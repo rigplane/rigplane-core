@@ -2178,7 +2178,14 @@ class TestToneTsqlCommands:
             tsql_freq_hz=None,
             name="FT8",
         )
-        civ = build_memory_contents_set(mem, ic7610_memory, cmd_map=ic7610_cmd_map)
+        from rigplane.profiles import get_radio_profile
+
+        civ = build_memory_contents_set(
+            mem,
+            ic7610_memory,
+            cmd_map=ic7610_cmd_map,
+            modes=get_radio_profile("IC-7610").modes,
+        )
         # FE FE 98 E0 1A 00 <channel 2 bytes> <payload 26 bytes> FD
         # Structure: FE FE(2) + to/from(2) + cmd(1) + sub(1) + data(28) + FD(1) = 35 bytes
         assert len(civ) == 35

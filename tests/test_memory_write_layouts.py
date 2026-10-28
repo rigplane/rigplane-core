@@ -32,7 +32,9 @@ simulated.
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -42,6 +44,8 @@ from rigplane.commands.memory import (
     build_memory_clear,
     build_memory_contents_set,
 )
+from rigplane.core.exceptions import CommandError, CommandRejectedError
+from rigplane.core.types import CivFrame, MemoryWriteField, MemoryWriteLayout
 from rigplane.profiles import MemoryWriteUnverifiedError, get_radio_profile
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.radio import IcomRadio
@@ -76,7 +80,7 @@ _IC7300_BLOCK = (
     "01"  # filter 1
     "01"  # data OFF | TONE
     "001365"  # 136.5 Hz
-    "000000"  # tone squelch off
+    "000885"  # tsql unset: the declared default 88.5 Hz (the radio's own default, as seen in a real record; zeros are refused)
 )
 # The 47-byte channel blocks of the two-block records, written field by
 # field in manual order: frequency 5 | mode 1 | filter 1 | data mode 1 |
@@ -90,8 +94,8 @@ _IC705_BLOCK = (
     "21"  # duplex + | TONE
     "00"  # digital squelch off (X0, fixed low nibble)
     "001365"  # 136.5 Hz (the 1B 00 encoding, guide p.21)
-    "000000"  # tone squelch off
-    "000000"  # DTCS off
+    "000885"  # tsql unset: the declared default 88.5 Hz (the radio's own default, as seen in a real record; zeros are refused)
+    "000023"  # DTCS polarity NN, code 023 (the radio's own default, as seen in a real record; zeros are refused)
     "00"  # DV code squelch off
     "000000" + _SP24  # duplex offset 0 (not exposed in this slice)  # UR/R1/R2 blank
 )
@@ -103,8 +107,8 @@ _IC9700_BLOCK = (
     "21"  # duplex + | TONE
     "00"  # digital squelch off
     "001365"  # 136.5 Hz
-    "000000"  # tone squelch off
-    "000000"  # DTCS off
+    "000885"  # tsql unset: the declared default 88.5 Hz (as above)
+    "000023"  # DTCS polarity NN, code 023 (as above)
     "00"  # DV code squelch off
     "000000" + _SP24  # duplex offset 0  # UR/R1/R2 blank
 )
@@ -196,9 +200,6 @@ def _cmd_map(model: str):
 
 
 def _mem(model: str, **overrides) -> MemoryChannel:
-    """One repeater channel per the case table: FM (USB for the HF-only
-    radios), TONE 136.5 Hz, DUP+; the IC-7610 override keeps its legacy
-    Hz-based tone field."""
     fields: dict = {
         "channel": _CASES[model][2],
         "group": _CASES[model][1],
@@ -211,7 +212,7 @@ def _mem(model: str, **overrides) -> MemoryChannel:
         "scan": 0,
         "datamode": 0,
         "tonemode": 1,
-        "duplex": 2,
+        "duplex": 2 if model in ("IC-705", "IC-9700") else 0,
         "tone_centihz": 13_650,
         "name": {
             "IC-705": "TEST RPT",
@@ -232,6 +233,7 @@ def _build(model: str, mem: MemoryChannel) -> bytes:
         _memory(model),
         to_addr=_CASES[model][0],
         cmd_map=_cmd_map(model),
+        modes=profile.modes,
         ctcss_tones_centihz=profile.ctcss_tones_centihz,
         data_mode_count=profile.data_mode_count,
     )
@@ -329,7 +331,7 @@ def test_the_write_body_decodes_with_the_read_parser(model: str) -> None:
     assert entry.duplex is RepeaterShiftDirection.PLUS
     assert entry.tone_mode is ToneSquelchType.TONE
     assert entry.tone_centihz == 13_650
-    assert entry.tsql_centihz == 0
+    assert entry.tsql_centihz == 8_850  # unset tsql wrote the declared default
     assert entry.name == mem.name
 
 
@@ -403,12 +405,23 @@ def test_a_tone_mode_the_record_cannot_store_refuses(
         _build(model, _mem(model, **overrides))
 
 
-def test_dtcs_tone_mode_builds_where_the_record_declares_it() -> None:
-    """The IC-705's tone nibble is 0-3 (guide p.17: OFF/TONE/TSQL/DTCS)."""
-    frame = _build("IC-705", _mem("IC-705", tonemode=3))
-    # byte 14 of the record: duplex 2 | DTCS 3
-    record = frame[10:-1]  # after FE FE A4 E0 1A 00 + the 4-byte address
-    assert record[9] == 0x23
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_dtcs_tone_mode_refuses_a_fixed_code(model: str) -> None:
+    with pytest.raises(ValueError, match="DTCS"):
+        _build(model, _mem(model, tonemode=3))
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_a_dv_memory_builds_on_both_dv_radios(model: str) -> None:
+    mem = _mem(model, mode=0x17, tonemode=0, duplex=0)
+    assert _build(model, mem)
+
+
+@pytest.mark.parametrize(("model", "mode"), [("IC-705", 0x06), ("IC-7610", 0x12)])
+def test_mode_declared_by_the_active_profile_still_builds(
+    model: str, mode: int
+) -> None:
+    assert _build(model, _mem(model, mode=mode))
 
 
 @pytest.mark.parametrize("datamode", [2, 3], ids=["DATA2", "DATA3"])
@@ -436,9 +449,13 @@ def test_a_data_mode_the_radio_does_not_have_refuses(model: str) -> None:
         ("IC-9700", {"mode": 0x22, "group": 1}, "DD mode"),
         ("IC-705", {"mode": 0x22}, "DD mode"),  # no DD groups on this radio
         # RPS (duplex 3) exists only in DD mode; DUP-/DUP+ never in DD.
-        ("IC-9700", {"duplex": 3, "group": 1}, "duplex"),
+        ("IC-9700", {"duplex": 3, "group": 1, "frequency_hz": 146_940_000}, "duplex"),
         ("IC-705", {"duplex": 3}, "duplex"),  # a group/channel radio has 0-2
-        ("IC-9700", {"mode": 0x22, "group": 3, "duplex": 2}, "duplex"),
+        (
+            "IC-9700",
+            {"mode": 0x22, "group": 3, "duplex": 2, "frequency_hz": 1_260_000_000},
+            "duplex",
+        ),
     ],
 )
 def test_dd_and_rps_combinations_refuse_outside_their_modes(
@@ -454,10 +471,134 @@ def test_dd_and_rps_combinations_refuse_outside_their_modes(
 def test_dd_mode_with_rps_builds_in_a_dd_group() -> None:
     """IC-9700 band 3 (1.2 GHz, ``dd_groups``): DD mode with RPS -- the one
     combination the guide documents (p.14: RPS in DD, DUP+/- elsewhere)."""
-    frame = _build("IC-9700", _mem("IC-9700", mode=0x22, group=3, duplex=3, tonemode=0))
+    frame = _build(
+        "IC-9700",
+        _mem(
+            "IC-9700",
+            mode=0x22,
+            group=3,
+            duplex=3,
+            tonemode=0,
+            frequency_hz=1_260_000_000,
+        ),
+    )
     record = frame[9:-1]  # after FE FE A2 E0 1A 00 + the 3-byte address
     assert record[6] == 0x22  # mode DD
     assert record[9] == 0x30  # duplex 3 (RPS) | tone OFF
+
+
+@pytest.mark.parametrize(
+    ("group", "frequency"),
+    [
+        (1, 144_000_000),
+        (1, 148_000_000),
+        (2, 430_000_000),
+        (2, 450_000_000),
+        (3, 1_240_000_000),
+        (3, 1_300_000_000),
+    ],
+)
+def test_memory_band_frequency_edges_build(group: int, frequency: int) -> None:
+    assert _build("IC-9700", _mem("IC-9700", group=group, frequency_hz=frequency))
+
+
+def test_no_frequency_band_is_invented_for_an_undeclared_profile() -> None:
+    profile = get_radio_profile("IC-9700")
+    memory = replace(profile.memory, frequency_ranges=())
+    assert build_memory_contents_set(
+        _mem("IC-9700", group=1),
+        memory,
+        to_addr=0xA2,
+        cmd_map=_cmd_map("IC-9700"),
+        modes=profile.modes,
+        ctcss_tones_centihz=profile.ctcss_tones_centihz,
+        data_mode_count=profile.data_mode_count,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("filter", 2),
+        ("scan", 1),
+        ("datamode", 1),
+        ("tonemode", 1),
+        ("duplex", 1),
+        ("tone_freq_hz", 88),
+        ("tsql_freq_hz", 88),
+        ("tone_centihz", 8850),
+        ("tsql_centihz", 8850),
+    ],
+)
+def test_a_layout_cannot_silently_drop_optional_memory_fields(
+    field: str, value: int
+) -> None:
+    profile = get_radio_profile("IC-705")
+    layout = MemoryWriteLayout(
+        clear="1a00_ff",
+        record_length=10,
+        fields=(
+            MemoryWriteField("frequency", 0, 5, "frequency"),
+            MemoryWriteField("mode", 5, 1, "mode"),
+            MemoryWriteField("name", 6, 4, "name"),
+        ),
+    )
+    mem = _mem("IC-705", duplex=0, tonemode=0, tone_centihz=None, name="TEST")
+    mem = replace(mem, **{field: value})
+    with pytest.raises(ValueError, match=field):
+        build_memory_contents_set(
+            mem,
+            replace(profile.memory, write_layout=layout),
+            to_addr=0xA4,
+            cmd_map=_cmd_map("IC-705"),
+            modes=profile.modes,
+            ctcss_tones_centihz=profile.ctcss_tones_centihz,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "overrides", "match"),
+    [
+        ("IC-9700", {"group": 1}, "frequency"),
+        ("IC-9700", {"group": 2, "frequency_hz": 146_940_000}, "frequency"),
+        ("IC-9700", {"group": 3}, "frequency"),
+        ("IC-9700", {"group": 1, "frequency_hz": 143_999_999}, "frequency"),
+        ("IC-9700", {"group": 1, "frequency_hz": 148_000_001}, "frequency"),
+        ("IC-7300", {"duplex": 1}, "duplex"),
+        ("IC-7300MK2", {"duplex": 2}, "duplex"),
+        ("IC-7610", {"duplex": 1}, "duplex"),
+        ("IC-705", {"scan": 1}, "scan"),
+        ("IC-9700", {"scan": 1}, "scan"),
+    ],
+)
+async def test_unstorable_memory_values_refuse_before_sending(
+    model: str, overrides: dict, match: str
+) -> None:
+    transport = MockTransport()
+    radio = _radio(model, transport)
+    try:
+        with pytest.raises(ValueError, match=match):
+            await radio.set_memory_contents(_mem(model, **overrides))
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model", ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2", "IC-7610"]
+)
+@pytest.mark.parametrize("name", [None, [], {}, 123, b"NAME"])
+async def test_non_string_names_refuse_before_sending(model: str, name: object) -> None:
+    transport = MockTransport()
+    radio = _radio(model, transport)
+    try:
+        with pytest.raises(ValueError, match="name must be a string"):
+            await radio.set_memory_contents(_mem(model, name=name))
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
 
 
 @pytest.mark.asyncio
@@ -528,7 +669,28 @@ async def test_an_out_of_range_clear_address_refuses(model: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-class _MemoryStoreTransport(MockTransport):
+class _MemoryAckTransport(MockTransport):
+    """The simulated peer ACKs memory mutations, leaving reads to the store."""
+
+    def __init__(self, reply_command: int | None = 0xFB) -> None:
+        super().__init__()
+        self.reply_command = reply_command
+
+    async def send_tracked(self, data: bytes) -> None:
+        await super().send_tracked(data)
+        civ = data[CIV_HEADER_SIZE:]
+        mutation = civ[4] == 0x0B or (
+            civ[4:6] == b"\x1a\x00" and (len(civ) > 16 or civ[-2] == 0xFF)
+        )
+        if mutation and self.reply_command is not None:
+            self.queue_response(
+                wrap_civ_in_udp(
+                    build_civ_frame(CONTROLLER_ADDR, civ[2], self.reply_command)
+                )
+            )
+
+
+class _MemoryStoreTransport(_MemoryAckTransport):
     """A table-driven CI-V memory store built from the SAME layout
     declaration the production encoder uses.
 
@@ -592,6 +754,95 @@ def _radio(model: str, transport: MockTransport) -> IcomRadio:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mode": 0x12},
+        {"tonemode": 1, "tone_centihz": None},
+        {"tonemode": 2, "tsql_centihz": None},
+        {"tonemode": 3},
+        {"tone_freq_hz": 123},
+    ],
+)
+async def test_sdk_memory_write_refuses_before_sending(
+    model: str, overrides: dict
+) -> None:
+    transport = _MemoryAckTransport()
+    radio = _radio(model, transport)
+    try:
+        with pytest.raises(ValueError):
+            await radio.set_memory_contents(_mem(model, **overrides))
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("default_tone", [-1, 12345])
+@pytest.mark.parametrize("operation", ["write", "clear"])
+async def test_a_default_tone_outside_the_ctcss_domain_is_not_admitted(
+    model: str, default_tone: int, operation: str
+) -> None:
+    """The SDK gate applies the loader's domain rule: a spliced-in default
+    tone the profile's CTCSS table lacks refuses like no layout at all."""
+    transport = _MemoryAckTransport()
+    radio = _radio(model, transport)
+    profile = radio._profile
+    layout = replace(profile.memory.write_layout, default_tone_centihz=default_tone)
+    radio._profile = replace(
+        profile, memory=replace(profile.memory, write_layout=layout)
+    )
+    try:
+        with pytest.raises(MemoryWriteUnverifiedError):
+            if operation == "write":
+                await radio.set_memory_contents(_mem(model))
+            else:
+                await radio.memory_clear(_CASES[model][2], group=_CASES[model][1])
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("operation", ["write", "clear"])
+async def test_memory_mutations_report_nak(model: str, operation: str) -> None:
+    transport = _MemoryAckTransport(reply_command=0xFA)
+    radio = _radio(model, transport)
+    try:
+        with pytest.raises(CommandRejectedError):
+            if operation == "write":
+                await radio.set_memory_contents(_mem(model))
+            else:
+                await radio.memory_clear(_CASES[model][2], group=_CASES[model][1])
+    finally:
+        radio._connected = False
+    assert len(transport.sent_packets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("operation", ["write", "clear"])
+@pytest.mark.parametrize("reply", [None, CivFrame(0xE0, 0xA4, 0x1A, 0, b"", 0)])
+async def test_memory_mutations_need_an_ack(
+    model: str, operation: str, reply: CivFrame | None
+) -> None:
+    radio = _radio(model, MockTransport())
+    radio._send_civ_raw = AsyncMock(return_value=reply)
+    try:
+        with pytest.raises(CommandError):
+            if operation == "write":
+                await radio.set_memory_contents(_mem(model))
+            else:
+                await radio.memory_clear(_CASES[model][2], group=_CASES[model][1])
+    finally:
+        radio._connected = False
+    radio._send_civ_raw.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
 async def test_write_then_read_returns_what_was_written(model: str) -> None:
     """Simulated round trip: the decoded entry equals the written channel
@@ -620,12 +871,11 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     assert entry.duplex is RepeaterShiftDirection.PLUS
     assert entry.tone_mode is ToneSquelchType.TONE
     assert entry.tone_centihz == 13_650
-    assert entry.tsql_centihz == 0
+    assert entry.tsql_centihz == 8_850  # unset tsql wrote the declared default
     assert entry.name == mem.name
     # The reply data after ``1A 00``, by hand from the manual tables: the
     # stored record, which carries its channel block twice (the record's
-    # own DTCS/offset/DV fields are their declared OFF values, all
-    # zeros).
+    # own DTCS/offset/DV fields are their declared fixed values).
     block = bytes.fromhex({"IC-705": _IC705_BLOCK, "IC-9700": _IC9700_BLOCK}[model])
     address = {
         "IC-705": bytes.fromhex("00020007"),
@@ -760,7 +1010,7 @@ async def test_ftx1_has_no_write_path_at_all() -> None:
     before anything is enqueued -- no write path is added here."""
     from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 
-    radio = YaesuCatRadio("/dev/null", profile=get_radio_profile("FTX-1"))
+    radio = YaesuCatRadio("/dev/null", profile="ftx1")
     with pytest.raises(NotImplementedError):
         await radio.set_memory_contents(_mem("IC-705"))
     with pytest.raises(NotImplementedError):

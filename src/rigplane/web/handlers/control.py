@@ -3537,6 +3537,22 @@ class ControlHandler:
                 _strict_memory_address(
                     {"channel": mem.channel, "group": mem.group}, memory
                 )
+                from ...commands.memory import build_memory_contents_set
+
+                profile = radio.profile
+                if profile.command_map is None:
+                    raise ValueError("memory write requires the active command map")
+                # Use the wire builder's validation before enqueueing as well
+                # as at execution; never admit a record it cannot encode.
+                build_memory_contents_set(
+                    mem,
+                    memory,
+                    to_addr=profile.civ_addr,
+                    cmd_map=profile.command_map,
+                    modes=profile.modes,
+                    ctcss_tones_centihz=profile.ctcss_tones_centihz,
+                    data_mode_count=profile.data_mode_count,
+                )
                 q.put(SetMemoryContents(mem))
                 return {"channel": mem.channel}
             case "set_bsr":

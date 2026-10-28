@@ -659,6 +659,12 @@ group number or band code, `first_channel`/`last_channel` the channel;
 `offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
 Both default to `[]` and accept only lists of unique integers within
 `first_group..last_group`; booleans are rejected.
+`frequency_ranges` optionally lists `{group, min_hz, max_hz}` tables for
+memory writes. Bounds are inclusive positive integer Hz, at most 9999999999;
+groups must be within the memory bounds and ranges in one group cannot overlap.
+A nonempty list admits only matching group/frequency pairs; an absent or empty
+list adds no frequency restriction. See `rig_loader.py: _parse_memory` and
+`commands/memory.py: _encode_record_frequency`.
 `write_layout` (default absent) declares the write-side record layout
 accepted for the profile, as a field table (MOR-3644): `clear` names the
 channel-clear wire form (`"1a00_ff"` = the manuals' `1A 00` + the radio's
@@ -670,13 +676,19 @@ many times the channel-data block — the fields between a leading
 Icom manuals print the block's position labels twice: the TX/split copy,
 which a non-split entry fills with the RX values, so the IC-705, IC-9700,
 IC-7300 and IC-7300MK2 profiles
-declare `copies = 2` and the name lands after the last copy), and
+declare `copies = 2` and the name lands after the last copy),
+`default_tone_centihz` the tone a `tone`/`tsql` field carries when the
+caller leaves it unset (a zero field is not a valid CTCSS value; required
+exactly when the table declares such a field, and checked against the
+profile's CTCSS domain), and
 `fields` an array of `{field, offset, length, encoding}`
-rows (plus `max_hz` on a frequency field) that must tile the record
+rows (plus `max_hz` on a frequency field and `value`, the hex byte
+string, on a `fixed` field) that must tile the record
 exactly, with no gap or overlap. The encodings come from one shared
 vocabulary (`core/types.py: MEMORY_WRITE_ENCODINGS`) — the raw mode code,
 the filter byte, the centi-Hz-exact CTCSS encoding of `1B 00`, ASCII
-names space- or NUL-padded, and fixed zero/space runs — so the per-radio
+names space- or NUL-padded, and `fixed` byte runs declared as hex — so
+the per-radio
 facts (offsets, name width, copy count) are data, and one table-driven
 encoder in `commands/memory.py` builds every radio's record. Absent means NOT
 verified: memory contents writes and clears are refused with the stable

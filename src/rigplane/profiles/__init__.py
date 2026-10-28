@@ -1001,7 +1001,13 @@ def admit_memory_write(profile: RadioProfile | None) -> None:
     """
     memory = profile.memory if isinstance(profile, RadioProfile) else None
     layout = memory.write_layout if isinstance(memory, MemoryProfile) else None
-    if isinstance(layout, MemoryWriteLayout) and not layout.validation_errors():
+    if (
+        isinstance(layout, MemoryWriteLayout)
+        and not layout.validation_errors()
+        and not layout.domain_errors(
+            profile.ctcss_tones_centihz if isinstance(profile, RadioProfile) else None
+        )
+    ):
         return
     model = profile.model if isinstance(profile, RadioProfile) else "this radio"
     raise MemoryWriteUnverifiedError(

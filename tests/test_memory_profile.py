@@ -23,7 +23,9 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
         "group_channel", 0, 99, 0, 99, recall=True
     )
     ic9700 = get_radio_profile("IC-9700")
-    assert replace(ic9700.memory, write_layout=None) == MemoryProfile(
+    assert replace(
+        ic9700.memory, write_layout=None, frequency_ranges=()
+    ) == MemoryProfile(
         "band_channel", 1, 3, 1, 99, dd_groups=(3,), offset_10mhz_groups=(3,)
     )
     assert ic9700.memory.dd_groups == (3,)
@@ -85,6 +87,47 @@ def test_loader_reads_memory_group_rules(tmp_path: Path) -> None:
     assert defaults.dd_groups == defaults.offset_10mhz_groups == ()
     fields = {f.name: f for f in dataclasses.fields(MemoryProfile)}
     assert fields["dd_groups"].kw_only and fields["offset_10mhz_groups"].kw_only
+
+
+def test_loader_reads_optional_memory_frequency_ranges(tmp_path: Path) -> None:
+    memory = _load(
+        tmp_path,
+        _GOOD
+        + "frequency_ranges = [{group = 1, min_hz = 144000000, max_hz = 148000000}]\n",
+    ).memory
+    assert memory.frequency_ranges == ((1, 144_000_000, 148_000_000),)
+    assert _load(tmp_path, _GOOD).memory.frequency_ranges == ()
+    assert get_radio_profile("IC-705").memory.frequency_ranges == ()
+    assert get_radio_profile("IC-9700").memory.frequency_ranges == (
+        (1, 144_000_000, 148_000_000),
+        (2, 430_000_000, 450_000_000),
+        (3, 1_240_000_000, 1_300_000_000),
+    )
+
+
+@pytest.mark.parametrize(
+    "ranges",
+    [
+        "1",
+        "{}",
+        "[1]",
+        "[{group = true, min_hz = 1, max_hz = 2}]",
+        "[{group = 0, min_hz = 1, max_hz = 2}]",
+        "[{group = 4, min_hz = 1, max_hz = 2}]",
+        "[{group = 1, min_hz = true, max_hz = 2}]",
+        "[{group = 1, min_hz = 1, max_hz = 2.0}]",
+        "[{group = 1, min_hz = 0, max_hz = 2}]",
+        "[{group = 1, min_hz = 3, max_hz = 2}]",
+        "[{group = 1, min_hz = 1}]",
+        "[{group = 1, min_hz = 1, max_hz = 2, extra = 1}]",
+        "[{group = 1, min_hz = 1, max_hz = 2}, {group = 1, min_hz = 2, max_hz = 3}]",
+    ],
+)
+def test_loader_rejects_invalid_memory_frequency_ranges(
+    tmp_path: Path, ranges: str
+) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].frequency_ranges"):
+        _load(tmp_path, _GOOD + f"frequency_ranges = {ranges}\n")
 
 
 @pytest.mark.parametrize("key", ["dd_groups", "offset_10mhz_groups"])
@@ -282,6 +325,92 @@ def test_loader_rejects_a_broken_write_layout(
 def test_loader_rejects_an_out_of_range_tone_max(tmp_path: Path, tone_max: str) -> None:
     with pytest.raises(RigLoadError, match=r"\[memory\].write_layout.tone_max"):
         _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT + f"\ntone_max = {tone_max}\n")
+
+
+# A layout with tone/tsql fields: an unset tone writes the declared
+# default (a zero field is not a valid CTCSS value), so the default is
+# required here and must be a member of the profile's CTCSS domain.
+_TONE_WRITE_LAYOUT = """
+[memory.write_layout]
+clear = "1a00_ff"
+record_length = 16
+default_tone_centihz = 8850
+fields = [
+  { field = "frequency", offset = 0, length = 5, encoding = "frequency" },
+  { field = "mode", offset = 5, length = 1, encoding = "mode" },
+  { field = "tone", offset = 6, length = 3, encoding = "tone" },
+  { field = "tsql", offset = 9, length = 3, encoding = "tsql" },
+  { field = "dtcs", offset = 12, length = 3, encoding = "fixed", value = "000023" },
+  { field = "name", offset = 15, length = 1, encoding = "name" },
+]
+"""
+
+_CTCSS_CATALOG = (
+    "schema_version = 1\n\n[tables.standard_50]\nvalues_centihz = [8850, 12300]\n"
+)
+
+
+def _load_with_ctcss(tmp_path: Path, memory: str):
+    (tmp_path / "_ctcss_tables_v1.toml").write_text(_CTCSS_CATALOG)
+    return load_rig(
+        _write_toml(
+            tmp_path, _minimal_toml('[ctcss]\ntable = "standard_50"\n' + memory)
+        )
+    )
+
+
+def test_loader_reads_the_fixed_encoding_and_the_tone_default(tmp_path: Path) -> None:
+    """``fixed`` is the one way to declare a constant byte run (its hex
+    ``value`` in the profile), and ``default_tone_centihz`` is the tone an
+    unset tone/tsql field carries."""
+    declared = _load_with_ctcss(tmp_path, _GOOD + _TONE_WRITE_LAYOUT).memory
+    assert declared is not None and declared.write_layout is not None
+    layout = declared.write_layout
+    assert layout.default_tone_centihz == 8850
+    dtcs = next(field for field in layout.fields if field.field == "dtcs")
+    assert dtcs.encoding == "fixed" and dtcs.value == "000023"
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        ('value = "000023"', 'value = "0002"'),  # shorter than the field
+        ('value = "000023"', 'value = "0000zz"'),  # not hex
+        ('value = "000023"', "value = 23"),  # not a string
+        (', value = "000023" },', " },"),  # a fixed field without a value
+        (
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode" },',
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode", value = "00" },',  # value off a fixed field
+        ),
+        ("default_tone_centihz = 8850", "default_tone_centihz = 9999"),  # off-domain
+        ("default_tone_centihz = 8850", 'default_tone_centihz = "8850"'),
+    ],
+)
+def test_loader_rejects_a_broken_fixed_field_or_tone_default(
+    tmp_path: Path, edit: tuple[str, str]
+) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].write_layout"):
+        _load_with_ctcss(tmp_path, _GOOD + _TONE_WRITE_LAYOUT.replace(*edit))
+
+
+def test_loader_requires_the_tone_default_with_tone_fields(tmp_path: Path) -> None:
+    with pytest.raises(RigLoadError, match=r"default_tone_centihz"):
+        _load_with_ctcss(
+            tmp_path,
+            _GOOD + _TONE_WRITE_LAYOUT.replace("default_tone_centihz = 8850\n", ""),
+        )
+
+
+def test_loader_rejects_a_tone_default_without_tone_fields(tmp_path: Path) -> None:
+    with pytest.raises(RigLoadError, match=r"default_tone_centihz"):
+        _load(
+            tmp_path,
+            _GOOD
+            + _GOOD_WRITE_LAYOUT.replace(
+                'clear = "1a00_ff"',
+                'clear = "1a00_ff"\ndefault_tone_centihz = 8850',
+            ),
+        )
 
 
 @pytest.mark.parametrize("value", ['"civ_26"', "3", "[]", "true", '""'])

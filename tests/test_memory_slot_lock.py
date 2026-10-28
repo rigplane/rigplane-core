@@ -5,16 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
-from _helpers import CIV_HEADER_SIZE
+from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected, YaesuCatTransport
 from rigplane.commands import CONTROLLER_ADDR
+from rigplane.commands._frame import build_civ_frame
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -157,6 +157,9 @@ class _GatedIc705Transport(MockTransport):
             if payload.endswith(b"\xff"):  # the declared clear form
                 self.events.append("clear")
                 await super().send_tracked(data)
+                self.queue_response(
+                    wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, civ[2], 0xFB))
+                )
                 return
             address = payload
             channel = int(address[2:4].hex())

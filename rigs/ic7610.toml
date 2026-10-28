@@ -1563,5 +1563,5 @@ fields = [
   { field = "tone", offset = 9, length = 3, encoding = "tone_hz_bcd" },
   { field = "tsql", offset = 12, length = 3, encoding = "tsql_hz_bcd" },
   { field = "name", offset = 15, length = 10, encoding = "name_nul" },
-  { field = "pad", offset = 25, length = 1, encoding = "zero" },
+  { field = "pad", offset = 25, length = 1, encoding = "fixed", value = "00" },
 ]

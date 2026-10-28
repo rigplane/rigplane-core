@@ -672,6 +672,7 @@ clear = "1a00_ff"  # Advanced Manual 11a p.19-11: 1A 00 + channel + FF (P1/P2 ex
 record_length = 25  # one copy: select + the 14-byte span + the 10-byte name
 copies = 2  # p.19-11 NOTE: the span is stored twice (TX copy = RX values when not split)
 tone_max = 2  # the !1 tone nibble is 0=OFF, 1=TONE, 2=TSQL (no DTCS on this radio)
+default_tone_centihz = 8850  # an unset tone/tsql writes the default tone (88.5 Hz); zeros are not a valid CTCSS value
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                            # e
   { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 74_800_000 },  # r-i: receiver tops at 74.8 MHz (spec, 4 m per MOR-3782)

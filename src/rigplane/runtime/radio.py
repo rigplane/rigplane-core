@@ -6317,17 +6317,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         without one (never silently group 0), the channel-only radios
         keep group 0. MOR-3644: refused unless the profile's ``[memory]``
         section declares a verified write layout; the clear frame itself
-        is the profile's declared form; nothing is sent otherwise.
+        is the profile's declared form; nothing is sent otherwise. The
+        clear awaits the radio's answer: a NAK raises
+        :class:`CommandRejectedError`, silence a timeout -- a refused
+        clear never reports success.
         """
+        self._check_connected()
         admit_memory_write(self._profile)
         memory = self._profile.memory
         assert memory is not None  # admit_memory_write just verified it
         async with memory_slot_operation(self):
-            await self._send_fire_and_forget(
+            self._check_connected()
+            resp = await self._send_civ_expect(
                 self._commands.build_memory_clear(
                     memory, group, channel, to_addr=self._radio_addr
-                )
+                ),
+                label="memory_clear",
             )
+            if parse_ack_nak(resp) is False:
+                raise CommandRejectedError(
+                    f"Radio rejected memory clear {group}/{channel}"
+                )
+            if parse_ack_nak(resp) is not True:
+                raise CommandError("Expected ACK for memory_clear")
 
     async def get_memory_contents(self, channel: int) -> MemoryChannel:
         """Read full memory channel data.
@@ -6354,21 +6366,33 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         declares a verified write layout, and the record itself is built
         from that layout (``[memory].write_layout``) -- the address form,
         field offsets, tone encoding and name width are the profile's
-        own. Nothing is sent otherwise.
+        own. Nothing is sent otherwise. The write awaits the radio's
+        answer: a NAK raises :class:`CommandRejectedError`, silence a
+        timeout -- a refused write never reports success.
         """
+        self._check_connected()
         admit_memory_write(self._profile)
         memory = self._profile.memory
         assert memory is not None  # admit_memory_write just verified it
         async with memory_slot_operation(self):
-            await self._send_fire_and_forget(
+            self._check_connected()
+            resp = await self._send_civ_expect(
                 self._commands.build_memory_contents_set(
                     mem,
                     memory,
                     to_addr=self._radio_addr,
                     ctcss_tones_centihz=self._profile.ctcss_tones_centihz,
+                    modes=self._profile.modes,
                     data_mode_count=self._profile.data_mode_count,
-                )
+                ),
+                label="set_memory_contents",
             )
+            if parse_ack_nak(resp) is False:
+                raise CommandRejectedError(
+                    f"Radio rejected memory contents write to channel {mem.channel}"
+                )
+            if parse_ack_nak(resp) is not True:
+                raise CommandError("Expected ACK for set_memory_contents")
 
     async def read_memory_entries(
         self, group: int, channels: Sequence[int]
