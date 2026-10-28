@@ -136,7 +136,7 @@
   {#if overlayVisible}
     <div
       class="power-off-overlay"
-      style:top="max(var(--rp-status-bar-bottom, 0px), var(--rp-chrome-top, 0px))"
+      style:top="var(--rp-status-bar-bottom, 0px)"
       role="dialog"
       aria-modal="true"
       data-testid="global-power-off"
@@ -198,7 +198,7 @@
   }
 
   .global-tx {
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
+    top: 0;
     display: flex;
     align-items: center;
     gap: 6px;
@@ -239,7 +239,7 @@
   .global-tx > span:last-child { min-inline-size: 2ch; }
 
   .global-tx-fault {
-    top: calc(var(--rp-chrome-top, 0px) + 28px); /* MOR-3845 */
+    top: 28px;
     padding: 3px 12px;
     border-radius: 4px;
     font-size: 11px;
@@ -249,8 +249,7 @@
 
   /* `inset: 0` keeps the overlay full-screen; the inline `top` (the only
      MOR-1240 edge) starts it below a mounted status bar via the
-     document-level `--rp-status-bar-bottom` StatusBar publishes, and never
-     above the reserved top chrome strip (MOR-3845 `--rp-chrome-top`). */
+     document-level `--rp-status-bar-bottom` StatusBar publishes. */
   .power-off-overlay {
     position: fixed;
     inset: 0;

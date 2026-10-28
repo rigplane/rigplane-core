@@ -952,13 +952,12 @@
   .np-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 999;
   }
 
   .np-detail {
     position: fixed;
-    top: calc(var(--rp-chrome-top, 0px) + 36px); /* MOR-3845 */
+    top: 36px;
     left: 50%;
     transform: translateX(-50%);
     background: var(--v2-bg-primary, #0f0f1a);

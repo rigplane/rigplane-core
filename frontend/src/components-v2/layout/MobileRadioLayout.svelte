@@ -1130,10 +1130,10 @@
   /* ── Landscape layout ── */
   .m-landscape {
     position: fixed;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
+    top: 0;
     left: 0;
     width: 100dvw;
-    height: calc(100dvh - var(--rp-chrome-top, 0px));
+    height: 100dvh;
     background: #000;
     z-index: 50;
     display: flex;
@@ -1381,8 +1381,8 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    height: calc(100vh - var(--rp-chrome-top, 0px));
-    height: calc(100dvh - var(--rp-chrome-top, 0px));
+    height: 100vh;
+    height: 100dvh;
     background: linear-gradient(180deg, var(--v2-bg-gradient-start) 0%, var(--v2-bg-darkest) 100%);
     overflow: hidden;
     padding-top: env(safe-area-inset-top, 0px);
@@ -1955,7 +1955,6 @@
   .m-step-picker-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 149;
   }
 

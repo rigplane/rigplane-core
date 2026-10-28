@@ -307,7 +307,7 @@
 <style>
   .keyboard-leader-pill {
     position: fixed;
-    top: calc(var(--rp-chrome-top, 0px) + 14px); /* MOR-3845 */
+    top: 14px;
     right: 14px;
     z-index: 1100;
     padding: 8px 12px;
@@ -323,7 +323,6 @@
   .keyboard-help-overlay {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 1200;
     display: grid;
     place-items: center;

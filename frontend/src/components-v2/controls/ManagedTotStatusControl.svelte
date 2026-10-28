@@ -109,13 +109,12 @@
   .managed-tot-popover-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 1000;
   }
 
   .managed-tot-popover {
     position: fixed;
-    top: calc(var(--rp-chrome-top, 0px) + 36px); /* MOR-3845 */
+    top: 36px;
     right: 10px;
     z-index: 1001;
     min-inline-size: 250px;

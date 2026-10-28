@@ -86,7 +86,6 @@
 <style>
   .frequency-entry-backdrop {
     position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     padding: 20px; background: rgba(0, 0, 0, 0.62); backdrop-filter: blur(3px);
   }
   .frequency-entry-dialog {

@@ -1017,7 +1017,6 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 10000;
     background: var(--v2-popup-bg);
     border: 0;

@@ -40,17 +40,6 @@ body {
   min-height: 100dvh;
 }
 
-/* MOR-3845: top chrome inset contract (same pattern as MOR-1240's
- * `--rp-status-bar-bottom`). An embedding shell (the unified title bar)
- * reserves the strip above the page by setting `--rp-chrome-top` on
- * <html>; Core's root layout offsets below it and every fixed surface
- * anchored to the viewport top starts at the same edge. The default is
- * 0px, so with the property unset nothing changes visually. */
-:root {
-  --rp-chrome-top: 0px;
-}
-
 #app {
   min-height: 100dvh;
-  padding-top: var(--rp-chrome-top, 0px);
 }

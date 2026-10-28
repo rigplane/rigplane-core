@@ -541,10 +541,7 @@ describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usa
     document.documentElement.style.setProperty(BOTTOM_EDGE, '34px');
     const instance = mountHost();
 
-    // MOR-3845: the top edge is the greater of the bar edge and the
-    // reserved top chrome strip, so the bar never covers either.
-    expect(powerEl()?.style.top)
-      .toBe(`max(var(${BOTTOM_EDGE}, 0px), var(--rp-chrome-top, 0px))`);
+    expect(powerEl()?.style.top).toBe(`var(${BOTTOM_EDGE}, 0px)`);
 
     document.documentElement.style.removeProperty(BOTTOM_EDGE);
     unmount(instance);
@@ -558,8 +555,7 @@ describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usa
     // No bar publishes, so the variable is unset anywhere: the overlay's
     // top collapses to the 0px fallback — full-screen.
     expect(bottomEdge()).toBe('');
-    expect(powerEl()?.style.top)
-      .toBe(`max(var(${BOTTOM_EDGE}, 0px), var(--rp-chrome-top, 0px))`);
+    expect(powerEl()?.style.top).toBe(`var(${BOTTOM_EDGE}, 0px)`);
 
     unmount(instance);
   });

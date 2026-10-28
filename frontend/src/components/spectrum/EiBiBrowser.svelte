@@ -402,7 +402,6 @@
   .eibi-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     background: rgba(0, 0, 0, 0.5);
     z-index: 1000;
     display: flex;

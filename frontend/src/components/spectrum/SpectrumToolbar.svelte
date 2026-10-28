@@ -979,7 +979,6 @@
   .layer-dropdown-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 999;
     background: none;
     border: none;
@@ -1110,7 +1109,6 @@
   .popover-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 999;
     background: none;
     border: none;

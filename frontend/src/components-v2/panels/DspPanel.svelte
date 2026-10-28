@@ -268,8 +268,6 @@
   let nrModalMode = $state(0);
   function computeModalStyle(anchor: HTMLElement | undefined): string {
     const menuWidth = 220;
-    const app = document.getElementById('app');
-    const topLimit = 8 + (app ? Number.parseFloat(getComputedStyle(app).paddingTop) || 0 : 0);
     let left = anchor?.getBoundingClientRect().left ?? 8;
     if (left + menuWidth > window.innerWidth - 8) {
       left = window.innerWidth - 8 - menuWidth;
@@ -286,15 +284,15 @@
       : null;
     if (mobileTuningStrip) {
       const stripTop = mobileTuningStrip.getBoundingClientRect().top;
-      return `top: ${topLimit}px; left: ${left}px; width: ${menuWidth}px; bottom: calc(100dvh - ${stripTop}px + 8px); overflow-y: auto;`;
+      return `top: 8px; left: ${left}px; width: ${menuWidth}px; bottom: calc(100dvh - ${stripTop}px + 8px); overflow-y: auto;`;
     }
 
     if (!anchor) {
-      return `top: ${topLimit}px; left: 8px; width: 220px; max-height: calc(100dvh - ${topLimit + 8}px); overflow-y: auto;`;
+      return 'top: 8px; left: 8px; width: 220px;';
     }
     const rect = anchor.getBoundingClientRect();
-    const top = Math.max(topLimit, rect.bottom + 6);
-    return `top: ${top}px; left: ${left}px; width: ${menuWidth}px; max-height: calc(100dvh - ${top + 8}px); overflow-y: auto;`;
+    const top = rect.bottom + 6;
+    return `top: ${top}px; left: ${left}px; width: ${menuWidth}px;`;
   }
 
   function openModalFor(kind: ModalId): void {
@@ -717,7 +715,6 @@
   .menu-backdrop {
     position: fixed;
     inset: 0;
-    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 10000;
     background: var(--v2-attenuator-bg);
     border: 0;
