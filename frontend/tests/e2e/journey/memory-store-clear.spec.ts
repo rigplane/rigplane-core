@@ -61,9 +61,11 @@ async function installWebSocketInterceptor(page: Page): Promise<void> {
     const win = window as Window & {
       __WS_COMMANDS__?: WsCommandRecord[];
       __WS_REFUSALS__?: WsRefusalRecord[];
+      __WS_ACKS__?: string[];
     };
     win.__WS_COMMANDS__ = [];
     win.__WS_REFUSALS__ = [];
+    win.__WS_ACKS__ = [];
     const OriginalWebSocket = window.WebSocket;
 
     class InterceptedWebSocket extends OriginalWebSocket {
@@ -79,6 +81,9 @@ async function installWebSocketInterceptor(page: Page): Promise<void> {
                 error: String(parsed.error),
                 message: String(parsed.message),
               });
+            }
+            if (parsed.type === 'response' && parsed.ok === true) {
+              win.__WS_ACKS__?.push(String(parsed.id));
             }
           } catch {
             // Ignore non-JSON frames.
@@ -134,6 +139,14 @@ async function receivedRefusals(page: Page): Promise<WsRefusalRecord[]> {
   return page.evaluate(() => {
     const win = window as Window & { __WS_REFUSALS__?: WsRefusalRecord[] };
     return win.__WS_REFUSALS__ ?? [];
+  });
+}
+
+/** Ids of the ok responses the server has sent to the page so far, in arrival order. */
+async function receivedAcks(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const win = window as Window & { __WS_ACKS__?: string[] };
+    return win.__WS_ACKS__ ?? [];
   });
 }
 
@@ -270,11 +283,15 @@ test.describe('memory seam, IC-7610 simulator (channel-addressed, verified write
     await expect(surface.getByTestId('memory-channel-1-freq')).toHaveText('14.074.000');
     await expect(surface.getByTestId('memory-count')).toHaveText('1/99');
 
-    // Tune away, then recall channel 1 through the panel: the simulator's
-    // stored contents come back through the real seam (set_freq/set_mode
-    // inside the fake) into /api/v1/state and the readout.
+    // Change BOTH frequency and mode, then recall channel 1 through the
+    // panel: the simulator's stored contents come back through the real
+    // seam (set_freq/set_mode inside the fake) into /api/v1/state and the
+    // DOM. The mode leg makes the recall's set_mode load-bearing — a
+    // frequency-only recall would pass with mode restoration dropped.
+    const modeKey = (name: string) => page.locator(`[data-testid="standard-mode-${name}"]`).getByRole('radio');
     await tuneViaEntry(page, '7.100');
-    await expectServerMain(page, { freqHz: 7_100_000 });
+    await modeKey('LSB').click();
+    await expectServerMain(page, { freqHz: 7_100_000, mode: 'LSB' });
     await surface.getByTestId('memory-channel-1-recall').click();
     await expect.poll(() => sentMemoryCommands(page)).toEqual([
       { name: 'set_memory_mode', params: { channel: 1 } },
@@ -284,29 +301,41 @@ test.describe('memory seam, IC-7610 simulator (channel-addressed, verified write
     ]);
     await expectServerMain(page, { freqHz: 14_074_000, mode: 'USB' });
     await expectReadoutHz(readout, 14_074_000);
+    await expect(modeKey('USB')).toHaveAttribute('aria-checked', 'true');
 
     // Clear channel 1 through the panel's two-step CLR. The panel sends no
     // group; on this channel-addressed radio the server defaults it to 0.
     await tuneViaEntry(page, '7.100');
-    await expectServerMain(page, { freqHz: 7_100_000 });
+    await expectServerMain(page, { freqHz: 7_100_000, mode: 'USB' });
     await surface.getByTestId('memory-channel-1-clear').click();
     await surface.locator('[data-channel="1"]').getByRole('button', { name: 'Yes' }).click();
     await expect.poll(async () => (await sentCommands(page, ['memory_clear'])).map(({ params }) => params))
       .toEqual([{ channel: 1 }]);
-    // The verified write layout admitted the clear: no refusal for its id.
+    // The verified write layout admitted the clear: its own id was acked,
+    // not refused.
     const [clearCommand] = await sentCommands(page, ['memory_clear']);
+    await expect.poll(async () => (await receivedAcks(page)).includes(clearCommand.id)).toBe(true);
     expect((await receivedRefusals(page)).filter((refusal) => refusal.id === clearCommand.id)).toEqual([]);
 
     // Visible result: the row is gone from the local catalogue.
     await expect(surface.getByTestId('memory-channel-1')).toHaveCount(0);
     await expect(surface.getByTestId('memory-count')).toHaveText('0/99');
 
-    // Read back empty: the cleared channel recalls as a no-op on the
-    // simulator (the ok reply proves the command executed; the VFO stays
-    // at 7.100 MHz instead of snapping back to the stored 14.074 MHz).
-    const reply = await sendRawCommand(page, 'memory_to_vfo', { channel: 1 });
-    expect(reply).toMatchObject({ ok: true, result: { channel: 1 } });
-    await expectServerMain(page, { freqHz: 7_100_000 });
+    // Read back empty. The probe (recall of the cleared channel) no-ops on
+    // the simulator, so its execution is proven by a FIFO WITNESS instead
+    // of a state diff: the probe's ok reply means it was ENQUEUED
+    // (_enqueue_rc_memory returns only after q.put), and the witness
+    // set_mode behind it lands on the same queue — when the witness's
+    // effect is observed, the probe has been drained before it. The witness
+    // changes the MODE only, so it cannot overwrite the probe's evidence:
+    // had the Clear been dropped, the probe would have restored the stored
+    // 14.074 MHz before the witness ran, and the final frequency assertion
+    // would fail.
+    const probe = await sendRawCommand(page, 'memory_to_vfo', { channel: 1 });
+    expect(probe).toMatchObject({ ok: true, result: { channel: 1 } });
+    const witness = await sendRawCommand(page, 'set_mode', { mode: 'LSB', receiver: 0 });
+    expect(witness).toMatchObject({ ok: true });
+    await expectServerMain(page, { freqHz: 7_100_000, mode: 'LSB' });
   });
 
   test('an out-of-range channel is refused before the wire', async ({ page }) => {
