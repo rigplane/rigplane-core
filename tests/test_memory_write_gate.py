@@ -317,10 +317,15 @@ class TestHandlerWriteGate:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        ("model", "group"), [("IC-705", 3), ("IC-9700", 2), ("IC-7300", 0)]
+        ("model", "group", "frequency_hz"),
+        [
+            ("IC-705", 3, 14_074_000),
+            ("IC-9700", 2, 446_000_000),
+            ("IC-7300", 0, 14_074_000),
+        ],
     )
     async def test_the_opted_in_radios_enqueue_the_write(
-        self, model: str, group: int
+        self, model: str, group: int, frequency_hz: int
     ) -> None:
         """MOR-3644 part 2: the declared layouts pass the gate and
         the address reaches the queue (group/band for the addressed
@@ -330,7 +335,7 @@ class TestHandlerWriteGate:
         from rigplane.web.radio_poller import MemoryClear, SetMemoryContents
 
         handler, queue = self._handler(model)
-        mem = replace(_mem(), group=group)
+        mem = replace(_mem(), group=group, frequency_hz=frequency_hz)
         result = await handler._enqueue_command(
             "memory_clear", {"channel": 5, "group": group}
         )
