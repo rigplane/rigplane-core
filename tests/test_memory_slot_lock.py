@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
