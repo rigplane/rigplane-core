@@ -255,6 +255,7 @@ def build_memory_contents_set(
     from_addr: int = CONTROLLER_ADDR,
     *,
     cmd_map: CommandMap,
+    modes: tuple[str, ...],
     ctcss_tones_centihz: tuple[int, ...] | None = None,
     data_mode_count: int = 1,
 ) -> bytes:
@@ -270,7 +271,11 @@ def build_memory_contents_set(
     (``commands/tone.py``); ``data_mode_count`` is the profile's
     ``[data_mode].count`` (the IC-7610's record stores DATA1-3, the other
     manuals' records 0/1). A layout without the matching fields ignores
-    both. ``layout.copies`` decides how many times the channel-data block
+    both. ``modes`` is the active profile's mode list; DD additionally
+    requires a declared DD group. In centi-Hz layouts, an active TONE/TSQL
+    mode requires an explicit parameter; only an inactive parameter uses
+    the declared default. Fixed DTCS fields cannot accept DTCS mode.
+    ``layout.copies`` decides how many times the channel-data block
     appears on the wire (the sourced manuals print it twice -- the
     TX/split copy a non-split entry fills with the RX values).
 
@@ -285,6 +290,16 @@ def build_memory_contents_set(
     layout = _require_write_layout(memory)
     group = _required_memory_group(mem.group, memory, "write")
     address = _encode_memory_address(memory, group, mem.channel)
+    if mem.mode != _MODE_DD:
+        try:
+            mode = Mode(mem.mode)
+        except ValueError:
+            raise ValueError(f"unknown CI-V mode code 0x{mem.mode:02x}") from None
+        if mode.name.replace("_", "-") not in modes:
+            raise ValueError(f"mode {mode.name} is not declared by the active profile")
+    else:
+        _dd_memory_mode(mem.mode, memory, group)
+    _check_tone_representation(mem, layout, ctcss_tones_centihz)
     record = _write_record(mem, memory, layout, ctcss_tones_centihz, data_mode_count)
     return _build_from_map(
         cmd_map,
@@ -390,6 +405,48 @@ def _encode_record_name(name: str, length: int, pad: bytes) -> bytes:
     if any(not 0x20 <= byte <= 0x7E for byte in encoded):
         raise ValueError("memory name must be printable ASCII")
     return encoded.ljust(length, pad)
+
+
+def _check_tone_representation(
+    mem: MemoryChannel,
+    layout: MemoryWriteLayout,
+    ctcss_tones_centihz: tuple[int, ...] | None,
+) -> None:
+    """Refuse a tone supplied in the representation the record does not store.
+
+    The layout's field table names exactly one tone representation: the
+    centi-Hz ``tone``/``tsql`` fields or the legacy Hz ``tone_hz_bcd``/
+    ``tsql_hz_bcd`` ones. A value supplied in the other representation
+    would be silently dropped from the record (an unset field writes the
+    declared default, not the caller's tone), so it refuses here, before
+    any byte is built.
+    """
+    encodings = {field.encoding for field in layout.fields}
+    if mem.tonemode == 3 and any(
+        field.field == "dtcs" and field.encoding == "fixed" for field in layout.fields
+    ):
+        raise ValueError(
+            "DTCS mode requires a caller-supplied code; this field is fixed"
+        )
+    if encodings & {"tone", "tsql"} and mem.tonemode in (1, 2):
+        tone = mem.tone_centihz if mem.tonemode == 1 else mem.tsql_centihz
+        if tone is None:
+            raise ValueError("active tone mode requires an explicit tone frequency")
+        _require_profile_tone(tone, ctcss_tones_centihz)
+    if encodings & {"tone", "tsql"} and (
+        mem.tone_freq_hz is not None or mem.tsql_freq_hz is not None
+    ):
+        raise ValueError(
+            "this record stores tones in exact centi-Hz: use "
+            "tone_centihz/tsql_centihz, not tone_freq_hz/tsql_freq_hz"
+        )
+    if encodings & {"tone_hz_bcd", "tsql_hz_bcd"} and (
+        mem.tone_centihz is not None or mem.tsql_centihz is not None
+    ):
+        raise ValueError(
+            "this record stores tones in Hz: use "
+            "tone_freq_hz/tsql_freq_hz, not tone_centihz/tsql_centihz"
+        )
 
 
 def _encode_record_tone(

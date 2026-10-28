@@ -38,7 +38,7 @@ from rigplane.types import MemoryChannel
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from _helpers import CIV_HEADER_SIZE
-from test_radio import MockTransport
+from test_memory_write_layouts import _MemoryAckTransport as MockTransport
 from test_web_server import _addr, _http_get
 from test_web_split_writes import _request
 
@@ -362,11 +362,10 @@ class TestHandlerWriteGate:
         tests/test_memory_write_layouts.py), so the shared arm refuses it
         with the stable code before anything is enqueued."""
         from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-        from rigplane.profiles import get_radio_profile
         from rigplane.web.handlers import ControlHandler
         from rigplane.web.radio_poller import CommandQueue
 
-        radio = YaesuCatRadio("/dev/null", profile=get_radio_profile("FTX-1"))
+        radio = YaesuCatRadio("/dev/null", profile="ftx1")
         ws = MagicMock()
         ws.send_text = AsyncMock()
         server = MagicMock()
@@ -439,6 +438,59 @@ async def _shutdown(web: WebServer, radio: IcomRadio) -> None:
             task.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     radio._connected = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mode": 0x12},
+        {"tonemode": 1, "tone_centihz": None},
+        {"tonemode": 2, "tsql_centihz": None},
+        {"tonemode": 1, "tone_centihz": 12_345},
+        {"tonemode": 2, "tsql_centihz": 12_345},
+        {"tonemode": 3},
+        {"tone_centihz": None, "tone_freq_hz": 123},
+    ],
+)
+async def test_http_memory_write_refuses_unusable_mode_or_tones(
+    model: str, overrides: dict[str, Any]
+) -> None:
+    from test_memory_write_layouts import _mem as layout_mem
+
+    transport = MockTransport()
+    radio = _radio(model, transport)
+    web = await _serve(radio)
+    params = layout_mem(model, **overrides).__dict__
+    try:
+        status, body = await _request(web, "http", "set_memory_contents", params)
+    finally:
+        await _shutdown(web, radio)
+    assert status == 400
+    assert body["error"]
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+async def test_http_memory_write_refuses_wfm_outside_active_profile() -> None:
+    from test_memory_write_layouts import _mem as layout_mem
+
+    transport = MockTransport()
+    radio = _radio("IC-9700", transport)
+    web = await _serve(radio)
+    try:
+        status, body = await _request(
+            web,
+            "http",
+            "set_memory_contents",
+            layout_mem("IC-9700", mode=0x06).__dict__,
+        )
+    finally:
+        await _shutdown(web, radio)
+    assert status == 400
+    assert body["error"]
+    assert transport.sent_packets == []
 
 
 @pytest.mark.asyncio

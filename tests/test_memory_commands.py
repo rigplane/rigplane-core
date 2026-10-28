@@ -27,6 +27,7 @@ from rigplane.commands import (
     parse_memory_contents_response,
 )
 from rigplane.commands.bound import BoundCommands
+from rigplane.profiles import get_radio_profile
 from rigplane.radio_protocol import MemoryCapable
 from rigplane.rig_loader import load_rig
 from rigplane.types import BandStackRegister, CivFrame, MemoryChannel
@@ -186,7 +187,11 @@ class TestMemoryContentsSetBuilder:
             name="FT8",
         )
         frame = build_memory_contents_set(
-            mem, ic7610_memory, to_addr=RADIO_ADDR, cmd_map=cmd_map
+            mem,
+            ic7610_memory,
+            to_addr=RADIO_ADDR,
+            cmd_map=cmd_map,
+            modes=get_radio_profile("IC-7610").modes,
         )
         assert frame[:4] == b"\xfe\xfe\x98\xe0"
         assert frame[4] == 0x1A  # command
@@ -200,6 +205,7 @@ class TestMemoryContentsSetBuilder:
                 ic7610_memory,
                 to_addr=RADIO_ADDR,
                 cmd_map=cmd_map,
+                modes=get_radio_profile("IC-7610").modes,
             )  # type: ignore[arg-type]
 
     def test_invalid_channel_raises(self, cmd_map, ic7610_memory) -> None:
@@ -214,7 +220,11 @@ class TestMemoryContentsSetBuilder:
         )
         with pytest.raises(ValueError, match="memory channel must be 1-101"):
             build_memory_contents_set(
-                mem, ic7610_memory, to_addr=RADIO_ADDR, cmd_map=cmd_map
+                mem,
+                ic7610_memory,
+                to_addr=RADIO_ADDR,
+                cmd_map=cmd_map,
+                modes=get_radio_profile("IC-7610").modes,
             )
 
     def test_requires_cmd_map(self, ic7610_memory) -> None:
@@ -334,6 +344,9 @@ class TestIcomRadioMemoryMethods:
         # verified 26-byte write layout.
         radio._profile = rig.to_profile()
         radio._send_fire_and_forget = AsyncMock()
+        radio._send_civ_expect = AsyncMock(
+            return_value=CivFrame(0xE0, RADIO_ADDR, 0xFB, None, b"", 0x00)
+        )
         radio._commands = BoundCommands(rig.to_command_map())
         return radio
 
@@ -378,8 +391,8 @@ class TestIcomRadioMemoryMethods:
         radio = self._make_radio()
         bound = IcomRadio.memory_clear.__get__(radio, type(radio))
         await bound(7)
-        radio._send_fire_and_forget.assert_called_once()
-        frame_arg = radio._send_fire_and_forget.call_args[0][0]
+        radio._send_civ_expect.assert_called_once()
+        frame_arg = radio._send_civ_expect.call_args[0][0]
         assert frame_arg[4] == 0x0B
 
     @pytest.mark.asyncio
@@ -407,8 +420,8 @@ class TestIcomRadioMemoryMethods:
             tonemode=0,
         )
         await bound(mem)
-        radio._send_fire_and_forget.assert_called_once()
-        frame_arg = radio._send_fire_and_forget.call_args[0][0]
+        radio._send_civ_expect.assert_called_once()
+        frame_arg = radio._send_civ_expect.call_args[0][0]
         assert frame_arg[4] == 0x1A
         assert frame_arg[5] == 0x00
 

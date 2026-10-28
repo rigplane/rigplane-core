@@ -34,6 +34,7 @@ def _build(mem: MemoryChannel) -> bytes:
         profile.memory,
         to_addr=_RADIO_ADDR,
         cmd_map=_cmd_map("IC-705"),
+        modes=profile.modes,
         ctcss_tones_centihz=profile.ctcss_tones_centihz,
         data_mode_count=profile.data_mode_count,
     )
@@ -90,8 +91,8 @@ def test_parse_decodes_the_real_record_and_the_replayed_readback() -> None:
 
 def test_unset_tones_write_the_declared_defaults_never_zeros() -> None:
     """With the caller leaving tone/tsql unset, the tone, tsql and DTCS
-    fields equal the capture's accepted values in BOTH block copies --
-    never the zeros the capture's rejected frames carry."""
+    fields carry 88.5 Hz and DTCS 023 in BOTH block copies -- never the
+    zeros the capture's rejected frames carry."""
     layout = _memory("IC-705").write_layout
     assert layout is not None
     span = layout.data_block_span()
@@ -120,7 +121,12 @@ def test_unset_tones_write_the_declared_defaults_never_zeros() -> None:
         for name in ("tone", "tsql", "dtcs"):
             field_offset = offsets[name] + base
             got = record[field_offset : field_offset + 3]
-            assert got == accepted_record[field_offset : field_offset + 3]
+            expected = (
+                b"\x00\x08\x85"
+                if name in ("tone", "tsql")
+                else accepted_record[field_offset : field_offset + 3]
+            )
+            assert got == expected
             assert got != b"\x00\x00\x00"
 
 

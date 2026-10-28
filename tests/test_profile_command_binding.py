@@ -344,6 +344,7 @@ def _exposed_builders() -> list[tuple[str, Any]]:
 _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
     "scan_set_df_span": {"df_span": 0xA1},
     "build_memory_contents_set": {
+        "modes": ("USB",),
         "mem": MemoryChannel(
             channel=1,
             frequency_hz=14_074_000,
