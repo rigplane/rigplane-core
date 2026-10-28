@@ -46,12 +46,42 @@ KEY_OFF = bytes.fromhex("fefea4e01c0000fd")
 # ── fake serial ──────────────────────────────────────────────────────────
 
 
-class FakeSerial:
-    """Scripted serial double: writes are logged, replies appear after delays."""
+class VirtualClock:
+    """Deterministic clock for the latency tests: ``advance`` moves time
+    forward with no real sleeping. ``__call__`` is perf_counter-like
+    (seconds), ``ns`` is perf_counter_ns-like.
+    """
 
-    def __init__(self, responder=None) -> None:
+    def __init__(self, start_s: float = 1000.0) -> None:
+        self.now = start_s
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, dt_s: float) -> None:
+        self.now += dt_s
+
+    def ns(self) -> int:
+        return int(self.now * 1e9)
+
+
+class FakeSerial:
+    """Scripted serial double with real pyserial POSIX semantics.
+
+    ``read(n)`` BLOCKS until n bytes have been buffered or the configured
+    ``timeout`` has elapsed, then returns whatever there is (possibly short
+    or empty); ``in_waiting`` reports the bytes already buffered. Blocking
+    advances the injected clock (real ``time.sleep`` by default, a
+    :class:`VirtualClock` for the latency tests) instead of returning early
+    the way the old double did -- a short reply must NOT make ``read(64)``
+    return before the timeout, because real pyserial does not.
+    """
+
+    def __init__(
+        self, responder=None, *, clock=time.perf_counter, sleep=time.sleep
+    ) -> None:
         self.writes: list[bytes] = []
-        self.timeout: float = 0.05
+        self.timeout: float | None = 0.05
         self.dtr = True
         self.rts = True
         self.opened = False
@@ -60,6 +90,8 @@ class FakeSerial:
         self._pending: list[tuple[float, bytes]] = []
         self._buf = bytearray()
         self._responder = responder
+        self._clock = clock
+        self._sleep = sleep
 
     def open(self) -> None:
         self.opened = True
@@ -75,11 +107,12 @@ class FakeSerial:
         self.writes.append(data)
         if self._responder is not None:
             for delay_s, payload in self._responder(data):
-                self._pending.append((time.perf_counter() + delay_s, payload))
+                self._pending.append((self._clock() + delay_s, payload))
         return len(data)
 
-    def read(self, n: int = 1) -> bytes:
-        now = time.perf_counter()
+    def _materialize(self) -> None:
+        """Move arrived payloads from the schedule into the read buffer."""
+        now = self._clock()
         still_pending: list[tuple[float, bytes]] = []
         for available_at, payload in self._pending:
             if available_at <= now:
@@ -87,6 +120,30 @@ class FakeSerial:
             else:
                 still_pending.append((available_at, payload))
         self._pending = still_pending
+
+    @property
+    def in_waiting(self) -> int:
+        self._materialize()
+        return len(self._buf)
+
+    def read(self, n: int = 1) -> bytes:
+        deadline = None if self.timeout is None else self._clock() + self.timeout
+        while True:
+            self._materialize()
+            if len(self._buf) >= n:
+                break
+            now = self._clock()
+            remaining = None if deadline is None else deadline - now
+            if remaining is not None and remaining <= 0:
+                break  # timeout expired: return what there is (maybe short)
+            if self._pending:
+                until_next = max(0.0, min(at for at, _ in self._pending) - now)
+                wait = until_next if remaining is None else min(remaining, until_next)
+            elif remaining is None:
+                break  # block-forever with nothing coming: cannot hang tests
+            else:
+                wait = remaining
+            self._sleep(wait)
         out = bytes(self._buf[:n])
         del self._buf[:n]
         return out
@@ -1055,3 +1112,90 @@ def test_main_summarize_timing_toml(tmp_path, capsys) -> None:
     assert "reply_latency_ms = 7.0" in out
     assert "tx_on_switch_ms = 100.0" in out
     assert "ack_ms_set" not in out
+
+
+# ── D. latency measurement discipline (MOR-3839 review, live RX capture) ──
+#
+# The live bench capture measured ~22.6 ms median on BOTH radios while the
+# Core-level probes show 3.3 ms for the same command: ``ser.read(64)`` with
+# ``timeout=0.02`` only returns once 64 bytes arrived or the 20 ms timeout
+# expired, quantising every measured latency to ~20 ms. These tests pin the
+# fix: block for the FIRST byte (read(1)), stamp first_ns the moment read(1)
+# returns, then drain whatever is already buffered via in_waiting.
+
+
+def _virtual_serial(responder) -> tuple[FakeSerial, VirtualClock]:
+    clock = VirtualClock()
+    return FakeSerial(responder, clock=clock, sleep=clock.advance), clock
+
+
+def test_fake_serial_read_blocks_until_n_bytes_or_timeout() -> None:
+    # pyserial POSIX semantics: read(64) with only 3 bytes ever arriving
+    # returns those 3 bytes only when the configured timeout has elapsed.
+    ser, clock = _virtual_serial(lambda req: [(0.003, b"abc")])
+    ser.timeout = 0.020
+    t0 = clock.now
+    ser.write(b"req")
+    assert ser.read(64) == b"abc"
+    assert clock.now - t0 == pytest.approx(0.020)
+    # read(1) returns the moment ONE byte is buffered, not at the timeout.
+    ser2, clock2 = _virtual_serial(lambda req: [(0.003, b"abc")])
+    ser2.timeout = 0.020
+    ser2.write(b"req")
+    assert ser2.read(1) == b"a"
+    assert clock2.now == pytest.approx(1000.003)
+    assert ser2.in_waiting == 2  # buffered, not yet read
+
+
+def test_civ_reply_latency_is_not_quantised_to_the_read_timeout() -> None:
+    # A reply arriving 3 ms after the write must measure 3 ms +- 1 ms.
+    # Before the fix this measured ~20 ms (the read(64) timeout).
+    responder, _state = make_ic705_responder(reply_delay_s=0.003)
+    ser, clock = _virtual_serial(responder)
+    reply = st.civ_transact(ser, _req(0x03), timeout_s=1.0, clock=clock.ns)
+    assert reply.ack_ms == pytest.approx(3.0, abs=1.0)
+    assert reply.frame_ms == pytest.approx(3.0, abs=1.0)
+
+
+def test_cat_reply_latency_is_not_quantised_to_the_read_timeout() -> None:
+    ser, clock = _virtual_serial(lambda req: [(0.003, b"FA00014074000;")])
+    ser.write(b"FA;")
+    t1 = clock.ns()
+    got = st.read_cat_line(ser, deadline_ns=t1 + 1_000_000_000, clock=clock.ns)
+    assert got is not None
+    line, first_ns, complete_ns = got
+    assert line == "FA00014074000;"
+    assert (first_ns - t1) / 1e6 == pytest.approx(3.0, abs=1.0)
+    assert (complete_ns - t1) / 1e6 == pytest.approx(3.0, abs=1.0)
+
+
+def test_civ_multichunk_frame_completes_at_the_second_chunk() -> None:
+    # Frame split into two writes 2 ms apart: ack stamps the first chunk,
+    # the frame completes at the second chunk's arrival.
+    reply_frame = _rep(0x03, data=bytes.fromhex("0040071400"))
+    half = len(reply_frame) // 2
+
+    def responder(req: bytes):
+        return [(0.003, reply_frame[:half]), (0.005, reply_frame[half:])]
+
+    ser, clock = _virtual_serial(responder)
+    reply = st.civ_transact(ser, _req(0x03), timeout_s=1.0, clock=clock.ns)
+    assert reply.raw == reply_frame
+    assert reply.ack_ms == pytest.approx(3.0, abs=1.0)
+    assert reply.frame_ms == pytest.approx(5.0, abs=1.0)
+
+
+def test_civ_echo_then_reply_still_measures_the_reply() -> None:
+    # Echo-enabled link: our own request comes back first (1 ms), the real
+    # reply at 4 ms. The echo never marks first_ns.
+    request = _req(0x03)
+    reply_frame = _rep(0x03, data=bytes.fromhex("0040071400"))
+
+    def responder(req: bytes):
+        return [(0.001, req), (0.004, reply_frame)]
+
+    ser, clock = _virtual_serial(responder)
+    reply = st.civ_transact(ser, request, timeout_s=1.0, clock=clock.ns)
+    assert reply.raw == reply_frame
+    assert reply.ack_ms == pytest.approx(4.0, abs=1.0)
+    assert reply.frame_ms == pytest.approx(4.0, abs=1.0)

@@ -570,6 +570,19 @@ class CivReply:
     frame_ms: float  # last byte written -> complete reply frame
 
 
+def _read_available(ser: object) -> bytes:
+    """Bytes already buffered on the port, WITHOUT blocking.
+
+    Uses ``in_waiting`` when the port exposes it (pyserial does); otherwise
+    returns nothing and the caller's blocking ``read(1)`` loop picks up the
+    rest byte by byte.
+    """
+    in_waiting = getattr(ser, "in_waiting", None)
+    if not in_waiting:
+        return b""
+    return ser.read(in_waiting)  # type: ignore[attr-defined]
+
+
 def _read_civ_reply(
     ser: object,
     request: bytes,
@@ -582,6 +595,13 @@ def _read_civ_reply(
     Returns ``(frame, raw, first_byte_ns, complete_ns)``. Echo bytes (our own
     request frame coming back at us on echo-enabled links) are dropped and
     never mark ``first_byte_ns``.
+
+    Latency measurement discipline: block for ONE byte with the short
+    timeout and stamp ``first_byte_ns`` the moment that ``read(1)`` returns,
+    then take whatever else is already buffered without blocking. A
+    ``read(64)`` would only return once 64 bytes arrived or the timeout
+    expired, quantising every measured reply to ~20 ms (the artifact seen
+    on the live IC-705/FTX-1 captures).
     """
     buf = bytearray()
     first_ns: int | None = None
@@ -590,11 +610,15 @@ def _read_civ_reply(
         if now >= deadline_ns:
             return None
         ser.timeout = max(0.0, min(0.02, (deadline_ns - now) / 1e9))  # type: ignore[attr-defined]
-        chunk = ser.read(64)  # type: ignore[attr-defined]
-        if not chunk:
+        byte = ser.read(1)  # type: ignore[attr-defined]
+        arrived_ns = clock()  # stamped as read(1) returned, never after parsing
+        if byte:
+            if first_ns is None:
+                first_ns = arrived_ns
+            buf += byte
+            buf += _read_available(ser)
+        if not buf:
             continue
-        buf += chunk
-        complete_ns: int | None = None
         for frame_bytes in iter_civ_frames(bytes(buf)):
             if frame_bytes == request:
                 # Echo of our own write: drop it so first_ns only ever marks
@@ -611,8 +635,6 @@ def _read_civ_reply(
             if first_ns is None:
                 first_ns = complete_ns
             return parsed, bytes(frame_bytes), first_ns, complete_ns
-        if first_ns is None and buf:
-            first_ns = clock()
 
 
 def civ_transact(
@@ -651,7 +673,12 @@ def read_cat_line(
     deadline_ns: int,
     clock: Callable[[], int] = time.perf_counter_ns,
 ) -> tuple[str, int, int] | None:
-    """Read one ``;``-terminated CAT line; returns (line, first_ns, complete_ns)."""
+    """Read one ``;``-terminated CAT line; returns (line, first_ns, complete_ns).
+
+    Same latency discipline as :func:`_read_civ_reply`: block for the FIRST
+    byte with the short timeout, stamp ``first_ns`` the moment ``read(1)``
+    returns, then drain whatever is already buffered without blocking.
+    """
     buf = bytearray()
     first_ns: int | None = None
     while True:
@@ -659,14 +686,16 @@ def read_cat_line(
         if now >= deadline_ns:
             return None
         ser.timeout = max(0.0, min(0.02, (deadline_ns - now) / 1e9))  # type: ignore[attr-defined]
-        chunk = ser.read(64)  # type: ignore[attr-defined]
-        if not chunk:
-            continue
-        if first_ns is None:
-            first_ns = clock()
-        buf += chunk
+        byte = ser.read(1)  # type: ignore[attr-defined]
+        arrived_ns = clock()  # stamped as read(1) returned, never after parsing
+        if byte:
+            if first_ns is None:
+                first_ns = arrived_ns
+            buf += byte
+            buf += _read_available(ser)
         end = buf.find(b";")
         if end >= 0:
+            assert first_ns is not None  # buf grew only via a stamped byte
             return buf[: end + 1].decode("ascii", errors="replace"), first_ns, clock()
 
 
