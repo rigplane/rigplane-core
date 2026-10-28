@@ -299,6 +299,7 @@ class ManagedTxComposition:
         if not self._candidate_is_current(event):
             await self._retire_once(event)
             return
+        self._events[event.provider_generation] = event
         try:
             await self._authority.provider_available(event.provider_generation)
         except BaseException:
@@ -309,13 +310,12 @@ class ManagedTxComposition:
             await asyncio.shield(cleanup)
             await self._retire_once(event)
             return
-        self._events[event.provider_generation] = event
         self._active_provider = event
 
     def _candidate_is_current(self, event: _ProviderEvent) -> bool:
         store = self._state_store
         return (
-            self._shutdown_task is None
+            (self._shutdown_task is None or not self._shutdown_task.done())
             and store is not None
             and self._live_transport_identity is event.transport_identity
             and self._observation_generation == event.observation_generation
@@ -350,7 +350,7 @@ class ManagedTxComposition:
 
             async def recover() -> None:
                 async with self._transition_lock:
-                    if self._shutdown_task is None:
+                    if self._shutdown_task is None or not self._shutdown_task.done():
                         await self._ensure_current_locked()
 
             self._recovery_task = asyncio.create_task(recover())
@@ -384,10 +384,6 @@ class ManagedTxComposition:
 
     async def _complete_shutdown(self, termination: asyncio.Event) -> ShutdownResult:
         try:
-            recovery = self._recovery_task
-            if recovery is not None:
-                recovery.cancel()
-                await asyncio.gather(recovery, return_exceptions=True)
             task = self._transition_task
             if task is not None:
                 await asyncio.shield(task)
@@ -418,6 +414,10 @@ class ManagedTxComposition:
                 await self._retire_once(terminal)
             return result
         finally:
+            recovery = self._recovery_task
+            if recovery is not None:
+                recovery.cancel()
+                await asyncio.gather(recovery, return_exceptions=True)
             unsubscribe, self._unsubscribe = self._unsubscribe, None
             if unsubscribe is not None:
                 unsubscribe()

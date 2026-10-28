@@ -9,6 +9,7 @@ import pytest
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.core.state_store import StateStore
+from rigplane.runtime.managed_tx_authority import ShutdownResult
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -318,6 +319,42 @@ class _BlockedActuator:
             self.ptt = False
             self.writes.append(("OFF", token.provider_generation))
         return ActuationResult.ACCEPTED
+
+
+async def test_shutdown_drains_after_displaced_on_exceeds_release_deadline(tmp_path):
+    actuator = _BlockedActuator(late=True)
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.bind_state_store(store)
+    await composition.transport_ready(object())
+    authority = composition.authority
+    authority._attempt_timeout = 0.2
+    termination = asyncio.Event()
+    try:
+        await authority.submit_transmit_on()
+        await asyncio.wait_for(actuator.started.wait(), 1)
+        shutdown = asyncio.create_task(composition.shutdown(termination))
+        assert await _until(lambda: bool(actuator.writes), 0.1)
+        assert actuator.writes == [("OFF", 1)]
+        assert not composition._retired_generations
+        assert await _until(lambda: 1 in composition._retired_generations, 1)
+        assert not actuator.release.is_set() and not shutdown.done()
+        assert authority.snapshot_nowait().state.release_required
+        assert await _until(
+            lambda: authority.snapshot_nowait().provider_generation == 2, 1
+        )
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await authority.submit_transmit_on()
+        actuator.release.set()
+        result = await asyncio.wait_for(asyncio.shield(shutdown), 3)
+        assert result is ShutdownResult.DRAINED
+        assert ("ON", 1) in actuator.writes and actuator.writes[-1] == ("OFF", 2)
+        assert not actuator.ptt and _clean(authority)
+    finally:
+        actuator.release.set()
+        termination.set()
+        await asyncio.wait_for(composition.shutdown(termination), 3)
 
 
 @pytest.mark.parametrize("mode", ["quick", "late", "timeout", "terminate", "supersede"])
