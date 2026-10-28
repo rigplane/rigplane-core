@@ -9,6 +9,10 @@ import path from 'node:path';
  * to the group. The server-restart scenario uses this to start a fake on
  * its own port, kill it mid-session and start a replacement on the same
  * port.
+ *
+ * `script` selects the fake's entry point: the journey fake by default, the
+ * MOR-3644 memory fake (tests/e2e/memory_journey_web_server.py, which adds
+ * its own `--model` selector) when passed by the memory seam spec.
  */
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
@@ -51,6 +55,7 @@ export async function startJourneyServer(
   port: number,
   freqHz: number,
   extraArgs: string[] = [],
+  script = 'tests/e2e/journey_web_server.py',
 ): Promise<JourneyServerHandle> {
   // Without this check the readiness wait below could be answered by the
   // process already on the port instead of the one spawned here.
@@ -60,7 +65,7 @@ export async function startJourneyServer(
   const child = spawn(
     'uv',
     [
-      'run', 'python', 'tests/e2e/journey_web_server.py',
+      'run', 'python', script,
       '--port', String(port), '--freq', String(freqHz),
       ...extraArgs,
     ],
