@@ -647,6 +647,7 @@ class YaesuCatPoller:
 
         self._reconnecting = True
         self._cancel_deferred_entry("serial reconnect")
+        transport.last_valid_frame_monotonic = None
         advance = self._advance_provider_generation
         provider_generation = None if advance is None else advance()
         reconnect_generation = self._captured_provider_generation()

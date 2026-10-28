@@ -1064,12 +1064,10 @@ class CivRuntime:
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
         source_generation = self._host._civ_epoch
+        self._host.last_valid_frame_monotonic = None
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
-        # MOR-3845: a new connection generation has no valid-frame evidence
-        # yet; only ``_route_civ_frame`` may re-stamp it.
-        self._host.last_valid_frame_monotonic = None
         self._host._state_store.begin_provider_generation()
         for token in self._managed_tx_ports.values():
             if token.civ_source_generation == source_generation:
@@ -1855,14 +1853,12 @@ class CivRuntime:
         store_provider_generation: int | None = None,
     ) -> None:
         """Route one parsed CI-V frame into command/scope event paths."""
+        if generation != self._host._civ_epoch:
+            return
         if frame.from_addr != self._host._radio_addr:
             return
         if frame.to_addr not in (CONTROLLER_ADDR, 0x00):
             return
-        # MOR-3845: the frame parsed successfully AND carries radio-originated
-        # information (from the radio, to us or broadcast) — the one decode
-        # point every Icom backend (LAN and serial) shares.
-        self._host.last_valid_frame_monotonic = time.monotonic()
         if frame.command != 0x27:
             logger.debug(
                 "civ-rx: cmd=0x%02X sub=0x%02X to=0x%02X data=%s",
@@ -1885,6 +1881,7 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                self._host.last_valid_frame_monotonic = time.monotonic()
                 self._publish_scope_mode_observation(
                     scope_frame, receiver=receiver, frame=frame
                 )
@@ -1900,8 +1897,6 @@ class CivRuntime:
             event = CivEvent(type=CivEventType.NAK, frame=frame)
         else:
             event = CivEvent(type=CivEventType.RESPONSE, frame=frame)
-            if generation != self._host._civ_epoch:
-                return
             self._update_state_cache_from_frame(
                 frame,
                 source_generation=generation,
@@ -2216,6 +2211,11 @@ class CivRuntime:
             if generation is None
             else generation
         )
+        if (
+            observations
+            and store_provider_generation == self._host._state_store.provider_generation
+        ):
+            self._host.last_valid_frame_monotonic = time.monotonic()
         observations = tuple(
             _replace_dataclass(
                 observation,

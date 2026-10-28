@@ -805,20 +805,12 @@ class RigctldClientRadio:
 
     @property
     def last_valid_frame_monotonic(self) -> float | None:
-        """MOR-3845: decode-point liveness stamp (Radio protocol member).
-
-        Stamped by :class:`RigctldTransport` only when a ``query()``
-        completes with data lines backed by a fresh rig read; daemon
-        acks/errors and (re)connects never stamp it.
-        """
+        """Unknown: standard rigctld responses carry no fresh-read provenance."""
         return self._transport.last_valid_frame_monotonic
 
     @property
     def liveness_stale_after_ms(self) -> int:
-        """MOR-3845: age at which the liveness stamp is stale — the medium
-        observation cadence plus one full request timeout, so a healthy
-        poller (quiet RX or sustained TX) always stays below it.
-        """
+        """The medium observation cadence plus one request timeout, in ms."""
         from .observations import (
             build_external_rigctld_acquisition_profile,
             resolve_external_rigctld_poll_intervals,

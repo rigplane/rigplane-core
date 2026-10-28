@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from rigplane import radio_protocol
 from rigplane.radio_protocol import (
     MetersCapable,
@@ -17,6 +19,8 @@ from rigplane.radio_state import RadioState
 
 class _StubRadio:
     """Minimal conforming stub that implements the Radio protocol."""
+
+    last_valid_frame_monotonic: float | None = None
 
     @property
     def backend_id(self) -> str:
@@ -80,6 +84,42 @@ def test_backend_id_known_values() -> None:
     """backend_id can hold any of the documented family values."""
     known_ids = {"rigplane", "icom_serial", "yaesu_cat"}
     assert _StubRadio().backend_id in known_ids
+
+
+@pytest.mark.parametrize(
+    "family",
+    [
+        "lan",
+        "IC-705",
+        "IC-7300",
+        "IC-7300MK2",
+        "IC-9700",
+        "IC-7610",
+        "X6200",
+        "yaesu",
+        "rigctld",
+    ],
+)
+def test_shipping_backend_satisfies_radio_with_liveness(family: str) -> None:
+    from rigplane.backends.config import (
+        LanBackendConfig,
+        RigctldBackendConfig,
+        SerialBackendConfig,
+        YaesuCatBackendConfig,
+    )
+    from rigplane.backends.factory import create_radio
+
+    if family == "lan":
+        config = LanBackendConfig(host="127.0.0.1", model="IC-7610")
+    elif family == "yaesu":
+        config = YaesuCatBackendConfig(device="/dev/test")
+    elif family == "rigctld":
+        config = RigctldBackendConfig(host="127.0.0.1")
+    else:
+        config = SerialBackendConfig(device="/dev/test", model=family)
+    radio = create_radio(config)
+    assert isinstance(radio, Radio)
+    assert radio.last_valid_frame_monotonic is None
 
 
 class _PowerStub:

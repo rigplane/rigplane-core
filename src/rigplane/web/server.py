@@ -2454,6 +2454,7 @@ class WebServer:
         *,
         health_revision: int,
         public_state_seq: int,
+        liveness: Mapping[str, object] | None,
     ) -> str:
         def _etag_component(value: object) -> str:
             if isinstance(value, bool):
@@ -2469,7 +2470,12 @@ class WebServer:
                     snapshot,
                     health_revision=health_revision,
                 )
-                + (public_state_seq,)
+                + (
+                    public_state_seq,
+                    liveness.get("lastFrameAgeMs") if liveness else None,
+                    liveness.get("staleAfterMs") if liveness else None,
+                    liveness.get("source") if liveness else None,
+                )
             )
         )
 
@@ -4780,6 +4786,7 @@ class WebServer:
                 snapshot,
                 health_revision=health_revision,
                 public_state_seq=public_state_seq,
+                liveness=body_dict["connection"]["liveness"],
             ),
         )
 

@@ -1,12 +1,4 @@
-"""MOR-3845: the universal radio liveness stamp and ``connection.liveness``.
-
-``Radio.last_valid_frame_monotonic`` is stamped by every backend at its
-decode point — only after a frame decodes AND carries radio-originated
-information. Raw bytes, malformed traffic, receiver start-up, a reconnect
-without an answer and daemon-only acks never advance it; every connection
-generation resets it. ``/api/v1/info`` and the WebSocket state expose it as
-``connection.liveness`` with the age computed at response time.
-"""
+"""MOR-3845: decoded radio liveness and conservative daemon-only evidence."""
 
 from __future__ import annotations
 
@@ -33,6 +25,7 @@ from rigplane.backends.yaesu_cat import (
     YaesuCatTransport,
 )
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected
+from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.state_store import StateStore
 from rigplane.radio import IcomRadio
@@ -145,7 +138,8 @@ async def test_civ_valid_frame_advances_the_stamp(civ_radio: IcomRadio) -> None:
     frame = parse_civ_frame(_radio_freq_response())
     before = time.monotonic()
     await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
-        frame, generation=MagicMock()
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
     )
     stamp = civ_radio.last_valid_frame_monotonic  # noqa: SLF001
     assert stamp is not None
@@ -163,7 +157,8 @@ async def test_civ_frame_not_from_the_radio_never_stamps(
     )
     frame = parse_civ_frame(echo)
     await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
-        frame, generation=MagicMock()
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
     )
     assert civ_radio.last_valid_frame_monotonic is None  # noqa: SLF001
 
@@ -199,10 +194,63 @@ async def test_civ_receiver_startup_does_not_stamp(civ_radio: IcomRadio) -> None
     assert civ_radio.last_valid_frame_monotonic is None  # noqa: SLF001
 
 
+@pytest.mark.parametrize("command,data", [(0x04, b"\xff"), (0x03, b"\xff" * 5)])
+async def test_civ_invalid_payload_preserves_stamp(
+    civ_radio: IcomRadio, command: int, data: bytes
+) -> None:
+    civ_radio.last_valid_frame_monotonic = 1.0
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, command, data=data)
+    )
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    assert civ_radio.last_valid_frame_monotonic == 1.0
+
+
+@pytest.mark.parametrize(
+    "command,sub,data",
+    [
+        (0x03, None, bcd_encode(14_074_000)),
+        (0x27, 0x00, b"\x00\x01\x01"),
+        (0xFB, None, b""),
+        (0xFA, None, b""),
+    ],
+)
+async def test_civ_retired_generation_cannot_stamp(
+    civ_radio: IcomRadio, command: int, sub: int | None, data: bytes
+) -> None:
+    retired = civ_radio._civ_epoch  # noqa: SLF001
+    civ_radio._civ_runtime.advance_generation("retire test source")  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, command, sub=sub, data=data)
+    )
+    await civ_radio._civ_runtime._route_civ_frame(frame, generation=retired)  # noqa: SLF001
+    assert civ_radio.last_valid_frame_monotonic is None
+
+
 def test_civ_connection_generation_resets_the_stamp(civ_radio: IcomRadio) -> None:
     civ_radio.last_valid_frame_monotonic = time.monotonic()  # noqa: SLF001
     civ_radio._civ_runtime.advance_generation("test reconnect")  # noqa: SLF001
     assert civ_radio.last_valid_frame_monotonic is None  # noqa: SLF001
+
+
+def test_civ_generation_callback_sees_cleared_stamp(
+    civ_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    civ_radio.last_valid_frame_monotonic = 1.0
+    tracker = civ_radio._civ_request_tracker  # noqa: SLF001
+    advance = tracker.advance_generation
+    observed: list[float | None] = []
+
+    def advance_observed(error: Exception) -> int:
+        observed.append(civ_radio.last_valid_frame_monotonic)
+        return advance(error)
+
+    monkeypatch.setattr(tracker, "advance_generation", advance_observed)
+    civ_radio._civ_runtime.advance_generation("observe retirement")  # noqa: SLF001
+    assert observed == [None]
 
 
 def test_civ_stale_after_derives_from_the_ready_idle_timeout(
@@ -233,8 +281,131 @@ async def test_cat_query_match_stamps_liveness(
     cat_transport._reader = FakeStreamReader([b"FA014074000;"])  # type: ignore[assignment]  # noqa: SLF001
     cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
 
-    assert await cat_transport.query("FA;") == "FA014074000"
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    assert await radio.get_freq() == 14_074_000
     assert cat_transport.last_valid_frame_monotonic is not None
+
+
+@pytest.mark.parametrize(
+    "response,method", [(b"FAgarbage;", "get_freq"), (b"MD0Z;", "get_mode")]
+)
+async def test_cat_invalid_payload_preserves_stamp(
+    cat_transport: YaesuCatTransport, response: bytes, method: str
+) -> None:
+    cat_transport._reader = FakeStreamReader([response])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport.last_valid_frame_monotonic = 1.0
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    with pytest.raises(ValueError):
+        await getattr(radio, method)()
+    assert cat_transport.last_valid_frame_monotonic == 1.0
+
+
+async def test_cat_raw_prefix_match_does_not_stamp(
+    cat_transport: YaesuCatTransport,
+) -> None:
+    cat_transport._reader = FakeStreamReader([b"FA014074000;"])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    assert await cat_transport.query("FA;") == "FA014074000"
+    assert cat_transport.last_valid_frame_monotonic is None
+
+
+async def test_cat_close_clears_stamp_before_waiting(
+    cat_transport: YaesuCatTransport,
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    writer = FakeStreamWriter()
+
+    async def wait_closed() -> None:
+        entered.set()
+        await release.wait()
+
+    writer.wait_closed = wait_closed  # type: ignore[method-assign]
+    cat_transport._writer = writer  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport.last_valid_frame_monotonic = 1.0
+    task = asyncio.create_task(cat_transport.close())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert cat_transport.last_valid_frame_monotonic is None
+    finally:
+        release.set()
+        await task
+
+
+async def test_cat_failed_reopen_clears_stamp(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = YaesuCatTransport(device="/dev/test")
+    transport.last_valid_frame_monotonic = 1.0
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port",
+        AsyncMock(side_effect=OSError("closed")),
+    )
+    with pytest.raises(Exception, match="closed"):
+        await transport.connect()
+    assert transport.last_valid_frame_monotonic is None
+
+
+async def test_cat_disconnect_clears_stamp_before_audio_wait(
+    cat_transport: YaesuCatTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    cat_transport.last_valid_frame_monotonic = 1.0
+    observed: list[float | None] = []
+
+    async def stop_rx() -> None:
+        observed.append(radio.last_valid_frame_monotonic)
+
+    monkeypatch.setattr(radio._audio_driver, "stop_rx", stop_rx)  # noqa: SLF001
+    await radio.disconnect()
+    assert observed == [None]
+
+
+async def test_cat_retired_inflight_query_cannot_stamp(
+    cat_transport: YaesuCatTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pending_query(*args: Any, **kwargs: Any) -> str:
+        entered.set()
+        await release.wait()
+        return "FA014074000"
+
+    monkeypatch.setattr(cat_transport, "query", pending_query)
+    task = asyncio.create_task(radio.get_freq())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await cat_transport.close()
+        release.set()
+        await task
+        assert radio.last_valid_frame_monotonic is None
+    finally:
+        release.set()
+        await task
+
+
+async def test_cat_reconnect_callback_sees_cleared_stamp(
+    cat_transport: YaesuCatTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    cat_transport.last_valid_frame_monotonic = 1.0
+    poller = YaesuCatPoller(radio)
+    observed: list[float | None] = []
+    monkeypatch.setattr(cat_transport, "_maybe_reconnect_needed", lambda: True)
+    monkeypatch.setattr(cat_transport, "reconnect", AsyncMock())
+    poller.bind_provider_generation(
+        capture=lambda: 1,
+        advance=lambda: observed.append(radio.last_valid_frame_monotonic) or 1,
+    )
+    await poller._try_reconnect()  # noqa: SLF001
+    assert observed == [None]
 
 
 async def test_cat_rejected_answer_does_not_stamp(
@@ -273,7 +444,7 @@ async def test_cat_reconnect_resets_the_stamp(
     transport = YaesuCatTransport(device="/dev/test", baudrate=38400, timeout=0.2)
     await transport.connect()
     assert await transport.query("ID;") == "ID0840"
-    assert transport.last_valid_frame_monotonic is not None
+    transport.last_valid_frame_monotonic = time.monotonic()
 
     await transport.close()
     mock.open_serial_connection = AsyncMock(
@@ -299,14 +470,17 @@ def test_cat_stale_after_derives_from_the_read_timeout() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_rigctld_query_data_lines_stamp_liveness() -> None:
+@pytest.mark.parametrize("command,lines", [("f", 1), ("m", 2), ("t", 1), ("v", 1)])
+async def test_rigctld_cached_data_cannot_prove_radio_liveness(
+    command: str, lines: int
+) -> None:
     async with FakeRigctldServer() as server:
         transport = RigctldTransport(host=server.host, port=server.port)
         await transport.connect()
         try:
             assert transport.last_valid_frame_monotonic is None
-            assert await transport.query("f", response_lines=1) == ["14074000"]
-            assert transport.last_valid_frame_monotonic is not None
+            await transport.query(command, response_lines=lines)
+            assert transport.last_valid_frame_monotonic is None
         finally:
             await transport.close()
 
@@ -327,14 +501,74 @@ async def test_rigctld_reconnect_resets_the_stamp() -> None:
         transport = RigctldTransport(host=server.host, port=server.port)
         await transport.connect()
         assert await transport.query("f", response_lines=1) == ["14074000"]
-        assert transport.last_valid_frame_monotonic is not None
+        transport.last_valid_frame_monotonic = time.monotonic()
         await transport.close()
+        assert transport.last_valid_frame_monotonic is None
 
         await transport.connect()
         try:
             assert transport.last_valid_frame_monotonic is None
         finally:
             await transport.close()
+
+
+async def test_rigctld_invalid_payload_preserves_stamp() -> None:
+    async with FakeRigctldServer(
+        behavior=FakeRigctldBehavior(malformed_responses={"f": b"garbage\n"})
+    ) as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            radio._transport.last_valid_frame_monotonic = 1.0  # noqa: SLF001
+            with pytest.raises(Exception, match="malformed frequency"):
+                await radio.get_freq()
+            assert radio.last_valid_frame_monotonic == 1.0
+        finally:
+            await radio.disconnect()
+
+
+async def test_rigctld_cancellation_clears_stamp_before_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with FakeRigctldServer() as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        transport.last_valid_frame_monotonic = 1.0
+        observed: list[float | None] = []
+        transport.bind_provider_generation(
+            advance=lambda: observed.append(transport.last_valid_frame_monotonic) or 1
+        )
+        entered = asyncio.Event()
+
+        async def pending_read(*args: Any) -> str:
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(transport, "_read_line", pending_read)
+        task = asyncio.create_task(transport.query("f", response_lines=1))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert observed == [None]
+            assert transport.last_valid_frame_monotonic is None
+        finally:
+            await transport.close()
+
+
+async def test_rigctld_failed_reopen_clears_stamp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = RigctldTransport(host="127.0.0.1")
+    transport.last_valid_frame_monotonic = 1.0
+    monkeypatch.setattr(
+        asyncio, "open_connection", AsyncMock(side_effect=OSError("closed"))
+    )
+    with pytest.raises(Exception, match="closed"):
+        await transport.connect()
+    assert transport.last_valid_frame_monotonic is None
 
 
 async def test_rigctld_radio_reports_daemon_source_and_cadence_threshold() -> None:
@@ -441,11 +675,10 @@ async def test_api_info_liveness_stays_null_until_a_real_read() -> None:
                 "staleAfterMs": radio.liveness_stale_after_ms,
                 "source": "daemon",
             }
-            # A fresh read of a radio value flips the age to a real number.
+            # Standard rigctld replies carry no physical-read provenance.
             assert await radio.get_freq() == 14_074_000
             liveness = (await _serve_info(radio))["connection"]["liveness"]
-            assert liveness["lastFrameAgeMs"] is not None
-            assert liveness["lastFrameAgeMs"] < liveness["staleAfterMs"]
+            assert liveness["lastFrameAgeMs"] is None
             assert liveness["source"] == "daemon"
         finally:
             await radio.disconnect()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
@@ -324,6 +325,7 @@ class YaesuCatRadio:
             # The identity phase already owns the open port — a reopen
             # would toggle DTR/RTS on a radio that may merely be off.
             return
+        self._transport.last_valid_frame_monotonic = None
         self._cancel_identity_reread()
         self._identity_generation += 1
         generation = self._identity_generation
@@ -382,6 +384,7 @@ class YaesuCatRadio:
 
     async def disconnect(self) -> None:
         """Close the serial port."""
+        self._transport.last_valid_frame_monotonic = None
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
@@ -692,11 +695,7 @@ class YaesuCatRadio:
 
     @property
     def last_valid_frame_monotonic(self) -> float | None:
-        """MOR-3845: decode-point liveness stamp (Radio protocol member).
-
-        Stamped by :class:`YaesuCatTransport` only when a ``query()`` match
-        returns a validated radio answer; reset on every (re)connect.
-        """
+        """Monotonic time of the last response accepted by the profile parser."""
         return self._transport.last_valid_frame_monotonic
 
     @property
@@ -1279,6 +1278,9 @@ class YaesuCatRadio:
             query_kwargs.update(is_current=is_current, tier=tier)
         if expect_rejection:
             query_kwargs["expect_rejection"] = True
+        writer = self._transport._writer
+        identity_generation = self._identity_generation
+        reconnects = self._transport.stats.reconnects
         raw = await self._transport.query(read_cmd, **query_kwargs)
 
         parser = self._parsers.get(cmd_name)
@@ -1286,7 +1288,17 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no parse template")
 
         # Transport strips trailing ';'; add it back for the parser.
-        return parser.parse(raw + ";")
+        result = parser.parse(raw + ";")
+        if isinstance(result.get("mode"), str):
+            self._mode_name(result["mode"])
+        if (
+            self._transport.connected
+            and self._transport._writer is writer
+            and self._identity_generation == identity_generation
+            and self._transport.stats.reconnects == reconnects
+        ):
+            self._transport.last_valid_frame_monotonic = time.monotonic()
+        return result
 
     async def _write(
         self,
