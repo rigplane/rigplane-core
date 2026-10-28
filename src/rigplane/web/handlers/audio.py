@@ -662,6 +662,22 @@ class AudioBroadcaster:
         self._rx_start_attempt += 1
         self._rx_start_failure = None
 
+    def rx_start_failure_candidates(self) -> tuple[AudioCandidate, ...] | None:
+        """Candidates latched by the current RX-start failure, or None (MOR-3823).
+
+        Shares the staleness pruning of :meth:`rx_start_status` (a latch whose
+        radio or RX source has moved on is dropped, exactly as a
+        ``GET /api/v1/info`` read would drop it). Otherwise read-only: it
+        never clears, re-arms, or rewrites the latch.
+        """
+        self.rx_start_status()
+        failure = self._rx_start_failure
+        return failure[3] if failure is not None else None
+
+    def rx_relay_active(self) -> bool:
+        """True while the broadcaster holds an RX subscription (MOR-3823)."""
+        return self._subscription is not None
+
     def rx_start_status(self) -> dict[str, Any]:
         failure = self._rx_start_failure
         if failure is not None:

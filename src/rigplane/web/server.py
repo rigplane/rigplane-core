@@ -113,6 +113,10 @@ from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
 from ..audio.bus import STAGE_RX_POST_DSP
+from ..audio.candidate_levels import (
+    CandidateLevelProbe,
+    CandidateProbeBusyError,
+)
 from ..audio.session import AudioSession, AudioSessionEvent
 from ..audio.usb_driver import bounded_portaudio_pool
 from ..audio_analyzer import AudioAnalyzer
@@ -1229,6 +1233,9 @@ class WebServer:
             on_client_count_change=self._broadcast_ws_client_state_update,
             adaptive_egress=self._config.audio_adaptive_egress,
         )
+        # Read-only live level probe for latched pairing-refusal candidates
+        # (MOR-3823); see audio/candidate_levels.py for the safety bounds.
+        self._candidate_level_probe = CandidateLevelProbe()
         self._hardware_scope_available = _supports_scope(radio)
         # Gated WebRTC transport session manager (A2.3 / MOR-307). Lazily
         # constructed on first use so the import stays out of the no-extra path.
@@ -4792,6 +4799,58 @@ class WebServer:
             self._audio_analyzer.to_dict(), separators=(",", ":")
         ).encode()
         await _send_json(writer, body, headers)
+
+    async def _handle_audio_candidate_levels(
+        self, writer: asyncio.StreamWriter
+    ) -> None:
+        """POST /api/v1/audio/candidate-levels -- live RX level per candidate.
+
+        Read-only probe over the capture candidates of the latched RX-start
+        pairing refusal (MOR-3823). The candidate set comes from the
+        broadcaster's latch, never from the request; the probe is refused
+        (409) with no latch and while RX is active, and a second concurrent
+        call is refused (429) while one runs.
+        """
+        broadcaster = self._audio_broadcaster
+        candidates = broadcaster.rx_start_failure_candidates()
+        if candidates is None or not any(
+            candidate.direction == "capture" for candidate in candidates
+        ):
+            await _send_diag_error(
+                writer,
+                409,
+                "candidate_levels_unavailable",
+                "no RX-start failure with capture candidates is latched",
+            )
+            return
+        if broadcaster.rx_relay_active():
+            await _send_diag_error(
+                writer,
+                409,
+                "rx_active",
+                "RX audio is active; the candidate level probe is refused",
+            )
+            return
+        try:
+            levels = await self._candidate_level_probe.probe(candidates)
+        except CandidateProbeBusyError:
+            await _send_diag_error(
+                writer,
+                429,
+                "probe_in_progress",
+                "a candidate level probe is already running",
+            )
+            return
+        body = json.dumps(
+            {
+                "schemaVersion": 1,
+                "levels": [level.to_dict() for level in levels],
+            },
+            separators=(",", ":"),
+        ).encode()
+        await _send_response(
+            writer, 200, "OK", body, {"Content-Type": "application/json"}
+        )
 
     def _get_meter_cal_payload(self) -> dict[str, Any]:
         """Extract meter calibration from radio backend or profile."""

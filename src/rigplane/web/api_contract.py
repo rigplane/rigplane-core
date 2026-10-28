@@ -75,6 +75,12 @@ STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
         "auth": "none",
     },
     {
+        "method": "POST",
+        "path": "/api/v1/audio/candidate-levels",
+        "purpose": "live RX level probe for latched pairing candidates",
+        "auth": "none",
+    },
+    {
         "method": "GET",
         "path": "/api/v1/managed-transmit",
         "purpose": "managed transmit authority snapshot",
@@ -236,4 +242,5 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
     },
     "/api/v1/commands": {"required": ("ok", "name", "result")},
     "/api/v1/commands/batch": {"required": ("ok", "results")},
+    "/api/v1/audio/candidate-levels": {"required": ("schemaVersion", "levels")},
 }

@@ -128,6 +128,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/state` | Canonical current state snapshot |
 | `GET` | `/api/v1/capabilities` | Full profile-backed capabilities |
 | `GET` | `/api/v1/audio/analysis` | Audio analysis snapshot when analyzer is active |
+| `POST` | `/api/v1/audio/candidate-levels` | Live RX level for each latched pairing-refusal capture candidate |
 | `GET` | `/api/v1/managed-transmit` | Managed transmit authority snapshot |
 | `POST` | `/api/v1/managed-transmit/command` | Submit a latched transmit or force-off intent |
 | `PUT` | `/api/v1/managed-transmit/tot` | Update the managed transmit time-out |
@@ -1144,6 +1145,51 @@ between attempts) and reads `{"busy": false, "retryInSeconds": null}`
 otherwise (pinned by
 `test_web_serves_session_busy_during_startup_busy_hold` and
 `test_granted_busy_hold_becomes_ready_and_marks_transport_once`).
+
+## `POST /api/v1/audio/candidate-levels`
+
+Live RX capture level for each `capture` candidate of the latched RX-start
+pairing refusal — the same candidates `GET /api/v1/info` exposes under
+`audioReceive.failure.candidates` — so a device chooser can show which
+candidate actually carries the radio's audio. No request body; the probed
+device set comes from the latch, never from the request
+(`src/rigplane/web/server.py: WebServer._handle_audio_candidate_levels`).
+
+```json
+{
+  "schemaVersion": 1,
+  "levels": [
+    { "stableId": "Core Audio|AppleUSBAudioEngine:...:2", "state": "ok", "peakDbfs": -12.0 },
+    { "stableId": "Core Audio|name:HD Pro Webcam", "state": "silent", "peakDbfs": null }
+  ]
+}
+```
+
+`levels` follows the latch order and covers only `direction == "capture"`
+candidates. `state` is `ok` (level measured; `peakDbfs` is the capture
+window's peak sample level in dBFS), `silent` (the stream delivered only
+bit-exact zero frames — `src/rigplane/audio/usb_driver.py: _is_silent_frame`),
+`busy` (the device is already open elsewhere), or `error` (anything else);
+`peakDbfs` is `null` unless the state is `ok`. Responses never carry
+exception text, host paths, or device-driver strings; probe failures are
+logged on the host at debug level.
+
+Errors use the same `{"error", "message"}` envelope as the other diagnostic
+routes: `409 candidate_levels_unavailable` when no RX-start failure with
+capture candidates is latched, `409 rx_active` while the broadcaster holds
+an active RX subscription, `429 probe_in_progress` for a call arriving while
+another probe is still running.
+
+Safety bounds (any client of the web port can call this, and it opens host
+input devices): probes run strictly one candidate at a time and one request
+at a time; each candidate opens a short (~0.4 s) capture through the same
+bounded machinery a real RX start uses
+(`src/rigplane/audio/usb_driver.py: UsbAudioDriver.start_rx`,
+`_BoundedPortAudioPool.open_stream_bounded`); a finished result is reused
+for 1 s; the whole call is bounded (~3 s overall, per-candidate opens bounded
+by the capture-open timeout). The call never changes the latch, the device
+selection, or the RX relay
+(`src/rigplane/audio/candidate_levels.py: CandidateLevelProbe`).
 
 ## `GET /api/v1/state`
 

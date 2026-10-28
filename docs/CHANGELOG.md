@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `POST /api/v1/audio/candidate-levels`: read-only live RX capture level
+  (peak dBFS) for each capture candidate of a latched USB audio pairing
+  refusal (MOR-3823).
+
 ### Fixed
 
 - **Memory writes and clears refused without a verified write layout

@@ -537,6 +537,12 @@ async def _dispatch_http_routes(
             return
         await server._handle_bridge(method, writer, headers, reader)
         return
+    if path == "/api/v1/audio/candidate-levels":
+        if method != "POST":
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await server._handle_audio_candidate_levels(writer)
+        return
     if path in (
         "/api/v1/radio/disconnect",
         "/api/v1/radio/connect",
