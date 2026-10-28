@@ -29,16 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   p.19-11) and IC-7300MK2 (p.17) — each with manual-sourced fixture
   bytes, out-of-range refusals (address, tone, frequency, name) and a
   write/read round trip on the radios with a merged read model
-  (IC-705/IC-9700, whose write body is the same two-block record a read
-  reply carries: `copies = 2` in the field table, per the manuals' own
-  NOTE). The IC-7610 keeps its historic 26-byte record and `0x0B` clear
+  (IC-705/IC-9700). All four manuals print the channel-data block's
+  position labels twice — the TX/split copy a non-split entry fills with
+  the RX values, per each manual's own NOTE — so the write body carries
+  the block `copies = 2` times, the same record a read reply carries.
+  The IC-7610 keeps its historic 26-byte record and `0x0B` clear
   byte-for-byte, now declared in the same vocabulary; the discrepancy
   with its own guide (a 27-byte record and a `1A 00 + channel + FF`
   clear) stays open as MOR-2055. The write API takes the address the
   profile needs (`group` for the IC-705's memory groups and the
   IC-9700's band codes) and centi-Hz-exact tones through the profile's
   CTCSS domain. Both typed commands stay classified in the TX
-  interlock's MEMORY family (deferred while keyed). Radios without a
+  interlock's MEMORY family (held while keyed on the unmanaged poller
+  path; managed-TX authority deliberately bypasses the non-PTT
+  interlock). Radios without a
   verified layout (FTX-1, X6100, X6200, TX-500) still refuse; the
   IC-7300/IC-7300MK2 read listing stays off — their `1A 00` read reply
   is not documented in the sourced manuals.

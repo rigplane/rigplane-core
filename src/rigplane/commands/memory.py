@@ -271,8 +271,8 @@ def build_memory_contents_set(
     ``[data_mode].count`` (the IC-7610's record stores DATA1-3, the other
     manuals' records 0/1). A layout without the matching fields ignores
     both. ``layout.copies`` decides how many times the channel-data block
-    appears on the wire (the IC-705/IC-9700 record carries it twice --
-    the TX/split copy a non-split entry fills with the RX values).
+    appears on the wire (the sourced manuals print it twice -- the
+    TX/split copy a non-split entry fills with the RX values).
 
     A grouped memory (IC-705 groups, IC-9700 band codes) requires an
     explicit ``group``: ``MemoryChannel.group`` left at ``None`` refuses
@@ -504,11 +504,12 @@ def _write_record(
 
     ``layout.copies`` repeats the channel-data block (the fields between
     the leading select byte and the name field, per
-    :meth:`MemoryWriteLayout.data_block_span`): the IC-705/IC-9700 record
-    carries the RX block and the TX/split copy, and a non-split entry
-    fills both with the same values, as the manuals' NOTE prescribes
-    (IC-705 guide p.17, IC-9700 guide p.14) and the read reply shows.
-    Fields at or past the block end (the name) shift after the repeats.
+    :meth:`MemoryWriteLayout.data_block_span`): the sourced Icom manuals
+    print the block's position labels twice -- the TX/split copy, which a
+    non-split entry fills with the RX values, as each manual's NOTE
+    prescribes (IC-705 guide p.17, IC-9700 p.14, IC-7300 Advanced Manual
+    11a p.19-11, IC-7300MK2 p.17). Fields at or past the block end (the
+    name) shift after the repeats.
     """
     span = layout.data_block_span()
     block_len = (span[1] - span[0]) if span is not None else 0

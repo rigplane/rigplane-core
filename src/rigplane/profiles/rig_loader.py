@@ -2230,8 +2230,8 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
         raise RigLoadError(
             f"{filename}: [memory].write_layout.copies must be an integer "
             "1..2 (how many times the channel-data block appears on the "
-            f"wire; the IC-705/IC-9700 manuals' record carries it twice), "
-            f"got {copies!r}"
+            "wire; the sourced Icom manuals print the block's position "
+            f"labels twice for the TX/split copy), got {copies!r}"
         )
     rows = raw.get("fields")
     if not isinstance(rows, list) or not rows:

@@ -558,11 +558,12 @@ class MemoryWriteLayout:
     nibble (0=OFF, 1=TONE, 2=TSQL, 3=DTCS) for radios whose record has
     no DTCS field. ``copies`` is the number of times the channel-data
     block -- the fields between a leading ``select`` byte and the name
-    field -- appears on the wire: the IC-705/IC-9700 manuals' record
-    carries the block twice (the TX/split copy, which a non-split entry
-    fills with the RX values; IC-705 guide p.17 and IC-9700 guide p.14
-    print the block's position labels twice and say so in the NOTE), so
-    those layouts declare ``copies = 2`` and the name lands after the
+    field -- appears on the wire: the sourced Icom manuals print the
+    block's position labels twice (the TX/split copy, which a non-split
+    entry fills with the RX values; IC-705 guide p.17, IC-9700 guide
+    p.14, IC-7300 Advanced Manual 11a p.19-11 and IC-7300MK2 guide p.17,
+    each with the same NOTE), so those layouts declare ``copies = 2``
+    and the name lands after the
     last copy. The declared ``fields`` table always tiles ONE copy
     (``record_length`` is that one-copy length); the wire record is
     :meth:`wire_record_length` bytes.

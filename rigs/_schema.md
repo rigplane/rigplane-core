@@ -666,9 +666,10 @@ own address form + `FF`, `"0b_channel"` = the legacy `0x0B` + 2-byte BCD
 channel the IC-7610 keeps), `record_length` the bytes after the memory
 address in ONE copy of the record, `copies` (default 1, at most 2) how
 many times the channel-data block — the fields between a leading
-`select` byte and the name field — appears on the wire (the IC-705/IC-9700
-manuals print the block's position labels twice: the TX/split copy,
-which a non-split entry fills with the RX values, so those profiles
+`select` byte and the name field — appears on the wire (the sourced
+Icom manuals print the block's position labels twice: the TX/split copy,
+which a non-split entry fills with the RX values, so the IC-705, IC-9700,
+IC-7300 and IC-7300MK2 profiles
 declare `copies = 2` and the name lands after the last copy), and
 `fields` an array of `{field, offset, length, encoding}`
 rows (plus `max_hz` on a frequency field) that must tile the record

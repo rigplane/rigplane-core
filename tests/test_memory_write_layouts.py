@@ -15,10 +15,12 @@ offset or width in the TOML cannot pass:
   name, the same record a read reply carries (``parse_memory_entry``).
 * IC-9700: CI-V Reference Guide (rev. 4) p.14 "Memory content" -- the
   same two-block shape (labels 5~51 twice, name 52~67, same NOTE).
-* IC-7300: Advanced Manual (11a) p.19-11 "Memory content" (guide bytes
-  q-@7 = 1-27, one block copy).
-* IC-7300MK2: CI-V Reference Guide p.17 "Memory channel content" (guide
-  bytes 1-33, one block copy).
+* IC-7300: Advanced Manual (11a) p.19-11 "Memory content" -- the
+  channel-data span r-!7 (14 bytes: frequency, mode, filter, data|tone,
+  tone, tsql) is printed twice before the name !8-@7 (10 characters),
+  with the same TX/split NOTE.
+* IC-7300MK2: CI-V Reference Guide p.17 "Memory channel content" -- the
+  span 4~17 printed twice, name 18-33 (16 characters), same NOTE.
 * IC-7610: the legacy 26-byte record this package has always built
   (byte-identical; the manual's own 27-byte form is the deferred
   discrepancy, see the PR body and MOR-2055).
@@ -64,6 +66,18 @@ _CASES = {
 # unused call-sign fields with spaces.
 _SP24 = "20" * 24
 
+# The 14-byte channel-data span of the HF records (frequency 5 | mode 1
+# | filter 1 | data|tone 1 | tone 3 | tsql 3): the IC-7300 manual prints
+# it as r-!7, the IC-7300MK2 guide as 4~17 -- both print the span TWICE
+# before the name, with the same TX/split NOTE as the IC-705/IC-9700.
+_IC7300_BLOCK = (
+    "0040071400"  # 14.074 MHz, LE BCD
+    "01"  # mode USB (raw code)
+    "01"  # filter 1
+    "01"  # data OFF | TONE
+    "001365"  # 136.5 Hz
+    "000000"  # tone squelch off
+)
 # The 47-byte channel blocks of the two-block records, written field by
 # field in manual order: frequency 5 | mode 1 | filter 1 | data mode 1 |
 # duplex|tone 1 | digital squelch 1 | tone 3 | tsql 3 | DTCS 3 | DV code
@@ -124,32 +138,28 @@ _MANUAL_RECORDS = {
     ),
     # IC-7300 Advanced Manual (11a) p.19-11, after ``1A 00``:
     # q,w channel | e split|select | r-i frequency | o mode | !0 filter |
-    # !1 data|tone | !2-!4 tone | !5-!7 tsql | !8-@7 name (10). The
+    # !1 data|tone | !2-!4 tone | !5-!7 tsql -- the span printed AGAIN as
+    # "r-!7" (the NOTE: the second copy is the TX data, filled with the
+    # same values when Split is OFF) -- then !8-@7 name (10). The
     # IC-7300 record has no duplex, DTCS, DV or call-sign fields at all.
     "IC-7300": (
         "0007"  # q,w: channel 7
         "00"  # e: split OFF | select OFF
-        "0040071400"  # r-i: 14.074 MHz, LE BCD
-        "01"  # o: mode USB (raw code)
-        "01"  # !0: filter 1
-        "01"  # !1: data OFF | TONE
-        "001365"  # !2-!4: 136.5 Hz
-        "000000"  # !5-!7: tone squelch off
-        "46543820202020202020"  # !8-@7: "FT8", 10, space padded
+        + _IC7300_BLOCK  # r-!7: the RX span
+        + _IC7300_BLOCK  # the TX/split copy repeats the RX values
+        + "46543820202020202020"  # !8-@7: "FT8", 10, space padded
     ),
     # IC-7300MK2 CI-V Reference Guide p.17, after ``1A 00``:
     # 1,2 channel | 3 split|select | 4-8 frequency | 9 mode | 10 filter |
-    # 11 data|tone | 12-14 tone | 15-17 tsql | 18-33 name (16 characters).
+    # 11 data|tone | 12-14 tone | 15-17 tsql -- the span printed AGAIN as
+    # "4 ~ 17" (same NOTE as the IC-7300) -- then 18-33 name (16
+    # characters).
     "IC-7300MK2": (
         "0007"  # 1,2: channel 7
         "00"  # 3: split OFF | select OFF
-        "0040071400"  # 4-8: 14.074 MHz, LE BCD
-        "01"  # 9: mode USB
-        "01"  # 10: filter 1
-        "01"  # 11: data OFF | TONE
-        "001365"  # 12-14: 136.5 Hz
-        "000000"  # 15-17: tone squelch off
-        "46543820202020202020202020202020"  # 18-33: "FT8", 16, space padded
+        + _IC7300_BLOCK  # 4-17: the RX span
+        + _IC7300_BLOCK  # the TX/split copy repeats the RX values
+        + "46543820202020202020202020202020"  # 18-33: "FT8", 16, space padded
     ),
     # The legacy 26-byte record, byte-identical to the pre-MOR-3644
     # builder (the complete-frame golden in tests/test_memory_write_gate.py
@@ -255,7 +265,7 @@ def test_the_encoder_builds_the_manual_record(model: str) -> None:
     ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2", "IC-7610"],
 )
 def test_the_frame_length_is_the_manual_total(model: str) -> None:
-    """115 (705) / 114 (9700) / 27 (7300) / 33 (MK2) / 28 (7610 legacy)
+    """115 (705) / 114 (9700) / 41 (7300) / 47 (MK2) / 28 (7610 legacy)
     data bytes after ``1A 00`` -- the position table's own byte count,
     both block copies included."""
     frame = _build(model, _mem(model))
