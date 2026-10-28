@@ -1,0 +1,740 @@
+# TCI Server Design
+
+Status: draft for review
+Date: 2026-10-27
+Linear: MOR-3821
+Scope: public open-core `rigplane-core`; a TCI (Transceiver Control Interface)
+server so TCI client applications can use any RigPlane radio. Docs only: this
+file adds no code.
+
+## Summary
+
+Core already serves Hamlib `rigctld` for CAT. Some applications cannot use it:
+the logger OpsLog speaks TCI (and FLRig/OmniRig) but not Hamlib as a client.
+TCI also carries RX and TX audio over the same WebSocket as control, which
+removes the virtual audio cable for digital-mode programs (WSJT-X Improved,
+JTDX, MSHV).
+
+The design is a **thin adapter**: a new sibling UI-server package
+`rigplane.tci`, next to `rigplane.rigctld` and `rigplane.web`, that
+
+- terminates the TCI WebSocket and translates TCI text commands to the same
+  `CommandIntent` pipeline that `rigctld` and the Web UI already use;
+- reads state from the same `StateStore` and pushes changes to every TCI client;
+- keys the transmitter **only** through the existing `ManagedTxAuthority`;
+- moves audio through the existing `AudioSession` (RX subscription, TX lease)
+  behind the existing fail-closed TX gate.
+
+It adds no radio-specific code, no second TX path, no second audio path and no
+second WebSocket implementation. Where the existing mechanism lives in the wrong
+place to be shared (inside `rigctld` or inside `web`), the design extracts it
+first (section 11, PRs P0a to P0d) instead of copying it.
+
+### Decisions
+
+| # | Decision | Section |
+|---|---|---|
+| D1 | New package `rigplane.tci`, sibling of `web` and `rigctld`; new import-linter rows | 4 |
+| D2 | One RFC 6455 implementation: move `web/websocket.py` (and the Host/Origin guard) to a neutral lower layer; `web` keeps a shim | 4.2 |
+| D3 | TCI is a new command *ingress* (`source="tci"`), not a new command path | 5.1 |
+| D4 | TX only through `ManagedTxAuthority`; the managed-key choreography now private to `rigctld` is extracted and shared | 7 |
+| D5 | On a radio without the managed composition, TCI refuses PTT (no legacy unsupervised write) | 7.2 |
+| D6 | `tune` and `tune_drive` are not honoured in the first release; answered as "not tuning" | 6.4, 7.5 |
+| D7 | `trx_count:1` first; dual-receiver radios are a later extension | 5.3 |
+| D8 | Default `127.0.0.1:50001`, opt-in flag, rejects browser `Origin` | 9 |
+| D9 | Conformance suite uses `eesdr-tci` as client plus spec-derived fixtures; real-client behaviour is pinned by recorded client-to-server transcripts | 10 |
+
+## 1. Goals and non-goals
+
+Goals
+
+- OpsLog, JTDX, WSJT-X Improved, MSHV and loggers connect, read radio state,
+  tune, select mode, switch split, key (where the radio supports managed TX) and,
+  in the audio phase, exchange RX/TX audio.
+- Same safety as every other ingress: a TCI client can never leave the
+  transmitter keyed after it goes away, and can never key around the authority.
+- Work for every radio Core supports through the `Radio` capability protocols,
+  with radio facts taken from profiles and capabilities, never from `if model ==`.
+
+Non-goals
+
+- IQ streams, spectrum/panorama, spots on a panorama, line-out recording,
+  E-Coder and hardware-sensor commands (TCI phase 4, only if a client needs them).
+- CW macros and CW keying over TCI (`cw_macros`, `cw_msg`, `keyer`): they start
+  TX and need their own managed-TX semantics. A follow-up, not this program.
+- The 200 ms "parameter monopoly" and band/mode memory that ExpertSDR3 does
+  (spec section 3.5). Core is last-write-wins on a single radio.
+- A TCI client library, or any code copied from AetherSDR (GPL-3.0). See 12.
+
+## 2. Evidence base and its limits
+
+Every statement about *external* behaviour below says how it was established.
+Nothing here was captured from a live TCI session: AetherSDR was not running
+(`bridge_status` returned no instances) and no TCI client was run.
+
+| Source | What was read | Used for |
+|---|---|---|
+| ExpertSDR3/TCI `TCI Protocol 2.1.pdf` (MIT), extracted with `pdftotext -layout` on 2026-10-27 | sections 3.1 to 3.5, 4.1 to 4.7 | wire format, command tables, stream header, format notes |
+| `ars-ka0s/eesdr-tci` 0.1.0 (BSD-3-Clause-Clear), `README.md`, `pyproject.toml`, `eesdr_tci/tci.py` (command table, packet class), `eesdr_tci/listener.py` | those files | what the test client accepts and sends |
+| AetherSDR docs (GPL-3.0; docs only, no source): `docs/user/docs/tci-server.md`, `docs/user/docs/generated/tci-commands.md`, `docs/architecture/tci-routing-ordering.md` | whole files | second-hand description of how WSJT-X Improved 3.1.0, JTDX 2.2.159 and wfview drive a TCI server, and of server-side pitfalls |
+| OpsLog wiki, page `CAT-Control` | TCI section | how OpsLog uses TCI |
+| WSJT-X Improved / JTDX source | **not read** | n/a |
+
+Consequences:
+
+- Client behaviour in 5.2 is *reported*, not observed. Capture C0 (section 10.5)
+  turns each reported fact into a recorded transcript before the PR that depends
+  on it merges. Where reports disagree or are silent the doc says "open".
+- The spec PDF is dated September 2026 and describes version 2.1. `eesdr-tci`
+  is written against version 2.0 (its README); its command dictionary lacks
+  `CW_MON`, `HW_SENSORS`, `HW_SENSORS_ENABLE` and `LINEOUT_STREAM` (stream type 4).
+  The server must never emit anything outside that dictionary (10.2).
+
+## 3. Existing pieces in Core
+
+Citations are file plus symbol, per the repo's documentation rule. All read on
+`origin/main` at `a12f992e1`.
+
+| Need | Existing piece | Role for TCI |
+|---|---|---|
+| Hamlib server, model for the new one | `rigctld/server.py: RigctldServer` (accept loop, per-connection `rigctld-client-N` owner id, `_release_session_tx`), `rigctld/handler.py: RigctldHandler`, `rigctld/contract.py: RigctldConfig` | structure and lifecycle to mirror |
+| Shared radio API | `core/radio_protocol.py: Radio` and the `*Capable` protocols (`SplitCapable`, `RitXitCapable`, `LevelsCapable`, `PowerControlCapable`, `RelativeVfoFrequencyWritable`, `AudioTransport`) | what TCI commands map to |
+| Command ingress | `core/command_service.py: command_intent_from_request`, `core/command_dispatch.py: prepare_command_intent`, `enqueue_command_intent`; `core/state_pipeline_contracts.py: CommandSource` | TCI writes become intents (`source="tci"`) |
+| State reads and change feed | `core/state_store.py: StateStore.snapshot, delta_since`; `core/tx_observation.py: OBSERVED_PTT_PATH, project_observed_ptt`; `StateModelService.ensure_fresh` | init burst and push notifications |
+| Managed TX authority | `runtime/managed_tx_authority.py: ManagedTxAuthority` (`start_ptt_submission`, `submit_ptt`, `owner_disconnect`, `held_by_other`, `radio_tx_refusal_nowait`, `snapshot`), `runtime/managed_tx_state.py: ManagedTxOutcome`, `runtime/managed_tx_ingress.py: bind_managed_tx, refuse_key_without_owner`, `core/tx_safety.py: TxSource`, `runtime/controller_authority.py: ControllerAuthority`, `runtime/managed_tx_config.py: DEFAULT_MANAGED_TX_TOT_SECONDS` | the only way to key |
+| Managed-key choreography | `rigctld/server.py: _ManagedPttReady` and the PTT block of `_handle_client`; `rigctld/handler.py: _RigctldCommandExecutor._execute_managed_ptt, _execute_managed_tuner` | **currently private to rigctld; extracted in P0c** |
+| RX audio | `audio/session.py: AudioSession.subscribe_rx`, `audio/lan_stream.py: AudioPacket`, `audio/pcm.py: PcmFrame`, `audio/resample.py: PcmResampler`, `audio/_codecs.py: decode_ulaw_to_pcm16`, `runtime/_audio_runtime_mixin.py: add_pcm_rx_tap` | RX source |
+| TX audio | `audio/session.py: AudioSession.acquire_tx, TxLease.push(submission_guard=..., admission=...)`, `core/radio_protocol.py: AudioTransport.audio_tx_codec, push_tx`, `audio/route.py: resolve_audio_route, rigctld_wsjtx_policy` | TX sink and route policy |
+| Fail-closed TX gate | `web/server.py: WebServer._bridge_tx_gate_open` (uses `ManagedTxAuthority.snapshot`, `project_observed_ptt`, `ControllerAuthority.mode`), consumed by `audio/bridge.py: AudioBridge(tx_gate=...)` | **lives in `web`; extracted in P0b** |
+| WebSocket | `web/websocket.py` (`WebSocketConnection`, `make_frame`, `make_accept_key`, `keepalive_loop`), handshake inside `web/server.py: WebServer._handle_websocket`, `web/host_guard.py: host_header_allowed, same_origin_allowed` | **in `web`; moved in P0a** |
+| Listener config | `cli/__init__.py: _cmd_web` (constructs `RigctldServer` with the managed composition; host `127.0.0.1` when managed, else `0.0.0.0`), `--rigctld/--no-rigctld`, `--rigctld-port`, `check_ports_available`, `rigctld/contract.py: RigctldConfig` | model for `--tci*` flags |
+| Test doubles | `tests/test_rigctld_server.py` (ephemeral port `port=0`), `tests/test_rigctld_managed_tx.py`, `tests/serial_stub.py: SerialMockRadio`, `rigplane_testkit/icom/simulator.py`, `rigplane_testkit/yaesu/cat_fake.py`, `rigplane_testkit/sim/`, `audio/backend.py: FakeAudioBackend` | seam and E2E tests |
+| Layering rules | `.importlinter` (`layers`, `independence-top`), `src/rigplane/rigctld/LAYER.md` | new package must fit |
+| Architecture of ingress | `docs/superpowers/specs/2026-06-02-radio-state-pipeline-design.md` ("command ingress" and "data ingress") | TCI is one more ingress |
+
+Searches done before designing (two vocabularies each): "websocket server, RFC
+6455, handshake, upgrade" found only `web/websocket.py` and the handshake in
+`WebServer._handle_websocket`; `aiohttp` is a required dependency but imported
+only by `diagnostics/upload.py` and `cli/_diagnose.py` as a client. "managed key,
+ptt submission, owner disconnect, lease" found the authority plus the
+rigctld-private choreography above. "tx gate, fail closed, bridge" found
+`_bridge_tx_gate_open` only. "pcm frame, decode packet, resample" found at least three
+places that decode RX packets (see 8.2). Nothing existing implements TCI.
+
+## 4. Architecture
+
+```text
+TCI client (WSJT-X Improved / JTDX / MSHV / OpsLog / logger)
+   |  ws://127.0.0.1:50001   text = commands, binary = audio
+   v
+rigplane.tci
+   server.py      listener, upgrade, Host/Origin guard, per-socket session id "tci-client-N"
+   session.py     one TciSession per socket: parse, dispatch, per-client stream settings
+   protocol.py    command grammar: parse / format (pure functions)
+   commands.py    TCI command -> Core operation table (phase "control")
+   notifier.py    StateStore delta -> TCI notifications, 30 ms coalescing, broadcast
+   audio.py       (phase "audio") stream header codec, RX pump, TX receiver, TX_CHRONO
+   |
+   v   CommandIntent (source="tci")            ManagedTx ingress (shared, from P0c)
+Radio API / CommandService / StateStore   --->  ManagedTxAuthority  --->  Radio.set_ptt
+   |                                              
+   v   AudioSession.subscribe_rx / acquire_tx (+ shared TX gate from P0b)
+```
+
+### 4.1 Layer
+
+`tci` is a third member of the top UI-server tier. In `.importlinter`:
+`layers` row becomes `rigplane.web | rigplane.rigctld | rigplane.tci`;
+`independence-top` lists all three. Allowed dependencies are those of `web`
+(`core`, `commands`, `profiles`, `audio`, `runtime`; not `backends`), because TCI
+needs audio, which `rigctld` does not. A `src/rigplane/tci/LAYER.md` charter is
+part of PR C1, with the same "forbidden patterns" as `rigctld/LAYER.md`
+(no backend-id branches, no telemetry, no `from rigplane.web`/`rigctld`).
+
+### 4.2 One WebSocket implementation
+
+`tci` may not import `web`. The two reusable parts are in `web` today:
+framing (`web/websocket.py`) and the upgrade handshake (inline in
+`WebServer._handle_websocket`: Host allowlist, Origin check, `Sec-WebSocket-Key`,
+101 response). Writing a second RFC 6455 server for TCI would be two mechanisms
+for one job; adding `aiohttp` as a server would be a second stack and break the
+"stdlib only" charter of `web/LAYER.md`.
+
+P0a moves `web/websocket.py` to `core/websocket.py` (framing has no radio
+dependency), extracts the server-side upgrade into a function there (key check,
+accept header, response bytes, optional Host/Origin predicate), and moves
+`web/host_guard.py` with it. `web/websocket.py` and `web/host_guard.py` become
+`sys.modules`-alias shims, the repo's existing convention for moved modules
+(`CLAUDE.md`, "Layer boundaries"). `WebServer._handle_websocket` calls the new
+function. Existing web tests are the pin.
+
+Limits to keep: `_MAX_WS_FRAME` is 64 KiB. A TCI audio block is at most
+64 + 16384 bytes, so it fits. Per-message deflate stays off for TCI (clients do
+not negotiate it; audio does not compress).
+
+## 5. Phase "control"
+
+### 5.1 Command path
+
+A TCI write is parsed to a `CommandIntent` with `command_intent_from_request`
+and `source="tci"` (add `"tci"` to `CommandSource`; add `TxSource.TCI` and
+`"tci": TxSource.TCI` to `_STABLE_OWNER_SOURCES` in `runtime/managed_tx_ingress.py`).
+It then takes the same queue and executor as a `rigctld` write. Reads project
+from `StateStore` the way `RigctldHandler._cmd_get_freq` does, calling
+`StateModelService.ensure_fresh` when the projection is stale.
+
+TCI must not start its own acquisition machinery. `RigctldServer.start`
+bootstraps state acquisition and a freshness task; whether that is needed when
+the web server already feeds the shared store in the managed composition is
+unresolved here. C1 settles it with a failing test first: a TCI server that
+starts no scheduler and still answers `vfo:0,0;` from the composed store.
+
+### 5.2 What clients send (reported, to be captured)
+
+Evidence tags: **[spec]** = TCI 2.1 PDF; **[AS]** = AetherSDR docs as above
+(second-hand); **[OL]** = OpsLog wiki; **[open]** = nobody in the evidence base
+says; capture C0 decides.
+
+| Client | At connect | During a QSO | Evidence |
+|---|---|---|---|
+| all | WebSocket upgrade, then waits for the init burst up to `ready;` and seeds its state from it | reads/writes below | [spec] 3.1, 4.1; [AS] "WSJT-X seeds requested frequencies from the init burst" |
+| WSJT-X Improved 3.1.0 | `vfo:0,0,<hz>` (waits about 2 s for the echo); `split_enable:0,false` before it programs channel 1; `vfo:0,1,<hz>` (waits about 1 s); `audio_start:0` (sent automatically); reads `drive`/`tune_drive` and indexes the power as the second argument after the receiver. Mode set: **[open]** | `trx:0,true,tci` and `trx:0,false`; TX audio frames on each `TX_CHRONO` | [AS] routing doc (startup tune, rig compatibility, power shape), user doc (`audio_start`) |
+| JTDX 2.2.159 | Rig-split sequence `split_enable:0,true`, then `vfo:0,1,<tx hz>` | `trx:0,true,tci`, then `TX_CHRONO` | [AS] routing doc |
+| OpsLog (TCI backend) | host and port (default 40001 in OpsLog), frequency, mode, PTT, split; optional spots; asks for real split rather than "Fake It". Which command names it sends: **[open]** (the wiki names none) | the wiki's statement that it retries refused writes describes OpsLog's own TCI and Hamlib *servers*, not this client role | [OL] |
+| MSHV | TCI interface with host and port, optional audio streaming | audio and PTT | [AS] (one line) |
+| Log4OM v2 | spots in both directions | `clicked_on_spot` back | [AS] (one line) |
+
+Reported client constraints that shape the design:
+
+1. A write must **always be answered**, even when it changes nothing; WSJT-X
+   waits for the echo. A write the radio refuses is answered with the state the
+   radio is actually in, not with silence and not with an error.
+2. A refused PTT is answered with `trx:<n>,false;` ([AS]); the spec has no error
+   reply. WSJT-X shows "failed to set ptt".
+3. `drive` and `tune_drive` replies and notifications always carry
+   `<trx>,<power>`; a bare power value breaks ESDR3-mode WSJT-X/JTDX ([AS]).
+   `drive:<trx>` is a read; only `drive:<trx>,<power>` writes.
+4. The `protocol` line may switch client behaviour ([AS], "ESDR3-mode"). Which
+   `protocol:` and `device:` strings to announce is **open** (decision Q4).
+5. JTDX "can crash with some TCI servers" ([AS] user doc). Any deviation in the
+   init burst is a risk; capture C0 must include JTDX.
+
+### 5.3 Receiver and channel model
+
+TCI addresses a transceiver (`trx`, "receiver periodic number") and two
+channels per receiver (0 = A, 1 = B). The server announces `trx_count:1` and
+`channels_count:2`, always for `trx` 0.
+
+- Channel 0 is the frequency and mode the radio receives on.
+- Channel 1 is the TX frequency when split is enabled; with split off it mirrors
+  channel 0. On Core this is the relative-VFO surface:
+  `RelativeVfoFrequencyWritable.write_relative_vfo_frequency`, which `rigctld`
+  already reaches through the `set_split_freq` intent, gated on the capability.
+- Radios with two independent receivers (`ReceiverBankCapable.receiver_count > 1`)
+  expose only the receiver that `Radio.get_freq(receiver=0)` addresses. `trx_count:2`
+  is a later extension, not part of this program (decision Q5).
+
+A request for `trx` other than 0 is ignored without a reply (spec 4.7, rule 5).
+
+### 5.4 Init burst
+
+One deterministic sequence per connection, ending with `ready;`. The spec lists
+the initialisation commands (4.1) and says they are sent first, then the state
+(3.1); it fixes no order among them. This design uses identity, topology,
+limits, modes, state, stream settings, `ready`, which is the order AetherSDR
+documents as its startup barrier (tci-routing-ordering.md, "Startup barrier").
+C0 confirms what the clients need:
+
+1. `protocol:<name>,<version>;` `device:<model>;` `receive_only:<bool>;`
+2. `trx_count:1;` `channels_count:2;`
+3. `vfo_limits:<lo>,<hi>;` (and `if_limits`, see below)
+4. `modulations_list:<names>;`
+5. state, per the table in 5.5: `dds`, `if`, `vfo:0,0`, `vfo:0,1`, `modulation`,
+   `trx`, `tune`, `drive`, `tune_drive`, `rit_enable`, `xit_enable`,
+   `split_enable`, `rit_offset`, `xit_offset`, `tx_enable`, `tx_frequency`
+6. stream settings (phase audio): `audio_samplerate`, `audio_stream_sample_type`,
+   `audio_stream_channels`, `audio_stream_samples`
+7. `ready;`
+
+Sources: `device` is `Radio.model`; `receive_only` is true unless the radio has
+the TX capability **and** the managed composition is present (7.2);
+`vfo_limits` comes from the radio profile frequency ranges (data, not code);
+`modulations_list` is the intersection of TCI names (5.6) and the modes the
+profile supports. `if_limits` has no Core source (there is no panorama IF); it
+is omitted unless capture C0 shows a client waits for it.
+
+### 5.5 Command table, phase "control"
+
+Direction: **R** read (no value argument), **S** set, **N** server notification.
+Reads and sets reply with the same command name, to the sender and, for sets, to
+every other client (spec 3.1: the server synchronises clients).
+
+Tier A is required at connect and in a QSO. Tier B is accepted and answered
+from state or ignored harmlessly. Tier C is not honoured; how it is answered is
+in 6.
+
+| TCI command | Tier | Core mapping | Notes |
+|---|---|---|---|
+| `vfo:0,0` R/S | A | read: `StateStore` freq of receiver 0; set: intent `set_freq{freq, receiver=0}` | echo the frequency the radio reached; echo current on no-op or failure |
+| `vfo:0,1` R/S | A | read: relative-VFO TX frequency (mirror of channel 0 when split off); set: intent `set_split_freq` if `RelativeVfoFrequencyWritable`, else echo current | reply even on no-op (WSJT-X waits 1 s) |
+| `modulation:0[,mode]` R/S | A | names in 5.6; set: intent `set_mode`, plus `set_data_mode` for DIGU/DIGL | applies `audio.route.rigctld_wsjtx_policy` for data mode and TX input (P0d shares the glue now in `rigctld/server.py: _apply_wsjtx_data_mod_input`) |
+| `split_enable:0[,bool]` R/S | A | `SplitCapable.get_split/set_split` via intent `set_split`; no capability: always `false` | `false` while a client programs channel 1 must not erase it ([AS]) |
+| `trx:0[,bool[,source]]` R/S | A | PTT through the managed ingress (7) | reply `trx:0,false;` on every refusal; `source` handling in 7.3 |
+| `drive:0[,0..100]` R/S | A | read: normalised power level; set: intent `set_rf_power` with `value/100.0`, resolved by `core/command_service.py: resolve_power_level_target` (clamps to the profile range) | reply carries `0,<power>` always |
+| `start` / `stop` S | B | acknowledged by echo, no radio action | TCI "device start/stop" has no Core equivalent |
+| `rit_enable`, `rit_offset` R/S | B | `RitXitCapable.get/set_rit_status`, `get/set_rit_frequency` | capability absent: `false` / `0` |
+| `xit_enable`, `xit_offset` R/S | B | `RitXitCapable.get/set_rit_tx_status`; offset mirrors the RIT value | `RitXitCapable` has one frequency method, so the two offsets are one value |
+| `tx_enable:0` N/R | B | server only: true when TX capability and managed composition are present | a client set is ignored and answered with the current value (spec 4.3) |
+| `tx_frequency` N | B | the TX frequency (channel 1 when split, else channel 0) | |
+| `dds`, `if` R | B | `dds:0,<ch0 hz>` ; `if:0,<ch>,0` | no panorama; read-only |
+| `vfo_limits`, `modulations_list`, `trx_count`, `channels_count`, `device`, `protocol`, `receive_only`, `ready` | B | init only (5.4) | |
+| `rx_sensors_enable`, `tx_sensors_enable` S, `rx_sensors`, `tx_sensors` N | B | optional: `MetersCapable.get_s_meter` mapped to dBm if `runtime/meter_cal.py` provides such a mapping (to be checked in that PR); `get_power_meter`, `get_swr` | deferred to a later PR if no captured client sends the enables |
+| `cw_keyer_speed`, `cw_macros_speed` R/S | B | `CwControlCapable.get/set_key_speed` | non-TX state only |
+| `spot`, `spot_delete`, `spot_clear` S | B | accepted and dropped | OpsLog and Log4OM send spots ([OL], [AS]); no panorama |
+| `tune`, `tune_drive` | C | see 6.4 | |
+| everything else in spec 4.2 to 4.5 | C | see 6.1 | |
+
+### 5.6 Mode names
+
+A table in `tci/commands.py` maps TCI names to Core `Mode` and a data-mode flag:
+`AM`, `LSB`, `USB`, `CW`, `FM` (and `NFM`) map to the same-named Core modes;
+`DIGL` is LSB with data mode on, `DIGU` is USB with data mode on, as `rigctld`
+maps `PKTLSB`/`PKTUSB`. `SAM`, `DSB`, `DRM`, `WFM` are not announced. This is
+TCI vocabulary, which belongs to the adapter; which names a radio actually
+supports is read from the profile, so no per-radio branch exists.
+
+## 6. Commands we cannot honour
+
+### 6.1 Rule
+
+The spec says an unknown command, a wrong-typed argument or an out-of-range
+receiver is ignored without a reply (4.7, rule 5), and a set whose argument
+cannot be parsed degrades to a read (rule 2). The server follows that, and adds:
+
+- A command that is in the spec but outside Tier A/B is **ignored without a
+  reply**, never half-applied. It is logged once per connection at INFO with the
+  command name only (no arguments), so a captured client's real needs show up.
+- Parsing follows rules 1 to 4: empty arguments are discarded, booleans are
+  `true`/`1` case-insensitively, frequencies and levels are integers, names are
+  case-insensitive. Malformed input never reaches a `CommandIntent`.
+- Only commands from the `eesdr-tci` dictionary are ever **emitted** (10.2).
+
+### 6.2 IQ, line-out, spectrum
+
+`iq_start`, `iq_stop`, `iq_samplerate`, `line_out_*`, `rx_sensors`-style panorama
+data: ignored. `audio_*` commands belong to phase "audio" (section 8) and, until
+that phase ships, are also ignored, so a control-only release does not advertise
+audio.
+
+### 6.3 CW over TCI
+
+`cw_macros`, `cw_msg`, `cw_macros_stop`, `cw_terminal`, `keyer`: ignored. They
+start transmission and need a decision on owner and release semantics with the
+authority; out of scope here.
+
+### 6.4 `tune` and `tune_drive`
+
+Core's tune primitive is `SystemControlCapable.set_tuner_status`: 0 off, 1 on,
+2 tuning cycle (the Web UI starts a tune with value 2; `rigctld` `set_func TUNER`
+sends 0/1 through `_execute_managed_tuner`). TCI `tune` switches the transceiver
+between receive and its Tune mode (spec 4.2), which has its own power setting,
+`tune_drive`. These are different operations:
+
+- A tuner cycle is not a managed PTT lease; there is no owner to release on
+  disconnect. `ManagedTxAuthority._execute` deliberately aborts only
+  `STOP_CW` on full force, because `STOP_TUNE` "would switch the tuner OFF",
+  a persistent user setting.
+- No Core primitive for "Tune mode at a chosen power" was found. Searching
+  `core/radio_protocol.py` and `core/command_dispatch.py` for `carrier` gave no
+  hits; for `tune`, the hits are the tuner-status methods above and a docstring
+  example.
+
+First release: `tune:0[,x]` is answered `tune:0,false;` and does nothing;
+`tune_drive` is read as the same value as `drive` and ignores sets. Honouring
+`tune` is decision Q3. Option if the owner wants it: map `tune:0,true` to
+`set_tuner_status(2)` through the same owner checks the Web UI applies
+(`ControlHandler._validate_controller_command`: refused while another owner holds
+TX or while the radio transmits with no owner), stop it with value 0 on
+`tune:0,false`, and on disconnect send value 0 only for a tune this session
+started. That needs a bench run on a dummy load and is a separate PR.
+
+## 7. TX safety
+
+### 7.1 Principles
+
+1. The only keying path is `ManagedTxAuthority`. No TCI code calls
+   `Radio.set_ptt`, `send_civ` or any raw frame.
+2. A key request always names an owner: `tci-client-<N>`, minted once per
+   accepted socket, as `rigctld-client-N` is, so the lease is releasable.
+3. An unkey never fails open: it never forces another owner off, and it is
+   answered even if nothing was keyed.
+4. Anything the client cannot be told about (socket gone) is released by the
+   server side, not by the client.
+
+### 7.2 Managed composition required
+
+`bind_managed_tx` returns `None` for a radio that publishes no supervisor, and
+`rigctld` then falls back to a legacy `Radio.set_ptt` with only its own
+key-down bound (`RigctldHandler._arm_key_down_backstop`). TCI does **not** copy
+that fallback. `receive_only:true` is announced, `tx_enable` is false, and
+`trx:0,true` is answered `trx:0,false;` whenever the managed composition
+(`ManagedTxAuthority` + `CommandQueue` + `CommandService`, built by `_cmd_web`)
+is absent. Adversary: a TCI client, or a crash of it, on a radio that has no
+watchdog. TCI is therefore started only inside `web` and `station`, not in
+standalone `serve`. This is stricter than `rigctld` on purpose, and has a
+precedent: the `/api/v1/rigctl` channel is attached only when the managed
+composition exists, because "only the managed authority enforces" the session's
+key (`_cmd_web`, MOR-3536). Relaxing it is a separate decision.
+
+### 7.3 `trx`
+
+`trx:0,true[,source]`:
+
+1. Parse. `source` is `tci` (audio from the TCI stream), absent or any mic
+   name. Mic names and absent are accepted and key the radio without touching
+   audio routing; `tci` additionally requires phase "audio" (8) and a PCM TX
+   route, otherwise refuse. Reason: keying with the wrong audio source is the
+   mistake a client cannot see.
+2. Refuse (reply `trx:0,false;`, no radio write) if: no managed composition;
+   `ControllerAuthority.mode == "remote"`; `authority.held_by_other(owner)`;
+   `authority.radio_tx_refusal_nowait()` is not `None` (radio transmitting with
+   no owner, MOR-3537).
+3. Otherwise submit through the shared managed-key ingress (P0c):
+   `ManagedTxAuthority.start_ptt_submission(True, owner, ready=..., expires_at_monotonic=...)`
+   and the ordered queue entry, exactly as `rigctld` does for `set_ptt`. The
+   reply is `trx:0,true;` when the submission is accepted and its queued write
+   completes; any `ManagedTxOutcome.REJECTED`, `CommandError` or
+   `ControllerError` is `trx:0,false;`. The notifier then follows the observed
+   PTT (`OBSERVED_PTT_PATH`); if the radio contradicts the reply, the next
+   notification says so.
+
+`trx:0,false`: `ManagedTxAuthority.submit_ptt(False, owner)`. If this owner holds
+nothing, reply the actual state and write nothing, matching `rigctld`
+(`RigctldHandler._route_ptt`, "unkey declined").
+
+Open: whether `trx:0,true` should wait for the radio's observed TX before
+replying (AetherSDR documents a 1.25 s confirmation window for its radio). The
+default here is the `rigctld` behaviour (reply on accepted write); C3 measures
+the gap on the simulator and the bench and revisits it only with data.
+
+### 7.4 Disconnect, liveness, bounds
+
+- **Socket closes for any reason** (close frame, FIN, reset, server stop): the
+  session calls the shared release, the equivalent of `RigctldServer._release_session_tx`:
+  `ManagedTxAuthority.owner_disconnect(owner)`. It survives one cancellation, is
+  fail-soft, and runs before the socket object is dropped. The shared helper
+  from P0c is the single implementation.
+- **Peer dies without closing** (power loss, cable): AetherSDR lists this as a
+  known issue, the radio stays keyed until the OS gives up on the connection
+  ([AS] Known issues). Two bounds apply here. (a) Liveness: every TCI session
+  pings every 5 s and is closed after 15 s without a pong, which releases any
+  lease (first bullet). `WebSocketConnection.keepalive_loop(interval)` already
+  pings and closes on a stale pong using an injectable clock, but its pong
+  timeout is a fixed 60 s attribute; P0a makes it a constructor parameter with
+  the default unchanged. The two constants are named in `tci/session.py` and
+  pinned by a fake-clock test. A client frozen for more than 15 s is dropped;
+  that errs on the safe side. (b) The authority's software TOT,
+  `DEFAULT_MANAGED_TX_TOT_SECONDS` (180 s), is the absolute backstop and is not
+  changed.
+- **Server stop**: `stop()` closes sessions first, then lets the authority's own
+  shutdown run; same order and timeouts as `RigctldServer.stop`
+  (`STOP_TIMEOUT_S`).
+- **Second owner**: a `rigctld` client and a TCI client share one authority.
+  Whoever keys first holds the lease; the other is refused (7.3 step 2). No
+  TCI-side arbitration exists.
+
+### 7.5 Drive and tune
+
+`drive` is a level write (`set_rf_power`), not a keying operation; it is
+admitted by the same write path as `rigctld` `RFPOWER`, and
+`ManagedTxAuthority.admit_managed_write` already passes it while keyed. It is
+clamped by `resolve_power_level_target` to the profile range. `tune` and
+`tune_drive`: 6.4. No TCI-specific safety mechanism is introduced beyond 7.4(a).
+
+### 7.6 Network exposure
+
+Default bind is `127.0.0.1` (section 9). The adversaries named:
+
+- A web page in the operator's browser opening `ws://127.0.0.1:50001`
+  (cross-site WebSocket hijack, DNS rebinding). Native TCI clients send no
+  `Origin`; the upgrade is refused with 403 if an `Origin` header is present and
+  not allow-listed, and the `Host` header is checked with the moved
+  `host_header_allowed`. A test connects with a browser-style `Origin` and a
+  rebinding `Host` and expects refusal.
+- Another machine on the LAN: only if the operator binds a non-loopback address,
+  which is logged at WARNING on start. TCI has no authentication in the spec,
+  and the existing `rigctld` listener has none either (it binds `0.0.0.0` when
+  unmanaged). No extra gate is added; decision Q6 asks whether remote PTT should
+  need an explicit opt-in.
+
+## 8. Phase "audio"
+
+### 8.1 Stream format (spec 3.4)
+
+Binary frames carry a 64-byte header then data. Little-endian, as `eesdr-tci`
+packs it (`<8I32x`):
+
+| Field | Meaning |
+|---|---|
+| `receiver` | trx number (0) |
+| `sample_rate` | the client's `audio_samplerate`: 8000, 12000, 24000, 48000 |
+| `format` | 0 int16, 1 int24, 2 int32, 3 float32 (default float32) |
+| `codec`, `crc` | always 0 |
+| `length` | number of samples in `data`, **all channels counted** (spec wording for the IQ stream: complex samples are `length/channels`; `eesdr-tci` sizes `data` as `bytes_per_sample * length`). Open: confirm against a captured stream (C0). |
+| `type` | 1 RX audio, 2 TX audio, 3 TX_CHRONO (4 line-out: not sent) |
+| `channels` | 1 or 2 (default 2) |
+| `count` | per-stream packet counter, separate for RX audio and TX_CHRONO, reset when switching RX/TX |
+| `reserv[7]` | zero |
+
+Per-client settings (spec 4.3): `audio_samplerate` (unsupported value ignored,
+current rate echoed), `audio_stream_sample_type` (reply lower case),
+`audio_stream_channels` (clamped 1 to 2), `audio_stream_samples` (clamped 100 to
+2048; defaults 2048/1024/512/256 samples at 48/24/12/8 kHz),
+`tx_stream_audio_buffering` (50 to 500 ms, default 50). Supported sample types:
+int16 and float32 are required; int24 and int32 are included if the conversion
+stays within the PR budget, otherwise a request for them is "unknown format:
+ignored, current echoed", which the spec allows (4.3).
+
+### 8.2 RX path
+
+`audio_start:0` -> `AudioSession.subscribe_rx("tci-<N>")`; `audio_stop:0` or
+disconnect -> close the subscription. Per client:
+
+1. Packet -> `PcmFrame` (s16le, rate, channels). **Gap:** there is no shared
+   packet-to-PCM helper. At least three places decode RX
+   packets on their own (`AudioBridge._rx_loop`,
+   `web/handlers/audio.py: AudioBroadcaster`, and `add_pcm_rx_tap`, which is
+   Icom-LAN-only and has no consumer in the tree). TCI would be the fourth. A1 first proves per backend which packets `subscribe_rx` delivers
+   (fake LAN/USB/Yaesu audio, `FakeAudioBackend`) and adds one shared decode
+   function in `audio/pcm.py` over the existing decoders. Migrating the three
+   existing consumers to it is *not* in this program; it is filed as a follow-up
+   ticket.
+2. Resample to the client rate with `audio.resample.PcmResampler`; map channels
+   (mono to stereo by duplication, stereo to mono by average); convert to the
+   client sample type; re-block to `audio_stream_samples`.
+3. Send on a bounded per-session queue. If a client falls behind, drop the
+   oldest audio and count it; never block the radio-side loop or other clients.
+   A client that stays behind for 5 s is closed.
+
+Radio facts: IC-7300 profile pins mono PCM, IC-7610 receives stereo-capable
+codecs with a mono TX codec (`rigs/ic7300.toml`, `rigs/ic7610.toml: [audio]`),
+FTX-1 is mono 16-bit over USB. All are read from `audio_codec`,
+`audio_sample_rate` and the route, never branched on.
+
+### 8.3 TX path
+
+Flow, spec 3.4: after `trx:0,true,tci` is accepted the server sends
+`TX_CHRONO` (type 3) at the cadence of `length / sample_rate`; the client answers
+with TX audio frames (type 2) of that length, or with zero-length/no frame for
+silence.
+
+1. Accept `trx ...,tci` only if `browser_tx_audio_facts`-equivalent route facts
+   say PCM TX is possible. The existing check lives in
+   `web/handlers/audio.py: browser_tx_audio_facts`; A2 moves the radio-only
+   part (codec, route, required MOD input source) to `audio/route.py`, or reuses
+   `resolve_audio_route` directly, whichever is smaller; the web function then
+   calls it. First release supports radios whose `audio_tx_codec` is
+   `PCM_1CH_16BIT`; an Opus TX codec refuses `source=tci`.
+2. `lease = await radio.audio_session.acquire_tx("tci-<N>")` at the moment the
+   key is accepted; release at unkey/disconnect.
+3. Convert client frames to s16le mono at the radio TX rate: de-interleave,
+   average channels, resample, clamp to [-1, 1] and **replace NaN/Inf with 0**,
+   scale to int16.
+4. `await lease.push(pcm, submission_guard=gate)` where `gate` is the shared
+   fail-closed TX gate (P0b): open only while the managed intent is keyed or the
+   fresh observed PTT is ON; closed on any exception, no authority, or remote
+   controller mode. Frames that arrive with the gate closed are dropped and
+   counted, with the throttled warning pattern `AudioHandler._warn_tx_throttled`
+   uses.
+5. TX audio with no keyed owner, or from a session that is not the owner, is
+   dropped. A frame never keys the radio.
+
+DATA-mode and MOD-input policy for digital modes is applied when the client
+selects DIGU/DIGL (5.5), through the same `rigctld_wsjtx_policy` result, so the
+TX audio lands on the input the radio uses for data.
+
+### 8.4 Latency and pacing
+
+The only timing state is the chrono cadence and the per-client queue limits
+above. No fixed sleeps as synchronisation: cadence uses the event loop clock
+and is injectable for tests.
+
+## 9. Listener, configuration, enabling
+
+| Item | Decision |
+|---|---|
+| Default port | `50001`. Evidence: AetherSDR docs give 50001 as its TCI default and tell WSJT-X users to enter `localhost:50001`. OpsLog's TCI backend defaults to 40001 ([OL]); a MacLoggerDX help page is reported (search snippet only, page not read) to give 40001 as the ExpertSDR2 default. Q1. |
+| Default bind | `127.0.0.1`; non-loopback logged at WARNING. `rigctld` binds `0.0.0.0` when unmanaged; TCI never does by default. |
+| Flags | `web` and `station`: `--tci` / `--no-tci`, `--tci-port N`, `--tci-host H`, parallel to `--rigctld`, `--rigctld-port`. Default **off** in Core (new network listener that can key; Q2). No `serve` support (7.2). |
+| Env | none, matching `rigctld`, which has none. |
+| Wiring | in `cli/__init__.py: _cmd_web`, next to `RigctldServer`, receiving the same `managed_tx_authority`, `command_queue`, `command_service`; `OSError` on bind aborts startup the way `rigctld` does; stop in the same `finally`; include the port in `check_ports_available`. |
+| Coexistence with `rigctld` | two independent sockets on one radio and one authority. Owners are namespaced by source (`rigctld-client-N`, `tci-client-N`). The authority refuses a second keyer. Neither listener starts, stops or configures the other. |
+| Core and Pro | the feature is Core, MIT, no gating. Pro runs Core as a sidecar process on `127.0.0.1:8470` (`docs/architecture/open-core-policy.md`, sections 1 and 8) and enables TCI by passing `--tci` and a port from its own settings; any Pro UI toggle is a `rigplane-pro` task. Core has no Python hook for starting extra listeners and this design adds none. |
+| Docs | `docs/api/tci.md` (new), a client setup page (WSJT-X Improved, JTDX, OpsLog), `docs/CHANGELOG.md`. |
+
+Note the port conflict the owner will hit: AetherSDR already listens on 50001.
+`--tci-port` exists for this and is reported by `check_ports_available`.
+
+## 10. Test plan
+
+Rules from the repo: test first and watch it fail on the exact SHA
+(`focused.yml`), no tests on the laptop (Mac mini), no bare `MagicMock` (`tests/test_meta_mock_specs.py`;
+`tests/test_meta_assertions.py` also applies), real dataclasses for
+signature-sensitive objects, `FakeAudioBackend` only for audio, and
+`docs/development/review-checklist.md` walked before pushing.
+
+### 10.1 Unit
+
+- Grammar: every example string in spec 4.1 to 4.5, plus the seven rules of 4.7,
+  as a table-driven test of `tci/protocol.py` (empty arguments, read vs set,
+  booleans, case, unknown command, wrong type, out-of-range receiver).
+- Binary header: byte-exact vectors built by hand from the 3.4 struct for RX,
+  TX and `TX_CHRONO` frames, all four sample types, `count` wrap, and
+  round-trip with `eesdr-tci`'s `TciDataPacket`.
+- Mode table, power scaling (`drive` 0, 1, 50, 100 on watts-native and raw-255
+  radios), sample-type and channel conversion, NaN/Inf replacement.
+
+### 10.2 Conformance with `eesdr-tci`
+
+Dev-only dependency (adds `websockets` transitively; BSD-3-Clause-Clear, never
+shipped). The suite starts the real `TciServer` on an ephemeral port
+(`port=0`, as `tests/test_rigctld_server.py`) over a fake radio and drives it
+with `eesdr_tci.listener.Listener`:
+
+- connect, init burst, `ready` event, and the order in 5.4;
+- **output guard:** `Listener._listen_main` raises `ValueError` on any command
+  name outside its dictionary, which ends its receive task, so a full scripted
+  session that completes proves the server emitted only known commands;
+- read/set round trips for `vfo`, `modulation`, `split_enable`, `rit_*`, `drive`;
+- multi-client sync: a set from client A reaches client B and A;
+- refused PTT replies `trx:0,false;`; unknown commands produce no reply;
+- phase audio: `audio_start`, receive typed `TciDataPacket`s, send TX frames.
+
+Limit: the library follows TCI 2.0, so the `count` field and 2.1-only commands
+are covered by the byte-level fixtures in 10.1, not by it.
+
+### 10.3 Seam and E2E (TX safety is the point)
+
+Against the real `ManagedTxAuthority` composition used by
+`tests/test_rigctld_managed_tx.py`, with simulator-backed fake radios
+(`SerialMockRadio`, `rigplane_testkit` simulators). Each is written to fail before the code that satisfies it:
+
+- key via TCI: authority intent is `PTT(tci-client-N)`; unkey releases;
+- socket reset / close frame / server stop / task cancel while keyed: lease
+  released, radio back to RX (assert authority snapshot, not only the reply);
+- silent peer: pong timeout (fake clock) releases within 15 s; TOT unchanged;
+- contention: a `rigctld` client holds PTT, TCI key is refused with
+  `trx:0,false;`; and the reverse;
+- unmanaged radio: `trx:0,true` refused, no `set_ptt` call recorded;
+- `ControllerAuthority.mode == "remote"`: refused;
+- TX audio with gate closed (unkeyed, stale observation, exception) pushes
+  nothing to the lease; with gate open pushes converted s16le;
+- browser `Origin` and rebinding `Host` refused at upgrade; native client with
+  neither header connects;
+- start/stop twice, port in use, cancellation during accept.
+
+Mutation check: before merging C3 and A2, delete the owner release and the
+gate check in a scratch branch and confirm the matching tests go red.
+
+### 10.4 Existing suites as the pin for the refactors
+
+P0a to P0d change no behaviour. Their pin is the current `rigctld`, web and
+bridge suites (`tests/test_rigctld_*.py`, `tests/test_audio_bridge.py`, web
+WebSocket tests) plus one new test per extracted unit that is written first and
+fails (the new module does not exist yet).
+
+### 10.5 Capture C0 and the real-app smoke
+
+C0 (first, before C1 merges): a transparent WebSocket recording proxy (a small
+script under `scripts/`, text frames and binary headers only, no audio payloads)
+placed between each real client and a TCI server the owner already runs
+(AetherSDR with Flex). Targets: WSJT-X Improved, JTDX, OpsLog, MSHV. The output
+is **client-to-server lines only**, stored as fixtures under
+`tests/fixtures/tci/`; server replies in tests are authored from the spec, so no
+fixture reproduces another program's output. C0 closes every **[open]** item:
+`protocol`/`device` strings, channel-1 and split sequences, `length` semantics,
+the `if_limits`, sensors and `rx_filter_band` questions, and whether `start;` is
+sent. It needs the owner's machine and radio; it is RX-only and no PTT is
+pressed.
+
+Real-app smoke (RX only, one of JTDX or WSJT-X Improved, bench radio IC-7300 or
+FTX-1): connect and "Test CAT" passes; dial and mode changes follow both ways;
+band change; FT8 decodes for 15 minutes with audio from the TCI stream (phase
+audio). "Enable Tx" off and PTT never pressed. Verify first through the server
+API and logs (`radio-selfcheck`); evidence goes to `docs/validation/`. A TX
+check is a separate acceptance on a dummy load at minimum power with the owner's
+authorisation, and is not part of CI.
+
+## 11. PR phasing
+
+Sizes are rough changed lines including tests. Phase labels: P0 prerequisites,
+C control, A audio.
+
+| PR | Content | Depends on | ~Lines |
+|---|---|---|---|
+| P0a | move `web/websocket.py` and `host_guard` to a neutral layer with shims; extract server upgrade function; `WebServer` uses it; pong timeout becomes a constructor parameter (default 60 s unchanged) | none | 300 |
+| P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it | none | 300 |
+| P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | none | 900 |
+| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` | P0c (same file) | 200 |
+| C0 | recording proxy script and captured fixtures | owner/bench time | 250 |
+| C1 | `tci/` skeleton: grammar, server, upgrade, init burst, read-only commands, notifier; `.importlinter`, `LAYER.md` | P0a | 950 |
+| C2 | write commands: `vfo`, `modulation`, `split_enable`, `rit`/`xit`, `drive`, Tier B | C1 | 700 |
+| C3 | TX: `trx`, `tx_enable`, disconnect and liveness, `tune` answer; seam tests | C2, P0c, P0d | 850 |
+| C4 | CLI flags and wiring, `check_ports_available`, docs, changelog | C3 | 450 |
+| A1 | audio stream codec, RX path, shared decode helper | C1 | 800 |
+| A2 | TX path, `TX_CHRONO`, gate, route policy | A1, C3, P0b | 900 |
+| A3 | real-app RX smoke evidence and fixtures | C4, A1 | 150 |
+
+About 6.7k lines in 12 PRs. P0a, P0b and P0c are file-disjoint and can run in
+parallel; C1 can start after P0a.
+
+Sizing basis. The coordinator brief allows PRs up to 4000 lines. `CLAUDE.md` sets
+a hard ceiling of 10 files and 1000 changed lines (the line ceiling is the
+owner's to waive) and `docs/development/review-checklist.md` a 500-line target
+with a measured penalty above it. Every PR above is planned at or under 1000
+lines so none needs a ceiling exception. P0c is the one most likely to exceed it;
+if it does, split into the PTT choreography and the tuner/split pieces rather
+than ask for an exception.
+
+Freeze. `AGENTS.md` prohibits new protocols during the stabilisation freeze
+without an exception. The owner decision of 2026-10-27 (MOR-3821) is the
+exception: each implementation PR carries `Freeze exception: owner decision
+2026-10-27, MOR-3821` as the first body line and the `freeze-exception` label.
+This design PR is `Change class: docs`.
+
+Each PR: failing test first with `focused.yml` evidence on the exact SHA,
+`tmp/pre-review.sh` clean, one natural `quick`, exact-head review by a
+different model family from the builder.
+
+## 12. Licensing and clean-room
+
+- Spec: MIT, may be implemented freely.
+- `eesdr-tci`: BSD-3-Clause-Clear, dev/test dependency only, not vendored, not
+  shipped. `listener.py` and `tci.py` were read to learn what the test client accepts and sends.
+- AetherSDR is GPL-3.0. Only its published docs were read, for client
+  behaviour. No source was read, nothing is copied or paraphrased into Core, and
+  no fixture contains its output (10.5). Behaviour facts are re-established by
+  capture C0 against a running copy, as wire observation.
+- WSJT-X Improved and JTDX are GPL; their source was not read.
+- Command names, argument orders and stream layout are the spec's, not
+  AetherSDR's.
+
+## 13. Risks and open questions
+
+| # | Item | Owner of the decision |
+|---|---|---|
+| Q1 | Default port 50001 (recommended) or 40001 | sumo |
+| Q2 | Core default: TCI off unless `--tci` (recommended); Pro turns it on | owner |
+| Q3 | Honour `tune`? Recommended: no in the first release (6.4) | owner |
+| Q4 | `protocol:` and `device:` strings. AetherSDR announces `protocol:ExpertSDR3,<version>` and clients are reported to switch behaviour on it; the safest default is the same program name, with the version and `device:` settled by C0 | C0 evidence |
+| Q5 | `trx_count:1` first; dual-receiver radios later | sumo |
+| Q6 | Remote PTT from non-loopback peers: parity with `rigctld` (recommended) or require an opt-in | owner |
+| Q7 | Extract shared mechanisms first (recommended, P0a to P0d) versus duplicate; duplicating breaks "no two mechanisms" | sumo |
+| Q8 | Sizing: plan to the 1000-line ceiling, not 4000 | sumo |
+
+Risks, in order: P0c changes the TX path that `rigctld` users rely on, hence
+the strictest pin and an unchanged-behaviour review; client behaviour is
+reported, not captured, until C0; JTDX is reported to crash on non-conforming
+servers; `length` semantics and `protocol` strings are open; the shared RX
+decode helper may expose backend gaps (FTX-1, serial Icom) that need their own
+fixes.
