@@ -95,7 +95,8 @@ async def test_a_profile_without_memory_channels_refuses() -> None:
 @pytest.mark.asyncio
 async def test_a_channel_list_profile_has_no_verified_read_layout() -> None:
     """IC-7300 declares a write-side [memory] section only (MOR-3644 part
-    2): its 1A 00 read reply is unverified, so the listing refuses."""
+    2): its 1A 00 read reply is not in the sourced manuals, so the
+    listing refuses."""
     with pytest.raises(CommandError, match="no verified CI-V memory read layout"):
         await _radio("IC-7300").read_memory_entries(0, [1])
 

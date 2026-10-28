@@ -15,27 +15,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Verified memory write layouts as profile data (MOR-3644).**
   `set_memory_contents` used to build one fixed 26-byte `1A 00` record and
-  `memory_clear` one fixed `0x0B` clear frame — wire forms only ever
-  exercised on the IC-7610 (its `0x0B` channel payload remains the open
-  MOR-2055 question); on radios with a different memory layout a client
-  call could corrupt a stored channel. Part 1 refused both commands with
-  the stable error `memory_write_unverified` unless the profile's
-  `[memory]` section declares a `write_layout`. Part 2 replaces the
-  hard-coded record with ONE table-driven encoder built from a
-  profile-declared field table (`[memory.write_layout]`: field, offset,
-  length, encoding, plus the clear form), and declares the verified
-  layouts for the IC-705 (CI-V Reference Guide p.17), IC-9700 (p.14),
-  IC-7300 (Advanced Manual 11a p.19-11) and IC-7300MK2 (p.17) — each
-  with manual-sourced fixture bytes, out-of-range refusals (address,
-  tone, frequency, name) and a write/read round trip on the radios whose
-  read model is verified. The IC-7610 keeps its historic 26-byte record
-  and `0x0B` clear byte-for-byte, now declared in the same vocabulary;
-  the discrepancy with its own guide (a 27-byte record and a
-  `1A 00 + channel + FF` clear) stays open as MOR-2055. The write API
-  takes the address the profile needs (`group` for the IC-705's memory
-  groups and the IC-9700's band codes) and centi-Hz-exact tones through
-  the profile's CTCSS domain. Both typed commands stay classified in the
-  TX interlock's MEMORY family (deferred while keyed). Radios without a
+  `memory_clear` one fixed `0x0B` clear frame — the IC-7610's historic
+  wire forms, applied to every radio (its `0x0B` channel payload remains
+  the open MOR-2055 question); on radios with a different memory layout
+  a client call could corrupt a stored channel. Part 1 refused both
+  commands with the stable error `memory_write_unverified` unless the
+  profile's `[memory]` section declares a `write_layout`. Part 2
+  replaces the hard-coded record with ONE table-driven encoder built
+  from a profile-declared field table (`[memory.write_layout]`: field,
+  offset, length, encoding, plus the clear form and the channel-block
+  copy count), and declares the verified layouts for the IC-705 (CI-V
+  Reference Guide p.17), IC-9700 (p.14), IC-7300 (Advanced Manual 11a
+  p.19-11) and IC-7300MK2 (p.17) — each with manual-sourced fixture
+  bytes, out-of-range refusals (address, tone, frequency, name) and a
+  write/read round trip on the radios with a merged read model
+  (IC-705/IC-9700). All four manuals print the channel-data block's
+  position labels twice — the TX/split copy a non-split entry fills with
+  the RX values, per each manual's own NOTE — so the write body carries
+  the block `copies = 2` times, the same record a read reply carries.
+  The IC-7610 keeps its historic 26-byte record and `0x0B` clear
+  byte-for-byte, now declared in the same vocabulary; the discrepancy
+  with its own guide (a 27-byte record and a `1A 00 + channel + FF`
+  clear) stays open as MOR-2055. The write API takes the address the
+  profile needs (`group` for the IC-705's memory groups and the
+  IC-9700's band codes) and centi-Hz-exact tones through the profile's
+  CTCSS domain. Both typed commands stay classified in the TX
+  interlock's MEMORY family (held while keyed on the unmanaged poller
+  path; managed-TX authority deliberately bypasses the non-PTT
+  interlock). Radios without a
   verified layout (FTX-1, X6100, X6200, TX-500) still refuse; the
   IC-7300/IC-7300MK2 read listing stays off — their `1A 00` read reply
   is not documented in the sourced manuals.

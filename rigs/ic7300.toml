@@ -638,8 +638,8 @@ max_watts = 100
 # 0001-0099 (01-99) plus the programmed scan edges 0100/0101 (P1/P2),
 # which the bounds below leave out (Advanced Manual 11a p.19-11). The
 # read listing stays OFF: the 1A 00 read reply is not documented in the
-# provided extracts and is not verified, so no memory_read capability is
-# declared and read_memory_entries refuses.
+# provided extracts, so no memory_read capability is declared and
+# read_memory_entries refuses.
 [memory]
 addressing = "channel"
 first_group = 0
@@ -648,12 +648,20 @@ first_channel = 1
 last_channel = 99
 
 # The verified 1A 00 write record (MOR-3644), field by field from the
-# IC-7300 Advanced Manual (11a) p.19-11 "Memory content". Offsets are
-# relative to the record AFTER the address (guide bytes q,w: channel
-# 2-byte BCD); the guide's position labels map as: e -> 0 (split|
+# IC-7300 Advanced Manual (11a) p.19-11 "Memory content". The manual's
+# header row prints the channel-data span TWICE -- r-i, o, !0, !1, !2-!4,
+# !5-!7, then "r-!7" again, then the name !8-@7 -- and its NOTE spells it
+# out: "The same data as r-!7 are stored in r-!7 ... When the Split
+# function is ON, the data of r-!7 is used for transmit. Even if the
+# Split function is OFF, enter the data into r-!7 ..." -- so the record
+# is select byte + the 14-byte span x copies + the 10-character name.
+# The field table below declares ONE copy: offsets are relative to the
+# record AFTER the address (guide bytes q,w: channel 2-byte BCD); the
+# guide's position labels map as: e -> 0 (split|
 # select), r-i -> 1-5 (frequency), o -> 6 (mode), !0 -> 7 (filter), !1 ->
-# 8 (data|tone), !2-!4 -> 9-11 (tone), !5-!7 -> 12-14 (tsql), !8-@7 ->
-# 15-24 (name, 10 characters). Mode and filter are the raw bytes of the
+# 8 (data|tone), !2-!4 -> 9-11 (tone), !5-!7 -> 12-14 (tsql); the name
+# (!8-@7, 10 characters) is declared at 15-24 and lands after the last
+# block copy. Mode and filter are the raw bytes of the
 # 47-byte read block's mode + filter pair (the manual's 2-byte "operating
 # mode setting"); the tone fields use the 1B 00 encoding. The record has
 # NO duplex, DTCS, DV or call-sign fields -- the IC-7300 memory channel
@@ -661,7 +669,8 @@ last_channel = 99
 # the manual documents 00 for P1/P2 and OFF as the normal value).
 [memory.write_layout]
 clear = "1a00_ff"  # Advanced Manual 11a p.19-11: 1A 00 + channel + FF (P1/P2 excluded)
-record_length = 25
+record_length = 25  # one copy: select + the 14-byte span + the 10-byte name
+copies = 2  # p.19-11 NOTE: the span is stored twice (TX copy = RX values when not split)
 tone_max = 2  # the !1 tone nibble is 0=OFF, 1=TONE, 2=TSQL (no DTCS on this radio)
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                            # e

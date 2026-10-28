@@ -524,8 +524,8 @@ max_watts = 100  # HF/50 MHz SSB/CW/RTTY/FM 0.6-100 W (spec p.70)
 # 00 01-00 99 plus the programmed scan edges 01 00/01 01 (P1/P2), which
 # the bounds below leave out (CI-V Reference Guide p.17). The read
 # listing stays OFF: the 1A 00 read reply is not documented in the
-# provided extracts and is not verified, so no memory_read capability is
-# declared and read_memory_entries refuses.
+# provided extracts, so no memory_read capability is declared and
+# read_memory_entries refuses.
 [memory]
 addressing = "channel"
 first_group = 0
@@ -534,19 +534,29 @@ first_channel = 1
 last_channel = 99
 
 # The verified 1A 00 write record (MOR-3644), field by field from the
-# IC-7300MK2 CI-V Reference Guide p.17 "Memory channel content". Offsets
+# IC-7300MK2 CI-V Reference Guide p.17 "Memory channel content". The
+# guide's header row prints the channel-data span TWICE -- 4-8, 9, 10,
+# 11, 12-14, 15-17, then "4 ~ 17" again, then the name 18-33 -- and its
+# NOTE spells it out: "The same data as 4 ~ 17 are stored in 4 ~ 17 ...
+# When the Split function is ON, the data of 4 ~ 17 is used for
+# transmission. Even if the Split function is OFF, we recommend that you
+# set the same data as 4 ~ 17 ..." -- so the record is select byte + the
+# 14-byte span x copies + the 16-character name. The field table below
+# declares ONE copy: offsets
 # are relative to the record AFTER the address (guide bytes 1,2: channel
 # 2-byte BCD); the guide's position labels map as: 3 -> 0 (split|
 # select), 4-8 -> 1-5 (frequency), 9 -> 6 (mode), 10 -> 7 (filter), 11
-# -> 8 (data|tone), 12-14 -> 9-11 (tone), 15-17 -> 12-14 (tsql), 18-33
-# -> 15-30 (name, 16 characters). Mode and filter are the raw bytes of
+# -> 8 (data|tone), 12-14 -> 9-11 (tone), 15-17 -> 12-14 (tsql); the
+# name (18-33, 16 characters) is declared at 15-30 and lands after the
+# last block copy. Mode and filter are the raw bytes of
 # the 47-byte read block's mode + filter pair (the guide's 2-byte
 # "operating mode setting"); the tone fields use the 1B 00 encoding. The
 # record has NO duplex, DTCS, DV or call-sign fields. Split and select
 # are written 00 ("Set 00 for P1 and P2", OFF otherwise).
 [memory.write_layout]
 clear = "1a00_ff"  # guide p.17: "send the command 1A 00 XX XX FF" (P1/P2 excluded)
-record_length = 31
+record_length = 31  # one copy: select + the 14-byte span + the 16-byte name
+copies = 2  # guide p.17 NOTE: the span is stored twice (TX copy = RX values when not split)
 tone_max = 2  # the 11 tone nibble is 0=OFF, 1=TONE, 2=TSQL (no DTCS on this radio)
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                            # 3

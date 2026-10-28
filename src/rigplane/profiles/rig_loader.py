@@ -2174,16 +2174,19 @@ _MEMORY_KEYS = frozenset(
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
-_WRITE_LAYOUT_KEYS = frozenset({"clear", "record_length", "tone_max", "fields"})
+_WRITE_LAYOUT_KEYS = frozenset(
+    {"clear", "record_length", "tone_max", "copies", "fields"}
+)
 _WRITE_FIELD_KEYS = frozenset({"field", "offset", "length", "encoding", "max_hz"})
 
 
 def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
     """Parse the optional ``[memory.write_layout]`` table (MOR-3644).
 
-    The declaration is pure data: the clear form, the record length and
-    the field table. Structural correctness (known encodings, exact
-    tiling, one frequency/mode/name field) is decided by
+    The declaration is pure data: the clear form, the record length, the
+    block copy count and the field table. Structural correctness (known
+    encodings, exact tiling, one frequency/mode/name field, the block
+    span a ``copies`` repeat needs) is decided by
     :meth:`MemoryWriteLayout.validation_errors`, the same rules the
     runtime admission gate applies to SDK-supplied profiles.
     """
@@ -2221,6 +2224,14 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
         raise RigLoadError(
             f"{filename}: [memory].write_layout.tone_max must be an integer "
             f"0..3 (the tone-mode nibble this record can store), got {tone_max!r}"
+        )
+    copies = raw.get("copies", 1)
+    if isinstance(copies, bool) or not isinstance(copies, int) or not 1 <= copies <= 2:
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.copies must be an integer "
+            "1..2 (how many times the channel-data block appears on the "
+            "wire; the sourced Icom manuals print the block's position "
+            f"labels twice for the TX/split copy), got {copies!r}"
         )
     rows = raw.get("fields")
     if not isinstance(rows, list) or not rows:
@@ -2287,6 +2298,7 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
         clear=clear,
         record_length=record_length,
         tone_max=tone_max,
+        copies=copies,
         fields=tuple(fields),
     )
     errors = layout.validation_errors()

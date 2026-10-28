@@ -664,14 +664,21 @@ accepted for the profile, as a field table (MOR-3644): `clear` names the
 channel-clear wire form (`"1a00_ff"` = the manuals' `1A 00` + the radio's
 own address form + `FF`, `"0b_channel"` = the legacy `0x0B` + 2-byte BCD
 channel the IC-7610 keeps), `record_length` the bytes after the memory
-address, and `fields` an array of `{field, offset, length, encoding}`
+address in ONE copy of the record, `copies` (default 1, at most 2) how
+many times the channel-data block — the fields between a leading
+`select` byte and the name field — appears on the wire (the sourced
+Icom manuals print the block's position labels twice: the TX/split copy,
+which a non-split entry fills with the RX values, so the IC-705, IC-9700,
+IC-7300 and IC-7300MK2 profiles
+declare `copies = 2` and the name lands after the last copy), and
+`fields` an array of `{field, offset, length, encoding}`
 rows (plus `max_hz` on a frequency field) that must tile the record
 exactly, with no gap or overlap. The encodings come from one shared
 vocabulary (`core/types.py: MEMORY_WRITE_ENCODINGS`) — the raw mode code,
 the filter byte, the centi-Hz-exact CTCSS encoding of `1B 00`, ASCII
 names space- or NUL-padded, and fixed zero/space runs — so the per-radio
-facts (offsets, name width) are data, and one table-driven encoder in
-`commands/memory.py` builds every radio's record. Absent means NOT
+facts (offsets, name width, copy count) are data, and one table-driven
+encoder in `commands/memory.py` builds every radio's record. Absent means NOT
 verified: memory contents writes and clears are refused with the stable
 error `memory_write_unverified` before any byte reaches the wire, at the
 dispatch handler and in the backend. Declaring the read-side fields

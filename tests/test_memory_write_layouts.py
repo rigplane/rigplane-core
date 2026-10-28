@@ -8,19 +8,25 @@ only permitted source -- and compared with the encoder output, so a wrong
 offset or width in the TOML cannot pass:
 
 * IC-705: CI-V Reference Guide (A7560-8EX, Jul. 2020) p.17 "Memory
-  content" (guide bytes 1-68; the record below is guide bytes 5-68).
-* IC-9700: CI-V Reference Guide (rev. 4) p.14 "Memory content" (guide
-  bytes 1-67).
-* IC-7300: Advanced Manual (11a) p.19-11 "Memory content" (guide bytes
-  q-@7 = 1-27).
-* IC-7300MK2: CI-V Reference Guide p.17 "Memory channel content" (guide
-  bytes 1-33).
+  content". The guide prints the channel block's labels (6~52) twice,
+  the name (53~68) after them, and its NOTE says the second block is the
+  TX data, to be filled with the same values when Split is OFF -- so the
+  record is select byte + the 47-byte block x ``copies`` + the 16-byte
+  name, the same record a read reply carries (``parse_memory_entry``).
+* IC-9700: CI-V Reference Guide (rev. 4) p.14 "Memory content" -- the
+  same two-block shape (labels 5~51 twice, name 52~67, same NOTE).
+* IC-7300: Advanced Manual (11a) p.19-11 "Memory content" -- the
+  channel-data span r-!7 (14 bytes: frequency, mode, filter, data|tone,
+  tone, tsql) is printed twice before the name !8-@7 (10 characters),
+  with the same TX/split NOTE.
+* IC-7300MK2: CI-V Reference Guide p.17 "Memory channel content" -- the
+  span 4~17 printed twice, name 18-33 (16 characters), same NOTE.
 * IC-7610: the legacy 26-byte record this package has always built
   (byte-identical; the manual's own 27-byte form is the deferred
   discrepancy, see the PR body and MOR-2055).
 
-All radios here are in-process mocks/simulators; nothing touches hardware
-and every result is simulated.
+Every radio here is an in-process mock/simulator; all results are
+simulated.
 """
 
 from __future__ import annotations
@@ -56,86 +62,104 @@ _CASES = {
     "IC-7610": (0x98, 0, 1),
 }
 
-# The blank UR/R1/R2 call-sign fields: the real IC-705 record (MOR-3650)
-# pads unused call-sign fields with spaces.
+# The blank UR/R1/R2 call-sign fields: the read record (MOR-3650) pads
+# unused call-sign fields with spaces.
 _SP24 = "20" * 24
+
+# The 14-byte channel-data span of the HF records (frequency 5 | mode 1
+# | filter 1 | data|tone 1 | tone 3 | tsql 3): the IC-7300 manual prints
+# it as r-!7, the IC-7300MK2 guide as 4~17 -- both print the span TWICE
+# before the name, with the same TX/split NOTE as the IC-705/IC-9700.
+_IC7300_BLOCK = (
+    "0040071400"  # 14.074 MHz, LE BCD
+    "01"  # mode USB (raw code)
+    "01"  # filter 1
+    "01"  # data OFF | TONE
+    "001365"  # 136.5 Hz
+    "000000"  # tone squelch off
+)
+# The 47-byte channel blocks of the two-block records, written field by
+# field in manual order: frequency 5 | mode 1 | filter 1 | data mode 1 |
+# duplex|tone 1 | digital squelch 1 | tone 3 | tsql 3 | DTCS 3 | DV code
+# 1 | duplex offset 3 | UR/R1/R2 24.
+_IC705_BLOCK = (
+    "0000944601"  # 146.940 MHz, LE BCD
+    "05"  # mode FM (raw code, same as the read block)
+    "01"  # filter 1
+    "00"  # data mode OFF
+    "21"  # duplex + | TONE
+    "00"  # digital squelch off (X0, fixed low nibble)
+    "001365"  # 136.5 Hz (the 1B 00 encoding, guide p.21)
+    "000000"  # tone squelch off
+    "000000"  # DTCS off
+    "00"  # DV code squelch off
+    "000000" + _SP24  # duplex offset 0 (not exposed in this slice)  # UR/R1/R2 blank
+)
+_IC9700_BLOCK = (
+    "0000004604"  # 446.000 MHz, LE BCD
+    "05"  # mode FM
+    "01"  # filter 1
+    "00"  # data mode OFF
+    "21"  # duplex + | TONE
+    "00"  # digital squelch off
+    "001365"  # 136.5 Hz
+    "000000"  # tone squelch off
+    "000000"  # DTCS off
+    "00"  # DV code squelch off
+    "000000" + _SP24  # duplex offset 0  # UR/R1/R2 blank
+)
 
 # The hand-built manual records for the `_mem` inputs below. Offsets are
 # the manual's own position labels; the hex is written field by field in
 # manual order so a mis-declared offset in the TOML shifts a byte here.
 _MANUAL_RECORDS = {
-    # IC-705 CI-V Reference Guide p.17, after ``1A 00``:
-    # 1,2 group | 3,4 channel | 5 select | 6-10 frequency | 11 mode | 12
-    # filter | 13 data mode | 14 duplex|tone | 15 digital squelch | 16-18
-    # tone | 19-21 tsql | 22-24 DTCS | 25 DV code | 26-28 duplex offset |
-    # 29-52 UR/R1/R2 | 53-68 name (16 characters).
+    # IC-705 CI-V Reference Guide p.17, after ``1A 00``: 1,2 group | 3,4
+    # channel | 5 select | 6-52 channel block | the block AGAIN (the
+    # guide prints 6~52 twice; its NOTE: the second block is the TX data,
+    # filled with the same values when Split is OFF) | 53-68 name (16
+    # characters, printed after the second block).
     "IC-705": (
         "00020007"  # group 2, channel 7 (2-byte BCD each)
         "00"  # 5: split OFF | select OFF
-        "0000944601"  # 6-10: 146.940 MHz, LE BCD
-        "05"  # 11: mode FM (raw code, same as the read block)
-        "01"  # 12: filter 1 (the real MOR-3650 record stores 01)
-        "00"  # 13: data mode OFF
-        "21"  # 14: duplex + | TONE
-        "00"  # 15: digital squelch off (X0, fixed low nibble)
-        "001365"  # 16-18: 136.5 Hz (the 1B 00 encoding, guide p.21)
-        "000000"  # 19-21: tone squelch off
-        "000000"  # 22-24: DTCS off
-        "00"  # 25: DV code squelch off
-        "000000"  # 26-28: duplex offset 0 (not exposed in this slice)
-        + _SP24  # 29-52: UR/R1/R2 blank
+        + _IC705_BLOCK  # 6-52: the RX block
+        + _IC705_BLOCK  # the TX/split copy repeats the RX values
         + "54455354205250542020202020202020"  # 53-68: "TEST RPT", 16
     ),
-    # IC-9700 CI-V Reference Guide p.14, after ``1A 00``:
-    # 1 band | 2,3 channel | 4 select | 5-9 frequency | 10 mode | 11
-    # filter | 12 data mode | 13 duplex|tone | 14 digital squelch | 15-17
-    # tone | 18-20 tsql | 21-23 DTCS | 24 DV code | 25-27 duplex offset |
-    # 28-51 UR/R1/R2 | 52-67 name (16 characters).
+    # IC-9700 CI-V Reference Guide p.14, after ``1A 00``: 1 band | 2,3
+    # channel | 4 select | 5-51 channel block | the block AGAIN (the
+    # guide prints 5~51 twice, same NOTE as the IC-705) | 52-67 name
+    # (16 characters).
     "IC-9700": (
         "020007"  # band 2 (430 MHz), channel 7
         "00"  # 4: select OFF (high nibble fixed 0)
-        "0000004604"  # 5-9: 446.000 MHz, LE BCD
-        "05"  # 10: mode FM
-        "01"  # 11: filter 1
-        "00"  # 12: data mode OFF
-        "21"  # 13: duplex + | TONE
-        "00"  # 14: digital squelch off
-        "001365"  # 15-17: 136.5 Hz
-        "000000"  # 18-20: tone squelch off
-        "000000"  # 21-23: DTCS off
-        "00"  # 24: DV code squelch off
-        "000000"  # 25-27: duplex offset 0
-        + _SP24  # 28-51: UR/R1/R2 blank
+        + _IC9700_BLOCK  # 5-51: the RX block
+        + _IC9700_BLOCK  # the TX/split copy repeats the RX values
         + "55484620544553542020202020202020"  # 52-67: "UHF TEST", 16
     ),
     # IC-7300 Advanced Manual (11a) p.19-11, after ``1A 00``:
     # q,w channel | e split|select | r-i frequency | o mode | !0 filter |
-    # !1 data|tone | !2-!4 tone | !5-!7 tsql | !8-@7 name (10). The
+    # !1 data|tone | !2-!4 tone | !5-!7 tsql -- the span printed AGAIN as
+    # "r-!7" (the NOTE: the second copy is the TX data, filled with the
+    # same values when Split is OFF) -- then !8-@7 name (10). The
     # IC-7300 record has no duplex, DTCS, DV or call-sign fields at all.
     "IC-7300": (
         "0007"  # q,w: channel 7
         "00"  # e: split OFF | select OFF
-        "0040071400"  # r-i: 14.074 MHz, LE BCD
-        "01"  # o: mode USB (raw code)
-        "01"  # !0: filter 1
-        "01"  # !1: data OFF | TONE
-        "001365"  # !2-!4: 136.5 Hz
-        "000000"  # !5-!7: tone squelch off
-        "46543820202020202020"  # !8-@7: "FT8", 10, space padded
+        + _IC7300_BLOCK  # r-!7: the RX span
+        + _IC7300_BLOCK  # the TX/split copy repeats the RX values
+        + "46543820202020202020"  # !8-@7: "FT8", 10, space padded
     ),
     # IC-7300MK2 CI-V Reference Guide p.17, after ``1A 00``:
     # 1,2 channel | 3 split|select | 4-8 frequency | 9 mode | 10 filter |
-    # 11 data|tone | 12-14 tone | 15-17 tsql | 18-33 name (16 characters).
+    # 11 data|tone | 12-14 tone | 15-17 tsql -- the span printed AGAIN as
+    # "4 ~ 17" (same NOTE as the IC-7300) -- then 18-33 name (16
+    # characters).
     "IC-7300MK2": (
         "0007"  # 1,2: channel 7
         "00"  # 3: split OFF | select OFF
-        "0040071400"  # 4-8: 14.074 MHz, LE BCD
-        "01"  # 9: mode USB
-        "01"  # 10: filter 1
-        "01"  # 11: data OFF | TONE
-        "001365"  # 12-14: 136.5 Hz
-        "000000"  # 15-17: tone squelch off
-        "46543820202020202020202020202020"  # 18-33: "FT8", 16, space padded
+        + _IC7300_BLOCK  # 4-17: the RX span
+        + _IC7300_BLOCK  # the TX/split copy repeats the RX values
+        + "46543820202020202020202020202020"  # 18-33: "FT8", 16, space padded
     ),
     # The legacy 26-byte record, byte-identical to the pre-MOR-3644
     # builder (the complete-frame golden in tests/test_memory_write_gate.py
@@ -241,11 +265,72 @@ def test_the_encoder_builds_the_manual_record(model: str) -> None:
     ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2", "IC-7610"],
 )
 def test_the_frame_length_is_the_manual_total(model: str) -> None:
-    """68 (705) / 67 (9700) / 27 (7300) / 33 (MK2) / 28 (7610 legacy) data
-    bytes after ``1A 00`` -- the position table's own byte count."""
+    """115 (705) / 114 (9700) / 41 (7300) / 47 (MK2) / 28 (7610 legacy)
+    data bytes after ``1A 00`` -- the position table's own byte count,
+    both block copies included."""
     frame = _build(model, _mem(model))
     expected = len(_MANUAL_RECORDS[model]) // 2
     assert len(frame) == 6 + expected + 1  # header+1A00, data, FD
+
+
+def _record(model: str, mem: MemoryChannel) -> bytes:
+    """The encoder's write record (the bytes after the ``1A 00``
+    command and the memory address)."""
+    memory = _memory(model)
+    address_len = {"group_channel": 4, "band_channel": 3, "channel": 2}[
+        memory.addressing
+    ]
+    return _build(model, mem)[6 + address_len : -1]
+
+
+@pytest.mark.parametrize(
+    "model", ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2", "IC-7610"]
+)
+def test_the_block_repeats_the_profile_declared_number_of_times(model: str) -> None:
+    """The copy count is profile data (``write_layout.copies``), read here
+    from the loaded profile -- never a number pinned in the test -- so a
+    data-only profile change flips it: the wire record carries the
+    channel block exactly ``copies`` times between the select byte and
+    the name, and is ``wire_record_length`` bytes long."""
+    layout = _memory(model).write_layout
+    assert layout is not None
+    record = _record(model, _mem(model))
+    assert len(record) == layout.wire_record_length()
+    span = layout.data_block_span()
+    assert span is not None
+    block = record[span[0] : span[1]]
+    for copy in range(layout.copies):
+        start = span[0] + copy * len(block)
+        assert record[start : start + len(block)] == block
+    name_field = next(f for f in layout.fields if f.encoding in ("name", "name_nul"))
+    name_start = name_field.offset + (layout.copies - 1) * len(block)
+    pad = b"\x00" if name_field.encoding == "name_nul" else b" "
+    expected_name = _mem(model).name.encode("ascii").ljust(name_field.length, pad)
+    assert record[name_start : name_start + name_field.length] == expected_name
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_the_write_body_decodes_with_the_read_parser(model: str) -> None:
+    """Write and read tied together (MOR-3644): the bytes the encoder
+    builds for the ``1A 00`` write body are accepted by
+    ``parse_memory_entry`` for the same profile and decode to what was
+    written -- address, select byte, BOTH block copies and the name. A
+    one-copy record fails the parser's length check, which is what makes
+    the two-block declaration load-bearing."""
+    from rigplane.commands.memory import parse_memory_entry
+    from rigplane.core.types import RepeaterShiftDirection, ToneSquelchType
+
+    mem = _mem(model)
+    entry = parse_memory_entry(_build(model, mem)[6:-1], _memory(model))
+    assert (entry.group, entry.channel) == (_CASES[model][1], _CASES[model][2])
+    assert entry.frequency_hz == mem.frequency_hz
+    assert entry.mode == "FM"
+    assert entry.data_mode is False
+    assert entry.duplex is RepeaterShiftDirection.PLUS
+    assert entry.tone_mode is ToneSquelchType.TONE
+    assert entry.tone_centihz == 13_650
+    assert entry.tsql_centihz == 0
+    assert entry.name == mem.name
 
 
 # ---------------------------------------------------------------------------
@@ -439,20 +524,21 @@ async def test_an_out_of_range_clear_address_refuses(model: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Round trip: write through the real radio path, read the slot back
+# Round trip: write through the production radio path, read the slot back
 # ---------------------------------------------------------------------------
 
 
 class _MemoryStoreTransport(MockTransport):
-    """A table-driven fake CI-V transport built from the SAME layout
+    """A table-driven CI-V memory store built from the SAME layout
     declaration the production encoder uses.
 
-    A ``1A 00`` SET is stored by address; a GET is answered from the store
-    with the record's channel block doubled (the reply shape the read
-    parser verified on the real IC-705, MOR-3650); a ``1A 00 + address +
-    FF`` clear empties the slot. The block span -- between the select
-    field and the name field -- comes from the profile's own field table,
-    so the fake cannot invent a layout of its own.
+    A ``1A 00`` SET is stored by address (its length is checked against
+    the profile's own ``wire_record_length``, block copies included); a
+    GET is answered with the stored record AS IS -- the write body is the
+    same record a read reply carries (select byte, the channel block
+    ``copies`` times, the name), so no synthesis happens here; a
+    ``1A 00 + address + FF`` clear empties the slot. The double cannot
+    invent a layout of its own.
     """
 
     def __init__(self, memory, radio_addr: int) -> None:
@@ -465,9 +551,7 @@ class _MemoryStoreTransport(MockTransport):
         }[memory.addressing]
         layout = memory.write_layout
         assert layout is not None
-        select = next(f for f in layout.fields if f.encoding == "select")
-        name = next(f for f in layout.fields if f.encoding in ("name", "name_nul"))
-        self._select_len, self._name_offset = select.length, name.offset
+        self._record_len = layout.wire_record_length()
         self._slots: dict[bytes, bytes] = {}
         self.cleared: list[bytes] = []
         self.last_reply_data: bytes | None = None
@@ -482,15 +566,7 @@ class _MemoryStoreTransport(MockTransport):
         if not body:  # GET
             await super().send_tracked(data)
             stored = self._slots.get(address)
-            if stored is None:
-                reply_data = address + b"\xff"
-            else:
-                reply_data = (
-                    address
-                    + stored[: self._select_len]
-                    + stored[self._select_len : self._name_offset] * 2
-                    + stored[self._name_offset :]
-                )
+            reply_data = address + (stored if stored is not None else b"\xff")
             reply = build_civ_frame(
                 CONTROLLER_ADDR, self._radio_addr, 0x1A, sub=0x00, data=reply_data
             )
@@ -501,6 +577,7 @@ class _MemoryStoreTransport(MockTransport):
             self.cleared.append(address)
             self._slots.pop(address, None)
         else:
+            assert len(body) == self._record_len
             self._slots[address] = body
         await super().send_tracked(data)
 
@@ -519,10 +596,10 @@ def _radio(model: str, transport: MockTransport) -> IcomRadio:
 async def test_write_then_read_returns_what_was_written(model: str) -> None:
     """Simulated round trip: the decoded entry equals the written channel
     (frequency, mode, duplex, tone mode/frequency, name) -- the write
-    record and the verified read model agree through the real radio
-    methods. The synthesized reply's own bytes are pinned too: the
-    address, the select byte, the 47-byte channel block TWICE (the reply
-    carries the split TX copy), then the name."""
+    record and the merged read model agree through the production radio
+    methods. The reply's own bytes are pinned too: the address, the
+    select byte, the 47-byte channel block TWICE (the reply carries the
+    split TX copy), then the name."""
     from rigplane.core.types import RepeaterShiftDirection, ToneSquelchType
 
     radio_addr, group, channel = _CASES[model]
@@ -546,24 +623,10 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     assert entry.tsql_centihz == 0
     assert entry.name == mem.name
     # The reply data after ``1A 00``, by hand from the manual tables: the
-    # stored record with its channel block doubled (the record's own
-    # DTCS/offset/DV fields are their declared OFF values, all zeros).
-    block = bytes.fromhex(
-        {
-            "IC-705": "0000944601",
-            "IC-9700": "0000004604",
-        }[model]
-        + "0501"  # mode FM, filter 1
-        "00"  # data mode off
-        "21"  # duplex + | TONE
-        "00"  # digital squelch off
-        "001365"  # tone 136.5 Hz
-        "000000"  # tone squelch off
-        "000000"  # DTCS off
-        "00"  # DV code off
-        "000000"  # duplex offset 0
-         + _SP24
-    )
+    # stored record, which carries its channel block twice (the record's
+    # own DTCS/offset/DV fields are their declared OFF values, all
+    # zeros).
+    block = bytes.fromhex({"IC-705": _IC705_BLOCK, "IC-9700": _IC9700_BLOCK}[model])
     address = {
         "IC-705": bytes.fromhex("00020007"),
         "IC-9700": bytes.fromhex("020007"),
@@ -620,9 +683,9 @@ async def test_a_grouped_radio_refuses_an_unnamed_group(model: str) -> None:
 async def test_the_written_wire_bytes_are_the_manual_record(model: str) -> None:
     """The IC-7300/IC-7300MK2 read reply shape is not in the provided
     manual extracts, so the read listing stays off for them; the round
-    trip pins what IS verified: the write crosses the real radio path and
-    the wire carries exactly the manual record, then the clear empties the
-    slot in its declared form."""
+    trip pins the write side: the write crosses the production radio
+    path, the wire carries exactly the manual record, and the clear then
+    empties the slot in its declared form."""
     radio_addr, group, channel = _CASES[model]
     mem = _mem(model)
     transport = _MemoryStoreTransport(_memory(model), radio_addr)
