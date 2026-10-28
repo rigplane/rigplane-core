@@ -340,7 +340,7 @@
   .keyboard-help-card {
     position: relative;
     width: min(1100px, calc(100vw - 32px));
-    max-height: calc(100vh - 40px);
+    max-height: calc(100vh - var(--rp-chrome-top, 0px) - 40px);
     overflow: auto;
     border: 1px solid var(--v2-border-soft);
     border-radius: 18px;

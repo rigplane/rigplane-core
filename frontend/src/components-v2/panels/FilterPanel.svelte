@@ -1027,11 +1027,11 @@
 
   .filter-modal {
     position: fixed;
-    top: 50%;
+    top: calc(50% + var(--rp-chrome-top, 0px) / 2);
     left: 50%;
     z-index: 10001;
     width: min(560px, calc(100vw - 24px));
-    max-height: min(88vh, 720px);
+    max-height: min(calc((100dvh - var(--rp-chrome-top, 0px)) * 0.88), 720px);
     transform: translate(-50%, -50%);
     display: flex;
     flex-direction: column;
