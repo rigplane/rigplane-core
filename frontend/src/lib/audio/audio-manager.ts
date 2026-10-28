@@ -100,6 +100,16 @@ function preferredRxCodec(): 'opus' | 'pcm16' {
   return typeof AudioDecoder === 'undefined' ? 'pcm16' : 'opus';
 }
 
+/** MOR-3823: a USB pairing refusal is actionable only from a page that runs
+ *  on the station host itself. The controller MODE is not that signal — a
+ *  mode:"local" Core (the default multi-session mode) reports local to every
+ *  LAN client too — so the page proves it by its own hostname instead. */
+function pageRunsOnStationHost(): boolean {
+  const hostname = location.hostname;
+  return hostname === 'localhost' || hostname.endsWith('.localhost')
+    || hostname === '127.0.0.1' || hostname === '::1' || hostname === '[::1]';
+}
+
 class AudioManager {
   private ws: WebSocket | null = null;
   private readonly rxDiagnosticEnabled = import.meta.env.VITE_RX_AUDIO_DIAGNOSTIC === '1';
@@ -565,20 +575,22 @@ class AudioManager {
         this.stopRx();
         setRxError(true);
         // MOR-3823: the frame's `reason` is the publishable category. A USB
-        // pairing refusal is actionable only on the station host, so the
-        // toast differs for a remote client and the local operator.
+        // pairing refusal is actionable only on the station host itself, so
+        // the host-actionable toast (--rx-device/--tx-device instructions) is
+        // shown only when this page proves — by its own loopback hostname —
+        // that it runs there; every other client gets the station wording.
         if (typeof msg.reason === 'string' && SERVER_RX_DEVICE_REASONS.has(msg.reason)) {
-          if (this.controller?.remote()) {
-            this._operatorNotifier?.(
-              'error',
-              'The station must choose its audio device. Ask whoever runs the station computer.',
-              'rxAudioStationDeviceNeeded',
-            );
-          } else {
+          if (pageRunsOnStationHost()) {
             this._operatorNotifier?.(
               'error',
               'The radio\'s audio devices could not be paired automatically. Choose the RX and TX audio devices explicitly.',
               'rxAudioChooseDeviceOnHost',
+            );
+          } else {
+            this._operatorNotifier?.(
+              'error',
+              'The station must choose its audio device. Ask whoever runs the station computer.',
+              'rxAudioStationDeviceNeeded',
             );
           }
         } else {

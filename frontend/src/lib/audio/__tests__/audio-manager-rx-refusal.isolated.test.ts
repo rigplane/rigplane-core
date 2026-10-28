@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ControllerClient } from '../../transport/controller-client';
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -59,13 +60,16 @@ class FakeWebSocket {
 
   readyState = FakeWebSocket.CONNECTING;
   binaryType = '';
+  protocol: string;
   sent: unknown[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: ((event: unknown) => void) | null = null;
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
 
-  constructor(public url: string) {
+  constructor(public url: string, protocols: string | string[] = []) {
+    const list = Array.isArray(protocols) ? protocols : [protocols];
+    this.protocol = list[0] ?? '';
     FakeWebSocket.instances.push(this);
   }
 
@@ -384,62 +388,127 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     message: 'audio_start: RX audio failed to start: usb_ambiguous',
     reason: 'usb_ambiguous',
   };
-  const remoteBinding = () => ({
-    remote: () => true,
-    ready: () => true,
-    epoch: () => 1,
-    current: () => true,
-    protocols: () => [] as string[],
-  });
+  const DEVICE_REASONS = ['usb_ambiguous', 'usb_topology_names', 'usb_topology_unavailable'];
+  const clients: ControllerClient[] = [];
 
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
-    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost' });
     vi.useFakeTimers();
   });
 
   afterEach(async () => {
+    for (const client of clients.splice(0)) client.lose();
     const { audioManager } = await import('../audio-manager');
     audioManager.destroy();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
-  it('a remote client is told the station must choose its audio device', async () => {
+  /** Answer the controller REST endpoints the way Core does, then run the
+   *  real acquire path (ControllerClient.prepare) so the client's `remote`
+   *  flag is whatever the advertised mode makes it — never forced by the
+   *  test. mode:"local" (Core's default multi-session mode) yields
+   *  remote === false for ANY browser, including LAN clients. */
+  async function prepareController(mode: 'local' | 'remote'): Promise<ControllerClient> {
+    const grant = {
+      controller_key: 'c'.repeat(64), generation: 1, ttl_ms: 6000, heartbeat_ms: 2000,
+    };
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: { method?: string }) => {
+      if ((init?.method ?? 'GET') === 'GET') {
+        return { ok: true, status: 200, json: async () => ({ protocol_version: 1, mode }) };
+      }
+      return { ok: true, status: 201, json: async () => grant };
+    }));
+    const client = new ControllerClient();
+    clients.push(client);
+    await client.prepare();
+    // A remote-mode session reports active only once the control socket opened.
+    if (client.remote) client.controlOpened(() => {});
+    return client;
+  }
+
+  /** The same binding frontend-runtime.ts installs, over the real client. */
+  function runtimeBinding(client: ControllerClient) {
+    return {
+      remote: () => client.remote,
+      ready: () => client.active,
+      epoch: () => client.epoch,
+      current: (epoch: number) => client.active && client.current(epoch),
+      protocols: () => client.protocols(),
+    };
+  }
+
+  /** Set the page hostname the jsdom way this file already uses, prepare the
+   *  controller in the given mode, and start RX against a fresh socket. */
+  async function rig(hostname: string, mode: 'local' | 'remote') {
+    const host = hostname === 'localhost' ? hostname : `${hostname}:8080`;
+    vi.stubGlobal('location', { protocol: 'http:', host, hostname });
+    const client = await prepareController(mode);
     const { audioManager } = await import('../audio-manager');
     const audio = await import('../../stores/audio.svelte');
     const notify = vi.fn();
     audioManager.setOperatorNotifier(notify);
-    audioManager.setControllerBinding(remoteBinding());
-
+    audioManager.setControllerBinding(runtimeBinding(client));
     audioManager.startRx();
     const socket = FakeWebSocket.instances[0];
     socket.open();
-    serverText(socket, RX_REFUSAL_FRAME);
+    return { audioManager, audio, notify, socket };
+  }
 
-    expect(notify).toHaveBeenCalledWith(
-      'error', expect.any(String), 'rxAudioStationDeviceNeeded',
-    );
-    expect(audioManager.rxEnabled).toBe(false);
-    expect(audio.getAudioState().rxError).toBe(true);
-  });
-
-  it.each(['usb_ambiguous', 'usb_topology_names', 'usb_topology_unavailable'])(
-    'a local operator is asked to choose the station devices (%s)',
+  it.each(DEVICE_REASONS)(
+    'a loopback page in mode local is asked to choose the station devices (%s)',
     async (reason) => {
-      const { audioManager } = await import('../audio-manager');
-      const audio = await import('../../stores/audio.svelte');
-      const notify = vi.fn();
-      audioManager.setOperatorNotifier(notify);
-
-      audioManager.startRx();
-      const socket = FakeWebSocket.instances[0];
-      socket.open();
+      const { audioManager, audio, notify, socket } = await rig('localhost', 'local');
       serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+      expect(notify).toHaveBeenCalledWith(
+        'error', expect.any(String), 'rxAudioChooseDeviceOnHost',
+      );
+      expect(audioManager.rxEnabled).toBe(false);
+      expect(audio.getAudioState().rxError).toBe(true);
+    },
+  );
 
+  it.each(DEVICE_REASONS)(
+    'a LAN page in mode local is told the station must choose its device (%s)',
+    async (reason) => {
+      // The regression this PR fixes: mode "local" sets remote === false for
+      // LAN clients too, so the controller flag alone would wrongly show the
+      // --rx-device/--tx-device instructions on a phone or another PC.
+      const { audioManager, audio, notify, socket } = await rig('192.168.1.20', 'local');
+      serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+      expect(notify).toHaveBeenCalledWith(
+        'error', expect.any(String), 'rxAudioStationDeviceNeeded',
+      );
+      expect(audioManager.rxEnabled).toBe(false);
+      expect(audio.getAudioState().rxError).toBe(true);
+    },
+  );
+
+  it.each(DEVICE_REASONS)(
+    'a LAN page in mode remote is told the station must choose its device (%s)',
+    async (reason) => {
+      const { audioManager, audio, notify, socket } = await rig('192.168.1.20', 'remote');
+      serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+      expect(notify).toHaveBeenCalledWith(
+        'error', expect.any(String), 'rxAudioStationDeviceNeeded',
+      );
+      expect(audioManager.rxEnabled).toBe(false);
+      expect(audio.getAudioState().rxError).toBe(true);
+    },
+  );
+
+  // The host message is gated on the page hostname alone: a loopback page IS
+  // a display on the station host, so its operator can act on the
+  // --rx-device/--tx-device instructions even when the control session
+  // itself is remote-mode. Host message iff loopback, regardless of mode.
+  it.each(DEVICE_REASONS)(
+    'a loopback page keeps the host instructions even in mode remote (%s)',
+    async (reason) => {
+      const { audioManager, audio, notify, socket } = await rig('127.0.0.1', 'remote');
+      serverText(socket, { ...RX_REFUSAL_FRAME, reason });
       expect(notify).toHaveBeenCalledWith(
         'error', expect.any(String), 'rxAudioChooseDeviceOnHost',
       );
@@ -452,17 +521,8 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     ['unknown', 'other'],
     ['missing', undefined],
   ])('an %s reason keeps the generic toast', async (_label, reason) => {
-    const { audioManager } = await import('../audio-manager');
-    const audio = await import('../../stores/audio.svelte');
-    const notify = vi.fn();
-    audioManager.setOperatorNotifier(notify);
-    audioManager.setControllerBinding(remoteBinding());
-
-    audioManager.startRx();
-    const socket = FakeWebSocket.instances[0];
-    socket.open();
+    const { audio, notify, socket } = await rig('localhost', 'local');
     serverText(socket, { ...RX_REFUSAL_FRAME, reason });
-
     expect(notify).toHaveBeenCalledWith(
       'error', expect.any(String), 'rxAudioStartFailed',
     );
