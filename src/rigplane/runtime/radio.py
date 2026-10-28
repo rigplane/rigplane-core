@@ -61,10 +61,13 @@ from rigplane.audio.route import (
     resolve_lan_audio_stream_request,
 )
 from rigplane.core._bounded_queue import BoundedQueue
+from rigplane.core.civ import is_directed_ptt_reply
 from rigplane.runtime._civ_rx import (
     CivRuntime,
     RawCivExpectation,
     RawCivTransactionResult,
+    _PttReadContext,
+    _PttNotQuiescent,
 )
 from rigplane.runtime._dual_rx_runtime import DualRxRuntimeMixin
 from rigplane.runtime._scope_runtime import ScopeRuntimeMixin
@@ -191,7 +194,6 @@ from rigplane.core.radio_protocol import (
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import (
-    RADIO_READBACK_SOURCES,
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
 )
@@ -4463,6 +4465,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         await self._send_civ_raw(civ, priority=Priority.IMMEDIATE, wait_response=False)
         logger.debug("set_ptt(%s) sent (fire-and-forget)", on)
 
+    _PTT_READBACK_SETTLE_S: float = 0.2
+
     async def actuate(
         self,
         token: EffectToken,
@@ -4525,7 +4529,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return ActuationResult.UNCERTAIN
         return ActuationResult.ACCEPTED if acknowledged else ActuationResult.REJECTED
 
-    async def read_transmit_state(self) -> TxStateReading:
+    async def read_transmit_state(
+        self,
+        *,
+        priority: Priority = Priority.NORMAL,
+        is_current: Callable[[], bool] | None = None,
+    ) -> TxStateReading:
         """One solicited CI-V transmit-state observation.
 
         The directed reply is parsed through the shared observation decoder;
@@ -4534,11 +4543,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         connection preconditions still raise.
         """
         self._check_connected()
+        ledger = self._civ_runtime._ptt_reply_ledger
+        if not ledger.eligible():
+            return TxStateReading(value=None, failure="not-quiescent")
+        orphans_before = ledger.orphan_count
+        context = _PttReadContext(is_current)
         frame = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0x00)
         try:
             reply = await self._send_civ_expect(
-                frame, label="tx-state", timeout=TX_READ_DEADLINE_SECONDS
+                frame,
+                label="tx-state",
+                timeout=TX_READ_DEADLINE_SECONDS,
+                priority=priority,
+                is_current=context,
             )
+        except _PttNotQuiescent:
+            return TxStateReading(value=None, failure="not-quiescent")
         except (asyncio.TimeoutError, TimeoutError):
             # Both are real outcomes here: ``asyncio.TimeoutError`` from the
             # outer wait, or this module's own ``core.exceptions.TimeoutError``
@@ -4549,11 +4569,25 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return TxStateReading(value=None, failure="timeout")
         except CommandError:
             return TxStateReading(value=None, failure="read-error")
+        if (
+            context.entry is None
+            or context.entry.answered_by is not reply
+            or not is_directed_ptt_reply(reply, self._radio_addr)
+        ):
+            return TxStateReading(value=None, failure="unverifiable-provenance")
         for observation in self._civ_runtime._observations_from_frame(reply):
             if str(observation.path) != "global.tx_state.ptt":
                 continue
             source = str(observation.source.source)
-            if source in RADIO_READBACK_SOURCES:
+            if source == "poll_response":
+                if not observation.value:
+                    await asyncio.sleep(self._PTT_READBACK_SETTLE_S)
+                    if not context():
+                        return TxStateReading(value=None, failure="read-error")
+                    if ledger.orphan_count != orphans_before:
+                        return TxStateReading(
+                            value=None, failure="unverifiable-provenance"
+                        )
                 return TxStateReading(
                     value=bool(observation.value),
                     attributed=None,  # Icom reports no attribution (§3.7)
