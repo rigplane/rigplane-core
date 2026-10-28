@@ -92,10 +92,9 @@ class PttReplyLedger:
         """Account for a reply already classified by the runtime's D1 gate."""
         now = self._clock()
         self._expire(now)
-        # Serial queue admission can reorder dispatches; never pay unwritten debt.
-        entry = next((e for e in self._owed if e.dispatched_at is not None), None)
+        # A reply can arrive while the sender is still awaiting serial drain.
+        entry = self._owed.popleft() if self._owed else None
         if entry is not None:
-            self.discard(entry)
             entry.answered_by = frame
             return entry
         self._orphan_count += 1

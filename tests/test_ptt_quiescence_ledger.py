@@ -11,6 +11,9 @@ from tx_observation_fakes import (
     civ_transmit_state_reply,
 )
 
+from rigplane.backends.ic7300 import Ic7300SerialRadio
+from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.civ import (
@@ -23,6 +26,8 @@ from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.transport import IcomTransport
 from rigplane.runtime import _civ_rx
 from rigplane.runtime.radio import CoreRadio, IcomRadio
+
+from rigplane_testkit.serial import CivSerialFake
 
 
 class _LanTransport(ScriptedLanTransport, IcomTransport):
@@ -65,10 +70,13 @@ def test_fifo_identity_orphan_and_writes():
     a, b = ledger.note_dispatch(_request()), ledger.note_dispatch(_request())
     ledger.note_written(b)
     reply = _reply()
-    assert ledger.note_reply(reply) is b and b.answered_by is reply
+    assert ledger.note_reply(reply) is a and a.answered_by is reply
+    assert a.dispatched_at is None
     assert not ledger.eligible()
     ledger.note_written(a)
-    assert ledger.note_reply(reply) is a and a.answered_by is reply
+    ledger.discard(a)
+    assert ledger.owed_count == 1 and ledger.orphan_count == 0
+    assert ledger.note_reply(reply) is b and b.answered_by is reply
     assert ledger.eligible() and ledger.quarantine_until == 0
     assert ledger.note_reply(reply) is None
     assert ledger.orphan_count == 1 and ledger.quarantine_until == 2
@@ -78,6 +86,64 @@ def test_fifo_identity_orphan_and_writes():
     for shape in ("rx", "tx_cat", "ack"):
         assert ledger.note_dispatch(_reply(shape)) is None
     assert ledger.owed_count == 0
+
+
+@pytest.mark.parametrize(
+    "radio_cls,model",
+    [(Icom7610SerialRadio, "IC-7610"), (Ic7300SerialRadio, "IC-7300")],
+)
+async def test_serial_reply_during_drain(radio_cls, model, monkeypatch):
+    fake = CivSerialFake(model=model)
+    entered, release, received = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release.set()
+
+    async def opener():
+        reader, writer = await fake.open_serial_connection()
+        drain = writer.drain
+
+        async def gated_drain():
+            await drain()
+            if not release.is_set():
+                entered.set()
+                await release.wait()
+
+        monkeypatch.setattr(writer, "drain", gated_drain)
+        return reader, writer
+
+    link = SerialCivLink(device="civ-serial-fake", open_serial_connection=opener)
+    radio = radio_cls(
+        device="civ-serial-fake", civ_link=link, _enumerate_serial_ports_fn=lambda: []
+    )
+    task = None
+    try:
+        await radio.connect()
+        assert radio.connected
+        ledger = radio._civ_runtime._ptt_reply_ledger
+        note_reply = ledger.note_reply
+
+        def account_reply(frame):
+            entry = note_reply(frame)
+            received.set()
+            return entry
+
+        monkeypatch.setattr(ledger, "note_reply", account_reply)
+        release.clear()
+        task = asyncio.create_task(radio.read_transmit_state())
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(received.wait(), 1)
+        assert not task.done()
+        release.set()
+        reading = await asyncio.wait_for(task, 1)
+        assert reading.verified_readback and reading.value is False
+        assert reading.failure is None
+        assert ledger.owed_count == ledger.orphan_count == 0
+        assert ledger.quarantine_until == 0 and ledger.eligible()
+    finally:
+        release.set()
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await radio.disconnect()
 
 
 @pytest.mark.parametrize("age,owed", [(3.999, 1), (4.0, 1), (4.001, 0)])
