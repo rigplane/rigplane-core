@@ -539,37 +539,43 @@ async def release_radio(request, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "case,prior,answer,expected",
+    "release_radio,case,prior,answer,expected",
     [
-        ("A1a-silent", "silence", "rx", "uncertain"),
-        ("A1b-beyond-L", "expired", "stale", "accepted"),
-        ("A2-malformed", "unmapped", "rx", "uncertain"),
-        ("A2-broadcast", "broadcast", "rx", "uncertain"),
-        ("A3a-owed", "silence", "rx", "uncertain"),
-        ("A3b-twin", "cached", "twin", "uncertain"),
-        ("A3c-after-Q", "cached", "twin", "uncertain"),
-        ("A4-sink", "sink", "rx", "uncertain"),
-        ("A5-nak", "refusal", "rx", "uncertain"),
-        ("A6-rx", None, "rx", "accepted"),
-        ("A6-tx", None, "tx_cat", "uncertain"),
-        ("A7-second-emission", None, "rx", "accepted"),
-        ("A8-orphan", "orphan", "rx", "uncertain"),
-        ("A9-generation", "generation", "rx", "uncertain"),
-        ("A10-fb", None, "ack", "uncertain"),
-        ("A10-fa", None, "refusal", "uncertain"),
-        ("E0-single-reply-limit", None, "foreign", "accepted"),
-        ("E-in-code-predispatch", "orphan", "rx", "uncertain"),
-        ("E-in-code-settle-read", None, "settle", "uncertain"),
-        ("E-in-code-settle-release", None, "settle", "uncertain"),
-        ("FIFO-LAN-benign", None, "concurrent", "accepted"),
-        ("new-header", None, "re-emitted", "accepted"),
-        ("B-malformed", None, "unmapped", "uncertain"),
-        ("B-broadcast", None, "broadcast", "uncertain"),
-        ("clean-fb", None, "rx", "accepted"),
-        ("clean-fa", None, "rx", "rejected"),
-        ("ambiguous-fa", None, "rx", "accepted"),
-        ("unsupported-read", None, "rx", "uncertain"),
+        (transport, *row)
+        for transport in ("lan", "7610-serial", "7300-serial")
+        for row in [
+            ("A1a-silent", "silence", "rx", "uncertain"),
+            ("A1b-beyond-L", "expired", "stale", "accepted"),
+            ("A2-malformed", "unmapped", "rx", "uncertain"),
+            ("A2-broadcast", "broadcast", "rx", "uncertain"),
+            ("A3a-owed", "silence", "rx", "uncertain"),
+            ("A3b-twin", "cached", "twin", "uncertain"),
+            ("A3c-after-Q", "cached", "twin", "uncertain"),
+            ("A4-sink", "sink", "rx", "uncertain"),
+            ("A5-nak", "refusal", "rx", "uncertain"),
+            ("A6-rx", None, "rx", "accepted"),
+            ("A6-tx", None, "tx_cat", "uncertain"),
+            ("A7-second-emission", None, "rx", "accepted"),
+            ("A8-orphan", "orphan", "rx", "uncertain"),
+            ("A9-generation", "generation", "rx", "uncertain"),
+            ("A10-fb", None, "ack", "uncertain"),
+            ("A10-fa", None, "refusal", "uncertain"),
+            ("E0-single-reply-limit", None, "foreign", "accepted"),
+            ("E-in-code-predispatch", "orphan", "rx", "uncertain"),
+            ("E-in-code-settle-read", None, "settle", "uncertain"),
+            ("E-in-code-settle-release", None, "settle", "uncertain"),
+            ("FIFO-LAN-benign", None, "concurrent", "accepted"),
+            ("new-header", None, "re-emitted", "accepted"),
+            ("B-malformed", None, "unmapped", "uncertain"),
+            ("B-broadcast", None, "broadcast", "uncertain"),
+            ("clean-fb", None, "rx", "accepted"),
+            ("clean-fa", None, "rx", "rejected"),
+            ("ambiguous-fa", None, "rx", "accepted"),
+            ("unsupported-read", None, "rx", "uncertain"),
+        ]
+        if row[1] != "cached" or transport == "lan"
     ],
+    indirect=["release_radio"],
 )
 async def test_two_read_release_matrix(
     release_radio, monkeypatch, case, prior, answer, expected
@@ -657,7 +663,7 @@ async def test_two_read_release_matrix(
     note_dispatch = runtime._note_ptt_dispatch
 
     def observe(frame, is_current=None):
-        note_dispatch(frame, is_current)
+        entry = note_dispatch(frame, is_current)
         if answer == "settle" and isinstance(is_current, _PttReadContext):
             current = is_current.is_current
 
@@ -674,6 +680,7 @@ async def test_two_read_release_matrix(
                 return current is None or current()
 
             is_current.is_current = settle_current
+        return entry
 
     monkeypatch.setattr(runtime, "_note_ptt_dispatch", observe)
     task = asyncio.create_task(
@@ -738,9 +745,10 @@ async def test_normal_polling_confirms_on_first_eligible_retry(
     note_dispatch = runtime._note_ptt_dispatch
 
     def observe(frame, is_current=None):
-        note_dispatch(frame, is_current)
+        entry = note_dispatch(frame, is_current)
         if isinstance(is_current, _PttReadContext):
             confirmations.append(is_current.entry)
+        return entry
 
     monkeypatch.setattr(runtime, "_note_ptt_dispatch", observe)
     raw = build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0)

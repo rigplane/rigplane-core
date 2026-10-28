@@ -56,14 +56,14 @@ async def api(tmp_path, monkeypatch):
         note_dispatch = runtime._note_ptt_dispatch
 
         def observe(frame, is_current=None):
-            note_dispatch(frame, is_current)
-            if frame.command == 0x1C and frame.sub == 0 and not frame.data:
-                entry = runtime._ptt_reply_ledger._owed[-1]
+            entry = note_dispatch(frame, is_current)
+            if entry is not None:
                 pending.append(is_current)
                 if is_current is script["a_owner"]:
                     script["a"] = entry
                 if isinstance(is_current, _PttReadContext):
                     script["b"] = entry
+            return entry
 
         monkeypatch.setattr(runtime, "_note_ptt_dispatch", observe)
         dispatch = stack.sim._dispatch_civ
@@ -113,6 +113,7 @@ async def test_release_readback_through_http_and_websocket(api, case, monkeypatc
             is_current=script["a_owner"],
         )
         a = script["a"]
+        assert a.dispatched_at is not None
         monkeypatch.setattr(ledger, "_clock", lambda: a.dispatched_at)
         monkeypatch.setattr(authority._wakeup, "_clock", ledger._clock)
         monkeypatch.setattr(authority, "_clock", ledger._clock)
