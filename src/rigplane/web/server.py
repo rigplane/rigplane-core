@@ -490,7 +490,7 @@ class _HttpCommandCollector:
 def _command_error_code(exc: BaseException) -> str:
     if isinstance(exc, MemoryWriteUnverifiedError):
         # MOR-3644: stable refusal code carried on the exception.
-        return exc.reason_code
+        return str(exc.reason_code)
     if isinstance(exc, CommandUnsupportedError):
         return "unsupported_command"
     if isinstance(exc, CommandRejectedError):
