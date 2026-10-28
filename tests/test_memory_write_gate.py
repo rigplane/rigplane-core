@@ -203,6 +203,56 @@ async def test_sdk_supplied_profile_with_an_unlisted_layout_refuses(
     assert transport.sent_packets == []
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"clear": []},
+        {"clear": 3},
+        {"record_length": "26"},
+        {"record_length": True},
+        {"tone_max": "2"},
+        {"fields": "26 bytes"},
+        {"fields": ()},
+        {"fields": ({"field": "x", "offset": 0, "length": 1, "encoding": "mode"},)},
+    ],
+    ids=[
+        "clear-list",
+        "clear-int",
+        "record_length-str",
+        "record_length-bool",
+        "tone_max-str",
+        "fields-str",
+        "fields-empty",
+        "fields-raw-dict",
+    ],
+)
+async def test_sdk_supplied_junk_layout_members_refuse_not_crash(
+    mutation: dict,
+) -> None:
+    """A structurally broken layout spliced into a profile with
+    ``dataclasses.replace`` must surface as the stable refusal (the same
+    rules the TOML loader applies), never as a TypeError at the gate."""
+    from dataclasses import replace
+
+    transport = MockTransport()
+    radio = _radio("IC-705", transport)
+    memory = radio._profile.memory
+    assert memory is not None and memory.write_layout is not None
+    radio._profile = replace(
+        radio._profile,
+        memory=replace(memory, write_layout=replace(memory.write_layout, **mutation)),
+    )
+    try:
+        with pytest.raises(MemoryWriteUnverifiedError):
+            await radio.set_memory_contents(_mem())
+        with pytest.raises(MemoryWriteUnverifiedError):
+            await radio.memory_clear(5)
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
+
+
 # ---------------------------------------------------------------------------
 # Dispatch: the shared WS/HTTP handler arm refuses before enqueueing
 # ---------------------------------------------------------------------------
@@ -470,6 +520,94 @@ async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
     assert body["result"] == {"channel": 1}
     assert len(transport.sent_packets) == 1
     assert transport.sent_packets[0][CIV_HEADER_SIZE:][4:6] == b"\x1a\x00"
+
+
+@pytest.mark.asyncio
+async def test_http_seam_writes_the_ic705_in_its_declared_layout() -> None:
+    """MOR-3644 part 2, entry point to wire: an IC-705 write through the
+    HTTP command endpoint carries the manual record (group address,
+    centi-Hz tone) on the wire, and its clear is the declared
+    ``1A 00 + address + FF`` form. The expected frames are the manual
+    fixtures of tests/test_memory_write_layouts.py, imported so the two
+    cannot drift."""
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
+    )
+
+    from test_memory_write_layouts import _mem as _layout_mem
+    from test_memory_write_layouts import _manual_frame
+
+    transport = MockTransport()
+    radio = _radio("IC-705", transport)
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
+        )
+    )
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    done = asyncio.Event()
+
+    async def consume() -> None:
+        for _ in range(2):
+            await web.command_queue.wait(2)
+            entry = web.command_queue.take_entry()
+            assert entry is not None
+            await poller._execute_queued_entry(entry)
+        done.set()
+
+    consumer = asyncio.create_task(consume())
+    mem = _layout_mem("IC-705")
+    try:
+        status, body = await _request(web, "http", "set_memory_contents", mem.__dict__)
+        clear_status, clear_body = await _request(
+            web, "http", "memory_clear", {"channel": mem.channel, "group": mem.group}
+        )
+        await asyncio.wait_for(done.wait(), timeout=5)
+        await asyncio.wait_for(consumer, timeout=5)
+    finally:
+        await _shutdown(web, radio)
+    assert status == 200 and body["ok"] is True
+    assert clear_status == 200 and clear_body["ok"] is True
+    frames = [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets]
+    expected_clear = bytes.fromhex(f"fefea4e01a00{mem.group:04d}{mem.channel:04d}fffd")
+    assert frames == [_manual_frame("IC-705"), expected_clear]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"channel": 5, "group": 2.9},  # a fractional group must not coerce
+        {"channel": 5, "group": True},
+        {"channel": 100, "group": 2},  # outside the profile bounds
+        {"channel": 5, "group": 100},
+    ],
+)
+async def test_http_clear_refuses_a_malformed_address_before_enqueueing(
+    params: dict,
+) -> None:
+    """MOR-3644 part 2: the dispatch arm validates the address the profile
+    needs (strict integers, profile bounds) so a malformed clear is a
+    client error, not an ok answer that fails later at the radio."""
+    transport = MockTransport()
+    radio = _radio("IC-705", transport)
+    radio._connected = False  # refused before enqueue; never touched
+    web = await _serve(radio)
+    try:
+        status, body = await _request(web, "http", "memory_clear", params)
+    finally:
+        await _shutdown(web, radio)
+    assert status == 400
+    assert body["error"] == "invalid_request"
+    assert transport.sent_packets == []
 
 
 @pytest.mark.asyncio

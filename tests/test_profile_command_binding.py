@@ -49,7 +49,7 @@ from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.command_map import CommandMap
 from rigplane.commands.vfo import set_dual_watch
-from rigplane.core.types import MemoryProfile
+from rigplane.core.types import MemoryProfile, MemoryWriteField, MemoryWriteLayout
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.runtime.radio import CoreRadio
 from rigplane.types import BandStackRegister, MemoryChannel
@@ -352,7 +352,50 @@ _EXTRA_PROBE_KWARGS: dict[str, dict[str, Any]] = {
             scan=0,
             datamode=0,
             tonemode=0,
-        )
+        ),
+        # The builder needs a profile whose write layout is declared
+        # (MOR-3644); a minimal valid one, so the drift probe still only
+        # exercises the command-key resolution.
+        "memory": MemoryProfile(
+            "channel",
+            0,
+            0,
+            1,
+            101,
+            write_layout=MemoryWriteLayout(
+                clear="0b_channel",
+                record_length=10,
+                fields=(
+                    MemoryWriteField("frequency", 0, 5, "frequency"),
+                    MemoryWriteField("mode", 5, 1, "mode_bcd"),
+                    MemoryWriteField("name", 6, 4, "name_nul"),
+                ),
+            ),
+        ),
+    },
+    "build_memory_clear": {
+        # The legacy clear form keeps the exposed "memory_clear" key this
+        # drift guard asserts; the manual 1a00_ff form resolves the
+        # set_memory_contents entry instead and is pinned separately
+        # below (the form comes from the profile argument, not the map).
+        "memory": MemoryProfile(
+            "channel",
+            0,
+            0,
+            1,
+            101,
+            write_layout=MemoryWriteLayout(
+                clear="0b_channel",
+                record_length=10,
+                fields=(
+                    MemoryWriteField("frequency", 0, 5, "frequency"),
+                    MemoryWriteField("mode", 5, 1, "mode_bcd"),
+                    MemoryWriteField("name", 6, 4, "name_nul"),
+                ),
+            ),
+        ),
+        "group": 0,
+        "channel": 1,
     },
     "build_memory_group_set": {
         "memory": MemoryProfile("group_channel", 0, 99, 0, 99),
@@ -510,6 +553,53 @@ class TestExposedKeyDriftGuard:
             f"{builder.__qualname__} did not call _build_from_map with cmd_map set"
         )
         assert captured["key"] == builder.cmd_map_key(probe_map)
+
+    def test_memory_clear_resolves_the_key_of_its_declared_form(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MOR-3644: ``build_memory_clear`` resolves the command-map entry
+        its declared clear form needs -- the manual ``1a00_ff`` form uses
+        the profile's ``set_memory_contents`` (1A 00) bytes, the legacy
+        ``0b_channel`` form the ``memory_clear`` (0x0B) bytes. The form is
+        profile data, so the generic drift probe above (same kwargs for
+        every map) pins the legacy branch and this test pins both."""
+        from rigplane.commands import build_memory_clear
+        from rigplane.commands import memory as memory_module
+
+        captured: dict[str, str] = {}
+
+        def _fake_build_from_map(
+            _cmd_map: CommandMap, key: str, *args: Any, **kwargs: Any
+        ) -> bytes:
+            captured["key"] = key
+            return b""
+
+        monkeypatch.setattr(memory_module, "_build_from_map", _fake_build_from_map)
+
+        def _layout(clear: str) -> MemoryProfile:
+            return MemoryProfile(
+                "channel",
+                0,
+                0,
+                1,
+                101,
+                write_layout=MemoryWriteLayout(
+                    clear=clear,
+                    record_length=10,
+                    fields=(
+                        MemoryWriteField("frequency", 0, 5, "frequency"),
+                        MemoryWriteField("mode", 5, 1, "mode_bcd"),
+                        MemoryWriteField("name", 6, 4, "name_nul"),
+                    ),
+                ),
+            )
+
+        probe_map = CommandMap({"set_memory_contents": (0x1A, 0x00)})
+        build_memory_clear(_layout("1a00_ff"), 0, 1, to_addr=0x94, cmd_map=probe_map)
+        assert captured["key"] == "set_memory_contents"
+        probe_map = CommandMap({"memory_clear": (0x0B,)})
+        build_memory_clear(_layout("0b_channel"), 0, 1, to_addr=0x94, cmd_map=probe_map)
+        assert captured["key"] == "memory_clear"
 
 
 def test_ptt_off_is_also_covered_directly() -> None:

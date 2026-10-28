@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,9 +16,14 @@ from test_profile_identity_metadata import _minimal_toml, _write_toml
 
 def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
     ic705 = get_radio_profile("IC-705")
-    assert ic705.memory == MemoryProfile("group_channel", 0, 99, 0, 99, recall=True)
+    # write_layout participates in dataclass equality; strip it here so
+    # this test stays about the addressing facts (the write layouts have
+    # their own assertions below).
+    assert replace(ic705.memory, write_layout=None) == MemoryProfile(
+        "group_channel", 0, 99, 0, 99, recall=True
+    )
     ic9700 = get_radio_profile("IC-9700")
-    assert ic9700.memory == MemoryProfile(
+    assert replace(ic9700.memory, write_layout=None) == MemoryProfile(
         "band_channel", 1, 3, 1, 99, dd_groups=(3,), offset_10mhz_groups=(3,)
     )
     assert ic9700.memory.dd_groups == (3,)
@@ -27,9 +33,11 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
         assert "memory_read" in profile.capabilities
     # IC-7300 gained a write-side [memory] section (MOR-3644 part 2); the
     # read listing stays off: no memory_read capability was added.
-    profile = get_radio_profile("IC-7300")
-    assert profile.memory == MemoryProfile("channel", 0, 0, 1, 99)
-    assert "memory_read" not in profile.capabilities
+    ic7300 = get_radio_profile("IC-7300")
+    assert replace(ic7300.memory, write_layout=None) == MemoryProfile(
+        "channel", 0, 0, 1, 99
+    )
+    assert "memory_read" not in ic7300.capabilities
 
 
 def test_shipped_profiles_declare_the_verified_write_layout() -> None:
@@ -151,6 +159,16 @@ def test_loader_reads_the_write_layout(tmp_path: Path) -> None:
             MemoryWriteField("name", 6, 4, "name"),
         ),
     )
+    # A record without DTCS declares the tone-mode ceiling (IC-7300/MK2).
+    capped = _load(
+        tmp_path,
+        _GOOD
+        + _GOOD_WRITE_LAYOUT.replace(
+            'clear = "1a00_ff"', 'clear = "1a00_ff"\ntone_max = 2'
+        ),
+    ).memory
+    assert capped is not None and capped.write_layout is not None
+    assert capped.write_layout.tone_max == 2
     # The default refuses: no declaration, no memory writes or clears.
     defaults = _load(tmp_path, _GOOD).memory
     assert defaults is not None
@@ -162,8 +180,10 @@ def test_loader_reads_the_write_layout(tmp_path: Path) -> None:
     "edit",
     [
         ('clear = "1a00_ff"', 'clear = "civ_26"'),  # not a clear form
+        ('clear = "1a00_ff"', "clear = []"),  # junk member type
         ("record_length = 10", "record_length = 0"),
         ("record_length = 10", 'record_length = "10"'),
+        ("record_length = 10", "record_length = 11"),  # undeclared tail byte
         (
             'encoding = "mode"',
             'encoding = "civ_47"',
@@ -202,6 +222,12 @@ def test_loader_rejects_a_broken_write_layout(
 ) -> None:
     with pytest.raises(RigLoadError, match=r"\[memory\].write_layout"):
         _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT.replace(*edit))
+
+
+@pytest.mark.parametrize("tone_max", ["4", '"2"', "true", "-1"])
+def test_loader_rejects_an_out_of_range_tone_max(tmp_path: Path, tone_max: str) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].write_layout.tone_max"):
+        _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT + f"\ntone_max = {tone_max}\n")
 
 
 @pytest.mark.parametrize("value", ['"civ_26"', "3", "[]", "true", '""'])

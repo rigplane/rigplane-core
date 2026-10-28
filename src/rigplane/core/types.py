@@ -546,38 +546,82 @@ class MemoryWriteLayout:
 
     The record is the bytes after the memory address (whose form comes
     from :class:`MemoryProfile` addressing): ``fields`` must tile
-    ``[0, record_length)`` exactly, so a gap or an overlap is a load-time
-    error, never a silently wrong byte. ``clear`` names the channel-clear
-    wire form from :data:`MEMORY_WRITE_CLEAR_FORMS`.
+    ``[0, record_length)`` exactly, so a gap, an overlap or an undeclared
+    tail byte is a load-time error, never a silently wrong byte.
+    ``clear`` names the channel-clear wire form from
+    :data:`MEMORY_WRITE_CLEAR_FORMS`; ``tone_max`` bounds the tone-mode
+    nibble (0=OFF, 1=TONE, 2=TSQL, 3=DTCS) for radios whose record has
+    no DTCS field.
     """
 
     clear: str
     record_length: int
     fields: tuple[MemoryWriteField, ...]
+    tone_max: int = 3
 
     def validation_errors(self) -> tuple[str, ...]:
         """Structural errors that make this declaration unbuildable.
 
         Empty means valid. Called by the TOML loader (which raises with
         the file name) and by the runtime admission gate (which refuses
-        SDK-supplied profiles), so both sides apply the same rules.
+        SDK-supplied profiles), so both sides apply the same rules. Member
+        types are checked first: an SDK caller can splice any junk into a
+        frozen dataclass with ``dataclasses.replace``, and that must
+        surface as a refusal here, never as a ``TypeError`` at the gate.
         """
         errors: list[str] = []
-        if self.clear not in MEMORY_WRITE_CLEAR_FORMS:
+        if not isinstance(self.clear, str) or self.clear not in (
+            MEMORY_WRITE_CLEAR_FORMS
+        ):
             errors.append(f"unknown clear form {self.clear!r}")
-        if not 1 <= self.record_length <= 128:
+        if isinstance(self.record_length, bool) or not isinstance(
+            self.record_length, int
+        ):
+            errors.append(f"record_length must be an int, got {self.record_length!r}")
+        elif not 1 <= self.record_length <= 128:
             errors.append(f"record_length must be 1..128, got {self.record_length}")
+        if isinstance(self.tone_max, bool) or not isinstance(self.tone_max, int):
+            errors.append(f"tone_max must be an int, got {self.tone_max!r}")
+        elif not 0 <= self.tone_max <= 3:
+            errors.append(f"tone_max must be 0..3, got {self.tone_max}")
+        if not isinstance(self.fields, tuple) or not all(
+            isinstance(entry, MemoryWriteField) for entry in self.fields
+        ):
+            return ("the field table is not a tuple of memory write fields", *errors)
         if not self.fields:
             return ("the field table is empty", *errors)
         names: set[str] = set()
-        ordered = sorted(self.fields, key=lambda f: f.offset)
-        cursor = 0
-        for entry in ordered:
-            if not entry.field or entry.field in names:
-                errors.append(f"duplicate or empty field name {entry.field!r}")
-            names.add(entry.field)
-            if entry.encoding not in MEMORY_WRITE_ENCODINGS:
+        for entry in self.fields:
+            if not isinstance(entry.field, str) or not entry.field:
+                errors.append(f"empty or non-string field name {entry.field!r}")
+            if not isinstance(entry.encoding, str) or (
+                entry.encoding not in MEMORY_WRITE_ENCODINGS
+            ):
                 errors.append(f"unknown encoding {entry.encoding!r}")
+            if (
+                isinstance(entry.offset, bool)
+                or not isinstance(entry.offset, int)
+                or isinstance(entry.length, bool)
+                or not isinstance(entry.length, int)
+            ):
+                errors.append(f"field {entry.field!r}: offset/length must be ints")
+            if entry.encoding == "frequency" and entry.max_hz is not None:
+                if isinstance(entry.max_hz, bool) or not isinstance(entry.max_hz, int):
+                    errors.append(f"field {entry.field!r}: max_hz must be an int")
+                elif not 0 < entry.max_hz <= 9_999_999_999:
+                    errors.append(
+                        f"field {entry.field!r}: max_hz must be 1..9_999_999_999"
+                    )
+        if errors:
+            return tuple(errors)  # no tiling analysis over junk members
+        # Exact tiling of [0, record_length): no gap, no overlap, no
+        # undeclared tail byte the preallocated record would silently
+        # zero-fill.
+        cursor = 0
+        for entry in sorted(self.fields, key=lambda item: item.offset):
+            if entry.field in names:
+                errors.append(f"duplicate field name {entry.field!r}")
+            names.add(entry.field)
             if entry.offset < 0 or entry.length < 1:
                 errors.append(f"field {entry.field!r}: offset/length must be >= 0/1")
             elif entry.offset + entry.length > self.record_length:
@@ -592,11 +636,11 @@ class MemoryWriteLayout:
                     f"field {entry.field!r}: encoding {entry.encoding!r} "
                     f"needs length {width}, got {entry.length}"
                 )
-            if entry.encoding == "frequency" and entry.max_hz is not None:
-                if not 0 < entry.max_hz <= 9_999_999_999:
-                    errors.append(
-                        f"field {entry.field!r}: max_hz must be 1..9_999_999_999"
-                    )
+        if cursor != self.record_length:
+            errors.append(
+                f"the table leaves the last "
+                f"{self.record_length - cursor} byte(s) undeclared"
+            )
         for encodings, what in (
             (("frequency",), "a frequency"),
             (("mode", "mode_bcd"), "a mode"),

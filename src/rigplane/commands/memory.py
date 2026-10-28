@@ -300,6 +300,29 @@ def _require_write_layout(memory: MemoryProfile) -> MemoryWriteLayout:
     return layout
 
 
+def _dd_memory_mode(mode_code: int, memory: MemoryProfile, group: int) -> bool:
+    """Whether this mode byte is DD mode in one of the profile's DD groups.
+
+    The shared read/write rule (MOR-3644): the DD byte is a mode only in
+    the groups the profile declares (``dd_groups``); anywhere else it is
+    not a mode this radio can store.
+    """
+    dd = mode_code == _MODE_DD and group in memory.dd_groups
+    if mode_code == _MODE_DD and not dd:
+        raise ValueError(f"DD mode is not valid for memory group {group}")
+    return dd
+
+
+def _check_duplex_nibble(duplex: int, dd: bool, memory: MemoryProfile) -> None:
+    """The duplex nibble rules, shared by the read parser and the write
+    encoder: 0-2 on a group/channel radio, 0-3 on a band/code radio
+    (3 = RPS); DUP-/DUP+ never in DD mode, RPS only in it."""
+    if duplex > (2 if memory.addressing == "group_channel" else 3) or (
+        (duplex == 3) != dd and duplex != 0
+    ):
+        raise ValueError(f"duplex nibble {duplex} does not fit the mode")
+
+
 def _check_frequency_digits(hi_byte: int, memory: MemoryProfile) -> None:
     """The GHz and 100 MHz digit rules, shared by the read parser and the
     write encoder so a record the write builds is always one the read
@@ -355,6 +378,7 @@ def _encode_write_field(
     field: MemoryWriteField,
     mem: MemoryChannel,
     memory: MemoryProfile,
+    layout: MemoryWriteLayout,
     ctcss_tones_centihz: tuple[int, ...] | None,
 ) -> bytes:
     """Encode one declared field; the value is validated first, so an
@@ -371,10 +395,17 @@ def _encode_write_field(
         case "frequency":
             return _encode_record_frequency(mem.frequency_hz, memory, field.max_hz)
         case "mode":
-            try:
-                Mode(mem.mode)
-            except ValueError:
-                raise ValueError(f"unknown CI-V mode code 0x{mem.mode:02x}") from None
+            # The raw CI-V mode code of the read block; DD (0x22) only in
+            # the profile's DD groups (the shared reader rule).
+            if mem.mode == _MODE_DD:
+                _dd_memory_mode(mem.mode, memory, mem.group)
+            else:
+                try:
+                    Mode(mem.mode)
+                except ValueError:
+                    raise ValueError(
+                        f"unknown CI-V mode code 0x{mem.mode:02x}"
+                    ) from None
             return bytes([mem.mode])
         case "mode_bcd":
             return bcd_encode_value(mem.mode, byte_count=1)
@@ -389,16 +420,23 @@ def _encode_write_field(
         case "data_tone":
             if mem.datamode not in (0, 1):
                 raise ValueError(f"data mode must be 0 or 1, got {mem.datamode}")
-            if not 0 <= mem.tonemode <= 3:
-                raise ValueError(f"tone mode must be 0-3, got {mem.tonemode}")
+            if not 0 <= mem.tonemode <= layout.tone_max:
+                raise ValueError(
+                    f"tone mode must be 0-{layout.tone_max}, got {mem.tonemode}"
+                )
             return bytes([(mem.datamode << 4) | mem.tonemode])
         case "duplex_tone":
-            # RPS (3) is the IC-9700 DD value; a group/channel radio has 0-2.
-            max_duplex = 2 if memory.addressing == "group_channel" else 3
-            if not 0 <= mem.duplex <= max_duplex:
-                raise ValueError(f"duplex must be 0-{max_duplex}, got {mem.duplex}")
-            if not 0 <= mem.tonemode <= 3:
-                raise ValueError(f"tone mode must be 0-3, got {mem.tonemode}")
+            # The reader's own duplex rule, shared: RPS (3) is the IC-9700
+            # DD value, DUP-/DUP+ never in DD.
+            _check_duplex_nibble(
+                mem.duplex,
+                _dd_memory_mode(mem.mode, memory, mem.group),
+                memory,
+            )
+            if not 0 <= mem.tonemode <= layout.tone_max:
+                raise ValueError(
+                    f"tone mode must be 0-{layout.tone_max}, got {mem.tonemode}"
+                )
             return bytes([(mem.duplex << 4) | mem.tonemode])
         case "tone":
             return _encode_record_tone(mem.tone_centihz, ctcss_tones_centihz)
@@ -432,7 +470,7 @@ def _write_record(
     record = bytearray(layout.record_length)
     for field in layout.fields:
         record[field.offset : field.offset + field.length] = _encode_write_field(
-            field, mem, memory, ctcss_tones_centihz
+            field, mem, memory, layout, ctcss_tones_centihz
         )
     return bytes(record)
 
@@ -643,16 +681,10 @@ def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, A
     tone_mode = _TONE_MODE_BY_NIBBLE.get(tone_nibble)
     if tone_mode is None:
         raise ValueError(f"unknown tone mode nibble {tone_nibble}")
-    dd = mode_code == _MODE_DD and group in memory.dd_groups
-    if mode_code == _MODE_DD and not dd:
-        raise ValueError(f"unknown mode code {mode_code:02X} for memory group {group}")
-    # RPS (3) exists only in DD; DD has no DUP-/DUP+.
-    if duplex_nibble > (2 if memory.addressing == "group_channel" else 3) or (
-        (duplex_nibble == 3) != dd and duplex_nibble != 0
-    ):
-        raise ValueError(
-            f"duplex nibble {duplex_nibble} does not fit mode {mode_code:02X}"
-        )
+    dd = _dd_memory_mode(mode_code, memory, group)
+    # RPS (3) exists only in DD; DD has no DUP-/DUP+ (the shared rule the
+    # write encoder applies to the value before a byte is built).
+    _check_duplex_nibble(duplex_nibble, dd, memory)
     # The shared GHz/100 MHz digit rules (MOR-3644): the write encoder
     # checks the same byte, so a record it builds always reads back.
     _check_frequency_digits(block[4], memory)

@@ -547,6 +547,7 @@ last_channel = 99
 [memory.write_layout]
 clear = "1a00_ff"  # guide p.17: "send the command 1A 00 XX XX FF" (P1/P2 excluded)
 record_length = 31
+tone_max = 2  # the 11 tone nibble is 0=OFF, 1=TONE, 2=TSQL (no DTCS on this radio)
 fields = [
   { field = "select", offset = 0, length = 1, encoding = "select" },                            # 3
   { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 74_800_000 },  # 4-8: receiver tops at 74.8 MHz (spec p.70)

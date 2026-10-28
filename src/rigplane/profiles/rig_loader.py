@@ -2174,7 +2174,7 @@ _MEMORY_KEYS = frozenset(
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
-_WRITE_LAYOUT_KEYS = frozenset({"clear", "record_length", "fields"})
+_WRITE_LAYOUT_KEYS = frozenset({"clear", "record_length", "tone_max", "fields"})
 _WRITE_FIELD_KEYS = frozenset({"field", "offset", "length", "encoding", "max_hz"})
 
 
@@ -2211,6 +2211,16 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
         raise RigLoadError(
             f"{filename}: [memory].write_layout.record_length must be an "
             f"integer 1..128, got {record_length!r}"
+        )
+    tone_max = raw.get("tone_max", 3)
+    if (
+        isinstance(tone_max, bool)
+        or not isinstance(tone_max, int)
+        or (not 0 <= tone_max <= 3)
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.tone_max must be an integer "
+            f"0..3 (the tone-mode nibble this record can store), got {tone_max!r}"
         )
     rows = raw.get("fields")
     if not isinstance(rows, list) or not rows:
@@ -2274,7 +2284,10 @@ def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
             )
         )
     layout = MemoryWriteLayout(
-        clear=clear, record_length=record_length, fields=tuple(fields)
+        clear=clear,
+        record_length=record_length,
+        tone_max=tone_max,
+        fields=tuple(fields),
     )
     errors = layout.validation_errors()
     if errors:

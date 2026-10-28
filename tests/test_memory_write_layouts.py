@@ -135,7 +135,7 @@ _MANUAL_RECORDS = {
         "01"  # 11: data OFF | TONE
         "001365"  # 12-14: 136.5 Hz
         "000000"  # 15-17: tone squelch off
-        "465438202020202020202020202020"  # 18-33: "FT8", 16, space padded
+        "46543820202020202020202020202020"  # 18-33: "FT8", 16, space padded
     ),
     # The legacy 26-byte record, byte-identical to the pre-MOR-3644
     # builder (the complete-frame golden in tests/test_memory_write_gate.py
@@ -297,6 +297,62 @@ def test_an_out_of_range_frequency_refuses(model: str, overrides: dict) -> None:
 def test_a_tone_outside_the_ctcss_domain_refuses(model: str) -> None:
     with pytest.raises(ValueError, match="[Tt]one"):
         _build(model, _mem(model, tone_centihz=12_345))
+
+
+@pytest.mark.parametrize(
+    ("model", "overrides"),
+    [
+        ("IC-7300", {"tonemode": 3}),  # no DTCS field on this radio
+        ("IC-7300MK2", {"tonemode": 3}),
+    ],
+)
+def test_a_tone_mode_the_record_cannot_store_refuses(
+    model: str, overrides: dict
+) -> None:
+    """The IC-7300/MK2 record's tone nibble is 0=OFF, 1=TONE, 2=TSQL
+    (Advanced Manual 11a p.19-11 / MK2 guide p.17); DTCS (3) is declared
+    out of range as layout data (``tone_max = 2``)."""
+    with pytest.raises(ValueError, match="tone mode"):
+        _build(model, _mem(model, **overrides))
+
+
+def test_dtcs_tone_mode_builds_where_the_record_declares_it() -> None:
+    """The IC-705's tone nibble is 0-3 (guide p.17: OFF/TONE/TSQL/DTCS)."""
+    frame = _build("IC-705", _mem("IC-705", tonemode=3))
+    # byte 14 of the record: duplex 2 | DTCS 3
+    record = frame[10:-1]  # after FE FE A4 E0 1A 00 + the 4-byte address
+    assert record[9] == 0x23
+
+
+@pytest.mark.parametrize(
+    ("model", "overrides", "match"),
+    [
+        # DD mode (0x22) is a mode only in the IC-9700's DD groups (band 3).
+        ("IC-9700", {"mode": 0x22, "group": 1}, "DD mode"),
+        ("IC-705", {"mode": 0x22}, "DD mode"),  # no DD groups on this radio
+        # RPS (duplex 3) exists only in DD mode; DUP-/DUP+ never in DD.
+        ("IC-9700", {"duplex": 3, "group": 1}, "duplex"),
+        ("IC-705", {"duplex": 3}, "duplex"),  # a group/channel radio has 0-2
+        ("IC-9700", {"mode": 0x22, "group": 3, "duplex": 2}, "duplex"),
+    ],
+)
+def test_dd_and_rps_combinations_refuse_outside_their_modes(
+    model: str, overrides: dict, match: str
+) -> None:
+    """The reader's own DD/duplex rules (``_parse_block``), shared with the
+    encoder: a record the write builds must always be one the read side
+    accepts back."""
+    with pytest.raises(ValueError, match=match):
+        _build(model, _mem(model, **overrides))
+
+
+def test_dd_mode_with_rps_builds_in_a_dd_group() -> None:
+    """IC-9700 band 3 (1.2 GHz, ``dd_groups``): DD mode with RPS -- the one
+    combination the guide documents (p.14: RPS in DD, DUP+/- elsewhere)."""
+    frame = _build("IC-9700", _mem("IC-9700", mode=0x22, group=3, duplex=3, tonemode=0))
+    record = frame[9:-1]  # after FE FE A2 E0 1A 00 + the 3-byte address
+    assert record[6] == 0x22  # mode DD
+    assert record[9] == 0x30  # duplex 3 (RPS) | tone OFF
 
 
 @pytest.mark.asyncio

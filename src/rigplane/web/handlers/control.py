@@ -3467,12 +3467,36 @@ class ControlHandler:
                 # MOR-3644: every ingress (WS, HTTP) shares this arm; the
                 # profile is the only authority on the write record layout.
                 admit_memory_write(getattr(radio, "profile", None))
+                # The address the profile needs: ``group`` is the memory
+                # group (IC-705) or band code (IC-9700), 0 on the
+                # channel-only radios. Bounds are the profile's own, so a
+                # malformed or out-of-range address refuses here, before
+                # anything is enqueued (an accepted clear never answers
+                # ok and fails later at the radio).
+                for field in ("channel", "group"):
+                    if field in params:
+                        value = params[field]
+                        if isinstance(value, bool) or (
+                            isinstance(value, float) and not value.is_integer()
+                        ):
+                            raise ValueError(
+                                f"{field} must be an integer, got {value!r}"
+                            )
                 channel = _int_param(params["channel"], "channel")
-                # The group/band part of the address for group- or
-                # band-addressed memories (IC-705, IC-9700); 0 for the
-                # channel-only radios. Profile bounds are checked when the
-                # frame is built.
                 group = _int_param(params.get("group", 0), "group")
+                memory = getattr(getattr(radio, "profile", None), "memory", None)
+                if not isinstance(memory, MemoryProfile):
+                    raise ValueError("this radio's memory has no verified layout")
+                if not memory.first_group <= group <= memory.last_group:
+                    raise ValueError(
+                        f"group must be {memory.first_group}-{memory.last_group}, "
+                        f"got {group}"
+                    )
+                if not memory.first_channel <= channel <= memory.last_channel:
+                    raise ValueError(
+                        f"channel must be {memory.first_channel}-"
+                        f"{memory.last_channel}, got {channel}"
+                    )
                 q.put(MemoryClear(channel, group))
                 return {"channel": channel}
             case "set_memory_contents":
