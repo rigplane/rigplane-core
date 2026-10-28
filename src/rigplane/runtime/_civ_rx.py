@@ -61,6 +61,7 @@ from rigplane.core.exceptions import (
     StaleBeforeWireError,
     TimeoutError,
 )
+from rigplane.core.transport import IcomTransport
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import (
     KnownTxTarget,
@@ -743,13 +744,37 @@ class CivRuntime:
 
     def _note_ptt_dispatch(
         self, frame: CivFrame, is_current: Callable[[], bool] | None = None
-    ) -> None:
+    ) -> OwedReplyEntry | None:
         ledger = self._ptt_reply_ledger
         if isinstance(is_current, _PttReadContext) and not ledger.eligible():
             raise _PttNotQuiescent("PTT replies are not quiescent")
+        if (
+            frame.to_addr != self._host._radio_addr
+            or frame.from_addr != CONTROLLER_ADDR
+        ):
+            return None
         entry = ledger.note_dispatch(frame)
         if isinstance(is_current, _PttReadContext):
             is_current.entry = entry
+        return entry
+
+    async def _send_ptt_accounted(
+        self,
+        transport: Any,
+        pkt: bytes,
+        frame: CivFrame,
+        is_current: Callable[[], bool] | None = None,
+        write_guard: Callable[[], bool] | None = None,
+    ) -> None:
+        entry = self._note_ptt_dispatch(frame, is_current)
+        try:
+            guard = {"is_current": write_guard} if write_guard is not None else {}
+            await transport.send_tracked(pkt, **guard)
+        except CommandError:
+            self._ptt_reply_ledger.discard(entry)
+            raise
+        finally:
+            self._ptt_reply_ledger.note_written(entry)
 
     # ------------------------------------------------------------------
     # Public API (design doc)
@@ -1371,8 +1396,7 @@ class CivRuntime:
             commander.note_foreign_dispatch(asyncio.current_task(), Priority.NORMAL)
 
         async def send() -> None:
-            self._note_ptt_dispatch(parse_civ_frame(civ_frame))
-            await transport.send_tracked(pkt)
+            await self._send_ptt_accounted(transport, pkt, parse_civ_frame(civ_frame))
 
         task = asyncio.create_task(send())
         tasks = None
@@ -1834,14 +1858,15 @@ class CivRuntime:
         self._host._last_civ_data_received = time.monotonic()
         try:
             while self._host._civ_transport is not None:
+                receiving_transport = self._host._civ_transport
                 try:
-                    packet = await self._host._civ_transport.receive_packet(timeout=0.2)
+                    packet = await receiving_transport.receive_packet(timeout=0.2)
                 except asyncio.TimeoutError:
                     self._cleanup_stale_civ_waiters()
                     continue
 
                 packets = [packet]
-                queue = getattr(self._host._civ_transport, "_packet_queue", None)
+                queue = getattr(receiving_transport, "_packet_queue", None)
                 if queue is not None:
                     while not queue.empty():
                         try:
@@ -1871,7 +1896,7 @@ class CivRuntime:
                     for raw, received in tuple(cache.items()):
                         if now - received > lifetime:
                             del cache[raw]
-                    if any(
+                    if isinstance(receiving_transport, IcomTransport) and any(
                         is_directed_ptt_reply(f, self._host._radio_addr)
                         for _, f in frames
                     ):
@@ -4395,8 +4420,13 @@ class CivRuntime:
                 # proves the frame never left this side.
                 sent = True
                 try:
-                    self._note_ptt_dispatch(parsed_frame, is_current)
-                    await transport.send_tracked(pkt, **guard)
+                    await self._send_ptt_accounted(
+                        transport,
+                        pkt,
+                        parsed_frame,
+                        is_current,
+                        guard.get("is_current"),
+                    )
                 except CommandError:
                     # The transport refused before writing: the one
                     # failure behind the call still provably pre-wire.
@@ -4474,8 +4504,9 @@ class CivRuntime:
             # pre-wire.
             sent = True
             try:
-                self._note_ptt_dispatch(parsed_frame, is_current)
-                await transport.send_tracked(pkt, **guard)
+                await self._send_ptt_accounted(
+                    transport, pkt, parsed_frame, is_current, guard.get("is_current")
+                )
             except CommandError:
                 # The transport refused before writing: the one failure
                 # behind the call still provably pre-wire.

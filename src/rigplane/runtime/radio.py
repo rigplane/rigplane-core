@@ -4544,6 +4544,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         ledger = self._civ_runtime._ptt_reply_ledger
+        runtime, epoch, transport = (
+            self._civ_runtime,
+            self._civ_epoch,
+            self._civ_transport,
+        )
         if not ledger.eligible():
             return TxStateReading(value=None, failure="not-quiescent")
         orphans_before = ledger.orphan_count
@@ -4582,7 +4587,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if source == "poll_response":
                 if not observation.value:
                     await asyncio.sleep(self._PTT_READBACK_SETTLE_S)
-                    if not context():
+                    if (
+                        self._civ_runtime is not runtime
+                        or self._civ_epoch != epoch
+                        or self._civ_transport is not transport
+                        or not self._connected
+                        or not context()
+                    ):
                         return TxStateReading(value=None, failure="read-error")
                     if ledger.orphan_count != orphans_before:
                         return TxStateReading(
