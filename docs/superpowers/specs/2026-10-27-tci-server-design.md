@@ -484,7 +484,7 @@ between receive and its Tune mode (spec 4.2), which has its own power setting,
 
 First release: `tune:0[,x]` is answered `tune:0,false;` and does nothing;
 `tune_drive` is read as the same value as `drive` and ignores sets. Honouring
-`tune` is decision Q3. Option if the owner wants it: map `tune:0,true` to
+Not honouring `tune` in release 1 is decided (Q3). Option for a later release: map `tune:0,true` to
 `set_tuner_status(2)` through the same owner checks the Web UI applies
 (`ControlHandler._validate_controller_command`: refused while another owner holds
 TX or while the radio transmits with no owner), stop it with value 0 on
@@ -649,8 +649,9 @@ Default bind is `127.0.0.1` (section 9). The adversaries named:
 - Another machine on the LAN: only if the operator binds a non-loopback address,
   which is logged at WARNING on start. TCI has no authentication in the spec,
   and the existing `rigctld` listener has none either (it binds `0.0.0.0` when
-  unmanaged). No extra gate is added; decision Q6 asks whether remote PTT should
-  need an explicit opt-in.
+  unmanaged). No extra gate is added (decided, Q6): remote PTT has parity with
+  `rigctld`. Network exposure is one explicit setting shared by both listeners
+  (section 9), not a TCI-only opt-in.
 
 ## 8. Phase "audio"
 
@@ -748,7 +749,8 @@ throughput.
    proceed. The mode must be one the policy defines a data route for (SSB, AM,
    FM per profile); in CW, RTTY or any other mode, or if the readback does not
    match, the key is refused with no PTT write. Restoring the previous input
-   after the over is **not part of this design** (open question Q11): the web
+   after the over is **not done in release 1** (decided, Q11; a documented known
+   limitation, section 9): the web
    path has no restore to reuse, because `ControlHandler`'s teardown hook only
    clears its bookkeeping (`_clear_mod_input_restore_on_teardown`, pinned by
    `tests/test_web_mod_input_restore.py`).
@@ -809,7 +811,9 @@ event-loop clock and the clock is injectable for tests.
 |---|---|
 | Default port | `50001`. Evidence: AetherSDR docs give 50001 as its TCI default and tell WSJT-X users to enter `localhost:50001`. OpsLog's TCI backend defaults to 40001 ([OL]); a MacLoggerDX help page is reported (search snippet only, page not read) to give 40001 as the ExpertSDR2 default. Q1. |
 | Default bind | `127.0.0.1`; non-loopback logged at WARNING. `rigctld` binds `0.0.0.0` when unmanaged; TCI never does by default. |
-| Flags | `web` and `station`: `--tci` / `--no-tci`, `--tci-port N`, `--tci-host H`, parallel to `--rigctld`, `--rigctld-port`. Default **off** in Core (new network listener that can key; Q2). No `serve` support (7.2). |
+| Network exposure | **One explicit setting shared by the `rigctld` and TCI listeners (decided, Q6)**, default loopback. Today `rigctld`'s host is hard-coded in `_cmd_web` (`127.0.0.1` when managed, else `0.0.0.0`) and `web`/`station` have no `--rigctld-host`; C4 introduces the shared setting and makes both listeners read it, instead of adding a TCI-only host flag. Whether it also changes `rigctld`'s unmanaged `0.0.0.0` default is not decided here; C4 keeps that behaviour unchanged and records the question in its PR. |
+| Flags | `web` and `station`: `--tci` / `--no-tci`, `--tci-port N`, plus the shared exposure setting above, parallel to `--rigctld`, `--rigctld-port`. **Off in Core unless `--tci`; Pro turns it on (decided, Q2).** No `serve` support (7.2). |
+| Known limitations (documented in `docs/api/tci.md`) | the TX input chosen for a `source=tci` over is not restored afterwards (Q11); `tune` and `tune_drive` are not honoured (Q3); IQ, spots on a panorama, CW over TCI and a second receiver are not offered. |
 | Env | none, matching `rigctld`, which has none. |
 | Wiring | in `cli/__init__.py: _cmd_web`, next to `RigctldServer`, the adapter receives the same `managed_tx_authority`, `command_queue`, `command_service` and passes its handler to the leaf's server; `OSError` on bind aborts startup the way `rigctld` does; stop in the same `finally`; include the port in `check_ports_available`. |
 | Coexistence with `rigctld` | two independent sockets on one radio and one authority. Owners are namespaced by source (`rigctld-client-N`, `tci-client-N`). The authority refuses a second keyer. Neither listener starts, stops or configures the other. |
@@ -948,9 +952,9 @@ and the init-burst order. Handling:
 Scope is split. **C0-RX** is RX-only with no PTT pressed and answers the
 connect, VFO/mode/split, audio-start and RX-header items. TX items (`trx`,
 `TX_CHRONO` exchange, TX header fields) need a **C0-TX** session with a dummy
-load, minimum power and the owner's authorisation, after the TX safety PR
-(C3) has merged; until then those items stay open and A2 does not merge.
-It needs the owner's machine and radio.
+load, minimum power, the owner present and his yes for each run (decided, Q10),
+after the TX safety PR (C3) has merged; until then those items stay open and
+A2 does not merge. It needs the owner's machine and radio.
 
 Real-app smoke (RX only, one of JTDX or WSJT-X Improved, bench radio IC-7300 or
 FTX-1): connect and "Test CAT" passes; dial and mode changes follow both ways;
@@ -972,7 +976,7 @@ labels: P0 prerequisites, L leaf package, C control (adapter), A audio.
 | P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; `web` behaviour, including its 60 s pong timeout, unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | 450 |
 | P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it; add `ManagedTxAuthority.owned_tx_submission(owner)` and the `before_on` preparation hook of 7.3a, with their tests | 650 |
 | P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | 900 |
-| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` (apply and readback; restoring the input is Q11, not included) | 300 |
+| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` (apply and readback; restoring the input is not done in release 1, Q11) | 300 |
 | P0e | widen `RelativeVfoModeWritable.write_relative_vfo_mode` to a numeric DATA sub-mode with readback, bounded by `data_mode_count`; IC-7610 simulator test | 300 |
 | C0 | recording proxy script with coverage report, C0-RX fixtures and findings note (C0-TX follows C3) | 350 |
 | L1 | leaf `protocol.py` (grammar, formatting) and `frames.py` (stream header, sample types), with spec fixtures and `eesdr-tci` round trips | 600 |
@@ -1048,16 +1052,16 @@ and the `freeze-exception` label. This design PR is `Change class: docs`.
 | # | Item | Owner of the decision |
 |---|---|---|
 | Q1 | Default port. **Decided 2026-10-27 (coordinator): 50001.** | decided |
-| Q2 | Core default: TCI off unless `--tci` (recommended); Pro turns it on | owner |
-| Q3 | Honour `tune`? Recommended: no in the first release (6.4) | owner |
+| Q2 | Core default. **Decided 2026-10-28 (owner, via coordinator): TCI is off in Core unless `--tci`; Pro turns it on.** | decided |
+| Q3 | `tune`. **Decided 2026-10-28 (owner): not honoured in release 1** (6.4) | decided |
 | Q4 | `protocol:` and `device:` strings. AetherSDR announces `protocol:ExpertSDR3,<version>` and clients are reported to switch behaviour on it; the safest default is the same program name, with the version and `device:` settled by C0 | C0 evidence |
 | Q5 | Receiver count. **Decided 2026-10-27 (coordinator): `trx_count:1` first**; dual-receiver radios later | decided |
-| Q6 | Remote PTT from non-loopback peers: parity with `rigctld` (recommended) or require an opt-in | owner |
+| Q6 | Remote PTT. **Decided 2026-10-28 (owner): parity with `rigctld`; the listener binds `127.0.0.1` by default and network exposure is one explicit setting shared by both listeners** | decided |
 | Q7 | Shared mechanisms. **Decided 2026-10-27 (coordinator): extract first (P0a to P0e), no duplication.** | decided |
 | Q8 | PR sizing. **Decided 2026-10-27 (coordinator): the owner's rule is PRs up to 4000 lines; plan fewer, larger PRs, each with failing-first and seam tests (section 11).** | decided |
 | Q9 | WebSocket location. **Decided 2026-10-27 (coordinator): framing stays inside the leaf, `tci/ws.py`.** | decided |
-| Q10 | C0-TX session: dummy load, minimum power, owner's authorisation, after C3 | owner |
-| Q11 | Input restoration after a `source=tci` over. Today nothing restores it. If wanted, it is new behaviour: saved settings; cleanup on preparation failure, rejection, cancellation, unkey and disconnect; fresh confirmed RX and ownership/generation validation before restoring; an explicit unresolved obligation when the release is uncertain; tests that restoration never changes routing during another owner's TX or `RELEASE_REQUIRED`. Raised by the third review round as P2 and deliberately not designed here | owner |
+| Q10 | C0-TX session. **Decided 2026-10-28 (owner): it comes later, with a dummy load at minimum power, the owner present and his yes for each run** | decided |
+| Q11 | Input restoration after a `source=tci` over. **Decided 2026-10-28 (owner): not done in release 1; a documented known limitation.** If ever wanted it is new behaviour (saved settings; cleanup on preparation failure, rejection, cancellation, unkey and disconnect; fresh confirmed RX and ownership/generation validation before restoring; an explicit unresolved obligation when the release is uncertain; tests that restoration never changes routing during another owner's TX or `RELEASE_REQUIRED`). Raised by the third review round as P2 | decided |
 
 Risks, in order: P0c (inside PR 2) changes the TX path that `rigctld` users rely
 on, hence the strictest pin and an unchanged-behaviour review; PRs of up to 4000
