@@ -300,7 +300,10 @@ byte) takes `ptt_set_ack_ms`, falling back to `ack_ms_set`, then
 `reply_latency_ms`; the answer to a PTT read (1C 00 without data) takes
 `readback_ms`, falling back to `reply_latency_ms`; every other answer takes
 `reply_latency_ms`. Answers stay in request order: a zero-delay answer
-scheduled while a delayed reply is still pending is delivered after it.
+scheduled while a `[timing]`-delayed reply is still pending is delivered after
+it. The `delay_identity_answer` fault injection is not part of that order: an
+instant answer is delivered while the delayed identity answer is still
+pending, and a positively delayed answer still lands after it.
 `write_drain_ms` is how long the simulated serial writer's
 `drain()` takes. `tx_on_switch_ms` / `tx_off_switch_ms` delay the simulated PTT
 state change after an accepted PTT write: the `ptt` property and PTT read

@@ -43,6 +43,9 @@ NAK = _answer(0xFA)
 PTT_OFF = _answer(0x1C, sub=0x00, data=b"\x00")
 PTT_ON = _answer(0x1C, sub=0x00, data=b"\x01")
 FREQ_ANSWER = _answer(0x03, data=_bcd_encode_freq(INITIAL_FREQ))
+ID_READ = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x19, sub=0x00)
+# rigs/ic7300.toml [identity].expected_ids: 19 00 answers with the id 94.
+ID_ANSWER = _answer(0x19, sub=0x00, data=bytes.fromhex("94"))
 
 PTT_READ = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00)
 FREQ_READ = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x03)
@@ -154,6 +157,50 @@ async def test_without_switch_keys_ptt_flips_inside_the_write(tmp_path) -> None:
         assert len(clock.active) == 1  # only the ACK delivery is scheduled
         clock.advance(0.061)
         assert _delivered(reader) == ACK  # the ACK still waits the latency
+    finally:
+        writer.close()
+
+
+# ---------------------------------------------------------------------------
+# The identity-delay fault injection is not part of the [timing] order
+# ---------------------------------------------------------------------------
+
+
+async def test_an_instant_reply_does_not_wait_behind_the_delayed_identity_answer() -> (
+    None
+):
+    """Legacy fault injection, no ``[timing]`` key set: slow identity,
+    instant everything else. The frequency answer to a pipelined read is
+    already readable while the delayed identity answer is still in flight."""
+    fake = CivSerialFake(echo=False, frequency_hz=INITIAL_FREQ)
+    fake.delay_identity_answer(0.15)
+    reader, writer, clock = await _scheduled(fake)
+    try:
+        writer.write(ID_READ + FREQ_READ)
+        assert _delivered(reader) == FREQ_ANSWER  # synchronous, clock untouched
+        clock.advance(0.149)
+        assert _delivered(reader) == FREQ_ANSWER  # the identity answer not yet
+        clock.advance(0.002)
+        assert _delivered(reader) == FREQ_ANSWER + ID_ANSWER  # lands at 150 ms
+    finally:
+        writer.close()
+
+
+async def test_a_positive_reply_latency_stays_behind_the_delayed_identity_answer() -> (
+    None
+):
+    """With a configured reply latency the legacy order holds: the identity
+    answer (latency + fault delay) still holds a later read's answer back."""
+    fake = CivSerialFake(echo=False, frequency_hz=INITIAL_FREQ, reply_latency_s=0.05)
+    fake.delay_identity_answer(0.15)
+    reader, writer, clock = await _scheduled(fake)
+    try:
+        writer.write(ID_READ + FREQ_READ)
+        assert _delivered(reader) == b""  # both answers are in flight
+        clock.advance(0.199)
+        assert _delivered(reader) == b""  # the read's answer waits behind identity
+        clock.advance(0.002)
+        assert _delivered(reader) == ID_ANSWER + FREQ_ANSWER  # identity first
     finally:
         writer.close()
 

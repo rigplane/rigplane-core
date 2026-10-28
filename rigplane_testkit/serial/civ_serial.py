@@ -626,9 +626,12 @@ class CivSerialFake:
         if reply is None:
             return
         delay = self._answer_delay_s(parsed, reply)
+        identity_fault = (
+            parsed.command == _CMD_TRANSCEIVER_ID and self._identity_delay_s > 0
+        )
         if parsed.command == _CMD_TRANSCEIVER_ID:
             delay += self._identity_delay_s
-        connection.deliver_after(delay, reply)
+        connection.deliver_after(delay, reply, fault=identity_fault)
         if connection.scope_start_pending:
             connection.scope_start_pending = False
             connection.start_scope()  # the wave follows the ACK that enabled it
@@ -845,7 +848,11 @@ class _Connection:
         self.error: OSError | None = None
         self.scope_start_pending = False
         self._last_due = 0.0  # loop time of the latest scheduled delayed reply
+        self._last_due_ordered = 0.0  # ditto, [timing]-class replies only
         self._late: set[asyncio.TimerHandle] = set()  # replies still in flight
+        # The [timing]-class replies still pending: what a zero-delay reply
+        # must queue behind (a fault-injection reply never holds one back).
+        self._ordered: set[asyncio.TimerHandle] = set()
         self._scope_handle: asyncio.TimerHandle | None = None
         self._scope_t0 = 0.0
         self._scope_sweep = 0
@@ -867,29 +874,47 @@ class _Connection:
         for handle in self._late:
             handle.cancel()
         self._late.clear()
+        self._ordered.clear()
 
-    def deliver_after(self, delay: float, data: bytes) -> None:
+    def deliver_after(self, delay: float, data: bytes, *, fault: bool = False) -> None:
         """Deliver *data* ``delay`` seconds from now, in the order scheduled.
 
         A non-positive delay delivers synchronously only while no delayed
-        reply is pending; behind one it is queued right after the pending
-        replies, so an answer never overtakes an earlier request's reply.
+        ``[timing]``-class reply is pending; behind a pending one it is
+        queued right after the pending replies, so an answer never
+        overtakes an earlier request's reply. *fault* marks a reply
+        delayed by the ``delay_identity_answer`` fault injection instead:
+        it is not part of that order, and a non-positive-delay reply
+        behind only fault replies is delivered synchronously, as before
+        the ``[timing]`` keys existed. A positive delay is always
+        scheduled after every earlier scheduled reply, a fault reply
+        included.
         """
-        if delay <= 0.0 and not self._late:
+        if delay <= 0.0 and not self._ordered:
             self.deliver(data)
             return
         loop = self._fake._scheduler()
-        due = max(loop.time() + max(delay, 0.0), self._last_due + 1e-6)
-        self._last_due = due
+        if delay <= 0.0:
+            # Queued behind a pending [timing]-class reply: right after
+            # the latest of those, never behind a fault-injection reply.
+            due = max(loop.time(), self._last_due_ordered + 1e-6)
+        else:
+            # The legacy rule: no scheduled reply lands before an earlier one.
+            due = max(loop.time() + delay, self._last_due + 1e-6)
+        self._last_due = max(self._last_due, due)
         baud = self.baud  # a reply sent at this rate is noise at another
 
         def deliver_late() -> None:
             self._late.discard(handle)
+            self._ordered.discard(handle)
             if self.baud == baud:
                 self.deliver(data)
 
         handle = loop.call_at(due, deliver_late)
         self._late.add(handle)
+        if not fault:
+            self._ordered.add(handle)
+            self._last_due_ordered = due
 
     def start_scope(self) -> None:
         """Stream the fake's scope sweeps from the first one, after any reply due."""
