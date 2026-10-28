@@ -38,7 +38,7 @@ The design has two layers inside Core (coordinator decision of 2026-10-27):
 It adds no radio-specific code, no second TX path, no second audio path and no
 second WebSocket implementation. Where the existing mechanism lives in the wrong
 place to be shared (inside `rigctld` or inside `web`), the design extracts it
-first (section 11, PRs P0a to P0d) instead of copying it. The one existing
+first (section 11, PRs P0a to P0e) instead of copying it. The one existing
 RFC 6455 implementation moves into layer (a), so `web` and the adapter share it.
 
 ### Decisions
@@ -420,8 +420,18 @@ on `split_enable:0,true`, it also writes B through the relative-VFO mode surface
 (`RelativeVfoModeWritable.write_relative_vfo_mode`, reached by `rigctld` as
 `set_split_mode`, gated on the capability). Before accepting a key it reads
 the TX tuple back (`read_relative_vfo`) and refuses (`trx:0,false;`, no PTT
-write) if mode or data state of the TX VFO differs from the announced
-modulation. Radios without the surface have no separate TX tuple to fix.
+write) if the mode or the **numeric DATA sub-mode** of the TX VFO, or the MOD
+input assigned to that sub-mode, differs from what the policy
+(`rigctld_wsjtx_policy`) requires. The sub-mode matters: on an IC-7610 over LAN
+the policy is DATA2 with the LAN input, and an IC-7610 whose DATA1 input is MIC
+would transmit from the microphone if only the DATA flag were compared.
+**Prerequisite (P0e):** `RelativeVfoModeWritable.write_relative_vfo_mode`
+accepts `data: bool | None` today, and its Icom implementation reads back only
+0 and 1, so it cannot write or verify DATA2. P0e widens it to a numeric
+sub-mode bounded by the profile's `data_mode_count`, with write and readback
+through the capability, no per-radio branch. Radios without the surface have no
+separate TX tuple to fix. Test: IC-7610 simulator split case with DATA1=MIC and
+DATA2=LAN, asserting B's exact sub-mode and input before key-down.
 Tests: start with mismatched A/B modes; change mode before and after enabling
 split; assert the tuple actually read at key-down
 (`tests/test_rigctld_wsjtx_split_mk2.py` is the existing rigctld precedent for
@@ -517,11 +527,11 @@ key (`_cmd_web`, MOR-3536). Relaxing it is a separate decision.
 
 1. Parse. The optional third argument selects the TX audio source (spec 4.2).
    Core selects TX input only through the route policy of 8.3, so:
-   - `tci`: requires phase "audio" (8) and a PCM TX route. Before the key is
-     accepted the adapter **establishes and verifies** the TX input: it applies
-     the data-mode and MOD-input policy for the current mode (8.3, step 1) even
-     if the client never sent `modulation`, reads the result back, and refuses
-     if it cannot be established or verified;
+   - `tci`: requires phase "audio" (8) and a PCM TX route. The TX input is
+     **established and verified inside the authority's admitted key**, never
+     before it (7.3a): the policy of 8.3 step 1 is applied even if the client
+     never sent `modulation`, read back, and the key is refused if it cannot be
+     established or verified;
    - absent: key with the radio's currently selected input (what a rigctld
      `set_ptt` does); the reply is the same whatever DIGU/DIGL selected earlier;
    - `mic1`, `mic2`, `micpc`, `ecoder2` or any other name: **refuse**
@@ -532,7 +542,8 @@ key (`_cmd_web`, MOR-3536). Relaxing it is a separate decision.
    `ControllerAuthority.mode == "remote"`; `authority.held_by_other(owner)`;
    `authority.radio_tx_refusal_nowait()` is not `None` (radio transmitting with
    no owner, MOR-3537).
-3. Otherwise submit through the shared managed-key ingress (P0c):
+3. Otherwise submit through the shared managed-key ingress (P0c), with the
+   `before_on` preparation of 7.3a for `source=tci`:
    `ManagedTxAuthority.start_ptt_submission(True, owner, ready=..., expires_at_monotonic=...)`
    and the ordered queue entry, exactly as `rigctld` does for `set_ptt`. The
    reply is `trx:0,true;` when the submission is accepted and its queued write
@@ -540,6 +551,32 @@ key (`_cmd_web`, MOR-3536). Relaxing it is a separate decision.
    `ControllerError` is `trx:0,false;`. The notifier then follows the observed
    PTT (`OBSERVED_PTT_PATH`); if the radio contradicts the reply, the next
    notification says so.
+
+### 7.3a Preparation inside the admitted key
+
+Changing mode, DATA state or MOD input is a write that can alter what another
+owner is transmitting. It therefore must not run before the authority has
+admitted this owner, and checking `held_by_other` first is not enough, because
+the routing writes await and another owner can key in between. In
+`ManagedTxAuthority._begin_positive_operation` the optional `ready` future is
+awaited *before* the admission block, and `admit_managed_write` does not stop
+mode or input writes while another owner holds TX, so neither can serve.
+
+Requirement: `ManagedTxAuthority` gains an optional `before_on` coroutine
+parameter on `start_ptt_submission`. It runs after the admission block has set
+the intent to `PTT(owner)` (so no other owner can key) and before the PTT_ON
+effect is dispatched, bounded by the attempt timeout. If it raises, times out or
+reports failure, the transition takes the authority's existing
+"ON rejected before effect" path (intent back to RX, release debt, scheduled
+`force_receive`), no RF is produced, and the requester is told `trx:0,false;`.
+Routing writes made during `before_on` go through the normal `CommandIntent`
+path with `source="tci"`. The change lands in P0b together with
+`owned_tx_submission`, and is used by TCI only.
+
+Tests: another owner holds TX (MIC) and A sends `trx:0,true,tci`: no mode, DATA
+or input write is made; another owner keys while A is inside `before_on`: that
+key is refused and A's writes complete first or are cancelled; `before_on`
+raising or timing out leaves RX with debt scheduled and no PTT_ON write.
 
 `trx:0,false`: `ManagedTxAuthority.submit_ptt(False, owner)`. If this owner holds
 nothing, reply the actual state and write nothing, matching `rigctld`
@@ -711,9 +748,11 @@ throughput.
    input source) for the current mode, reads it back, and only then lets the key
    proceed. The mode must be one the policy defines a data route for (SSB, AM,
    FM per profile); in CW, RTTY or any other mode, or if the readback does not
-   match, the key is refused with no PTT write. The previous input is restored on
-   unkey and on disconnect with the restore mechanism the web path already has
-   (`ControlHandler._mod_input_restore`, `arm_mod_input_restore`).
+   match, the key is refused with no PTT write. Restoring the previous input
+   after the over is **not part of this design** (open question Q11): the web
+   path has no restore to reuse, because `ControlHandler`'s teardown hook only
+   clears its bookkeeping (`_clear_mod_input_restore_on_teardown`, pinned by
+   `tests/test_web_mod_input_restore.py`).
 2. `lease = await radio.audio_session.acquire_tx("tci-<N>")` at the moment the
    key is accepted; release at unkey/disconnect.
 3. Convert client frames to s16le mono at the radio TX rate: de-interleave
@@ -875,7 +914,7 @@ gate check in a scratch branch and confirm the matching tests go red.
 
 ### 10.4 Existing suites as the pin for the refactors
 
-P0a to P0d change no behaviour (P0a also adds the boundary test of 4.1, which is new). Their pin is the current `rigctld`, web and
+P0a, P0c and P0d change no behaviour (P0a also adds the boundary test of 4.1, which is new). P0b and P0e add capability (new authority methods, a widened capability) and carry their own new tests. The pin for the unchanged parts is the current `rigctld`, web and
 bridge suites (`tests/test_rigctld_*.py`, `tests/test_audio_bridge.py`, web
 WebSocket tests) plus one new test per extracted unit that is written first and
 fails (the new module does not exist yet).
@@ -930,21 +969,22 @@ L leaf package, C control (adapter), A audio.
 | PR | Content | Depends on | ~Lines |
 |---|---|---|---|
 | P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; `web` behaviour, including its 60 s pong timeout, unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | none | 450 |
-| P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it; add `ManagedTxAuthority.owned_tx_submission(owner)` with its tests | none | 450 |
+| P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it; add `ManagedTxAuthority.owned_tx_submission(owner)` and the `before_on` preparation hook of 7.3a, with their tests | none | 650 |
 | P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | none | 900 |
-| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` (apply, readback and restore, with the web path's restore mechanism) | P0c (same file) | 350 |
+| P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` (apply and readback; restoring the input is Q11, not included) | P0c (same file) | 300 |
+| P0e | widen `RelativeVfoModeWritable.write_relative_vfo_mode` to a numeric DATA sub-mode with readback, bounded by `data_mode_count`; IC-7610 simulator test | none | 300 |
 | C0 | recording proxy script with coverage report, C0-RX fixtures and findings note (C0-TX follows C3) | owner/bench time | 350 |
 | L1 | leaf `protocol.py` (grammar, formatting) and `frames.py` (stream header, sample types), with spec fixtures and `eesdr-tci` round trips | P0a | 600 |
 | L2 | leaf `server.py` and `handler.py`: listener, sessions, broadcast and coalescing, ping and independent deadline watchdog, Origin/Host predicate; conformance with a fake handler | L1 | 800 |
 | C1 | adapter skeleton: handler, init burst, read-only commands, notifier; `tci_adapter/LAYER.md`; `.importlinter` adapter rows | L2 | 700 |
 | C2 | adapter write commands: `vfo`, `modulation`, `split_enable`, `rit`/`xit`, `drive`, Tier B | C1 | 650 |
-| C3 | TX: `trx`, `tx_enable`, disconnect, `tune` answer; seam tests | C2, P0c, P0d | 800 |
+| C3 | TX: `trx`, `tx_enable`, disconnect, `tune` answer; seam tests | C2, P0b, P0c, P0d, P0e | 800 |
 | C4 | CLI flags and wiring, `check_ports_available`, docs, changelog | C3 | 450 |
 | A1 | adapter RX path, shared decode helper, resample and channel mapping | C1 | 650 |
 | A2 | adapter TX path: playout buffer, `TX_CHRONO`, owner-specific admission, route policy | A1, C3, P0b | 900 |
 | A3 | real-app RX smoke evidence and fixtures | C4, A1 | 150 |
 
-About 8.2k lines in 14 PRs. P0a, P0b and P0c are file-disjoint and can run in
+About 8.7k lines in 15 PRs. P0a, P0b and P0c are file-disjoint and can run in
 parallel; L1 and L2 need only P0a, so the whole leaf can be built and tested
 while P0c is still in review.
 
@@ -992,10 +1032,11 @@ different model family from the builder.
 | Q4 | `protocol:` and `device:` strings. AetherSDR announces `protocol:ExpertSDR3,<version>` and clients are reported to switch behaviour on it; the safest default is the same program name, with the version and `device:` settled by C0 | C0 evidence |
 | Q5 | `trx_count:1` first; dual-receiver radios later | sumo |
 | Q6 | Remote PTT from non-loopback peers: parity with `rigctld` (recommended) or require an opt-in | owner |
-| Q7 | Extract shared mechanisms first (recommended, P0a to P0d) versus duplicate; duplicating breaks "no two mechanisms" | sumo |
+| Q7 | Extract shared mechanisms first (recommended, P0a to P0e) versus duplicate; duplicating breaks "no two mechanisms" | sumo |
 | Q8 | Sizing: plan to the 1000-line ceiling, not 4000 | sumo |
 | Q9 | WebSocket framing lives inside the leaf (`tci/ws.py`, recommended: it travels with the package) or in its own leaf `rigplane.ws` (cleaner name for `web`, two packages to lift) | sumo |
 | Q10 | C0-TX session: dummy load, minimum power, owner's authorisation, after C3 | owner |
+| Q11 | Input restoration after a `source=tci` over. Today nothing restores it. If wanted, it is new behaviour: saved settings; cleanup on preparation failure, rejection, cancellation, unkey and disconnect; fresh confirmed RX and ownership/generation validation before restoring; an explicit unresolved obligation when the release is uncertain; tests that restoration never changes routing during another owner's TX or `RELEASE_REQUIRED`. Raised by the third review round as P2 and deliberately not designed here | owner |
 
 Risks, in order: P0c changes the TX path that `rigctld` users rely on, hence
 the strictest pin and an unchanged-behaviour review; client behaviour is
