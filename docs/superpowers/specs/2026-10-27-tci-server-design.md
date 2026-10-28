@@ -15,27 +15,39 @@ TCI also carries RX and TX audio over the same WebSocket as control, which
 removes the virtual audio cable for digital-mode programs (WSJT-X Improved,
 JTDX, MSHV).
 
-The design is a **thin adapter**: a new sibling UI-server package
-`rigplane.tci`, next to `rigplane.rigctld` and `rigplane.web`, that
+The design has two layers inside Core (coordinator decision of 2026-10-27):
 
-- terminates the TCI WebSocket and translates TCI text commands to the same
-  `CommandIntent` pipeline that `rigctld` and the Web UI already use;
-- reads state from the same `StateStore` and pushes changes to every TCI client;
-- keys the transmitter **only** through the existing `ManagedTxAuthority`;
-- moves audio through the existing `AudioSession` (RX subscription, TX lease)
-  behind the existing fail-closed TX gate.
+- **(a) `rigplane.tci`, a radio-agnostic TCI protocol package.** Message
+  parse/encode, binary stream frame formats, and the WebSocket session and
+  handshake. It imports nothing from the rest of Core (only the standard
+  library and itself), so it can be lifted into a standalone MIT package
+  without a rewrite. The rule is enforced by an import-linter contract and a
+  test (section 4.1). No separate repository or package is created now; it is
+  extracted only when a second user outside Core appears.
+- **(b) `rigplane.tci_adapter`, one thin adapter.** A sibling UI-server
+  package next to `rigplane.rigctld` and `rigplane.web`. It is the only place
+  that knows about Core, and it
+
+  - translates TCI text commands to the same `CommandIntent` pipeline that
+    `rigctld` and the Web UI already use;
+  - reads state from the same `StateStore` and pushes changes to every client;
+  - keys the transmitter **only** through the existing `ManagedTxAuthority`;
+  - moves audio through the existing `AudioSession` (RX subscription, TX
+    lease) behind the existing fail-closed TX gate.
 
 It adds no radio-specific code, no second TX path, no second audio path and no
 second WebSocket implementation. Where the existing mechanism lives in the wrong
 place to be shared (inside `rigctld` or inside `web`), the design extracts it
-first (section 11, PRs P0a to P0d) instead of copying it.
+first (section 11, PRs P0a to P0d) instead of copying it. The one existing
+RFC 6455 implementation moves into layer (a), so `web` and the adapter share it.
 
 ### Decisions
 
 | # | Decision | Section |
 |---|---|---|
-| D1 | New package `rigplane.tci`, sibling of `web` and `rigctld`; new import-linter rows | 4 |
-| D2 | One RFC 6455 implementation: move `web/websocket.py` (and the Host/Origin guard) to a neutral lower layer; `web` keeps a shim | 4.2 |
+| D1 | Two layers: leaf protocol package `rigplane.tci` (imports nothing from Core) and one thin adapter `rigplane.tci_adapter`, sibling of `web` and `rigctld` | 4 |
+| D2 | One RFC 6455 implementation: move `web/websocket.py` into the leaf as `tci/ws.py`; the Host/Origin guard moves to `core/host_guard.py` and is injected into the leaf; `web` keeps shims | 4.2 |
+| D10 | The leaf boundary is enforced by an import-linter contract plus an AST test (stdlib and itself only); no separate repo or package until a second outside user exists | 4.1 |
 | D3 | TCI is a new command *ingress* (`source="tci"`), not a new command path | 5.1 |
 | D4 | TX only through `ManagedTxAuthority`; the managed-key choreography now private to `rigctld` is extracted and shared | 7 |
 | D5 | On a radio without the managed composition, TCI refuses PTT (no legacy unsupervised write) | 7.2 |
@@ -106,7 +118,7 @@ Citations are file plus symbol, per the repo's documentation rule. All read on
 | RX audio | `audio/session.py: AudioSession.subscribe_rx`, `audio/lan_stream.py: AudioPacket`, `audio/pcm.py: PcmFrame`, `audio/resample.py: PcmResampler`, `audio/_codecs.py: decode_ulaw_to_pcm16`, `runtime/_audio_runtime_mixin.py: add_pcm_rx_tap` | RX source |
 | TX audio | `audio/session.py: AudioSession.acquire_tx, TxLease.push(submission_guard=..., admission=...)`, `core/radio_protocol.py: AudioTransport.audio_tx_codec, push_tx`, `audio/route.py: resolve_audio_route, rigctld_wsjtx_policy` | TX sink and route policy |
 | Fail-closed TX gate | `web/server.py: WebServer._bridge_tx_gate_open` (uses `ManagedTxAuthority.snapshot`, `project_observed_ptt`, `ControllerAuthority.mode`), consumed by `audio/bridge.py: AudioBridge(tx_gate=...)` | **lives in `web`; extracted in P0b** |
-| WebSocket | `web/websocket.py` (`WebSocketConnection`, `make_frame`, `make_accept_key`, `keepalive_loop`), handshake inside `web/server.py: WebServer._handle_websocket`, `web/host_guard.py: host_header_allowed, same_origin_allowed` | **in `web`; moved in P0a** |
+| WebSocket | `web/websocket.py` (`WebSocketConnection`, `make_frame`, `make_accept_key`, `keepalive_loop`), handshake inside `web/server.py: WebServer._handle_websocket`, `web/host_guard.py: host_header_allowed, same_origin_allowed` | **in `web`; the framing moves to the leaf `tci/ws.py` and the guard to `core/host_guard.py` in P0a** |
 | Listener config | `cli/__init__.py: _cmd_web` (constructs `RigctldServer` with the managed composition; host `127.0.0.1` when managed, else `0.0.0.0`), `--rigctld/--no-rigctld`, `--rigctld-port`, `check_ports_available`, `rigctld/contract.py: RigctldConfig` | model for `--tci*` flags |
 | Test doubles | `tests/test_rigctld_server.py` (ephemeral port `port=0`), `tests/test_rigctld_managed_tx.py`, `tests/serial_stub.py: SerialMockRadio`, `rigplane_testkit/icom/simulator.py`, `rigplane_testkit/yaesu/cat_fake.py`, `rigplane_testkit/sim/`, `audio/backend.py: FakeAudioBackend` | seam and E2E tests |
 | Layering rules | `.importlinter` (`layers`, `independence-top`), `src/rigplane/rigctld/LAYER.md` | new package must fit |
@@ -121,56 +133,122 @@ rigctld-private choreography above. "tx gate, fail closed, bridge" found
 `_bridge_tx_gate_open` only. "pcm frame, decode packet, resample" found at least three
 places that decode RX packets (see 8.2). Nothing existing implements TCI.
 
-## 4. Architecture
+## 4. Architecture: two layers
 
 ```text
 TCI client (WSJT-X Improved / JTDX / MSHV / OpsLog / logger)
    |  ws://127.0.0.1:50001   text = commands, binary = audio
    v
-rigplane.tci
-   server.py      listener, upgrade, Host/Origin guard, per-socket session id "tci-client-N"
-   session.py     one TciSession per socket: parse, dispatch, per-client stream settings
-   protocol.py    command grammar: parse / format (pure functions)
-   commands.py    TCI command -> Core operation table (phase "control")
-   notifier.py    StateStore delta -> TCI notifications, 30 ms coalescing, broadcast
-   audio.py       (phase "audio") stream header codec, RX pump, TX receiver, TX_CHRONO
+rigplane.tci                       (a) protocol package, imports nothing from Core
+   ws.py        RFC 6455 framing and server upgrade (moved from web/websocket.py)
+   protocol.py  command grammar: parse / format, pure functions
+   frames.py    binary stream header; sample-type conversion (stdlib only)
+   server.py    listener, one session per socket, broadcast with 30 ms
+                coalescing, ping liveness; Origin/Host predicate is injected
+   handler.py   TciHandler: the Protocol the adapter implements
+   |   TciHandler: on_connect (returns the init burst), on_command,
+   |   on_binary, on_disconnect
+   v
+rigplane.tci_adapter               (b) the only code that knows Core
+   handler.py   implements TciHandler; mints owner "tci-client-N"; refusal rules
+   commands.py  TCI command -> Core operation table (phase "control")
+   notifier.py  StateStore delta -> TCI notifications
+   audio.py     (phase "audio") RX pump, TX receiver, TX_CHRONO, resample and
+                channel mapping
    |
-   v   CommandIntent (source="tci")            ManagedTx ingress (shared, from P0c)
-Radio API / CommandService / StateStore   --->  ManagedTxAuthority  --->  Radio.set_ptt
-   |                                              
+   v   CommandIntent (source="tci")          ManagedTx ingress (shared, from P0c)
+Radio API / CommandService / StateStore  --->  ManagedTxAuthority  --->  Radio.set_ptt
+   |
    v   AudioSession.subscribe_rx / acquire_tx (+ shared TX gate from P0b)
 ```
 
-### 4.1 Layer
+What belongs where:
 
-`tci` is a third member of the top UI-server tier. In `.importlinter`:
-`layers` row becomes `rigplane.web | rigplane.rigctld | rigplane.tci`;
-`independence-top` lists all three. Allowed dependencies are those of `web`
-(`core`, `commands`, `profiles`, `audio`, `runtime`; not `backends`), because TCI
-needs audio, which `rigctld` does not. A `src/rigplane/tci/LAYER.md` charter is
-part of PR C1, with the same "forbidden patterns" as `rigctld/LAYER.md`
-(no backend-id branches, no telemetry, no `from rigplane.web`/`rigctld`).
+| Concern | Layer |
+|---|---|
+| Grammar (spec 3.1, 4.7), command names, argument parsing, formatting | (a) |
+| Stream header, `StreamType`, `SampleType`, sample-type conversion, per-stream `count` | (a) |
+| WebSocket framing, upgrade, ping/pong liveness, session and broadcast plumbing | (a) |
+| What a command means for a radio, owners, refusals, mode names, power scaling | (b) |
+| `StateStore` projection, init burst content, notifications | (b) |
+| `ManagedTxAuthority`, `CommandIntent`, `AudioSession`, resampling, channel mapping | (b) |
+| CLI flags, wiring in `_cmd_web` | (b) |
+
+The leaf offers no radio vocabulary: a command reaches `TciHandler.on_command`
+as a name plus a tuple of strings, and the adapter decides what it means.
+
+### 4.1 Boundary rule and its enforcement
+
+Rule: every module under `src/rigplane/tci/` imports only the standard library
+and `rigplane.tci` itself. No other `rigplane` package or module, and no
+third-party package (not `numpy`, not `aiohttp`). The adapter and `web` may
+import the leaf; the leaf imports neither. Needs that appear to require Core are
+met by injection: the Origin/Host predicate is a callable the adapter passes
+in; the handler is a Protocol the leaf defines.
+
+Why a leaf: a TCI server with no radio in it is the part another program could
+use. It is extracted into its own MIT package only when a second user outside
+Core appears; no repository or package is created now.
+
+Enforcement, written first and failing before the package exists:
+
+1. **import-linter.** In `.importlinter`, `rigplane.tci` becomes the bottom row
+   of `layers` (below `rigplane.core`), so nothing the layered contract knows
+   about can be imported by it. A new `forbidden` contract `tci-is-a-leaf`
+   names `rigplane.tci` as source and the current top-level packages
+   (`core`, `commands`, `runtime`, `audio`, `profiles`, `scope`, `dsp`, `sdr`,
+   `backends`, `web`, `rigctld`, `tci_adapter`, `cli`, `validation`) as
+   forbidden. It shows up in the normal `lint-imports` gate. Limit: it cannot
+   say "stdlib only", and a package added later is not in its list.
+2. **AST test** `tests/test_tci_leaf_boundary.py`. It parses every `.py` under
+   `src/rigplane/tci/` and fails on any import whose top-level name is not in
+   `sys.stdlib_module_names`, `__future__`, or `rigplane.tci` (relative imports
+   inside the package included). It asserts the directory contains the expected
+   modules, so an empty or missing package fails rather than passes. A second
+   test feeds the scanner `import numpy` and `from rigplane.core import x`
+   and requires both to be reported, so the check is shown able to fail. This
+   test is the complete rule; the linter contract is the visible, early signal.
+
+`.importlinter` also changes the top row to
+`rigplane.web | rigplane.rigctld | rigplane.tci_adapter` and adds
+`tci_adapter` to `independence-top`. The adapter may depend on what `web`
+may (`core`, `commands`, `profiles`, `audio`, `runtime`, plus the leaf; not
+`backends`), because it needs audio, which `rigctld` does not. A
+`LAYER.md` for each of the two packages is part of their first PRs, with
+`rigctld/LAYER.md`'s forbidden patterns (no backend-id branches, no telemetry,
+no `from rigplane.web`/`rigctld`).
 
 ### 4.2 One WebSocket implementation
 
-`tci` may not import `web`. The two reusable parts are in `web` today:
-framing (`web/websocket.py`) and the upgrade handshake (inline in
-`WebServer._handle_websocket`: Host allowlist, Origin check, `Sec-WebSocket-Key`,
-101 response). Writing a second RFC 6455 server for TCI would be two mechanisms
-for one job; adding `aiohttp` as a server would be a second stack and break the
-"stdlib only" charter of `web/LAYER.md`.
+Neither `tci_adapter` nor the leaf may import `web`. The two reusable parts are
+in `web` today: framing (`web/websocket.py`) and the upgrade handshake (inline
+in `WebServer._handle_websocket`: Host allowlist, Origin check,
+`Sec-WebSocket-Key`, 101 response). Writing a second RFC 6455 server for TCI
+would be two mechanisms for one job; adding `aiohttp` as a server would be a
+second stack, break the "stdlib only" charter of `web/LAYER.md`, and is barred
+from the leaf by 4.1.
 
-P0a moves `web/websocket.py` to `core/websocket.py` (framing has no radio
-dependency), extracts the server-side upgrade into a function there (key check,
-accept header, response bytes, optional Host/Origin predicate), and moves
-`web/host_guard.py` with it. `web/websocket.py` and `web/host_guard.py` become
-`sys.modules`-alias shims, the repo's existing convention for moved modules
-(`CLAUDE.md`, "Layer boundaries"). `WebServer._handle_websocket` calls the new
-function. Existing web tests are the pin.
+P0a creates the leaf package with `tci/ws.py`: the moved `web/websocket.py` plus
+a server-side upgrade function (key check, accept header, response bytes, an
+injected `allow(headers) -> bool` predicate). `web/websocket.py` becomes a
+`sys.modules`-alias shim to it, the repo's existing convention for moved modules
+(`CLAUDE.md`, "Layer boundaries"), and `WebServer._handle_websocket` calls the new
+function with the predicate built from `web/host_guard.py`. That guard
+(`host_header_allowed`, `same_origin_allowed`) is plain header logic with no
+radio dependency; it moves to `core/host_guard.py` with a `web` shim, so the
+adapter can build the same predicate without importing `web`. Existing web tests
+are the pin, plus the new boundary test.
+
+Consequence to accept: `web` now depends on the leaf for framing. The shim keeps
+`rigplane.web.websocket` working, so no web code changes its import. The
+alternative, a separate leaf `rigplane.ws` lifted together with `tci`, avoids
+that naming oddity at the price of a second package to extract (open question
+Q9).
 
 Limits to keep: `_MAX_WS_FRAME` is 64 KiB. A TCI audio block is at most
 64 + 16384 bytes, so it fits. Per-message deflate stays off for TCI (clients do
-not negotiate it; audio does not compress).
+not negotiate it; audio does not compress). `WebSocketConnection`'s pong
+timeout becomes a constructor parameter, default unchanged (7.4).
 
 ## 5. Phase "control"
 
@@ -296,7 +374,7 @@ in 6.
 
 ### 5.6 Mode names
 
-A table in `tci/commands.py` maps TCI names to Core `Mode` and a data-mode flag:
+A table in `tci_adapter/commands.py` maps TCI names to Core `Mode` and a data-mode flag:
 `AM`, `LSB`, `USB`, `CW`, `FM` (and `NFM`) map to the same-named Core modes;
 `DIGL` is LSB with data mode on, `DIGU` is USB with data mode on, as `rigctld`
 maps `PKTLSB`/`PKTUSB`. `SAM`, `DSB`, `DRM`, `WFM` are not announced. This is
@@ -420,7 +498,7 @@ the gap on the simulator and the bench and revisits it only with data.
 ### 7.4 Disconnect, liveness, bounds
 
 - **Socket closes for any reason** (close frame, FIN, reset, server stop): the
-  session calls the shared release, the equivalent of `RigctldServer._release_session_tx`:
+  adapter's `on_disconnect` calls the shared release, the equivalent of `RigctldServer._release_session_tx`:
   `ManagedTxAuthority.owner_disconnect(owner)`. It survives one cancellation, is
   fail-soft, and runs before the socket object is dropped. The shared helper
   from P0c is the single implementation.
@@ -431,8 +509,8 @@ the gap on the simulator and the bench and revisits it only with data.
   lease (first bullet). `WebSocketConnection.keepalive_loop(interval)` already
   pings and closes on a stale pong using an injectable clock, but its pong
   timeout is a fixed 60 s attribute; P0a makes it a constructor parameter with
-  the default unchanged. The two constants are named in `tci/session.py` and
-  pinned by a fake-clock test. A client frozen for more than 15 s is dropped;
+  the default unchanged. The two constants are named in the leaf's `tci/server.py`
+  and pinned by a fake-clock test. A client frozen for more than 15 s is dropped;
   that errs on the safe side. (b) The authority's software TOT,
   `DEFAULT_MANAGED_TX_TOT_SECONDS` (180 s), is the absolute backstop and is not
   changed.
@@ -470,6 +548,12 @@ Default bind is `127.0.0.1` (section 9). The adversaries named:
 ## 8. Phase "audio"
 
 ### 8.1 Stream format (spec 3.4)
+
+The header layout, the `StreamType` and `SampleType` enums and the conversion
+between sample types live in the leaf (`tci/frames.py`, standard library only:
+`struct`, `array`). If A1's measurements show pure-Python conversion too slow
+at 2048-sample blocks, the conversion moves to the adapter; `numpy` does not
+enter the leaf.
 
 Binary frames carry a 64-byte header then data. Little-endian, as `eesdr-tci`
 packs it (`<8I32x`):
@@ -509,9 +593,10 @@ disconnect -> close the subscription. Per client:
    function in `audio/pcm.py` over the existing decoders. Migrating the three
    existing consumers to it is *not* in this program; it is filed as a follow-up
    ticket.
-2. Resample to the client rate with `audio.resample.PcmResampler`; map channels
-   (mono to stereo by duplication, stereo to mono by average); convert to the
-   client sample type; re-block to `audio_stream_samples`.
+2. In the adapter: resample to the client rate with
+   `audio.resample.PcmResampler`; map channels (mono to stereo by duplication,
+   stereo to mono by average); re-block to `audio_stream_samples`. Then the
+   leaf's `frames.py` converts to the client sample type and builds the frame.
 3. Send on a bounded per-session queue. If a client falls behind, drop the
    oldest audio and count it; never block the radio-side loop or other clients.
    A client that stays behind for 5 s is closed.
@@ -567,7 +652,7 @@ and is injectable for tests.
 | Default bind | `127.0.0.1`; non-loopback logged at WARNING. `rigctld` binds `0.0.0.0` when unmanaged; TCI never does by default. |
 | Flags | `web` and `station`: `--tci` / `--no-tci`, `--tci-port N`, `--tci-host H`, parallel to `--rigctld`, `--rigctld-port`. Default **off** in Core (new network listener that can key; Q2). No `serve` support (7.2). |
 | Env | none, matching `rigctld`, which has none. |
-| Wiring | in `cli/__init__.py: _cmd_web`, next to `RigctldServer`, receiving the same `managed_tx_authority`, `command_queue`, `command_service`; `OSError` on bind aborts startup the way `rigctld` does; stop in the same `finally`; include the port in `check_ports_available`. |
+| Wiring | in `cli/__init__.py: _cmd_web`, next to `RigctldServer`, the adapter receives the same `managed_tx_authority`, `command_queue`, `command_service` and passes its handler to the leaf's server; `OSError` on bind aborts startup the way `rigctld` does; stop in the same `finally`; include the port in `check_ports_available`. |
 | Coexistence with `rigctld` | two independent sockets on one radio and one authority. Owners are namespaced by source (`rigctld-client-N`, `tci-client-N`). The authority refuses a second keyer. Neither listener starts, stops or configures the other. |
 | Core and Pro | the feature is Core, MIT, no gating. Pro runs Core as a sidecar process on `127.0.0.1:8470` (`docs/architecture/open-core-policy.md`, sections 1 and 8) and enables TCI by passing `--tci` and a port from its own settings; any Pro UI toggle is a `rigplane-pro` task. Core has no Python hook for starting extra listeners and this design adds none. |
 | Docs | `docs/api/tci.md` (new), a client setup page (WSJT-X Improved, JTDX, OpsLog), `docs/CHANGELOG.md`. |
@@ -583,35 +668,47 @@ Rules from the repo: test first and watch it fail on the exact SHA
 signature-sensitive objects, `FakeAudioBackend` only for audio, and
 `docs/development/review-checklist.md` walked before pushing.
 
-### 10.1 Unit
+### 10.1 Leaf `rigplane.tci` (no radio anywhere)
+
+Everything here runs without Core. This is what makes the package liftable, and
+it is the test suite that would travel with it.
 
 - Grammar: every example string in spec 4.1 to 4.5, plus the seven rules of 4.7,
   as a table-driven test of `tci/protocol.py` (empty arguments, read vs set,
-  booleans, case, unknown command, wrong type, out-of-range receiver).
+  booleans, case, unknown command, wrong type).
 - Binary header: byte-exact vectors built by hand from the 3.4 struct for RX,
   TX and `TX_CHRONO` frames, all four sample types, `count` wrap, and
   round-trip with `eesdr-tci`'s `TciDataPacket`.
-- Mode table, power scaling (`drive` 0, 1, 50, 100 on watts-native and raw-255
-  radios), sample-type and channel conversion, NaN/Inf replacement.
-
-### 10.2 Conformance with `eesdr-tci`
-
-Dev-only dependency (adds `websockets` transitively; BSD-3-Clause-Clear, never
-shipped). The suite starts the real `TciServer` on an ephemeral port
-(`port=0`, as `tests/test_rigctld_server.py`) over a fake radio and drives it
-with `eesdr_tci.listener.Listener`:
-
-- connect, init burst, `ready` event, and the order in 5.4;
-- **output guard:** `Listener._listen_main` raises `ValueError` on any command
+- Framing and upgrade: the moved `web/websocket.py` tests, plus rejection of a
+  bad key and of a request the injected predicate refuses.
+- Server conformance with `eesdr-tci`: the real leaf server on an ephemeral
+  port (`port=0`) with a **fake `TciHandler`**, driven by
+  `eesdr_tci.listener.Listener`. Dev-only dependency (adds `websockets`
+  transitively; BSD-3-Clause-Clear, never shipped). Covers connect, init burst
+  and the `ready` event, multi-client broadcast and coalescing, ping liveness
+  with a fake clock, the output guard below, and typed `TciDataPacket`s both ways.
+- **Output guard:** `Listener._listen_main` raises `ValueError` on any command
   name outside its dictionary, which ends its receive task, so a full scripted
-  session that completes proves the server emitted only known commands;
-- read/set round trips for `vfo`, `modulation`, `split_enable`, `rit_*`, `drive`;
+  session that completes proves the server emitted only known commands.
+- The boundary tests of 4.1.
+
+Limit: the library follows TCI 2.0, so the `count` field and 2.1-only commands
+are covered by the byte-level fixtures, not by it.
+
+### 10.2 Adapter `rigplane.tci_adapter`
+
+Unit: mode table, power scaling (`drive` 0, 1, 50, 100 on watts-native and
+raw-255 radios), channel mapping, resampling, NaN/Inf replacement.
+
+Conformance through the real adapter: the same `eesdr-tci` client, the leaf
+server, the adapter, and a fake radio (`SerialMockRadio` or a
+`rigplane_testkit` simulator):
+
+- init burst order of 5.4; read/set round trips for `vfo`, `modulation`,
+  `split_enable`, `rit_*`, `drive`;
 - multi-client sync: a set from client A reaches client B and A;
 - refused PTT replies `trx:0,false;`; unknown commands produce no reply;
 - phase audio: `audio_start`, receive typed `TciDataPacket`s, send TX frames.
-
-Limit: the library follows TCI 2.0, so the `count` field and 2.1-only commands
-are covered by the byte-level fixtures in 10.1, not by it.
 
 ### 10.3 Seam and E2E (TX safety is the point)
 
@@ -638,7 +735,7 @@ gate check in a scratch branch and confirm the matching tests go red.
 
 ### 10.4 Existing suites as the pin for the refactors
 
-P0a to P0d change no behaviour. Their pin is the current `rigctld`, web and
+P0a to P0d change no behaviour (P0a also adds the boundary test of 4.1, which is new). Their pin is the current `rigctld`, web and
 bridge suites (`tests/test_rigctld_*.py`, `tests/test_audio_bridge.py`, web
 WebSocket tests) plus one new test per extracted unit that is written first and
 fails (the new module does not exist yet).
@@ -668,25 +765,28 @@ authorisation, and is not part of CI.
 ## 11. PR phasing
 
 Sizes are rough changed lines including tests. Phase labels: P0 prerequisites,
-C control, A audio.
+L leaf package, C control (adapter), A audio.
 
 | PR | Content | Depends on | ~Lines |
 |---|---|---|---|
-| P0a | move `web/websocket.py` and `host_guard` to a neutral layer with shims; extract server upgrade function; `WebServer` uses it; pong timeout becomes a constructor parameter (default 60 s unchanged) | none | 300 |
+| P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; pong timeout as a constructor parameter, default 60 s unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | none | 450 |
 | P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it | none | 300 |
 | P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | none | 900 |
 | P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` | P0c (same file) | 200 |
 | C0 | recording proxy script and captured fixtures | owner/bench time | 250 |
-| C1 | `tci/` skeleton: grammar, server, upgrade, init burst, read-only commands, notifier; `.importlinter`, `LAYER.md` | P0a | 950 |
-| C2 | write commands: `vfo`, `modulation`, `split_enable`, `rit`/`xit`, `drive`, Tier B | C1 | 700 |
-| C3 | TX: `trx`, `tx_enable`, disconnect and liveness, `tune` answer; seam tests | C2, P0c, P0d | 850 |
+| L1 | leaf `protocol.py` (grammar, formatting) and `frames.py` (stream header, sample types), with spec fixtures and `eesdr-tci` round trips | P0a | 600 |
+| L2 | leaf `server.py` and `handler.py`: listener, sessions, broadcast and coalescing, ping liveness, Origin/Host predicate; conformance with a fake handler | L1 | 700 |
+| C1 | adapter skeleton: handler, init burst, read-only commands, notifier; `tci_adapter/LAYER.md`; `.importlinter` adapter rows | L2 | 700 |
+| C2 | adapter write commands: `vfo`, `modulation`, `split_enable`, `rit`/`xit`, `drive`, Tier B | C1 | 650 |
+| C3 | TX: `trx`, `tx_enable`, disconnect, `tune` answer; seam tests | C2, P0c, P0d | 800 |
 | C4 | CLI flags and wiring, `check_ports_available`, docs, changelog | C3 | 450 |
-| A1 | audio stream codec, RX path, shared decode helper | C1 | 800 |
-| A2 | TX path, `TX_CHRONO`, gate, route policy | A1, C3, P0b | 900 |
+| A1 | adapter RX path, shared decode helper, resample and channel mapping | C1 | 650 |
+| A2 | adapter TX path, `TX_CHRONO`, gate, route policy | A1, C3, P0b | 800 |
 | A3 | real-app RX smoke evidence and fixtures | C4, A1 | 150 |
 
-About 6.7k lines in 12 PRs. P0a, P0b and P0c are file-disjoint and can run in
-parallel; C1 can start after P0a.
+About 7.5k lines in 14 PRs. P0a, P0b and P0c are file-disjoint and can run in
+parallel; L1 and L2 need only P0a, so the whole leaf can be built and tested
+while P0c is still in review.
 
 Sizing basis. The coordinator brief allows PRs up to 4000 lines. `CLAUDE.md` sets
 a hard ceiling of 10 files and 1000 changed lines (the line ceiling is the
@@ -718,6 +818,9 @@ different model family from the builder.
 - WSJT-X Improved and JTDX are GPL; their source was not read.
 - Command names, argument orders and stream layout are the spec's, not
   AetherSDR's.
+- The leaf is MIT like the rest of Core and contains nothing derived from the
+  GPL programs above, so extracting it later needs no relicensing. Its tests
+  carry the `eesdr-tci` dev dependency with them.
 
 ## 13. Risks and open questions
 
@@ -731,6 +834,7 @@ different model family from the builder.
 | Q6 | Remote PTT from non-loopback peers: parity with `rigctld` (recommended) or require an opt-in | owner |
 | Q7 | Extract shared mechanisms first (recommended, P0a to P0d) versus duplicate; duplicating breaks "no two mechanisms" | sumo |
 | Q8 | Sizing: plan to the 1000-line ceiling, not 4000 | sumo |
+| Q9 | WebSocket framing lives inside the leaf (`tci/ws.py`, recommended: it travels with the package) or in its own leaf `rigplane.ws` (cleaner name for `web`, two packages to lift) | sumo |
 
 Risks, in order: P0c changes the TX path that `rigctld` users rely on, hence
 the strictest pin and an unchanged-behaviour review; client behaviour is
