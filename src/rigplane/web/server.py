@@ -2496,6 +2496,15 @@ class WebServer:
             snapshot,
             health_revision=self._health_revision,
         )
+        liveness = connection_liveness_payload(self._radio)
+        public_state_seq = self._public_state_seq_for_key(
+            cache_key
+            + (
+                liveness.get("lastFrameAgeMs") if liveness else None,
+                liveness.get("staleAfterMs") if liveness else None,
+                liveness.get("source") if liveness else None,
+            )
+        )
         if (
             updated_at is None
             and cache_key == self._cached_public_state_key
@@ -2505,9 +2514,9 @@ class WebServer:
             # MOR-3845: the liveness frame age is wall-clock dependent — a
             # cache hit must still serve the age at response time, not the
             # value frozen when the payload was built.
-            payload["connection"]["liveness"] = connection_liveness_payload(self._radio)
+            payload["connection"]["liveness"] = liveness
+            payload["publicStateSeq"] = public_state_seq
             return payload
-        public_state_seq = self._public_state_seq_for_key(cache_key)
         profile = self._get_profile_unless_provider_owned()
         # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
         # passes neither, and every unobserved entry stays ``missing``. A
@@ -2540,6 +2549,7 @@ class WebServer:
             monitor_mute=self.monitor_mute.public(receiver_count),
         )
         payload["publicStateSeq"] = public_state_seq
+        payload["connection"]["liveness"] = liveness
         payload["stateContractVersion"] = 1
         payload["providerGeneration"] = snapshot.provider_generation
         # Live SDR status (MOR-3201); the delivery key carries it (cache hit = no-op).

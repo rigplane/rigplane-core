@@ -5123,7 +5123,7 @@ class TestStateEtag:
         assert store_after.freshness_revision == store_before.freshness_revision
         assert store_after.observation_seq == store_before.observation_seq
         assert store_after.fields == store_before.fields
-        assert second["publicStateSeq"] == first["publicStateSeq"]
+        assert second["publicStateSeq"] > first["publicStateSeq"]
 
     @pytest.mark.asyncio
     async def test_state_response_includes_etag(self) -> None:
