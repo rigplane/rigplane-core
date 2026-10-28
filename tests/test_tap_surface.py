@@ -225,7 +225,9 @@ async def test_malformed_selected_relay_routes_notify_without_fallback() -> None
             assert radio.__dict__["audio_bus"].subscribe_calls == 0
         assert json.loads(ws.send_text.await_args.args[0]) == {
             "type": "error",
-            "message": f"audio_start: RX audio failed to start: {expected}",
+            # MOR-3823: the category token, never the exception text.
+            "message": "audio_start: RX audio failed to start: other",
+            "reason": "other",
         }
 
 

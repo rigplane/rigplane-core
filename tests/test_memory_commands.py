@@ -27,6 +27,7 @@ from rigplane.commands import (
     parse_memory_contents_response,
 )
 from rigplane.commands.bound import BoundCommands
+from rigplane.profiles import get_radio_profile
 from rigplane.radio_protocol import MemoryCapable
 from rigplane.rig_loader import load_rig
 from rigplane.types import BandStackRegister, CivFrame, MemoryChannel
@@ -51,6 +52,16 @@ def cmd_map():
     """
     rig = load_rig(RIG_DIR / "ic7610.toml")
     return rig.to_command_map()
+
+
+@pytest.fixture()
+def ic7610_memory():
+    """The IC-7610's own ``[memory]`` section: the write builders take the
+    profile whose layout they build from (MOR-3644)."""
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    memory = rig.to_profile().memory
+    assert memory is not None
+    return memory
 
 
 # ---------------------------------------------------------------------------
@@ -150,19 +161,21 @@ class TestMemoryToVfoBuilder:
 class TestMemoryClearBuilder:
     """build_memory_clear produces correct CI-V frames."""
 
-    def test_channel_10(self, cmd_map) -> None:
-        frame = build_memory_clear(10, to_addr=RADIO_ADDR, cmd_map=cmd_map)
-        assert frame[4] == 0x0B  # command
+    def test_channel_10(self, cmd_map, ic7610_memory) -> None:
+        frame = build_memory_clear(
+            ic7610_memory, 0, 10, to_addr=RADIO_ADDR, cmd_map=cmd_map
+        )
+        assert frame[4] == 0x0B  # the IC-7610's declared legacy clear form
 
-    def test_channel_0_raises(self, cmd_map) -> None:
-        with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_clear(0, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+    def test_channel_0_raises(self, cmd_map, ic7610_memory) -> None:
+        with pytest.raises(ValueError, match="memory channel must be 1-101"):
+            build_memory_clear(ic7610_memory, 0, 0, to_addr=RADIO_ADDR, cmd_map=cmd_map)
 
 
 class TestMemoryContentsSetBuilder:
     """build_memory_contents_set produces correct CI-V frames."""
 
-    def test_basic_channel(self, cmd_map) -> None:
+    def test_basic_channel(self, cmd_map, ic7610_memory) -> None:
         mem = MemoryChannel(
             channel=1,
             frequency_hz=14_074_000,
@@ -173,19 +186,29 @@ class TestMemoryContentsSetBuilder:
             tonemode=0,
             name="FT8",
         )
-        frame = build_memory_contents_set(mem, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+        frame = build_memory_contents_set(
+            mem,
+            ic7610_memory,
+            to_addr=RADIO_ADDR,
+            cmd_map=cmd_map,
+            modes=get_radio_profile("IC-7610").modes,
+        )
         assert frame[:4] == b"\xfe\xfe\x98\xe0"
         assert frame[4] == 0x1A  # command
         assert frame[5] == 0x00  # sub-command
         assert frame[-1:] == b"\xfd"
 
-    def test_invalid_type_raises(self, cmd_map) -> None:
+    def test_invalid_type_raises(self, cmd_map, ic7610_memory) -> None:
         with pytest.raises(TypeError, match="Expected MemoryChannel"):
             build_memory_contents_set(
-                {"channel": 1}, to_addr=RADIO_ADDR, cmd_map=cmd_map
+                {"channel": 1},
+                ic7610_memory,
+                to_addr=RADIO_ADDR,
+                cmd_map=cmd_map,
+                modes=get_radio_profile("IC-7610").modes,
             )  # type: ignore[arg-type]
 
-    def test_invalid_channel_raises(self, cmd_map) -> None:
+    def test_invalid_channel_raises(self, cmd_map, ic7610_memory) -> None:
         mem = MemoryChannel(
             channel=0,
             frequency_hz=14_074_000,
@@ -195,10 +218,16 @@ class TestMemoryContentsSetBuilder:
             datamode=0,
             tonemode=0,
         )
-        with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_contents_set(mem, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+        with pytest.raises(ValueError, match="memory channel must be 1-101"):
+            build_memory_contents_set(
+                mem,
+                ic7610_memory,
+                to_addr=RADIO_ADDR,
+                cmd_map=cmd_map,
+                modes=get_radio_profile("IC-7610").modes,
+            )
 
-    def test_requires_cmd_map(self) -> None:
+    def test_requires_cmd_map(self, ic7610_memory) -> None:
         """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
         mem = MemoryChannel(
             channel=1,
@@ -210,7 +239,7 @@ class TestMemoryContentsSetBuilder:
             tonemode=0,
         )
         with pytest.raises(TypeError, match="MOR-2006"):
-            build_memory_contents_set(mem, to_addr=RADIO_ADDR)  # type: ignore[call-arg]
+            build_memory_contents_set(mem, ic7610_memory, to_addr=RADIO_ADDR)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------
@@ -310,11 +339,14 @@ class TestIcomRadioMemoryMethods:
         rig = load_rig(RIG_DIR / "ic7610.toml")
         radio = MagicMock()
         radio._radio_addr = RADIO_ADDR
-        # MOR-3644: the write gate reads the real profile; this mock radio
-        # stands for the IC-7610, whose profile declares the verified
-        # 26-byte write layout.
+        # MOR-3644: the write gate reads the loaded profile; this mock
+        # radio stands for the IC-7610, whose profile declares the
+        # verified 26-byte write layout.
         radio._profile = rig.to_profile()
         radio._send_fire_and_forget = AsyncMock()
+        radio._send_civ_expect = AsyncMock(
+            return_value=CivFrame(0xE0, RADIO_ADDR, 0xFB, None, b"", 0x00)
+        )
         radio._commands = BoundCommands(rig.to_command_map())
         return radio
 
@@ -359,8 +391,8 @@ class TestIcomRadioMemoryMethods:
         radio = self._make_radio()
         bound = IcomRadio.memory_clear.__get__(radio, type(radio))
         await bound(7)
-        radio._send_fire_and_forget.assert_called_once()
-        frame_arg = radio._send_fire_and_forget.call_args[0][0]
+        radio._send_civ_expect.assert_called_once()
+        frame_arg = radio._send_civ_expect.call_args[0][0]
         assert frame_arg[4] == 0x0B
 
     @pytest.mark.asyncio
@@ -388,8 +420,8 @@ class TestIcomRadioMemoryMethods:
             tonemode=0,
         )
         await bound(mem)
-        radio._send_fire_and_forget.assert_called_once()
-        frame_arg = radio._send_fire_and_forget.call_args[0][0]
+        radio._send_civ_expect.assert_called_once()
+        frame_arg = radio._send_civ_expect.call_args[0][0]
         assert frame_arg[4] == 0x1A
         assert frame_arg[5] == 0x00
 
@@ -571,7 +603,7 @@ class TestHandlerMemoryDispatch:
         radio.radio_ready = True
         radio.model = "IC-7610"
         radio.capabilities = {"memory"}
-        # MOR-3644: the dispatch write gate reads the real profile; this
+        # MOR-3644: the dispatch write gate reads the loaded profile; this
         # handler's radio stands for the IC-7610, the profile whose
         # [memory] section declares the verified write layout.
         radio.profile = load_rig(RIG_DIR / "ic7610.toml").to_profile()
