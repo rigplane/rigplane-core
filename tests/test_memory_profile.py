@@ -25,26 +25,26 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
     # The capability is declared together with the reader (list API PR).
     for profile in (ic705, ic9700):
         assert "memory_read" in profile.capabilities
-    # IC-7300 has no [memory] section at all.
+    # IC-7300 gained a write-side [memory] section (MOR-3644 part 2); the
+    # read listing stays off: no memory_read capability was added.
     profile = get_radio_profile("IC-7300")
-    assert profile.memory is None
+    assert profile.memory == MemoryProfile("channel", 0, 0, 1, 99)
     assert "memory_read" not in profile.capabilities
 
 
 def test_shipped_profiles_declare_the_verified_write_layout() -> None:
-    """MOR-3644: only IC-7610 opts in; everyone else refuses by default."""
-    ic7610 = get_radio_profile("IC-7610")
-    assert ic7610.memory is not None
-    assert ic7610.memory.write_layout == "civ_26"
-    # The read-only listing stays off: no memory_read capability was added.
-    assert "memory_read" not in ic7610.capabilities
-    # Every other shipped [memory] section leaves the write layout unset.
-    for model in ("IC-705", "IC-9700", "FTX-1"):
+    """MOR-3644: every shipped profile with memory commands declares a
+    structurally valid write layout; the radios without one (FTX-1: the
+    Yaesu backend has no write path; X6100/X6200: commands declared
+    absent, no [memory] section) refuse writes."""
+    for model in ("IC-7610", "IC-705", "IC-9700", "IC-7300", "IC-7300MK2"):
         memory = get_radio_profile(model).memory
-        assert memory is not None
-        assert memory.write_layout is None
-    # Radios with no [memory] section have no write layout either.
-    assert get_radio_profile("IC-7300").memory is None
+        assert memory is not None, model
+        assert memory.write_layout is not None, model
+        assert not memory.write_layout.validation_errors(), model
+    ftx1 = get_radio_profile("FTX-1").memory
+    assert ftx1 is not None and ftx1.write_layout is None
+    assert get_radio_profile("X6100").memory is None
 
 
 def _load(tmp_path: Path, memory: str):
@@ -125,10 +125,32 @@ def test_recall_is_accepted_only_for_group_channel_addressing(tmp_path: Path) ->
     assert _load(tmp_path, group).to_profile().memory.recall is True
 
 
+_GOOD_WRITE_LAYOUT = """
+[memory.write_layout]
+clear = "1a00_ff"
+record_length = 10
+fields = [
+  { field = "frequency", offset = 0, length = 5, encoding = "frequency" },
+  { field = "mode", offset = 5, length = 1, encoding = "mode" },
+  { field = "name", offset = 6, length = 4, encoding = "name" },
+]
+"""
+
+
 def test_loader_reads_the_write_layout(tmp_path: Path) -> None:
-    declared = _load(tmp_path, _GOOD + 'write_layout = "civ_26"\n').memory
+    from rigplane.core.types import MemoryWriteField, MemoryWriteLayout
+
+    declared = _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT).memory
     assert declared is not None
-    assert declared.write_layout == "civ_26"
+    assert declared.write_layout == MemoryWriteLayout(
+        clear="1a00_ff",
+        record_length=10,
+        fields=(
+            MemoryWriteField("frequency", 0, 5, "frequency"),
+            MemoryWriteField("mode", 5, 1, "mode"),
+            MemoryWriteField("name", 6, 4, "name"),
+        ),
+    )
     # The default refuses: no declaration, no memory writes or clears.
     defaults = _load(tmp_path, _GOOD).memory
     assert defaults is not None
@@ -137,9 +159,53 @@ def test_loader_reads_the_write_layout(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "value", ['"morse"', "3", "[]", "{}", "true", '"CIV_26"', '""']
+    "edit",
+    [
+        ('clear = "1a00_ff"', 'clear = "civ_26"'),  # not a clear form
+        ("record_length = 10", "record_length = 0"),
+        ("record_length = 10", 'record_length = "10"'),
+        (
+            'encoding = "mode"',
+            'encoding = "civ_47"',
+        ),  # not a vocabulary encoding
+        (
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode" },',
+            '{ field = "mode", offset = 6, length = 1, encoding = "mode" },',  # gap
+        ),
+        (
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode" },',
+            '{ field = "mode", offset = 4, length = 1, encoding = "mode" },',  # overlap
+        ),
+        ("record_length = 10", "record_length = 8"),  # name runs past
+        (
+            '{ field = "name", offset = 6, length = 4, encoding = "name" },',
+            '{ field = "name", offset = 6, length = 4, encoding = "name" },\n'
+            '  { field = "name2", offset = 6, length = 4, encoding = "name" },',  # two name fields
+        ),
+        (
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode" },',
+            '{ field = "mode", offset = 5, length = 2, encoding = "mode" },',  # wrong width
+        ),
+        (
+            '{ field = "frequency", offset = 0, length = 5, encoding = "frequency" },',
+            '{ field = "frequency", offset = 0, length = 5, encoding = "frequency", max_hz = 0 },',  # bad max_hz
+        ),
+        (
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode" },',
+            '{ field = "mode", offset = 5, length = 1, encoding = "mode", max_hz = 100 },',  # max_hz off frequency
+        ),
+        ("fields = [", "stray = 1\nfields = ["),  # unknown key
+    ],
 )
-def test_loader_rejects_an_unknown_write_layout(tmp_path: Path, value: str) -> None:
+def test_loader_rejects_a_broken_write_layout(
+    tmp_path: Path, edit: tuple[str, str]
+) -> None:
+    with pytest.raises(RigLoadError, match=r"\[memory\].write_layout"):
+        _load(tmp_path, _GOOD + _GOOD_WRITE_LAYOUT.replace(*edit))
+
+
+@pytest.mark.parametrize("value", ['"civ_26"', "3", "[]", "true", '""'])
+def test_loader_rejects_a_non_table_write_layout(tmp_path: Path, value: str) -> None:
     with pytest.raises(RigLoadError, match=r"\[memory\].write_layout"):
         _load(tmp_path, _GOOD + f"write_layout = {value}\n")
 

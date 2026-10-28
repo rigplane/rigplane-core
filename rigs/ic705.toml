@@ -505,6 +505,42 @@ first_channel = 0
 last_channel = 99
 recall = true  # 08 A0 selects the group, 08 the channel (guide p.3); not yet bench-verified
 
+# The verified 1A 00 write record (MOR-3644), field by field from the
+# IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.17 "Memory
+# content". Offsets are relative to the record AFTER the address (guide
+# bytes 1-4: memory group 2-byte BCD + channel 2-byte BCD); the guide's
+# position labels map as: 5 -> 0 (select), 6-10 -> 1-5 (frequency), 11 ->
+# 6 (mode), 12 -> 7 (filter), 13 -> 8 (data mode), 14 -> 9 (duplex|tone),
+# 15 -> 10 (digital squelch), 16-18 -> 11-13 (tone), 19-21 -> 14-16
+# (tsql), 22-24 -> 17-19 (DTCS), 25 -> 20 (DV code), 26-28 -> 21-23
+# (duplex offset), 29-52 -> 24-47 (UR/R1/R2), 53-68 -> 48-63 (name).
+# Mode and filter are the raw bytes of the verified read block (MOR-3650;
+# the guide's 2-byte "operating mode setting" is the read block's mode +
+# filter pair); the tone fields use the 1B 00 encoding (guide p.21).
+# Fields the write API does not expose yet carry their documented OFF
+# value: select 00 (split OFF, select OFF), digital squelch 00, DTCS
+# 000000, DV code 00, duplex offset 000000, call signs blank (spaces, as
+# in the real record's unused fields, MOR-3650).
+[memory.write_layout]
+clear = "1a00_ff"  # guide p.17: 1A 00 + the address + FF
+record_length = 64
+fields = [
+  { field = "select", offset = 0, length = 1, encoding = "select" },                              # 5
+  { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 999_999_999 },  # 6-10: GHz digit fixed 0 (read-side rule, MOR-3650)
+  { field = "mode", offset = 6, length = 1, encoding = "mode" },                                  # 11
+  { field = "filter", offset = 7, length = 1, encoding = "filter" },                              # 12
+  { field = "data_mode", offset = 8, length = 1, encoding = "data_mode" },                        # 13
+  { field = "duplex_tone", offset = 9, length = 1, encoding = "duplex_tone" },                    # 14: duplex 0-2 (no RPS on this radio)
+  { field = "digital_squelch", offset = 10, length = 1, encoding = "zero" },                      # 15: 00 = off
+  { field = "tone", offset = 11, length = 3, encoding = "tone" },                                 # 16-18
+  { field = "tsql", offset = 14, length = 3, encoding = "tsql" },                                 # 19-21
+  { field = "dtcs", offset = 17, length = 3, encoding = "zero" },                                 # 22-24: 000000 = off
+  { field = "dv_code", offset = 20, length = 1, encoding = "zero" },                              # 25
+  { field = "duplex_offset", offset = 21, length = 3, encoding = "zero" },                        # 26-28: 0 Hz (not exposed, MOR-3644 slice)
+  { field = "callsigns", offset = 24, length = 24, encoding = "space" },                          # 29-52: UR/R1/R2 blank
+  { field = "name", offset = 48, length = 16, encoding = "name" },                                # 53-68
+]
+
 [ctcss]
 table = "standard_50"
 

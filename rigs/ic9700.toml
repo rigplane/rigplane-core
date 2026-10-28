@@ -353,6 +353,41 @@ last_channel = 99
 dd_groups = [3]
 offset_10mhz_groups = [3]
 
+# The verified 1A 00 write record (MOR-3644), field by field from the
+# IC-9700 CI-V Reference Guide (2019, rev. 4) p.14 "Memory content".
+# Offsets are relative to the record AFTER the address (guide bytes 1-3:
+# frequency band 1 byte + channel 2-byte BCD); the guide's position
+# labels map as: 4 -> 0 (select), 5-9 -> 1-5 (frequency), 10 -> 6 (mode),
+# 11 -> 7 (filter), 12 -> 8 (data mode), 13 -> 9 (duplex|tone), 14 -> 10
+# (digital squelch), 15-17 -> 11-13 (tone), 18-20 -> 14-16 (tsql), 21-23
+# -> 17-19 (DTCS), 24 -> 20 (DV code), 25-27 -> 21-23 (duplex offset),
+# 28-51 -> 24-47 (UR/R1/R2), 52-67 -> 48-63 (name). Mode and filter are
+# the raw bytes of the read block (the guide's 2-byte "operating mode
+# setting" is the read block's mode + filter pair); the tone fields use
+# the 1B 00 encoding (guide p.19). The select byte's high nibble is fixed
+# 0 (guide: "Fixed"); duplex nibble 3 is RPS, valid in DD mode only
+# (guide p.14). Fields the write API does not expose yet carry their
+# documented OFF value (as on the IC-705 above).
+[memory.write_layout]
+clear = "1a00_ff"  # guide p.14: 1A 00 + the address + FF
+record_length = 64
+fields = [
+  { field = "select", offset = 0, length = 1, encoding = "select" },                                # 4
+  { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 1_499_999_999 },  # 5-9: GHz <= 1, 100 MHz <= 4 (read-side rules)
+  { field = "mode", offset = 6, length = 1, encoding = "mode" },                                    # 10
+  { field = "filter", offset = 7, length = 1, encoding = "filter" },                                # 11
+  { field = "data_mode", offset = 8, length = 1, encoding = "data_mode" },                          # 12
+  { field = "duplex_tone", offset = 9, length = 1, encoding = "duplex_tone" },                      # 13: duplex 0-3 (3 = RPS, DD only)
+  { field = "digital_squelch", offset = 10, length = 1, encoding = "zero" },                        # 14: 00 = off
+  { field = "tone", offset = 11, length = 3, encoding = "tone" },                                   # 15-17
+  { field = "tsql", offset = 14, length = 3, encoding = "tsql" },                                   # 18-20
+  { field = "dtcs", offset = 17, length = 3, encoding = "zero" },                                   # 21-23: 000000 = off
+  { field = "dv_code", offset = 20, length = 1, encoding = "zero" },                                # 24
+  { field = "duplex_offset", offset = 21, length = 3, encoding = "zero" },                          # 25-27: 0 Hz (not exposed, MOR-3644 slice)
+  { field = "callsigns", offset = 24, length = 24, encoding = "space" },                            # 28-51: UR/R1/R2 blank
+  { field = "name", offset = 48, length = 16, encoding = "name" },                                  # 52-67
+]
+
 [ctcss]
 table = "standard_50"
 

@@ -30,7 +30,12 @@ from rigplane.core.state_acquisition_policy import (
     ReconciliationPriority,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.types import MEMORY_WRITE_LAYOUTS, ToneSquelchType
+from rigplane.core.types import (
+    MEMORY_WRITE_CLEAR_FORMS,
+    MemoryWriteField,
+    MemoryWriteLayout,
+    ToneSquelchType,
+)
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.profiles.control_domain import (
@@ -2169,6 +2174,112 @@ _MEMORY_KEYS = frozenset(
     }
 )
 _MEMORY_ADDRESSING = frozenset({"group_channel", "band_channel", "channel"})
+_WRITE_LAYOUT_KEYS = frozenset({"clear", "record_length", "fields"})
+_WRITE_FIELD_KEYS = frozenset({"field", "offset", "length", "encoding", "max_hz"})
+
+
+def _parse_write_layout(filename: str, raw: Any) -> MemoryWriteLayout | None:
+    """Parse the optional ``[memory.write_layout]`` table (MOR-3644).
+
+    The declaration is pure data: the clear form, the record length and
+    the field table. Structural correctness (known encodings, exact
+    tiling, one frequency/mode/name field) is decided by
+    :meth:`MemoryWriteLayout.validation_errors`, the same rules the
+    runtime admission gate applies to SDK-supplied profiles.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout must be a table with "
+            "'clear', 'record_length' and 'fields', got "
+            f"{type(raw).__name__}"
+        )
+    _reject_unknown_keys(filename, "[memory].write_layout", raw, _WRITE_LAYOUT_KEYS)
+    clear = raw.get("clear")
+    if not isinstance(clear, str) or clear not in MEMORY_WRITE_CLEAR_FORMS:
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.clear must be one of "
+            f"{sorted(MEMORY_WRITE_CLEAR_FORMS)}, got {clear!r}"
+        )
+    record_length = raw.get("record_length")
+    if (
+        isinstance(record_length, bool)
+        or not isinstance(record_length, int)
+        or not 1 <= record_length <= 128
+    ):
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.record_length must be an "
+            f"integer 1..128, got {record_length!r}"
+        )
+    rows = raw.get("fields")
+    if not isinstance(rows, list) or not rows:
+        raise RigLoadError(
+            f"{filename}: [memory].write_layout.fields must be a non-empty "
+            "array of field tables"
+        )
+    fields: list[MemoryWriteField] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout.fields entries must be tables"
+            )
+        _reject_unknown_keys(
+            filename, "[memory].write_layout.fields", row, _WRITE_FIELD_KEYS
+        )
+        name = row.get("field")
+        offset = row.get("offset")
+        length = row.get("length")
+        encoding = row.get("encoding")
+        max_hz = row.get("max_hz")
+        if not isinstance(name, str) or not name:
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field 'field' must be a "
+                f"non-empty string, got {name!r}"
+            )
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or isinstance(length, bool)
+            or not isinstance(length, int)
+        ):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'offset' "
+                f"and 'length' must be integers"
+            )
+        if not isinstance(encoding, str):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: "
+                f"'encoding' must be a string, got {encoding!r}"
+            )
+        if max_hz is not None and encoding != "frequency":
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'max_hz' "
+                "is only valid on a frequency field"
+            )
+        if max_hz is not None and (
+            isinstance(max_hz, bool) or not isinstance(max_hz, int)
+        ):
+            raise RigLoadError(
+                f"{filename}: [memory].write_layout field {name!r}: 'max_hz' "
+                "must be an integer"
+            )
+        fields.append(
+            MemoryWriteField(
+                field=name,
+                offset=offset,
+                length=length,
+                encoding=encoding,
+                max_hz=max_hz,
+            )
+        )
+    layout = MemoryWriteLayout(
+        clear=clear, record_length=record_length, fields=tuple(fields)
+    )
+    errors = layout.validation_errors()
+    if errors:
+        raise RigLoadError(f"{filename}: [memory].write_layout: {'; '.join(errors)}")
+    return layout
 
 
 def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
@@ -2228,14 +2339,7 @@ def _parse_memory(filename: str, raw: Any) -> MemoryProfile | None:
                 f"{filename}: [memory].{key} must not contain duplicates"
             )
         groups[key] = tuple(values)
-    write_layout = raw.get("write_layout")
-    if write_layout is not None and (
-        not isinstance(write_layout, str) or write_layout not in MEMORY_WRITE_LAYOUTS
-    ):
-        raise RigLoadError(
-            f"{filename}: [memory].write_layout must be one of "
-            f"{sorted(MEMORY_WRITE_LAYOUTS)} or absent, got {write_layout!r}"
-        )
+    write_layout = _parse_write_layout(filename, raw.get("write_layout"))
     return MemoryProfile(  # type: ignore[arg-type]
         addressing=addressing,
         recall=recall,

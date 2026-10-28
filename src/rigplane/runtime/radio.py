@@ -6309,18 +6309,24 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 self._commands.build_memory_to_vfo(channel, to_addr=self._radio_addr)
             )
 
-    async def memory_clear(self, channel: int) -> None:
+    async def memory_clear(self, channel: int, group: int = 0) -> None:
         """Clear memory channel.
 
-        MOR-3644: refused unless the profile's ``[memory]`` section declares
-        a verified write layout; nothing is sent otherwise.
+        ``group`` is the memory group (IC-705) or band code (IC-9700) when
+        the profile's memory is addressed that way; the channel-only
+        radios keep group 0. MOR-3644: refused unless the profile's
+        ``[memory]`` section declares a verified write layout; the clear
+        frame itself is the profile's declared form; nothing is sent
+        otherwise.
         """
         admit_memory_write(self._profile)
-        if not 1 <= channel <= 101:
-            raise ValueError(f"Channel must be 1-101, got {channel}")
+        memory = self._profile.memory
+        assert memory is not None  # admit_memory_write just verified it
         async with memory_slot_operation(self):
             await self._send_fire_and_forget(
-                self._commands.build_memory_clear(channel, to_addr=self._radio_addr)
+                self._commands.build_memory_clear(
+                    memory, group, channel, to_addr=self._radio_addr
+                )
             )
 
     async def get_memory_contents(self, channel: int) -> MemoryChannel:
@@ -6344,17 +6350,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_memory_contents(self, mem: MemoryChannel) -> None:
         """Write full memory channel data.
 
-        MOR-3644: refused unless the profile's ``[memory]`` section declares
-        a verified write layout — the fixed 26-byte record this builder
-        emits is only proven for the opted-in profiles; nothing is sent
-        otherwise.
+        MOR-3644: refused unless the profile's ``[memory]`` section
+        declares a verified write layout, and the record itself is built
+        from that layout (``[memory].write_layout``) -- the address form,
+        field offsets, tone encoding and name width are the profile's
+        own. Nothing is sent otherwise.
         """
         admit_memory_write(self._profile)
-        if not 1 <= mem.channel <= 101:
-            raise ValueError(f"Channel must be 1-101, got {mem.channel}")
+        memory = self._profile.memory
+        assert memory is not None  # admit_memory_write just verified it
         async with memory_slot_operation(self):
             await self._send_fire_and_forget(
-                self._commands.build_memory_contents_set(mem, to_addr=self._radio_addr)
+                self._commands.build_memory_contents_set(
+                    mem,
+                    memory,
+                    to_addr=self._radio_addr,
+                    ctcss_tones_centihz=self._profile.ctcss_tones_centihz,
+                )
             )
 
     async def read_memory_entries(
@@ -6373,6 +6385,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         memory = self._profile.memory
         if memory is None:
             raise CommandError(f"{self._profile.model} declares no memory channels")
+        if memory.addressing not in ("group_channel", "band_channel"):
+            # A channel-list profile (IC-7300, IC-7610) declares write-side
+            # data only: its 1A 00 read reply is not verified (MOR-3644),
+            # so the listing stays off rather than guessed.
+            raise CommandError(
+                f"{self._profile.model} has no verified CI-V memory read layout"
+            )
         entries: list[MemoryEntry] = []
         for channel in channels:
             async with memory_slot_operation(self):

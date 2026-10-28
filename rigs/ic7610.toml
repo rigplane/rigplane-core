@@ -1524,21 +1524,44 @@ tx_state_map = { "0" = "rx" }
 
 [memory]
 # Write-side declaration only (MOR-3644). The 26-byte 1A 00 SET record and
-# the 0x0B clear this package builds are pinned against THIS profile's own
-# command map by tests/test_memory_commands.py (TestMemoryContentsSetBuilder,
-# TestMemoryClearBuilder, and TestIcomRadioMemoryMethods's
-# test_memory_clear_calls_builder / test_set_memory_contents_calls_builder,
-# all loading ic7610.toml), tests/integration/test_memory_set_only.py, and
-# the complete-frame goldens in tests/test_memory_write_gate.py. Declaring
-# write_layout = "civ_26" RETAINS this radio's existing write/clear
-# behaviour (the 0x0B channel payload question stays open, MOR-2055);
-# every other profile leaves it absent and refuses writes/clears.
-# The read-side listing stays OFF for this radio: the memory_read capability
-# is deliberately not declared (the 47-byte 1A 00 read record is not proven
-# here; see runtime/radio.py get_memory_contents).
+# the 0x0B clear this package has always built are pinned against THIS
+# profile's own command map by tests/test_memory_commands.py
+# (TestMemoryContentsSetBuilder, TestMemoryClearBuilder, and
+# TestIcomRadioMemoryMethods's test_memory_clear_calls_builder /
+# test_set_memory_contents_calls_builder, all loading ic7610.toml),
+# tests/integration/test_memory_set_only.py, and the complete-frame
+# goldens in tests/test_memory_write_gate.py. The declaration below
+# RETAINS this radio's existing write/clear behaviour byte for byte (the
+# record's Hz-BCD tone fields, BCD mode byte, NUL padded name and
+# trailing pad byte are the legacy form; only field-level validation --
+# filter 1-3, scan 0/1, name length -- is new). The IC-7610 CI-V
+# Reference Guide (Rev. 4) p.11 documents a DIFFERENT record (channel,
+# select, frequency, 2-byte mode, data|tone, tone, tsql, 10-char name --
+# 27 data bytes) and a 1A 00 + channel + FF clear; that discrepancy is
+# deliberately deferred to MOR-2055, the owner decides whether to switch.
+# The read-side listing stays OFF for this radio: the memory_read
+# capability is deliberately not declared (the 47-byte 1A 00 read record
+# is not proven here; see runtime/radio.py get_memory_contents).
 addressing = "channel"
 first_group = 0
 last_group = 0
 first_channel = 1
 last_channel = 101
-write_layout = "civ_26"
+
+# The legacy record, declared in the shared layout vocabulary so ONE
+# table-driven encoder builds every radio's record (offsets are relative
+# to the record after the 2-byte BCD channel address).
+[memory.write_layout]
+clear = "0b_channel"  # legacy 0x0B + channel; the guide's 1A 00 + FF clear is the MOR-2055 discrepancy
+record_length = 26
+fields = [
+  { field = "scan", offset = 0, length = 1, encoding = "scan" },
+  { field = "frequency", offset = 1, length = 5, encoding = "frequency" },
+  { field = "mode", offset = 6, length = 1, encoding = "mode_bcd" },
+  { field = "filter", offset = 7, length = 1, encoding = "filter" },
+  { field = "data_tone", offset = 8, length = 1, encoding = "data_tone" },
+  { field = "tone", offset = 9, length = 3, encoding = "tone_hz_bcd" },
+  { field = "tsql", offset = 12, length = 3, encoding = "tsql_hz_bcd" },
+  { field = "name", offset = 15, length = 10, encoding = "name_nul" },
+  { field = "pad", offset = 25, length = 1, encoding = "zero" },
+]

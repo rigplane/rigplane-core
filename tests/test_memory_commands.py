@@ -53,6 +53,16 @@ def cmd_map():
     return rig.to_command_map()
 
 
+@pytest.fixture()
+def ic7610_memory():
+    """The IC-7610's own ``[memory]`` section: the write builders take the
+    profile whose layout they build from (MOR-3644)."""
+    rig = load_rig(RIG_DIR / "ic7610.toml")
+    memory = rig.to_profile().memory
+    assert memory is not None
+    return memory
+
+
 # ---------------------------------------------------------------------------
 # MemoryCapable protocol type-checking
 # ---------------------------------------------------------------------------
@@ -150,19 +160,21 @@ class TestMemoryToVfoBuilder:
 class TestMemoryClearBuilder:
     """build_memory_clear produces correct CI-V frames."""
 
-    def test_channel_10(self, cmd_map) -> None:
-        frame = build_memory_clear(10, to_addr=RADIO_ADDR, cmd_map=cmd_map)
-        assert frame[4] == 0x0B  # command
+    def test_channel_10(self, cmd_map, ic7610_memory) -> None:
+        frame = build_memory_clear(
+            ic7610_memory, 0, 10, to_addr=RADIO_ADDR, cmd_map=cmd_map
+        )
+        assert frame[4] == 0x0B  # the IC-7610's declared legacy clear form
 
-    def test_channel_0_raises(self, cmd_map) -> None:
-        with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_clear(0, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+    def test_channel_0_raises(self, cmd_map, ic7610_memory) -> None:
+        with pytest.raises(ValueError, match="memory channel must be 1-101"):
+            build_memory_clear(ic7610_memory, 0, 0, to_addr=RADIO_ADDR, cmd_map=cmd_map)
 
 
 class TestMemoryContentsSetBuilder:
     """build_memory_contents_set produces correct CI-V frames."""
 
-    def test_basic_channel(self, cmd_map) -> None:
+    def test_basic_channel(self, cmd_map, ic7610_memory) -> None:
         mem = MemoryChannel(
             channel=1,
             frequency_hz=14_074_000,
@@ -173,19 +185,24 @@ class TestMemoryContentsSetBuilder:
             tonemode=0,
             name="FT8",
         )
-        frame = build_memory_contents_set(mem, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+        frame = build_memory_contents_set(
+            mem, ic7610_memory, to_addr=RADIO_ADDR, cmd_map=cmd_map
+        )
         assert frame[:4] == b"\xfe\xfe\x98\xe0"
         assert frame[4] == 0x1A  # command
         assert frame[5] == 0x00  # sub-command
         assert frame[-1:] == b"\xfd"
 
-    def test_invalid_type_raises(self, cmd_map) -> None:
+    def test_invalid_type_raises(self, cmd_map, ic7610_memory) -> None:
         with pytest.raises(TypeError, match="Expected MemoryChannel"):
             build_memory_contents_set(
-                {"channel": 1}, to_addr=RADIO_ADDR, cmd_map=cmd_map
+                {"channel": 1},
+                ic7610_memory,
+                to_addr=RADIO_ADDR,
+                cmd_map=cmd_map,
             )  # type: ignore[arg-type]
 
-    def test_invalid_channel_raises(self, cmd_map) -> None:
+    def test_invalid_channel_raises(self, cmd_map, ic7610_memory) -> None:
         mem = MemoryChannel(
             channel=0,
             frequency_hz=14_074_000,
@@ -195,10 +212,12 @@ class TestMemoryContentsSetBuilder:
             datamode=0,
             tonemode=0,
         )
-        with pytest.raises(ValueError, match="Channel must be 1-101"):
-            build_memory_contents_set(mem, to_addr=RADIO_ADDR, cmd_map=cmd_map)
+        with pytest.raises(ValueError, match="memory channel must be 1-101"):
+            build_memory_contents_set(
+                mem, ic7610_memory, to_addr=RADIO_ADDR, cmd_map=cmd_map
+            )
 
-    def test_requires_cmd_map(self) -> None:
+    def test_requires_cmd_map(self, ic7610_memory) -> None:
         """cmd_map is required keyword-only -- MOR-2006 Q6's API break."""
         mem = MemoryChannel(
             channel=1,
@@ -210,7 +229,7 @@ class TestMemoryContentsSetBuilder:
             tonemode=0,
         )
         with pytest.raises(TypeError, match="MOR-2006"):
-            build_memory_contents_set(mem, to_addr=RADIO_ADDR)  # type: ignore[call-arg]
+            build_memory_contents_set(mem, ic7610_memory, to_addr=RADIO_ADDR)  # type: ignore[call-arg]
 
 
 # ---------------------------------------------------------------------------

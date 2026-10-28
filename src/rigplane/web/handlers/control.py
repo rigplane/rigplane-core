@@ -3468,9 +3468,12 @@ class ControlHandler:
                 # profile is the only authority on the write record layout.
                 admit_memory_write(getattr(radio, "profile", None))
                 channel = _int_param(params["channel"], "channel")
-                if not 1 <= channel <= 101:
-                    raise ValueError(f"channel must be 1-101, got {channel}")
-                q.put(MemoryClear(channel))
+                # The group/band part of the address for group- or
+                # band-addressed memories (IC-705, IC-9700); 0 for the
+                # channel-only radios. Profile bounds are checked when the
+                # frame is built.
+                group = _int_param(params.get("group", 0), "group")
+                q.put(MemoryClear(channel, group))
                 return {"channel": channel}
             case "set_memory_contents":
                 if not isinstance(radio, MemoryCapable):

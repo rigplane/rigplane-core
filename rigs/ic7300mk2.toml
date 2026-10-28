@@ -519,6 +519,45 @@ width_max = 255
 [power]
 max_watts = 100  # HF/50 MHz SSB/CW/RTTY/FM 0.6-100 W (spec p.70)
 
+# ── Memory channels, write side only (MOR-3644) ───────────────────
+# The IC-7300MK2 addresses a memory channel by number alone: channels
+# 00 01-00 99 plus the programmed scan edges 01 00/01 01 (P1/P2), which
+# the bounds below leave out (CI-V Reference Guide p.17). The read
+# listing stays OFF: the 1A 00 read reply is not documented in the
+# provided extracts and is not verified, so no memory_read capability is
+# declared and read_memory_entries refuses.
+[memory]
+addressing = "channel"
+first_group = 0
+last_group = 0
+first_channel = 1
+last_channel = 99
+
+# The verified 1A 00 write record (MOR-3644), field by field from the
+# IC-7300MK2 CI-V Reference Guide p.17 "Memory channel content". Offsets
+# are relative to the record AFTER the address (guide bytes 1,2: channel
+# 2-byte BCD); the guide's position labels map as: 3 -> 0 (split|
+# select), 4-8 -> 1-5 (frequency), 9 -> 6 (mode), 10 -> 7 (filter), 11
+# -> 8 (data|tone), 12-14 -> 9-11 (tone), 15-17 -> 12-14 (tsql), 18-33
+# -> 15-30 (name, 16 characters). Mode and filter are the raw bytes of
+# the 47-byte read block's mode + filter pair (the guide's 2-byte
+# "operating mode setting"); the tone fields use the 1B 00 encoding. The
+# record has NO duplex, DTCS, DV or call-sign fields. Split and select
+# are written 00 ("Set 00 for P1 and P2", OFF otherwise).
+[memory.write_layout]
+clear = "1a00_ff"  # guide p.17: "send the command 1A 00 XX XX FF" (P1/P2 excluded)
+record_length = 31
+fields = [
+  { field = "select", offset = 0, length = 1, encoding = "select" },                            # 3
+  { field = "frequency", offset = 1, length = 5, encoding = "frequency", max_hz = 74_800_000 },  # 4-8: receiver tops at 74.8 MHz (spec p.70)
+  { field = "mode", offset = 6, length = 1, encoding = "mode" },                                # 9
+  { field = "filter", offset = 7, length = 1, encoding = "filter" },                            # 10
+  { field = "data_tone", offset = 8, length = 1, encoding = "data_tone" },                      # 11: tone 0=OFF, 1=TONE, 2=TSQL (no DTCS)
+  { field = "tone", offset = 9, length = 3, encoding = "tone" },                                # 12-14
+  { field = "tsql", offset = 12, length = 3, encoding = "tsql" },                               # 15-17
+  { field = "name", offset = 15, length = 16, encoding = "name" },                              # 18-33
+]
+
 [ctcss]
 table = "standard_50"
 

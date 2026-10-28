@@ -660,13 +660,20 @@ group number or band code, `first_channel`/`last_channel` the channel;
 Both default to `[]` and accept only lists of unique integers within
 `first_group..last_group`; booleans are rejected.
 `write_layout` (default absent) declares the write-side record layout
-accepted for the profile: `"civ_26"` names the 2-byte BCD channel +
-26-byte fixed record `1A 00` SET (and the `0x0B` clear) the builders in
-`commands/memory.py` emit. Declaring it retains the radio's existing
-write/clear behaviour; its open payload questions stay tracked (the
-`0x0B` channel bytes are MOR-2055). Absent means NOT verified: memory
-contents writes and clears are refused with the stable error
-`memory_write_unverified` before any byte reaches the wire, at the
+accepted for the profile, as a field table (MOR-3644): `clear` names the
+channel-clear wire form (`"1a00_ff"` = the manuals' `1A 00` + the radio's
+own address form + `FF`, `"0b_channel"` = the legacy `0x0B` + 2-byte BCD
+channel the IC-7610 keeps), `record_length` the bytes after the memory
+address, and `fields` an array of `{field, offset, length, encoding}`
+rows (plus `max_hz` on a frequency field) that must tile the record
+exactly, with no gap or overlap. The encodings come from one shared
+vocabulary (`core/types.py: MEMORY_WRITE_ENCODINGS`) — the raw mode code,
+the filter byte, the centi-Hz-exact CTCSS encoding of `1B 00`, ASCII
+names space- or NUL-padded, and fixed zero/space runs — so the per-radio
+facts (offsets, name width) are data, and one table-driven encoder in
+`commands/memory.py` builds every radio's record. Absent means NOT
+verified: memory contents writes and clears are refused with the stable
+error `memory_write_unverified` before any byte reaches the wire, at the
 dispatch handler and in the backend. Declaring the read-side fields
 alone proves nothing about the write layout; the `memory_read`
 capability is still what turns on the read-only listing.

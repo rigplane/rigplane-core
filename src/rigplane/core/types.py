@@ -31,7 +31,10 @@ __all__ = [
     "MemoryChannel",
     "MemoryEntry",
     "MemoryProfile",
-    "MEMORY_WRITE_LAYOUTS",
+    "MemoryWriteField",
+    "MemoryWriteLayout",
+    "MEMORY_WRITE_ENCODINGS",
+    "MEMORY_WRITE_CLEAR_FORMS",
     "BandStackRegister",
 ]
 
@@ -421,22 +424,32 @@ def bcd_decode(data: bytes) -> int:
 
 @dataclass
 class MemoryChannel:
-    """Memory channel data structure for IC-7610.
+    """One memory channel as the write API programmes it.
 
-    Represents a single memory channel entry with frequency, mode, filter,
-    tone settings, and name.
+    The legacy 26-byte IC-7610 record read ``scan``, ``mode`` (BCD of the
+    int), ``filter``, ``tone_freq_hz``/``tsql_freq_hz`` (Hz, BCD) and a
+    NUL-padded 10-char name; the manual-verified layouts (MOR-3644) use
+    the raw CI-V mode code, centi-Hz-exact tones against the profile's
+    CTCSS domain (the ``1B 00`` encoding), a duplex nibble and the
+    profile's own address form (``group``: memory group or band code).
 
     Attributes:
-        channel: Memory channel number (1-101).
+        channel: Memory channel number, bounded by the profile.
         frequency_hz: Frequency in Hz.
-        mode: Mode code (BCD-encoded, see Mode enum).
+        mode: CI-V mode code (raw byte on the verified layouts, BCD of
+            the int on the legacy IC-7610 record).
         filter: Filter number (1-3).
-        scan: Scan flag (0/1).
-        datamode: Data mode flag (high nibble of combined byte).
-        tonemode: Tone mode flag (low nibble of combined byte).
-        tone_freq_hz: CTCSS tone frequency in Hz (optional).
-        tsql_freq_hz: TSQL frequency in Hz (optional).
-        name: Memory channel name (max 10 ASCII characters).
+        scan: Scan flag (0/1, legacy record only).
+        datamode: Data mode flag (0/1, high nibble where combined).
+        tonemode: Tone mode nibble (0=OFF, 1=TONE, 2=TSQL, 3=DTCS).
+        tone_freq_hz: CTCSS tone in Hz (legacy record only).
+        tsql_freq_hz: TSQL frequency in Hz (legacy record only).
+        name: Memory channel name, bounded by the layout's name field.
+        group: Memory group (IC-705) or band code (IC-9700); 0 on the
+            channel-only radios.
+        duplex: Duplex nibble (0=OFF, 1=DUP-, 2=DUP+, 3=RPS in DD).
+        tone_centihz: CTCSS tone in exact centi-Hz (verified layouts).
+        tsql_centihz: TSQL frequency in exact centi-Hz (verified layouts).
     """
 
     channel: int
@@ -449,17 +462,153 @@ class MemoryChannel:
     tone_freq_hz: int | None = None
     tsql_freq_hz: int | None = None
     name: str = ""
+    group: int = 0
+    duplex: int = 0
+    tone_centihz: int | None = None
+    tsql_centihz: int | None = None
 
 
 MemoryAddressing = Literal["group_channel", "band_channel", "channel"]
 
-# Write record layouts this package can build (MOR-3644): ``"civ_26"`` is
-# the 2-byte BCD channel + 26-byte fixed record ``1A 00`` SET (and the
-# ``0x0B`` clear) from ``commands/memory.py``. One authoritative vocabulary
-# shared by the TOML loader and the runtime admission gate, so an
-# SDK-supplied profile carrying an unlisted layout string is refused just
-# like a profile that declares none.
-MEMORY_WRITE_LAYOUTS: frozenset[str] = frozenset({"civ_26"})
+# The write-record field encodings the package can build (MOR-3644). One
+# shared vocabulary for the TOML loader, the admission gate and the
+# table-driven encoder in ``commands/memory.py``; the per-radio facts
+# (offsets, widths, name length) live in each profile's
+# ``[memory.write_layout]`` table, not here.
+MEMORY_WRITE_ENCODINGS: frozenset[str] = frozenset(
+    {
+        "select",  # the split/select byte, written 00 (both OFF)
+        "scan",  # the scan flag byte (legacy record)
+        "frequency",  # 5-byte LE BCD, optional max_hz limit
+        "mode",  # the raw CI-V mode code byte
+        "mode_bcd",  # BCD of the mode int (legacy record)
+        "filter",  # the filter byte, 1-3
+        "data_mode",  # the standalone data-mode byte, 00/01
+        "data_tone",  # datamode<<4 | tonemode in one byte
+        "duplex_tone",  # duplex<<4 | tonemode in one byte
+        "tone",  # 3-byte CTCSS BCD (the 1B 00 encoding) or zeros
+        "tsql",  # the tone-squelch twin of "tone"
+        "tone_hz_bcd",  # BCD of tone_freq_hz (legacy record)
+        "tsql_hz_bcd",  # BCD of tsql_freq_hz (legacy record)
+        "name",  # ASCII, space padded
+        "name_nul",  # ASCII, NUL padded (legacy record)
+        "zero",  # a fixed run of 00 bytes
+        "space",  # a fixed run of 20 bytes
+    }
+)
+
+# How a channel is cleared (MOR-3644). ``"1a00_ff"`` is the form the
+# IC-705/IC-9700/IC-7300/IC-7300MK2 manuals document (``1A 00`` + the
+# radio's own address form + ``FF``); ``"0b_channel"`` is the legacy
+# ``0x0B`` + 2-byte BCD channel frame the IC-7610 profile keeps so its
+# wire bytes do not change in this PR (MOR-2055).
+MEMORY_WRITE_CLEAR_FORMS: frozenset[str] = frozenset({"1a00_ff", "0b_channel"})
+
+# Per-encoding byte widths the loader enforces on every declaration.
+_WRITE_ENCODING_WIDTHS: dict[str, int | None] = {
+    "frequency": 5,
+    "mode": 1,
+    "mode_bcd": 1,
+    "filter": 1,
+    "data_mode": 1,
+    "data_tone": 1,
+    "duplex_tone": 1,
+    "tone": 3,
+    "tsql": 3,
+    "tone_hz_bcd": 3,
+    "tsql_hz_bcd": 3,
+    "select": 1,
+    "scan": 1,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryWriteField:
+    """One field of a profile-declared write record (MOR-3644).
+
+    ``offset`` is relative to the record that follows the memory address;
+    ``encoding`` names one shared encoder from
+    :data:`MEMORY_WRITE_ENCODINGS`; ``max_hz`` is the optional frequency
+    ceiling the declaration enforces (the GHz/100 MHz digit rules the
+    read parser applies are shared code and always checked).
+    """
+
+    field: str
+    offset: int
+    length: int
+    encoding: str
+    max_hz: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryWriteLayout:
+    """A radio's verified ``1A 00`` write record, as profile data.
+
+    The record is the bytes after the memory address (whose form comes
+    from :class:`MemoryProfile` addressing): ``fields`` must tile
+    ``[0, record_length)`` exactly, so a gap or an overlap is a load-time
+    error, never a silently wrong byte. ``clear`` names the channel-clear
+    wire form from :data:`MEMORY_WRITE_CLEAR_FORMS`.
+    """
+
+    clear: str
+    record_length: int
+    fields: tuple[MemoryWriteField, ...]
+
+    def validation_errors(self) -> tuple[str, ...]:
+        """Structural errors that make this declaration unbuildable.
+
+        Empty means valid. Called by the TOML loader (which raises with
+        the file name) and by the runtime admission gate (which refuses
+        SDK-supplied profiles), so both sides apply the same rules.
+        """
+        errors: list[str] = []
+        if self.clear not in MEMORY_WRITE_CLEAR_FORMS:
+            errors.append(f"unknown clear form {self.clear!r}")
+        if not 1 <= self.record_length <= 128:
+            errors.append(f"record_length must be 1..128, got {self.record_length}")
+        if not self.fields:
+            return ("the field table is empty", *errors)
+        names: set[str] = set()
+        ordered = sorted(self.fields, key=lambda f: f.offset)
+        cursor = 0
+        for entry in ordered:
+            if not entry.field or entry.field in names:
+                errors.append(f"duplicate or empty field name {entry.field!r}")
+            names.add(entry.field)
+            if entry.encoding not in MEMORY_WRITE_ENCODINGS:
+                errors.append(f"unknown encoding {entry.encoding!r}")
+            if entry.offset < 0 or entry.length < 1:
+                errors.append(f"field {entry.field!r}: offset/length must be >= 0/1")
+            elif entry.offset + entry.length > self.record_length:
+                errors.append(f"field {entry.field!r} runs past record_length")
+            elif entry.offset != cursor:
+                kind = "overlap" if entry.offset < cursor else "a gap"
+                errors.append(f"field {entry.field!r} {kind}s at offset {cursor}")
+            cursor = entry.offset + entry.length
+            width = _WRITE_ENCODING_WIDTHS.get(entry.encoding)
+            if width is not None and entry.length != width:
+                errors.append(
+                    f"field {entry.field!r}: encoding {entry.encoding!r} "
+                    f"needs length {width}, got {entry.length}"
+                )
+            if entry.encoding == "frequency" and entry.max_hz is not None:
+                if not 0 < entry.max_hz <= 9_999_999_999:
+                    errors.append(
+                        f"field {entry.field!r}: max_hz must be 1..9_999_999_999"
+                    )
+        for encodings, what in (
+            (("frequency",), "a frequency"),
+            (("mode", "mode_bcd"), "a mode"),
+            (("name", "name_nul"), "a name"),
+        ):
+            if sum(item.encoding in encodings for item in self.fields) != 1:
+                errors.append(f"the table must declare exactly {what} field")
+        for encoding in ("tone", "tsql", "tone_hz_bcd", "tsql_hz_bcd", "select"):
+            count = sum(item.encoding == encoding for item in self.fields)
+            if count > 1:
+                errors.append(f"the table declares {encoding} more than once")
+        return tuple(errors)
 
 
 @dataclass(frozen=True, slots=True)
@@ -481,13 +630,14 @@ class MemoryProfile:
     dd_groups: tuple[int, ...] = field(default=(), kw_only=True)
     offset_10mhz_groups: tuple[int, ...] = field(default=(), kw_only=True)
     # The write-side record layout accepted for this profile (MOR-3644):
-    # ``"civ_26"`` is the 2-byte BCD channel + 26-byte fixed record
-    # ``1A 00`` SET (and the ``0x0B`` clear) this package's builders emit,
-    # validated against :data:`MEMORY_WRITE_LAYOUTS`. Absent (the default)
-    # means NOT verified: memory contents writes and clears are refused
-    # before any byte reaches the wire. Declaring the read-side fields
-    # alone proves nothing about the write layout.
-    write_layout: str | None = field(default=None, kw_only=True)
+    # a field table declaring the verified ``1A 00`` SET record and the
+    # channel-clear wire form, validated structurally by
+    # :meth:`MemoryWriteLayout.validation_errors` at load time and by the
+    # runtime admission gate for SDK-supplied profiles. Absent (the
+    # default) means NOT verified: memory contents writes and clears are
+    # refused before any byte reaches the wire. Declaring the read-side
+    # fields alone proves nothing about the write layout.
+    write_layout: MemoryWriteLayout | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

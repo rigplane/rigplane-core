@@ -1,13 +1,21 @@
-"""Memory writes/clears refused without a verified write layout (MOR-3644).
+"""The memory write admission gate (MOR-3644).
 
-``set_memory_contents`` builds one fixed 26-byte ``1A 00`` record
-(``commands/memory.py: build_memory_contents_set``). The IC-705 and IC-9700
-``1A 00`` record is a different layout (group/band code, select/split byte,
-two 47-byte channel blocks, a 16-char name), so a client call could corrupt a
-real stored channel. Only a profile whose ``[memory]`` section declares a
-``write_layout`` may write or clear; every profile that merely declares the
-commands (IC-705, IC-9700, IC-7300, ...) and every profile with no
-``[memory]`` section is refused before any byte reaches the wire.
+``set_memory_contents`` and ``memory_clear`` pass one admission check
+(``profiles.admit_memory_write``) at every ingress: the profile must
+declare a structurally valid ``[memory].write_layout`` field table. The
+manual-verified layouts themselves -- per-radio fixture bytes, negative
+pins and the write/read round trips -- live in
+``tests/test_memory_write_layouts.py``; this file pins the GATE:
+
+* radios without a layout (X6100, X6200 -- commands declared absent, no
+  ``[memory]`` section) refuse at the backend, at the dispatch arm and at
+  the HTTP/WS seam, with the stable error and nothing on the wire;
+* an SDK caller splicing a junk layout into a profile refuses the same
+  way;
+* the opted-in profiles are unchanged: the IC-7610 complete-frame
+  goldens, the HTTP seam write and the quiet-RX deferral;
+* a write-side ``[memory]`` section does not turn on the read listing
+  (IC-7300, IC-7610: ``memory_read`` stays undeclared).
 
 All radios here are in-process mocks/simulators; no hardware is touched.
 """
@@ -64,7 +72,7 @@ def _mem(channel: int = 1) -> MemoryChannel:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("model", ["X6100", "X6200"])
 async def test_unverified_profiles_refuse_set_memory_contents(model: str) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
@@ -74,12 +82,12 @@ async def test_unverified_profiles_refuse_set_memory_contents(model: str) -> Non
     finally:
         radio._connected = False
     assert excinfo.value.reason_code == "memory_write_unverified"
-    # The wire shows no bytes: the 26-byte IC-7610-shaped record is never sent.
+    # The wire shows no bytes: no record is built for an unverified radio.
     assert transport.sent_packets == []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize("model", ["X6100", "X6200"])
 async def test_unverified_profiles_refuse_memory_clear(model: str) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
@@ -93,17 +101,29 @@ async def test_unverified_profiles_refuse_memory_clear(model: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_profile_without_memory_section_refuses_both() -> None:
-    """IC-7300 has the commands but no ``[memory]`` section at all."""
+async def test_ic7300_write_side_memory_section_does_not_enable_the_read() -> None:
+    """IC-7300 declares ``[memory]`` for the WRITE layout only (MOR-3644
+    part 2): the 1A 00 read reply is unverified, so the radio method
+    refuses and the listing endpoint stays 404 (no ``memory_read``
+    capability was added)."""
+    from rigplane.core.exceptions import CommandError
+
     transport = MockTransport()
     radio = _radio("IC-7300", transport)
     try:
-        with pytest.raises(MemoryWriteUnverifiedError, match="IC-7300"):
-            await radio.set_memory_contents(_mem())
-        with pytest.raises(MemoryWriteUnverifiedError, match="IC-7300"):
-            await radio.memory_clear(5)
+        with pytest.raises(CommandError, match="no verified CI-V memory read layout"):
+            await radio.read_memory_entries(0, [1])
+        web = await _serve(radio)
+        try:
+            host, port = _addr(web)
+            status, _headers, _body = await _http_get(
+                host, port, "/api/v1/memories?group=0&start=1&count=3"
+            )
+        finally:
+            await _shutdown(web, radio)
     finally:
         radio._connected = False
+    assert status == 404
     assert transport.sent_packets == []
 
 
@@ -209,7 +229,7 @@ class TestHandlerWriteGate:
         return handler, server.command_queue
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
+    @pytest.mark.parametrize("model", ["X6100", "X6200"])
     async def test_memory_clear_refused_and_not_enqueued(self, model: str) -> None:
         handler, queue = self._handler(model)
         with pytest.raises(MemoryWriteUnverifiedError):
@@ -217,7 +237,7 @@ class TestHandlerWriteGate:
         assert queue.drain() == []
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
+    @pytest.mark.parametrize("model", ["X6100", "X6200"])
     async def test_set_memory_contents_refused_and_not_enqueued(
         self, model: str
     ) -> None:
@@ -225,6 +245,31 @@ class TestHandlerWriteGate:
         with pytest.raises(MemoryWriteUnverifiedError):
             await handler._enqueue_command("set_memory_contents", _mem().__dict__)
         assert queue.drain() == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "group"), [("IC-705", 3), ("IC-9700", 2), ("IC-7300", 0)]
+    )
+    async def test_the_opted_in_radios_enqueue_the_write(
+        self, model: str, group: int
+    ) -> None:
+        """MOR-3644 part 2: the manual-verified layouts pass the gate and
+        the address reaches the queue (group/band for the addressed
+        radios)."""
+        from dataclasses import replace
+
+        from rigplane.web.radio_poller import MemoryClear, SetMemoryContents
+
+        handler, queue = self._handler(model)
+        mem = replace(_mem(), group=group)
+        result = await handler._enqueue_command(
+            "memory_clear", {"channel": 5, "group": group}
+        )
+        assert result == {"channel": 5}
+        assert queue.drain() == [MemoryClear(5, group)]
+        result = await handler._enqueue_command("set_memory_contents", mem.__dict__)
+        assert result == {"channel": mem.channel}
+        assert queue.drain() == [SetMemoryContents(mem)]
 
     @pytest.mark.asyncio
     async def test_ic7610_memory_clear_still_enqueues(self) -> None:
@@ -237,13 +282,42 @@ class TestHandlerWriteGate:
 
     @pytest.mark.asyncio
     async def test_ws_response_carries_the_stable_error_code(self) -> None:
-        handler, _queue = self._handler("IC-705")
+        handler, _queue = self._handler("X6100")
         await handler._dispatch_command(7, "memory_clear", {"channel": 5})
         reply = json.loads(handler._ws.send_text.await_args_list[-1].args[0])
         assert reply["id"] == 7
         assert reply["ok"] is False
         assert reply["error"] == "memory_write_unverified"
         assert "write layout" in reply["message"]
+
+    @pytest.mark.asyncio
+    async def test_ftx1_refuses_at_the_dispatch_arm(self) -> None:
+        """FTX-1 pinned explicitly (MOR-3644): the Yaesu backend has no
+        write path at all (``NotImplementedError``, confirmed in
+        tests/test_memory_write_layouts.py), so the shared arm refuses it
+        with the stable code before anything is enqueued."""
+        from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+        from rigplane.profiles import get_radio_profile
+        from rigplane.web.handlers import ControlHandler
+        from rigplane.web.radio_poller import CommandQueue
+
+        radio = YaesuCatRadio("/dev/null", profile=get_radio_profile("FTX-1"))
+        ws = MagicMock()
+        ws.send_text = AsyncMock()
+        server = MagicMock()
+        server.command_queue = CommandQueue()
+        handler = ControlHandler(
+            ws=ws,
+            radio=radio,
+            server_version="test",
+            radio_model="FTX-1",
+            server=server,
+        )
+        with pytest.raises(MemoryWriteUnverifiedError):
+            await handler._enqueue_command("memory_clear", {"channel": 5})
+        with pytest.raises(MemoryWriteUnverifiedError):
+            await handler._enqueue_command("set_memory_contents", _mem().__dict__)
+        assert server.command_queue.drain() == []
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +400,7 @@ async def test_http_seam_refuses_unverified_memory_writes(
     name: str, params: dict[str, Any]
 ) -> None:
     transport = MockTransport()
-    radio = _radio("IC-705", transport)
+    radio = _radio("X6100", transport)
     web = await _serve(radio)
     try:
         status, body = await _request(web, "http", name, params)
@@ -403,7 +477,7 @@ async def test_http_batch_refuses_unverified_memory_writes_and_skips_the_rest() 
     """The batch endpoint answers the refusal per step and marks the
     remaining steps skipped; nothing is executed or sent."""
     transport = MockTransport()
-    radio = _radio("IC-705", transport)
+    radio = _radio("X6100", transport)
     web = await _serve(radio)
     try:
         status, body = await _post_batch(
