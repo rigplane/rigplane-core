@@ -524,24 +524,26 @@ async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
 
 
 @pytest.mark.asyncio
-async def test_http_seam_writes_the_ic705_in_its_declared_layout() -> None:
-    """MOR-3644 part 2, entry point to wire: an IC-705 write through the
-    HTTP command endpoint carries the manual record (group address,
-    centi-Hz tone) on the wire, and its clear is the declared
-    ``1A 00 + address + FF`` form. The expected frames are the manual
-    fixtures of tests/test_memory_write_layouts.py, imported so the two
-    cannot drift."""
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300", "IC-7300MK2"])
+async def test_http_seam_writes_the_manual_layouts(model: str) -> None:
+    """MOR-3644 part 2, entry point to wire for every newly enabled
+    layout: a write through the HTTP command endpoint carries the manual
+    record on the wire (group/band address, centi-Hz tone), and the clear
+    is the declared ``1A 00 + address + FF`` form. The expected frames are
+    the manual fixtures of tests/test_memory_write_layouts.py, imported
+    so the two cannot drift."""
     from rigplane.core.state_pipeline_contracts import (
         FieldPath,
         Observation,
         SourceMetadata,
     )
 
-    from test_memory_write_layouts import _mem as _layout_mem
+    from test_memory_write_layouts import _CASES, _mem as _layout_mem
     from test_memory_write_layouts import _manual_frame
 
+    radio_addr, group, channel = _CASES[model]
     transport = MockTransport()
-    radio = _radio("IC-705", transport)
+    radio = _radio(model, transport)
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
     web.command_state_store.apply_current(
@@ -565,7 +567,7 @@ async def test_http_seam_writes_the_ic705_in_its_declared_layout() -> None:
         done.set()
 
     consumer = asyncio.create_task(consume())
-    mem = _layout_mem("IC-705")
+    mem = _layout_mem(model)
     try:
         status, body = await _request(web, "http", "set_memory_contents", mem.__dict__)
         clear_status, clear_body = await _request(
@@ -577,9 +579,84 @@ async def test_http_seam_writes_the_ic705_in_its_declared_layout() -> None:
         await _shutdown(web, radio)
     assert status == 200 and body["ok"] is True
     assert clear_status == 200 and clear_body["ok"] is True
+    # The clear frame by hand: 1A 00 + the radio's own address form + FF.
+    address = {
+        "IC-705": f"{group:04d}{channel:04d}",
+        "IC-9700": f"{group:02d}{channel:04d}",
+        "IC-7300": f"{channel:04d}",
+        "IC-7300MK2": f"{channel:04d}",
+    }[model]
     frames = [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets]
-    expected_clear = bytes.fromhex(f"fefea4e01a00{mem.group:04d}{mem.channel:04d}fffd")
-    assert frames == [_manual_frame("IC-705"), expected_clear]
+    assert frames == [
+        _manual_frame(model),
+        bytes.fromhex(f"fefe{radio_addr:02x}e01a00{address}fffd"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("datamode", [2, 3], ids=["DATA2", "DATA3"])
+async def test_http_seam_writes_the_ic7610_data_modes(datamode: int) -> None:
+    """The IC-7610's record carries DATA1-3 (guide p.11) through the real
+    API path: the profile's ``[data_mode].count`` domain reaches the
+    encoder (a write the builder's own default limit of 1 would refuse --
+    the regression pins the forwarding, not just the builder)."""
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
+    )
+
+    transport = MockTransport()
+    radio = _radio("IC-7610", transport)
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
+        )
+    )
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    consumed = asyncio.Event()
+
+    async def consume() -> None:
+        await web.command_queue.wait(2)
+        entry = web.command_queue.take_entry()
+        consumed.set()
+        assert entry is not None
+        await poller._execute_queued_entry(entry)
+
+    consumer = asyncio.create_task(consume())
+    try:
+        status, body = await _request(
+            web,
+            "http",
+            "set_memory_contents",
+            {**_mem().__dict__, "datamode": datamode},
+        )
+        await asyncio.wait_for(consumed.wait(), timeout=5)
+        await asyncio.wait_for(consumer, timeout=5)
+    finally:
+        await _shutdown(web, radio)
+    assert status == 200 and body["ok"] is True
+    # The legacy complete-frame golden with the DATA nibble set.
+    assert transport.sent_packets[0][CIV_HEADER_SIZE:] == bytes.fromhex(
+        "fefe98e01a00"
+        "0001"
+        "00"
+        "0040071400"
+        "01"
+        "01"
+        f"{datamode << 4:02x}"
+        "000000"
+        "000000"
+        "46543800000000000000"
+        "00"
+        "fd"
+    )
 
 
 @pytest.mark.asyncio
