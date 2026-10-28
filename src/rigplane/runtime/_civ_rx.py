@@ -1067,6 +1067,9 @@ class CivRuntime:
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
+        # MOR-3845: a new connection generation has no valid-frame evidence
+        # yet; only ``_route_civ_frame`` may re-stamp it.
+        self._host.last_valid_frame_monotonic = None
         self._host._state_store.begin_provider_generation()
         for token in self._managed_tx_ports.values():
             if token.civ_source_generation == source_generation:
@@ -1856,6 +1859,10 @@ class CivRuntime:
             return
         if frame.to_addr not in (CONTROLLER_ADDR, 0x00):
             return
+        # MOR-3845: the frame parsed successfully AND carries radio-originated
+        # information (from the radio, to us or broadcast) — the one decode
+        # point every Icom backend (LAN and serial) shares.
+        self._host.last_valid_frame_monotonic = time.monotonic()
         if frame.command != 0x27:
             logger.debug(
                 "civ-rx: cmd=0x%02X sub=0x%02X to=0x%02X data=%s",

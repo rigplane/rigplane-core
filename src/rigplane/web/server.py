@@ -157,6 +157,7 @@ from .runtime_helpers import (  # noqa: TID251
     VFO_CAPABILITY_TAGS,
     build_public_state_payload_from_snapshot,
     classify_radio_health,
+    connection_liveness_payload,
     primary_receiver_snapshot_ids,
     projected_af_level_sub_tag,
     projected_receiver_control_tags,
@@ -2494,7 +2495,12 @@ class WebServer:
             and cache_key == self._cached_public_state_key
             and self._cached_public_state_payload is not None
         ):
-            return copy.deepcopy(self._cached_public_state_payload)
+            payload = copy.deepcopy(self._cached_public_state_payload)
+            # MOR-3845: the liveness frame age is wall-clock dependent — a
+            # cache hit must still serve the age at response time, not the
+            # value frozen when the payload was built.
+            payload["connection"]["liveness"] = connection_liveness_payload(self._radio)
+            return payload
         public_state_seq = self._public_state_seq_for_key(cache_key)
         profile = self._get_profile_unless_provider_owned()
         # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
@@ -4311,6 +4317,8 @@ class WebServer:
                         *self._startup_busy_hold()
                     ),
                     "wsClients": len(self._client_tasks),
+                    # MOR-3845: additive; computed at request time.
+                    "liveness": connection_liveness_payload(self._radio),
                 },
             },
             separators=(",", ":"),

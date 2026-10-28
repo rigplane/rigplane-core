@@ -1130,10 +1130,10 @@
   /* ── Landscape layout ── */
   .m-landscape {
     position: fixed;
-    top: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     left: 0;
     width: 100dvw;
-    height: 100dvh;
+    height: calc(100dvh - var(--rp-chrome-top, 0px));
     background: #000;
     z-index: 50;
     display: flex;
@@ -1955,6 +1955,7 @@
   .m-step-picker-backdrop {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 149;
   }
 

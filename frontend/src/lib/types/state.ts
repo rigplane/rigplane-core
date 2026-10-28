@@ -230,6 +230,19 @@ export interface ConnectionPublic {
   rigConnected: boolean;
   radioReady: boolean;
   controlConnected: boolean;
+  liveness?: ConnectionLivenessPublic | null;
+}
+/**
+ * MOR-3845: decode-point radio liveness (additive).
+ *
+ * ``lastFrameAgeMs`` is computed server-side at payload-build time from
+ * the backend's ``last_valid_frame_monotonic`` stamp; ``None`` when the
+ * radio has never answered on this connection generation.
+ */
+export interface ConnectionLivenessPublic {
+  lastFrameAgeMs: number | null;
+  staleAfterMs: number;
+  source: "radio" | "daemon" | "simulator";
 }
 /**
  * Radio connection detail. Carries ONLY ``status`` in the state payload.

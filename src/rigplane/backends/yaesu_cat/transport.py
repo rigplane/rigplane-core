@@ -195,12 +195,22 @@ class YaesuCatTransport:
         self._exchange_gate = PriorityExchangeGate()
         self._stats = TransportStats()
         self._last_reconnect: float = 0.0
+        # MOR-3845: decode-point liveness stamp (surfaced through
+        # ``YaesuCatRadio.last_valid_frame_monotonic``). Only a successful
+        # ``query()`` match — a validated line that answers our command —
+        # may stamp it; a new connection generation resets it.
+        self.last_valid_frame_monotonic: float | None = None
 
     # ── Properties ────────────────────────────────────────────────────
 
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def timeout(self) -> float:
+        """Per-attempt read timeout for queries (seconds)."""
+        return self._timeout
 
     @property
     def stats(self) -> TransportStats:
@@ -233,6 +243,9 @@ class YaesuCatTransport:
             )
             self._connected = True
             self._stats.record_port_open()
+            # MOR-3845: port open is a new connection generation, not
+            # liveness evidence — only a successful query match re-stamps.
+            self.last_valid_frame_monotonic = None
             logger.info("CAT serial port opened: %s", self._device)
         except Exception as exc:
             raise CatTransportError(
@@ -552,6 +565,10 @@ class YaesuCatTransport:
                     continue
 
                 # ── Match! ──
+                # MOR-3845: a validated response line that answers our
+                # command — radio-originated information, decoded. Echo,
+                # stale auto-info and ``?;`` rejections never reach this.
+                self.last_valid_frame_monotonic = time.monotonic()
                 self._stats.record_success()
                 return response
 

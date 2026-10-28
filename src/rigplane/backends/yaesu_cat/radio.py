@@ -686,6 +686,28 @@ class YaesuCatRadio:
         """Stable backend family identifier — ``"yaesu_cat"`` for Yaesu CAT."""
         return "yaesu_cat"
 
+    #: MOR-3845: liveness source label for the ``connection.liveness`` web
+    #: field — this backend talks to the radio directly.
+    liveness_source = "radio"
+
+    @property
+    def last_valid_frame_monotonic(self) -> float | None:
+        """MOR-3845: decode-point liveness stamp (Radio protocol member).
+
+        Stamped by :class:`YaesuCatTransport` only when a ``query()`` match
+        returns a validated radio answer; reset on every (re)connect.
+        """
+        return self._transport.last_valid_frame_monotonic
+
+    @property
+    def liveness_stale_after_ms(self) -> int:
+        """MOR-3845: age at which the liveness stamp is stale — twice the
+        transport's per-attempt read timeout, the same 2x ladder the CI-V
+        health classifier uses. The CAT poller queries on a 75 ms fast
+        cadence (1 s slow), so quiet RX and sustained TX stay far below it.
+        """
+        return int(self._transport.timeout * 2 * 1000)
+
     @property
     def model(self) -> str:
         """Human-readable radio model name (e.g. ``'FTX-1'``)."""

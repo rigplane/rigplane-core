@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
@@ -48,6 +49,12 @@ class RigctldTransport:
         self._lifecycle_lock = asyncio.Lock()
         self._provider_generation_advance: Callable[[], int] | None = None
         self._connection_retired = True
+        # MOR-3845: decode-point liveness stamp (surfaced through
+        # ``RigctldClientRadio.last_valid_frame_monotonic``). Only a
+        # completed ``query()`` — data lines backed by a fresh rig read —
+        # may stamp it; a daemon ``RPRT`` ack/error from ``command()``
+        # never does. A new connection generation resets it.
+        self.last_valid_frame_monotonic: float | None = None
 
     def bind_provider_generation(
         self, *, advance: Callable[[], int] | None = None
@@ -87,6 +94,9 @@ class RigctldTransport:
             ) from exc
         self._reader, self._writer = reader, writer
         self._connection_retired = False
+        # MOR-3845: TCP connect is a new connection generation, not liveness
+        # evidence — only a completed query (fresh rig read) re-stamps.
+        self.last_valid_frame_monotonic = None
 
     async def close(self) -> None:
         async with self._lifecycle_lock:
@@ -225,6 +235,11 @@ class RigctldTransport:
                         f"{command!r}; expected {response_lines} data line(s)."
                     )
                 lines.append(line)
+        # MOR-3845: the daemon only produces data lines for a get query
+        # after a fresh read of a rig value — radio-backed information.
+        # (A bare ``RPRT 0`` ack from ``command()`` is daemon reachability,
+        # never radio liveness, and does not stamp.)
+        self.last_valid_frame_monotonic = time.monotonic()
         return lines
 
     async def command(

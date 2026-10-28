@@ -1655,6 +1655,8 @@ def test_ftx1_empty_store_nulls_every_unobserved_status_leaf() -> None:
         "rigConnected": False,
         "radioReady": False,
         "controlConnected": False,
+        # MOR-3845: additive liveness — null without a radio that answered.
+        "liveness": None,
     }
     assert payload["radioDetail"] == {"status": "disconnected"}
     assert payload["wsClients"] == {"scope": 0, "control": 0, "audio": 0}
@@ -1763,6 +1765,8 @@ def test_observed_values_match_the_prewire_contract_byte_for_byte() -> None:
         "rigConnected": False,
         "radioReady": False,
         "controlConnected": False,
+        # MOR-3845: additive liveness — null without a radio that answered.
+        "liveness": None,
     }
     assert payload["radioDetail"] == {"status": "disconnected"}
     assert payload["radioHealth"] == {

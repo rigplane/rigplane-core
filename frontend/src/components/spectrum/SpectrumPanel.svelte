@@ -1380,6 +1380,7 @@
   .spectrum-panel.fullscreen {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 100;
     border-radius: 0;
     border: none;
