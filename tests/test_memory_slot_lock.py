@@ -5,16 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
-from _helpers import CIV_HEADER_SIZE
+from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected, YaesuCatTransport
 from rigplane.commands import CONTROLLER_ADDR
+from rigplane.commands._frame import build_civ_frame
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -134,7 +134,8 @@ class _GatedIc705Transport(MockTransport):
 
     A read is recorded when its frame is dispatched; the reply is queued only
     when the gate for that channel opens, so the test holds each slot read in
-    flight. A ``0x0B`` memory-clear frame is recorded and passed through.
+    flight. A ``1A 00`` + address + ``FF`` clear frame (the IC-705's
+    declared form, MOR-3644) is recorded and passed through.
     """
 
     def __init__(self, channels: list[int]) -> None:
@@ -152,7 +153,15 @@ class _GatedIc705Transport(MockTransport):
     async def send_tracked(self, data: bytes) -> None:
         civ = data[CIV_HEADER_SIZE:]
         if civ[4:6] == b"\x1a\x00":
-            address = civ[6:-1]
+            payload = civ[6:-1]
+            if payload.endswith(b"\xff"):  # the declared clear form
+                self.events.append("clear")
+                await super().send_tracked(data)
+                self.queue_response(
+                    wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, civ[2], 0xFB))
+                )
+                return
+            address = payload
             channel = int(address[2:4].hex())
             self.events.append(f"read {channel}")
             self._in_flight[channel].set()
@@ -160,8 +169,6 @@ class _GatedIc705Transport(MockTransport):
             await super().send_tracked(data)
             self.queue_response(_reply(0xA4, address + b"\xff"))
             return
-        if civ[4] == 0x0B:
-            self.events.append("clear")
         await super().send_tracked(data)
 
 
@@ -169,14 +176,9 @@ class _GatedIc705Transport(MockTransport):
 async def test_web_memory_clear_runs_between_the_listed_slot_reads() -> None:
     transport = _GatedIc705Transport([0, 1, 2])
     radio = _icom_recall_radio("IC-705", transport)
-    # Simulated opt-in (MOR-3644): the slot-lock ordering pinned here is
-    # profile-agnostic, and the shipped IC-705 profile now refuses
-    # memory_clear (no verified write layout), so this synthetic profile
-    # declares the IC-7610-proven one to let the clear reach the wire.
-    radio._profile = replace(
-        radio._profile,
-        memory=replace(radio._profile.memory, write_layout="civ_26"),
-    )
+    # The slot-lock ordering pinned here is profile-agnostic; the shipped
+    # IC-705 profile now declares its verified write layout (MOR-3644 part
+    # 2), so the clear reaches the wire in the declared 1A 00 + FF form.
     radio._civ_stream_ready = True
     radio._last_civ_data_received = time.monotonic()
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
@@ -207,8 +209,10 @@ async def test_web_memory_clear_runs_between_the_listed_slot_reads() -> None:
             _http_get(host, port, "/api/v1/memories?group=0&start=0&count=3")
         )
         await transport.wait_in_flight(0)
+        # The IC-705 is group-addressed, so the clear names its group
+        # (MOR-3644: a grouped radio refuses an unnamed group).
         post = asyncio.create_task(
-            _request(web, "http", "memory_clear", {"channel": 5})
+            _request(web, "http", "memory_clear", {"channel": 5, "group": 0})
         )
         await asyncio.wait_for(entry_taken.wait(), timeout=5)
         await asyncio.sleep(0)

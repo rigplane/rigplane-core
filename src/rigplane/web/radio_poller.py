@@ -3205,9 +3205,9 @@ class RadioPoller:
             case MemoryToVfo(channel=channel):
                 if isinstance(radio, MemoryCapable):
                     await radio.memory_to_vfo(channel)
-            case MemoryClear(channel=channel):
+            case MemoryClear(channel=channel, group=group):
                 if isinstance(radio, MemoryCapable):
-                    await radio.memory_clear(channel)
+                    await radio.memory_clear(channel, group=group)
             case SetMemoryContents(mem=mem):
                 if isinstance(radio, MemoryCapable):
                     await radio.set_memory_contents(mem)

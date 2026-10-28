@@ -2197,8 +2197,9 @@ class MemoryCapable(Protocol):
         """Load a memory channel into the VFO (1-101)."""
         ...
 
-    async def memory_clear(self, channel: int) -> None:
-        """Clear a memory channel (1-101)."""
+    async def memory_clear(self, channel: int, group: int | None = None) -> None:
+        """Clear a memory channel; ``group`` is the required memory group
+        (IC-705) or band code (IC-9700), 0 on the channel-only radios."""
         ...
 
     async def set_memory_contents(self, mem: "MemoryChannel") -> None:

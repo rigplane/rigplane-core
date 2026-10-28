@@ -768,6 +768,7 @@ class MemoryToVfo:
 @dataclass(frozen=True, slots=True)
 class MemoryClear:
     channel: int
+    group: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
