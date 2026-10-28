@@ -63,8 +63,11 @@ Goals
 - OpsLog, JTDX, WSJT-X Improved, MSHV and loggers connect, read radio state,
   tune, select mode, switch split, key (where the radio supports managed TX) and,
   in the audio phase, exchange RX/TX audio.
-- Same safety as every other ingress: a TCI client can never leave the
-  transmitter keyed after it goes away, and can never key around the authority.
+- Same safety as every other ingress: a TCI client never keys around the
+  authority, and when it goes away its lease is released through the authority
+  (7.4). What that guarantees is bounded by the configured software TOT and by
+  an uncertain-release outcome, both stated in 7.4; this document does not
+  promise more.
 - Work for every radio Core supports through the `Radio` capability protocols,
   with radio facts taken from profiles and capabilities, never from `if model ==`.
 
@@ -248,7 +251,7 @@ Q9).
 Limits to keep: `_MAX_WS_FRAME` is 64 KiB. A TCI audio block is at most
 64 + 16384 bytes, so it fits. Per-message deflate stays off for TCI (clients do
 not negotiate it; audio does not compress). `WebSocketConnection`'s pong
-timeout becomes a constructor parameter, default unchanged (7.4).
+timeout stays as it is for `web`; TCI's watchdog is separate (7.4).
 
 ## 5. Phase "control"
 
@@ -304,10 +307,15 @@ channels per receiver (0 = A, 1 = B). The server announces `trx_count:1` and
 `channels_count:2`, always for `trx` 0.
 
 - Channel 0 is the frequency and mode the radio receives on.
-- Channel 1 is the TX frequency when split is enabled; with split off it mirrors
-  channel 0. On Core this is the relative-VFO surface:
-  `RelativeVfoFrequencyWritable.write_relative_vfo_frequency`, which `rigctld`
-  already reaches through the `set_split_freq` intent, gated on the capability.
+- Channel 1 is VFO B. It is addressed and reported independently of split
+  (WSJT-X Improved programs it right after `split_enable:0,false`, [AS]).
+  Split only decides the *effective TX frequency*: B when split is on, else A.
+  On Core, channel 1 is the relative-VFO surface:
+  `RelativeVfoReadbackCapable.read_relative_vfo(selected=False)` to read and
+  `RelativeVfoFrequencyWritable.write_relative_vfo_frequency` to write, which
+  `rigctld` already reaches through the `set_split_freq` intent, gated on the
+  capability. A radio without that surface reports channel 1 equal to channel 0
+  and answers a channel-1 write with the current value.
 - Radios with two independent receivers (`ReceiverBankCapable.receiver_count > 1`)
   expose only the receiver that `Radio.get_freq(receiver=0)` addresses. `trx_count:2`
   is a later extension, not part of this program (decision Q5).
@@ -354,7 +362,7 @@ in 6.
 | TCI command | Tier | Core mapping | Notes |
 |---|---|---|---|
 | `vfo:0,0` R/S | A | read: `StateStore` freq of receiver 0; set: intent `set_freq{freq, receiver=0}` | echo the frequency the radio reached; echo current on no-op or failure |
-| `vfo:0,1` R/S | A | read: relative-VFO TX frequency (mirror of channel 0 when split off); set: intent `set_split_freq` if `RelativeVfoFrequencyWritable`, else echo current | reply even on no-op (WSJT-X waits 1 s) |
+| `vfo:0,1` R/S | A | read: the unselected VFO's frequency, independent of split; set: intent `set_split_freq` if `RelativeVfoFrequencyWritable`, else echo current | reply even on no-op (WSJT-X waits 1 s); a write with split off must stay readable and must survive enabling split |
 | `modulation:0[,mode]` R/S | A | names in 5.6; set: intent `set_mode`, plus `set_data_mode` for DIGU/DIGL | applies `audio.route.rigctld_wsjtx_policy` for data mode and TX input (P0d shares the glue now in `rigctld/server.py: _apply_wsjtx_data_mod_input`) |
 | `split_enable:0[,bool]` R/S | A | `SplitCapable.get_split/set_split` via intent `set_split`; no capability: always `false` | `false` while a client programs channel 1 must not erase it ([AS]) |
 | `trx:0[,bool[,source]]` R/S | A | PTT through the managed ingress (7) | reply `trx:0,false;` on every refusal; `source` handling in 7.3 |
@@ -363,7 +371,7 @@ in 6.
 | `rit_enable`, `rit_offset` R/S | B | `RitXitCapable.get/set_rit_status`, `get/set_rit_frequency` | capability absent: `false` / `0` |
 | `xit_enable`, `xit_offset` R/S | B | `RitXitCapable.get/set_rit_tx_status`; offset mirrors the RIT value | `RitXitCapable` has one frequency method, so the two offsets are one value |
 | `tx_enable:0` N/R | B | server only: true when TX capability and managed composition are present | a client set is ignored and answered with the current value (spec 4.3) |
-| `tx_frequency` N | B | the TX frequency (channel 1 when split, else channel 0) | |
+| `tx_frequency` N | B | the effective TX frequency: channel 1 when split is on, else channel 0 | |
 | `dds`, `if` R | B | `dds:0,<ch0 hz>` ; `if:0,<ch>,0` | no panorama; read-only |
 | `vfo_limits`, `modulations_list`, `trx_count`, `channels_count`, `device`, `protocol`, `receive_only`, `ready` | B | init only (5.4) | |
 | `rx_sensors_enable`, `tx_sensors_enable` S, `rx_sensors`, `tx_sensors` N | B | optional: `MetersCapable.get_s_meter` mapped to dBm if `runtime/meter_cal.py` provides such a mapping (to be checked in that PR); `get_power_meter`, `get_swr` | deferred to a later PR if no captured client sends the enables |
@@ -447,7 +455,8 @@ started. That needs a bench run on a dummy load and is a separate PR.
 3. An unkey never fails open: it never forces another owner off, and it is
    answered even if nothing was keyed.
 4. Anything the client cannot be told about (socket gone) is released by the
-   server side, not by the client.
+   server side, not by the client; the outcome of that release can be uncertain
+   (7.4).
 
 ### 7.2 Managed composition required
 
@@ -468,11 +477,15 @@ key (`_cmd_web`, MOR-3536). Relaxing it is a separate decision.
 
 `trx:0,true[,source]`:
 
-1. Parse. `source` is `tci` (audio from the TCI stream), absent or any mic
-   name. Mic names and absent are accepted and key the radio without touching
-   audio routing; `tci` additionally requires phase "audio" (8) and a PCM TX
-   route, otherwise refuse. Reason: keying with the wrong audio source is the
-   mistake a client cannot see.
+1. Parse. The optional third argument selects the TX audio source (spec 4.2).
+   Core selects TX input only through the route policy of 8.3, so:
+   - `tci`: requires phase "audio" (8) and a PCM TX route, otherwise refuse;
+   - absent: key with the radio's currently selected input (what a rigctld
+     `set_ptt` does); the reply is the same whatever DIGU/DIGL selected earlier;
+   - `mic1`, `mic2`, `micpc`, `ecoder2` or any other name: **refuse**
+     (`trx:0,false;`, no PTT write). Accepting it would key whichever input the
+     data route selected, which is not what the client asked for.
+   Test: select DIGU, unkey, send `trx:0,true,mic1`, assert no PTT write.
 2. Refuse (reply `trx:0,false;`, no radio write) if: no managed composition;
    `ControllerAuthority.mode == "remote"`; `authority.held_by_other(owner)`;
    `authority.radio_tx_refusal_nowait()` is not `None` (radio transmitting with
@@ -504,16 +517,31 @@ the gap on the simulator and the bench and revisits it only with data.
   from P0c is the single implementation.
 - **Peer dies without closing** (power loss, cable): AetherSDR lists this as a
   known issue, the radio stays keyed until the OS gives up on the connection
-  ([AS] Known issues). Two bounds apply here. (a) Liveness: every TCI session
-  pings every 5 s and is closed after 15 s without a pong, which releases any
-  lease (first bullet). `WebSocketConnection.keepalive_loop(interval)` already
-  pings and closes on a stale pong using an injectable clock, but its pong
-  timeout is a fixed 60 s attribute; P0a makes it a constructor parameter with
-  the default unchanged. The two constants are named in the leaf's `tci/server.py`
-  and pinned by a fake-clock test. A client frozen for more than 15 s is dropped;
-  that errs on the safe side. (b) The authority's software TOT,
-  `DEFAULT_MANAGED_TX_TOT_SECONDS` (180 s), is the absolute backstop and is not
-  changed.
+  ([AS] Known issues). Two bounds apply here.
+  (a) Liveness. The leaf server runs, per session, a **deadline watchdog that is
+  independent of the heartbeat writes**: it records the time of the last pong
+  (or any inbound frame) on the injected clock and, when `now - last > 15 s`,
+  aborts the transport (`WebSocketConnection.abort`) and runs the protected
+  teardown of the first bullet. Pings are sent every 5 s by a separate task with
+  a bounded write. Reason: the existing `keepalive_loop` only checks liveness
+  after each sleep and awaits an unbounded `writer.drain()`, so reusing it as is
+  can release up to ~20 s late, or never when a write blocks. The loop and its
+  60 s fixed pong timeout stay as they are for `web`. The constants live in the
+  leaf's `tci/server.py`. Tests (fake clock): a last pong that is not aligned
+  with the 5 s tick still releases by 15 s; a permanently blocked `drain` still
+  releases.
+  (b) The authority's software TOT. `ManagedTxTotConfigStore` takes a
+  configured value (default `DEFAULT_MANAGED_TX_TOT_SECONDS`, 180 s) that can be
+  disabled or extended, and `ManagedTxAuthority._tot_deadline_locked` follows
+  it. So the bound on a keyed over is *the configured TOT*, not a fixed 180 s;
+  with TOT disabled a live, ping-answering client can stay keyed
+  indefinitely, as any other ingress can.
+  (c) Uncertain release. The shared disconnect helper is fail-soft and survives
+  one cancellation; after a timeout or a second cancellation the unkey can be
+  unconfirmed and the lease stays held with its release obligation unsettled
+  (`RELEASE_REQUIRED`), which the uncertain-shutdown diagnostics surface
+  (`RigctldServer._release_session_tx` docstring, MOR-1015). TCI inherits this
+  and does not claim to remove it.
 - **Server stop**: `stop()` closes sessions first, then lets the authority's own
   shutdown run; same order and timeouts as `RigctldServer.stop`
   (`STOP_TIMEOUT_S`).
@@ -527,7 +555,8 @@ the gap on the simulator and the bench and revisits it only with data.
 admitted by the same write path as `rigctld` `RFPOWER`, and
 `ManagedTxAuthority.admit_managed_write` already passes it while keyed. It is
 clamped by `resolve_power_level_target` to the profile range. `tune` and
-`tune_drive`: 6.4. No TCI-specific safety mechanism is introduced beyond 7.4(a).
+`tune_drive`: 6.4. No TCI-specific safety mechanism is introduced beyond the watchdog of 7.4(a)
+and the owner-specific audio admission of 8.3.
 
 ### 7.6 Network exposure
 
@@ -566,7 +595,7 @@ packs it (`<8I32x`):
 | `codec`, `crc` | always 0 |
 | `length` | number of samples in `data`, **all channels counted** (spec wording for the IQ stream: complex samples are `length/channels`; `eesdr-tci` sizes `data` as `bytes_per_sample * length`). Open: confirm against a captured stream (C0). |
 | `type` | 1 RX audio, 2 TX audio, 3 TX_CHRONO (4 line-out: not sent) |
-| `channels` | 1 or 2 (default 2) |
+| `channels` | 1 or 2. The spec default is 2; this server announces and serves 1 (8.2) |
 | `count` | per-stream packet counter, separate for RX audio and TX_CHRONO, reset when switching RX/TX |
 | `reserv[7]` | zero |
 
@@ -594,9 +623,18 @@ disconnect -> close the subscription. Per client:
    existing consumers to it is *not* in this program; it is filed as a follow-up
    ticket.
 2. In the adapter: resample to the client rate with
-   `audio.resample.PcmResampler`; map channels (mono to stereo by duplication,
-   stereo to mono by average); re-block to `audio_stream_samples`. Then the
+   `audio.resample.PcmResampler`; re-block to `audio_stream_samples`. Then the
    leaf's `frames.py` converts to the client sample type and builds the frame.
+   **Channels.** Spec 3.4: with DIGL/DIGU selected, a two-channel stream is a
+   *complex* signal and a one-channel stream a real one. Core's RX audio is a
+   real demodulated signal, so duplicating it into two channels would hand a
+   conforming consumer a stream with no quadrature content. First release
+   therefore serves **real mono in every mode**: the init burst announces
+   `audio_stream_channels:1;` and a client request for 2 is answered with the
+   current value (1), the same "unsupported value ignored, current echoed"
+   treatment the spec gives other stream settings. Whether WSJT-X Improved,
+   JTDX and MSHV accept that is a C0 item; a true complex (Hilbert) conversion,
+   if a client needs it, is a separate design with I/Q phase reference tests.
 3. Send on a bounded per-session queue. If a client falls behind, drop the
    oldest audio and count it; never block the radio-side loop or other clients.
    A client that stays behind for 5 s is closed.
@@ -609,9 +647,14 @@ FTX-1 is mono 16-bit over USB. All are read from `audio_codec`,
 ### 8.3 TX path
 
 Flow, spec 3.4: after `trx:0,true,tci` is accepted the server sends
-`TX_CHRONO` (type 3) at the cadence of `length / sample_rate`; the client answers
-with TX audio frames (type 2) of that length, or with zero-length/no frame for
-silence.
+`TX_CHRONO` (type 3) at the cadence of `length / (channels * sample_rate)`,
+because `length` counts all channels (8.1): at 48 kHz, stereo, length 2048 the
+interval is 21.33 ms, at mono 42.67 ms. The client answers with TX audio frames
+(type 2) of that length, or with a zero-length frame/no frame for silence. The
+sample-versus-frame distinction is kept in the code by two named quantities,
+`samples` (interleaved scalars) and `frames` (per-channel), and tested with a
+fake clock for mono and stereo: request timestamps and delivered sample
+throughput.
 
 1. Accept `trx ...,tci` only if `browser_tx_audio_facts`-equivalent route facts
    say PCM TX is possible. The existing check lives in
@@ -622,17 +665,42 @@ silence.
    `PCM_1CH_16BIT`; an Opus TX codec refuses `source=tci`.
 2. `lease = await radio.audio_session.acquire_tx("tci-<N>")` at the moment the
    key is accepted; release at unkey/disconnect.
-3. Convert client frames to s16le mono at the radio TX rate: de-interleave,
-   average channels, resample, clamp to [-1, 1] and **replace NaN/Inf with 0**,
-   scale to int16.
-4. `await lease.push(pcm, submission_guard=gate)` where `gate` is the shared
-   fail-closed TX gate (P0b): open only while the managed intent is keyed or the
-   fresh observed PTT is ON; closed on any exception, no authority, or remote
-   controller mode. Frames that arrive with the gate closed are dropped and
-   counted, with the throttled warning pattern `AudioHandler._warn_tx_throttled`
-   uses.
-5. TX audio with no keyed owner, or from a session that is not the owner, is
-   dropped. A frame never keys the radio.
+3. Convert client frames to s16le mono at the radio TX rate: de-interleave
+   (in DIGU/DIGL a two-channel frame is I/Q, and the real part, channel 0, is
+   used; otherwise channels are averaged), resample, clamp to [-1, 1] and
+   **replace NaN/Inf with 0**, scale to int16.
+4. **Playout buffer.** Converted audio goes into a bounded per-session buffer
+   whose target depth is the client's `tx_stream_audio_buffering` (50 to 500 ms,
+   default 50). A playout task starts once the buffer holds the target and then
+   pushes one radio frame (20 ms) per tick on the event-loop clock. Underrun
+   while keyed: a frame of silence is pushed so playout stays continuous, and
+   the underrun is counted. Overrun (depth above target plus 500 ms): drop the
+   oldest and count. The buffer is flushed on unkey, on disconnect, and when the
+   gate closes. Test: the same arrival jitter at buffering 50 ms and 150 ms
+   must yield continuous playout at 150 ms and a measurably smaller underrun
+   count than at 50 ms, with fixed added latency equal to the setting.
+5. **Owner-specific admission, not the global gate.** The playout task pushes
+   with `lease.push(pcm, admission=...)`, where the admission is a new
+   `ManagedTxAuthority.owned_tx_submission(owner)` async context manager, modelled
+   on `outside_tx_submission` (MOR-3764): it takes the authority's
+   `_outside_tx_lock`, which every positive keying transition also takes before
+   `_lock`, and yields True only while the held intent is `PTT(owner)` and the
+   authority is open and unfaulted; the push runs inside it under the same
+   budget. Consequence: a frame admitted for owner A completes before owner B's
+   key transition is applied, and a frame for A after A unkeyed or B keyed is
+   refused. The shared global gate of P0b (any keyed intent or observed PTT ON)
+   is *not* sufficient here, because it cannot tell A's frame from B's over; it
+   stays what `AudioBridge` and the web path use. `TxLease.push` takes a guard or
+   an admission, never both, so TCI uses the admission only; frames also stop
+   when the managed intent leaves `PTT(owner)` because the buffer is flushed.
+   Test: A keys, a frame is suspended before admission, A unkeys, B keys, the
+   frame resumes: nothing of A reaches B; and the same with the suspension
+   inside the push. Sibling to report: the web and bridge paths use the global
+   gate and have the same shape; this program does not change them and files a
+   follow-up.
+6. Frames with no keyed owner, or from a session that is not the owner, are
+   dropped and counted with the throttled warning pattern
+   `AudioHandler._warn_tx_throttled` uses. A frame never keys the radio.
 
 DATA-mode and MOD-input policy for digital modes is applied when the client
 selects DIGU/DIGL (5.5), through the same `rigctld_wsjtx_policy` result, so the
@@ -640,9 +708,9 @@ TX audio lands on the input the radio uses for data.
 
 ### 8.4 Latency and pacing
 
-The only timing state is the chrono cadence and the per-client queue limits
-above. No fixed sleeps as synchronisation: cadence uses the event loop clock
-and is injectable for tests.
+The timing state is the chrono cadence, the RX queue limits of 8.2 and the TX
+playout buffer of 8.3. No fixed sleeps as synchronisation: all of it runs on the
+event-loop clock and the clock is injectable for tests.
 
 ## 9. Listener, configuration, enabling
 
@@ -719,7 +787,19 @@ Against the real `ManagedTxAuthority` composition used by
 - key via TCI: authority intent is `PTT(tci-client-N)`; unkey releases;
 - socket reset / close frame / server stop / task cancel while keyed: lease
   released, radio back to RX (assert authority snapshot, not only the reply);
-- silent peer: pong timeout (fake clock) releases within 15 s; TOT unchanged;
+- silent peer: the deadline watchdog (fake clock) releases within 15 s for a
+  non-aligned last pong and for a permanently blocked `drain`;
+- TOT disabled and TOT extended: the over is bounded by the configured value,
+  not by 180 s, and the test asserts exactly that; a failed or twice-cancelled
+  release leaves the documented `RELEASE_REQUIRED` outcome, not a silent success;
+- `trx:0,true,mic1` after DIGU: refused, no PTT write; absent source keys the
+  current input;
+- channel B: `split_enable:0,false`, `vfo:0,1,<hz>` echoes and reads B, then
+  `split_enable:0,true` leaves B unchanged;
+- TX handoff A to B with A's frame suspended before admission and inside the
+  push: no frame of A reaches B's over;
+- `TX_CHRONO` cadence for mono and stereo; playout buffer at 50 ms and 150 ms
+  under identical jitter;
 - contention: a `rigctld` client holds PTT, TCI key is refused with
   `trx:0,false;`; and the reverse;
 - unmanaged radio: `trx:0,true` refused, no `set_ptt` call recorded;
@@ -743,16 +823,36 @@ fails (the new module does not exist yet).
 ### 10.5 Capture C0 and the real-app smoke
 
 C0 (first, before C1 merges): a transparent WebSocket recording proxy (a small
-script under `scripts/`, text frames and binary headers only, no audio payloads)
+script under `scripts/`: text frames and binary headers, no audio payloads)
 placed between each real client and a TCI server the owner already runs
-(AetherSDR with Flex). Targets: WSJT-X Improved, JTDX, OpsLog, MSHV. The output
-is **client-to-server lines only**, stored as fixtures under
-`tests/fixtures/tci/`; server replies in tests are authored from the spec, so no
-fixture reproduces another program's output. C0 closes every **[open]** item:
-`protocol`/`device` strings, channel-1 and split sequences, `length` semantics,
-the `if_limits`, sensors and `rx_filter_band` questions, and whether `start;` is
-sent. It needs the owner's machine and radio; it is RX-only and no PTT is
-pressed.
+(AetherSDR with Flex). Targets: WSJT-X Improved, JTDX, OpsLog, MSHV.
+
+The recorder keeps **both directions, labelled** (`c2s`, `s2c`), because some
+open items can only be read from the server side: the announced `protocol` and
+`device` strings, the RX binary-header fields (`length`, `channels`, `count`),
+and the init-burst order. Handling:
+
+- The full two-way capture is evidence, kept **outside the repository** (repo
+  rule: detailed reports stay outside worktrees). It is never committed and
+  never used as a test expectation, so no fixture reproduces another program's
+  output.
+- What goes into the repo is (i) the **client-to-server** lines as fixtures
+  under `tests/fixtures/tci/`, and (ii) a short findings note of *facts*
+  extracted from the server side (for example "`length` counted all channels")
+  with the capture file name and line as provenance. Server replies in tests
+  are authored from the spec.
+- The recorder emits a coverage report: for every open item of section 5.2 it
+  states whether the capture contained the events needed to answer it. An item
+  without such events stays **open**; C0 is complete only when the report says
+  so for the items a given PR depends on, and the recorder has a test that a
+  capture lacking those events reports "incomplete".
+
+Scope is split. **C0-RX** is RX-only with no PTT pressed and answers the
+connect, VFO/mode/split, audio-start and RX-header items. TX items (`trx`,
+`TX_CHRONO` exchange, TX header fields) need a **C0-TX** session with a dummy
+load, minimum power and the owner's authorisation, after the TX safety PR
+(C3) has merged; until then those items stay open and A2 does not merge.
+It needs the owner's machine and radio.
 
 Real-app smoke (RX only, one of JTDX or WSJT-X Improved, bench radio IC-7300 or
 FTX-1): connect and "Test CAT" passes; dial and mode changes follow both ways;
@@ -769,22 +869,22 @@ L leaf package, C control (adapter), A audio.
 
 | PR | Content | Depends on | ~Lines |
 |---|---|---|---|
-| P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; pong timeout as a constructor parameter, default 60 s unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | none | 450 |
-| P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it | none | 300 |
+| P0a | create `rigplane.tci` with `ws.py` (moved `web/websocket.py` plus server upgrade function with injected predicate; `web` behaviour, including its 60 s pong timeout, unchanged); move `host_guard` to `core/host_guard.py`; shims in `web`; `.importlinter` rows and `tests/test_tci_leaf_boundary.py` (written first, red) | none | 450 |
+| P0b | extract the fail-closed TX gate from `WebServer._bridge_tx_gate_open` into a shared function; `WebServer` and the bridge call it; add `ManagedTxAuthority.owned_tx_submission(owner)` with its tests | none | 450 |
 | P0c | extract the managed-PTT/tuner submission choreography and session release out of `rigctld` into a shared module; `rigctld` calls it; add `"tci"` to `CommandSource` and `TxSource.TCI` | none | 900 |
 | P0d | share the WSJT-X data-mode/MOD-input glue now in `rigctld/server.py` | P0c (same file) | 200 |
-| C0 | recording proxy script and captured fixtures | owner/bench time | 250 |
+| C0 | recording proxy script with coverage report, C0-RX fixtures and findings note (C0-TX follows C3) | owner/bench time | 350 |
 | L1 | leaf `protocol.py` (grammar, formatting) and `frames.py` (stream header, sample types), with spec fixtures and `eesdr-tci` round trips | P0a | 600 |
-| L2 | leaf `server.py` and `handler.py`: listener, sessions, broadcast and coalescing, ping liveness, Origin/Host predicate; conformance with a fake handler | L1 | 700 |
+| L2 | leaf `server.py` and `handler.py`: listener, sessions, broadcast and coalescing, ping and independent deadline watchdog, Origin/Host predicate; conformance with a fake handler | L1 | 800 |
 | C1 | adapter skeleton: handler, init burst, read-only commands, notifier; `tci_adapter/LAYER.md`; `.importlinter` adapter rows | L2 | 700 |
 | C2 | adapter write commands: `vfo`, `modulation`, `split_enable`, `rit`/`xit`, `drive`, Tier B | C1 | 650 |
 | C3 | TX: `trx`, `tx_enable`, disconnect, `tune` answer; seam tests | C2, P0c, P0d | 800 |
 | C4 | CLI flags and wiring, `check_ports_available`, docs, changelog | C3 | 450 |
 | A1 | adapter RX path, shared decode helper, resample and channel mapping | C1 | 650 |
-| A2 | adapter TX path, `TX_CHRONO`, gate, route policy | A1, C3, P0b | 800 |
+| A2 | adapter TX path: playout buffer, `TX_CHRONO`, owner-specific admission, route policy | A1, C3, P0b | 900 |
 | A3 | real-app RX smoke evidence and fixtures | C4, A1 | 150 |
 
-About 7.5k lines in 14 PRs. P0a, P0b and P0c are file-disjoint and can run in
+About 8.0k lines in 14 PRs. P0a, P0b and P0c are file-disjoint and can run in
 parallel; L1 and L2 need only P0a, so the whole leaf can be built and tested
 while P0c is still in review.
 
@@ -835,6 +935,7 @@ different model family from the builder.
 | Q7 | Extract shared mechanisms first (recommended, P0a to P0d) versus duplicate; duplicating breaks "no two mechanisms" | sumo |
 | Q8 | Sizing: plan to the 1000-line ceiling, not 4000 | sumo |
 | Q9 | WebSocket framing lives inside the leaf (`tci/ws.py`, recommended: it travels with the package) or in its own leaf `rigplane.ws` (cleaner name for `web`, two packages to lift) | sumo |
+| Q10 | C0-TX session: dummy load, minimum power, owner's authorisation, after C3 | owner |
 
 Risks, in order: P0c changes the TX path that `rigctld` users rely on, hence
 the strictest pin and an unchanged-behaviour review; client behaviour is
