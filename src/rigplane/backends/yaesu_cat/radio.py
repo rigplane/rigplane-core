@@ -497,33 +497,13 @@ class YaesuCatRadio:
         spec = self._config.commands.get("get_id")
         if not (isinstance(spec, CatCommandSpec) and spec.read):
             return ""
-        try:
-            raw = await self._transport.query(spec.read)
-        except (CatTimeoutError, CatTransportError, ValueError):
-            return None
-        parser = self._parsers.get("get_id")
-        if parser is None:
+        if self._parsers.get("get_id") is None:
             return ""
         try:
-            result = parser.parse(raw + ";")
-        except ValueError:
+            result = await self._query_decoded("get_id", spec.read)
+        except (CatTimeoutError, CatTransportError, ValueError):
             return None
-        value = result.get("model")
-        if isinstance(value, str):
-            return (
-                value
-                if len(value) == 4 and value.isascii() and value.isdigit()
-                else None
-            )
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not 0 <= value <= 9999
-        ):
-            return None
-        # Typed custom templates may parse an integer; preserve the CAT
-        # identifier's canonical four-digit spelling.
-        return str(value).zfill(4)
+        return str(result["model"]).zfill(4)
 
     def _classify_identity_answer(
         self, answered: str
@@ -1278,6 +1258,12 @@ class YaesuCatRadio:
             query_kwargs.update(is_current=is_current, tier=tier)
         if expect_rejection:
             query_kwargs["expect_rejection"] = True
+        return await self._query_decoded(cmd_name, read_cmd, **query_kwargs)
+
+    async def _query_decoded(
+        self, cmd_name: str, read_cmd: str, **query_kwargs: Any
+    ) -> dict[str, Any]:
+        """Decode a read and credit only its still-current connection."""
         writer = self._transport._writer
         identity_generation = self._identity_generation
         reconnects = self._transport.stats.reconnects
@@ -1298,6 +1284,13 @@ class YaesuCatRadio:
             self._mode_name(result["mode"])
         elif cmd_name in {"get_agc", "get_agc_sub"}:
             int(result["mode"])
+        elif cmd_name == "get_id":
+            value = result.get("model")
+            if isinstance(value, str):
+                if not (len(value) == 4 and value.isascii() and value.isdigit()):
+                    raise ValueError("Malformed CAT identity")
+            elif type(value) is not int or not 0 <= value <= 9999:
+                raise ValueError("Malformed CAT identity")
         if (
             self._transport.connected
             and self._transport._writer is writer

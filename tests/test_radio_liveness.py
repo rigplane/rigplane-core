@@ -905,3 +905,129 @@ async def test_civ_invalid_bcd_level_preserves_stamp(
         frame, generation=civ_radio._civ_epoch
     )
     assert civ_radio.last_valid_frame_monotonic == 1.0
+
+
+async def test_civ_identity_reply_advances_the_stamp(
+    civ_radio: IcomRadio,
+) -> None:
+    """A validated 19/00 transceiver-ID reply is decoded radio information:
+    identity-only traffic must advance the stamp without touching the store."""
+    civ_radio.last_valid_frame_monotonic = None  # noqa: SLF001
+    before_store = civ_radio._state_store.snapshot()  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x19, sub=0x00, data=b"\x01\x06")
+    )
+    before = time.monotonic()
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    stamp = civ_radio.last_valid_frame_monotonic  # noqa: SLF001
+    assert stamp is not None
+    assert before <= stamp <= time.monotonic()
+    after_store = civ_radio._state_store.snapshot()  # noqa: SLF001
+    assert after_store.state_revision == before_store.state_revision
+    assert after_store.observation_seq == before_store.observation_seq
+
+
+async def test_civ_malformed_identity_reply_preserves_stamp(
+    civ_radio: IcomRadio,
+) -> None:
+    """A 19/00 reply with no identity bytes carries no evidence."""
+    civ_radio.last_valid_frame_monotonic = 1.0  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x19, sub=0x00, data=b"")
+    )
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    assert civ_radio.last_valid_frame_monotonic == 1.0  # noqa: SLF001
+
+
+async def test_civ_retired_identity_reply_cannot_stamp(
+    civ_radio: IcomRadio,
+) -> None:
+    """A valid 19/00 reply on a retired connection generation is discarded."""
+    civ_radio.last_valid_frame_monotonic = None  # noqa: SLF001
+    retired = civ_radio._civ_epoch  # noqa: SLF001
+    civ_radio._civ_runtime.advance_generation("retire test source")  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x19, sub=0x00, data=b"\x01\x06")
+    )
+    await civ_radio._civ_runtime._route_civ_frame(frame, generation=retired)  # noqa: SLF001
+    assert civ_radio.last_valid_frame_monotonic is None  # noqa: SLF001
+
+
+async def test_cat_identity_answer_advances_the_stamp(
+    cat_transport: YaesuCatTransport,
+) -> None:
+    """The connect-time ``ID;`` read decodes ``ID0840;`` — that validated
+    identity reply must stamp liveness like any other decoded read."""
+    cat_transport._reader = FakeStreamReader([b"ID0840;"])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    before = time.monotonic()
+    assert await radio._read_identity_answer() == "0840"  # noqa: SLF001
+    stamp = cat_transport.last_valid_frame_monotonic
+    assert stamp is not None
+    assert before <= stamp <= time.monotonic()
+
+
+async def test_cat_malformed_identity_answer_preserves_stamp(
+    cat_transport: YaesuCatTransport,
+) -> None:
+    """A non-numeric ``ID;`` answer is not identity evidence."""
+    cat_transport._reader = FakeStreamReader([b"IDZZZZ;"])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    assert await radio._read_identity_answer() is None  # noqa: SLF001
+    assert cat_transport.last_valid_frame_monotonic is None
+
+
+async def test_cat_silent_identity_answer_preserves_stamp(
+    cat_transport: YaesuCatTransport,
+) -> None:
+    """Silence on the ``ID;`` probe carries no evidence."""
+    cat_transport._reader = FakeStreamReader([])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    assert await radio._read_identity_answer() is None  # noqa: SLF001
+    assert cat_transport.last_valid_frame_monotonic is None
+
+
+async def test_cat_retired_identity_answer_cannot_stamp(
+    cat_transport: YaesuCatTransport, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``ID;`` answer that outlives its connection generation (a reconnect
+    raced the probe) validates but must not stamp."""
+    cat_transport._reader = FakeStreamReader([b"ID0840;"])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    real_query = cat_transport.query
+
+    async def _retiring_query(command: str, **kwargs: object) -> str:
+        radio._identity_generation += 1  # noqa: SLF001
+        return await real_query(command, **kwargs)
+
+    monkeypatch.setattr(cat_transport, "query", _retiring_query)
+    assert await radio._read_identity_answer() == "0840"  # noqa: SLF001
+    assert cat_transport.last_valid_frame_monotonic is None
+
+
+@pytest.mark.parametrize("value", [True, -1, 10000, "Z", "840", "０８４０"])
+async def test_cat_invalid_decoded_identity_preserves_stamp(
+    cat_transport: YaesuCatTransport, monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    cat_transport._reader = FakeStreamReader([b"ID0840;"])  # type: ignore[assignment]
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]
+    cat_transport.last_valid_frame_monotonic = 1.0
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport
+    monkeypatch.setattr(radio._parsers["get_id"], "parse", lambda _: {"model": value})
+    assert await radio._read_identity_answer() is None
+    assert radio.last_valid_frame_monotonic == 1.0

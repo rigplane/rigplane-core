@@ -2183,15 +2183,19 @@ class CivRuntime:
     ) -> None:
         """Project supported CI-V ingress fields into the runtime StateStore."""
 
+        store_provider_generation = (
+            self._host._state_store.provider_generation
+            if generation is None
+            else generation
+        )
         if frame.command == 0x19 and frame.sub == 0x00:
-            # MOR-3071: a transceiver-ID reply (19 00) answers the
-            # connect-time identity probe, not a state query. It must not
-            # become store evidence — publishing it would count as the
-            # liveness-derived power_on observation (MOR-2544) and break
-            # the startup gate's "the link answers nothing" predicate, so
-            # a present-but-silent radio would read as answering. This
-            # layer cannot tell the probe's reply from any other 19 00
-            # reply, so every 19 00 frame is skipped; other subs project.
+            # Identity answers establish link liveness, but remain excluded
+            # from StateStore startup/power inference (MOR-3071).
+            if (
+                len(frame.data) in (1, 2)
+                and store_provider_generation == self._host._state_store.provider_generation
+            ):
+                self._host.last_valid_frame_monotonic = time.monotonic()
             return
         try:
             observations = self._observations_from_frame(frame)
@@ -2212,11 +2216,6 @@ class CivRuntime:
             )
             return
 
-        store_provider_generation = (
-            self._host._state_store.provider_generation
-            if generation is None
-            else generation
-        )
         if (
             any(
                 observation.value is not None
