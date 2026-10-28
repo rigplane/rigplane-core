@@ -219,6 +219,46 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
+    def test_release_gate_changes_select_the_route_that_runs_receipt_tests(self) -> None:
+        # MOR-3839 pre-review: the publish-path radio-smoke gate is pinned by
+        # tests/test_check_radio_smoke.py and
+        # tests/test_publish_radio_smoke_gate.py, and only the core route's
+        # full tests/ run executes them. A change confined to the checker, to
+        # publish.yml, or to either test module must select that route;
+        # otherwise a regression to the production publish gate can receive
+        # green required CI without its receipt tests ever running.
+        receipt_test_modules = (
+            "tests/test_check_radio_smoke.py",
+            "tests/test_publish_radio_smoke_gate.py",
+        )
+        for path in (
+            "scripts/release/check_radio_smoke.py",
+            *receipt_test_modules,
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": True, "frontend": False, "ci": False, "docs": False},
+                )
+        # publish.yml stays CI-selected too: the workflow contract tests must
+        # still run for a publish.yml-only change.
+        self.assertEqual(
+            CLASSIFIER.classify([".github/workflows/publish.yml"]),
+            {"core": True, "frontend": False, "ci": True, "docs": False},
+        )
+        # The core route's test step runs the whole tests/ tree, which is
+        # where both receipt test modules live.
+        for module in receipt_test_modules:
+            with self.subTest(module=module):
+                self.assertTrue((ROOT / module).is_file())
+                self.assertEqual(Path(module).parts[0], "tests")
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        run_tests = quick.index("      - name: Run tests\n")
+        step_end = quick.index("\n      - name: ", run_tests + 1)
+        run_tests_step = quick[run_tests:step_end]
+        self.assertIn("if: needs.classify.outputs.core == 'true'", run_tests_step)
+        self.assertIn("uv run pytest tests/ ", run_tests_step)
+
     def test_docs_data_files_select_core_by_suffix_rule(self) -> None:
         # The rule covers any *.json/*.toml/*.yaml/*.yml under docs/, including
         # files not in the hand-maintained CORE_DOCS_TEST_INPUT_EXACT list: a

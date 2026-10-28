@@ -91,8 +91,8 @@ def _run(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     *,
-    rx: dict[str, Any] | str | None,
-    tx: dict[str, Any] | str | None,
+    rx: dict[str, Any] | str | bytes | None,
+    tx: dict[str, Any] | str | bytes | None,
     tag: str = TAG,
     sha: str = SHA,
 ) -> tuple[int, str]:
@@ -102,8 +102,11 @@ def _run(
     for path, payload in ((rx_path, rx), (tx_path, tx)):
         if payload is None:
             continue
-        text = payload if isinstance(payload, str) else json.dumps(payload)
-        path.write_text(text, encoding="utf-8")
+        if isinstance(payload, bytes):
+            path.write_bytes(payload)
+        else:
+            text = payload if isinstance(payload, str) else json.dumps(payload)
+            path.write_text(text, encoding="utf-8")
     rc = checker.main(
         [
             "check",
@@ -298,6 +301,19 @@ def test_malformed_json_fails(
     assert any(
         "rx:" in line and "malformed JSON" in line for line in _stderr_lines(stderr)
     ), stderr
+
+
+def test_invalid_utf8_is_a_reported_violation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Invalid UTF-8 must be one violation line, not an uncaught UnicodeDecodeError."""
+    rc, stderr = _run(tmp_path, capsys, rx=b'{"schema": 1, "\xff\xfe": 1}', tx=_tx_payload())
+    assert rc != 0, "an undecodable receipt must fail the check"
+    lines = _stderr_lines(stderr)
+    utf8_lines = [line for line in lines if "UTF-8" in line]
+    assert len(utf8_lines) == 1 and utf8_lines[0].startswith("rx:"), (
+        f"expected exactly one rx violation line naming UTF-8; stderr:\n{stderr}"
+    )
 
 
 def test_missing_file_fails(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
