@@ -316,6 +316,11 @@ def test_connection_health_projection_prefers_store_and_has_pr_a_fallback() -> N
         "rigConnected": True,
         "radioReady": True,
         "controlConnected": False,
+        "liveness": {
+            "lastFrameAgeMs": None,
+            "staleAfterMs": 2000,
+            "source": "radio",
+        },
     }
     assert fallback["radioDetail"] == {"status": "connected"}
     assert fallback["radioHealth"] == fallback_health
@@ -346,6 +351,11 @@ def test_connection_health_projection_prefers_store_and_has_pr_a_fallback() -> N
         "rigConnected": False,
         "radioReady": False,
         "controlConnected": True,
+        "liveness": {
+            "lastFrameAgeMs": None,
+            "staleAfterMs": 2000,
+            "source": "radio",
+        },
     }
     assert projected["radioDetail"] == {"status": "reconnecting"}
     assert projected["radioHealth"] == {
