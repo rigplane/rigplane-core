@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final, TypedDict
+from typing import Final, NotRequired, TypedDict
 
 WEB_API_CONTRACT_VERSION: Final[int] = 1
 
@@ -23,6 +23,7 @@ class WebSocketRoute(TypedDict):
 
 class ResponseFieldContract(TypedDict):
     required: tuple[str, ...]
+    result_values: NotRequired[tuple[str, ...]]
 
 
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
@@ -225,7 +226,11 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "txObservation",
         )
     },
-    "/api/v1/managed-transmit/command": {"required": ("ok", "operation", "result")},
+    "/api/v1/managed-transmit/command": {
+        "required": ("ok", "operation", "result"),
+        # HTTP 202 pending retains force_off debt until a provider rearms.
+        "result_values": ("accepted", "pending", "rejected"),
+    },
     "/api/v1/managed-transmit/tot": {
         "required": (
             "schemaVersion",

@@ -5824,6 +5824,12 @@ class WebServer:
                 # (another owner holds TX, MOR-3534) as a command error.
                 submission = None
             accepted = submission is not None and submission.outcome.value == "accepted"
+            # An offline release is retained for provider rearm, not settled.
+            pending = (
+                accepted
+                and operation == "force_off"
+                and getattr(submission, "pending_release", False)
+            )
             await self._send_json(
                 writer,
                 202 if accepted else 409,
@@ -5831,7 +5837,11 @@ class WebServer:
                 {
                     "ok": accepted,
                     "operation": operation,
-                    "result": "accepted" if accepted else "rejected",
+                    "result": "pending"
+                    if pending
+                    else "accepted"
+                    if accepted
+                    else "rejected",
                 },
             )
             return

@@ -133,6 +133,15 @@ class ManagedTxSubmission:
     def settlement_done(self) -> bool:
         return self._completion.done()
 
+    @property
+    def pending_release(self) -> bool:
+        """Release debt was admitted without an available provider effect."""
+        return (
+            self.outcome is ManagedTxOutcome.ACCEPTED
+            and self.transition.state.release_required
+            and not self.transition.effects
+        )
+
     async def wait_settlement(self) -> ActuationSettled | None:
         """Join provider settlement without transferring cancellation ownership."""
         _transition, settlement = await asyncio.shield(self._completion)
@@ -210,6 +219,7 @@ class ManagedTxAuthority:
         # both); unkeying, settlement, scheduler and shutdown never take it.
         self._outside_tx_lock = asyncio.Lock()
         self._state = ManagedTxState()
+        self._latest_on_epoch = 0
         self._change_listeners: set[ManagedTxChangeListener] = set()
         self._provider_generation = provider_generation
         self._generation_high_water = (
@@ -671,7 +681,15 @@ class ManagedTxAuthority:
     def is_effect_current(
         self, token: EffectToken, operation: ActuationOperation | AbortOperation
     ) -> bool:
-        """Check write currency synchronously against the live pending attempt."""
+        if operation is ActuationOperation.FORCE_RECEIVE:
+            return (
+                token.effect_epoch >= self._latest_on_epoch
+                and not (self._closing or self._closed or self._terminated)
+                and not (
+                    self._shutdown_termination is not None
+                    and self._shutdown_termination.is_set()
+                )
+            )
         pending = self._state.pending_effect
         if isinstance(operation, AbortOperation):
             operation = ActuationOperation.FORCE_RECEIVE
@@ -1176,6 +1194,7 @@ class ManagedTxAuthority:
         if self._state.intent.kind is not ManagedTxIntentKind.TRANSMIT:
             self._transmit_owner = None
         if was_clean and self._state.intent.kind is not ManagedTxIntentKind.RX:
+            self._latest_on_epoch = self._state.effect_epoch
             self._keyed_at = self._clock()  # MOR-3537: Core keys
         if self._state_is_clean_locked():
             if not was_clean:
@@ -1273,6 +1292,8 @@ class ManagedTxAuthority:
         transition = None
         full_force = False
         async with self._lock:
+            if self._closing or self._closed or self._terminated:
+                return
             now = self._clock()
             tot_due = self._tot_deadline_locked()
             if tot_due is not None and tot_due <= now:
