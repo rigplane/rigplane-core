@@ -65,7 +65,11 @@ from rigplane.core.tx_target import (
     TxTargetUnknownReason,
     UnknownTxTarget,
 )
-from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    normalize_observed_ptt,
+)
 from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
     FieldChange,
@@ -499,8 +503,10 @@ _OBSERVABLE_CMD16_VALUE_FIELDS = {
 
 
 def _decode_bcd_nibble(value: int) -> int:
-    """Decode a single BCD-nibble byte (matches ``_handle_16``/``_handle_11``)."""
-    return ((value >> 4) & 0x0F) * 10 + (value & 0x0F)
+    """Decode a single packed BCD byte with the shared strict decoder."""
+    from rigplane.commands import _bcd_decode_value
+
+    return _bcd_decode_value(bytes([value]))
 
 
 def _frame_native_id(frame: CivFrame) -> str:
@@ -2212,7 +2218,12 @@ class CivRuntime:
             else generation
         )
         if (
-            observations
+            any(
+                observation.value is not None
+                and observation.value is not ObservedPtt.UNKNOWN
+                and not isinstance(observation.value, UnknownTxTarget)
+                for observation in observations
+            )
             and store_provider_generation == self._host._state_store.provider_generation
         ):
             self._host.last_valid_frame_monotonic = time.monotonic()
@@ -2893,7 +2904,7 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x1C and frame.sub == 0x00:
-            if frame.data:
+            if frame.data in (b"\x00", b"\x01"):
                 observations.append(
                     self._observation(
                         FieldPath.global_("tx_state", "ptt"),
@@ -3006,11 +3017,10 @@ class CivRuntime:
             # Reuse the exact decode of ``_handle_10`` / ``get_tuning_step``;
             # the value is a device step code, not Hz (MOR-461). Promoted to a
             # neutral global slow-state int; Hz mapping is deferred to MOR-453.
-            b = frame.data[0]
             observations.append(
                 self._observation(
                     FieldPath.global_("slow_state", "tuning_step"),
-                    ((b >> 4) & 0x0F) * 10 + (b & 0x0F),
+                    _decode_bcd_nibble(frame.data[0]),
                     frame=frame,
                 )
             )
@@ -3169,8 +3179,9 @@ class CivRuntime:
 
     @staticmethod
     def _decode_level(data: bytes) -> int:
-        b0, b1 = data[0], data[1]
-        return (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
+        from rigplane.commands import _level_bcd_decode
+
+        return _level_bcd_decode(data)
 
     def _decode_filter_width(self, frame: CivFrame) -> int:
         """Decode a 0x1A/0x03 filter-width frame to Hz.

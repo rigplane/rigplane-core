@@ -739,3 +739,169 @@ def test_ws_state_payload_liveness_is_null_without_a_radio() -> None:
     )
     assert payload["connection"]["liveness"] is None
     ServerStatePublic.model_validate(payload)
+
+
+# ---------------------------------------------------------------------------
+# MOR-3845 round 3: only successfully decoded radio information stamps
+# ---------------------------------------------------------------------------
+
+
+async def test_civ_empty_ptt_frame_preserves_stamp(civ_radio: IcomRadio) -> None:
+    """A 1C/00 frame with no PTT value decodes only to an unknown-PTT
+    observation — unknown is not radio information, so the stamp is kept."""
+    civ_radio.last_valid_frame_monotonic = 1.0  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x1C, sub=0x00, data=b"")
+    )
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    assert civ_radio.last_valid_frame_monotonic == 1.0  # noqa: SLF001
+
+
+@pytest.mark.parametrize("data", [b"\x02", b"\xff", b"\x00\x00"])
+async def test_civ_invalid_ptt_byte_preserves_stamp(
+    civ_radio: IcomRadio, data: bytes
+) -> None:
+    """PTT bytes outside the exact 0x00/0x01 readback never count as decoded
+    radio information, even though they still project a fail-closed unknown."""
+    civ_radio.last_valid_frame_monotonic = 1.0  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x1C, sub=0x00, data=data)
+    )
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    assert civ_radio.last_valid_frame_monotonic == 1.0  # noqa: SLF001
+
+
+async def test_civ_orphan_scope_chunk_preserves_stamp(
+    civ_radio: IcomRadio,
+) -> None:
+    """An orphan 27/00 continuation (final sequence with no sequence-1
+    metadata and no pixels) is an incomplete assembly, not a valid frame."""
+    civ_radio.last_valid_frame_monotonic = 1.0  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(
+            CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0x00, data=b"\x00\x02\x02"
+        )
+    )
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    assert civ_radio.last_valid_frame_monotonic == 1.0  # noqa: SLF001
+
+
+async def test_civ_invalid_bcd_att_preserves_stamp(civ_radio: IcomRadio) -> None:
+    """A 0x11 attenuator byte with invalid BCD nibbles is undecodable: no
+    observation and no stamp."""
+    civ_radio.last_valid_frame_monotonic = 1.0  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x11, data=b"\xff")
+    )
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    assert civ_radio.last_valid_frame_monotonic == 1.0  # noqa: SLF001
+
+
+async def test_civ_valid_scope_frame_stamps_liveness(
+    civ_radio: IcomRadio,
+) -> None:
+    """Valid counterpart: a complete single-packet LAN scope frame (sequence
+    1 of 1 with metadata and pixels) still advances the stamp."""
+    from rigplane.types import bcd_encode as _bcd_encode
+
+    payload = (
+        b"\x00"  # receiver MAIN
+        b"\x01\x01"  # seq 1 of 1 (BCD)
+        b"\x01"  # fixed mode
+        + _bcd_encode(14_000_000)
+        + _bcd_encode(14_350_000)
+        + b"\x00"  # in range
+        + bytes(range(10))  # pixels
+    )
+    civ_radio.last_valid_frame_monotonic = None  # noqa: SLF001
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0x00, data=payload)
+    )
+    before = time.monotonic()
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    stamp = civ_radio.last_valid_frame_monotonic  # noqa: SLF001
+    assert stamp is not None
+    assert before <= stamp <= time.monotonic()
+
+
+@pytest.mark.parametrize(
+    "answer,reader",
+    [
+        (b"RA0Z;", "read_attenuator"),
+        (b"PA0Z;", "read_preamp"),
+        (b"FTZ;", "get_tx_source"),
+        (b"VSZ;", "read_vfo_select"),
+    ],
+)
+async def test_cat_garbage_single_char_answer_preserves_stamp(
+    cat_transport: YaesuCatTransport, answer: bytes, reader: str
+) -> None:
+    """A template match on a non-numeric char is not a decoded value: the
+    reader must reject it and the pre-existing stamp must be preserved."""
+    cat_transport._reader = FakeStreamReader([answer])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    cat_transport.last_valid_frame_monotonic = 1.0
+    with pytest.raises(ValueError):
+        await getattr(radio, reader)()
+    assert cat_transport.last_valid_frame_monotonic == 1.0
+
+
+@pytest.mark.parametrize(
+    "answer,reader,expected",
+    [
+        (b"RA01;", "read_attenuator", True),
+        (b"PA02;", "read_preamp", 2),
+        (b"FT1;", "get_tx_source", 1),
+        (b"VS1;", "read_vfo_select", 1),
+    ],
+)
+async def test_cat_numeric_single_char_answer_stamps_liveness(
+    cat_transport: YaesuCatTransport,
+    answer: bytes,
+    reader: str,
+    expected: object,
+) -> None:
+    """Valid counterparts: exact-digit answers decode and advance the stamp."""
+    cat_transport._reader = FakeStreamReader([answer])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    assert await getattr(radio, reader)() == expected
+    assert cat_transport.last_valid_frame_monotonic is not None
+
+
+@pytest.mark.parametrize(
+    "command,sub,data",
+    [
+        (0x14, 0x01, b"\x00\xff"),
+        (0x15, 0x02, b"\xff\x00"),
+    ],
+)
+async def test_civ_invalid_bcd_level_preserves_stamp(
+    civ_radio: IcomRadio, command: int, sub: int, data: bytes
+) -> None:
+    civ_radio.last_valid_frame_monotonic = 1.0
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, command, sub=sub, data=data)
+    )
+    await civ_radio._civ_runtime._route_civ_frame(
+        frame, generation=civ_radio._civ_epoch
+    )
+    assert civ_radio.last_valid_frame_monotonic == 1.0

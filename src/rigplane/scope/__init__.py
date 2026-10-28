@@ -158,6 +158,9 @@ class _ReceiverState:
 
             return None
 
+        elif self._start_time is None:
+            return None
+
         elif 1 < seq < seq_max:
             # Middle sequences: bytes [2:] are pixel amplitude data.
             self._chunks.append(bytes(raw_payload[2:]))
