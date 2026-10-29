@@ -207,7 +207,6 @@ class ControlPhaseRuntime:
         h._civ_stream_ready = False
         h._civ_recovering = False
         h._last_status_error = 0
-        h._last_status_disconnected = False
         h._last_auth_error = 0
         # Re-enable queue during setup — we need status packets from radio.
         # The notice callback stays clear so _receive_guid still reads the
@@ -1368,7 +1367,6 @@ class ControlPhaseRuntime:
                 got_audio: int = status.audio_port
                 status_packets_seen += 1
                 h._last_status_error = status.error
-                h._last_status_disconnected = status.disconnected
                 logger.info(
                     "Status: civ_port=%d, audio_port=%d, error=0x%08X, disconnected=%s",
                     got_civ,
