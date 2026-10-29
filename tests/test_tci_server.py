@@ -553,6 +553,54 @@ async def test_disconnect_survives_one_cancellation() -> None:
     assert handler.disconnect_calls == 1
 
 
+async def test_disconnect_cancel_then_timeout_still_finalizes() -> None:
+    """Cancel followed by a re-wait timeout must still finalize the callback.
+
+    The disconnect task is cancelled after the handler entered, then the
+    bounded re-wait times out: ownership stays until the callback task is
+    cancelled and its finalization observed (exactly one invocation).
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S, _run_guarded_disconnect
+
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    finalized = asyncio.Event()
+
+    class _Handler:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def on_disconnect(self) -> None:
+            self.calls += 1
+            entered.set()
+            try:
+                await gate.wait()
+            finally:
+                finalized.set()
+
+    handler = _Handler()
+    task = asyncio.create_task(
+        _run_guarded_disconnect(handler, "s1")  # type: ignore[arg-type]
+    )
+    try:
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        await asyncio.sleep(0)
+        task.cancel()
+        async with asyncio.timeout(TEARDOWN_TIMEOUT_S * 2 + 5.0):
+            await task
+        assert finalized.is_set()
+        assert handler.calls == 1
+    finally:
+        gate.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+
 async def test_connect_failure_closes_and_releases_once() -> None:
     clock = FakeClock()
     handler = FakeHandler()
