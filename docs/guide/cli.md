@@ -33,6 +33,9 @@ All commands accept these options:
 | `--list-audio-devices` | — | — | List USB audio devices and exit |
 | `--version` | — | — | Print version and exit |
 
+!!! tip "Which `--model` value is mine?"
+    Run `rigplane models` for the supported radios with the exact `--model` value for each (`rigplane models --json` for the machine-readable form). Matching is case-insensitive and the profile id works too.
+
 !!! tip "Zero-config startup"
     If you have a single radio on the network, run `rigplane --model IC-7610 web` (with your radio's model) — it auto-discovers the radio via LAN broadcast. No `--host` needed.
 
@@ -700,6 +703,36 @@ The JSON payload also reports current platform limitations:
 | `windowsUsbAudio` | USB audio topology may require explicit/manual device selection |
 | `linuxUsbAudio` | PipeWire/PulseAudio device naming varies by distribution/session |
 
+### Listing supported models
+
+`rigplane models` lists every profile from `rigs/*.toml` with the exact
+`--model` value to pass, the transports it offers, and the backend that will
+be used. Rows marked `profile only, no backend yet` are known profiles
+without a backend implementation. Matching is case-insensitive and the
+profile id works too, so `--model IC-7300` and `--model icom_ic7300` resolve
+to the same radio.
+
+```bash
+rigplane models            # plain table of supported models
+rigplane models --json     # machine-readable form for setup tools
+```
+
+The `Backend` column is the default backend for that radio. A CI-V radio that has a LAN backend uses it unless you pass `--serial-port`, which selects the serial backend; a radio without LAN always uses `serial`.
+
+```text
+--model     Radio            Transports     Backend                       Also accepted
+IC-705      Icom IC-705      LAN, USB CI-V  lan                           icom_ic705
+IC-7300     Icom IC-7300     USB CI-V       serial                        icom_ic7300
+IC-7300MK2  Icom IC-7300MK2  LAN, USB CI-V  lan                           icom_ic7300mk2
+IC-7610     Icom IC-7610     LAN, USB CI-V  lan                           icom_ic7610
+IC-9700     Icom IC-9700     LAN, USB CI-V  lan                           icom_ic9700
+TX-500      Lab599 TX-500    USB CAT        profile only, no backend yet  lab599_tx500
+X6100       Xiegu X6100      USB CI-V       profile only, no backend yet  xiegu_x6100
+X6200       Xiegu X6200      USB CI-V       serial                        xiegu_x6200
+FTX-1       Yaesu FTX-1      USB CAT        yaesu-cat                     yaesu_ftx1
+Matching is case-insensitive; the profile id (last column) also works.
+```
+
 ### `serve`
 
 Start a client-facing `rigctld`-compatible TCP server so that logging and
@@ -1011,7 +1044,7 @@ These flags apply to **every** command and must come before the subcommand name.
 |------|---------|---------|-------------|
 | `--version` | *(global)* | — | Print version and exit |
 | `--control-port PORT` | *(global)* | `50001` (`$ICOM_PORT`) | Radio UDP control port; `--port` is a deprecated alias |
-| `--model MODEL` | *(global)* | — | Radio model (e.g. `IC-7300`); resolves from `rigs/*.toml` |
+| `--model MODEL` | *(global)* | — | Radio model (e.g. `IC-7300`); resolves from `rigs/*.toml`. Run `rigplane models` for the exact values. |
 | `--radio-addr ADDR` | *(global)* | — | CI-V address override (hex or decimal) |
 
 ```bash

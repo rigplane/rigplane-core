@@ -107,6 +107,12 @@ from rigplane.cli._convert import (  # noqa: E402
     add_subparser as _add_convert_subparser,
     run as _run_convert,
 )
+from rigplane.cli._models import (  # noqa: E402
+    add_subparser as _add_models_subparser,
+    backend_for_protocol as _backend_for_protocol,
+    match_rig as _match_rig,
+    run as _run_models,
+)
 from rigplane.core.exceptions import (  # noqa: E402
     ConnectionError as RigplaneConnectionError,
     RadioSessionHeldError,
@@ -393,6 +399,7 @@ _COMMAND_NAMES = {
     "validate",
     "radio-validate",
     "convert",
+    "models",
 }
 
 _GLOBAL_CONNECTION_OPTIONS = {
@@ -703,6 +710,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  rigplane --model IC-7610 web --bridge           # web UI + audio bridge\n"
             "  rigplane --model IC-7610 serve                  # rigctld server only\n"
             "  rigplane discover                               # find radios on the network\n"
+            "  rigplane models                                 # list supported models and --model values\n"
             "exit codes (web, station, serve and the radio commands):\n"
             "  0  success\n"
             "  1  runtime error (connection, auth, command failure)\n"
@@ -1892,6 +1900,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # convert — bootstrap a draft TOML from Hamlib dump_caps + cross-check
     _add_convert_subparser(sub)
 
+    # models — list supported radio profiles and exact --model values
+    _add_models_subparser(sub)
+
     return p
 
 
@@ -1944,19 +1955,14 @@ def _resolve_model(
 
     rigs = discover_available_rigs(_rigs_dir())
 
-    # Case-insensitive match by model name or by rig id
-    matched = None
-    for _name, rig in rigs.items():
-        if (
-            _name.lower() == model_name.lower()
-            or rig.id.lower() == model_name.lower().replace("-", "_")
-        ):
-            matched = rig
-            break
+    matched = _match_rig(rigs, model_name)
 
     if matched is None:
         available = ", ".join(sorted(rigs.keys()))
-        raise ValueError(f"Unknown model {model_name!r}. Available: {available}")
+        raise ValueError(
+            f"Unknown model {model_name!r}. Available: {available}. "
+            "Run `rigplane models` for the list with the exact values."
+        )
 
     # --radio-addr overrides profile civ_addr
     if radio_addr is None:
@@ -2046,15 +2052,16 @@ async def _build_backend_config(
     if backend is None:
         if model_name is None:
             backend = "serial" if serial_port else "lan"
-        elif protocol_type == "yaesu_cat":
-            backend = "yaesu-cat"
-        elif protocol_type == "civ":
-            backend = "serial" if serial_port else "lan"
         else:
-            raise ValueError(
-                f"Model {model_name!r} uses protocol {protocol_type!r}, "
-                "which no backend supports"
+            inferred = _backend_for_protocol(
+                protocol_type, serial_port=bool(serial_port)
             )
+            if inferred is None:
+                raise ValueError(
+                    f"Model {model_name!r} uses protocol {protocol_type!r}, "
+                    "which no backend supports"
+                )
+            backend = inferred
 
     if backend == "yaesu-cat":
         host = getattr(args, "host", _HOST_NOT_SET)
@@ -5267,6 +5274,8 @@ def main() -> None:
         sys.exit(_run_radio_validate(args))
     elif args.command == "convert":
         sys.exit(_run_convert(args))
+    elif args.command == "models":
+        sys.exit(_run_models(args))
     elif args.command is None:
         parser.print_help()
         sys.exit(0)
