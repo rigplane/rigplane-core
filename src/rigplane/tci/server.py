@@ -112,6 +112,7 @@ class TciSession:
         self._flush_handle: asyncio.TimerHandle | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._done = False
+        self._finished = asyncio.Event()
         self._teardown_started = False
 
     @property
@@ -167,33 +168,46 @@ class TciSession:
         return True
 
     async def finish(self) -> None:
-        """Stop every task, close the transport, tear down exactly once."""
+        """Stop every task, close the transport, tear down exactly once.
+
+        A caller that arrives while another ``finish()`` is already
+        running waits for it to complete instead of returning early:
+        otherwise ``stop()`` could observe the detached transport (and
+        return) before ``on_disconnect`` has run. Session tasks themselves
+        never wait (the winner reaps them; waiting would deadlock the
+        winner's gather against the waiter's task).
+        """
+        current = asyncio.current_task()
         if self._done:
+            if current is not None and current not in self._tasks:
+                await self._finished.wait()
             return
         self._done = True
-        if self._flush_handle is not None:
-            self._flush_handle.cancel()
-            self._flush_handle = None
-        current = asyncio.current_task()
-        others = [task for task in self._tasks if task is not current]
-        for task in others:
-            task.cancel()
-        if others:
-            await asyncio.gather(*others, return_exceptions=True)
         try:
-            # Always close, even when a close frame already marked the
-            # connection closed: the transport still needs its own
-            # teardown. Skipping it here left the socket attached to the
-            # listener, so ``stop()`` hung in ``wait_closed()`` forever.
-            # ``close()`` sends the close frame only once and
-            # ``writer.close()`` is idempotent.
-            await self._conn.close()
-        except OSError:
-            pass
-        try:
-            await self._teardown()
+            if self._flush_handle is not None:
+                self._flush_handle.cancel()
+                self._flush_handle = None
+            others = [task for task in self._tasks if task is not current]
+            for task in others:
+                task.cancel()
+            if others:
+                await asyncio.gather(*others, return_exceptions=True)
+            try:
+                # Always close, even when a close frame already marked the
+                # connection closed: the transport still needs its own
+                # teardown. Skipping it here left the socket attached to the
+                # listener, so ``stop()`` hung in ``wait_closed()`` forever.
+                # ``close()`` sends the close frame only once and
+                # ``writer.close()`` is idempotent.
+                await self._conn.close()
+            except OSError:
+                pass
+            try:
+                await self._teardown()
+            finally:
+                self._server._drop_session(self)
         finally:
-            self._server._drop_session(self)
+            self._finished.set()
 
     async def _teardown(self) -> None:
         """Run ``on_disconnect`` exactly once; survives one cancellation."""

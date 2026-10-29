@@ -397,11 +397,15 @@ async def test_cancellation_during_accept(tcp_available: None) -> None:
     client = await RawClient.connect(server.bound_port)
     await client.read_until_ready()
     serve_task.cancel()
+    # Stop before awaiting the cancelled serve task: the cancel path
+    # inside ``serve_forever`` waits for open sessions to detach, so the
+    # session has to be finished first (otherwise only the 15 s watchdog
+    # releases it).
+    await server.stop()
     try:
         await serve_task
     except asyncio.CancelledError:
         pass
-    await server.stop()
     assert handler.disconnect_calls == 1
     client.writer.close()
     await client.writer.wait_closed()
