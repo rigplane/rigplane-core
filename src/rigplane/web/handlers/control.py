@@ -1780,10 +1780,12 @@ class ControlHandler:
             power_max_watts = getattr(profile, "max_watts", None)
             power_min_watts = getattr(profile, "min_watts", None)
             # MOR-3634: the expected readback follows the per-band/per-source
-            # rated ceiling the backend will apply at the wire. An estimate
-            # from the latest observations; the queued request itself stays
-            # the operator's, unclamped by band, so a band change queued
-            # ahead of it does not silently shrink or inflate it.
+            # rated ceiling the backend will apply at the wire. Only an
+            # estimate from the latest observations (it answers the client at
+            # admission); the poller replaces the stored expectation with the
+            # watts the backend actually wrote. The queued request itself
+            # stays the operator's, unclamped by band, so a band change
+            # queued ahead of it does not silently shrink or inflate it.
             power_ceiling_watts = resolve_power_ceiling_watts(
                 profile, freqs_hz=observed_band_freqs_hz(self._radio)
             )

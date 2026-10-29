@@ -20,6 +20,7 @@ from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
 from ...core.tx_observation import TxStateReading
+from ...core.tx_target import KnownTxTarget
 from ...core.types import MemoryEntry
 from ...exceptions import (
     AudioFormatError,
@@ -55,6 +56,7 @@ from .memory import memory_entry_from_cat
 from .parser import CatCommandParser, CatParseError, format_command, is_data_mode
 from .transport import (
     CatCommandRejected,
+    CatGarbledFrameError,
     CatTimeoutError,
     CatTransportError,
     YaesuCatTransport,
@@ -2942,8 +2944,8 @@ class YaesuCatRadio:
         """
         return await self.read_power()
 
-    async def set_power(self, watts: int, head: int = 2) -> None:
-        """Set TX power.
+    async def set_power(self, watts: int, head: int = 2) -> int:
+        """Set TX power and return the watts put on the wire.
 
         A profile-declared ``[power].min_watts`` floor raises a request
         below the radio's minimum up to that minimum before the wire
@@ -2957,13 +2959,20 @@ class YaesuCatRadio:
         down to the ceiling after the floor lift -- the wire authority for
         every path (web admission only estimates it; rigctld ``RFPOWER``
         and the CLI ``power`` command bypass admission). The band comes
-        from the radio itself, read under ``_mode_lock`` (see
-        :meth:`_read_transmit_band_freqs_hz`). A profile without the tables
-        is unchanged and reads nothing.
+        from the radio itself, read under ``_mode_lock`` by the same
+        validated reader the poller publishes ``tx_target`` from
+        (:meth:`YaesuObservationAdapter.read_tx_target`): a malformed or
+        changing route, a reconnect during the read or an unanswered read
+        proves no band, and the lowest declared ceiling applies. A profile
+        without the tables is unchanged and reads nothing.
 
         Args:
             watts: Power in watts.
             head: Head selector (default 2).
+
+        Returns:
+            The watts written -- the single value the caller's readback
+            expectation must be built from.
         """
         async with self._mode_lock:
             if self._config.min_watts is not None:
@@ -2975,34 +2984,32 @@ class YaesuCatRadio:
                 if ceiling is not None:
                     watts = min(ceiling, watts)
             await self._write("set_power", head=str(head), watts=watts)
+            return watts
 
     async def _read_transmit_band_freqs_hz(self) -> tuple[int | None, ...]:
         """Ask the radio which band it would transmit on, right now (MOR-3634).
 
-        The authority behind the rated-power ceiling: the frequency of the
-        transmitting receiver (``FT;`` names it on a dual-receiver radio, then
-        that receiver's frequency is read), taken from the radio under
-        ``_mode_lock`` immediately before the ``PC`` write -- not from a poll
-        that may predate a band change, a cancelled partial write or a
-        TX-route change. Every band, TX-route and split mutation holds the
-        same lock, so none can interleave between this read and the write.
-        A read the radio does not answer is an unknown candidate (``None``):
-        the lowest declared ceiling applies, never the widest. When the
-        TX route cannot be read, every receiver is a candidate.
+        The authority behind the rated-power ceiling: the transmitting
+        receiver's frequency from the radio, taken under ``_mode_lock``
+        immediately before the ``PC`` write -- not from a poll that may
+        predate a band change, a cancelled partial write or a TX-route
+        change. Every band, TX-route and split mutation holds the same
+        lock, so none can interleave between this read and the write; a
+        front-panel change cannot be locked out, which is why the shared
+        reader brackets the frequency with two route reads. ``(None,)``
+        (no band proven: the lowest declared ceiling applies, never the
+        widest) when the reader reports an unknown target, no frequency, or
+        the radio leaves a read unanswered.
         """
-        receivers: tuple[int, ...] = (0,)
-        if self.receiver_count > 1:
-            try:
-                receivers = (await self.get_tx_func(),)
-            except Exception:
-                receivers = (0, 1)
-        freqs: list[int | None] = []
-        for receiver in receivers:
-            try:
-                freqs.append(await self.read_freq(receiver))
-            except Exception:
-                freqs.append(None)
-        return tuple(freqs)
+        from .observations import YaesuObservationAdapter
+
+        try:
+            target = await YaesuObservationAdapter.from_radio(self).read_tx_target()
+        except (CatTimeoutError, CatGarbledFrameError):
+            return (None,)
+        if isinstance(target, KnownTxTarget):
+            return (target.frequency_hz,)
+        return (None,)
 
     async def set_rf_power(self, level: int) -> None:
         """Set TX power level — :class:`PowerControlCapable` interface.

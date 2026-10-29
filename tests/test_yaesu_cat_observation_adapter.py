@@ -742,7 +742,7 @@ async def test_real_ftx1_parser_brackets_selected_frequency(
     radio._transport.query = AsyncMock(  # type: ignore[method-assign]
         side_effect=[f"FT{ft}", frequency_response, f"FT{ft}"]
     )
-    target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+    target = await YaesuObservationAdapter.from_radio(radio).read_tx_target()
 
     assert target == KnownTxTarget(receiver=receiver, slot=None, frequency_hz=frequency)
     assert radio._transport.query.await_args_list == [
@@ -760,7 +760,7 @@ async def test_invalid_ft_type_or_range_is_contradiction(tx_func: object) -> Non
 
     target = await YaesuObservationAdapter(
         radio, profile=_profile_state_acquisition(), clock=_clock
-    )._read_tx_target()
+    ).read_tx_target()
 
     assert target == UnknownTxTarget(reason="contradiction")
     radio.read_freq.assert_not_awaited()
@@ -794,7 +794,7 @@ async def test_missing_or_unsupported_ft_is_unknown(
 
     target = await YaesuObservationAdapter(
         radio, profile=_profile_state_acquisition(), clock=_clock
-    )._read_tx_target()
+    ).read_tx_target()
 
     assert target == expected
 
@@ -814,7 +814,7 @@ async def test_tx_target_mid_cycle_change_or_missing_frequency(boundary: str) ->
 
     target = await YaesuObservationAdapter(
         radio, profile=_profile_state_acquisition(), clock=_clock
-    )._read_tx_target()
+    ).read_tx_target()
 
     expected = (
         UnknownTxTarget(reason="contradiction")
@@ -834,7 +834,7 @@ async def test_tx_target_connection_failure_propagates() -> None:
         radio, profile=_profile_state_acquisition(), clock=_clock
     )
     with pytest.raises(RadioConnectionError, match="link reset"):
-        await adapter._read_tx_target()
+        await adapter.read_tx_target()
 
 
 @pytest.mark.asyncio

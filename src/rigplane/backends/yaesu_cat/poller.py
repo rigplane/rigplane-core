@@ -28,7 +28,11 @@ from collections.abc import Awaitable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
-from rigplane.core.command_service import _is_yaesu_cat_readback, _yaesu_receiver_alias
+from rigplane.core.command_service import (
+    _is_yaesu_cat_readback,
+    _yaesu_receiver_alias,
+    resolve_power_level_target,
+)
 from rigplane.core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
@@ -513,6 +517,41 @@ class YaesuCatPoller:
                 exc_info=True,
             )
 
+    def _revise_power_expectation(
+        self, entry: CommandQueueEntry, written: int | None
+    ) -> None:
+        """Make the command wait for the watts the backend actually wrote.
+
+        MOR-3634: the backend clamps a power write to the rated ceiling of the
+        band it reads from the radio under its own lock; admission only
+        estimated that band. The readback expectation is therefore rebuilt
+        from the written value (on the one normalized scale, through the same
+        resolver admission uses), never kept from the estimate.
+        """
+        if (
+            type(written) is not int
+            or entry.command_service is None
+            or entry.command_id is None
+            or entry.source is None
+        ):
+            return
+        from .observations import YAESU_POWER_LEVEL_PATH
+
+        profile = self._radio.profile
+        _, level = resolve_power_level_target(
+            written,
+            power_native_unit="watts",
+            power_max_watts=profile.max_watts,
+            power_min_watts=profile.min_watts,
+        )
+        entry.command_service.revise_expected_value(
+            source=entry.source,
+            session_id=entry.session_id,
+            command_id=entry.command_id,
+            path=YAESU_POWER_LEVEL_PATH,
+            value=level,
+        )
+
     def _track_receiver_select_readback(self, entry: CommandQueueEntry) -> None:
         if (
             entry.command_service is None
@@ -821,11 +860,12 @@ class YaesuCatPoller:
                 if cmd is None:
                     raise CommandError("queued command has no dispatch payload")
                 if isinstance(cmd, CommandIntent):
-                    await self._execute_command(
+                    written = await self._execute_command(
                         cmd, validate_currency=lambda: validate_currency(entry)
                     )
                 else:
-                    await self._execute_command(cmd)
+                    written = await self._execute_command(cmd)
+                self._revise_power_expectation(entry, written)
                 self._track_receiver_select_readback(entry)
             except Exception as exc:
                 self._mark_queued_command_failed(entry, exc)
@@ -1065,11 +1105,15 @@ class YaesuCatPoller:
         cmd: Any,
         *,
         validate_currency: Callable[[], None] | None = None,
-    ) -> None:
+    ) -> int | None:
         """Dispatch a single command to the radio.
 
         Commands come from the web UI CommandQueue.  The dispatcher handles
         all command types; unsupported commands fail truthfully.
+
+        Returns the watts a :class:`SetPower` actually put on the wire (the
+        backend may clamp the request, MOR-3634), ``None`` for every other
+        command.
         """
         cmd = canonicalize_level_command(cmd, self._radio)
         if isinstance(cmd, CommandIntent):
@@ -1079,7 +1123,7 @@ class YaesuCatPoller:
                 managed_tx_authority=self._managed_tx_authority,
                 validate_currency=validate_currency,
             )
-            return
+            return None
         if self._managed_tx_authority is None:
             decision = evaluate_tx_interlock(
                 cmd,
@@ -1145,6 +1189,7 @@ class YaesuCatPoller:
 
         radio = self._radio
         name = type(cmd).__name__
+        written: int | None = None
 
         match cmd:
             # ── Core: Frequency / Mode / Band ──
@@ -1239,7 +1284,7 @@ class YaesuCatPoller:
                         f"Yaesu backend expects SetPower unit='watts' "
                         f"(PC command); got unit={unit!r}"
                     )
-                await radio.set_power(level)
+                written = await radio.set_power(level)
             case SetDriveGain(level=level):
                 await radio.set_drive_gain(level)
 
@@ -1353,6 +1398,7 @@ class YaesuCatPoller:
                 raise NotImplementedError(f"{name} unsupported by Yaesu CAT dispatcher")
 
         logger.info("CMD: %s", name)
+        return written
 
     # ------------------------------------------------------------------
     # Poll actions

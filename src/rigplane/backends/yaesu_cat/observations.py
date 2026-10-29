@@ -255,6 +255,7 @@ _SUB_TSQL_FREQ = FieldPath.receiver("sub", "operator_controls", "tsql_freq")
 _MAIN_REPEATER_SHIFT = FieldPath.receiver("main", "operator_controls", "repeater_shift")
 _SUB_REPEATER_SHIFT = FieldPath.receiver("sub", "operator_controls", "repeater_shift")
 YAESU_PTT_PATH = _PTT
+YAESU_POWER_LEVEL_PATH = _POWER_LEVEL
 
 
 class YaesuObservationRadio(Protocol):
@@ -447,7 +448,7 @@ class YaesuObservationAdapter:
             observations.append(
                 adapter.observation(
                     _TX_TARGET,
-                    await self._read_tx_target(),
+                    await self.read_tx_target(),
                     native_id="get_tx_func",
                 )
             )
@@ -623,8 +624,18 @@ class YaesuObservationAdapter:
         self._note_critical_read_answers((_TX_TARGET,))
         return tx_func
 
-    async def _read_tx_target(self) -> TxTarget:
-        """Bracket the selected frequency with stable native FT authority."""
+    async def read_tx_target(self) -> TxTarget:
+        """Bracket the selected frequency with stable native FT authority.
+
+        The ONE reader of "which receiver transmits, on what frequency": the
+        poller publishes it as the ``tx_target`` observation and the backend's
+        ``set_power`` resolves the rated-power ceiling from it (MOR-3634). An
+        out-of-range or malformed selector, a route that changed between the
+        two ``FT;`` reads and a reconnect during the read all answer
+        :class:`UnknownTxTarget`; a frequency the radio did not give is a
+        known receiver with ``frequency_hz=None``. A read the radio leaves
+        unanswered raises :class:`CatTimeoutError` after it is counted.
+        """
         if not self._has_runtime_capability("tx"):
             return UnknownTxTarget(reason="unsupported")
         stats = getattr(getattr(self.radio, "_transport", None), "stats", None)

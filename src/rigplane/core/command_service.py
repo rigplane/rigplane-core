@@ -663,6 +663,47 @@ class CommandService:
         ]
         return before - len(self._readback_expectations)
 
+    def revise_expected_value(
+        self,
+        *,
+        source: CommandSource,
+        session_id: str | None,
+        command_id: str,
+        path: FieldPath,
+        value: Any,
+    ) -> bool:
+        """Replace the value an in-flight command's *path* is waiting for.
+
+        For a write whose final value only the backend knows (MOR-3634: the
+        rated-power clamp it applies under its own lock): the admission-time
+        estimate is replaced, in the pending overlay and in the readback
+        expectation alike, by what was actually written, so the readback of
+        that very write closes the command. Returns whether an expectation
+        of the command was revised.
+        """
+        self._purge_expired()
+        revised = False
+
+        def _revise(items: list[PendingOverlay]) -> list[PendingOverlay]:
+            nonlocal revised
+            result = []
+            for item in items:
+                if (
+                    item.source == source
+                    and item.session_id == session_id
+                    and item.command_id == command_id
+                    and item.path == path
+                    and not item.matches_any_value
+                ):
+                    item = replace(item, value=value)
+                    revised = True
+                result.append(item)
+            return result
+
+        self._overlays = _revise(self._overlays)
+        self._readback_expectations = _revise(self._readback_expectations)
+        return revised
+
     def project_pending_values(
         self,
         *,
