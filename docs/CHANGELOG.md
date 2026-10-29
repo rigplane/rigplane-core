@@ -22,11 +22,12 @@ under 3.0.0 below, plus the changes in this section.
 - **A quick key, unkey, key, unkey could leave the radio transmitting
   (MOR-3838, #4390).** A release that arrived while the previous key-on was
   still being sent was lost: the key-on went out afterwards and nothing
-  unkeyed the radio. A release that supersedes a key-on still in flight now
-  waits for it to finish and then runs right after it; a release
-  requested while no TX provider is available is answered as pending and is
-  sent when the provider is back. Covered by simulator tests of the managed
-  transmit authority.
+  unkeyed the radio. The unkey of a release that supersedes a key-on still in
+  flight is now sent promptly; a key-on that stays stuck is escalated once to
+  port retirement and re-arm, and an unkey older than a newer key-on is
+  dropped. A release requested while no TX provider is available is answered
+  as pending and is sent when the provider is re-armed. Covered by simulator
+  tests of the managed transmit authority.
 
 - **Ambiguous Icom PTT release is confirmed by a verified read-back
   (MOR-3818, #4388, #4389).** When the acknowledgement of an unkey is missing
@@ -83,8 +84,7 @@ under 3.0.0 below, plus the changes in this section.
 - **Simulator `[timing]` keys (#4392).** The simulator profile and the CI-V
   serial fake accept optional per-class delays (`ack_ms_set`,
   `ptt_set_ack_ms`, `readback_ms`, `write_drain_ms`, `tx_on_switch_ms`,
-  `tx_off_switch_ms`), each defaulting to `reply_latency_ms`. Test tooling
-  only; no shipped profile sets them.
+  `tx_off_switch_ms`). Test tooling only; no shipped profile sets them.
 
 ## [3.0.0] — 2026-10-27
 
