@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   validate:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     timeout-minutes: 25
+    env:
+      # Pin uv to the matrix interpreter; unpinned, `uv run` picks the newest
+      # interpreter on the runner and both legs would test 3.13 (MOR-590).
+      UV_PYTHON: ${{ matrix.python-version }}
     strategy:
       fail-fast: true
       matrix:
@@ -88,7 +92,7 @@ jobs:
 
   build:
     needs: validate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     steps:
       - uses: actions/checkout@v6
 
@@ -160,16 +164,25 @@ jobs:
 
   publish:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     environment:
       name: pypi
       url: https://pypi.org/p/rigplane
     steps:
+      # A directory unique to this run attempt: a self-hosted workspace keeps
+      # files between runs, and a shared dist/ could hold another release.
       - name: Download dist artifacts
         uses: actions/download-artifact@v8
         with:
           name: dist
-          path: dist/
+          path: ${{ runner.temp }}/dist-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # uv publish with this job's OIDC token instead of the Docker-based
+      # pypa/gh-action-pypi-publish: the self-hosted runner image ships no Docker.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.1.0
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        env:
+          DIST_DIR: ${{ runner.temp }}/dist-${{ github.run_id }}-${{ github.run_attempt }}
+        run: uv publish --trusted-publishing always "$DIST_DIR"/*
