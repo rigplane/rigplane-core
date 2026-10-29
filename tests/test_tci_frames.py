@@ -199,14 +199,15 @@ def test_float32_to_int16_clamps_and_rounds() -> None:
 
 
 def test_negative_ties_round_half_away_from_zero() -> None:
-    """Exact ties round away from zero, like the positive side does.
+    """Exact ties round away from zero on each asymmetric rail.
 
-    Half an INT16 LSB below zero (exactly representable: 2**-16) must
-    convert to -1, mirroring +0.5 LSB converting to +1.
+    Tie points must be exact on their own rail: the negative rail is
+    32768 (a power of two, so -0.5 LSB is exactly 2**-16), the
+    positive rail is 32767 (so its smallest exact tie is 0.5).
     """
-    data = struct.pack("<2f", 0.5 / 32768, -0.5 / 32768)
+    data = struct.pack("<3f", 0.5, -0.5 / 32768, -0.5)
     out = convert_samples(data, SampleType.FLOAT32, SampleType.INT16)
-    assert struct.unpack("<2h", out) == (1, -1)
+    assert struct.unpack("<3h", out) == (16384, -1, -16384)
 
 
 def test_int24_sign_and_widening() -> None:
