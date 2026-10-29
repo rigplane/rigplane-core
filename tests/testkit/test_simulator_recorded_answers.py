@@ -14,14 +14,16 @@ measurement of the same order is the conformance answer-class replay
 
 from __future__ import annotations
 
-from rigplane_testkit.icom import _bcd_encode_freq
+from rigplane_testkit.icom import MockIcomRadio, _bcd_encode_freq
 from rigplane_testkit.icom.replay import extract_civ_frame
 
 from testkit.ic7610_fakes import ic7610_lan_fake
 from testkit.test_ic7610_conformance import _civ_packet, _lan_sim
 from testkit.test_simulator_faults import _UdpClient
 
-# Recorded LAN facts of the split-frequency command (0x0F), from the
+# The simulator models split natively (MOR-3632); these tests turn that off
+# (``models_tx_frequency=False``) so split stays a command only the recorded
+# table answers. Recorded LAN facts of the split-frequency command (0x0F), from the
 # ``lan`` rows of tests/fixtures/ic7610/civ_pairs.jsonl: the bare ``0F``
 # read of the probe window is answered with split OFF (``00``), and the
 # ``0F 01`` write of the rx_write_restore window with an ACK.
@@ -54,7 +56,7 @@ async def _ask_frame(
 
 
 async def test_recorded_split_read_and_write_answer_from_the_table() -> None:
-    async with _lan_sim(ic7610_lan_fake()) as (server, client):
+    async with _lan_sim(ic7610_lan_fake(models_tx_frequency=False)) as (server, client):
         reply = await _ask_frame(client, server.civ_port, _SPLIT_READ, seq=1)
         assert reply == _SPLIT_READ_OFF_REPLY
         reply = await _ask_frame(client, server.civ_port, _SPLIT_WRITE_ON, seq=2)
@@ -79,7 +81,7 @@ async def test_body_neither_native_nor_recorded_still_naks() -> None:
 
 
 async def test_refused_command_still_naks_over_the_table() -> None:
-    sim = ic7610_lan_fake()
+    sim = ic7610_lan_fake(models_tx_frequency=False)
     sim.refused_civ_commands = {(0x0F, None)}
     async with _lan_sim(sim) as (server, client):
         reply = await _ask_frame(client, server.civ_port, _SPLIT_READ, seq=1)
@@ -88,6 +90,6 @@ async def test_refused_command_still_naks_over_the_table() -> None:
 
 
 async def test_without_a_table_the_split_read_still_naks() -> None:
-    async with _lan_sim() as (server, client):
+    async with _lan_sim(MockIcomRadio(models_tx_frequency=False)) as (server, client):
         reply = await _ask_frame(client, server.civ_port, _SPLIT_READ, seq=1)
         assert reply == _NAK_REPLY

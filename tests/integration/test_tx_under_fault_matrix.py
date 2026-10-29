@@ -344,9 +344,7 @@ async def _stand_up_stack(
         stateful_ptt=True,
         ptt_on_session_loss=loss,
         unsolicited_civ=unsolicited,
-        # The split read and 1C 03 TX-frequency read a managed key's
-        # TX-target admission needs (MOR-3632/3633).
-        **({"models_tx_frequency": True} | (sim_options or {})),
+        **(sim_options or {}),
     )
     await sim.start()
 

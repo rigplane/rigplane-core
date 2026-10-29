@@ -482,7 +482,7 @@ class MockIcomRadio(AudioPortMixin):
         scope_stream: bool = False,
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
-        models_tx_frequency: bool = False,
+        models_tx_frequency: bool = True,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -545,12 +545,12 @@ class MockIcomRadio(AudioPortMixin):
         # the selected receiver, 1 = SUB is (recorded vfo_select window).
         self._dual_receiver: bool = dual_receiver
         self._selected_receiver: int = 0
-        # Opt-in (``models_tx_frequency``): split (CI-V 0x0F, 00 = OFF /
-        # 01 = ON) and the transceiver-wide transmit-frequency read (CI-V
-        # 1C 03), the TX band being MAIN, or SUB while split is ON (the
-        # IC-7610 rule) -- what a managed key's TX-target admission reads.
-        # Off, both NAK as before (a mounted recorded-answer table may still
-        # answer them).
+        # Split (CI-V 0x0F, 00 = OFF / 01 = ON) and the transceiver-wide
+        # transmit-frequency read (CI-V 1C 03), the TX band being MAIN, or
+        # SUB while split is ON (the IC-7610 rule) -- what a managed key's
+        # TX-target admission reads. ``models_tx_frequency=False`` NAKs both
+        # (a radio whose TX frequency cannot be read; a mounted
+        # recorded-answer table may still answer them).
         self._split: bool = False
         self._models_tx_frequency = models_tx_frequency
         # Modelling of the 0x1A 05 menu items the startup reader reads;
