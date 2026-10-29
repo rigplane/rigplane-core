@@ -84,8 +84,12 @@ async def test_tracker_starts_a_key_with_a_live_ready() -> None:
             assert ready.connection_generation is generation
             assert ready.superseded is False
             assert ready.expires_at_monotonic > 0.0
-            # The admission block waits on this ready: releasing it admits.
+            # The admission block waits on both halves of this ready: the
+            # validation (as the executor's set) and the queue turn's
+            # release. Releasing both admits.
             ready.set_result(None)
+            assert not ready.done()
+            ready.release_queue()
             receipt = await submission
             assert receipt.transition.state.intent.owner_token == "rigctld-client-1"
         finally:
