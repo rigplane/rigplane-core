@@ -156,6 +156,36 @@ async def _run_guarded_disconnect(handler: TciHandler, session_id: str) -> None:
         logger.debug("tci %s: disconnect failed", session_id, exc_info=True)
 
 
+def _reap_session_task(task: asyncio.Task[Any]) -> None:
+    """Done-callback: retrieve a late session task so nothing is unretrieved."""
+    if task.cancelled():
+        return
+    try:
+        task.exception()
+    except Exception:
+        pass
+
+
+async def _join_session_tasks(
+    tasks: list[asyncio.Task[Any]], session_id: str
+) -> None:
+    """Join session tasks, bounded independently of child cancellation.
+
+    A cancelled callback that awaits gated cleanup forever must not wedge
+    this join past :data:`TEARDOWN_TIMEOUT_S`: the graceful close and the
+    guarded disconnect still run while unfinished tasks are retained and
+    reaped on completion.
+    """
+    try:
+        async with asyncio.timeout(TEARDOWN_TIMEOUT_S):
+            await asyncio.gather(*tasks, return_exceptions=True)
+    except TimeoutError:
+        logger.debug("tci %s: task join timed out; disconnecting anyway", session_id)
+        for task in tasks:
+            if not task.done():
+                task.add_done_callback(_reap_session_task)
+
+
 class TciSession:
     """One accepted socket: reader, sender, ping, and watchdog tasks."""
 
@@ -317,7 +347,7 @@ class TciSession:
                 task.cancel()
             if others:
                 try:
-                    await asyncio.gather(*others, return_exceptions=True)
+                    await _join_session_tasks(others, self._id)
                 finally:
                     # Transport cleanup is unconditional across
                     # cancellation during the join: a cancel landing
