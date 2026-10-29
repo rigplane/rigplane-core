@@ -272,12 +272,14 @@ starts no scheduler and still answers `vfo:0,0;` from the composed store.
 ### 5.2 What clients send (reported, to be captured)
 
 Evidence tags: **[spec]** = TCI 2.1 PDF; **[AS]** = AetherSDR docs as above
-(second-hand); **[OL]** = OpsLog wiki; **[open]** = nobody in the evidence base
-says; capture C0 decides.
+(second-hand); **[OL]** = OpsLog wiki; **[RN]** = WSJT-X Release Notes
+(second-hand, report of 2026-10-29, link in the ecosystem notes);
+**[open]** = nobody in the evidence base says; capture C0 decides.
 
 | Client | At connect | During a QSO | Evidence |
 |---|---|---|---|
 | all | WebSocket upgrade, then waits for the init burst up to `ready;` and seeds its state from it | reads/writes below | [spec] 3.1, 4.1; [AS] "WSJT-X seeds requested frequencies from the init burst" |
+| WSJT-X 3.0.0 and newer (official) | [open] | control plus audio over TCI | [RN] |
 | WSJT-X Improved 3.1.0 | `vfo:0,0,<hz>` (waits about 2 s for the echo); `split_enable:0,false` before it programs channel 1; `vfo:0,1,<hz>` (waits about 1 s); `audio_start:0` (sent automatically); reads `drive`/`tune_drive` and indexes the power as the second argument after the receiver. Mode set: **[open]** | `trx:0,true,tci` and `trx:0,false`; TX audio frames on each `TX_CHRONO` | [AS] routing doc (startup tune, rig compatibility, power shape), user doc (`audio_start`) |
 | JTDX 2.2.159 | Rig-split sequence `split_enable:0,true`, then `vfo:0,1,<tx hz>` | `trx:0,true,tci`, then `TX_CHRONO` | [AS] routing doc |
 | OpsLog (TCI backend) | host and port (default 40001 in OpsLog), frequency, mode, PTT, split; optional spots; asks for real split rather than "Fake It". Which command names it sends: **[open]** (the wiki names none) | the wiki's statement that it retries refused writes describes OpsLog's own TCI and Hamlib *servers*, not this client role | [OL] |
