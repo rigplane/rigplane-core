@@ -571,7 +571,7 @@ describe('MobileRadioLayout structure', () => {
       } as unknown as ServerState;
       vi.mocked(getCapabilities).mockReturnValue(caps);
     }
-    function restore(previous: Capabilities) {
+    function restore(previous: Capabilities | null) {
       vi.mocked(getCapabilities).mockReturnValue(previous);
       vi.mocked(hasDualReceiver).mockReturnValue(false);
     }

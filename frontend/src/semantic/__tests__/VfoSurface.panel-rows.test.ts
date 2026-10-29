@@ -483,7 +483,7 @@ describe('standard RFG lamp appears only when RF gain is reduced (2/main_sub)', 
       const keys = Array.from(row(mainPanel, 'receiver').querySelectorAll('.lamp'))
         .map((lamp) => lamp.getAttribute('data-chip'));
       expect(keys, 'same lamp slots whatever the gain says').toEqual(
-        ['agc', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
+        ['agc', 'busy', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
     }
   });
 });
