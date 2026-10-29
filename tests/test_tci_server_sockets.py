@@ -175,6 +175,22 @@ async def test_start_stop_twice(tcp_available: None) -> None:
     assert first != 0
 
 
+async def test_double_start_rejected(tcp_available: None) -> None:
+    server = make_server(FakeHandler())
+    await server.start()
+    try:
+        with pytest.raises(RuntimeError):
+            await server.start()
+    finally:
+        await server.stop()
+
+
+async def test_serve_forever_without_start() -> None:
+    server = make_server(FakeHandler())
+    with pytest.raises(RuntimeError):
+        await server.serve_forever()
+
+
 async def test_port_in_use(tcp_available: None) -> None:
     blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
