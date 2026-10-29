@@ -1,19 +1,13 @@
-"""MOR-3633: repeater writes in the TX interlock and the PTT-on TX-target guard.
+"""MOR-3633: repeater writes in the TX interlock.
 
-Two behaviours, one policy module:
-
-* Every repeater-related write (shift, tone/TSQL toggles, tone/TSQL
-  frequencies) is DEFER-classified while the radio is keyed and passes in
-  known RX — the same single-slot deferred lane the memory and VFO-topology
-  families already use.  Descriptor-backed intents (``set_repeater_shift``
-  and friends, WS/HTTP) classify directly by intent name through the one
-  table in ``tx_interlock`` (the descriptor is the only name source for
-  migrated commands, so no typed command exists for them); the rigctld
-  ``set_func TONE``/``TSQL`` tokens resolve to the same names.
-* PTT-on is refused while the TX side's frequency is unknown, resolved
-  through the one ``global.tx_state.tx_target`` observation
-  (``core/tx_target.py``); the refusal names the receiver that would
-  transmit when the target knows it.
+Every repeater-related write (shift, tone/TSQL toggles, tone/TSQL
+frequencies) is DEFER-classified while the radio is keyed and passes in
+known RX — the same single-slot deferred lane the memory and VFO-topology
+families already use.  Descriptor-backed intents (``set_repeater_shift``
+and friends, WS/HTTP) classify directly by intent name through the one
+table in ``tx_interlock`` (the descriptor is the only name source for
+migrated commands, so no typed command exists for them); the rigctld
+``set_func TONE``/``TSQL`` tokens resolve to the same names.
 
 Fakes, never hardware: fake radios and a fake CI-V peer against the real
 HTTP/WS listener, ``RadioPoller`` and ``ManagedTxAuthority``, and a real
@@ -26,38 +20,32 @@ import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
-from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, call
 
 import pytest
 
-from rigplane._bounded_queue import BoundedQueue
 from rigplane.core.command_dispatch import (
     bind_command_intent,
     command_descriptor,
     execute_command_intent,
 )
-from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
-from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.exceptions import CommandError
-from rigplane.profiles import RadioProfile, resolve_radio_profile
+from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime import _poller_types
 from rigplane.runtime._poller_types import (
     PttOff,
-    PttOn,
     SetRepeaterTone,
     SetRepeaterTsql,
     execute_command_queue_entry,
 )
-from rigplane.runtime._state_queries import profile_publishes_tx_target
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, RadioTxOrigin
 from rigplane.runtime.managed_tx_state import (
     ActuationResult,
@@ -72,12 +60,9 @@ from rigplane.runtime.tx_interlock import (
     classify_tx_interlock,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
-    ptt_on_tx_target_refusal,
-    tx_frequency_unknown_refusal,
 )
 from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
-from support.tx_target import seed_tx_target_value
 from test_controller_sessions import radio_tx_authority
 from test_managed_tx_authority import authority
 from test_rigctld_managed_ingress_scheduling import (  # noqa: F401
@@ -87,7 +72,7 @@ from test_rigctld_managed_ingress_scheduling import (  # noqa: F401
     _send,
 )
 from test_rigctld_managed_ingress_scheduling import managed as managed_rig  # noqa: F401
-from test_rigctld_wsjtx_split_mk2 import _exchange, _peer
+from test_rigctld_wsjtx_split_mk2 import _peer
 from test_web_server import (
     _read_http_response,
     _ws_connect,
@@ -95,7 +80,6 @@ from test_web_server import (
     _ws_send_text,
 )
 
-_TX_TARGET = FieldPath.global_("tx_state", "tx_target")
 _PTT = FieldPath.global_("tx_state", "ptt")
 
 # Descriptor-backed repeater writes (WS/HTTP) and the rigctld ``set_func``
@@ -190,175 +174,6 @@ def test_classification_leaves_non_repeater_commands_alone() -> None:
     for not_an_intent in ("set_repeater_shift", object(), None):
         assert classify_tx_interlock(not_an_intent) is TxInterlockDisposition.TX_SAFE
         assert get_tx_interlock_command_family_metadata(not_an_intent) is None
-
-
-# ---------------------------------------------------------------------------
-# PTT-on guard: the TX side's frequency must be known (MOR-3633)
-# ---------------------------------------------------------------------------
-
-
-def _tx_target_store(
-    value: object,
-    *,
-    max_age: float = 3.0,
-    advance: float = 0.0,
-) -> tuple[StateStore, FreshnessClock]:
-    clock = FreshnessClock(start=10.0)
-    store = StateStore(freshness_clock=clock)
-    seed_tx_target_value(store, value, timestamp_monotonic=clock.now(), max_age=max_age)
-    if advance:
-        clock.advance(advance)
-    return store, clock
-
-
-def test_ptt_on_is_allowed_with_a_fresh_known_tx_target_frequency() -> None:
-    store, _clock = _tx_target_store(
-        KnownTxTarget(receiver="SUB", slot="A", frequency_hz=145_500_000)
-    )
-
-    assert ptt_on_tx_target_refusal(store.snapshot(), tx_target_supported=True) is None
-
-
-@pytest.mark.parametrize(
-    ("value", "expected_reason"),
-    (
-        (KnownTxTarget(receiver="SUB", slot="A", frequency_hz=None), None),
-        (UnknownTxTarget(reason="not-observed"), "not-observed"),
-        (UnknownTxTarget(reason="stale"), "stale"),
-        (UnknownTxTarget(reason="unsupported"), "unsupported"),
-        (UnknownTxTarget(reason="contradiction"), "contradiction"),
-    ),
-    ids=(
-        "known-target-without-frequency",
-        "unknown-not-observed",
-        "unknown-stale",
-        "unknown-unsupported",
-        "unknown-contradiction",
-    ),
-)
-def test_ptt_on_is_refused_when_the_tx_frequency_is_unknown(
-    value: object, expected_reason: str | None
-) -> None:
-    store, _clock = _tx_target_store(value)
-
-    refusal = ptt_on_tx_target_refusal(store.snapshot(), tx_target_supported=True)
-
-    assert refusal is not None
-    assert refusal.reason_code == "ptt_tx_frequency_unknown"
-    reason = expected_reason if expected_reason is not None else "not-observed"
-    assert refusal.details["txTargetReason"] == reason
-    receiver = value.receiver if isinstance(value, KnownTxTarget) else None
-    assert refusal.details.get("receiver") == receiver
-    if receiver is not None:
-        assert receiver in str(refusal)
-
-
-def test_ptt_on_refusal_names_the_sub_receiver_that_would_transmit() -> None:
-    store, _clock = _tx_target_store(
-        KnownTxTarget(receiver="SUB", slot="A", frequency_hz=None)
-    )
-
-    refusal = ptt_on_tx_target_refusal(store.snapshot(), tx_target_supported=True)
-
-    assert refusal is not None
-    assert refusal.details["receiver"] == "SUB"
-    assert "SUB" in str(refusal)
-
-
-def test_ptt_on_is_refused_without_any_tx_target_observation() -> None:
-    store = StateStore(freshness_clock=FreshnessClock(start=10.0))
-
-    refusal = ptt_on_tx_target_refusal(store.snapshot(), tx_target_supported=True)
-
-    assert refusal is not None
-    assert refusal.reason_code == "ptt_tx_frequency_unknown"
-    assert refusal.details["txTargetReason"] == "not-observed"
-
-
-def test_ptt_on_is_refused_when_the_tx_target_observation_is_stale() -> None:
-    store, clock = _tx_target_store(
-        KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=7_100_000),
-        advance=3.1,
-    )
-    snapshot = store.snapshot()
-    assert (
-        snapshot.field(_TX_TARGET).freshness is FreshnessState.FRESH
-    )  # the TTL recompute, not the flag, catches it
-
-    refusal = ptt_on_tx_target_refusal(snapshot, tx_target_supported=True)
-
-    assert refusal is not None
-    assert refusal.details["txTargetReason"] == "stale"
-
-
-def test_ptt_on_is_refused_on_a_foreign_provider_generation() -> None:
-    store, _clock = _tx_target_store(
-        KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=7_100_000)
-    )
-    snapshot = store.snapshot()
-    field = replace(snapshot.field(_TX_TARGET), provider_generation=1)
-    shifted = replace(snapshot, fields=(field,), provider_generation=2)
-
-    refusal = ptt_on_tx_target_refusal(shifted, tx_target_supported=True)
-
-    assert refusal is not None
-    assert refusal.details["txTargetReason"] == "stale"
-
-
-def test_ptt_on_guard_skips_radios_that_never_publish_tx_target() -> None:
-    """A profile that cannot report the target (IC-9700) keeps keying."""
-
-    store = StateStore(freshness_clock=FreshnessClock(start=10.0))
-
-    assert ptt_on_tx_target_refusal(store.snapshot(), tx_target_supported=False) is None
-
-
-def test_tx_frequency_value_core_answers_without_a_snapshot() -> None:
-    """The value core serves seats that retain the observation, not a store."""
-
-    assert (
-        tx_frequency_unknown_refusal(
-            KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=7_100_000)
-        )
-        is None
-    )
-
-    missing = tx_frequency_unknown_refusal(None)
-    assert missing is not None
-    assert missing.reason_code == "ptt_tx_frequency_unknown"
-    assert missing.details == {"txTargetReason": "not-observed"}
-
-    contradictory = tx_frequency_unknown_refusal("not-a-tx-target")
-    assert contradictory is not None
-    assert contradictory.details == {"txTargetReason": "contradiction"}
-
-
-@pytest.mark.parametrize(
-    ("model", "expected"),
-    (
-        ("IC-705", True),  # derived (selected_unselected readback)
-        ("IC-7300", True),  # derived
-        ("IC-7300MK2", True),  # derived
-        ("IC-7610", True),  # native 1C 03 read
-        ("FTX-1", True),  # native FT read
-        ("IC-9700", False),  # no readback, no declared capability
-        ("TX-500", False),  # no VFO readback to derive a target from
-        ("X6100", False),
-        ("X6200", False),
-    ),
-)
-def test_profile_publishes_tx_target_rows(model: str, expected: bool) -> None:
-    profile = resolve_radio_profile(model=model)
-
-    assert isinstance(profile, RadioProfile)
-    assert profile_publishes_tx_target(profile) is expected
-
-
-def test_profile_publishes_tx_target_answers_false_without_a_profile() -> None:
-    """Support must be proven from profile data; doubles never claim it."""
-
-    assert profile_publishes_tx_target(None) is False  # type: ignore[arg-type]
-    assert profile_publishes_tx_target(MagicMock()) is False  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -491,172 +306,6 @@ async def test_descriptor_repeater_write_reaches_the_radio_only_in_known_rx(
     write.assert_awaited_once()
     radio.set_ptt.assert_not_awaited()
     radio.send_civ.assert_not_awaited()
-
-
-@pytest.mark.parametrize("model", ("IC-705", "IC-7300", "IC-7610"))
-def test_ptt_on_is_refused_without_a_tx_target_observation(model: str) -> None:
-    poller, radio, store, clock = _poller(model)
-    _observe_ptt(store, False, observed_at=clock.now())
-
-    with pytest.raises(TxInterlockRefusal) as excinfo:
-        poller._enforce_tx_interlock(PttOn())  # noqa: SLF001
-
-    assert excinfo.value.reason_code == "ptt_tx_frequency_unknown"
-    assert excinfo.value.details["txTargetReason"] == "not-observed"
-    assert "receiver" not in excinfo.value.details
-    radio.set_ptt.assert_not_awaited()
-
-
-def test_ptt_on_passes_with_a_fresh_known_tx_target() -> None:
-    poller, _radio, store, clock = _poller()
-    _observe_ptt(store, False, observed_at=clock.now())
-    seed_tx_target_value(
-        store,
-        KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=7_100_000),
-        timestamp_monotonic=clock.now(),
-        max_age=3.0,
-    )
-
-    assert poller._enforce_tx_interlock(PttOn()) is None  # noqa: SLF001
-
-
-def test_ptt_on_refusal_names_the_receiver_that_would_transmit() -> None:
-    poller, radio, store, clock = _poller()
-    _observe_ptt(store, False, observed_at=clock.now())
-    seed_tx_target_value(
-        store,
-        KnownTxTarget(receiver="SUB", slot="A", frequency_hz=None),
-        timestamp_monotonic=clock.now(),
-        max_age=3.0,
-    )
-
-    with pytest.raises(TxInterlockRefusal) as excinfo:
-        poller._enforce_tx_interlock(PttOn())  # noqa: SLF001
-
-    assert excinfo.value.details["receiver"] == "SUB"
-    assert "SUB" in str(excinfo.value)
-    radio.set_ptt.assert_not_awaited()
-
-
-@pytest.mark.parametrize("model", ("IC-9700", "TX-500", "X6100", "X6200"))
-def test_ptt_on_passes_without_a_target_on_profiles_that_cannot_publish(
-    model: str,
-) -> None:
-    """A profile that never publishes tx_target must not be bricked by the guard.
-
-    The applicability is profile data (``profile_publishes_tx_target``), never a
-    model name in code: the same poller seat that refuses the publishing
-    profiles above lets these key.
-    """
-
-    poller, _radio, store, clock = _poller(model)
-    assert profile_publishes_tx_target(_radio.profile) is False
-    _observe_ptt(store, False, observed_at=clock.now())
-
-    assert poller._enforce_tx_interlock(PttOn()) is None  # noqa: SLF001
-
-
-@pytest.mark.parametrize("model", ("IC-705", "IC-7300", "IC-7300MK2", "IC-7610"))
-@pytest.mark.parametrize(
-    ("value", "advance", "reason"),
-    (
-        (UnknownTxTarget(reason="contradiction"), 0.0, "contradiction"),
-        (UnknownTxTarget(reason="unsupported"), 0.0, "unsupported"),
-        (UnknownTxTarget(reason="stale"), 0.0, "stale"),
-        (
-            KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=7_100_000),
-            3.5,
-            "stale",
-        ),
-    ),
-    ids=("contradiction", "unsupported", "unknown-stale", "aged-past-ttl"),
-)
-def test_ptt_on_is_refused_for_an_unknown_or_aged_target(
-    model: str, value: object, advance: float, reason: str
-) -> None:
-    poller, radio, store, clock = _poller(model)
-    assert profile_publishes_tx_target(radio.profile) is True
-    seed_tx_target_value(store, value, timestamp_monotonic=clock.now(), max_age=3.0)
-    clock.advance(advance)
-    _observe_ptt(store, False, observed_at=clock.now())  # RF is known RX
-
-    with pytest.raises(TxInterlockRefusal) as excinfo:
-        poller._enforce_tx_interlock(PttOn())  # noqa: SLF001
-
-    assert excinfo.value.reason_code == "ptt_tx_frequency_unknown"
-    assert excinfo.value.details["txTargetReason"] == reason
-    radio.set_ptt.assert_not_awaited()
-    radio.send_civ.assert_not_awaited()
-
-
-def test_keyed_ptt_on_keeps_the_rf_refusal_first() -> None:
-    """The TX-target guard runs after the RF verdict, never ahead of it."""
-
-    poller, _radio, store, clock = _poller()
-    _observe_ptt(store, True, observed_at=clock.now())
-
-    with pytest.raises(TxInterlockRefusal) as excinfo:
-        poller._enforce_tx_interlock(PttOn())  # noqa: SLF001
-
-    assert excinfo.value.reason_code == "radio_transmitting"
-
-
-def _service(clock: FreshnessClock, store: StateStore) -> CommandService:
-    executor = SimpleNamespace(execute=AsyncMock(return_value=CommandExecutionResult()))
-    return CommandService(executor=executor, state_store=store, clock=clock.now)
-
-
-async def test_refused_ptt_on_reports_the_tx_receiver_in_lifecycle_details() -> None:
-    clock = FreshnessClock(start=10.0)
-    radio, store = _radio(), StateStore(freshness_clock=clock)
-    store.begin_provider_generation()
-    _observe_ptt(store, False, observed_at=clock.now())
-    seed_tx_target_value(
-        store,
-        KnownTxTarget(receiver="SUB", slot="A", frequency_hz=None),
-        timestamp_monotonic=clock.now(),
-        max_age=3.0,
-    )
-    poller = RadioPoller(radio, CommandQueue(), state_store=store)
-    service = _service(clock, store)
-    await service.execute(
-        CommandIntent(
-            id="ptt-refused",
-            name="ptt_on",
-            params={"session_id": "ws-a"},
-            source="websocket",
-            target=None,
-            timeout=3.0,
-            pending_policy="none",
-            expected_observations=(),
-        )
-    )
-    entry = CommandQueueEntry(
-        PttOn(),
-        future=asyncio.get_running_loop().create_future(),
-        command_id="ptt-refused",
-        source="websocket",
-        session_id="ws-a",
-        command_service=service,
-    )
-
-    with pytest.raises(TxInterlockRefusal) as excinfo:
-        await poller._execute_queued_entry(entry)  # noqa: SLF001
-    assert entry.future is not None
-    assert entry.future.exception() is excinfo.value
-    poller._mark_queued_command_failed(entry, excinfo.value)  # noqa: SLF001
-
-    event = service.lifecycle_events()[-1]
-    assert event.state == "failed"
-    assert event.details == {
-        "session_id": "ws-a",
-        "blockedBy": "tx_interlock",
-        "reason": "ptt_tx_frequency_unknown",
-        "txTargetReason": "not-observed",
-        "receiver": "SUB",
-    }
-    assert "SUB" in (event.message or "")
-    radio.set_ptt.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -926,33 +575,6 @@ async def test_managed_rigctld_answers_enavail_without_the_capability_tag(
 
 
 # ---------------------------------------------------------------------------
-# Standalone rigctld: nothing publishes a TX target there, so none is required
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("model", ("IC-705", "IC-7300"))
-async def test_standalone_rigctld_keys_without_a_published_tx_target(
-    model: str,
-) -> None:
-    """`rigplane serve` has no TX-target publisher (the web poller is absent).
-
-    A guard that demanded a published target there would refuse every
-    ``T 1`` forever; PTT-on keys as it did before the guard existed, with
-    the fake CI-V peer recording the keying write.
-    """
-
-    async with _peer(model) as (_radio, peer, server, reader, writer):
-        assert server._rig_handler is not None  # noqa: SLF001
-        snapshot = server._rig_handler._state_store.snapshot()  # noqa: SLF001
-        with pytest.raises(KeyError):
-            snapshot.field(_TX_TARGET)
-
-        assert await _exchange(writer, reader, b"T 1\n") == b"RPRT 0\n"
-        assert await _exchange(writer, reader, b"T 0\n") == b"RPRT 0\n"
-        assert peer.ptt_writes == [True, False]
-
-
-# ---------------------------------------------------------------------------
 # Web HTTP/WS ingress: queue, production execution, client-visible outcome
 # ---------------------------------------------------------------------------
 
@@ -1159,136 +781,3 @@ async def test_web_repeater_write_is_held_while_keyed_then_runs_in_quiet_rx(
         result = (await asyncio.wait_for(reply, 2))[-1]
         assert result["ok"] is True
         assert len(peer.repeater_writes) == 1
-
-
-# ---------------------------------------------------------------------------
-# Failed-lifecycle delivery of the new refusal envelope reaches only its issuer
-# ---------------------------------------------------------------------------
-
-
-async def test_ptt_tx_frequency_refusal_reaches_only_its_issuing_session() -> None:
-    web = WebServer(None, WebConfig(radio_model="IC-705"))
-    issuer_q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
-    bystander_q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
-    web.register_control_event_queue(issuer_q, session_id="session-issuer")
-    web.register_control_event_queue(bystander_q, session_id="session-bystander")
-    for queue in (issuer_q, bystander_q):
-        while not queue.empty():
-            queue.get_nowait()
-
-    store = web.command_state_store
-    _web_rf(web, False)
-    seed_tx_target_value(
-        store,
-        KnownTxTarget(receiver="SUB", slot="A", frequency_hz=None),
-        max_age=60,
-    )
-    poller = RadioPoller(_radio(), web.command_queue, state_store=store)
-    web.command_service._executor = SimpleNamespace(  # noqa: SLF001
-        execute=AsyncMock(return_value=CommandExecutionResult())
-    )
-    await web.command_service.execute(
-        CommandIntent(
-            id="ptt-refused",
-            name="ptt_on",
-            params={"session_id": "session-issuer"},
-            source="websocket",
-            target=None,
-            timeout=3.0,
-            pending_policy="none",
-            expected_observations=(),
-        )
-    )
-    entry = CommandQueueEntry(
-        PttOn(),
-        future=asyncio.get_running_loop().create_future(),
-        command_id="ptt-refused",
-        source="websocket",
-        session_id="session-issuer",
-        command_service=web.command_service,
-    )
-
-    with pytest.raises(TxInterlockRefusal) as refusal:
-        await poller._execute_queued_entry_action(entry)  # noqa: SLF001
-    poller._mark_queued_command_failed(entry, refusal.value)  # noqa: SLF001
-
-    delivered = []
-    while not issuer_q.empty():
-        delivered.append(issuer_q.get_nowait())
-    lifecycle = [m for m in delivered if m["type"] == "command_lifecycle"]
-    assert len(lifecycle) == 1
-    assert lifecycle[0]["state"] == "failed"
-    assert lifecycle[0]["details"] == {
-        "blockedBy": "tx_interlock",
-        "reason": "ptt_tx_frequency_unknown",
-        "txTargetReason": "not-observed",
-        "receiver": "SUB",
-    }
-    assert bystander_q.empty()
-
-
-@pytest.mark.parametrize(
-    "details",
-    (
-        {"txTargetReason": "made-up"},
-        {"txTargetReason": "stale", "receiver": "TOP"},
-        {"txTargetReason": "stale", "receiver": ["MAIN"]},
-        {"txTargetReason": "stale", "extra": 1},
-        {"receiver": "SUB"},
-    ),
-    ids=(
-        "unknown-target-reason",
-        "unknown-receiver",
-        "mistyped-receiver",
-        "extra-key",
-        "no-reason",
-    ),
-)
-async def test_forged_ptt_tx_frequency_refusal_details_are_not_delivered(
-    details: dict,
-) -> None:
-    web = WebServer(None, WebConfig(radio_model="IC-705"))
-    issuer_q: BoundedQueue[dict[str, object]] = BoundedQueue(maxsize=16)
-    web.register_control_event_queue(issuer_q, session_id="session-issuer")
-    while not issuer_q.empty():
-        issuer_q.get_nowait()
-    web.command_service._executor = SimpleNamespace(  # noqa: SLF001
-        execute=AsyncMock(return_value=CommandExecutionResult())
-    )
-    await web.command_service.execute(
-        CommandIntent(
-            id="forged",
-            name="ptt_on",
-            params={"session_id": "session-issuer"},
-            source="websocket",
-            target=None,
-            timeout=3.0,
-            pending_policy="none",
-            expected_observations=(),
-        )
-    )
-    while not issuer_q.empty():
-        issuer_q.get_nowait()
-
-    web.command_service.fail_command(
-        "forged",
-        message="forged",
-        timed_out=False,
-        session_id="session-issuer",
-        source="websocket",
-        details={
-            "blockedBy": "tx_interlock",
-            "reason": "ptt_tx_frequency_unknown",
-            **details,
-        },
-    )
-
-    delivered = [m for m in _drain(issuer_q) if m["type"] == "command_lifecycle"]
-    assert delivered == []
-
-
-def _drain(queue: BoundedQueue[dict[str, object]]) -> list[dict[str, object]]:
-    items = []
-    while not queue.empty():
-        items.append(queue.get_nowait())
-    return items

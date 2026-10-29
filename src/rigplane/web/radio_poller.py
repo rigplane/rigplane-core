@@ -117,7 +117,6 @@ from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
-    profile_publishes_tx_target,
     tx_target_max_age,
     wire_parts_for_query,
 )
@@ -134,7 +133,6 @@ from ..runtime.tx_interlock import (
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
     is_exact_raw_dekey_frame,
-    ptt_on_tx_target_refusal,
     resolve_rf_state,
     send_civ_frame,
 )
@@ -685,8 +683,7 @@ class RadioPoller:
                 # (MOR-3378). The managed early return above keeps
                 # managed send_civ on its own ingress refusal.
                 return
-        snapshot = self._state_store.snapshot()
-        rf_state = self._current_rf_state(snapshot)
+        rf_state = self._current_rf_state()
         decision = evaluate_tx_interlock(cmd, rf_state=rf_state)
         if not decision.allowed:
             raise TxInterlockRefusal(
@@ -697,16 +694,6 @@ class RadioPoller:
                     else "rf_state_unknown"
                 ),
             )
-        if isinstance(cmd, PttOn):
-            # MOR-3633: the TX-target guard runs after the RF verdict, on
-            # the same snapshot, so a keyed or unknown radio keeps its
-            # existing refusal and only a known-RX key consults the target.
-            refusal = ptt_on_tx_target_refusal(
-                snapshot,
-                tx_target_supported=profile_publishes_tx_target(self._profile),
-            )
-            if refusal is not None:
-                raise refusal
 
     @staticmethod
     def _deferred_intent(entry: CommandQueueEntry) -> CommandIntent | None:
@@ -971,7 +958,6 @@ class RadioPoller:
             params["details"] = {
                 "blockedBy": "tx_interlock",
                 "reason": exc.reason_code,
-                **exc.details,
             }
         entry.command_service.fail_command(
             entry.command_id,

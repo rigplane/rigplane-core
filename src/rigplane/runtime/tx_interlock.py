@@ -22,7 +22,6 @@ from rigplane.core.tx_interlock_contract import (
     TxInterlockCommandFamilyMetadata,
     TxInterlockDisposition,
 )
-from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.runtime._poller_types import (
     MemoryClear,
     MemoryToVfo,
@@ -63,7 +62,6 @@ from rigplane.runtime._poller_types import (
 
 __all__ = [
     "DeferredTxCommandLane",
-    "PTT_TX_FREQUENCY_UNKNOWN",
     "REPEATER_WRITE_INTENTS",
     "RfState",
     "TX_INTERLOCK_COMMAND_FAMILY_METADATA",
@@ -80,10 +78,8 @@ __all__ = [
     "get_tx_interlock_command_family_metadata",
     "is_exact_raw_dekey_frame",
     "is_exact_raw_transmission_end_frame",
-    "ptt_on_tx_target_refusal",
     "resolve_rf_state",
     "send_civ_frame",
-    "tx_frequency_unknown_refusal",
 ]
 
 
@@ -99,21 +95,11 @@ class TxInterlockRefusal(CommandError):
     the reason codes are policy vocabulary, and every enforcement seat may
     need them. ``reason_code`` rides the failed-lifecycle details whitelist so
     a localized UI never has to parse English prose off the wire (MOR-1879).
-    ``details`` carries optional machine-readable refusal evidence (MOR-3633:
-    the TX-target reason and the receiver that would transmit); seats merge
-    it into the failed-lifecycle details beside ``reason_code``.
     """
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        reason_code: str,
-        details: Mapping[str, object] | None = None,
-    ) -> None:
+    def __init__(self, message: str, *, reason_code: str) -> None:
         super().__init__(message)
         self.reason_code = reason_code
-        self.details: dict[str, object] = dict(details) if details is not None else {}
 
 
 class RfState(StrEnum):
@@ -512,106 +498,6 @@ def evaluate_tx_interlock(
     return TxInterlockDecision(
         disposition, False, "RF state is TX; command is blocked."
     )
-
-
-# ---------------------------------------------------------------------------
-# PTT-on guard: the TX side's frequency must be known (MOR-3633)
-# ---------------------------------------------------------------------------
-
-_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
-
-# The wire reason code of a PTT-on refused for an unknown TX-side frequency;
-# the web lifecycle delivery validates it against this one spelling.
-PTT_TX_FREQUENCY_UNKNOWN = "ptt_tx_frequency_unknown"
-
-
-def _unknown_tx_frequency_refusal(
-    reason: str, receiver: str | None
-) -> TxInterlockRefusal:
-    details: dict[str, object] = {"txTargetReason": reason}
-    transmit_suffix = f"; {receiver} would transmit" if receiver is not None else ""
-    message = f"PTT refused: the TX frequency is unknown ({reason}{transmit_suffix})."
-    if receiver is not None:
-        details["receiver"] = receiver
-    return TxInterlockRefusal(
-        message, reason_code=PTT_TX_FREQUENCY_UNKNOWN, details=details
-    )
-
-
-def tx_frequency_unknown_refusal(value: object) -> TxInterlockRefusal | None:
-    """Refuse a TX-side frequency value that cannot key a transmitter.
-
-    The value-level core of the PTT-on guard, applied to the one
-    ``tx_state.tx_target`` field value. Only a known target carrying a
-    frequency passes; ``None`` (no observation) reads
-    ``not-observed``, and anything outside the ``core.tx_target``
-    vocabulary reads ``contradiction``. The receiver is named only when a
-    trusted known value carries it.
-    """
-
-    if value is None:
-        return _unknown_tx_frequency_refusal("not-observed", None)
-    if isinstance(value, KnownTxTarget):
-        if value.frequency_hz is None:
-            return _unknown_tx_frequency_refusal("not-observed", value.receiver)
-        return None
-    if isinstance(value, UnknownTxTarget):
-        return _unknown_tx_frequency_refusal(value.reason, None)
-    return _unknown_tx_frequency_refusal("contradiction", None)
-
-
-def ptt_on_tx_target_refusal(
-    snapshot: StateSnapshot, *, tx_target_supported: bool
-) -> TxInterlockRefusal | None:
-    """Refuse PTT-on while the TX side's frequency is unknown.
-
-    Reads the one ``global.tx_state.tx_target`` observation through the
-    ``core.tx_target`` vocabulary — never a second target resolver — with
-    the same fail-closed strictness as :func:`resolve_rf_state`: a missing
-    field, a stale flag or TTL, and a foreign provider generation all
-    refuse, as does a malformed observation. ``tx_target_supported`` is
-    the profile's answer from
-    :func:`rigplane.runtime._state_queries.profile_publishes_tx_target`;
-    radios that can never publish the target skip the guard and keep
-    keying. This is unknown-ness only — no frequency-permit logic, which
-    is MOR-3632 slice B.
-    """
-
-    if not tx_target_supported:
-        return None
-    try:
-        field = snapshot.field(_TX_TARGET_PATH)
-    except KeyError:
-        return tx_frequency_unknown_refusal(None)
-    if field.freshness is FreshnessState.STALE:
-        return _unknown_tx_frequency_refusal("stale", None)
-    if field.freshness is not FreshnessState.FRESH:
-        return _unknown_tx_frequency_refusal("not-observed", None)
-    max_age = field.max_age
-    generated_at = snapshot.generated_at_monotonic
-    last_observed = field.last_observed_monotonic
-    if (
-        type(field.provider_generation) is not int
-        or type(snapshot.provider_generation) is not int
-        or snapshot.provider_generation < 0
-        or any(
-            not isinstance(value, (int, float))
-            or isinstance(value, bool)
-            or not isfinite(value)
-            for value in (generated_at, last_observed, max_age)
-        )
-        or max_age is None
-        or max_age <= 0
-        or last_observed < 0
-        or generated_at < last_observed
-    ):
-        return _unknown_tx_frequency_refusal("contradiction", None)
-    if field.provider_generation != snapshot.provider_generation:
-        return _unknown_tx_frequency_refusal("stale", None)
-    assert isinstance(max_age, (int, float)) and not isinstance(max_age, bool)
-    if generated_at - last_observed >= max_age:
-        return _unknown_tx_frequency_refusal("stale", None)
-    return tx_frequency_unknown_refusal(field.value)
 
 
 # ---------------------------------------------------------------------------
