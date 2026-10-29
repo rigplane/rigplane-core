@@ -151,6 +151,14 @@ class AcquisitionPriority(StrEnum):
     USER = "user"
 
 
+#: Priorities of requests the scheduler raises itself (cadence and priming
+#: reads, reconciliation hints), the only ones the conditional-availability
+#: gate withholds at dispatch (MOR-3630).
+_AUTOMATIC_PRIORITIES = frozenset(
+    {AcquisitionPriority.BACKGROUND, AcquisitionPriority.RECONCILIATION}
+)
+
+
 class AcquisitionStatus(StrEnum):
     """Result of an ensure-fresh request."""
 
@@ -489,6 +497,7 @@ class AcquisitionScheduler:
     """Minimal priority/dedupe queue for backend-neutral acquisition reads."""
 
     __slots__ = (
+        "_availability",
         "_budget_fit",
         "_clock",
         "_cadence_by_key",
@@ -575,6 +584,13 @@ class AcquisitionScheduler:
         # calls either update method keeps its pre-existing, unfiltered
         # reconciliation behavior.
         self._tx_active = True
+        # MOR-3630: the conditional-availability resolution last reported to
+        # ``due_requests`` or ``note_availability``. ``dispatchable_requests``
+        # reads it to withhold automatic requests whose every path the
+        # current state contradicts -- see that method's docstring. Defaults
+        # to nothing resolved (no gating), like ``_tx_active`` defaulting to
+        # True.
+        self._availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY
         # MOR-2599: the demotation map from the last ``due_requests``
         # computation (key -> (cadence, TTL)); empty otherwise — the demoted
         # cadence clock and queue TTL read it.
@@ -1042,14 +1058,28 @@ class AcquisitionScheduler:
 
         MOR-2586: execution order is priority, then the highest-ranked
         acquisition class among the request's paths, then deadline.
+
+        MOR-3630: an automatic request (``BACKGROUND`` cadence and priming,
+        ``RECONCILIATION`` hints) whose every path the last reported
+        availability resolution contradicts is withheld the same way: a
+        read queued while the radio's mode allowed it and drained after the
+        mode changed (the IC-705 PBT read once MAIN reads FM) is not sent
+        into a NAK. It stays pending -- withheld, not deleted -- so it goes
+        out the first drain that observes the clause set holding again.
+        Requests a caller asked for by name (``NORMAL``/``COMMAND``/
+        ``USER``) are never gated here. Requests re-queued by
+        :meth:`resume_external_cat` pass through the same gate.
         """
 
         eligible = (
             request
             for request in self._requests_by_key.values()
-            if self._tx_active
-            or request.priority is not AcquisitionPriority.RECONCILIATION
-            or not request.policy.tx_only
+            if (
+                self._tx_active
+                or request.priority is not AcquisitionPriority.RECONCILIATION
+                or not request.policy.tx_only
+            )
+            and not self._contradicted_automatic_request(request)
         )
         return tuple(
             sorted(
@@ -1078,6 +1108,26 @@ class AcquisitionScheduler:
         """
 
         self._tx_active = tx_active
+
+    def note_availability(self, snapshot: StateSnapshot) -> None:
+        """Update the cached conditional availability from ``snapshot``.
+
+        The dispatching seats' drains call this every pass, with the same
+        canonical store snapshot the freshness tick resolves against, so
+        :meth:`dispatchable_requests` gates on the state as of the drain
+        rather than as of the last tick -- the availability twin of
+        :meth:`note_tx_active`. :meth:`due_requests` records what its
+        caller resolved the same way; the later writer wins.
+        """
+
+        self._availability = resolve_available_when(self._profile, snapshot)
+
+    def _contradicted_automatic_request(self, request: AcquisitionRequest) -> bool:
+        """Whether ``request`` is automatic and every path is contradicted."""
+
+        return request.priority in _AUTOMATIC_PRIORITIES and all(
+            self._availability.get(path, True) is False for path in request.paths
+        )
 
     def due_requests(
         self,
@@ -1131,6 +1181,8 @@ class AcquisitionScheduler:
         # second writer with a different value wins -- see
         # note_tx_active()'s docstring.
         self._tx_active = tx_active
+        # MOR-3630: and the availability, for the same reason.
+        self._availability = availability
         # MOR-2599: the demotion map for THIS computation (and the
         # ``record_acquisition_result`` that answers its requests): demote
         # the CADENCE of the non-selected receiver's class-derived groups

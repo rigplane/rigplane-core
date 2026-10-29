@@ -17,8 +17,10 @@ from rigplane.commands.scope import (
 from rigplane.core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionQueryResolver,
+    resolve_available_when,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import StateSnapshot
 from rigplane.profiles import RadioProfile
 
 _RECEIVER_IDS = {"0": 0, "main": 0, "1": 1, "sub": 1}
@@ -263,13 +265,25 @@ def acquisition_query_resolver_for_profile(
     return resolve
 
 
-def build_state_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
+def build_state_queries(
+    profile: RadioProfile,
+    *,
+    snapshot: StateSnapshot | None = None,
+) -> list[AcquisitionQuery]:
     """Build the profile-declared list of CI-V state queries.
 
     Parameters
     ----------
     profile:
         Radio profile (model, cmd29 support, receiver count).
+    snapshot:
+        The caller's current state (MOR-3630). A path whose declared
+        ``available_when`` clauses the snapshot contradicts (e.g. the
+        IC-705 PBT read while MAIN reads FM) contributes no query, the
+        same eligibility the scheduler applies to polling, priming and
+        dispatch; a clause source the snapshot has not observed keeps the
+        path (unknown counts as available). Without a snapshot every
+        pollable path contributes.
 
     Returns
     -------
@@ -281,9 +295,14 @@ def build_state_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
         return []
 
     resolve = acquisition_query_resolver_for_profile(profile)
+    availability = (
+        {} if snapshot is None else resolve_available_when(acquisition, snapshot)
+    )
     queries: list[AcquisitionQuery] = []
     seen: set[AcquisitionQuery] = set()
     for path in acquisition.pollable_paths():
+        if availability.get(path) is False:
+            continue
         query = resolve(path)
         if query is None:
             continue

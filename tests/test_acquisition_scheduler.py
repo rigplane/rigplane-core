@@ -4760,6 +4760,130 @@ def test_ic705_prime_skips_fm_contradicted_reads_then_reacquires_in_usb() -> Non
     assert store.snapshot().field(_IC705_FM_SHAPE).value == 1
 
 
+def _dispatchable_paths(scheduler: AcquisitionScheduler) -> set[FieldPath]:
+    return {
+        path for request in scheduler.dispatchable_requests() for path in request.paths
+    }
+
+
+def _pending_paths(scheduler: AcquisitionScheduler) -> set[FieldPath]:
+    return {path for request in scheduler.pending_requests() for path in request.paths}
+
+
+def _ic705_queued_in_usb() -> tuple[AcquisitionScheduler, StateSnapshot, StateSnapshot]:
+    """An IC-705 scheduler with the FM-contradicted reads queued while MAIN is USB."""
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(
+        profile=acquisition, clock=FreshnessClock(start=100.0)
+    )
+    usb = _snapshot_of({_IC705_FM_MODE: "USB"})
+    fm = _snapshot_of({_IC705_FM_MODE: "FM"})
+    scheduler.due_requests(availability=resolve_available_when(acquisition, usb))
+    scheduler.prime_unobserved((), limit=1000)
+    return scheduler, usb, fm
+
+
+def test_dispatch_withholds_reads_queued_before_the_mode_flipped_to_fm() -> None:
+    """MOR-3630 round 3 finding 1: eligibility is enforced at DISPATCH too.
+
+    The reads are queued while MAIN is USB (the cadence poll of the PBT and
+    notch width, the on-demand prime of the filter shape). The mode then
+    reads FM before the drain gets to them. Priming and demand already skip
+    a contradicted path; a request queued earlier must not reach the wire
+    either, or the radio NAKs it and the NAK enters timeout accounting. The
+    request stays pending, and goes out again once the mode is USB.
+    """
+
+    scheduler, usb, fm = _ic705_queued_in_usb()
+    contradicted = {*_IC705_FM_POLLED, _IC705_FM_SHAPE}
+    scheduler.note_availability(usb)
+    assert contradicted <= _dispatchable_paths(scheduler)
+
+    scheduler.note_availability(fm)
+    assert _dispatchable_paths(scheduler).isdisjoint(contradicted)
+    assert contradicted <= _pending_paths(scheduler)
+    executor, sent = recording_executor(get_radio_profile("IC-705"))
+    for request in scheduler.dispatchable_requests():
+        asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+    assert not set(sent) & {*_IC705_FM_QUERIES, _IC705_FM_SHAPE_QUERY}
+
+    scheduler.note_availability(usb)
+    assert contradicted <= _dispatchable_paths(scheduler)
+
+
+def test_resumed_external_cat_requests_honour_the_current_mode() -> None:
+    """MOR-3630 round 3 finding 1: deferred requests re-queue into the same gate."""
+
+    scheduler, usb, fm = _ic705_queued_in_usb()
+    contradicted = {*_IC705_FM_POLLED, _IC705_FM_SHAPE}
+    scheduler.pause_external_cat(owner="wsjtx", reason="test")
+    scheduler.note_availability(fm)
+    scheduler.resume_external_cat()
+    assert _dispatchable_paths(scheduler).isdisjoint(contradicted)
+
+    scheduler.note_availability(usb)
+    assert contradicted <= _dispatchable_paths(scheduler)
+
+
+def test_dispatch_gate_does_not_withhold_explicit_reads() -> None:
+    """A caller-owned read is never withheld by the gate.
+
+    Same rule as the ``tx_only`` gate: only automatic traffic (background
+    cadence and priming, reconciliation hints) is gated; a request a caller
+    asked for by name goes out and settles with the radio's own answer.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    scheduler.note_availability(_snapshot_of({_IC705_FM_MODE: "FM"}))
+
+    result = scheduler.ensure_fresh(
+        (_IC705_FM_SHAPE,),
+        max_age=1.0,
+        priority=AcquisitionPriority.USER,
+        reason="user-read",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert _IC705_FM_SHAPE in _dispatchable_paths(scheduler)
+
+
+def test_dispatch_gate_applies_to_another_conditional_profile() -> None:
+    """IC-7610: MAIN's shape read queued in USB is withheld once MAIN reads RTTY."""
+
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(
+        profile=acquisition, clock=FreshnessClock(start=100.0)
+    )
+    both_usb = _snapshot_of(
+        {
+            FieldPath.active("main", "freq_mode", "mode"): "USB",
+            FieldPath.active("sub", "freq_mode", "mode"): "USB",
+        }
+    )
+    main_rtty = _snapshot_of(
+        {
+            FieldPath.active("main", "freq_mode", "mode"): "RTTY",
+            FieldPath.active("sub", "freq_mode", "mode"): "USB",
+        }
+    )
+    scheduler.due_requests(availability=resolve_available_when(acquisition, both_usb))
+    scheduler.note_availability(both_usb)
+    assert {_IC7610_MAIN_SHAPE, _IC7610_SUB_SHAPE} <= _dispatchable_paths(scheduler)
+
+    scheduler.note_availability(main_rtty)
+    dispatchable = _dispatchable_paths(scheduler)
+    assert _IC7610_MAIN_SHAPE not in dispatchable
+    assert _IC7610_SUB_SHAPE in dispatchable
+
+    scheduler.note_availability(both_usb)
+    assert _IC7610_MAIN_SHAPE in _dispatchable_paths(scheduler)
+
+
 def test_tick_discards_the_attenuator_above_the_declared_band_bound() -> None:
     store = StateStore()
     service = _ftx1_freshness_service(store)

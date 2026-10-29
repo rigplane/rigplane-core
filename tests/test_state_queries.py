@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import replace
 import logging
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
@@ -21,7 +22,12 @@ from rigplane.commands.scope import (
 )
 from rigplane.core.acquisition_scheduler import IcomCivAcquisitionExecutor
 from rigplane.core.civ import request_key_from_frame
-from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.core.state_store import StateStore
 from rigplane.exceptions import CommandError
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
@@ -280,6 +286,7 @@ async def _send_through_initial(
     radio._INITIAL_STATE_GAP_SERIAL = 0.0
     radio._INITIAL_STATE_GAP_LAN = 0.0
     radio._initial_state_fetched = False
+    radio._state_store = StateStore()
     radio.radio_state = SimpleNamespace(
         scope_controls=SimpleNamespace(receiver=scope_receiver),
     )
@@ -290,6 +297,56 @@ async def _send_through_initial(
     assert radio.options == [(False, None, True)]
     assert radio._initial_state_fetched is True
     return radio.sent[0]
+
+
+# The IC-705 has no cmd29 (single receiver), so the sweep sends the bare
+# read of each FM-NAKed control (tests/fixtures/ic705/README.md).
+_IC705_FM_NAKED_READS = {
+    wire_parts_for_query(acquisition_query(0x14, sub=0x07), 0),
+    wire_parts_for_query(acquisition_query(0x14, sub=0x08), 0),
+    wire_parts_for_query(acquisition_query(0x16, sub=0x57), 0),
+}
+
+
+async def _ic705_initial_fetch_wire(main_mode: str | None) -> set[_FrameParts]:
+    """The frames an IC-705 initial fetch sends while the store holds ``main_mode``."""
+    profile = resolve_radio_profile(model="IC-705")
+    radio = _RecordingCivRadio()
+    radio._profile = profile
+    radio.capabilities = set()
+    radio._INITIAL_STATE_GAP_SERIAL = 0.0
+    radio._INITIAL_STATE_GAP_LAN = 0.0
+    radio._initial_state_fetched = False
+    radio.radio_state = SimpleNamespace(scope_controls=SimpleNamespace(receiver=0))
+    store = StateStore()
+    if main_mode is not None:
+        store.apply(
+            Observation(
+                path=FieldPath.active("main", "freq_mode", "mode"),
+                value=main_mode,
+                source=SourceMetadata(source="test", provider="test"),
+                timestamp_monotonic=time.monotonic(),
+            )
+        )
+    radio._state_store = store
+    await fetch_initial_state(radio)  # type: ignore[arg-type]
+    assert radio._initial_state_fetched is True
+    return set(radio.sent)
+
+
+async def test_initial_fetch_skips_reads_the_current_mode_contradicts() -> None:
+    """MOR-3630 round 3 finding 1: the initial sweep honours ``available_when``.
+
+    The sweep also runs after an external CAT owner hands the radio back,
+    when the store still holds the mode the radio was left in. With MAIN in
+    FM the PBT and notch-width reads would be NAKed, so they are not sent;
+    with MAIN in USB (and with the mode not yet observed) they are.
+    """
+
+    contradicted = _IC705_FM_NAKED_READS
+    assert contradicted.isdisjoint(await _ic705_initial_fetch_wire("FM"))
+    assert contradicted <= await _ic705_initial_fetch_wire("USB")
+    assert contradicted <= await _ic705_initial_fetch_wire(None)
 
 
 async def _send_through_web(
@@ -947,6 +1004,7 @@ class TestFetchInitialState:
             profile = resolve_radio_profile(model="IC-7610")
             r._profile = profile
             r._initial_state_fetched = False
+            r._state_store = StateStore()
             r._radio_state = SimpleNamespace(
                 scope_controls=SimpleNamespace(receiver=0),
             )

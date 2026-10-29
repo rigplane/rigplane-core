@@ -45,7 +45,13 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             if is_serial
             else radio._INITIAL_STATE_GAP_LAN
         )
-        queries = build_state_queries(radio._profile)
+        # MOR-3630: the sweep also runs after an external CAT owner hands the
+        # radio back, when the store still holds the mode the radio was left
+        # in; a read the declared ``available_when`` contradicts there is
+        # not sent (the radio would NAK it).
+        queries = build_state_queries(
+            radio._profile, snapshot=radio._state_store.snapshot()
+        )
         if not queries:
             radio._initial_state_fetched = True
             return
