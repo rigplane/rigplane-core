@@ -31,6 +31,7 @@ from rigplane.backends.config import (
     SerialBackendConfig,
     YaesuCatBackendConfig,
 )
+from rigplane.backends.ic7300.serial import Ic7300SerialRadio
 from rigplane.cli import _build_backend_config, _build_parser
 from rigplane.cli._models import match_rig
 from rigplane.discovery import RadioDiscoveryResult
@@ -756,7 +757,7 @@ def test_discover_line_replays_through_main_into_status(
     assert tokens[0] == "rigplane"
 
     seen: dict[str, object] = {}
-    radio = AsyncMock()
+    radio = AsyncMock(spec=Ic7300SerialRadio)
     radio.__aenter__.return_value = radio
     radio.__aexit__.return_value = False
     radio.capabilities = set()

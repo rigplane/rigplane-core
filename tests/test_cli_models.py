@@ -247,9 +247,7 @@ def test_connect_command_baud_and_addr_order() -> None:
 
 def test_connect_command_lan_pins_backend() -> None:
     line = _models.connect_command("IC-7610", host="192.168.1.50", backend="lan")
-    assert line == (
-        "rigplane --model IC-7610 --backend lan --host 192.168.1.50 status"
-    )
+    assert line == ("rigplane --model IC-7610 --backend lan --host 192.168.1.50 status")
     defaulted = _models.connect_command("IC-7610", host="192.168.1.50")
     assert defaulted == line
 

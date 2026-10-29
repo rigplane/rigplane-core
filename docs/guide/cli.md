@@ -42,7 +42,10 @@ All commands accept these options:
     Without `--model` (and without a matching `--radio-addr`), commands
     that connect to a radio stop with `Specify the radio model with
     --model. Supported: ...`, listing the supported models — rigplane
-    never picks a model for you.
+    never picks a model for you. `--backend rigctld` and
+    `--backend yaesu-cat` are exempt from the requirement and work
+    without `--model`; on the other backends, a `--radio-addr` that
+    matches a profile also identifies the radio.
 
     For permanent setups, set environment variables in your shell profile:
 
@@ -205,16 +208,18 @@ for that radio:
 ```text
 IC-7300:
   • Serial: /dev/ttyUSB0 (115200 baud)
-    rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status
+    rigplane --model IC-7300 --serial-port /dev/ttyUSB0 --serial-baud 115200 --radio-addr 0x94 status
 192.168.1.60:
   • LAN: 192.168.1.60
-    rigplane --model <MODEL> --host 192.168.1.60 status
+    rigplane --model <MODEL> --backend lan --host 192.168.1.60 status
 Not sure of the model? Run `rigplane models` for the exact --model values.
 ```
 
 LAN discovery finds the IP address but cannot tell the model, so those
 commands use a `<MODEL>` placeholder — replace it with the exact
-`--model` value from `rigplane models`. (`--json` output is unchanged.)
+`--model` value from `rigplane models`. The printed commands repeat the
+detected baud, CI-V address and the LAN backend, so they work regardless
+of environment variables. (`--json` output is unchanged.)
 
 ## Commands
 

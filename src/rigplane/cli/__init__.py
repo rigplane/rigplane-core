@@ -5132,19 +5132,17 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
             used_placeholder = True
         for lan in radio["lan"]:
             print(f"  \u2022 LAN: {lan['host']}")
-            print(f"    {_connect_command(model_arg, host=lan['host'])}")
+            print(f"    {_connect_command(model_arg, host=lan['host'], backend='lan')}")
         for serial in radio["serial"]:
             baud = serial.get("baudrate") or serial.get("baud", "?")
             print(f"  \u2022 Serial: {serial['port']} ({baud} baud)")
-            serial_baud = None
-            radio_addr = None
-            if rig is not None:
-                detected_baud = serial.get("baudrate") or serial.get("baud")
-                if isinstance(detected_baud, int) and detected_baud != rig.default_baud:
-                    serial_baud = detected_baud
-                detected_addr = serial.get("address")
-                if isinstance(detected_addr, int) and detected_addr != rig.civ_addr:
-                    radio_addr = detected_addr
+            # Repeat the observed connection settings on every printed
+            # command — independent of profile matching and of defaults
+            # and environment variables — so the line replays as-is.
+            detected_baud = serial.get("baudrate") or serial.get("baud")
+            serial_baud = detected_baud if isinstance(detected_baud, int) else None
+            detected_addr = serial.get("address")
+            radio_addr = detected_addr if isinstance(detected_addr, int) else None
             command = _connect_command(
                 model_arg,
                 serial_port=serial["port"],
