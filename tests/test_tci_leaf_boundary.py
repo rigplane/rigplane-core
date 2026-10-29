@@ -25,8 +25,43 @@ EXPECTED_MODULES = frozenset(
 )
 
 
-def _forbidden_imports(source: str) -> list[str]:
-    """Return the disallowed top-level imports found in *source*."""
+def _resolve_relative(level: int, module: str | None, package: str) -> str | None:
+    """Resolve a relative import to an absolute dotted name.
+
+    *package* is the containing package (``rigplane.tci`` for every file
+    scanned here). Returns ``None`` when the level escapes the top.
+    """
+    parts = package.split(".")
+    if level > len(parts):
+        return None
+    base = parts[: len(parts) - level + 1]
+    if module:
+        base.extend(module.split("."))
+    return ".".join(base)
+
+
+def _bad_absolute(dotted: str) -> str | None:
+    """Return *dotted* when it escapes stdlib and ``rigplane.tci``."""
+    top = dotted.split(".")[0]
+    if top == "__future__":
+        return None
+    if top in sys.stdlib_module_names:
+        return None
+    if top == "rigplane":
+        rest = dotted.split(".")
+        if len(rest) >= 2 and rest[1] == "tci":
+            return None
+    return dotted
+
+
+def _forbidden_imports(source: str, package: str = "rigplane.tci") -> list[str]:
+    """Return the disallowed top-level imports found in *source*.
+
+    Relative imports resolve against *package* (the containing package,
+    ``rigplane.tci`` for every scanned file) and face the same check:
+    ``from .protocol import ...`` stays inside, ``from .. import ...``
+    escapes.
+    """
     tree = ast.parse(source)
     bad: list[str] = []
     for node in ast.walk(tree):
@@ -41,19 +76,19 @@ def _forbidden_imports(source: str) -> list[str]:
                         bad.append(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level and node.level > 0:
-                continue  # relative import inside the package
+                absolute = _resolve_relative(node.level, node.module, package)
+                if absolute is None:
+                    bad.append("." * node.level + (node.module or ""))
+                else:
+                    hit = _bad_absolute(absolute)
+                    if hit is not None:
+                        bad.append(hit)
+                continue
             if node.module is None:
                 continue
-            top = node.module.split(".")[0]
-            if top == "__future__":
-                continue
-            if top in sys.stdlib_module_names:
-                continue
-            if top == "rigplane":
-                rest = node.module.split(".")
-                if len(rest) >= 2 and rest[1] == "tci":
-                    continue
-            bad.append(node.module)
+            hit = _bad_absolute(node.module)
+            if hit is not None:
+                bad.append(hit)
     return bad
 
 

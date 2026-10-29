@@ -63,6 +63,7 @@ forbidden_modules =
     rigplane.rigctld
     rigplane.tci_adapter
     rigplane.cli
+    rigplane.diagnostics
     rigplane.validation
 
 [importlinter:contract:validation-leaf]
