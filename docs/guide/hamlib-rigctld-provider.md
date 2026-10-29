@@ -12,7 +12,7 @@ connection for the Web UI, CLI, API, diagnostics, and the client-facing
 
 This is different from RigPlane's native providers. Native providers speak the
 radio protocol directly, such as Icom CI-V over LAN or USB serial, and can expose
-radio-specific features when RigPlane has a tested profile for that model. The
+radio-specific features when RigPlane has a native profile for that model. The
 Hamlib-backed provider is the long-tail compatibility path for radios where
 Hamlib already has the CAT dialect.
 

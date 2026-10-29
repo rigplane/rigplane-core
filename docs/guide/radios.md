@@ -10,14 +10,14 @@ serial CAT radios can use the [Hamlib / external rigctld provider](hamlib-rigctl
 which emits structured discovery candidates and maps Hamlib control into
 RigPlane capabilities through an external `rigctld` process.
 
-## Tested
+## Native Radios
 
 ### IC-7610
 
 - **CI-V Address:** `0x98`
 - **LAN Ports:** 50001 (control), 50002 (CI-V), 50003 (audio)
 - **USB:** Serial CI-V + USB audio devices ([setup guide](ic7610-usb-setup.md))
-- **Features verified:** frequency, mode, power, S-meter, SWR, ALC, PTT, CW keying, VFO select, split, attenuator, preamp, power on/off, discovery (LAN only), scope/waterfall
+- **Features:** frequency, mode, power, S-meter, SWR, ALC, PTT, CW keying, VFO select, split, attenuator, preamp, power on/off, discovery (LAN only), scope/waterfall
 - **Dual receiver:** use `select_receiver("MAIN")` / `select_receiver("SUB")`
 
 #### Backend Comparison
@@ -45,7 +45,7 @@ RigPlane capabilities through an external `rigctld` process.
 - **Connectivity:** USB serial (CI-V) — no built-in LAN
 - **VFO scheme:** VFO A/B (not Main/Sub)
 - **Rig profile:** `rigs/ic7300.toml`
-- **Features verified:** frequency, mode, power, S-meter, SWR, ALC, PTT, CW keying,
+- **Features:** frequency, mode, power, S-meter, SWR, ALC, PTT, CW keying,
   VFO A/B select, attenuator, preamp, NB, NR, scope/waterfall, audio RX/TX
 - **Not available:** DIGI-SEL, LAN, dual receiver
 
@@ -91,8 +91,7 @@ visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 
 ## Long-tail CAT / Profile Candidates
 
-These radios have profiles or known CAT surfaces, but they are not yet
-first-party hardware-validated. The intended direction is assisted discovery and
+These radios have profiles or known CAT surfaces. The intended direction is assisted discovery and
 Hamlib-backed control through an external `rigctld` process where that gives
 broader coverage than maintaining a bespoke backend for each dialect.
 
@@ -119,8 +118,7 @@ broader coverage than maintaining a bespoke backend for each dialect.
   RF power level control is advertised.
 - **Status:** A native profile is present. Discovery includes
   X6200-vs-IC-705 disambiguation because both radios can report CI-V address
-  `0xA4`. First-party maintainer hardware validation is still pending; hardware
-  reports are welcome.
+  `0xA4`. Hardware reports are welcome.
 
 ### Lab599 TX-500
 
@@ -130,10 +128,9 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **VFO scheme:** `ab`
 - **Status:** Profile only. Hamlib-backed provider plus assisted discovery is the preferred first path, not a bespoke Kenwood CAT backend.
 
-## Community-Validated / Maintainer Hardware Pending
+## More Native Radios
 
-These radios have working field reports and validated user integrations, but the
-maintainer has not yet completed first-party hardware validation in this repo.
+These radios are also supported by native backends.
 
 ### IC-705
 
@@ -141,10 +138,9 @@ maintainer has not yet completed first-party hardware validation in this repo.
 - **Connectivity:** LAN (WiFi) + USB serial (CI-V)
 - **VFO scheme:** Single receiver (portable transceiver)
 - **Rig profile:** `rigs/ic705.toml`
-- **Validated features (2.x):** LAN connect/disconnect, reconnect, frequency,
-  mode, PTT, and audio path integrations on the WiFi backend
-- **Status:** Community-validated on LAN/WiFi with 2.x; not yet validated on
-  3.0. First-party maintainer hardware validation is still pending.
+- **Features:** LAN connect/disconnect, reconnect, frequency, mode, PTT, and
+  audio on the WiFi backend
+- **Status:** Supported over LAN/WiFi and USB.
 - **Connecting over WiFi:** pass `--model IC-705`. LAN discovery finds the
   radio's IP address but not its model.
 
@@ -157,14 +153,13 @@ maintainer has not yet completed first-party hardware validation in this repo.
 - **Connectivity:** LAN (Ethernet) + USB serial (CI-V)
 - **VFO scheme:** Dual independent receivers (MAIN/SUB)
 - **Rig profile:** `rigs/ic9700.toml`
-- **Expected features:** frequency, mode, power, S-meter, scope/waterfall, audio RX/TX,
-  independent MAIN/SUB control, dual audio streaming
-- **Status:** Community-validated. A community IC-9700 user reported a field
-  issue — the FM/AM waterfall passband rendered asymmetric
-  ([#1719](https://github.com/rigplane/rigplane-core/issues/1719)) — which was
-  fixed in [#1792](https://github.com/rigplane/rigplane-core/pull/1792).
-  First-party maintainer hardware validation is still pending; broader backend
-  coverage still relies on community reports.
+- **Features:** frequency, mode, power, S-meter, scope/waterfall, audio RX/TX,
+  independent MAIN/SUB control. RX audio is one mono stream; separate MAIN/SUB
+  audio is not supported yet.
+- **Status:** Supported over LAN and USB. An FM/AM waterfall passband that
+  rendered asymmetric
+  ([#1719](https://github.com/rigplane/rigplane-core/issues/1719)) was fixed in
+  [#1792](https://github.com/rigplane/rigplane-core/pull/1792).
 
 !!! tip "Setup Guide"
     **[IC-9700 USB Serial & LAN Setup](ic9700-usb-setup.md)** — Setup guide covering

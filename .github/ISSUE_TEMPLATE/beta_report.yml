@@ -1,11 +1,11 @@
-name: 3.0 beta report
-description: Report your results testing the RigPlane 3.0 public beta
-title: "[Beta] "
+name: 3.0 radio report
+description: Tell us how RigPlane 3.0 works with your radio
+title: "[Report] "
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for testing the 3.0 beta.
+        Thanks for trying RigPlane 3.0 and telling us how it went.
 
   - type: input
     id: radio-model
@@ -45,7 +45,7 @@ body:
     id: install-command
     attributes:
       label: Install command used
-      description: "The exact command you ran to install RigPlane, for example pip install --pre rigplane."
+      description: "The exact command you ran to install RigPlane, for example pip install rigplane."
     validations:
       required: true
 
@@ -84,6 +84,6 @@ body:
     id: what-stopped-you
     attributes:
       label: What stopped you?
-      description: If you could not finish testing, tell me what got in the way.
+      description: If you could not finish setting up or testing, tell us what got in the way.
     validations:
       required: false

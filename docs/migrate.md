@@ -1,26 +1,23 @@
 ---
-description: "Migrate RigPlane 2.11.1 consumers to Core 3.0 beta, with historical icom-lan to RigPlane rename guidance."
+description: "Migrate RigPlane 2.11.1 consumers to Core 3.0, with historical icom-lan to RigPlane rename guidance."
 ---
 
-# Migrating to RigPlane Core 3.0 beta
+# Migrating to RigPlane Core 3.0
 
 This is a major-version migration with
 selected compatibility aliases, not a promise that every 2.x consumer works
-unchanged. Core includes the browser SDR interface; Pro packaging and its
-release are a later, separate scope.
+unchanged. Core includes the browser SDR interface; RigPlane Pro is a
+separate product that builds on Core and is released on its own schedule.
 
-Installed-package, browser and hardware acceptance apply to the final release
-candidate separately. The focused consumer examples below do not certify a
-release or blanket compatibility with every 2.x consumer.
+The focused consumer examples below show the migration for each audited
+surface. They do not promise that every 2.x consumer stays compatible.
 
 ## Compatibility decisions from 2.11.1
 
-The row IDs below follow the frozen
-[MOR-2336 compatibility matrix](https://linear.app/morozsm/issue/MOR-2336).
+The row IDs below follow the frozen compatibility matrix.
 Its source baseline is tag `v2.11.1` at
 `997cca0e385e78cd47f630d398488d34df29cb17`; its static comparison snapshot is
-`0126ca218526ef9b3e1a29e821596a1009d06b2d`. A preservation decision requires a
-candidate witness before it becomes a tested compatibility claim.
+`0126ca218526ef9b3e1a29e821596a1009d06b2d`. A preservation decision names a surface that stays supported.
 
 | Row | 2.11.1 consumer surface | 3.0 migration decision |
 |---|---|---|
@@ -30,7 +27,7 @@ candidate witness before it becomes a tested compatibility claim.
 | PY4 | `RadioState(tx_freq_monitor=False)` and `.tx_freq_monitor` | Intentionally removed; remove this dependency. `txTarget` is not an alias. |
 | PY5 | `set_tone_freq(freq_hz=8850)` / `set_tsql_freq(freq_hz=8850)` | Integer centiHz remains the public contract; Icom accepts the public keyword and the `freq_centihz` alternative. |
 | PY6 | `rigplane.radio`, `rigplane.radio_protocol`, `rigplane.sync` | Retain existing module aliases and sync signatures; this does not retain the old TX lifecycle. |
-| PY7 | Backend config/factory and session construction | Preserve audited public construction surfaces; installed-candidate witness remains required. |
+| PY7 | Backend config/factory and session construction | Preserve audited public construction surfaces; preserve the audited surfaces. |
 | WEB1 | Root JSON `txFreqMonitor` | Removed; absence is not a measured `false`. |
 | WEB2 | Root JSON `notchFilter` | Select `main.notchFilter` or `sub.notchFilter` explicitly. |
 | WEB3 | HTTP `ptt` ON/OFF command payloads | Migrate to canonical owned momentary PTT or intentional latched TRANSMIT, described below. |
@@ -39,11 +36,11 @@ candidate witness before it becomes a tested compatibility claim.
 | EXT2 | Permissive extension command/parameter dispatch | Use strict non-TX intents with required parameters and receiver. |
 | EXT3 | Host numeric `1`, manifest `host_api: "1.0"` or omission | Host `2`, explicit `host_api: "2.0"`; reject old or omitted declarations. Manifest schema remains `version: 1`. |
 | CLI1 | `ptt on && sleep 10 && ptt off` | Use `rigplane --model <MODEL> ptt --for 10`; the command owns the hold and release. |
-| CLI2 | Other CLI inventory, entrypoints, Python/dependencies/extras | Preserve audited inventory except the retired application-token options below; package metadata changes to the beta version. |
+| CLI2 | Other CLI inventory, entrypoints, Python/dependencies/extras | Preserve audited inventory except the retired application-token options below; package metadata changes to the 3.0 version. |
 | CFG1 | Tone-capable custom profile without a table | Declare a supported named `[ctcss]` table. |
 | WIRE1 | Empty successful response after raw timeout | Handle `RPRT -5` as an error. |
 | WIRE2 | Raw `w` in read-only mode | Handle `RPRT -22`, including for raw reads; use structured reads. |
-| WIRE3 | General rigctld framing and structured operations | Preserve audited wire shape; representative fake-provider witnesses remain required. |
+| WIRE3 | General rigctld framing and structured operations | Preserve audited wire shape; preserve the audited wire shape. |
 | OUT1 | Private internals, arbitrary external profiles, blanket 2.x emulation | No compatibility promise; Pro release and external-consumer census are outside this scope. |
 
 ## The radio model is required
@@ -297,7 +294,7 @@ and `src/rigplane/rigctld/server.py: RigctldServer`.
 The 2.11.1 SDR behavior is the required migration baseline: retain available
 spectrum/waterfall controls, tuning, VFO/mode/filter, radio controls, RX audio,
 meters, reachable managed PTT/ForceOff, screen navigation and persistence.
-This is an acceptance requirement, not a claim that the beta has passed it.
+This is an acceptance requirement, not a claim that every 2.11.1 workflow was re-tested.
 Use each radio's actual capabilities; an unavailable stream is not a blank
 successful spectrum. Core packaging/install/rollback and browser/hardware
 acceptance remain separate evidence from these compatibility examples.

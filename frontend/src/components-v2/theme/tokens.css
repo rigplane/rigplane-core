@@ -286,9 +286,9 @@
   --v2-vfo-sub-freq-selected-bg: rgba(255, 255, 255, 0.92);
   --v2-vfo-sub-freq-selected-text: var(--v2-bg-darkest);
 
-  /* VFO Frequency Glow Effects (lamp/LED/tube style) */
-  --v2-vfo-main-freq-glow: 0 0 12px rgba(124, 252, 229, 0.5);
-  --v2-vfo-sub-freq-glow: 0 0 12px rgba(255, 255, 255, 0.42);
+  /* Subtle default frequency glow; themed lamp/LED/tube glows override these tokens. */
+  --v2-vfo-main-freq-glow: 0 0 3px rgba(124, 252, 229, 0.3);
+  --v2-vfo-sub-freq-glow: 0 0 3px rgba(255, 255, 255, 0.25);
   --v2-vfo-freq-glow-intensity: 1.0;  /* 0.0-2.0, multiplier for glow strength */
   
   /* VFO Font Customization (7-segment, digital, retro) */

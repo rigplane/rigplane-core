@@ -228,7 +228,7 @@ async def test_audio_probe_without_resolvable_profile_refuses_before_probing(
     capsys,
     extra_args,
 ) -> None:
-    """`--host` alone identifies no radio, so the probe refuses like `status`.
+    """`--host` alone names no model, so the probe refuses like `status`.
 
     A dry run refuses too: it checks the plan the real run would execute.
     """
@@ -252,7 +252,7 @@ async def test_audio_probe_without_resolvable_profile_refuses_before_probing(
 
     assert rc == 1
     captured = capsys.readouterr()
-    assert captured.err.startswith("Error: Cannot resolve a radio profile")
+    assert captured.err.startswith("Error: Specify the radio model with --model.")
     assert captured.out == ""
     assert not output.exists()
 

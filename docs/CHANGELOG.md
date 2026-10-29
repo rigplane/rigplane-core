@@ -36,6 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flags stay. Not hardware-verified (tier B-): no IC-9700 has been on the
   bench, and the older MOR-2015 0x16-family sub-list cited in the profile
   does not name `5D` — reconciled in the MOR-3623 PR body.
+- Added `rigplane models`: list supported radio profiles with the exact `--model` value for each, as a plain table or `rigplane models --json`.
+- `rigplane discover` prints a ready-to-copy `rigplane --model ... status` command after each radio connection line (a `<MODEL>` placeholder with a pointer to `rigplane models` when LAN discovery cannot tell the model).
+
+### Changed
+
+- Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
+- **Core 3.0 is marked stable.** The package declares
+  `Development Status :: 5 - Production/Stable`. The README, installation
+  guide, migration guide, What's New and known limitations no longer call 3.0
+  a beta or ask for `pip install --pre`; the README no
+  longer lists which radios were tested; the docs site opens on 3.0 by
+  default; and the beta report form is now the 3.0 radio report form. The
+  PyPI project page shows the new README and classifier from the next upload.
 
 ### Fixed
 

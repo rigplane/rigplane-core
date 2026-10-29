@@ -1301,7 +1301,7 @@
   }
   .receiver-instrument .is-active .vfo-freq {
     color: var(--v2-vfo-main-freq-active, #7cfce5);
-    text-shadow: 0 0 12px rgba(124,252,229,.5);
+    text-shadow: var(--v2-vfo-main-freq-glow);
   }
   .receiver-instrument .secondary-slot .vfo-freq { font-size: 18px; margin: 2px 0; }
   .receiver-instrument .vfo-select { justify-self: end; grid-column: 2; grid-row: 1 / 3; }

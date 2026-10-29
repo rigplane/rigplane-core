@@ -33,8 +33,20 @@ All commands accept these options:
 | `--list-audio-devices` | — | — | List USB audio devices and exit |
 | `--version` | — | — | Print version and exit |
 
+!!! tip "Which `--model` value is mine?"
+    Run `rigplane models` for the supported radios with the exact `--model` value for each (`rigplane models --json` for the machine-readable form). Matching is case-insensitive and the profile id works too.
+
 !!! tip "Zero-config startup"
     If you have a single radio on the network, run `rigplane --model IC-7610 web` (with your radio's model) — it auto-discovers the radio via LAN broadcast. No `--host` needed.
+
+    Without `--model` (and without a matching `--radio-addr`), commands
+    that connect to a radio stop with `Specify the radio model with
+    --model. Supported: ...`, listing the supported models — rigplane
+    never picks a model for you. `--backend rigctld` and
+    `--backend yaesu-cat` are exempt from the requirement and work
+    without `--model`; on the `lan` backend, a `--radio-addr` that
+    matches a profile also identifies the radio (the `serial` backend
+    always needs `--model`).
 
     For permanent setups, set environment variables in your shell profile:
 
@@ -190,6 +202,25 @@ rigplane --json discover --hamlib-validate --rigctld-host 127.0.0.1
 rigplane discover --timeout 5          # Longer LAN listen window
 rigplane --json discover               # Stable setup-wizard JSON
 ```
+
+After each connection line, human output prints a ready-to-copy command
+for that radio:
+
+```text
+IC-7300:
+  • Serial: /dev/ttyUSB0 (115200 baud)
+    rigplane --model IC-7300 --serial-port /dev/ttyUSB0 --serial-baud 115200 --radio-addr 0x94 status
+192.168.1.60:
+  • LAN: 192.168.1.60
+    rigplane --model <MODEL> --backend lan --host 192.168.1.60 status
+Not sure of the model? Run `rigplane models` for the exact --model values.
+```
+
+LAN discovery finds the IP address but cannot tell the model, so those
+commands use a `<MODEL>` placeholder — replace it with the exact
+`--model` value from `rigplane models`. The printed commands repeat the
+detected baud, CI-V address and the LAN backend, so they work regardless
+of environment variables. (`--json` output is unchanged.)
 
 ## Commands
 
@@ -700,6 +731,36 @@ The JSON payload also reports current platform limitations:
 | `windowsUsbAudio` | USB audio topology may require explicit/manual device selection |
 | `linuxUsbAudio` | PipeWire/PulseAudio device naming varies by distribution/session |
 
+### Listing supported models
+
+`rigplane models` lists every profile from `rigs/*.toml` with the exact
+`--model` value to pass, the transports it offers, and the backends it can
+use. Rows marked `profile only, no backend yet` are known profiles
+without a backend implementation. Matching is case-insensitive and the
+profile id works too, so `--model IC-7300` and `--model icom_ic7300` resolve
+to the same radio.
+
+```bash
+rigplane models            # plain table of supported models
+rigplane models --json     # machine-readable form for setup tools
+```
+
+The `Backends` column lists the backends the radio can use: `lan` (use `--host`, or let rigplane look for the radio on the LAN), `serial` or `yaesu-cat` (use `--serial-port`).
+
+```text
+--model     Radio            Transports     Backends                      Also accepted
+IC-705      Icom IC-705      LAN, USB CI-V  lan, serial                   icom_ic705
+IC-7300     Icom IC-7300     USB CI-V       serial                        icom_ic7300
+IC-7300MK2  Icom IC-7300MK2  LAN, USB CI-V  lan, serial                   icom_ic7300mk2
+IC-7610     Icom IC-7610     LAN, USB CI-V  lan, serial                   icom_ic7610
+IC-9700     Icom IC-9700     LAN, USB CI-V  lan, serial                   icom_ic9700
+TX-500      Lab599 TX-500    USB CAT        profile only, no backend yet  lab599_tx500
+X6100       Xiegu X6100      USB CI-V       profile only, no backend yet  xiegu_x6100
+X6200       Xiegu X6200      USB CI-V       serial                        xiegu_x6200
+FTX-1       Yaesu FTX-1      USB CAT        yaesu-cat                     yaesu_ftx1
+Matching is case-insensitive; the profile id (last column) also works.
+```
+
 ### `serve`
 
 Start a client-facing `rigctld`-compatible TCP server so that logging and
@@ -1011,7 +1072,7 @@ These flags apply to **every** command and must come before the subcommand name.
 |------|---------|---------|-------------|
 | `--version` | *(global)* | — | Print version and exit |
 | `--control-port PORT` | *(global)* | `50001` (`$ICOM_PORT`) | Radio UDP control port; `--port` is a deprecated alias |
-| `--model MODEL` | *(global)* | — | Radio model (e.g. `IC-7300`); resolves from `rigs/*.toml` |
+| `--model MODEL` | *(global)* | — | Radio model (e.g. `IC-7300`); resolves from `rigs/*.toml`. Run `rigplane models` for the exact values. |
 | `--radio-addr ADDR` | *(global)* | — | CI-V address override (hex or decimal) |
 
 ```bash

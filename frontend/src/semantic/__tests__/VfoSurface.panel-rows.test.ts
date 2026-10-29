@@ -1329,10 +1329,11 @@ describe('source pins: vertical rhythm, container queries, tokens (MOR-2509 slic
           && body.includes('--dl-vfo-'))?.[2] ?? '';
       for (const token of ['panel-background', 'panel-shadow', 'panel-sheen', 'bridge-background',
         'bridge-shadow', 'meter-well-background', 'meter-well-shadow', 'meter-lit-filter',
-        'frequency-glow', 'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow',
+        'primary-glow', 'red-glow', 'amber-glow', 'dsp-glow',
         'frequency-ink-dim', 'name-ink-dim']) {
         expect(root, `${language} owns --dl-vfo-${token}`).toContain(`--dl-vfo-${token}:`);
       }
+      if (language !== 'studioline') expect(root).toContain('--dl-vfo-frequency-glow: none;');
     }
 
     expect(rule(panelCss, '.panel')).toMatch(/background:\s*var\(--dl-vfo-panel-background/);

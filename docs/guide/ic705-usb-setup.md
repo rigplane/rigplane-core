@@ -261,12 +261,6 @@ ls -l /dev/cu.*
 - [Troubleshooting](troubleshooting.md) — Common issues and solutions
 - [Backend Capabilities](radios.md) — Full capability matrix
 
-## Validation Status
-
-!!! warning "Not yet validated on 3.0"
-    The IC-705 is community-validated on RigPlane 2.x over WiFi. It has not
-    yet been validated on 3.0.
-
 ## Get the Packaged Desktop App
 
 !!! tip "Prefer a packaged desktop app?"
