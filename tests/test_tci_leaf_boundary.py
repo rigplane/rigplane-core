@@ -79,8 +79,18 @@ def test_tci_imports_only_stdlib_and_itself() -> None:
 
 @pytest.mark.parametrize(
     "source",
-    ["import numpy\n", "from rigplane.core import x\n"],
+    [
+        "import numpy\n",
+        "from rigplane.core import x\n",
+        "from ..diagnostics._logging import x\n",
+        "from .. import x\n",
+    ],
 )
 def test_scanner_reports_forbidden_imports(source: str) -> None:
     """The check itself must be able to fail (spec 4.1: shown able to fail)."""
     assert _forbidden_imports(source) != []
+
+
+def test_scanner_allows_same_package_relative_import() -> None:
+    """A relative import inside ``rigplane.tci`` stays inside the leaf."""
+    assert _forbidden_imports("from .protocol import TciCommand\n") == []
