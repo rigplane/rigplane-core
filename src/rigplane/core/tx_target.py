@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal, cast
+from typing import Any, ClassVar, Literal, Protocol, cast
 
 TxReceiver = Literal["MAIN", "SUB"]
 TxSlot = Literal["A", "B"]
@@ -13,6 +13,11 @@ TxTargetUnknownReason = Literal[
     "stale",
     "unsupported",
     "contradiction",
+]
+
+TxPermitRefusalReason = Literal[
+    "receive-only-band",
+    "outside-tx-range",
 ]
 
 _RECEIVERS = frozenset(("MAIN", "SUB"))
@@ -94,3 +99,94 @@ def validate_tx_target(value: object) -> TxTarget:
     if not isinstance(value, (KnownTxTarget, UnknownTxTarget)):
         raise TypeError("TX target observation value must be a TxTarget")
     return value
+
+
+class TxBandRow(Protocol):
+    """The band-row facts the permit reads (structurally ``BandInfo``).
+
+    ``core`` sits below ``profiles`` in the layer order, so the permit takes
+    rows through this protocol instead of importing the profile types.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def start(self) -> int: ...
+
+    @property
+    def end(self) -> int: ...
+
+    @property
+    def rx_only(self) -> bool: ...
+
+
+@dataclass(frozen=True, slots=True)
+class TxPermitDecision:
+    """Verdict of :func:`evaluate_tx_frequency_permit` (MOR-3632).
+
+    ``permitted`` True also covers every not-applicable case (see the
+    function).  On a refusal ``reason`` is the stable machine vocabulary;
+    ``frequency_hz`` and ``band_name`` carry the evidence for a truthful
+    message.
+    """
+
+    permitted: bool
+    reason: TxPermitRefusalReason | None = None
+    frequency_hz: int | None = None
+    band_name: str | None = None
+
+
+def evaluate_tx_frequency_permit(
+    bands: Iterable[TxBandRow],
+    target: TxTarget | None,
+) -> TxPermitDecision:
+    """Pure PTT-on band permit over the profile band rows (MOR-3632).
+
+    The adversary is an operator typo or an external client keying up on a
+    frequency the profile never permits for transmit.  ``bands`` is every
+    band row of the active profile (``FreqRangeInfo.bands`` flattened);
+    ``target`` is the server's current published TX target (already
+    split-aware upstream) or None when the field is missing, stale, or
+    malformed.  The permit is band-only and decides solely from a known
+    target that carries a frequency:
+
+    - no band rows at all: not applicable, PTT keeps the pre-permit
+      behaviour (permitted);
+    - target unknown (None, ``UnknownTxTarget``, or a known target with no
+      frequency): not applicable (permitted) — refusing an unknown target is
+      the job of the unknown-target guard (MOR-3633), so a radio that never
+      publishes a target keeps keying;
+    - frequency inside a non-``rx_only`` band: permitted (a TX-permitting row
+      wins over an overlapping receive-only row, e.g. an HF band inside a
+      general-coverage row);
+    - frequency inside an ``rx_only`` band only: refused
+      ``receive-only-band``;
+    - frequency outside every band row: refused ``outside-tx-range``.
+
+    A front-panel retune inside one poll interval is deliberately NOT
+    covered here; the radio firmware remains the last line of defence.
+    """
+
+    rows = tuple(bands)
+    if not rows:
+        return TxPermitDecision(permitted=True)
+    frequency = target.frequency_hz if isinstance(target, KnownTxTarget) else None
+    if frequency is None:
+        return TxPermitDecision(permitted=True)
+    for band in rows:
+        if not band.rx_only and band.start <= frequency <= band.end:
+            return TxPermitDecision(
+                permitted=True, frequency_hz=frequency, band_name=band.name
+            )
+    for band in rows:
+        if band.rx_only and band.start <= frequency <= band.end:
+            return TxPermitDecision(
+                permitted=False,
+                reason="receive-only-band",
+                frequency_hz=frequency,
+                band_name=band.name,
+            )
+    return TxPermitDecision(
+        permitted=False, reason="outside-tx-range", frequency_hz=frequency
+    )

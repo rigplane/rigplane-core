@@ -62,6 +62,7 @@ from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCap
 from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
+from ..runtime.tx_frequency_permit import tx_frequency_permit_refusal
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
 from ..runtime.callable_support import split_tx_routes_unselected_selector
 from ..runtime.managed_tx_authority import ManagedTxAuthority
@@ -595,6 +596,18 @@ class _RigctldCommandExecutor:
                 ticket.authority.validate(ticket)
 
         managed = self.handler._managed_tx_authority is not None
+        if intent.name == "set_ptt" and bool(intent.params.get("ptt")):
+            # MOR-3632: server-side TX frequency permit at PTT-on — the same
+            # gate the WS control path runs, on the same store and profile.
+            # PTT-off (``ptt`` False) never reaches it. Maps to the RPRT
+            # code every other TX refusal on this seat already uses.
+            refusal = tx_frequency_permit_refusal(
+                getattr(self.handler._radio, "profile", None),
+                self.handler._state_store,
+            )
+            if refusal is not None:
+                logger.info("rigctld: PTT-on refused: %s", refusal)
+                raise _RigctldCommandFailure(HamlibError.ERJCTED) from refusal
         if managed and intent.name == "set_ptt":
             return await self._execute_managed_ptt(intent)
         if (
