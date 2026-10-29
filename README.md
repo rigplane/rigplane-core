@@ -55,16 +55,17 @@ Full guides: [getting started](https://rigplane.dev/3.0/guide/quickstart/),
 
 ## Supported radios
 
-| Radio              | Transport          | Notes                                  |
-|--------------------|--------------------|----------------------------------------|
-| **Icom IC-7610**   | LAN, USB CI-V      | Dual receiver; see [known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md#dual-receiver-topology) |
-| **Icom IC-7300**   | USB CI-V           | Single receiver, USB-only              |
-| **Yaesu FTX-1**    | USB CAT            | 17 modes, VHF/UHF, C4FM, audio-derived panadapter (no hardware scope) |
-| Icom IC-705        | LAN (WiFi), USB CI-V | CI-V `0xA4`, QRP 10 W                |
-| Icom IC-9700       | LAN, USB CI-V      | VHF/UHF/SHF                            |
-| Xiegu X6200        | USB CI-V           | CI-V `0xA4`, 19200 baud, QRP 8 W       |
-| Xiegu X6100        | USB CI-V           | Profile only, no backend yet           |
-| Lab599 TX-500      | USB Kenwood CAT    | Profile only, no backend yet; QRP, minimal CAT |
+| Radio            | `--model` value | Transport            | Notes                                                                                                                                                                |
+|------------------|-----------------|----------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Icom IC-7610** | `IC-7610`       | LAN, USB CI-V        | Dual receiver; see [known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md#dual-receiver-topology) |
+| **Icom IC-7300** | `IC-7300`       | USB CI-V             | Single receiver, USB-only                                                                                                                                            |
+| Icom IC-7300MK2  | `IC-7300MK2`    | LAN, USB CI-V        |                                                                                                                                                                      |
+| **Yaesu FTX-1**  | `FTX-1`         | USB CAT              | 17 modes, VHF/UHF, C4FM, audio-derived panadapter (no hardware scope)                                                                                                |
+| Icom IC-705      | `IC-705`        | LAN (WiFi), USB CI-V | CI-V `0xA4`, QRP 10 W                                                                                                                                                |
+| Icom IC-9700     | `IC-9700`       | LAN, USB CI-V        | VHF/UHF/SHF                                                                                                                                                          |
+| Xiegu X6200      | `X6200`         | USB CI-V             | CI-V `0xA4`, 19200 baud, QRP 8 W                                                                                                                                     |
+| Xiegu X6100      | `X6100`         | USB CI-V             | Profile only, no backend yet                                                                                                                                         |
+| Lab599 TX-500    | `TX-500`        | USB Kenwood CAT      | Profile only, no backend yet; QRP, minimal CAT                                                                                                                       |
 
 Native radio capabilities are declared in `rigs/*.toml`. For long-tail serial
 CAT radios, the intended path is Hamlib-backed control underneath RigPlane's

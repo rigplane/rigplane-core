@@ -90,7 +90,18 @@ class TestRadioAddrOverride:
     """--radio-addr overrides profile civ_addr."""
 
     async def test_radio_addr_standalone(self, parser: argparse.ArgumentParser) -> None:
-        ns = _parse(parser, ["--host", "1.2.3.4", "--radio-addr", "0xA0", "status"])
+        ns = _parse(
+            parser,
+            [
+                "--host",
+                "1.2.3.4",
+                "--model",
+                "IC-7610",
+                "--radio-addr",
+                "0xA0",
+                "status",
+            ],
+        )
         cfg = await _build_backend_config(ns)
         assert cfg.radio_addr == 0xA0
 
@@ -120,20 +131,19 @@ class TestRadioAddrOverride:
 
 
 class TestDefaults:
-    """No --model, no --radio-addr → backward compatible defaults."""
+    """No --model, no --radio-addr → the CLI refuses with a model hint."""
 
     async def test_no_flags_radio_addr_none(
         self, parser: argparse.ArgumentParser
     ) -> None:
         ns = _parse(parser, ["--host", "1.2.3.4", "status"])
-        cfg = await _build_backend_config(ns)
-        assert cfg.radio_addr is None
-        assert cfg.model is None
+        with pytest.raises(ValueError, match="Specify the radio model"):
+            await _build_backend_config(ns)
 
     async def test_no_flags_model_none(self, parser: argparse.ArgumentParser) -> None:
         ns = _parse(parser, ["--host", "1.2.3.4", "status"])
-        cfg = await _build_backend_config(ns)
-        assert cfg.model is None
+        with pytest.raises(ValueError, match="Specify the radio model"):
+            await _build_backend_config(ns)
 
 
 class TestSerialBackend:

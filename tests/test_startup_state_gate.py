@@ -1513,7 +1513,9 @@ async def test_cli_web_exits_one_and_prints_the_defect(
     async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
         raise AssertionError("the listener must never bind")
 
-    args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+    args = _build_parser().parse_args(
+        ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld"]
+    )
     args.web_bridge = None  # no audio bridge; the gate is what is under test
     with (
         patch("rigplane.cli.create_radio", return_value=radio),
@@ -2718,7 +2720,15 @@ async def _served_through_cli(
         return _FakeAsyncServer()
 
     args = _build_parser().parse_args(
-        ["--host", "1.2.3.4", "web", "--no-rigctld", "--no-discovery"]
+        [
+            "--host",
+            "1.2.3.4",
+            "--model",
+            "IC-7300",
+            "web",
+            "--no-rigctld",
+            "--no-discovery",
+        ]
     )
     args.web_bridge = bridge
     with (
