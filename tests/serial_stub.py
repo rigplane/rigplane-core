@@ -53,6 +53,9 @@ class SplitIcomTransport:
         self.requests: list[tuple[int, int | None, bytes]] = []
         self.ptt_writes: list[bool] = []
         self.ptt_key_tuples: list[tuple[int, Mode, int, int]] = []
+        # Repeater tone / tone-frequency / duplex writes, recorded as
+        # (command, sub, data); the peer models none of their state.
+        self.repeater_writes: list[tuple[int, int | None, bytes]] = []
         self.relative_freq_read = asyncio.Event()
         self.relative_mode_read = asyncio.Event()
         self.relative_mode_read_gate: asyncio.Event | None = None
@@ -140,6 +143,11 @@ class SplitIcomTransport:
             reply_command, reply_data = command, bcd_encode(freq)
         elif command == 0x04:
             reply_command, reply_data = command, bytes([mode, filt])
+        elif command == 0x0F and data and data[0] >= 0x10:
+            # Duplex (repeater shift) selects 0x10-0x13; split uses 0x00/0x01.
+            self.repeater_writes.append((command, request.sub, data))
+        elif command in (0x16, 0x1B) and data:
+            self.repeater_writes.append((command, request.sub, data))
         elif command == 0x0F:
             if data:
                 self.split = bool(data[0])

@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -31,6 +31,7 @@ from ..core.command_service import (
     PendingOverlay,
     command_intent_from_request,
 )
+from ..core.command_dispatch import CommandUnsupportedError, prepare_command_intent
 from ..core.exceptions import CommandError, CommandRejectedError
 from ..runtime.controller_authority import ControllerAuthority, ControllerError
 from ..core.radio_protocol import (
@@ -63,7 +64,6 @@ from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
 from ..runtime import tx_interlock
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
-from ..runtime._state_queries import profile_publishes_tx_target
 from ..runtime.callable_support import split_tx_routes_unselected_selector
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_ingress import bind_managed_tx, refuse_key_without_owner
@@ -507,14 +507,32 @@ class _RigctldCommandExecutor:
             raise _RigctldCommandFailure(HamlibError.EIO) from exc
         return CommandExecutionResult()
 
-    async def _execute_managed_tuner(
-        self, intent: CommandIntent
+    async def _execute_managed_descriptor_write(
+        self,
+        intent: CommandIntent,
+        name: str,
+        params: Mapping[str, Any],
     ) -> CommandExecutionResult:
-        """Normalize the one in-scope rigctld function into the shared leaf."""
+        """Normalize one in-scope rigctld function into its shared leaf.
+
+        The descriptor intent runs through the same queue and dispatch leaf
+        as the web ingress, so managed admission applies to it there.
+        """
         queue = self.handler._command_queue
         assert queue is not None
         raw_session = intent.params.get("session_id")
         session_id = None if raw_session is None else str(raw_session)
+        try:
+            normalized = prepare_command_intent(
+                self.handler._radio,
+                name,
+                params,
+                source="rigctld",
+                command_id=intent.id,
+                session_id=session_id,
+            )
+        except CommandUnsupportedError as exc:
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
         loop = asyncio.get_running_loop()
         timeout = intent.timeout or self.handler._config.command_timeout
         try:
@@ -531,7 +549,9 @@ class _RigctldCommandExecutor:
             )
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise _RigctldCommandFailure(HamlibError.ETIMEOUT) from exc
-        except CommandError as exc:
+        except (CommandError, ValueError) as exc:
+            # A refused write (admission, or the rig rejecting the pair) is a
+            # rejection, not an I/O failure.
             raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
         return CommandExecutionResult()
 
@@ -603,7 +623,31 @@ class _RigctldCommandExecutor:
             and intent.name == "set_func"
             and str(intent.params["func"]).upper() == "TUNER"
         ):
-            return await self._execute_managed_tuner(intent)
+            return await self._execute_managed_descriptor_write(
+                intent,
+                "set_tuner_status",
+                {"value": 1 if bool(intent.params["on"]) else 0},
+            )
+        repeater_write = (
+            _FUNC_SET.get(str(intent.params["func"]).upper())
+            if managed and intent.name == "set_func"
+            else None
+        )
+        if (
+            repeater_write is not None
+            and repeater_write in tx_interlock.REPEATER_WRITE_INTENTS
+        ):
+            # MOR-3633: ``U TONE`` / ``U TSQL`` are the repeater descriptors'
+            # rigctld spelling; they take the descriptor leaf, whose managed
+            # admission refuses them while TX is held, owed or reported.
+            return await self._execute_managed_descriptor_write(
+                intent,
+                repeater_write,
+                {
+                    "on": bool(intent.params["on"]),
+                    "receiver": int(intent.params.get("receiver", 0)),
+                },
+            )
         if (
             managed
             and intent.name == "set_func"
@@ -665,24 +709,6 @@ class _RigctldCommandExecutor:
                 is not tx_interlock.RfState.RX
             ):
                 raise _RigctldCommandFailure(HamlibError.ERJCTED)
-            if (
-                intent.name == "set_ptt"
-                and intent.params.get("ptt") is True
-                and self.handler._has_canonical_state_store
-                and profile_publishes_tx_target(
-                    getattr(self.handler._radio, "profile", None)
-                )
-                and self.handler._resolve_rigctld_rf_state() is tx_interlock.RfState.RX
-            ):
-                # MOR-3633: the TX-target guard runs after the RF verdict,
-                # so a keyed or unknown radio keeps its existing refusal
-                # and only a known-RX key consults the target.
-                refusal = tx_interlock.ptt_on_tx_target_refusal(
-                    self.handler._state_store.snapshot(),
-                    tx_target_supported=True,
-                )
-                if refusal is not None:
-                    raise _RigctldCommandFailure(HamlibError.ERJCTED)
         await self._wait_predecessor()
         if ticket is not None:
             ticket.authority.validate(ticket)

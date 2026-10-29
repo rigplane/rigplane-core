@@ -63,6 +63,8 @@ from rigplane.runtime._poller_types import (
 
 __all__ = [
     "DeferredTxCommandLane",
+    "PTT_TX_FREQUENCY_UNKNOWN",
+    "REPEATER_WRITE_INTENTS",
     "RfState",
     "TX_INTERLOCK_COMMAND_FAMILY_METADATA",
     "TxInterlockCommandFamily",
@@ -327,7 +329,7 @@ _ALWAYS_PASS_TYPES = (PttOff, ScanStop)
 # keyed by descriptor intent name and no typed command exists for them. A
 # later repeater command joins by adding one name here; classification and
 # the family metadata below both read this set.
-_REPEATER_DEFER_INTENTS = frozenset(
+REPEATER_WRITE_INTENTS = frozenset(
     {
         "set_repeater_shift",
         "set_repeater_tone",
@@ -350,8 +352,8 @@ def _is_repeater_write(command: object) -> bool:
     """Whether ``command`` is a repeater write: a descriptor intent or its token."""
 
     if isinstance(command, CommandIntent):
-        return command.name in _REPEATER_DEFER_INTENTS
-    return _TOKEN_INTENT_NAMES.get(type(command)) in _REPEATER_DEFER_INTENTS
+        return command.name in REPEATER_WRITE_INTENTS
+    return _TOKEN_INTENT_NAMES.get(type(command)) in REPEATER_WRITE_INTENTS
 
 
 _DEFER_TYPES = (
@@ -518,6 +520,10 @@ def evaluate_tx_interlock(
 
 _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 
+# The wire reason code of a PTT-on refused for an unknown TX-side frequency;
+# the web lifecycle delivery validates it against this one spelling.
+PTT_TX_FREQUENCY_UNKNOWN = "ptt_tx_frequency_unknown"
+
 
 def _unknown_tx_frequency_refusal(
     reason: str, receiver: str | None
@@ -528,16 +534,16 @@ def _unknown_tx_frequency_refusal(
     if receiver is not None:
         details["receiver"] = receiver
     return TxInterlockRefusal(
-        message, reason_code="ptt_tx_frequency_unknown", details=details
+        message, reason_code=PTT_TX_FREQUENCY_UNKNOWN, details=details
     )
 
 
 def tx_frequency_unknown_refusal(value: object) -> TxInterlockRefusal | None:
     """Refuse a TX-side frequency value that cannot key a transmitter.
 
-    The value-level core of the PTT-on guard, for seats that retain the
-    ``tx_state.tx_target`` observation rather than a snapshot. Only a known
-    target carrying a frequency passes; ``None`` (no observation) reads
+    The value-level core of the PTT-on guard, applied to the one
+    ``tx_state.tx_target`` field value. Only a known target carrying a
+    frequency passes; ``None`` (no observation) reads
     ``not-observed``, and anything outside the ``core.tx_target``
     vocabulary reads ``contradiction``. The receiver is named only when a
     trusted known value carries it.

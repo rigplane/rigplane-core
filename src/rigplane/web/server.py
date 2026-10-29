@@ -49,7 +49,7 @@ from collections.abc import (
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast, get_args
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -91,6 +91,7 @@ from ..core.tx_observation import (
     legacy_ptt_bool,
     project_observed_ptt,
 )
+from ..core.tx_target import TxTargetUnknownReason
 from ..runtime.controller_authority import (
     ControllerAuthority,
     ControllerError,
@@ -100,6 +101,7 @@ from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
 from ..runtime.tx_gate import tx_gate_open
 from ..runtime.tx_interlock import (
+    PTT_TX_FREQUENCY_UNKNOWN,
     RfState,
     TxInterlockRefusal,
     classify_raw_civ_frame_tx_family,
@@ -3113,6 +3115,43 @@ class WebServer:
                 }
             else:
                 return False
+        elif event.state == "failed" and {
+            "session_id",
+            "blockedBy",
+            "reason",
+            "txTargetReason",
+        } <= set(details) <= {
+            "session_id",
+            "blockedBy",
+            "reason",
+            "txTargetReason",
+            "receiver",
+        }:
+            # MOR-3633: a PTT-on refused for an unknown TX-side frequency
+            # carries why the target is unknown and, when a trusted value
+            # knows it, the receiver that would transmit. Both are checked
+            # against their closed vocabularies (exact ``str`` type, so no
+            # merely-equal object rides onto the wire) and republished.
+            reason = details.get("reason")
+            target_reason = details.get("txTargetReason")
+            receiver = details.get("receiver")
+            if (
+                details.get("blockedBy") != "tx_interlock"
+                or type(reason) is not str
+                or reason != PTT_TX_FREQUENCY_UNKNOWN
+                or type(target_reason) is not str
+                or target_reason not in get_args(TxTargetUnknownReason)
+                or ("receiver" in details and receiver not in ("MAIN", "SUB"))
+                or ("receiver" in details and type(receiver) is not str)
+            ):
+                return False
+            public_details = {
+                "blockedBy": "tx_interlock",
+                "reason": PTT_TX_FREQUENCY_UNKNOWN,
+                "txTargetReason": target_reason,
+            }
+            if "receiver" in details:
+                public_details["receiver"] = receiver
         elif event.state == "failed" and set(details) == {
             "session_id",
             "outcome",

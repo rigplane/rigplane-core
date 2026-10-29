@@ -569,8 +569,9 @@ def test_every_managed_enqueue_stamps_the_consumer_connection_generation() -> No
             _ROOT / "src/rigplane/runtime/managed_tx_submission.py",
             "execute_managed_ptt",
         ),
-        "rigctld tuner": _function_source(
-            _ROOT / "src/rigplane/rigctld/handler.py", "_execute_managed_tuner"
+        "rigctld descriptor": _function_source(
+            _ROOT / "src/rigplane/rigctld/handler.py",
+            "_execute_managed_descriptor_write",
         ),
     }
     for ingress, source in sources.items():
@@ -580,6 +581,6 @@ def test_every_managed_enqueue_stamps_the_consumer_connection_generation() -> No
         "web PTT",
         "HTTP TRANSMIT_ON",
         "rigctld PTT producer",
-        "rigctld tuner",
+        "rigctld descriptor",
     ):
         assert "capture_connection_generation" in sources[ingress], ingress

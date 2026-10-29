@@ -811,6 +811,17 @@ class ManagedTxAuthority:
             raise TypeError("managed write admission requires a CommandIntent")
         descriptor = command_descriptor(intent.name)
         async with self._lock:
+            if classify_tx_interlock(intent) in (
+                TxInterlockDisposition.DEFER,
+                TxInterlockDisposition.BLOCK,
+            ):
+                # MOR-3633: a repeater write moves the TX frequency, so it is
+                # admitted only while nothing can be on the air: no held TX,
+                # no release still owed (a rejected unkey leaves the intent RX
+                # with the transmitter possibly keyed), and no TX the radio
+                # itself reports. Classified through the one interlock table,
+                # evaluated before the RX early return below.
+                return self._tx_quiet_locked()
             managed_tx = self._state.intent.kind is not ManagedTxIntentKind.RX
             if not managed_tx:
                 return True
@@ -820,14 +831,6 @@ class ManagedTxAuthority:
                 if descriptor.tx_policy is DescriptorTxPolicy.TUNER_CONTROL:
                     value = intent.params.get("value")
                     return type(value) is int and value == 0
-                # MOR-3633: repeater writes defer while keyed through the one
-                # interlock policy (classified by descriptor intent name), not
-                # a second list kept here.
-                if classify_tx_interlock(intent) in (
-                    TxInterlockDisposition.DEFER,
-                    TxInterlockDisposition.BLOCK,
-                ):
-                    return False
                 return True
             if intent.name == "set_func" and intent.params.get("func") == "TUNER":
                 return intent.params.get("on") is False
@@ -1567,6 +1570,19 @@ class ManagedTxAuthority:
         if self._radio_tx is None or not self._state_is_clean_locked():
             return None
         return self._radio_tx.radio_tx_since(self._idle_since)
+
+    def _tx_quiet_locked(self) -> bool:
+        """Whether no TX is held, owed or reported: the clean state, radio RX.
+
+        Fails closed: a radio-TX probe that raises reads as not quiet.
+        """
+        if not self._state_is_clean_locked():
+            return False
+        try:
+            return self._radio_tx_origin_locked() is None
+        except Exception:
+            logger.warning("managed TX quiet-state probe failed", exc_info=True)
+            return False
 
     def _radio_tx_refusal_locked(self) -> str | None:
         """Refusal code while the radio transmits and Core holds and owes no TX."""

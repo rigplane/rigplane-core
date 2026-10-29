@@ -753,6 +753,14 @@ class RadioPoller:
     def _emit_deferred_entry_held(
         self, entry: CommandQueueEntry, *, expires_at: float
     ) -> None:
+        if entry.future is not None and isinstance(entry.command, CommandIntent):
+            # MOR-3633: an awaited descriptor intent (HTTP/WS) keeps its reply
+            # open until the write runs, and that open reply is the client's
+            # hold feedback. A ``queued`` notice could not reach the issuer yet
+            # (the command is acknowledged only when it completes) and would
+            # replace the command's active lifecycle record, failing the
+            # finished write as "invalidated".
+            return
         intent = self._deferred_intent(entry)
         if intent is not None and entry.command_service is not None:
             entry.command_service.emit_lifecycle(

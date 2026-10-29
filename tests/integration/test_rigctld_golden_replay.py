@@ -50,11 +50,7 @@ import pytest
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 
-from _ptt_reread_fixtures import (
-    PttAnsweringSerialMockRadio,
-    seed_keyed_ready_tx_target,
-    wait_for_known_rf_state,
-)
+from _ptt_reread_fixtures import PttAnsweringSerialMockRadio, wait_for_known_rf_state
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -148,7 +144,6 @@ async def rigctld_dual_rx_server() -> AsyncGenerator[RigctldServer, None]:
     host, port = _addr(srv)
     _keepalive_reader, keepalive_writer = await asyncio.open_connection(host, port)
     await wait_for_known_rf_state(srv)
-    seed_keyed_ready_tx_target(srv)
     try:
         yield srv
     finally:

@@ -37,11 +37,7 @@ import pytest
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 
-from _ptt_reread_fixtures import (
-    PttAnsweringSerialMockRadio,
-    seed_keyed_ready_tx_target,
-    wait_for_known_rf_state,
-)
+from _ptt_reread_fixtures import PttAnsweringSerialMockRadio, wait_for_known_rf_state
 
 pytestmark = [pytest.mark.integration, pytest.mark.mock_integration]
 
@@ -191,7 +187,6 @@ async def ic7610_setup() -> AsyncGenerator[
     # MODE/BAND/VFO write — see ``_ptt_reread_fixtures.py``.
     keepalive = await _make_client(server)
     await wait_for_known_rf_state(server)
-    seed_keyed_ready_tx_target(server)
     radio.reset_calls()
     try:
         yield radio, server
@@ -209,7 +204,6 @@ async def ic7300_setup() -> AsyncGenerator[
     server = await _make_server(radio)
     keepalive = await _make_client(server)
     await wait_for_known_rf_state(server)
-    seed_keyed_ready_tx_target(server)
     radio.reset_calls()
     try:
         yield radio, server

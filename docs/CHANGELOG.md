@@ -29,18 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Repeater writes defer while keyed; PTT-on needs a known TX-side
-  frequency (MOR-3633).** Repeater shift, tone/TSQL and tone-frequency
-  writes join the TX interlock's new REPEATER family (deferred while
-  keyed, like the memory family), classified by command name in one
-  table that every ingress reads (managed admission, the unmanaged
-  queue and execute seats, rigctld `set_func TONE`/`TSQL`). PTT-on is
-  refused with the stable error `ptt_tx_frequency_unknown` while the
-  TX-side frequency is unknown on profiles that report a TX target
-  (IC-705, IC-7300, IC-7610, FTX-1), at the interlock seats and unmanaged
-  rigctld; the refusal names the receiver that would transmit. Radios
-  that cannot report a target (IC-9700) key unchanged, as does
-  managed-PTT admission (whose degraded-session contract is MOR-620).
+- **Repeater writes wait for receive; PTT-on needs a known TX frequency
+  (MOR-3633).** Repeater shift, tone/TSQL and tone-frequency writes join the
+  TX interlock's REPEATER family: held while the radio is keyed (the HTTP/WS
+  reply stays open until the write runs) and refused while the RF state is
+  unknown. With managed transmit authority they are admitted only while
+  nothing is held, owed (an unkey still being released) or reported as
+  transmitting by the radio, for the web ingress and for rigctld
+  `U TONE`/`U TSQL` alike. The Icom poller's PTT-on policy refuses a key
+  with the stable error `ptt_tx_frequency_unknown` while the TX-side frequency
+  of a radio that publishes a TX target (IC-705, IC-7300, IC-7300MK2,
+  IC-7610) is unknown, naming the receiver that would transmit; the refusal
+  reaches its issuer through the lifecycle delivery. The Yaesu poller has no
+  typed PTT-on, and standalone rigctld has no TX-target publisher, so neither
+  applies the guard.
 
 ## [3.0.1] — 2026-10-28
 
