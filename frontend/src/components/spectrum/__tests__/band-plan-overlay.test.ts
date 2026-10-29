@@ -158,12 +158,31 @@ describe('shouldSkipFetch (containment)', () => {
   it('viewport past the right fetch edge triggers fetch', () => {
     expect(shouldSkipFetch(14_000_000, 14_550_000, 13_825_000, 14_525_000)).toBe(false);
   });
+
+  it('same region and contained viewport is skipped', () => {
+    expect(shouldSkipFetch(14_000_000, 14_350_000, 13_825_000, 14_525_000, 'US', 'US')).toBe(true);
+  });
+
+  it('region switch at an unchanged viewport triggers fetch', () => {
+    expect(shouldSkipFetch(14_000_000, 14_350_000, 13_825_000, 14_525_000, 'IARU-R1', 'US')).toBe(false);
+  });
+
+  it('callers without a region keep the viewport-only behavior', () => {
+    expect(shouldSkipFetch(14_000_000, 14_350_000, 13_825_000, 14_525_000)).toBe(true);
+  });
 });
 
 describe('VHF/UHF overlay (MOR-3631)', () => {
-  it('formats GHz for 23 cm', () => {
-    expect(formatFreq(1_296_100_000)).toBe('1.296 GHz');
-    expect(formatFreq(1_240_000_000)).toBe('1.240 GHz');
+  it('formats GHz for 23 cm with 1 kHz resolution', () => {
+    expect(formatFreq(1_296_100_000)).toBe('1.296100 GHz');
+    expect(formatFreq(1_240_000_000)).toBe('1.240000 GHz');
+  });
+
+  it('renders both ends of a narrow 23 cm segment distinctly', () => {
+    // The 1296.000–1296.050 MHz EME segment must not collapse to one label.
+    expect(formatFreq(1_296_000_000)).toBe('1.296000 GHz');
+    expect(formatFreq(1_296_050_000)).toBe('1.296050 GHz');
+    expect(formatFreq(1_296_000_000)).not.toBe(formatFreq(1_296_050_000));
   });
 
   it('positions a 2 m simplex segment inside a 2 m span', () => {

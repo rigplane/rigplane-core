@@ -273,6 +273,10 @@
   let frameScopeMode = $state(0);  // scope mode from binary frame header (authoritative)
   let fullscreen = $state(false);
   let showEiBi = $state(false);
+  // Effective band-plan region, owned by the toolbar (it syncs with
+  // /api/v1/band-plan/config) and forwarded to the overlay so a region
+  // switch refetches segments even when the viewport did not move.
+  let bandPlanRegion = $state('US');
   let hiddenLayers = $state<string[]>(
     typeof localStorage !== 'undefined'
       ? JSON.parse(localStorage.getItem('rigplane-hidden-layers') || '[]')
@@ -1216,7 +1220,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource ? sdrToolbarStatus : scopeStatusIndicator} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi bind:currentRegion={bandPlanRegion} {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource ? sdrToolbarStatus : scopeStatusIndicator} />
   {/if}
   <div
     class="spectrum-split-region"
@@ -1238,7 +1242,7 @@
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
-      {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} />{/if}
+      {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
       {#if scopeTraceLive}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}

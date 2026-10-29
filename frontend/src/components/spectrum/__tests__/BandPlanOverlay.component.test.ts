@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import BandPlanOverlay from '../BandPlanOverlay.svelte';
+import BandPlanRegionHarness, { harnessRegion } from './BandPlanRegionHarness.svelte';
 
 // ── Mock arrl-band-plan (local fallback data) ──
 
@@ -262,6 +263,61 @@ describe('BandPlanOverlay (component)', () => {
     expect(bandPlanCalls[0][0]).toBe(
       '/api/v1/band-plan/segments?start=13825000&end=14525000',
     );
+  });
+
+  it('refetches at an unchanged viewport when the region switches', async () => {
+    const usSegment = {
+      start: 146_000_000, end: 146_400_000, mode: 'phone', label: 'FM-US',
+      color: '#60A5FA', opacity: 0.25, band: '2m', layer: 'ham', priority: 1,
+    };
+    const r1Segment = {
+      start: 145_800_000, end: 146_200_000, mode: 'phone', label: 'FM-R1',
+      color: '#60A5FA', opacity: 0.25, band: '2m', layer: 'ham', priority: 1,
+    };
+    mockFetch.mockImplementation(async () => ({
+      ok: true,
+      json: async () => ({
+        segments: harnessRegion.value === 'US' ? [usSegment] : [r1Segment],
+      }),
+    }) as Response);
+
+    harnessRegion.value = 'US';
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    const component = mount(BandPlanRegionHarness, { target, props: {} });
+    flushSync();
+    cleanups.push(() => {
+      unmount(component);
+      target.remove();
+    });
+
+    await vi.advanceTimersByTimeAsync(150);
+    flushSync();
+
+    const titles = () =>
+      Array.from(target.querySelectorAll('.band-segment')).map((s) => s.getAttribute('title'));
+    const bandPlanCalls = () =>
+      mockFetch.mock.calls.filter(([input]) => String(input).startsWith('/api/v1/band-plan/segments'));
+    expect(titles()).toContain('FM-US');
+    expect(bandPlanCalls()).toHaveLength(1);
+    const firstUrl = String(bandPlanCalls()[0][0]);
+
+    // Switch regions without touching the viewport.
+    harnessRegion.value = 'IARU-R1';
+    flushSync();
+    await vi.advanceTimersByTimeAsync(150);
+    flushSync();
+
+    // Same viewport (same URL) but a second fetch: the cached US range is invalid.
+    expect(bandPlanCalls()).toHaveLength(2);
+    expect(String(bandPlanCalls()[1][0])).toBe(firstUrl);
+    expect(titles()).toContain('FM-R1');
+    expect(titles()).not.toContain('FM-US');
+
+    // No fetch loop afterwards: the new region's range now contains the viewport.
+    await vi.advanceTimersByTimeAsync(1500);
+    flushSync();
+    expect(bandPlanCalls()).toHaveLength(2);
   });
 
   it('unmounts cleanly', () => {

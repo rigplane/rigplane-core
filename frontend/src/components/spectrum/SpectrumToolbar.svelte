@@ -43,6 +43,13 @@
      * `scopeStatusIndicator` so no source pin can confuse it with the dead
      * VfoHeader `scopeStatus` bridge (MOR-1409 A13b keeps that name dead). */
     scopeStatusIndicator?: Snippet;
+    /**
+     * Effective band-plan region, synced from `/api/v1/band-plan/config`.
+     * Bindable so the owning panel can forward it to `BandPlanOverlay`,
+     * which refetches its segments on change. Callers that omit it behave
+     * exactly as before.
+     */
+    currentRegion?: string;
   }
 
   let {
@@ -117,6 +124,7 @@
     hideAutoStepToggle = false,
     scopeControls,
     scopeStatusIndicator,
+    currentRegion = $bindable('US'),
   }: Props = $props();
 
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
@@ -146,7 +154,6 @@
     return `top: ${top}px; right: ${right}px;`;
   });
   let availableLayers = $state<LayerInfo[]>([]);
-  let currentRegion = $state('US');
   let availableRegions = $state<string[]>([]);
 
   // Fetch available layers and config from REST API

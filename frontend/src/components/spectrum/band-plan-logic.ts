@@ -21,9 +21,11 @@ export interface RemoteSegment {
   schedule?: string | null;
 }
 
-/** Format frequency for human display: Hz → "X.XXX GHz" / "X.XXX MHz" / "X.X kHz" / "X Hz". */
+/** Format frequency for human display: Hz → "X.XXXXXX GHz" / "X.XXX MHz" / "X.X kHz" / "X Hz". */
 export function formatFreq(hz: number): string {
-  if (hz >= 1_000_000_000) return `${(hz / 1_000_000_000).toFixed(3)} GHz`;
+  // GHz keeps six decimals so narrow 23 cm segments (e.g. 1296.000–1296.050 MHz)
+  // still render distinct endpoints at 1 kHz resolution.
+  if (hz >= 1_000_000_000) return `${(hz / 1_000_000_000).toFixed(6)} GHz`;
   if (hz >= 1_000_000) return `${(hz / 1_000_000).toFixed(3)} MHz`;
   if (hz >= 1_000) return `${(hz / 1_000).toFixed(1)} kHz`;
   return `${hz} Hz`;
@@ -89,7 +91,12 @@ export function shouldSkipFetch(
   end: number,
   lastStart: number,
   lastEnd: number,
+  region?: string | null,
+  lastRegion?: string | null,
 ): boolean {
   if (lastStart === 0) return false;
+  // The backend serves segments for the effective region, so a viewport
+  // contained in the previous fetch range must still refetch after a switch.
+  if (region !== undefined && region !== lastRegion) return false;
   return start >= lastStart && end <= lastEnd;
 }

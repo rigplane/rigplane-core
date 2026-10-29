@@ -11,11 +11,14 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+from test_web_command_batch_http import _post_json
 
 from rigplane.profiles import resolve_radio_profile
 from rigplane.core.state_pipeline_contracts import (
@@ -30,6 +33,7 @@ from rigplane.web.radio_poller import (
     RadioPoller,
     SetBand,
 )
+from rigplane.web.server import WebConfig, WebServer
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -512,8 +516,8 @@ class TestFtx1BandStackingCodes:
         [
             ("6m", 50_000_000, 54_000_000, 50_125_000),
             ("4m", 70_000_000, 70_500_000, 70_200_000),
-            ("2m", 144_000_000, 148_000_000, 145_000_000),
-            ("70cm", 430_000_000, 450_000_000, 432_100_000),
+            ("2m", 144_000_000, 148_000_000, 146_520_000),
+            ("70cm", 430_000_000, 450_000_000, 446_000_000),
         ],
     )
     def test_vhf_uhf_band_boundaries(
@@ -569,16 +573,17 @@ class TestIc9700Bands:
     Receiver/Transmitter: 144.000000~148.000000, 430.000000~450.000000,
     1240.000000~1300.000000). BSR codes are the Frequency band codes of the
     IC-9700 CI-V Reference Guide's "Band stacking register" (1A 01) table:
-    01=VHF, 02=UHF, 03=1.2GHz. default_hz is each band's manual-given
-    start edge (the manuals state no separate default tuning frequency;
-    the loader requires the key).
+    01=VHF, 02=UHF, 03=1.2GHz. default_hz is an FM-suitable in-band
+    calling frequency with bandwidth clearance from the band edges (a
+    failed band-stack read tunes FM there, never the CW/EME lower edge),
+    paired with default_mode = "FM".
     """
 
     _EXPECTED: dict[str, tuple[int, int, int, int]] = {
         # name: (start_hz, end_hz, default_hz, bsr_code)
-        "2m": (144_000_000, 148_000_000, 144_000_000, 0x01),
-        "70cm": (430_000_000, 450_000_000, 430_000_000, 0x02),
-        "23cm": (1_240_000_000, 1_300_000_000, 1_240_000_000, 0x03),
+        "2m": (144_000_000, 148_000_000, 146_520_000, 0x01),
+        "70cm": (430_000_000, 450_000_000, 446_000_000, 0x02),
+        "23cm": (1_240_000_000, 1_300_000_000, 1_294_500_000, 0x03),
     }
 
     def _bands(self) -> dict[str, tuple[int, int, int, int]]:
@@ -696,7 +701,7 @@ class TestSetBandDefaultModeFallback:
         radio.send_civ = AsyncMock(return_value=None)
         poller = _make_poller(radio, model="IC-9700")
         await poller._execute(SetBand(band=0x02))  # noqa: SLF001
-        radio.set_freq.assert_awaited_once_with(430_000_000)
+        radio.set_freq.assert_awaited_once_with(446_000_000)
         radio.set_mode.assert_awaited_once()
         assert radio.set_mode.call_args[0][0] == "FM"
 
@@ -721,3 +726,78 @@ class TestSetBandDefaultModeFallback:
         await poller._execute(SetBand(band=0x0D))  # noqa: SLF001
         radio.set_freq.assert_awaited_once_with(146520000)
         radio.set_mode.assert_awaited_once_with("USB", 1)
+
+
+# ---------------------------------------------------------------------------
+# BSR-miss fallback through the production HTTP command path (finding 8b)
+# ---------------------------------------------------------------------------
+
+
+async def _execute_one_queued_command(srv: WebServer, radio: MagicMock) -> None:
+    """Drain one queued command with a real RadioPoller (production drain).
+
+    Mirrors the ``execute_queued_command`` composition in
+    ``test_web_command_batch_http.py``: the HTTP layer below only enqueues
+    and waits; the poller settles the ordered future after driving the
+    fake hardware.
+    """
+    poller = RadioPoller(
+        radio,
+        srv.command_queue,
+        radio_state=RadioState(),
+        state_store=srv.command_state_store,
+    )
+    await srv.command_queue.wait(timeout=5.0)
+    entry = srv.command_queue.take_entry()
+    assert entry is not None
+    await poller._execute_queued_entry(entry)
+
+
+class TestSetBandFallbackHttpCommandPath:
+    """BSR-miss fallback driven through POST /api/v1/commands (finding 8b).
+
+    Failing-first: restoring the old profile defaults (IC-9700 band edges
+    144/430/1240 MHz, FTX-1 145.000/432.100 MHz) turns every case red —
+    the asserted public frequency/mode is the fallback pair now shipped
+    in rigs/*.toml. Reaching into ``poller._execute`` directly (as the
+    tests above do) bypasses the command API; these tests traverse the
+    real HTTP command route and assert what the radio was told.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "band", "expected_freq"),
+        [
+            ("IC-9700", 0x01, 146_520_000),  # 2 m FM calling
+            ("IC-9700", 0x02, 446_000_000),  # 70 cm FM calling
+            ("IC-9700", 0x03, 1_294_500_000),  # 23 cm FM simplex calling
+            ("FTX-1", 0x0D, 146_520_000),  # 2 m FM calling
+            ("FTX-1", 0x0E, 446_000_000),  # 70 cm FM calling
+        ],
+    )
+    async def test_bsr_miss_fallback_via_http_commands(
+        self, model: str, band: int, expected_freq: int
+    ) -> None:
+        radio = _make_radio(model=model)
+        radio.send_civ = AsyncMock(return_value=None)
+        srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        consumer = asyncio.create_task(_execute_one_queued_command(srv, radio))
+        try:
+            writer = await asyncio.wait_for(
+                _post_json(
+                    srv,
+                    "/api/v1/commands",
+                    {"id": "bsr-miss", "name": "set_band", "params": {"band": band}},
+                ),
+                timeout=5.0,
+            )
+            await asyncio.wait_for(consumer, timeout=5.0)
+        finally:
+            if not consumer.done():
+                consumer.cancel()
+
+        assert writer.response_status == 200
+        assert writer.response_body["ok"] is True
+        assert writer.response_body["result"] == {"band": band}
+        radio.set_freq.assert_awaited_once_with(expected_freq)
+        radio.set_mode.assert_awaited_once_with("FM")

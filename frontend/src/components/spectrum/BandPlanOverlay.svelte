@@ -22,14 +22,22 @@
     endFreq: number;
     visible?: boolean;
     hiddenLayers?: string[];
+    /**
+     * Effective band-plan region (e.g. 'US', 'IARU-R1'). The backend serves
+     * segments for this region; a change invalidates the fetch cache so the
+     * overlay refetches even when the viewport did not move. `null` keeps
+     * the legacy viewport-only behavior.
+     */
+    region?: string | null;
   }
 
-  let { startFreq, endFreq, visible = true, hiddenLayers = [] }: Props = $props();
+  let { startFreq, endFreq, visible = true, hiddenLayers = [], region = null }: Props = $props();
 
   let containerWidth = $state(0);
 
   let remoteSegments = $state<RemoteSegment[]>([]);
   let lastFetchRange = $state({ start: 0, end: 0 });
+  let lastFetchRegion = $state<string | null>(null);
   let fetchTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Popup state
@@ -52,9 +60,15 @@
 
   // Debounced fetch from REST API
   function fetchSegments(start: number, end: number) {
-    // lastFetchRange is bookkeeping written by this fetch: read it outside
-    // tracking so the store write below does not re-run the effect.
-    if (untrack(() => shouldSkipFetch(start, end, lastFetchRange.start, lastFetchRange.end))) {
+    // `region` is read tracked so the fetch $effect below refires on a
+    // region switch; the cached range/region are bookkeeping written by this
+    // fetch, so read them outside tracking to keep the MOR-2605 no-loop
+    // guarantee (their writes must not re-run the effect).
+    const currentRegion = region;
+    const skip = untrack(() =>
+      shouldSkipFetch(start, end, lastFetchRange.start, lastFetchRange.end, currentRegion, lastFetchRegion),
+    );
+    if (skip) {
       return;
     }
 
@@ -73,6 +87,7 @@
           const data = await resp.json();
           remoteSegments = data.segments ?? [];
           lastFetchRange = { start: fetchStart, end: fetchEnd };
+          lastFetchRegion = currentRegion;
         }
       } catch {
         // Silently fall back to local data
