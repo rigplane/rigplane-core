@@ -275,6 +275,42 @@ async def test_before_on_defaults_to_no_preparation() -> None:
         await managed.close()
 
 
+async def test_before_on_may_read_the_authority_while_routing() -> None:
+    """A hook awaiting an authority read must not deadlock (spec 7.3a).
+
+    TCI prepares the route through the normal CommandIntent path, whose
+    admission and projection reads take the authority lock. The hook runs
+    after the intent commits, so those reads must proceed while it runs:
+    the key admits and PTT_ON is dispatched.
+    """
+    managed, _clock, lane, _probe = radio_tx_authority()
+    try:
+        seen: list[str] = []
+
+        async def hook() -> bool:
+            projection = await managed.snapshot()
+            seen.append(projection.state.intent.owner_token)
+            return True
+
+        submission = managed.start_ptt_submission(
+            True,
+            "a",
+            expires_at_monotonic=100.0 + 3.0,
+            before_on=hook,
+        )
+        receipt = await submission
+        assert receipt.outcome is ACCEPTED
+        assert seen == ["a"]
+        assert [
+            effect.operation
+            for effect in lane.effects
+            if effect.operation is ActuationOperation.PTT_ON
+        ] != []
+        assert await managed.ptt_up("a") is ACCEPTED
+    finally:
+        await managed.close()
+
+
 async def test_before_on_is_rejected_for_an_unkey() -> None:
     managed, _clock, _lane, _probe = radio_tx_authority()
     try:
