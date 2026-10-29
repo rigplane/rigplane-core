@@ -142,11 +142,19 @@ async def test_release_calls_the_handler_release_and_returns() -> None:
 
 
 async def test_release_without_a_handler_release_is_a_noop() -> None:
-    await release_managed_session_tx(None, "s1", handback_timeout_s=1.0)
+    assert (
+        await release_managed_session_tx(None, "s1", handback_timeout_s=1.0)
+        is None
+    )
 
 
 async def test_release_that_raises_is_fail_soft() -> None:
-    await release_managed_session_tx(_failing_release, "s1", handback_timeout_s=1.0)
+    assert (
+        await release_managed_session_tx(
+            _failing_release, "s1", handback_timeout_s=1.0
+        )
+        is None
+    )
 
 
 async def test_release_that_hangs_is_abandoned_after_the_bound() -> None:

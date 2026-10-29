@@ -54,10 +54,13 @@ async def test_missing_setter_is_a_noop() -> None:
 
 
 async def test_plain_radio_without_a_setter_is_a_noop() -> None:
-    await apply_wsjtx_data_mod_input(
-        SimpleNamespace(profile=SimpleNamespace(data_mode_count=1)),
-        data_mode=1,
-        source=5,
+    assert (
+        await apply_wsjtx_data_mod_input(
+            SimpleNamespace(profile=SimpleNamespace(data_mode_count=1)),
+            data_mode=1,
+            source=5,
+        )
+        is None
     )
 
 
