@@ -98,7 +98,6 @@ class TciSession:
         handler: TciHandler,
         server: TciServer,
         clock: Callable[[], float],
-        deflate: bool = False,
     ) -> None:
         self._id = session_id
         self._reader = reader
@@ -106,7 +105,9 @@ class TciSession:
         self._handler = handler
         self._server = server
         self._clock = clock
-        self._conn = WebSocketConnection(reader, writer, clock=clock, deflate=deflate)
+        # Design 4.2: per-message deflate stays off for TCI (the upgrade
+        # ignores the extension offer), so the connection never compresses.
+        self._conn = WebSocketConnection(reader, writer, clock=clock)
         self._outbox: asyncio.Queue[bytes] = asyncio.Queue()
         self._pending: list[str] = []
         self._flush_handle: asyncio.TimerHandle | None = None
@@ -439,7 +440,6 @@ class TciServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         handler: TciHandler,
-        deflate: bool = False,
     ) -> TciSession | None:
         """Create a session, send the init burst, launch its tasks.
 
@@ -454,9 +454,7 @@ class TciServer:
             writer.close()
             await self._guarded_disconnect(handler)
             return None
-        session = TciSession(
-            session_id, reader, writer, handler, self, self._clock, deflate=deflate
-        )
+        session = TciSession(session_id, reader, writer, handler, self, self._clock)
         self._sessions[session_id] = session
         for line in burst:
             session._outbox.put_nowait(make_frame(WS_OP_TEXT, line.encode("utf-8")))
@@ -491,7 +489,10 @@ class TciServer:
             )
             return
         _target, headers = parsed
-        result = upgrade_response(headers, allow=self._allow)
+        # Design 4.2: the TCI upgrade ignores the extension offer (the
+        # 101 carries no Sec-WebSocket-Extensions), so no TCI frame is
+        # ever compressed, even when the client offers deflate.
+        result = upgrade_response(headers, allow=self._allow, allow_deflate=False)
         if isinstance(result, UpgradeDecline):
             await self._refuse(writer, result)
             return
@@ -507,7 +508,4 @@ class TciServer:
         except OSError:
             writer.close()
             return
-        # ``result`` is accepted here, so it carries the negotiated
-        # permessage-deflate flag (real clients compress once we accept;
-        # dropping it made the reader die on the first compressed frame).
-        await self._open_session(reader, writer, handler, deflate=result.deflate)
+        await self._open_session(reader, writer, handler)

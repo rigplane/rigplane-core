@@ -211,6 +211,7 @@ class WebSocketConnection:
         self._closed = False
         self._deflate = deflate
         self._fragmented_opcode: int = 0
+        self._fragmented_rsv1 = False
         self._fragments: list[bytes] = []
         self._last_pong: float = clock()
         self._last_frame: float = clock()
@@ -290,11 +291,14 @@ class WebSocketConnection:
                 if fin:
                     data = b"".join(self._fragments)
                     op = self._fragmented_opcode
+                    compressed = self._fragmented_rsv1
                     self._fragments = []
                     self._fragmented_opcode = 0
-                    # RSV1 is set on the FIRST fragment only (per RFC 7692)
-                    # Decompression was deferred to reassembly
-                    if rsv1 and self._deflate:
+                    self._fragmented_rsv1 = False
+                    # RSV1 is set on the FIRST fragment only (RFC 7692
+                    # S7.2.1): the final continuation usually carries
+                    # none, so the stored flag decides, not this bit.
+                    if compressed and self._deflate:
                         data = self._decompress(data)
                     return op, data
                 continue
@@ -302,6 +306,7 @@ class WebSocketConnection:
             # Data frame (text or binary)
             if not fin:
                 self._fragmented_opcode = opcode
+                self._fragmented_rsv1 = rsv1
                 self._fragments = [payload]
                 continue
 
@@ -454,18 +459,24 @@ def make_upgrade_response(
     headers: Mapping[str, str],
     *,
     protocol: str = "",
+    allow_deflate: bool = True,
 ) -> UpgradeAccept | UpgradeDecline:
     """Validate ``Sec-WebSocket-Key`` and build the 101 response bytes.
 
     The response layout matches what ``web`` has always sent (accept
     header, optional deflate line, optional subprotocol line).
+    ``allow_deflate=False`` ignores the extension offer entirely: the
+    101 carries no ``Sec-WebSocket-Extensions`` line, so no frame on
+    the connection is ever compressed (the TCI leaf per design 4.2).
     """
     key = headers.get("sec-websocket-key", "")
     if not key:
         return UpgradeDecline(400, "Bad Request", b"Missing key")
     accept = make_accept_key(key)
     ext_header = headers.get("sec-websocket-extensions", "")
-    deflate_resp = negotiate_deflate(ext_header) if ext_header else None
+    deflate_resp = (
+        negotiate_deflate(ext_header) if (ext_header and allow_deflate) else None
+    )
     ext_line = f"Sec-WebSocket-Extensions: {deflate_resp}\r\n" if deflate_resp else ""
     response = (
         "HTTP/1.1 101 Switching Protocols\r\n"
@@ -483,9 +494,14 @@ def upgrade_response(
     headers: Mapping[str, str],
     *,
     allow: AllowHeaders,
+    allow_deflate: bool = True,
 ) -> UpgradeAccept | UpgradeDecline:
-    """Full server-side upgrade: policy, key check, accept, response bytes."""
+    """Full server-side upgrade: policy, key check, accept, response bytes.
+
+    ``allow_deflate=False`` answers 101 without the extension header,
+    so the connection never negotiates compression (the TCI leaf).
+    """
     decline = check_upgrade_headers(headers, allow=allow)
     if decline is not None:
         return decline
-    return make_upgrade_response(headers)
+    return make_upgrade_response(headers, allow_deflate=allow_deflate)

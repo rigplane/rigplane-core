@@ -15,6 +15,8 @@ import asyncio
 import struct
 import zlib
 
+import pytest
+
 from rigplane.tci.server import TciServer
 from rigplane.tci.ws import (
     WS_OP_BINARY,
@@ -23,6 +25,7 @@ from rigplane.tci.ws import (
     WS_OP_PONG,
     WS_OP_TEXT,
     WebSocketConnection,
+    WebSocketError,
     make_upgrade_response,
     upgrade_response,
 )
@@ -181,8 +184,9 @@ async def test_tci_accept_ignores_deflate_offer() -> None:
     )
     await server._accept_request(reader, writer)
     assert writer.buffer.startswith(b"HTTP/1.1 101 ")
-    head_end = bytes(writer.buffer).index(b"\r\n\r\n")
+    head_end = bytes(writer.buffer).index(b"\r\n\r\n") + 4
     assert b"sec-websocket-extensions" not in bytes(writer.buffer[:head_end]).lower()
+    del writer.buffer[:head_end]
     try:
         session = server.sessions[0]
         assert session._conn.deflate_enabled is False
@@ -196,18 +200,17 @@ async def test_tci_accept_ignores_deflate_offer() -> None:
 
 
 async def test_compressed_frame_without_grant_is_refused() -> None:
-    """RSV1 without a negotiated deflate ends the session cleanly."""
+    """RSV1 without a negotiated deflate is a protocol violation.
+
+    The connection raises ``WebSocketError``; the session reader loop
+    turns that into a clean teardown (pinned separately).
+    """
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     conn = WebSocketConnection(reader, writer, clock=FakeClock())
     reader.feed_data(client_frame(WS_OP_TEXT, b"vfo:0,0,1;", rsv1=True))
-    try:
+    with pytest.raises(WebSocketError, match="permessage-deflate not negotiated"):
         await conn.recv()
-    except EOFError:
-        pass
-    else:
-        raise AssertionError("RSV1 without deflate must end the session")
-    assert writer.is_closing()
 
 
 async def test_single_compressed_frame_still_decompresses() -> None:
