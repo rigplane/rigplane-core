@@ -22,12 +22,11 @@ from dataclasses import replace
 
 import pytest
 
-from _helpers import wrap_civ_in_udp
+from _helpers import report_receiver_selection, wrap_civ_in_udp
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.command_map import CommandMap
 from rigplane.core.exceptions import CommandError, CommandRejectedError, TimeoutError
 from rigplane.radio import IcomRadio
-from rigplane.types import CivFrame
 from test_radio import MockTransport
 
 MODELS = [
@@ -59,19 +58,6 @@ def _frames(transport: MockTransport) -> list[tuple[int, bytes]]:
     return [(frame.command, frame.data) for frame in frames]
 
 
-def _observe_selection(radio: IcomRadio, value: int) -> None:
-    """The radio reports its selection (``07 D2``) through the RX path."""
-    radio._civ_runtime._update_state_cache_from_frame(
-        CivFrame(
-            to_addr=CONTROLLER_ADDR,
-            from_addr=radio.profile.civ_addr,
-            command=0x07,
-            sub=None,
-            data=bytes([0xD2, value]),
-        )
-    )
-
-
 def _split_off_action(radio: IcomRadio):
     """A routed action whose frame (``0F 00``) waits for the radio's ACK."""
 
@@ -97,28 +83,78 @@ async def _until(condition, *, deadline: float = 5.0) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", MODELS)
-async def test_an_unreported_selection_is_read_back_before_skipping_the_switch(
-    model,
+@pytest.mark.parametrize(("physical", "requested"), [(0, 0), (0, 1), (1, 0), (1, 1)])
+async def test_an_unreported_selection_is_read_back_before_routing(
+    model, physical, requested
 ) -> None:
-    """SUB is physically selected and the initial ``07 D2`` answer was lost:
-    the mirror still holds its default MAIN. A MAIN request must read the
-    selection back and switch, not send its frame to SUB."""
+    """The initial ``07 D2`` answer was lost, so the mirror holds its default
+    MAIN whatever the radio has selected. The selection is read back before
+    either the switch or the restoration target is decided: the action
+    lands on the requested receiver and the radio ends on the receiver it
+    started on."""
     transport = MockTransport()
     radio = _radio(model, transport)
     assert radio._radio_state.active == "MAIN"  # the dataclass default
+    transport.queue_response_on_send(1, _reply(radio, 0x07, bytes([0xD2, physical])))
+    for n in (2, 3, 4):
+        transport.queue_response_on_send(n, _reply(radio, 0xFB))
+    await radio._run_with_receiver_vfo_fallback(
+        receiver=requested, operation="routed_test", action=_split_off_action(radio)
+    )
+    expected = [(0x07, b"\xd2")]  # read the selection
+    if requested != physical:
+        expected.append((0x07, bytes([0xD0 + requested])))  # select it
+    expected.append((0x0F, b"\x00"))  # the action, on the requested receiver
+    if requested != physical:
+        expected.append((0x07, bytes([0xD0 + physical])))  # restore
+    assert _frames(transport) == expected
+    assert radio._radio_state.active == ("SUB" if physical else "MAIN")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+async def test_a_malformed_selection_reply_is_not_a_reading(model) -> None:
+    """``07 D2 02`` is no selection: it must neither move the mirror nor let
+    a routed operation skip its readback."""
+    transport = MockTransport()
+    radio = _radio(model, transport)
+    report_receiver_selection(radio, 0x02)
+    assert radio._radio_state.active == "MAIN"
     transport.queue_response_on_send(1, _reply(radio, 0x07, b"\xd2\x01"))
     for n in (2, 3, 4):
         transport.queue_response_on_send(n, _reply(radio, 0xFB))
     await radio._run_with_receiver_vfo_fallback(
         receiver=0, operation="routed_test", action=_split_off_action(radio)
     )
-    assert _frames(transport) == [
-        (0x07, b"\xd2"),  # read the selection: SUB
-        (0x07, b"\xd0"),  # select MAIN
-        (0x0F, b"\x00"),  # the action, on MAIN
-        (0x07, b"\xd1"),  # restore SUB
-    ]
+    assert _frames(transport)[:2] == [(0x07, b"\xd2"), (0x07, b"\xd0")]
     assert radio._radio_state.active == "SUB"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+async def test_a_selection_with_a_lost_ack_is_read_back_before_routing(model) -> None:
+    """MAIN was reported, then a SUB selection lost its ACK — the radio may
+    have applied it. The next routed MAIN operation must not trust the
+    earlier reading: it reads the selection back first."""
+    transport = MockTransport()
+    radio = _radio(model, transport)
+    radio._civ_get_timeout = 0.2
+    report_receiver_selection(radio, 0x00)
+    with pytest.raises((TimeoutError, CommandError)):
+        await radio.select_receiver(1)  # 07 D1, never answered
+    transport.queue_response_on_send(2, _reply(radio, 0x07, b"\xd2\x01"))
+    for n in (3, 4, 5):
+        transport.queue_response_on_send(n, _reply(radio, 0xFB))
+    await radio._run_with_receiver_vfo_fallback(
+        receiver=0, operation="routed_test", action=_split_off_action(radio)
+    )
+    assert _frames(transport) == [
+        (0x07, b"\xd1"),  # the selection whose ACK was lost
+        (0x07, b"\xd2"),  # read back: SUB
+        (0x07, b"\xd0"),
+        (0x0F, b"\x00"),
+        (0x07, b"\xd1"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -126,7 +162,7 @@ async def test_an_unreported_selection_is_read_back_before_skipping_the_switch(
 async def test_a_reported_selection_needs_no_readback(model) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
-    _observe_selection(radio, 0x00)
+    report_receiver_selection(radio, 0x00)
     transport.queue_response_on_send(1, _reply(radio, 0xFB))
     await radio._run_with_receiver_vfo_fallback(
         receiver=0, operation="routed_test", action=_split_off_action(radio)
@@ -174,7 +210,7 @@ async def test_a_competing_routed_request_is_refused_while_a_switch_is_pending(
     SUB request completes untouched."""
     transport = MockTransport()
     radio = _radio(model, transport)
-    _observe_selection(radio, 0x00)
+    report_receiver_selection(radio, 0x00)
     transport.queue_response_on_send(2, _reply(radio, 0xFB))  # SUB action
     transport.queue_response_on_send(3, _reply(radio, 0xFB))  # restore MAIN
     sub_request = asyncio.create_task(
@@ -215,7 +251,7 @@ async def test_a_later_selection_is_preserved_and_stops_our_frame(
     radio."""
     transport = MockTransport()
     radio = _radio(model, transport)
-    _observe_selection(radio, 0x00)
+    report_receiver_selection(radio, 0x00)
     transport.queue_response_on_send(1, _reply(radio, 0xFB))  # our SUB switch
     transport.queue_response_on_send(2, _reply(radio, 0xFB))  # their selection
     entered, gate = asyncio.Event(), asyncio.Event()
@@ -256,7 +292,7 @@ async def test_a_selection_change_while_our_frame_awaits_its_ack_is_reported(
     unknown (``CommandError``), never success, and our restore is skipped."""
     transport = MockTransport()
     radio = _radio(model, transport)
-    _observe_selection(radio, 0x00)
+    report_receiver_selection(radio, 0x00)
     transport.queue_response_on_send(1, _reply(radio, 0xFB))  # our SUB switch
     ours = asyncio.create_task(
         radio._run_with_receiver_vfo_fallback(
@@ -301,7 +337,7 @@ async def test_cancel_waits_for_a_restoration_that_times_out_and_retries(
     after it — with the cancellation."""
     radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
     radio._connected = True
-    _observe_selection(radio, 0x00)
+    report_receiver_selection(radio, 0x00)
     restore_started = asyncio.Event()
     restore_gate = asyncio.Event()
     calls: list[str] = []
@@ -339,3 +375,47 @@ async def test_cancel_waits_for_a_restoration_that_times_out_and_retries(
         await asyncio.gather(task, return_exceptions=True)
     assert calls == ["SUB", "MAIN", "MAIN"]
     assert radio._radio_state.active == "MAIN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+async def test_a_restoration_retry_never_overwrites_a_later_selection(model) -> None:
+    """The restoration times out; meanwhile another caller makes a newer
+    selection. The retry is skipped: the newer selection owns the radio."""
+    radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
+    radio._connected = True
+    report_receiver_selection(radio, 0x00)
+    restore_started = asyncio.Event()
+    restore_gate = asyncio.Event()
+    calls: list[str] = []
+
+    async def fake_set_vfo_wire(vfo: str) -> None:
+        calls.append(vfo)
+        if vfo == "MAIN":
+            restore_started.set()
+            await restore_gate.wait()
+            raise TimeoutError("restore timed out")
+
+    radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
+
+    async def action(is_current=None):
+        return "written"
+
+    task = asyncio.create_task(
+        radio._run_with_receiver_vfo_fallback(
+            receiver=1, operation="routed_test", action=action
+        )
+    )
+    try:
+        await asyncio.wait_for(restore_started.wait(), 5)
+        with radio._vfo_selection_change():  # the newer selection
+            radio._radio_state.active = "SUB"
+        restore_gate.set()
+        assert await asyncio.wait_for(task, 5) == "written"
+    finally:
+        restore_gate.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert calls == ["SUB", "MAIN"]  # no retry over the newer selection
+    assert radio._radio_state.active == "SUB"

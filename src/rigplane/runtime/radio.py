@@ -552,6 +552,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # dataclass default "MAIN" is never mistaken for a reading
         # (MOR-3623).
         self._active_receiver_civ_epoch: int | None = None
+        # When each receiver's frequency was last written: a frequency
+        # observation older than that is not band evidence (MOR-3623).
+        self._freq_written_monotonic: dict[int, float] = {}
         self._token_task: asyncio.Task[None] | None = None
         self._auto_reconnect = auto_reconnect
         self._reconnect_delay = reconnect_delay
@@ -2828,6 +2831,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_freq")
+        self._freq_written_monotonic[receiver] = time.monotonic()
         if receiver == RECEIVER_MAIN:
             await self._set_frequency_main(freq_hz)
             return
@@ -3069,7 +3073,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return value
 
     def _observed_freq_hz(self, receiver: int) -> int | None:
-        """The receiver's fresh observed frequency, or ``None`` when unknown."""
+        """The receiver's fresh observed frequency, or ``None`` when unknown.
+
+        An observation made before the receiver's last frequency write is
+        not current: the write may have moved it to another band.
+        """
         try:
             field = self._state_store.snapshot().field(
                 FieldPath.active(str(receiver), "freq_mode", "freq_hz")
@@ -3078,6 +3086,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return None
         value = field.value
         if field.freshness is not FreshnessState.FRESH or type(value) is not int:
+            return None
+        written = self._freq_written_monotonic.get(receiver)
+        if written is not None and field.last_observed_monotonic <= written:
             return None
         return value
 
@@ -4913,6 +4924,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"profile {self._profile.model} declares no VFO select code for {name}"
             )
         civ = self._commands.set_vfo(code, to_addr=self._radio_addr)
+        # The selection may change once this frame is submitted, whatever
+        # its answer: the mirror is no longer established until a caller
+        # confirms the outcome or the radio reports it (MOR-3623).
+        self._active_receiver_civ_epoch = None
         with self._vfo_selection_change():
             resp = await self._send_civ_expect(civ, label="set_vfo")
             ack = parse_ack_nak(resp)

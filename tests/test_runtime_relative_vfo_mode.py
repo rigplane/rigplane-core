@@ -10,6 +10,7 @@ from rigplane.core.exceptions import CommandError, CommandRejectedError, Timeout
 from rigplane.core.radio_protocol import RelativeVfoModeWritable, RelativeVfoState
 from rigplane.runtime.radio import IcomRadio
 
+from _helpers import report_receiver_selection
 from test_runtime_relative_vfo_frequency import FakeCivTransport, response
 
 
@@ -223,6 +224,8 @@ async def test_selection_methods_mark_epoch_until_completion(
 
     monkeypatch.setattr(radio, "_check_connected", lambda: None)
     monkeypatch.setattr(radio, "_send_civ_raw", send)
+    if (model, method) in _ROUTED_SELECTIONS:
+        report_receiver_selection(radio, 0)  # MAIN, as the radio reported it
     initial_epoch = radio._vfo_selection_epoch
     task = asyncio.create_task(getattr(radio, method)(*args, **kwargs))
     try:

@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, Mock, patch
 
+from _helpers import report_receiver_selection
 import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
@@ -307,6 +308,8 @@ def _connected_icom(*, model: str | None = "IC-7610") -> IcomRadio:
     # Bypass _check_connected without touching transport internals.
     radio._civ_runtime._check_connected = lambda: None  # type: ignore[method-assign]
     radio._civ_runtime._connected = True  # type: ignore[attr-defined]
+    if radio.profile.receiver_count > 1:
+        report_receiver_selection(radio, 0)  # MAIN, as the radio reported it
     return radio
 
 

@@ -60,6 +60,7 @@ from rigplane.core.types import AudioPeakFilter, FilterShape
 from rigplane.radio import IcomRadio
 
 from _helpers import wrap_civ_in_udp
+from _helpers import report_receiver_selection
 from test_radio import MockTransport
 
 # ---------------------------------------------------------------------------
@@ -391,6 +392,7 @@ async def _reader(row: _Race) -> AsyncIterator[tuple[IcomRadio, MockTransport]]:
             return None
 
         radio._set_vfo_wire = _instant_select  # type: ignore[method-assign]
+    report_receiver_selection(radio, 0)  # MAIN, as the radio reported it
     radio._civ_runtime.start_worker()
     try:
         yield radio, transport

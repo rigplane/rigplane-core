@@ -15,7 +15,7 @@ from rigplane.commands import (
     _CMD_MODE_GET,
     build_civ_frame,
 )
-from rigplane.types import Mode, PacketType, bcd_encode
+from rigplane.types import CivFrame, Mode, PacketType, bcd_encode
 
 CIV_HEADER_SIZE = 0x15
 
@@ -62,3 +62,21 @@ def ack_response() -> bytes:
     """Build a CI-V ACK wrapped in UDP."""
     civ = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK)
     return wrap_civ_in_udp(civ)
+
+
+def report_receiver_selection(radio, receiver: int) -> None:
+    """The radio reports its MAIN/SUB selection (``07 D2 00``/``01``).
+
+    Fed through the RX path like a real answer, so ``RadioState.active``
+    is a reading the routed MAIN/SUB operations may trust (MOR-3623),
+    not the dataclass default.
+    """
+    radio._civ_runtime._update_state_cache_from_frame(
+        CivFrame(
+            to_addr=CONTROLLER_ADDR,
+            from_addr=radio.profile.civ_addr,
+            command=0x07,
+            sub=None,
+            data=bytes([0xD2, receiver]),
+        )
+    )

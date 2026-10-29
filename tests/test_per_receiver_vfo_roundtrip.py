@@ -23,6 +23,7 @@ from rigplane.exceptions import CommandError
 from rigplane.radio import IcomRadio
 from rigplane.types import Mode, bcd_encode
 
+from _helpers import report_receiver_selection
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 
@@ -42,6 +43,7 @@ def ic7610(mock_transport: MockTransport):
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    report_receiver_selection(r, 0)  # MAIN, as the radio reported it
     yield r
     r._connected = False  # reset _conn_state so __del__ stays quiet
 

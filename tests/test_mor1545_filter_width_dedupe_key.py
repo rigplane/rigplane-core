@@ -27,6 +27,7 @@ from rigplane.core.exceptions import CommandRejectedError
 from rigplane.radio import IcomRadio
 
 from _helpers import wrap_civ_in_udp
+from _helpers import report_receiver_selection
 from test_radio import MockTransport
 
 _IC9700_ADDR = 0xA2
@@ -88,6 +89,7 @@ def ic7610_radio(mock_transport: MockTransport) -> Iterator[IcomRadio]:
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    report_receiver_selection(r, 0)  # MAIN, as the radio reported it
     yield r
     r._connected = False
 
@@ -107,6 +109,7 @@ def ic9700_radio(mock_transport: MockTransport) -> Iterator[IcomRadio]:
         return None
 
     r._set_vfo_wire = instant_select  # type: ignore[method-assign]
+    report_receiver_selection(r, 0)  # MAIN, as the radio reported it
     yield r
     r._connected = False
 

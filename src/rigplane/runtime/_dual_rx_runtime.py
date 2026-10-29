@@ -87,12 +87,16 @@ def _relative_vfo_routing_available(
 
 
 class _SelectionWatch:
-    """Notes whether another task started a VFO selection change (MOR-3623)."""
+    """Notes whether another task started a VFO selection change (MOR-3623).
 
-    __slots__ = ("owner", "moved")
+    ``owners`` holds the routed operation's own task and the cleanup tasks
+    it runs its restoration in: their selection changes are its own.
+    """
+
+    __slots__ = ("owners", "moved")
 
     def __init__(self, owner: "asyncio.Task[Any] | None") -> None:
-        self.owner = owner
+        self.owners: set[asyncio.Task[Any] | None] = {owner}
         self.moved = False
 
 
@@ -107,11 +111,15 @@ class _JoinedCleanup:
     cancellation (MOR-3623).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, watch: _SelectionWatch) -> None:
         self.cancelled = False
+        self._watch = watch
 
     async def run(self, step: "Awaitable[None]") -> None:
         task = asyncio.ensure_future(step)
+        # The step restores this operation's own selection: not a foreign
+        # change for the operation's watch.
+        self._watch.owners.add(task)
         while not task.done():
             try:
                 # ``wait`` never cancels the step it waits for.
@@ -161,7 +169,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         owners = self._vfo_selection_owners
         owners[owner] = owners.get(owner, 0) + 1
         for watch in self._vfo_selection_watches:
-            if watch.owner is not owner:
+            if owner not in watch.owners:
                 watch.moved = True
         self._vfo_selection_epoch <<= 1
         try:
@@ -311,8 +319,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
           selection change is in flight, and when another task starts one
           before its action: neither can route its frame through the
           other's selection.
-        * "No switch needed" rests on a reading: an active receiver not
-          established by the radio is read back first
+        * The switch decision and the restoration target rest on a reading:
+          an active receiver not established by the radio is read back first
           (:meth:`_established_active_receiver`).
         * The selection is ours while no other task started a selection
           change since this operation began (:meth:`_watch_vfo_selection`)
@@ -323,9 +331,9 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         * Restoration runs only while the selection is still ours: a later
           selection by anyone, even of the same receiver, owns the radio
           and is preserved.
-        * Restoration (with its one timeout retry) runs in its own task and
-          is joined: a cancellation of the caller waits for it, then
-          propagates.
+        * Restoration (with its one timeout retry, skipped once a later
+          selection owns the radio) runs in its own task and is joined: a
+          cancellation of the caller waits for it, then propagates.
 
         The commander's interference scope is deliberately not used here:
         it marks every foreign frame, including commands that cannot move
@@ -336,11 +344,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             raise CommandRejectedError(
                 f"{operation}: the receiver selection is changing; retry"
             )
-        cleanup = _JoinedCleanup()
         with self._vfo_selection_change(), self._watch_vfo_selection() as watch:
-            current = self._active_receiver_name()
-            if current == target:
-                current = await self._established_active_receiver(operation=operation)
+            cleanup = _JoinedCleanup(watch)
+            # Both the switch decision and the restoration target rest on a
+            # reading, never on the dataclass default.
+            current = await self._established_active_receiver(operation=operation)
             if current != target:
                 if target == "SUB" and self._profile.vfo_sub_code is None:
                     raise CommandError(
@@ -407,6 +415,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                         await self._restore_routed_selection(
                             cleanup,
                             restore_selection,
+                            selection_is_ours,
                             operation=operation,
                             current=current,
                         )
@@ -450,6 +459,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self,
         cleanup: "_JoinedCleanup",
         restore: "Callable[[], Awaitable[None]]",
+        selection_is_ours: "Callable[[], bool]",
         *,
         operation: str,
         current: str,
@@ -459,12 +469,16 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         Not swallowed: the radio would silently remain on the temporary
         receiver. The first attempt may fail because a prior
         fire-and-forget ACK sink consumed the timeout budget; a second
-        failure propagates and leaves the selection unestablished.
+        failure propagates and leaves the selection unestablished. The
+        retry is skipped once a later selection owns the radio.
         """
         try:
             try:
                 await cleanup.run(restore())
             except TimeoutError:
+                if not selection_is_ours():
+                    self._active_receiver_civ_epoch = None
+                    return
                 logger.warning(
                     "%s: timeout restoring VFO receiver to %s, retrying once",
                     operation,

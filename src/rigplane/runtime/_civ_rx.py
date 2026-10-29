@@ -2163,7 +2163,7 @@ class CivRuntime:
             elif frame.command == 0x07 and frame.data and len(frame.data) >= 2:
                 sub07 = frame.data[0]
                 val07 = frame.data[1]
-                if sub07 == 0xD2:
+                if sub07 == 0xD2 and val07 in (0x00, 0x01):
                     host._last_vfo = "SUB" if val07 else "MAIN"
                 elif sub07 == 0xC2:
                     host._state_cache.dual_watch = bool(val07)
@@ -3031,7 +3031,7 @@ class CivRuntime:
         elif frame.command == 0x07 and len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
-            if sub07 == 0xD2:
+            if sub07 == 0xD2 and len(frame.data) == 2 and val07 in (0x00, 0x01):
                 observations.append(
                     self._observation(
                         FieldPath.global_("slow_state", "active"),
@@ -3488,6 +3488,10 @@ class CivRuntime:
             sub07 = frame.data[0]
             val07 = frame.data[1]
             if sub07 == 0xD2:
+                if len(frame.data) != 2 or val07 not in (0x00, 0x01):
+                    # Not a selection reading: never let it establish the
+                    # mirror the routed operations trust (MOR-3623).
+                    return
                 new_active = "SUB" if val07 else "MAIN"
                 # The radio's own reading: the routed MAIN/SUB operations
                 # may now trust the mirror (MOR-3623).

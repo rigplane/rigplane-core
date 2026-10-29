@@ -20,11 +20,10 @@ from __future__ import annotations
 
 import pytest
 
-from rigplane.commands import CONTROLLER_ADDR
 from rigplane.radio import IcomRadio
 from rigplane.radio_protocol import ReceiverBankCapable, VfoSlotCapable
-from rigplane.types import CivFrame
 
+from _helpers import report_receiver_selection
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 
@@ -44,6 +43,8 @@ def _make_radio(model: str, mock_transport: MockTransport) -> IcomRadio:
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    if r.profile.receiver_count > 1:
+        report_receiver_selection(r, 0)  # MAIN, as the radio reported it
     return r
 
 
@@ -78,20 +79,6 @@ def ic705(mock_transport: MockTransport):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _report_selection(radio: IcomRadio, receiver: int) -> None:
-    """The radio reports its MAIN/SUB selection (``07 D2``) — the reading
-    a routed receiver operation needs before it skips a switch (MOR-3623)."""
-    radio._civ_runtime._update_state_cache_from_frame(
-        CivFrame(
-            to_addr=CONTROLLER_ADDR,
-            from_addr=radio.profile.civ_addr,
-            command=0x07,
-            sub=None,
-            data=bytes([0xD2, receiver]),
-        )
-    )
 
 
 def _civ_bytes(packets: list[bytes]) -> list[bytes]:
@@ -308,7 +295,6 @@ class TestSetVfoSlot:
         # when receiver=0 the fallback detects current==target and does NOT
         # switch, but the surrounding pattern still emits the slot frame
         # directly. No ACK queueing needed.
-        _report_selection(ic7610, 0)
         await ic7610.set_vfo_slot("A", receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
         assert SLOT_A_7610 in frames
@@ -317,7 +303,6 @@ class TestSetVfoSlot:
     async def test_ic7610_main_slot_b_emits_0x07_0x01(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        _report_selection(ic7610, 0)
         await ic7610.set_vfo_slot("B", receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
         assert SLOT_B_7610 in frames
@@ -356,7 +341,6 @@ class TestSetVfoSlot:
     ) -> None:
         # IC-9700 also dual-RX with same wire scheme; receiver=0 (MAIN) is
         # the reported selection, so no select/restore round-trip.
-        _report_selection(ic9700, 0)
         await ic9700.set_vfo_slot("A", receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
         assert SLOT_A_9700 in frames
@@ -446,7 +430,6 @@ class TestGetVfoSlot:
     async def test_ic7610_after_set_b_returns_b(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        _report_selection(ic7610, 0)
         await ic7610.set_vfo_slot("B", receiver=0)
         assert await ic7610.get_vfo_slot(receiver=0) == "B"
 
@@ -455,7 +438,6 @@ class TestGetVfoSlot:
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
         # Set MAIN.B; SUB stays on A.
-        _report_selection(ic7610, 0)
         await ic7610.set_vfo_slot("B", receiver=0)
         assert await ic7610.get_vfo_slot(receiver=0) == "B"
         assert await ic7610.get_vfo_slot(receiver=1) == "A"

@@ -17,6 +17,7 @@ from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame, Mode, bcd_encode
 
 # Reuse helpers from test_radio
+from _helpers import report_receiver_selection
 from test_radio import (
     MockTransport,
     _ack_response,
@@ -47,6 +48,7 @@ def radio(mock_transport: MockTransport) -> IcomRadio:
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    report_receiver_selection(r, 0)  # MAIN, as the radio reported it
     return r
 
 

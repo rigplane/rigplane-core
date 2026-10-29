@@ -19,6 +19,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.exceptions import TimeoutError
 from rigplane.radio import IcomRadio
 
+from _helpers import report_receiver_selection
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 _IC9700_ADDR = 0xA2
@@ -35,6 +36,7 @@ def ic9700_radio() -> IcomRadio:
     profile shape ``_run_with_receiver_vfo_fallback`` exists for."""
     r = IcomRadio("192.168.1.102", timeout=0.05, model="IC-9700")
     r._connected = True
+    report_receiver_selection(r, 0)  # MAIN, as the radio reported it
     yield r
     r._connected = False
 

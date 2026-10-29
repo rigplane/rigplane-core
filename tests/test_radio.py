@@ -54,6 +54,7 @@ from rigplane.types import (
 from _helpers import ack_response as _ack_response
 from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
+from _helpers import report_receiver_selection
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
@@ -3716,15 +3717,7 @@ class TestDspLevelParity:
         # IC-7610 profile omits 0x1A 0x06 from cmd29 (wfview Command29=false): sub
         # DATA mode uses VFO select + plain 0x1A 0x06. A reported SUB selection
         # (07 D2 01, MOR-3623) avoids extra VFO traffic.
-        radio._civ_runtime._update_state_cache_from_frame(
-            CivFrame(
-                to_addr=CONTROLLER_ADDR,
-                from_addr=radio.profile.civ_addr,
-                command=0x07,
-                sub=None,
-                data=b"\xd2\x01",
-            )
-        )
+        report_receiver_selection(radio, 1)
         mock_transport.queue_response(_ack_response())
         await radio.set_data_mode(3, receiver=1)
         assert mock_transport.sent_packets[-1].endswith(b"\x1a\x06\x03\xfd")
@@ -4735,6 +4728,7 @@ class TestToneTsqlDualRxCmd29Guard:
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
+        report_receiver_selection(r, 0)  # MAIN, as the radio reported it
         yield r
         r._connected = False  # reset _conn_state so __del__ stays quiet
 
@@ -4984,6 +4978,7 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
+        report_receiver_selection(r, 0)  # MAIN, as the radio reported it
         yield r
         r._connected = False  # reset _conn_state so __del__ stays quiet
 

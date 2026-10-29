@@ -60,6 +60,7 @@ from rigplane.types import CivFrame
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebConfig, WebServer
+from _helpers import report_receiver_selection
 from test_icom_memory_entry import _block, _ic9700_reply
 from test_radio import MockTransport, _wrap_civ_in_udp
 from test_web_server import (
@@ -256,7 +257,7 @@ async def test_set_on_the_sub_receiver_switches_and_restores(transport) -> None:
     ``set_mode`` uses), and the selection is restored after the write
     (pre-review P1, MOR-3623)."""
     radio = _radio(transport)
-    radio._radio_state.active = "MAIN"
+    report_receiver_selection(radio, 0)
     for n in (1, 2, 3):
         transport.queue_response_on_send(n, _reply(0xFB))
     await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
@@ -271,7 +272,7 @@ async def test_set_on_the_sub_receiver_switches_and_restores(transport) -> None:
 @pytest.mark.asyncio
 async def test_get_on_the_sub_receiver_switches_and_restores(transport) -> None:
     radio = _radio(transport)
-    radio._radio_state.active = "MAIN"
+    report_receiver_selection(radio, 0)
     transport.queue_response_on_send(1, _reply(0xFB))
     transport.queue_response_on_send(2, _reply(0x0F, bytes([0x11])))
     transport.queue_response_on_send(3, _reply(0xFB))
@@ -292,7 +293,7 @@ async def test_set_on_main_with_sub_selected_switches_and_restores(
     SUB is selected must switch to MAIN first, or the bare 0F would write
     SUB by accident — the dispatch path has no poller-side dance."""
     radio = _radio(transport)
-    radio._radio_state.active = "SUB"
+    report_receiver_selection(radio, 1)
     for n in (1, 2, 3):
         transport.queue_response_on_send(n, _reply(0xFB))
     await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=0)
@@ -311,7 +312,7 @@ async def test_a_lost_ack_on_the_initial_switch_still_restores(transport) -> Non
     The restoration's ACK is bound to the SECOND send: the first (the
     lost switch) stays unanswered."""
     radio = _radio(transport)
-    radio._radio_state.active = "MAIN"
+    report_receiver_selection(radio, 0)
     transport.queue_response_on_send(2, _reply(0xFB))
     with pytest.raises((TimeoutError, CommandError)):
         await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
@@ -330,7 +331,7 @@ async def test_an_invalid_direction_changes_nothing_not_even_the_selection(
     routing — an invalid value raises ValueError with zero wire traffic,
     even when the requested receiver is not the selected one."""
     radio = _radio(transport)
-    radio._radio_state.active = "MAIN"
+    report_receiver_selection(radio, 0)
     with pytest.raises(ValueError):
         await radio.set_repeater_shift(RepeaterShiftDirection.ARS, receiver=1)
     assert _sent_frames(transport) == []
@@ -345,7 +346,7 @@ async def test_a_foreign_selection_during_the_action_skips_the_restore(
     action ran, our restoration is skipped — a blind restore would overwrite
     their selection. Their selection owns the radio."""
     radio = _radio(transport)
-    radio._radio_state.active = "MAIN"
+    report_receiver_selection(radio, 0)
     calls: list[str] = []
 
     async def fake_set_vfo_wire(vfo: str) -> None:
@@ -373,7 +374,7 @@ async def test_cancellation_during_the_restore_waits_for_it(transport) -> None:
     the caller does not finish before the restoration did — then the
     cancellation propagates (simulated; fake wire only)."""
     radio = _radio(transport)
-    radio._radio_state.active = "MAIN"
+    report_receiver_selection(radio, 0)
     restore_started = asyncio.Event()
     restore_gate = asyncio.Event()
     calls: list[str] = []
@@ -689,6 +690,20 @@ async def test_runtime_set_mode_admits_dd_by_band(transport, freq, admitted) -> 
         with pytest.raises(CommandUnsupportedError):
             await radio.set_mode("DD")
         assert _sent_frames(transport) == []
+
+
+@pytest.mark.asyncio
+async def test_a_retune_makes_the_old_band_evidence_stale(transport) -> None:
+    """23 cm was observed, then the receiver was retuned to 2 m and no
+    readback has arrived yet: the 23 cm reading is not band evidence any
+    more, so DD is refused and nothing is sent."""
+    radio = _radio(transport)
+    _observe_freq(radio, 1_295_000_000)
+    transport.queue_response_on_send(1, _reply(0xFB))  # the retune's ACK
+    await radio.set_freq(145_000_000)
+    with pytest.raises(CommandUnsupportedError):
+        await radio.set_mode("DD")
+    assert [f.command for f in _sent_frames(transport)] == [0x05]
 
 
 # ── Band defaults ─────────────────────────────────────────────────────
