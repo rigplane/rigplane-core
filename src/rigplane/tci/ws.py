@@ -61,6 +61,21 @@ _RSV1 = 0x40  # per-message deflate flag
 # to prevent memory exhaustion from a malicious/malformed length field.
 _MAX_WS_FRAME = 64 * 1024
 
+# Maximum retained bytes across all fragments of one incoming message.
+# A client can otherwise send non-final frames forever (each within
+# ``_MAX_WS_FRAME``) while every frame refreshes ``last_activity``,
+# defeating the watchdog and growing memory without bound. Four times
+# the single-frame limit: ~60x above any legitimate message on this
+# path (browser control JSON is a few KiB; one TX audio frame is
+# 48 kHz x 20 ms x 2 ch x 2 B = 3840 B PCM16, less when Opus-coded),
+# so no legitimate sender fragments anywhere near this budget.
+_MAX_MESSAGE_BYTES = 4 * _MAX_WS_FRAME
+
+# Maximum fragments retained for one incoming message. Empty
+# continuations carry no bytes but each occupies a list slot, so the
+# count is bounded separately from the byte total.
+_MAX_FRAGMENTS = 64
+
 # zlib flush marker appended by deflate, stripped per RFC 7692 §7.2.1
 _DEFLATE_TAIL = b"\x00\x00\xff\xff"
 
@@ -287,6 +302,20 @@ class WebSocketConnection:
             if opcode == WS_OP_CONTINUATION:
                 if not self._fragments:
                     raise WebSocketError("unexpected continuation frame")
+                retained = sum(map(len, self._fragments))
+                if (
+                    len(self._fragments) + 1 > _MAX_FRAGMENTS
+                    or retained + len(payload) > _MAX_MESSAGE_BYTES
+                ):
+                    # Bound retention before keeping this fragment: drop
+                    # what was held and refuse with 1009, like an
+                    # oversize single frame. The session teardown stays
+                    # bounded through the same EOF path.
+                    self._fragments = []
+                    self._fragmented_opcode = 0
+                    self._fragmented_rsv1 = False
+                    await self.close(1009, "message too large")
+                    raise EOFError("message too large")
                 self._fragments.append(payload)
                 if fin:
                     data = b"".join(self._fragments)
