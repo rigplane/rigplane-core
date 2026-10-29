@@ -27,7 +27,6 @@ from rigplane.tci.ws import (
     WS_OP_TEXT,
     _MAX_FRAGMENTS,
     _MAX_MESSAGE_BYTES,
-    _MAX_WS_FRAME,
     WebSocketConnection,
     WebSocketError,
     make_upgrade_response,

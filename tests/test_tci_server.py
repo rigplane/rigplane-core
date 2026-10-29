@@ -887,9 +887,7 @@ async def test_overflowed_sender_observers_still_updated() -> None:
     server = make_server(handler, clock)
     writer_a = FakeWriter()
     writer_a.block_drain()
-    session_a, writer_a2, reader_a = await open_session(
-        server, handler, writer_a
-    )
+    session_a, writer_a2, reader_a = await open_session(server, handler, writer_a)
     assert writer_a2 is writer_a
     session_b, writer_b, _reader_b = await open_session(server, handler)
     try:
@@ -904,9 +902,7 @@ async def test_overflowed_sender_observers_still_updated() -> None:
         for _ in range(MAX_QUEUED_OUTBOUND - (len(BURST) - 1)):
             reader_a.feed_data(client_frame(WS_OP_TEXT, b"fill;"))
         async with asyncio.timeout(5.0):
-            while len(handler.commands) < MAX_QUEUED_OUTBOUND - (
-                len(BURST) - 1
-            ):
+            while len(handler.commands) < MAX_QUEUED_OUTBOUND - (len(BURST) - 1):
                 await asyncio.sleep(0.005)
         assert session_a._outbox.qsize() == MAX_QUEUED_OUTBOUND
         assert handler.disconnect_calls == 0

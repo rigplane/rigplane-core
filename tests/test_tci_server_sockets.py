@@ -629,9 +629,7 @@ async def test_fragmented_bytes_overflow_bounded(
         chunk = b"y" * 60000
         await _send_fragment(client.writer, WS_OP_BINARY, chunk, fin=False)
         for _ in range(4):
-            await _send_fragment(
-                client.writer, WS_OP_CONTINUATION, chunk, fin=False
-            )
+            await _send_fragment(client.writer, WS_OP_CONTINUATION, chunk, fin=False)
         opcode, payload = await client.next_frame()
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
@@ -671,9 +669,7 @@ async def test_fragment_count_overflow_bounded(
         assert len(server.sessions) == 1
         await _send_fragment(client.writer, WS_OP_BINARY, b"", fin=False)
         for _ in range(_MAX_FRAGMENTS):
-            await _send_fragment(
-                client.writer, WS_OP_CONTINUATION, b"", fin=False
-            )
+            await _send_fragment(client.writer, WS_OP_CONTINUATION, b"", fin=False)
         opcode, payload = await client.next_frame()
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
