@@ -555,9 +555,7 @@ async def test_discover_printed_commands_replay_into_backend_config(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    lines = [
-        line.strip() for line in out.splitlines() if "rigplane --model" in line
-    ]
+    lines = [line.strip() for line in out.splitlines() if "rigplane --model" in line]
     assert len(lines) == 2
     configs = {}
     for line in lines:
@@ -581,8 +579,7 @@ def test_main_discover_profile_load_failure_exits_1(
     prev_sigint = signal.getsignal(signal.SIGINT)
     monkeypatch.setattr(sys, "argv", ["rigplane", "discover"])
     lan = [
-        {"host": "192.168.1.50", "remote_id": 2, "model": "IC-7610",
-         "address": 0x98}
+        {"host": "192.168.1.50", "remote_id": 2, "model": "IC-7610", "address": 0x98}
     ]
     monkeypatch.setattr(
         "rigplane.discovery.discover_lan_radios",

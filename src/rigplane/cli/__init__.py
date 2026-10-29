@@ -5111,13 +5111,18 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     n_radios = len(grouped)
     n_methods = total_connections
 
+    from rigplane.rig_loader import RigLoadError, discover_available_rigs
+
+    try:
+        rigs = discover_available_rigs(_rigs_dir())
+    except RigLoadError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
     print(
         f"\nFound {n_radios} radio{'s' if n_radios != 1 else ''}"
         f" with {n_methods} connection method{'s' if n_methods != 1 else ''}:\n"
     )
-    from rigplane.rig_loader import discover_available_rigs
-
-    rigs = discover_available_rigs(_rigs_dir())
     used_placeholder = False
     for radio in grouped:
         print(f"{radio['model']}:")
@@ -5131,7 +5136,22 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         for serial in radio["serial"]:
             baud = serial.get("baudrate") or serial.get("baud", "?")
             print(f"  \u2022 Serial: {serial['port']} ({baud} baud)")
-            print(f"    {_connect_command(model_arg, serial_port=serial['port'])}")
+            serial_baud = None
+            radio_addr = None
+            if rig is not None:
+                detected_baud = serial.get("baudrate") or serial.get("baud")
+                if isinstance(detected_baud, int) and detected_baud != rig.default_baud:
+                    serial_baud = detected_baud
+                detected_addr = serial.get("address")
+                if isinstance(detected_addr, int) and detected_addr != rig.civ_addr:
+                    radio_addr = detected_addr
+            command = _connect_command(
+                model_arg,
+                serial_port=serial["port"],
+                serial_baud=serial_baud,
+                radio_addr=radio_addr,
+            )
+            print(f"    {command}")
     if hamlib_payload is not None:
         print_hamlib_human(hamlib_payload)
     if used_placeholder:

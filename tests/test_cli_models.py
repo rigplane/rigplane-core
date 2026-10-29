@@ -213,9 +213,7 @@ def test_backend_for_protocol(
 
 def test_connect_command_plain_serial_has_no_extras() -> None:
     line = _models.connect_command("IC-7300", serial_port="/dev/ttyUSB0")
-    assert line == (
-        "rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status"
-    )
+    assert line == ("rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status")
 
 
 def test_connect_command_serial_baud() -> None:
@@ -223,8 +221,7 @@ def test_connect_command_serial_baud() -> None:
         "FTX-1", serial_port="/dev/ttyUSB1", serial_baud=9600
     )
     assert line == (
-        "rigplane --model FTX-1 --serial-port /dev/ttyUSB1"
-        " --serial-baud 9600 status"
+        "rigplane --model FTX-1 --serial-port /dev/ttyUSB1 --serial-baud 9600 status"
     )
 
 

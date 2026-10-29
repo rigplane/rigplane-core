@@ -728,8 +728,8 @@ The JSON payload also reports current platform limitations:
 ### Listing supported models
 
 `rigplane models` lists every profile from `rigs/*.toml` with the exact
-`--model` value to pass, the transports it offers, and the backend that will
-be used. Rows marked `profile only, no backend yet` are known profiles
+`--model` value to pass, the transports it offers, and the backends it can
+use. Rows marked `profile only, no backend yet` are known profiles
 without a backend implementation. Matching is case-insensitive and the
 profile id works too, so `--model IC-7300` and `--model icom_ic7300` resolve
 to the same radio.
@@ -739,15 +739,15 @@ rigplane models            # plain table of supported models
 rigplane models --json     # machine-readable form for setup tools
 ```
 
-The `Backend` column is the default backend for that radio. A CI-V radio that has a LAN backend uses it unless you pass `--serial-port`, which selects the serial backend; a radio without LAN always uses `serial`.
+The `Backends` column lists the backends the radio can use: `lan` (use `--host`, or let rigplane look for the radio on the LAN), `serial` or `yaesu-cat` (use `--serial-port`).
 
 ```text
---model     Radio            Transports     Backend                       Also accepted
-IC-705      Icom IC-705      LAN, USB CI-V  lan                           icom_ic705
+--model     Radio            Transports     Backends                      Also accepted
+IC-705      Icom IC-705      LAN, USB CI-V  lan, serial                   icom_ic705
 IC-7300     Icom IC-7300     USB CI-V       serial                        icom_ic7300
-IC-7300MK2  Icom IC-7300MK2  LAN, USB CI-V  lan                           icom_ic7300mk2
-IC-7610     Icom IC-7610     LAN, USB CI-V  lan                           icom_ic7610
-IC-9700     Icom IC-9700     LAN, USB CI-V  lan                           icom_ic9700
+IC-7300MK2  Icom IC-7300MK2  LAN, USB CI-V  lan, serial                   icom_ic7300mk2
+IC-7610     Icom IC-7610     LAN, USB CI-V  lan, serial                   icom_ic7610
+IC-9700     Icom IC-9700     LAN, USB CI-V  lan, serial                   icom_ic9700
 TX-500      Lab599 TX-500    USB CAT        profile only, no backend yet  lab599_tx500
 X6100       Xiegu X6100      USB CI-V       profile only, no backend yet  xiegu_x6100
 X6200       Xiegu X6200      USB CI-V       serial                        xiegu_x6200

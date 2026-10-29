@@ -11,10 +11,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import TYPE_CHECKING, Any
 
 from rigplane.backends.factory import supports_serial_model
-from rigplane.rig_loader import discover_available_rigs
+from rigplane.rig_loader import RigLoadError, discover_available_rigs
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -59,12 +60,23 @@ def supported_models_text(rigs: Mapping[str, RigConfig]) -> str:
 
 
 def connect_command(
-    model_arg: str, *, host: str | None = None, serial_port: str | None = None
+    model_arg: str,
+    *,
+    host: str | None = None,
+    serial_port: str | None = None,
+    serial_baud: int | None = None,
+    radio_addr: int | None = None,
 ) -> str:
     """Format a ready-to-copy ``rigplane ... status`` command line."""
     if host is not None:
         return f"rigplane --model {model_arg} --host {host} status"
-    return f"rigplane --model {model_arg} --serial-port {serial_port} status"
+    parts = [f"rigplane --model {model_arg} --serial-port {serial_port}"]
+    if serial_baud is not None:
+        parts.append(f"--serial-baud {serial_baud}")
+    if radio_addr is not None:
+        parts.append(f"--radio-addr 0x{radio_addr:02X}")
+    parts.append("status")
+    return " ".join(parts)
 
 
 def backend_for_protocol(protocol_type: str | None, *, serial_port: bool) -> str | None:
@@ -110,7 +122,6 @@ def describe_rig(rig: RigConfig) -> dict[str, Any]:
         "transports": transports,
         "protocol": protocol,
         "backends": backends,
-        "default_backend": backends[0] if backends else None,
         "profile_only": not backends,
     }
 
@@ -129,16 +140,21 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
         "--json",
         dest="json",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Emit machine-readable JSON instead of the plain table.",
     )
     return p
 
 
 def run(args: argparse.Namespace) -> int:
-    """Driver for ``rigplane models``. Returns a process exit code (0)."""
+    """Driver for ``rigplane models``. Returns a process exit code."""
     from rigplane.cli import _rigs_dir
 
-    rigs = discover_available_rigs(_rigs_dir())
+    try:
+        rigs = discover_available_rigs(_rigs_dir())
+    except RigLoadError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     entries = sorted(
         (describe_rig(rig) for rig in rigs.values()),
         key=lambda entry: (entry["maker"].lower(), entry["model"].lower()),
@@ -146,14 +162,14 @@ def run(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         print(json.dumps({"models": entries}, indent=2))
         return 0
-    headers = ("--model", "Radio", "Transports", "Backend", "Also accepted")
+    headers = ("--model", "Radio", "Transports", "Backends", "Also accepted")
     rows: list[tuple[str, str, str, str, str]] = [
         (
             entry["model"],
             entry["name"],
             ", ".join(entry["transports"]),
-            entry["default_backend"]
-            if entry["default_backend"] is not None
+            ", ".join(entry["backends"])
+            if entry["backends"]
             else "profile only, no backend yet",
             entry["id"],
         )
