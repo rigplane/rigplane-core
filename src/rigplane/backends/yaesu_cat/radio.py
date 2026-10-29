@@ -95,6 +95,25 @@ def _ctcss_index_to_centihz(index: int, *, domain: tuple[int, ...] | None) -> in
     return int(table_index_to_hz(index, table=domain))
 
 
+# Single-character reply fields that a CAT radio always answers with a digit.
+# The shared parser stays tolerant of any character (its round-trip contract);
+# a non-digit answer is simply not credited as liveness evidence.
+_DIGIT_REPLY_FIELDS = frozenset(
+    {
+        "state", "value", "vfo", "head", "rx", "tx", "type", "src", "func",
+        "val", "tone", "shift",
+    }
+)
+
+
+def _digit_fields_valid(result: Mapping[str, Any]) -> bool:
+    return all(
+        value.isdigit()
+        for name, value in result.items()
+        if name in _DIGIT_REPLY_FIELDS and isinstance(value, str)
+    )
+
+
 def _load_config(profile: Any) -> "RigConfig":
     """Load RigConfig from a profile name or return an existing RigConfig."""
     from ...rig_loader import RigConfig, discover_available_rigs, load_rig
@@ -1293,6 +1312,7 @@ class YaesuCatRadio:
                 raise ValueError("Malformed CAT identity")
         if (
             self._transport.connected
+            and _digit_fields_valid(result)
             and self._transport._writer is writer
             and self._identity_generation == identity_generation
             and self._transport.stats.reconnects == reconnects

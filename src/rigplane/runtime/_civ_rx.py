@@ -2299,8 +2299,17 @@ class CivRuntime:
             )
             return
 
+        # A PTT readback is a single 0x00/0x01 byte; the projection above keeps
+        # its legacy tolerance for longer payloads, but they carry no
+        # radio-originated information to credit.
+        malformed_ptt = (
+            frame.command == 0x1C
+            and frame.sub == 0x00
+            and frame.data not in (b"\x00", b"\x01")
+        )
         if (
-            any(
+            not malformed_ptt
+            and any(
                 observation.value is not None
                 and observation.value is not ObservedPtt.UNKNOWN
                 and not isinstance(observation.value, UnknownTxTarget)
@@ -2986,7 +2995,7 @@ class CivRuntime:
                 )
             )
         elif frame.command == 0x1C and frame.sub == 0x00:
-            if frame.data in (b"\x00", b"\x01"):
+            if frame.data:
                 observations.append(
                     self._observation(
                         FieldPath.global_("tx_state", "ptt"),
