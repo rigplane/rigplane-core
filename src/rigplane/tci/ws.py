@@ -577,4 +577,6 @@ def upgrade_response(
     decline = check_upgrade_headers(headers, allow=allow)
     if decline is not None:
         return decline
-    return make_upgrade_response(headers, allow_deflate=allow_deflate, strict_tci=strict_tci)
+    return make_upgrade_response(
+        headers, allow_deflate=allow_deflate, strict_tci=strict_tci
+    )

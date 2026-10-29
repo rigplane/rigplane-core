@@ -166,9 +166,7 @@ def _reap_session_task(task: asyncio.Task[Any]) -> None:
         pass
 
 
-async def _join_session_tasks(
-    tasks: list[asyncio.Task[Any]], session_id: str
-) -> None:
+async def _join_session_tasks(tasks: list[asyncio.Task[Any]], session_id: str) -> None:
     """Join session tasks, bounded independently of child cancellation.
 
     A cancelled callback that awaits gated cleanup forever must not wedge

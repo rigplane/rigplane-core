@@ -1078,9 +1078,7 @@ async def test_bounded_join_runs_disconnect_before_gated_cleanup() -> None:
     gate = asyncio.Event()
 
     class _GatedHandler(FakeHandler):
-        async def on_command(
-            self, name: str, args: tuple[str, ...]
-        ) -> CommandOutcome:
+        async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
             entered.set()
             try:
                 await asyncio.Event().wait()
@@ -1210,7 +1208,8 @@ async def test_ping_loop_recovers_after_stalled_write() -> None:
 
         async def _ping_count() -> int:
             return sum(
-                1 for opcode, _ in parse_server_frames(writer.buffer)
+                1
+                for opcode, _ in parse_server_frames(writer.buffer)
                 if opcode == WS_OP_PING
             )
 
