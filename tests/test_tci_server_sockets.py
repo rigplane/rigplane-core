@@ -353,6 +353,30 @@ async def test_binary_both_ways_raw(tcp_available: None) -> None:
         await server.stop()
 
 
+async def test_broadcast_then_reply_keep_fifo_order(tcp_available: None) -> None:
+    """A reply sent inside the coalescing window never jumps the held broadcast.
+
+    The broadcast is held first, then the client command arrives: B must
+    receive the older broadcast line before its own newer reply.
+    """
+    handler = FakeHandler()
+    server = make_server(handler, coalesce_window=0.2)
+    await server.start()
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        server.broadcast(["vfo:0,0,111;"])
+        await client.send_text("echo:0,7;")
+        _opcode, first = await client.next_frame()
+        _opcode, second = await client.next_frame()
+        assert first == b"vfo:0,0,111;"
+        assert second == b"echo:0,7;"
+        await client.close()
+    finally:
+        await server.stop()
+    assert handler.disconnect_calls == 1
+
+
 async def test_reset_releases_session(tcp_available: None) -> None:
     handler = FakeHandler()
     server = make_server(handler)

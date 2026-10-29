@@ -14,6 +14,7 @@ from rigplane.tci.handler import CommandOutcome
 from rigplane.tci.server import (
     COALESCE_WINDOW_S,
     DEADLINE_S,
+    MAX_QUEUED_OUTBOUND,
     PING_INTERVAL_S,
     TciServer,
 )
@@ -652,6 +653,63 @@ async def test_server_defaults_use_leaf_constants() -> None:
     server = make_server(FakeHandler(), FakeClock())
     assert server._ping_interval == PING_INTERVAL_S
     assert server._coalesce_window == COALESCE_WINDOW_S
+
+
+async def test_stalled_sender_bounded_outbox() -> None:
+    """A stalled writer that keeps inbound alive cannot grow memory.
+
+    Session A blocks in ``drain`` while broadcasts pile up: retention
+    stays bounded, the session is aborted through the normal teardown
+    (disconnect once, dropped from the registry), and healthy session B
+    still receives every broadcast line.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    writer_a = FakeWriter()
+    writer_a.block_drain()
+    session_a, _writer, _reader = await open_session(server, handler, writer_a)
+    session_b, writer_b, _reader_b = await open_session(server, handler)
+    try:
+        await wait_for_frames(writer_b, len(BURST))
+        lines = [f"line:{i};" for i in range(MAX_QUEUED_OUTBOUND + 50)]
+        server.broadcast(lines)
+        async with asyncio.timeout(5.0):
+            while handler.disconnect_calls == 0:
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+        assert session_a not in server.sessions
+        assert session_a._done
+        assert session_a._outbox.qsize() <= MAX_QUEUED_OUTBOUND
+        assert len(session_a._pending) <= MAX_QUEUED_OUTBOUND
+        frames_b = await wait_for_frames(writer_b, len(BURST) + len(lines))
+        assert [payload for _, payload in frames_b[-len(lines) :]] == [
+            line.encode() for line in lines
+        ]
+    finally:
+        await session_a.finish()
+        await session_b.finish()
+    assert handler.disconnect_calls == 2
+
+
+async def test_reply_ordered_behind_pending_broadcast() -> None:
+    """An immediate reply never jumps ahead of a held broadcast."""
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    session, writer, _reader = await open_session(server, handler)
+    try:
+        await wait_for_frames(writer, len(BURST))
+        server.broadcast(["vfo:0,0,111;"])
+        assert session._pending == ["vfo:0,0,111;"]
+        session._send_now("vfo:0,0,222;")
+        frames = await wait_for_frames(writer, len(BURST) + 2)
+        assert [payload for _, payload in frames[-2:]] == [
+            b"vfo:0,0,111;",
+            b"vfo:0,0,222;",
+        ]
+    finally:
+        await session.finish()
 
 
 async def test_pong_answers_ping() -> None:
