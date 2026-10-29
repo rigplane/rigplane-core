@@ -3262,7 +3262,7 @@ class RigctldHandler:
         mode: int,
         *,
         filter_width: int | None,
-        data: bool | None,
+        data: bool | int | None,
         before_set: Callable[[], None] | None = None,
     ) -> CommandExecutionResult:
         if not isinstance(self._radio, RelativeVfoModeWritable):

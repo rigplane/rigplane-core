@@ -1546,7 +1546,7 @@ class YaesuCatRadio:
         mode: int,
         *,
         selected: bool,
-        data: bool | None = None,
+        data: bool | int | None = None,
         filter_width: int | None = None,
         before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
@@ -1565,8 +1565,17 @@ class YaesuCatRadio:
         }.get(base, base)
         if native not in self._mode_to_code:
             raise CommandError(f"relative mode {base!r} is absent from this profile")
-        if data is not None and type(data) is not bool:
-            raise CommandError("relative DATA must be a boolean")
+        if data is None:
+            pass
+        elif isinstance(data, bool):
+            pass
+        elif type(data) is int and data in (0, 1):
+            # Yaesu exposes DATA as a mode pair, not a numbered sub-mode
+            # (MOR-3821 P0e): 0/1 alias False/True so a caller passing a
+            # normalized count-1 value still lands on the same state.
+            data = bool(data)
+        else:
+            raise CommandError("relative DATA must be a boolean or 0/1")
         if filter_width is not None:
             raise CommandError(
                 "Icom filter-bank numbers are unavailable; use passband 0"
