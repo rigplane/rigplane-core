@@ -41,6 +41,7 @@ from rigplane.runtime.controller_authority import (
     ControllerTicket,
 )
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, RadioTxOrigin
+from rigplane.runtime.tx_interlock import RfState
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -619,6 +620,9 @@ class FakeRadioTx:
 
     def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
         return None if self.tx_at is None or self.tx_at <= since else self.origin
+
+    def radio_rf_state(self) -> RfState:
+        return RfState.RX if self.tx_at is None else RfState.TX
 
 
 def radio_tx_authority() -> tuple[ManagedTxAuthority, FakeClock, FakeLane, FakeRadioTx]:

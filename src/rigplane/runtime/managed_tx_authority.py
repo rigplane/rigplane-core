@@ -17,7 +17,11 @@ from rigplane.runtime.controller_authority import (
     ControllerError,
     ControllerTicket,
 )
-from rigplane.runtime.tx_interlock import TxInterlockDisposition, classify_tx_interlock
+from rigplane.runtime.tx_interlock import (
+    RfState,
+    TxInterlockDisposition,
+    classify_tx_interlock,
+)
 from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
     ManagedTxTotConfigStore,
@@ -69,6 +73,15 @@ class RadioTxProbe(Protocol):
 
     def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
         """Origin of a TX the radio reported after ``since``; ``None`` if none."""
+        ...
+
+    def radio_rf_state(self) -> RfState:
+        """The radio's RF state: ``RX`` only for a known, fresh RX reading.
+
+        ``radio_tx_since`` answers ``None`` for "no TX reported", which a
+        missing or aged reading also produces; only this answer can stand for
+        "the radio is receiving" (MOR-3633).
+        """
         ...
 
 
@@ -818,8 +831,9 @@ class ManagedTxAuthority:
                 # MOR-3633: a repeater write moves the TX frequency, so it is
                 # admitted only while nothing can be on the air: no held TX,
                 # no release still owed (a rejected unkey leaves the intent RX
-                # with the transmitter possibly keyed), and no TX the radio
-                # itself reports. Classified through the one interlock table,
+                # with the transmitter possibly keyed), and the radio's own
+                # PTT readback known, fresh and RX (a missing or aged reading
+                # is not RX). Classified through the one interlock table,
                 # evaluated before the RX early return below.
                 return self._tx_quiet_locked()
             managed_tx = self._state.intent.kind is not ManagedTxIntentKind.RX
@@ -1572,14 +1586,17 @@ class ManagedTxAuthority:
         return self._radio_tx.radio_tx_since(self._idle_since)
 
     def _tx_quiet_locked(self) -> bool:
-        """Whether no TX is held, owed or reported: the clean state, radio RX.
+        """Whether no TX is held, owed or possible: the clean state, known RX.
 
-        Fails closed: a radio-TX probe that raises reads as not quiet.
+        The radio must read as RECEIVING in a known, fresh observation; "no TX
+        reported" is not enough, because a missing or aged PTT reading says
+        nothing about an external PTT that is still keyed. Fails closed: no
+        probe, an unknown reading or a probe that raises all read as not quiet.
         """
-        if not self._state_is_clean_locked():
+        if self._radio_tx is None or not self._state_is_clean_locked():
             return False
         try:
-            return self._radio_tx_origin_locked() is None
+            return self._radio_tx.radio_rf_state() is RfState.RX
         except Exception:
             logger.warning("managed TX quiet-state probe failed", exc_info=True)
             return False

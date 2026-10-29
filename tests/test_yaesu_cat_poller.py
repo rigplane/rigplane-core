@@ -1717,6 +1717,113 @@ async def test_yaesu_queued_repeater_intent_fails_on_unknown_rf_without_a_write(
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
 
 
+_FTX1_REPEATER_WRITES = (
+    ("set_repeater_shift", {"direction": 1}),
+    ("set_repeater_tone", {"on": True}),
+    ("set_repeater_tsql", {"on": True}),
+    ("set_tone_freq", {"freq": 8850}),
+    ("set_tsql_freq", {"freq": 8850}),
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ("http", "websocket"))
+@pytest.mark.parametrize(("name", "params"), _FTX1_REPEATER_WRITES)
+async def test_ftx1_web_repeater_write_is_held_while_keyed_and_acknowledged_once(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    name: str,
+    params: dict[str, object],
+) -> None:
+    """MOR-3633: the real HTTP/WS path over the production command service.
+
+    A repeater write issued while the radio is keyed is held with the client's
+    reply open (no CAT frame), released after the continuous quiet-RX window,
+    written exactly once and acknowledged. A ``queued`` hold notice would
+    replace the command's active lifecycle record, and the finished write
+    would then fail as "invalidated" -- so the lifecycle must read
+    accepted -> queued -> sent -> acknowledged, never a failure.
+    """
+
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "rigplane.core.command_service.time.monotonic", lambda: clock[0]
+    )
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    transport_write = radio._transport.write  # noqa: SLF001
+    # The tone/TSQL toggles read the CT register first: script it at "tone on".
+    radio._transport.query = AsyncMock(  # noqa: SLF001
+        side_effect=lambda cmd, *_args, **_kwargs: f"CT{cmd[2]}1"
+    )
+
+    reply = asyncio.create_task(
+        handler._enqueue_command(  # noqa: SLF001
+            name, dict(params), command_id=f"{name}-{source}", source=source
+        )
+    )
+    await asyncio.sleep(0)
+
+    await _drain_with_ptt(poller, clock, 20.0, True)
+    assert not reply.done()
+    transport_write.assert_not_awaited()
+    assert poller._deferred_tx_lane.pending is not None  # noqa: SLF001
+
+    await _drain_with_ptt(poller, clock, 20.5, False)
+    await _drain_with_ptt(poller, clock, 21.4, False)
+    assert not reply.done()
+    transport_write.assert_not_awaited()
+
+    await _drain_with_ptt(poller, clock, 21.5, False)
+    await poller._drain_commands()  # noqa: SLF001
+    await asyncio.wait_for(reply, timeout=2)
+
+    assert transport_write.await_count == 1
+    states = [
+        event.state
+        for event in service.lifecycle_events()
+        if event.command_id == f"{name}-{source}"
+    ]
+    assert states == ["accepted", "queued", "sent", "acknowledged"]
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "params"), _FTX1_REPEATER_WRITES)
+async def test_ftx1_web_repeater_write_fails_on_unknown_rf_without_a_cat_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    params: dict[str, object],
+) -> None:
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    monkeypatch.setattr(
+        "rigplane.core.command_service.time.monotonic", lambda: clock[0]
+    )
+    radio, handler, poller, _store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+
+    reply = asyncio.create_task(
+        handler._enqueue_command(  # noqa: SLF001
+            name, dict(params), command_id=f"{name}-unknown", source="http"
+        )
+    )
+    await asyncio.sleep(0)
+
+    await _drain_with_ptt(poller, clock, 20.0, None)
+
+    with pytest.raises(CommandError, match="unknown"):
+        await asyncio.wait_for(reply, timeout=2)
+    radio._transport.write.assert_not_awaited()  # noqa: SLF001
+    assert service.lifecycle_events()[-1].state == "failed"
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
 @pytest.mark.asyncio
 async def test_yaesu_frequency_now_dispatches_without_entering_the_deferred_lane(
     monkeypatch: pytest.MonkeyPatch,

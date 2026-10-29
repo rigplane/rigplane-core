@@ -47,6 +47,7 @@ from rigplane.runtime._poller_types import (
     execute_command_queue_entry,
 )
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, RadioTxOrigin
+from rigplane.runtime.managed_tx_composition import ManagedTxComposition
 from rigplane.runtime.managed_tx_state import (
     ActuationResult,
     ManagedTxIntentKind,
@@ -60,10 +61,12 @@ from rigplane.runtime.tx_interlock import (
     classify_tx_interlock,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
+    resolve_rf_state,
 )
 from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from test_controller_sessions import radio_tx_authority
+from test_managed_tx_production_composition import RecordingActuator
 from test_managed_tx_authority import authority
 from test_rigctld_managed_ingress_scheduling import (  # noqa: F401
     _clear_release_debt,
@@ -275,6 +278,12 @@ def test_repeater_execute_seat_fails_closed_on_unknown_rf(command: object) -> No
     _observe_ptt(store, False, observed_at=clock.now())
     assert poller._enforce_tx_interlock(command) is None  # noqa: SLF001
 
+    # The RX reading ages past its TTL: the PTT may be keyed again, unseen.
+    clock.advance(2.0)
+    with pytest.raises(TxInterlockRefusal) as stale:
+        poller._enforce_tx_interlock(command)  # noqa: SLF001
+    assert stale.value.reason_code == "rf_state_unknown"
+
 
 @pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
 async def test_descriptor_repeater_write_reaches_the_radio_only_in_known_rx(
@@ -337,12 +346,32 @@ async def test_managed_transmit_refuses_repeater_writes(
 
 
 @pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
-async def test_managed_receive_admits_repeater_writes(name: str, params: dict) -> None:
-    managed, _, _, _, _, _ = authority()
+async def test_managed_known_receive_admits_repeater_writes(
+    name: str, params: dict
+) -> None:
+    managed, _clock, _lane, _probe = radio_tx_authority()  # the radio reads RX
     try:
         intent = _intent(name, params)
 
         assert await managed.admit_managed_write(intent) is True
+    finally:
+        await _finish(managed)
+
+
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
+async def test_managed_authority_without_a_radio_probe_refuses_repeater_writes(
+    name: str, params: dict
+) -> None:
+    """No readback means no known RX: the write is refused, not assumed safe."""
+
+    managed, _, _, _, _, _ = authority()
+    try:
+        intent = _intent(name, params)
+
+        assert await managed.admit_managed_write(intent) is False
+        # A write that cannot move the TX frequency stays admitted.
+        level = bind_command_intent("set_af_level", {"level": 100}, source="test")
+        assert await managed.admit_managed_write(level) is True
     finally:
         await _finish(managed)
 
@@ -376,8 +405,8 @@ async def test_dispatch_seam_refuses_shift_before_the_radio_write() -> None:
         await _finish(managed)
 
 
-async def test_dispatch_seam_executes_shift_outside_transmit() -> None:
-    managed, _, _, _, _, _ = authority()
+async def test_dispatch_seam_executes_shift_in_known_receive() -> None:
+    managed, _clock, _lane, _probe = radio_tx_authority()
     radio = SimpleNamespace(set_repeater_shift=AsyncMock())
     try:
         intent = bind_command_intent(
@@ -467,12 +496,113 @@ async def test_managed_failing_radio_tx_probe_refuses_repeater_writes() -> None:
         def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
             raise RuntimeError("readback lost")
 
+        def radio_rf_state(self) -> RfState:
+            raise RuntimeError("readback lost")
+
     managed._radio_tx = _Raising()  # type: ignore[assignment]  # noqa: SLF001
     try:
         intent = _intent("set_repeater_shift", {"direction": 1})
         assert await managed.admit_managed_write(intent) is False
     finally:
         await managed.close()
+
+
+# ---------------------------------------------------------------------------
+# Production composition: only KNOWN, FRESH receive admits a repeater write
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _composition(tmp_path):
+    """The production managed graph over a real store and its freshness clock."""
+
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    composition = ManagedTxComposition(
+        RecordingActuator(), config_path=tmp_path / "managed-tx.json"
+    )
+    await composition.transport_ready(object())
+    await composition.bind_state_store(store)
+    try:
+        yield composition, store, clock
+    finally:
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
+async def test_composition_admits_a_repeater_write_only_in_known_fresh_receive(
+    tmp_path, name: str, params: dict
+) -> None:
+    """A missing, stale or keyed PTT observation refuses; fresh RX admits.
+
+    ``ManagedTxComposition.radio_tx_since`` reads "no TX" for a missing or
+    aged observation too, so it cannot stand for "receiving": the external
+    PTT may still be keyed behind an expired reading.
+    """
+
+    intent = _intent(name, params)
+    async with _composition(tmp_path) as (composition, store, clock):
+        managed = composition.authority
+
+        # No PTT observation at all.
+        assert await managed.admit_managed_write(intent) is False
+
+        # Fresh RX.
+        _observe_ptt(store, False, observed_at=clock.now())
+        assert await managed.admit_managed_write(intent) is True
+
+        # Fresh TX keyed outside Core.
+        clock.advance(0.1)
+        _observe_ptt(store, True, observed_at=clock.now())
+        assert await managed.admit_managed_write(intent) is False
+
+        # RX again, then the reading ages past its TTL: the PTT may still be
+        # keyed, so the write is refused until a new reading arrives.
+        clock.advance(0.1)
+        _observe_ptt(store, False, observed_at=clock.now())
+        assert await managed.admit_managed_write(intent) is True
+        clock.advance(2.0)
+        assert await managed.admit_managed_write(intent) is False
+        _observe_ptt(store, False, observed_at=clock.now())
+        assert await managed.admit_managed_write(intent) is True
+
+        # A write that cannot move the TX frequency never needs the reading.
+        clock.advance(2.0)
+        level = bind_command_intent("set_af_level", {"level": 100}, source="test")
+        assert await managed.admit_managed_write(level) is True
+
+
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
+async def test_composition_dispatch_seam_writes_only_in_known_fresh_receive(
+    tmp_path, name: str, params: dict
+) -> None:
+    """The shared dispatch leaf (web and rigctld) over the production graph."""
+
+    async with _composition(tmp_path) as (composition, store, clock):
+        radio = SimpleNamespace(**{name: AsyncMock()})
+        write = getattr(radio, name)
+        intent = _intent(name, params)
+
+        with pytest.raises(CommandError, match="transmit authority"):
+            await execute_command_intent(
+                radio, intent, managed_tx_authority=composition.authority
+            )
+        write.assert_not_awaited()
+
+        _observe_ptt(store, False, observed_at=clock.now())
+        clock.advance(2.0)  # the only reading is now stale
+        with pytest.raises(CommandError, match="transmit authority"):
+            await execute_command_intent(
+                radio, intent, managed_tx_authority=composition.authority
+            )
+        write.assert_not_awaited()
+
+        _observe_ptt(store, False, observed_at=clock.now())
+        await execute_command_intent(
+            radio, intent, managed_tx_authority=composition.authority
+        )
+        write.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -483,6 +613,24 @@ _RIGCTLD_REPEATER_WIRES = (
     ("U TONE 1", "set_repeater_tone"),
     ("U TSQL 1", "set_repeater_tsql"),
 )
+
+
+@pytest.fixture
+def rf_rig(managed_rig: SimpleNamespace) -> SimpleNamespace:  # noqa: F811
+    """The managed rigctld rig with the radio's PTT readback wired in.
+
+    The shared rig builds its authority without a radio probe; here the probe
+    reads the rig's own store through the production RF resolver, so the
+    store's PTT observation decides whether the radio is known to be at RX.
+    """
+
+    store = managed_rig.store
+    managed_rig.authority._radio_tx = SimpleNamespace(  # noqa: SLF001
+        radio_released=lambda _keyed_at: None,
+        radio_tx_since=lambda _since: None,
+        radio_rf_state=lambda: resolve_rf_state(store.snapshot()),
+    )
+    return managed_rig
 
 
 def _repeater_spies(
@@ -503,74 +651,93 @@ def _repeater_spies(
 
 @pytest.mark.parametrize(("wire", "method"), _RIGCTLD_REPEATER_WIRES)
 async def test_managed_rigctld_admits_a_repeater_function_when_quiet(
-    managed_rig: SimpleNamespace,  # noqa: F811
+    rf_rig: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
     wire: str,
     method: str,
 ) -> None:
-    spies = _repeater_spies(managed_rig, monkeypatch)
+    spies = _repeater_spies(rf_rig, monkeypatch)
 
-    await _send(managed_rig, wire)
+    await _send(rf_rig, wire)
 
-    assert await _replies(managed_rig, 1) == [b"RPRT 0\n"]
+    assert await _replies(rf_rig, 1) == [b"RPRT 0\n"]
     spies[method].assert_awaited_once_with(on=True, receiver=0)
 
 
 @pytest.mark.parametrize(("wire", "method"), _RIGCTLD_REPEATER_WIRES)
 async def test_managed_rigctld_refuses_a_repeater_function_while_keyed(
-    managed_rig: SimpleNamespace,  # noqa: F811
+    rf_rig: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
     wire: str,
     method: str,
 ) -> None:
-    spies = _repeater_spies(managed_rig, monkeypatch)
-    await _key(managed_rig)
+    spies = _repeater_spies(rf_rig, monkeypatch)
+    await _key(rf_rig)
 
-    await _send(managed_rig, wire)
+    await _send(rf_rig, wire)
 
-    assert await _replies(managed_rig, 1) == [b"RPRT -9\n"]
+    assert await _replies(rf_rig, 1) == [b"RPRT -9\n"]
     for spy in spies.values():
         spy.assert_not_awaited()
-    await _clear_release_debt(managed_rig)
+    await _clear_release_debt(rf_rig)
 
 
 @pytest.mark.parametrize(("wire", "method"), _RIGCTLD_REPEATER_WIRES)
 async def test_managed_rigctld_refuses_a_repeater_function_with_a_release_owed(
-    managed_rig: SimpleNamespace,  # noqa: F811
+    rf_rig: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
     wire: str,
     method: str,
 ) -> None:
-    spies = _repeater_spies(managed_rig, monkeypatch)
-    await _key(managed_rig)
-    managed_rig.lane.results.append(ActuationResult.UNCERTAIN)
-    await _send(managed_rig, "T 0")
-    assert await _replies(managed_rig, 1) == [b"RPRT 0\n"]
-    while (await managed_rig.authority.snapshot()).state.pending_effect is not None:
+    spies = _repeater_spies(rf_rig, monkeypatch)
+    await _key(rf_rig)
+    rf_rig.lane.results.append(ActuationResult.UNCERTAIN)
+    await _send(rf_rig, "T 0")
+    assert await _replies(rf_rig, 1) == [b"RPRT 0\n"]
+    while (await rf_rig.authority.snapshot()).state.pending_effect is not None:
         await asyncio.sleep(0)
-    state = (await managed_rig.authority.snapshot()).state
+    state = (await rf_rig.authority.snapshot()).state
     assert state.intent.kind is ManagedTxIntentKind.RX and state.release_required
 
-    await _send(managed_rig, wire)
+    await _send(rf_rig, wire)
 
-    assert await _replies(managed_rig, 1) == [b"RPRT -9\n"]
+    assert await _replies(rf_rig, 1) == [b"RPRT -9\n"]
     for spy in spies.values():
         spy.assert_not_awaited()
-    await _clear_release_debt(managed_rig)
+    await _clear_release_debt(rf_rig)
+
+
+@pytest.mark.parametrize(("wire", "method"), _RIGCTLD_REPEATER_WIRES)
+async def test_managed_rigctld_refuses_a_repeater_function_without_a_fresh_rx_reading(
+    rf_rig: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: str,
+    method: str,
+) -> None:
+    """A missing PTT observation is not RX: the write is refused, nothing written."""
+
+    spies = _repeater_spies(rf_rig, monkeypatch)
+    rf_rig.store.discard([_PTT])
+
+    await _send(rf_rig, wire)
+
+    assert await _replies(rf_rig, 1) == [b"RPRT -9\n"]
+    for spy in spies.values():
+        spy.assert_not_awaited()
 
 
 @pytest.mark.parametrize(("wire", "method"), _RIGCTLD_REPEATER_WIRES)
 async def test_managed_rigctld_answers_enavail_without_the_capability_tag(
-    managed_rig: SimpleNamespace,  # noqa: F811
+    rf_rig: SimpleNamespace,
     wire: str,
     method: str,
 ) -> None:
     spy = AsyncMock()
-    setattr(managed_rig.radio, method, spy)
+    setattr(rf_rig.radio, method, spy)
 
-    await _send(managed_rig, wire)
+    await _send(rf_rig, wire)
 
-    assert await _replies(managed_rig, 1) == [b"RPRT -11\n"]
+    assert await _replies(rf_rig, 1) == [b"RPRT -11\n"]
     spy.assert_not_awaited()
 
 

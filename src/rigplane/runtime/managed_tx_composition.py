@@ -186,6 +186,11 @@ class ManagedTxComposition:
         store = self._state_store
         self._released = None if store is None else (store.snapshot(), keyed_at)
 
+    def radio_rf_state(self) -> RfState:
+        """The radio's RF state from the bound store; ``UNKNOWN`` before binding."""
+        store = self._state_store
+        return RfState.UNKNOWN if store is None else resolve_rf_state(store.snapshot())
+
     def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
         """Origin of a TX the radio reported in an observation newer than ``since``.
 
