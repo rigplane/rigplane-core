@@ -167,12 +167,7 @@ from .runtime_helpers import (  # noqa: TID251
     store_has_radio_observation,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
-from .websocket import (  # noqa: TID251
-    WS_KEEPALIVE_INTERVAL,
-    WebSocketConnection,
-    make_accept_key,
-    negotiate_deflate,
-)
+from .websocket import WS_KEEPALIVE_INTERVAL, WebSocketConnection  # noqa: TID251
 from ..radio_protocol import (
     CivTransactionCapable,
     ProviderOwnedStateCapable,
@@ -7890,36 +7885,44 @@ class WebServer:
     ) -> None:
         # MOR-2880: refuse foreign Hosts (421) and foreign Origins (403)
         # BEFORE the upgrade handshake — never a loopback exception.
-        raw_host = headers.get("host")
-        if not host_header_allowed(raw_host, self._config.allowed_hosts):
-            self._log_refused_request("websocket host", path, headers)
+        # The policy lives in rigplane.core.host_guard (shared with the
+        # TCI server); the check itself runs in rigplane.tci.ws.
+        from ..tci.ws import UpgradeAccept as _UpgradeAccept
+        from ..tci.ws import UpgradeDecline as _UpgradeDecline
+        from ..tci.ws import check_upgrade_headers as _check_upgrade_headers
+        from ..tci.ws import make_upgrade_response as _make_upgrade_response
+
+        def _allow_upgrade(
+            request_headers: Mapping[str, str],
+        ) -> _UpgradeDecline | None:
+            raw_host = request_headers.get("host")
+            if not host_header_allowed(raw_host, self._config.allowed_hosts):
+                self._log_refused_request("websocket host", path, request_headers)
+                return _UpgradeDecline(421, "Misdirected Request", MISDIRECTED_BODY)
+            origin = request_headers.get("origin")
+            if origin is not None:
+                scheme = "https" if self._config.tls else "http"
+                if not same_origin_allowed(
+                    origin,
+                    raw_host,
+                    scheme,
+                    self._config.allowed_hosts,
+                    self._config.trusted_origins,
+                ):
+                    self._log_refused_request("websocket origin", path, request_headers)
+                    return _UpgradeDecline(403, "Forbidden", ORIGIN_FORBIDDEN_BODY)
+            return None
+
+        decline = _check_upgrade_headers(headers, allow=_allow_upgrade)
+        if decline is not None:
             await _send_response(
                 writer,
-                421,
-                "Misdirected Request",
-                MISDIRECTED_BODY,
+                decline.status,
+                decline.reason,
+                decline.body,
                 {"Content-Type": "application/json"},
             )
             return
-        origin = headers.get("origin")
-        if origin is not None:
-            scheme = "https" if self._config.tls else "http"
-            if not same_origin_allowed(
-                origin,
-                raw_host,
-                scheme,
-                self._config.allowed_hosts,
-                self._config.trusted_origins,
-            ):
-                self._log_refused_request("websocket origin", path, headers)
-                await _send_response(
-                    writer,
-                    403,
-                    "Forbidden",
-                    ORIGIN_FORBIDDEN_BODY,
-                    {"Content-Type": "application/json"},
-                )
-                return
 
         protocols = [
             part.strip()
@@ -7963,40 +7966,24 @@ class WebServer:
                 writer, 403, "Forbidden", {"error": "controller_session_required"}
             )
             return
-        ws_key = headers.get("sec-websocket-key", "")
-        if not ws_key:
+        # Key check, accept header and 101 response bytes come from the
+        # shared leaf implementation (rigplane.tci.ws).
+        upgrade = _make_upgrade_response(headers, protocol=selected_protocol)
+        if not isinstance(upgrade, _UpgradeAccept):
             self._controller.detach(ticket)
-            await _send_response(writer, 400, "Bad Request", b"Missing key", {})
+            await _send_response(
+                writer, upgrade.status, upgrade.reason, upgrade.body, {}
+            )
             return
 
-        accept = make_accept_key(ws_key)
-        # Negotiate permessage-deflate (RFC 7692)
-        ext_header = headers.get("sec-websocket-extensions", "")
-        deflate_resp = negotiate_deflate(ext_header) if ext_header else None
-        ext_line = (
-            f"Sec-WebSocket-Extensions: {deflate_resp}\r\n" if deflate_resp else ""
-        )
-        response = (
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Accept: {accept}\r\n"
-            f"{ext_line}"
-            + (
-                f"Sec-WebSocket-Protocol: {selected_protocol}\r\n"
-                if selected_protocol
-                else ""
-            )
-            + "\r\n"
-        )
         try:
-            writer.write(response.encode("ascii"))
+            writer.write(upgrade.response)
             await writer.drain()
         except BaseException:
             self._controller.detach(ticket)
             raise
 
-        ws = WebSocketConnection(reader, writer, deflate=bool(deflate_resp))
+        ws = WebSocketConnection(reader, writer, deflate=upgrade.deflate)
         raw_model = (
             getattr(self._radio, "model", None) if self._radio is not None else None
         )

@@ -191,6 +191,10 @@ module = ["rigplane.web.state_schema"]
 disable_error_code = ["misc"]
 
 [[tool.mypy.overrides]]
+module = ["rigplane.tci", "rigplane.tci.*", "rigplane.core.host_guard"]
+follow_imports = "normal"
+
+[[tool.mypy.overrides]]
 module = ["cryptography", "cryptography.*"]
 ignore_missing_imports = true
 
