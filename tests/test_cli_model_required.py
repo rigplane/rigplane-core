@@ -16,6 +16,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shlex
+import signal
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -32,7 +34,7 @@ from rigplane.backends.config import (
 from rigplane.cli import _build_backend_config, _build_parser
 from rigplane.cli._models import match_rig
 from rigplane.discovery import RadioDiscoveryResult
-from rigplane.rig_loader import discover_available_rigs
+from rigplane.rig_loader import RigLoadError, discover_available_rigs
 
 
 @pytest.fixture()
@@ -136,6 +138,8 @@ async def test_missing_model_message_lists_every_profile(
 def test_missing_model_end_to_end_exits_1(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
     monkeypatch.setattr(sys, "argv", ["rigplane", "--host", "1.2.3.4", "status"])
 
     # main() finishes one-shot commands with os._exit: raise SystemExit
@@ -150,9 +154,15 @@ def test_missing_model_end_to_end_exits_1(
         raise AssertionError("must not create a radio without a model")
 
     monkeypatch.setattr("rigplane.cli.create_radio", _no_radio)
-    with pytest.raises(SystemExit) as excinfo:
-        cli.main()
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main()
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
     assert excinfo.value.code == 1
+    assert signal.getsignal(signal.SIGTERM) is prev_sigterm
+    assert signal.getsignal(signal.SIGINT) is prev_sigint
     assert "Specify the radio model with --model" in capsys.readouterr().err
 
 
@@ -376,3 +386,229 @@ async def test_discover_output_never_says_tested(
     ):
         assert await cli._cmd_discover(None, args) == 0
     assert "tested" not in capsys.readouterr().out.lower()
+
+
+@pytest.mark.asyncio
+async def test_discover_serial_ftx1_off_default_baud_prints_serial_baud(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _human_args()
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB1",
+            protocol="yaesu_cat",
+            model="FTX-1",
+            profile_id="yaesu_ftx1",
+            baudrate=9600,
+            address="0840",
+            description="FTX-1",
+        )
+    ]
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=serial),
+        ),
+    ):
+        assert await cli._cmd_discover(None, args) == 0
+    out = capsys.readouterr().out
+    assert (
+        "rigplane --model FTX-1 --serial-port /dev/ttyUSB1"
+        " --serial-baud 9600 status" in out
+    )
+
+
+@pytest.mark.asyncio
+async def test_discover_serial_ftx1_default_baud_prints_no_serial_baud(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _human_args()
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB1",
+            protocol="yaesu_cat",
+            model="FTX-1",
+            profile_id="yaesu_ftx1",
+            baudrate=38400,
+            address="0840",
+            description="FTX-1",
+        )
+    ]
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=serial),
+        ),
+    ):
+        assert await cli._cmd_discover(None, args) == 0
+    out = capsys.readouterr().out
+    assert "rigplane --model FTX-1 --serial-port /dev/ttyUSB1 status" in out
+    assert "--serial-baud" not in out
+
+
+@pytest.mark.asyncio
+async def test_discover_serial_ic7300_off_default_addr_prints_radio_addr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _human_args()
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB0",
+            protocol="civ",
+            model="IC-7300",
+            profile_id="icom_ic7300",
+            baudrate=115200,
+            address=0x95,
+            description="IC-7300",
+        )
+    ]
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=serial),
+        ),
+    ):
+        assert await cli._cmd_discover(None, args) == 0
+    out = capsys.readouterr().out
+    assert "--radio-addr 0x95" in out
+
+
+@pytest.mark.asyncio
+async def test_discover_serial_ic7300_default_addr_prints_no_radio_addr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = _human_args()
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB0",
+            protocol="civ",
+            model="IC-7300",
+            profile_id="icom_ic7300",
+            baudrate=115200,
+            address=0x94,
+            description="IC-7300",
+        )
+    ]
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=serial),
+        ),
+    ):
+        assert await cli._cmd_discover(None, args) == 0
+    out = capsys.readouterr().out
+    assert "rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status" in out
+    assert "--radio-addr" not in out
+
+
+@pytest.mark.asyncio
+async def test_discover_printed_commands_replay_into_backend_config(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Every printed command re-parses into the discovered backend config."""
+    args = _human_args()
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB1",
+            protocol="yaesu_cat",
+            model="FTX-1",
+            profile_id="yaesu_ftx1",
+            baudrate=9600,
+            address="0840",
+            description="FTX-1",
+        ),
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB0",
+            protocol="civ",
+            model="IC-7300",
+            profile_id="icom_ic7300",
+            baudrate=115200,
+            address=0x95,
+            description="IC-7300",
+        ),
+    ]
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=serial),
+        ),
+    ):
+        assert await cli._cmd_discover(None, args) == 0
+    out = capsys.readouterr().out
+    lines = [
+        line.strip() for line in out.splitlines() if "rigplane --model" in line
+    ]
+    assert len(lines) == 2
+    configs = {}
+    for line in lines:
+        tokens = shlex.split(line)
+        assert tokens[0] == "rigplane"
+        parsed = _build_parser().parse_args(tokens[1:])
+        configs[parsed.model] = await _build_backend_config(parsed)
+    ftx1 = configs["FTX-1"]
+    assert isinstance(ftx1, YaesuCatBackendConfig)
+    assert ftx1.baudrate == 9600
+    ic7300 = configs["IC-7300"]
+    assert isinstance(ic7300, SerialBackendConfig)
+    assert ic7300.radio_addr == 0x95
+
+
+def test_main_discover_profile_load_failure_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A broken profile makes `discover` print `Error:` before any summary."""
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(sys, "argv", ["rigplane", "discover"])
+    lan = [
+        {"host": "192.168.1.50", "remote_id": 2, "model": "IC-7610",
+         "address": 0x98}
+    ]
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_lan_radios",
+        AsyncMock(return_value=lan),
+    )
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_serial_radios",
+        AsyncMock(return_value=[]),
+    )
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise RigLoadError("boom")
+
+    monkeypatch.setattr("rigplane.rig_loader.discover_available_rigs", _boom)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main()
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+    assert excinfo.value.code == 1
+    assert signal.getsignal(signal.SIGTERM) is prev_sigterm
+    assert signal.getsignal(signal.SIGINT) is prev_sigint
+    captured = capsys.readouterr()
+    assert "Error:" in captured.err
+    assert "boom" in captured.err
+    assert "Traceback" not in captured.err
+    assert "Traceback" not in captured.out
+    assert "Found" not in captured.out

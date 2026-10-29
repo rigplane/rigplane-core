@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ import pytest
 from rigplane import cli
 from rigplane.cli import _build_parser
 from rigplane.cli import _models
-from rigplane.rig_loader import discover_available_rigs
+from rigplane.rig_loader import RigLoadError, discover_available_rigs
 
 
 def _json_entries(capsys) -> list[dict[str, Any]]:
@@ -95,13 +96,13 @@ def test_models_json_expected_shipped_profiles(capsys) -> None:
     assert ic7610["protocol"] == "civ"
     assert ic7610["transports"] == ["LAN", "USB CI-V"]
     assert ic7610["backends"] == ["lan", "serial"]
-    assert ic7610["default_backend"] == "lan"
+    assert "default_backend" not in ic7610
     assert ic7610["profile_only"] is False
 
     ic7300 = by_model["IC-7300"]
     assert ic7300["transports"] == ["USB CI-V"]
     assert ic7300["backends"] == ["serial"]
-    assert ic7300["default_backend"] == "serial"
+    assert "default_backend" not in ic7300
     assert ic7300["profile_only"] is False
 
     ftx1 = by_model["FTX-1"]
@@ -111,20 +112,20 @@ def test_models_json_expected_shipped_profiles(capsys) -> None:
     assert ftx1["protocol"] == "yaesu_cat"
     assert ftx1["transports"] == ["USB CAT"]
     assert ftx1["backends"] == ["yaesu-cat"]
-    assert ftx1["default_backend"] == "yaesu-cat"
+    assert "default_backend" not in ftx1
     assert ftx1["profile_only"] is False
 
     tx500 = by_model["TX-500"]
     assert tx500["maker"] == "Lab599"
     assert tx500["transports"] == ["USB CAT"]
     assert tx500["backends"] == []
-    assert tx500["default_backend"] is None
+    assert "default_backend" not in tx500
     assert tx500["profile_only"] is True
 
     x6100 = by_model["X6100"]
     assert x6100["transports"] == ["USB CI-V"]
     assert x6100["backends"] == []
-    assert x6100["default_backend"] is None
+    assert "default_backend" not in x6100
     assert x6100["profile_only"] is True
 
     ic705 = by_model["IC-705"]
@@ -143,7 +144,7 @@ def test_models_text_table(capsys) -> None:
     text = capsys.readouterr().out
     assert "--model" in text
     assert "Transports" in text
-    assert "Backend" in text
+    assert "Backends" in text
     assert "Also accepted" in text
     assert "case-insensitive" in text
     assert "tested" not in text.lower()
@@ -206,7 +207,49 @@ def test_backend_for_protocol(
 
 
 # ---------------------------------------------------------------------------
-# 6. _resolve_model unknown model
+# 6. connect_command serial extras
+# ---------------------------------------------------------------------------
+
+
+def test_connect_command_plain_serial_has_no_extras() -> None:
+    line = _models.connect_command("IC-7300", serial_port="/dev/ttyUSB0")
+    assert line == (
+        "rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status"
+    )
+
+
+def test_connect_command_serial_baud() -> None:
+    line = _models.connect_command(
+        "FTX-1", serial_port="/dev/ttyUSB1", serial_baud=9600
+    )
+    assert line == (
+        "rigplane --model FTX-1 --serial-port /dev/ttyUSB1"
+        " --serial-baud 9600 status"
+    )
+
+
+def test_connect_command_radio_addr_uppercase_hex() -> None:
+    line = _models.connect_command(
+        "IC-7300", serial_port="/dev/ttyUSB0", radio_addr=0xAB
+    )
+    assert line.endswith("--radio-addr 0xAB status")
+
+
+def test_connect_command_baud_and_addr_order() -> None:
+    line = _models.connect_command(
+        "IC-7300",
+        serial_port="/dev/ttyUSB0",
+        serial_baud=19200,
+        radio_addr=0x95,
+    )
+    assert line == (
+        "rigplane --model IC-7300 --serial-port /dev/ttyUSB0"
+        " --serial-baud 19200 --radio-addr 0x95 status"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 7. _resolve_model unknown model
 # ---------------------------------------------------------------------------
 
 
@@ -231,6 +274,62 @@ def test_main_dispatches_models_json(monkeypatch, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert isinstance(payload["models"], list)
     assert payload["models"] != []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["rigplane", "--json", "models"], ["rigplane", "models", "--json"]],
+)
+def test_main_models_json_flag_position(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--json` works before and after the `models` subcommand."""
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(sys, "argv", argv)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main()
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+    assert excinfo.value.code == 0
+    assert signal.getsignal(signal.SIGTERM) is prev_sigterm
+    assert signal.getsignal(signal.SIGINT) is prev_sigint
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, dict)
+    assert isinstance(payload["models"], list)
+    assert payload["models"] != []
+
+
+def test_main_models_profile_load_failure_exits_1(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A broken profile makes `models` print `Error:` and exit 1."""
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    monkeypatch.setattr(sys, "argv", ["rigplane", "models"])
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise RigLoadError("boom")
+
+    monkeypatch.setattr("rigplane.cli._models.discover_available_rigs", _boom)
+    try:
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main()
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+    assert excinfo.value.code == 1
+    assert signal.getsignal(signal.SIGTERM) is prev_sigterm
+    assert signal.getsignal(signal.SIGINT) is prev_sigint
+    captured = capsys.readouterr()
+    assert "Error:" in captured.err
+    assert "boom" in captured.err
+    assert "Traceback" not in captured.err
+    assert "Traceback" not in captured.out
 
 
 # ---------------------------------------------------------------------------

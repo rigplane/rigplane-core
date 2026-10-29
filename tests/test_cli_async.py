@@ -1633,6 +1633,7 @@ class TestRunErrorHandling:
             timeout=0.1,
             command="status",
             json=False,
+            model="IC-7610",
         )
         mock_radio = MagicMock()
         mock_radio.__aenter__ = AsyncMock(
@@ -1642,8 +1643,10 @@ class TestRunErrorHandling:
         with patch("rigplane.cli.create_radio", return_value=mock_radio):
             rc = await _run(args)
         assert rc == 1
+        mock_radio.__aenter__.assert_awaited_once()
         err = capsys.readouterr().err
         assert "Error" in err
+        assert "test connection failed" in err
 
     @pytest.mark.asyncio
     async def test_run_reports_unsupported_serial_model_cleanly(self, capsys) -> None:
