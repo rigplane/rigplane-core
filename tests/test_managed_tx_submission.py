@@ -12,8 +12,9 @@ this module; a future TCI adapter uses the same entry points with
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
-from typing import get_args
+from typing import Any, get_args
 
 import pytest
 
@@ -195,3 +196,90 @@ def test_managed_key_refused_is_neutral_to_ingress() -> None:
     assert issubclass(ManagedKeyRefused, Exception)
     assert issubclass(ManagedKeySetupError, Exception)
     assert not issubclass(ManagedKeyRefused, ManagedKeySetupError)
+
+
+_MISSING_BEFORE_ON: Any = object()
+
+
+async def test_tracker_forwards_before_on_only_when_set() -> None:
+    """The rigctld key path calls the authority exactly as on origin/main.
+
+    ``begin_key`` without ``before_on`` (the rigctld path) calls
+    ``start_ptt_submission`` with no ``before_on`` argument at all, so a
+    wrapper with the old narrower signature keeps working; with a hook
+    (the TCI path) it forwards it.
+    """
+    managed = _gate_authority()
+    try:
+        original = managed.start_ptt_submission
+        assert list(inspect.signature(original).parameters) == [
+            "on",
+            "owner",
+            "ready",
+            "expires_at_monotonic",
+            "before_on",
+        ]
+        forwarded: list[bool] = []
+
+        def _spy(
+            on: bool,
+            owner: str,
+            *,
+            ready: Any = None,
+            expires_at_monotonic: float | None = None,
+            before_on: Any = _MISSING_BEFORE_ON,
+        ) -> Any:
+            forwarded.append(before_on is not _MISSING_BEFORE_ON)
+            if before_on is _MISSING_BEFORE_ON:
+                return original(
+                    on,
+                    owner,
+                    ready=ready,
+                    expires_at_monotonic=expires_at_monotonic,
+                )
+            return original(
+                on,
+                owner,
+                ready=ready,
+                expires_at_monotonic=expires_at_monotonic,
+                before_on=before_on,
+            )
+
+        managed.start_ptt_submission = _spy  # type: ignore[method-assign]
+        tracker = ManagedPttTracker()
+        loop = asyncio.get_running_loop()
+
+        async def _hook() -> bool:
+            return True
+
+        key, ready = tracker.begin_key(
+            managed,
+            owner="rigctld-client-1",
+            on=True,
+            expires_at_monotonic=loop.time() + 3.0,
+            connection_generation=object(),
+        )
+        assert forwarded == [False]
+        assert ready is not None
+        ready.set_result(None)
+        ready.release_queue()
+        receipt = await key
+        assert receipt.transition.state.intent.owner_token == "rigctld-client-1"
+        await managed.ptt_up("rigctld-client-1")
+        keyed, ready2 = tracker.begin_key(
+            managed,
+            owner="rigctld-client-1",
+            on=True,
+            expires_at_monotonic=loop.time() + 3.0,
+            connection_generation=object(),
+            before_on=_hook,
+        )
+        assert forwarded == [False, True]
+        assert ready2 is not None
+        ready2.set_result(None)
+        ready2.release_queue()
+        receipt2 = await keyed
+        assert receipt2.transition.state.intent.owner_token == "rigctld-client-1"
+        await managed.ptt_up("rigctld-client-1")
+    finally:
+        await managed.close()
