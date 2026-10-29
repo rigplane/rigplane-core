@@ -307,6 +307,50 @@ async def test_before_on_force_off_during_hook_rejects_without_dispatch() -> Non
         await managed.close()
 
 
+async def test_before_on_cancel_during_hook_unwinds_without_dispatch() -> None:
+    """Cancelling a key mid-preparation unwinds the committed intent.
+
+    A dropped requester cancels its submission task while the hook
+    waits; the stale PTT_ON must not dispatch, audio admission for the
+    stale owner refuses, and another owner can key after a force-off.
+    """
+    managed, _clock, lane, _probe = radio_tx_authority()
+    try:
+        entered = asyncio.Event()
+        hold = asyncio.Event()
+
+        async def hook() -> bool:
+            entered.set()
+            await hold.wait()
+            return True
+
+        submission = managed.start_ptt_submission(
+            True,
+            "a",
+            expires_at_monotonic=100.0 + 3.0,
+            before_on=hook,
+        )
+        await asyncio.wait_for(entered.wait(), 5.0)
+        submission.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await submission
+        assert [
+            effect.operation
+            for effect in lane.effects
+            if effect.operation is ActuationOperation.PTT_ON
+        ] == []
+        state = (await managed.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+        out: list[bool] = []
+        await _enter_owned(managed, "a", out)
+        assert out == [False]
+        assert await managed.force_off() is ACCEPTED
+        assert await managed.ptt_down("b") is ACCEPTED
+        assert await managed.ptt_up("b") is ACCEPTED
+    finally:
+        await managed.close()
+
+
 async def test_before_on_may_read_the_authority_while_routing() -> None:
     """A hook awaiting an authority read must not deadlock (spec 7.3a).
 
