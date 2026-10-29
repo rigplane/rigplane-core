@@ -149,8 +149,8 @@ def _bind_split_mode(params: Mapping[str, Any]) -> dict[str, Any]:
     if filter_width is not None and filter_width not in (1, 2, 3):
         raise ValueError("filter_width must be a CI-V filter number 1-3")
     data = params.get("data")
-    if data is not None and not isinstance(data, int):
-        raise ValueError("data must be a boolean, an integer DATA sub-mode, or None")
+    if data is not None and not isinstance(data, bool):
+        raise ValueError("data must be a boolean or None")
     return {"mode": mode, "selected": False, "filter_width": filter_width, "data": data}
 
 

@@ -567,6 +567,17 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
         count = profile_data_mode_count(cast("Any", self))
+        if data is not None and not isinstance(data, bool):
+            # Numbered DATA sub-modes exist only where the profile numbers
+            # more than one (MOR-3821 P0e): a count-1 profile is bool-only,
+            # and sub-modes are 1-based. Refused before any IO — ahead of
+            # the preservation read below and any wire SET.
+            if type(data) is not int or count < 2 or not 1 <= data <= count:
+                raise CommandError(
+                    "direct VFO DATA sub-mode "
+                    f"{data!r} is not numbered by this profile "
+                    f"(data_mode_count {count})"
+                )
         if self._vfo_selection_epoch_moved(selection_epoch):
             raise CommandRejectedError(
                 "VFO selection changed during preservation; retry"
