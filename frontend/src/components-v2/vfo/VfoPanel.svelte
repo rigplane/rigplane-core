@@ -373,7 +373,7 @@
     --vfo-unlit-text: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
     --vfo-unlit-border: var(--dl-vfo-unlit-border, #1f2832);
     --vfo-unlit-fill: var(--dl-vfo-unlit-fill, rgba(255, 255, 255, 0.012));
-    --vfo-frequency-glow: var(--dl-vfo-frequency-glow, none);
+    --vfo-frequency-glow: var(--dl-vfo-frequency-glow, var(--v2-vfo-glow-override, var(--receiver-frequency-glow)));
     --vfo-primary-glow: var(--dl-vfo-primary-glow, none);
     --vfo-red-glow: var(--dl-vfo-red-glow, none);
     --vfo-amber-glow: var(--dl-vfo-amber-glow, none);
@@ -408,10 +408,6 @@
       var(--dl-vfo-panel-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5)),
       inset 0 0 0 1px var(--receiver-control-glow),
       0 0 12px 1px var(--receiver-panel-glow-outer);
-  }
-
-  :global([data-design-language='studioline']) .panel.active {
-    --vfo-frequency-glow: var(--v2-vfo-glow-override, var(--receiver-frequency-glow));
   }
 
   /* The glass OVER the content — dark mode only (the mock-up is dark-only,

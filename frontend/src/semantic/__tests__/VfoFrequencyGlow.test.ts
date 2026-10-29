@@ -35,6 +35,7 @@ describe('MOR-3860: token-driven frequency glow', () => {
     const panel = source('src/components-v2/vfo/VfoPanel.svelte');
     expect(panel.includes("'--receiver-frequency-glow': `var(--v2-vfo-${receiver}-freq-glow)`")).toBe(true);
     expect(panel).toContain('--vfo-frequency-glow: var(--dl-vfo-frequency-glow, var(--v2-vfo-glow-override, var(--receiver-frequency-glow)));');
+    expect(panel).not.toMatch(/:global\(\[data-design-language=['"]studioline['"]\]\)\s+\.panel\.active\s*\{[^}]*--vfo-frequency-glow\s*:/);
     expect(source('src/presentation/languages/studioline/studioline.css')).not.toMatch(/--dl-vfo-frequency-glow\s*:/);
     for (const language of ['fieldline', 'segmentline']) {
       expect(source(`src/presentation/languages/${language}/${language}.css`)).toMatch(/--dl-vfo-frequency-glow:\s*none\s*;/);
