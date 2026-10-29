@@ -102,12 +102,32 @@ def _status_line(status: int, reason: str, body: bytes) -> bytes:
     ).encode("ascii") + body
 
 
+async def _settle_disconnect_task(task: asyncio.Task[Any], session_id: str) -> None:
+    """Cancel the callback and observe its finalization.
+
+    Called after the bounded waits are spent: the ``cancel()`` lets a
+    callback parked in ``try/finally`` run its finalizers, and awaiting
+    the task keeps ownership until that finalization is observed (a
+    bare return left the finalizers pending forever). A handler error
+    stays absorbed (fail-soft).
+    """
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.debug("tci %s: disconnect failed", session_id, exc_info=True)
+
+
 async def _run_guarded_disconnect(handler: TciHandler, session_id: str) -> None:
-    """Run ``on_disconnect`` exactly once; survives one cancellation.
+    """Run ``on_disconnect`` exactly once; survives cancellation.
 
     The callback task is retained and re-awaited after the first
-    cancellation (the bounded handback shape of ``rigctld``): a second
-    cancellation abandons the wait, and each wait lasts at most
+    cancellation (the bounded handback shape of ``rigctld``): when the
+    bounded re-wait itself is cancelled or times out, the callback is
+    cancelled and its cancellation awaited, so ``try/finally``
+    finalizers still run. Each wait lasts at most
     :data:`TEARDOWN_TIMEOUT_S`. A handler error is absorbed
     (fail-soft). Used both for live sessions and for handlers whose
     ``on_connect`` never completed.
@@ -119,18 +139,19 @@ async def _run_guarded_disconnect(handler: TciHandler, session_id: str) -> None:
         except asyncio.CancelledError:
             try:
                 await asyncio.wait_for(asyncio.shield(task), TEARDOWN_TIMEOUT_S)
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, TimeoutError):
                 logger.debug(
-                    "tci %s: disconnect cancelled twice; abandoning", session_id
+                    "tci %s: disconnect wait failed after cancel; settling",
+                    session_id,
                 )
-                task.cancel()
+                await _settle_disconnect_task(task, session_id)
         except TimeoutError:
             logger.debug("tci %s: disconnect timed out; retrying once", session_id)
             try:
                 await asyncio.wait_for(asyncio.shield(task), TEARDOWN_TIMEOUT_S)
             except (asyncio.CancelledError, TimeoutError):
-                logger.debug("tci %s: disconnect unsettled; abandoning", session_id)
-                task.cancel()
+                logger.debug("tci %s: disconnect unsettled; settling", session_id)
+                await _settle_disconnect_task(task, session_id)
     except Exception:
         logger.debug("tci %s: disconnect failed", session_id, exc_info=True)
 
