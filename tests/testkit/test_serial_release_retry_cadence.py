@@ -38,6 +38,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from support.tx_target import seed_tx_target
 
 from rigplane import RadioConnectionState
 from rigplane.backends.ic7300 import Ic7300SerialRadio
@@ -171,6 +172,9 @@ async def test_release_retry_cadence_bounded_across_silent_link_down(
     await radio.connect()
     assert radio.connected
     assert (await composition.authority.snapshot()).provider_generation is not None
+    # No poller here: seed the in-band TX target a keyed-ready radio
+    # publishes, so the positive-TX admission (MOR-3632/3633) has one.
+    seed_tx_target(store)
 
     # Managed TX ON through the authority; the fake ACKs the PTT write
     # (rigplane_testkit/serial/civ_serial.py answers 0x1C), so the intent

@@ -36,6 +36,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_target_inputs import writes_tx_target_input
 
 if TYPE_CHECKING:
     from rigplane.core.radio_protocol import StateModelService
@@ -209,7 +210,6 @@ class CommandService:
         sent_event = self.emit_lifecycle(intent, "sent")
         key = (intent.source, _session_id(intent), intent.id)
         provider_generation = self._state_store.provider_generation
-        started_at = self._clock()
 
         try:
             selected_executor = self._executor if executor is None else executor
@@ -273,19 +273,21 @@ class CommandService:
                 )
             )
 
-        # MOR-3632: the write made the stored value of what it changed wrong,
-        # not stale. Withdraw it from consumers that must not act on the
-        # pre-write value (the TX target permit) until it is observed again,
-        # unless the executor already brought that observation back.
-        returned = {observation.path for observation in executor_result.observations}
-        self._state_store.mark_tx_target_inputs_written(
-            (
-                path
-                for path in _observable_paths_for_intent(intent)
-                if path not in returned
-            ),
-            observed_since=started_at,
-        )
+        # MOR-3632: a write that moved the TX target made the stored target
+        # wrong, not stale; it stays unknown until a post-write observation
+        # re-derives it. Fenced at the acknowledgement (never at the send: a
+        # read landing while the write still waits is pre-write), or at the
+        # write's own readback when the executor returned one.
+        if writes_tx_target_input(_observable_paths_for_intent(intent)):
+            self._state_store.fence_tx_target(
+                written_by=min(
+                    (
+                        observation.timestamp_monotonic
+                        for observation in executor_result.observations
+                    ),
+                    default=None,
+                )
+            )
         self._request_write_confirmation(intent, executor_result)
 
         return CommandServiceResult(

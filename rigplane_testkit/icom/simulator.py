@@ -155,6 +155,8 @@ _SUB_ALC_METER = 0x13
 _SUB_PREAMP_STATUS = 0x02
 _SUB_DIGISEL_STATUS = 0x4E
 _SUB_PTT = 0x00
+_SUB_TX_FREQUENCY = 0x03
+_CMD_SPLIT = 0x0F
 
 # CI-V 0x1A 05 menu items modelled by the simulator, as
 # ``(item, (default, bcd_bytes))``. The four MOD-input sources (0x0091-
@@ -480,6 +482,7 @@ class MockIcomRadio(AudioPortMixin):
         scope_stream: bool = False,
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
+        models_tx_frequency: bool = False,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -542,6 +545,14 @@ class MockIcomRadio(AudioPortMixin):
         # the selected receiver, 1 = SUB is (recorded vfo_select window).
         self._dual_receiver: bool = dual_receiver
         self._selected_receiver: int = 0
+        # Opt-in (``models_tx_frequency``): split (CI-V 0x0F, 00 = OFF /
+        # 01 = ON) and the transceiver-wide transmit-frequency read (CI-V
+        # 1C 03), the TX band being MAIN, or SUB while split is ON (the
+        # IC-7610 rule) -- what a managed key's TX-target admission reads.
+        # Off, both NAK as before (a mounted recorded-answer table may still
+        # answer them).
+        self._split: bool = False
+        self._models_tx_frequency = models_tx_frequency
         # Modelling of the 0x1A 05 menu items the startup reader reads;
         # current values (defaults and byte widths live in the table above).
         self._ctl_mem_menu: dict[bytes, int] = {
@@ -1303,6 +1314,19 @@ class MockIcomRadio(AudioPortMixin):
     def set_frequency(self, hz: int) -> None:
         """Set the radio's current frequency (Hz)."""
         self._frequency = hz
+
+    def set_unselected_frequency(self, hz: int) -> None:
+        """Set the unselected receiver's frequency (Hz)."""
+        self._unselected_frequency = hz
+
+    def set_split(self, on: bool) -> None:
+        """Set split (front panel): the TX band is SUB while it is on."""
+        self._split = on
+
+    @property
+    def tx_frequency(self) -> int:
+        """The frequency the simulated transceiver transmits on (CI-V 1C 03)."""
+        return self._tx_frequency()
 
     def set_mode(self, mode: int) -> None:
         """Set mode byte (e.g. 0x01=USB, 0x00=LSB)."""
@@ -2530,6 +2554,17 @@ class MockIcomRadio(AudioPortMixin):
                 return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
+        # --- Split (0x0F): bare read answers 00/01, SET 00/01 flips it ---
+        if cmd == _CMD_SPLIT and self._models_tx_frequency:
+            if not payload:
+                return self._civ_frame(
+                    to, frm, _CMD_SPLIT, data=bytes([0x01 if self._split else 0x00])
+                )
+            if payload in (b"\x00", b"\x01"):
+                self._split = payload == b"\x01"
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
         # --- PTT / Transceiver status (0x1C) ---
         if cmd == _CMD_PTT:
             if not payload:
@@ -2548,6 +2583,14 @@ class MockIcomRadio(AudioPortMixin):
                 state = 0x01 if self._ptt_state else 0x00
                 return self._civ_frame(
                     to, frm, _CMD_PTT, sub=_SUB_PTT, data=bytes([state])
+                )
+            if sub == _SUB_TX_FREQUENCY and not rest and self._models_tx_frequency:
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_PTT,
+                    sub=_SUB_TX_FREQUENCY,
+                    data=_bcd_encode_freq(self._tx_frequency()),
                 )
             if self._stateful_ptt and sub == _SUB_PTT and rest in (b"\x00", b"\x01"):
                 # Opt-in stateful PTT (MOR-3251): SET on/off answers FB and
@@ -2808,6 +2851,15 @@ class MockIcomRadio(AudioPortMixin):
         if (cmd, None) in self.refused_civ_commands:
             return True
         return bool(payload) and (cmd, payload[0]) in self.refused_civ_commands
+
+    def _tx_frequency(self) -> int:
+        """The frequency the simulated transceiver transmits on."""
+        main, sub = (
+            (self._frequency, self._unselected_frequency)
+            if self._selected_receiver == 0
+            else (self._unselected_frequency, self._frequency)
+        )
+        return sub if self._split else main
 
     def _civ_frame(
         self,

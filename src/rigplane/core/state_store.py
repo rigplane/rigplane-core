@@ -19,11 +19,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
     VfoSlot,
 )
-from rigplane.core.tx_target_inputs import tx_target_inputs_written
 
 _DEFAULT_MAX_HISTORY_COUNT = 4096
-# How long an own write withholds the TX-target inputs it changed (MOR-3632).
-_TX_TARGET_WRITE_GRACE_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -270,7 +267,7 @@ class StateStore:
         "_provider_generation",
         "_relative_vfo_retention",
         "_state_revision",
-        "_written",
+        "_tx_target_fence",
     )
 
     def __init__(
@@ -294,9 +291,10 @@ class StateStore:
         self._provider_generation_notifying = False
         self._relative_vfo_retention: _RelativeVfoRetention | None = None
         self._entries: dict[FieldPath, _FieldEntry] = {}
-        # Paths one of our own acknowledged writes made wrong -> clock reading
-        # of that write (see :meth:`mark_written`).
-        self._written: dict[FieldPath, float] = {}
+        # When one of our own acknowledged writes last moved the TX target
+        # (see :meth:`fence_tx_target`); None while no such write happened in
+        # this provider generation.
+        self._tx_target_fence: float | None = None
         self._history: list[SnapshotDelta] = []
         self._history_floor_state_revision = 0
         self._history_floor_freshness_revision = 0
@@ -322,7 +320,7 @@ class StateStore:
             )
         )
         self._entries.clear()
-        self._written.clear()
+        self._tx_target_fence = None
         if removed:
             self._state_revision += 1
             self._append_history(
@@ -425,14 +423,6 @@ class StateStore:
         else:
             changes = ()
 
-        if self._written:
-            for key in tx_target_inputs_written((observation.path,)):
-                written_at = self._written.get(key)
-                if (
-                    written_at is not None
-                    and observation.timestamp_monotonic > written_at
-                ):
-                    del self._written[key]
         self._entries[observation.path] = _FieldEntry(
             value=_copy_value(observation.value),
             freshness=FreshnessState.FRESH,
@@ -779,48 +769,38 @@ class StateStore:
             ),
         )
 
-    def mark_tx_target_inputs_written(
-        self, paths: Iterable[FieldPath], *, observed_since: float | None = None
-    ) -> None:
-        """Record that an acknowledged write of ours made TX-target inputs wrong.
+    def fence_tx_target(self, *, written_by: float | None = None) -> None:
+        """Record that an acknowledged write of ours moved the TX target.
 
-        A write does not make the stored observation of what it changed stale,
-        it makes it wrong: the value stays FRESH until the next read lands.
-        ``paths`` is whatever the write names; only the frequency, split and
-        active-slot facts the TX target is derived from are kept (see
-        :func:`tx_target_inputs_written`, which also folds the profile and
-        index spellings of a receiver into one key). A path already observed
-        after ``observed_since`` (the write's own readback) is not marked.
-        Consumers that must not act on a pre-write target ask
-        :meth:`pending_tx_target_inputs`; the first observation of such a path
-        stamped after the write clears it, a new provider generation clears all
-        of them, and a mark expires after ``_TX_TARGET_WRITE_GRACE_SECONDS``
-        so a field nothing ever reads back cannot withhold the target for
-        good. Not an observation and not part of any snapshot.
+        A write does not make the stored observations of what it changed
+        stale, it makes them wrong: they keep the pre-write values, FRESH,
+        until the next read lands. One rule follows (MOR-3632): after such a
+        write the TX target is UNKNOWN until a post-write observation
+        re-derives it. Consumers compare an observation's timestamp with
+        :attr:`tx_target_fence` -- the TX-target evaluation
+        (``runtime.tx_interlock.resolve_tx_target``) and the poller's
+        derivation inputs -- and treat anything stamped before it as stale.
+
+        ``written_by`` is the earliest moment known to follow the write: the
+        timestamp of the write's own readback when the executor returned one
+        (it was read after the write), else now, when the write was
+        acknowledged. Never the moment the command was queued or sent: a
+        cadence read landing while the write still waits for the wire must not
+        count as confirming it. The fence only moves forward and a new
+        provider generation clears it with the entries it fenced. Not an
+        observation and not part of any snapshot.
         """
 
         now = self._freshness_clock.now()
-        for path in tx_target_inputs_written(paths):
-            entry = self._entries.get(path)
-            if (
-                observed_since is not None
-                and entry is not None
-                and entry.last_observed_monotonic > observed_since
-            ):
-                continue
-            self._written[path] = now
+        fence = now if written_by is None else min(now, written_by)
+        if self._tx_target_fence is None or fence > self._tx_target_fence:
+            self._tx_target_fence = fence
 
-    def pending_tx_target_inputs(self) -> frozenset[FieldPath]:
-        """TX-target inputs written by us and not observed again since."""
+    @property
+    def tx_target_fence(self) -> float | None:
+        """When our last acknowledged write moved the TX target, else None."""
 
-        now = self._freshness_clock.now()
-        for path in [
-            path
-            for path, written_at in self._written.items()
-            if now - written_at >= _TX_TARGET_WRITE_GRACE_SECONDS
-        ]:
-            del self._written[path]
-        return frozenset(self._written)
+        return self._tx_target_fence
 
     def discard(self, paths: Iterable[FieldPath | str]) -> ChangeSet:
         """Remove session-scoped facts so a new provider epoch starts unknown.

@@ -5807,10 +5807,13 @@ class WebServer:
                 await self._managed_tx_unavailable(writer)
                 return
             except ControllerError as exc:
-                # Controller currency failed after routing (MOR-3534): e.g. ended.
-                await self._send_json(
-                    writer, exc.status, "Forbidden", {"error": exc.code}
-                )
+                # Controller currency failed after routing (MOR-3534): e.g. ended;
+                # or the positive-TX admission refused the TX target (MOR-3632/
+                # 3633), whose evidence rides along for this issuer only.
+                body: dict[str, object] = {"error": exc.code}
+                if exc.details:
+                    body["details"] = dict(exc.details)
+                await self._send_json(writer, exc.status, "Forbidden", body)
                 return
             except CommandError:
                 # The queue reports a refused or no-longer-current transmit_on

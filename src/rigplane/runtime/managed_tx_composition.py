@@ -35,10 +35,13 @@ from rigplane.runtime.managed_tx_effect_lane import (
 )
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+from rigplane.runtime._state_queries import profile_publishes_tx_target
 from rigplane.runtime.tx_interlock import (
     RfState,
-    current_tx_target,
+    TxInterlockRefusal,
     resolve_rf_state,
+    resolve_tx_target,
+    tx_frequency_unknown_refusal,
 )
 
 # Stable refusal codes of the TX frequency permit (MOR-3632).
@@ -243,36 +246,54 @@ class ManagedTxComposition:
             return RadioTxOrigin.FOREIGN
         return RadioTxOrigin.UNRELEASED
 
-    def tx_frequency_refusal(self) -> str | None:
-        """Refusal code if the current TX target is not in a transmit band.
+    def tx_frequency_refusal(self) -> TxInterlockRefusal | None:
+        """Refusal if the TX target does not admit a positive TX (MOR-3632/3633).
 
-        MOR-3632. The adversary is an operator typo or an external client
-        (rigctld, WSJT-X, a tracker) that sets a TX frequency and keys up; the
-        radio firmware stays the last line of defence against everything
-        else. Band-only: it decides solely from a current KNOWN TX target
-        that carries a frequency, against the active profile's band rows
-        (non-``rx_only`` rows permit TX; a permitting row wins over an
-        overlapping receive-only row). Everything else is not applicable and
-        returns ``None``: no state store yet, a profile without band rows,
-        or a target that is unknown, stale, malformed or without a frequency
-        (the unknown-target guard, MOR-3633, owns those). So is a target whose
-        inputs one of our own acknowledged writes changed since it was
-        derived or read (``StateStore.pending_tx_target_inputs``): the stored target
-        still describes the radio before that write, so it is not used.
+        The one positive-TX admission probe: ``ManagedTxAuthority`` consults
+        it under its lock, after the ordered queue barrier released the
+        transition, immediately before any positive transition (a momentary
+        PTT or the latched ``transmit_on``); releases never consult it. The
+        adversary is an operator typo or an external client (rigctld, WSJT-X,
+        a tracker) that sets a TX frequency and keys up; the radio firmware
+        stays the last line of defence against everything else.
+
+        Not applicable (``None``) without a bound store, or on a profile that
+        can never publish a TX target
+        (:func:`~rigplane.runtime._state_queries.profile_publishes_tx_target`).
+        Otherwise the target is read once, through the one evaluator
+        (:func:`~rigplane.runtime.tx_interlock.resolve_tx_target`, which also
+        treats a target older than our own last target-moving write as
+        stale), and refused in this order:
+
+        1. unknown, stale, contradictory, or known without a frequency ->
+           ``ptt_tx_frequency_unknown``;
+        2. a frequency inside a receive-only band row only ->
+           ``receive_only_band``; outside every band row ->
+           ``outside_tx_range`` (a TX-permitting row wins over an overlapping
+           receive-only one).
         """
         store = self._state_store
         profile = getattr(self._actuator, "profile", None)
-        if store is None or not isinstance(profile, RadioProfile):
+        if store is None or not profile_publishes_tx_target(profile):
             return None
-        if store.pending_tx_target_inputs():
-            return None
+        assert isinstance(profile, RadioProfile)
+        target = resolve_tx_target(store.snapshot(), fence=store.tx_target_fence)
+        refusal = tx_frequency_unknown_refusal(target)
+        if refusal is not None:
+            return refusal
         bands = tuple(band for rng in profile.freq_ranges for band in rng.bands)
-        decision = evaluate_tx_frequency_permit(
-            bands, current_tx_target(store.snapshot())
-        )
+        decision = evaluate_tx_frequency_permit(bands, target)
         if decision.permitted or decision.reason is None:
             return None
-        return _TX_PERMIT_REFUSALS[decision.reason]
+        where = (
+            f"{decision.frequency_hz} Hz"
+            if decision.band_name is None
+            else f"{decision.frequency_hz} Hz ({decision.band_name})"
+        )
+        return TxInterlockRefusal(
+            f"PTT refused: the TX frequency {where} is not a transmit frequency.",
+            reason_code=_TX_PERMIT_REFUSALS[decision.reason],
+        )
 
     def _provider_generation_changed(self, generation: int) -> None:
         self._observation_generation = int(generation)

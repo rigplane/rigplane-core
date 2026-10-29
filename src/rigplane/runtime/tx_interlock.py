@@ -18,9 +18,10 @@ from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import FreshnessState, StateSnapshot
 from rigplane.core.tx_target import (
     KnownTxTarget,
+    TxReceiver,
     TxTarget,
+    TxTargetUnknownReason,
     UnknownTxTarget,
-    tx_target_from_dict,
 )
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
@@ -66,6 +67,7 @@ from rigplane.runtime._poller_types import (
 
 __all__ = [
     "DeferredTxCommandLane",
+    "PTT_TX_FREQUENCY_UNKNOWN",
     "RfState",
     "TX_INTERLOCK_COMMAND_FAMILY_METADATA",
     "TxInterlockCommandFamily",
@@ -77,13 +79,16 @@ __all__ = [
     "TxInterlockRefusal",
     "classify_raw_civ_frame_tx_family",
     "classify_tx_interlock",
-    "current_tx_target",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
     "is_exact_raw_dekey_frame",
     "is_exact_raw_transmission_end_frame",
+    "moves_tx_target",
+    "ptt_on_tx_target_refusal",
     "resolve_rf_state",
+    "resolve_tx_target",
     "send_civ_frame",
+    "tx_frequency_unknown_refusal",
 ]
 
 
@@ -99,11 +104,21 @@ class TxInterlockRefusal(CommandError):
     the reason codes are policy vocabulary, and every enforcement seat may
     need them. ``reason_code`` rides the failed-lifecycle details whitelist so
     a localized UI never has to parse English prose off the wire (MOR-1879).
+    ``details`` carries optional machine-readable refusal evidence (MOR-3633:
+    why the TX target is unknown and the receiver that would transmit); the
+    seat that raises the refusal hands it to the issuer beside ``reason_code``.
     """
 
-    def __init__(self, message: str, *, reason_code: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: str,
+        details: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+        self.details: dict[str, str] = dict(details) if details is not None else {}
 
 
 class RfState(StrEnum):
@@ -307,41 +322,130 @@ def resolve_rf_state(snapshot: StateSnapshot) -> RfState:
 
 _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 
+# The wire reason code of a positive TX refused because the TX-side frequency
+# is unknown (MOR-3633); every seat and client reads this one spelling.
+PTT_TX_FREQUENCY_UNKNOWN = "ptt_tx_frequency_unknown"
 
-def current_tx_target(snapshot: StateSnapshot) -> TxTarget | None:
-    """Return the current published ``tx_state.tx_target``, else None (MOR-3632).
 
-    None means the server does not know the TX target right now: never
-    observed, not FRESH, from another provider generation, or older than its
-    own ``max_age`` at the snapshot. Like :func:`resolve_rf_state` the age is
-    recomputed from the snapshot instead of trusting the FRESH flag, because
-    the freshness service only clears it on its next tick. A stored mapping
-    (wire form) parses through the ``tx_target_from_dict`` contract the
-    pipeline uses; an unparseable value reads as unknown, never raises.
+def resolve_tx_target(
+    snapshot: StateSnapshot, *, fence: float | None = None
+) -> TxTarget:
+    """The one evaluation of the published ``tx_state.tx_target`` (MOR-3632/3633).
+
+    Every consumer that decides on the TX target -- the unknown-target refusal
+    and the band permit alike -- reads it through here, so there is one
+    freshness rule. Like :func:`resolve_rf_state` it fails closed and
+    recomputes the age from the snapshot instead of trusting the FRESH flag
+    (the freshness service clears that only on its next tick):
+
+    * no observation -> ``not-observed``; a STALE flag, a foreign provider
+      generation, or an age at or past the field's own ``max_age`` ->
+      ``stale``; any other non-FRESH flag -> ``not-observed``;
+    * malformed metadata (no positive finite ``max_age``, a non-integer
+      generation, a non-finite or future timestamp) or a value outside the
+      ``core.tx_target`` vocabulary -> ``contradiction``;
+    * an observation stamped before ``fence`` -> ``stale``: ``fence`` is
+      :attr:`StateStore.tx_target_fence`, the moment one of our own
+      acknowledged writes moved what the radio transmits on, so a target read
+      or derived before it still describes the radio before that write.
     """
 
     try:
         field = snapshot.field(_TX_TARGET_PATH)
     except KeyError:
-        return None
+        return UnknownTxTarget(reason="not-observed")
+    if field.freshness is FreshnessState.STALE:
+        return UnknownTxTarget(reason="stale")
+    if field.freshness is not FreshnessState.FRESH:
+        return UnknownTxTarget(reason="not-observed")
+    max_age = field.max_age
+    generated_at = snapshot.generated_at_monotonic
+    last_observed = field.last_observed_monotonic
     if (
-        field.freshness is not FreshnessState.FRESH
-        or field.provider_generation != snapshot.provider_generation
+        type(field.provider_generation) is not int
+        or type(snapshot.provider_generation) is not int
+        or snapshot.provider_generation < 0
+        or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not isfinite(value)
+            for value in (generated_at, last_observed, max_age)
+        )
+        or max_age is None
+        or max_age <= 0
+        or last_observed < 0
+        or generated_at < last_observed
     ):
-        return None
-    if field.max_age is not None:
-        age = snapshot.generated_at_monotonic - field.last_observed_monotonic
-        if not (isfinite(age) and age < field.max_age):
-            return None
+        return UnknownTxTarget(reason="contradiction")
+    if field.provider_generation != snapshot.provider_generation:
+        return UnknownTxTarget(reason="stale")
+    if generated_at - last_observed >= max_age:
+        return UnknownTxTarget(reason="stale")
+    if fence is not None and last_observed < fence:
+        return UnknownTxTarget(reason="stale")
     value = field.value
     if isinstance(value, (KnownTxTarget, UnknownTxTarget)):
         return value
-    if isinstance(value, Mapping):
-        try:
-            return tx_target_from_dict(value)
-        except (TypeError, ValueError):
-            return None
-    return None
+    return UnknownTxTarget(reason="contradiction")
+
+
+def _unknown_tx_frequency_refusal(
+    reason: TxTargetUnknownReason, receiver: TxReceiver | None
+) -> TxInterlockRefusal:
+    # Closed vocabulary: both values come from the ``core.tx_target`` literals,
+    # so the details a seat hands its issuer can carry nothing else.
+    details: dict[str, str] = {"txTargetReason": reason}
+    suffix = ""
+    if receiver is not None:
+        details["receiver"] = receiver
+        suffix = f"; {receiver} would transmit"
+    return TxInterlockRefusal(
+        f"PTT refused: the TX frequency is unknown ({reason}{suffix}).",
+        reason_code=PTT_TX_FREQUENCY_UNKNOWN,
+        details=details,
+    )
+
+
+def tx_frequency_unknown_refusal(value: object) -> TxInterlockRefusal | None:
+    """Refuse a TX-target value that does not name a frequency (MOR-3633).
+
+    The value-level core of the PTT-on unknown-target refusal. Only a known
+    target carrying a frequency passes. ``None`` reads ``not-observed``, a
+    known target without a frequency (split on, TX VFO unknown) reads
+    ``not-observed`` and names its receiver, and anything outside the
+    ``core.tx_target`` vocabulary reads ``contradiction``.
+    """
+
+    if value is None:
+        return _unknown_tx_frequency_refusal("not-observed", None)
+    if isinstance(value, KnownTxTarget):
+        if value.frequency_hz is None:
+            return _unknown_tx_frequency_refusal("not-observed", value.receiver)
+        return None
+    if isinstance(value, UnknownTxTarget):
+        return _unknown_tx_frequency_refusal(value.reason, None)
+    return _unknown_tx_frequency_refusal("contradiction", None)
+
+
+def ptt_on_tx_target_refusal(
+    snapshot: StateSnapshot,
+    *,
+    tx_target_supported: bool,
+    fence: float | None = None,
+) -> TxInterlockRefusal | None:
+    """Refuse a positive TX while the TX side's frequency is unknown (MOR-3633).
+
+    ``tx_target_supported`` is the profile's answer from
+    :func:`rigplane.runtime._state_queries.profile_publishes_tx_target`: a
+    radio that can never publish the target is not applicable and keeps
+    keying. Otherwise the target is read through :func:`resolve_tx_target`
+    (the one freshness rule, ``fence`` included) and refused unless it names
+    a frequency.
+    """
+
+    if not tx_target_supported:
+        return None
+    return tx_frequency_unknown_refusal(resolve_tx_target(snapshot, fence=fence))
 
 
 # These structural exemptions are intentionally checked before all disruptive
@@ -442,6 +546,29 @@ def get_tx_interlock_command_family_metadata(
     else:
         return None
     return _METADATA_BY_FAMILY[family]
+
+
+# The interlock families whose writes move what the radio transmits on: a
+# frequency, a band jump, a VFO selection, exchange or copy, split/dual-watch
+# topology, a memory recall. One table, read by every seat that has to know
+# whether its own write made the published TX target wrong (MOR-3632).
+_TX_TARGET_MOVING_FAMILIES = frozenset(
+    {
+        TxInterlockCommandFamily.FREQUENCY,
+        TxInterlockCommandFamily.BAND,
+        TxInterlockCommandFamily.VFO_SELECT,
+        TxInterlockCommandFamily.VFO_CONTENTS,
+        TxInterlockCommandFamily.VFO_TOPOLOGY,
+        TxInterlockCommandFamily.MEMORY,
+    }
+)
+
+
+def moves_tx_target(command: object) -> bool:
+    """Whether a typed command moves the radio's TX frequency (MOR-3632)."""
+
+    metadata = get_tx_interlock_command_family_metadata(command)
+    return metadata is not None and metadata.family in _TX_TARGET_MOVING_FAMILIES
 
 
 def classify_tx_interlock(command: object) -> TxInterlockDisposition:

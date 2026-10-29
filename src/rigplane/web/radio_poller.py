@@ -33,7 +33,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
@@ -117,10 +117,11 @@ from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
+    profile_publishes_tx_target,
     tx_target_max_age,
     wire_parts_for_query,
 )
-from ..core.tx_target_inputs import tx_target_inputs_written
+from ..core.tx_target_inputs import writes_tx_target_input
 from ..runtime.managed_tx_ingress import bind_managed_tx
 from ..runtime.managed_tx_state import submission_refused_for_release_debt
 from ..types import AudioCodec
@@ -134,7 +135,9 @@ from ..runtime.tx_interlock import (
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
     is_exact_raw_dekey_frame,
+    moves_tx_target,
     resolve_rf_state,
+    resolve_tx_target,
     send_civ_frame,
 )
 
@@ -522,15 +525,12 @@ def _positive_tx_refused_for_release_debt(
     )
 
 
-# MOR-3632: commands that retune what the radio transmits on without naming
-# one field (the A/B exchange and copy, a band jump, a memory recall): every
-# derivation input of the main receiver is wrong after one of them.
-_TX_TARGET_REWRITING_COMMANDS = (VfoSwap, VfoEqualize, SetBand, MemoryToVfo)
-_MAIN_TX_TARGET_INPUTS = (
-    FieldPath.active("0", "freq_mode", "freq_hz"),
-    FieldPath.unselected("0", "freq_mode", "freq_hz"),
-    FieldPath.active_slot("0"),
-)
+_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
+_TX_SPLIT_PATH = FieldPath.global_("tx_state", "split")
+# MOR-3632: how long a positive TX entry waits, at most, for the read-back of a
+# write that moved the TX target before its admission is released anyway (and
+# then refused for an unknown target). Several CI-V round trips on a slow link.
+_TX_TARGET_SETTLE_SECONDS = 1.0
 
 
 # ``ensure_fresh``'s ``max_age`` asks "how old may the CURRENT StateStore
@@ -846,6 +846,14 @@ class RadioPoller:
 
         validate_currency()
         if entry.positive_tx_submission is not None:
+            try:
+                await self._settle_tx_target(entry)
+            except Exception:
+                # The admission must still be released: a failed read-back
+                # leaves the target unknown, and the seat refuses the key.
+                logger.warning(
+                    "radio-poller: pre-key TX target read-back failed", exc_info=True
+                )
             await execute_positive_tx_queue_entry(entry)
             return None
         if entry.command is None:
@@ -1358,26 +1366,33 @@ class RadioPoller:
         it reaches the scheduler.
         """
 
-        if isinstance(cmd, _TX_TARGET_REWRITING_COMMANDS):
-            # MOR-3632: these name no single field, but every input moves.
-            self._fence_tx_target_after_write(_MAIN_TX_TARGET_INPUTS)
+        confirmed_selection = type(cmd) is SelectVfo and selected_receiver is not None
+        expected: tuple[FieldPath, ...] = ()
+        unnamed = False
         if isinstance(cmd, CommandIntent):
             expected = cmd.expected_observations
-        elif type(cmd) is SelectVfo and selected_receiver is not None:
-            expected = ()
-        else:
+        elif not confirmed_selection:
             name = LEGACY_COMMAND_NAMES.get(type(cmd))
             if name is None:
-                return
-            params = {
-                field.name: getattr(cmd, field.name)
-                for field in dataclasses.fields(cmd)
-            }
-            params.setdefault("receiver", 0)
-            expected = expected_observations_for_command(name, params)
-        self._fence_tx_target_after_write(expected)
+                unnamed = True
+            else:
+                params = {
+                    field.name: getattr(cmd, field.name)
+                    for field in dataclasses.fields(cmd)
+                }
+                params.setdefault("receiver", 0)
+                expected = expected_observations_for_command(name, params)
+        # MOR-3632: a write that moved what the radio transmits on (by its
+        # interlock family or by the fields it names) leaves the published TX
+        # target unknown until a post-write read re-derives it. The confirmed
+        # A/B selection is exempt: its own transaction read back both slots.
+        moved = not confirmed_selection and (
+            moves_tx_target(cmd) or writes_tx_target_input(expected)
+        )
+        if moved:
+            self._state_store.fence_tx_target()
         scheduler = self._acquisition_scheduler
-        if scheduler is None:
+        if scheduler is None or (unnamed and not moved):
             return
         paths = tuple(observable_field_path(path) for path in expected)
         if type(cmd) is SelectVfo and selected_receiver is not None:
@@ -1406,16 +1421,10 @@ class RadioPoller:
             capability = scheduler._profile.capability_for(filter_width)
             if capability.can_poll or capability.command_response_observable:
                 paths = (*paths, filter_width)
-        if (
-            self._profile.vfo_readback != "selected_unselected"
-            and tx_target_inputs_written(expected)
-        ):
-            # MOR-3632: a radio that reads its own TX target (IC-7610, 1C 03)
-            # is not derived here, so the read is queued with the write's own
-            # readback and the answer restores the target from the new values.
-            target_path = FieldPath.global_("tx_state", "tx_target")
-            if scheduler._profile.capability_for(target_path).can_poll:
-                paths = (*paths, target_path)
+        if moved:
+            # The target's own read-back rides with the write's, so the next
+            # read re-derives it instead of the cadence one.
+            paths = (*paths, *self._tx_target_readback_paths())
         if not paths:
             return
         scheduler.ensure_fresh(
@@ -3827,22 +3836,24 @@ class RadioPoller:
         return receiver, label
 
     def _tx_target_input(
-        self, snapshot: StateSnapshot, path: FieldPath
+        self, snapshot: StateSnapshot, path: FieldPath, *, fenced: bool = True
     ) -> tuple[Any, UnknownTxTarget | None]:
         """Look up one derivation input: ``(value, None)`` if FRESH, else
         ``(None, UnknownTxTarget(...))`` explaining why it cannot be used.
 
-        An input that our own acknowledged write changed (MOR-3632) counts only
-        from its first observation after that write
-        (``StateStore.pending_tx_target_inputs``): until then the store still holds the
-        pre-write value as FRESH, and deriving from it would publish the old
-        target as if it were current.
+        A ``fenced`` input (a frequency or the split flag) observed before the
+        TX-target fence (MOR-3632, ``StateStore.fence_tx_target``) counts as
+        stale: our own acknowledged write moved what the radio transmits on
+        since, and the store still holds the pre-write value as FRESH. The
+        VFO identity is not fenced: it only labels the slot, and a
+        selected/unselected radio cannot read it passively.
         """
         try:
             field = snapshot.field(path)
         except KeyError:
             return None, UnknownTxTarget(reason="not-observed")
-        if path in self._state_store.pending_tx_target_inputs():
+        fence = self._state_store.tx_target_fence
+        if fenced and fence is not None and field.last_observed_monotonic < fence:
             return None, UnknownTxTarget(reason="stale")
         if field.freshness is FreshnessState.STALE:
             return None, UnknownTxTarget(reason="stale")
@@ -3886,7 +3897,7 @@ class RadioPoller:
         snapshot = self._state_store.snapshot()
 
         slot, unknown = self._tx_target_input(
-            snapshot, FieldPath.active_slot(receiver_id)
+            snapshot, FieldPath.active_slot(receiver_id), fenced=False
         )
         if unknown is not None:
             return unknown
@@ -3936,27 +3947,81 @@ class RadioPoller:
         # return-type explicit rather than suppressing the check.
         return float(tx_target_max_age(self._profile))
 
-    def _fence_tx_target_after_write(self, written: Iterable[FieldPath]) -> None:
-        """Mark the TX-target inputs a write of ours changed (MOR-3632).
+    def _tx_target_readback_paths(self) -> tuple[FieldPath, ...]:
+        """What to read so the TX target can be known again (MOR-3632).
 
-        A write does not make the observation of what it changed stale, it
-        makes it wrong (see ``CommandService._request_write_confirmation``):
-        the store keeps the pre-write value as FRESH until a read lands, and
-        every poll tick re-derives and republishes it. ``CommandService``
-        marks the inputs of every intent it acknowledges; this is the same mark
-        for the commands that reach the poller without one (the A/B exchange
-        and copy, a band jump, a memory recall). ``_tx_target_input`` then
-        refuses a marked input until it is observed again, so the next tick
-        derives the target unknown instead of republishing the old frequency,
-        and the permit does not use it either (``StateStore``).
-
-        Radios with a native target read (IC-7610's 1C 03) are not derived
-        here (``_publish_tx_target``): their read is queued with the
-        post-write readback instead, in ``_request_post_write_readback``.
+        In the spelling the profile declares, and only what it can poll: the
+        inputs the selected/unselected derivation reads (both relative
+        frequencies of the transmitting receiver), else the radio's own
+        TX-target read; and the split flag, which picks the transmitting VFO
+        for the one and labels the receiver of the other.
         """
-        if self._profile.vfo_readback != "selected_unselected":
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return ()
+        if self._profile.vfo_readback == "selected_unselected":
+            receiver = "sub" if self._tx_target_receiver()[0] == 1 else "main"
+            candidates: tuple[FieldPath, ...] = (
+                _TX_SPLIT_PATH,
+                FieldPath.active(receiver, "freq_mode", "freq_hz"),
+                FieldPath.unselected(receiver, "freq_mode", "freq_hz"),
+            )
+        else:
+            candidates = (_TX_SPLIT_PATH, _TX_TARGET_PATH)
+        return tuple(
+            path
+            for path in candidates
+            if scheduler._profile.capability_for(path).can_poll
+        )
+
+    def _tx_target_known(self) -> bool:
+        """Whether the one TX-target evaluation names a frequency right now."""
+        store = self._state_store
+        target = resolve_tx_target(store.snapshot(), fence=store.tx_target_fence)
+        return isinstance(target, KnownTxTarget) and target.frequency_hz is not None
+
+    async def _settle_tx_target(self, entry: CommandQueueEntry) -> None:
+        """Read the TX target back before a key's admission (MOR-3632).
+
+        Runs in the positive TX entry's queue turn, before its admission is
+        released, so the one positive-TX seat
+        (``ManagedTxComposition.tx_frequency_refusal``) decides on the radio
+        as it is after every write queued ahead of the key: a retune-and-key
+        (WSJT-X moving its dial, then ``T 1``) keys on the new frequency or is
+        refused for it, never judged on the old one. The derived target is
+        re-derived first; while it is not known -- a write of ours fenced it
+        (``StateStore.fence_tx_target``), or it was never read or went stale
+        -- its read-back is queued and dispatched here (this seat owns the
+        wire for the turn) and awaited, bounded by
+        ``_TX_TARGET_SETTLE_SECONDS`` and the entry's own expiry. A read that
+        does not come back leaves the target unknown and the seat refuses the
+        key; nothing here admits or refuses anything itself.
+        """
+        if not profile_publishes_tx_target(self._profile):
             return
-        self._state_store.mark_tx_target_inputs_written(written)
+        self._publish_tx_target()
+        if self._tx_target_known():
+            return
+        scheduler = self._acquisition_scheduler
+        paths = self._tx_target_readback_paths()
+        if scheduler is None or not paths:
+            return
+        scheduler.ensure_fresh(
+            paths,
+            max_age=_POST_WRITE_READBACK_MAX_AGE,
+            priority=AcquisitionPriority.USER,
+            reason="tx_target_settle",
+            require_fresh_dispatch=True,
+        )
+        deadline = self._clock() + _TX_TARGET_SETTLE_SECONDS
+        if entry.expires_at_monotonic is not None:
+            deadline = min(deadline, entry.expires_at_monotonic)
+        while True:
+            await self._send_query()
+            self._publish_tx_target()
+            if self._tx_target_known() or self._clock() >= deadline:
+                return
+            await asyncio.sleep(self._adaptive_gap())
 
     def _publish_tx_target(self) -> None:
         """Recompute and, if changed or stale, republish tx_target (MOR-1496).
@@ -4004,11 +4069,13 @@ class RadioPoller:
             current = self._state_store.snapshot().field(path)
         except KeyError:
             current = None
+        fence = self._state_store.tx_target_fence
         if (
             current is not None
             and current.freshness is FreshnessState.FRESH
             and current.value == target
             and now - current.last_observed_monotonic < max_age * 0.5
+            and (fence is None or current.last_observed_monotonic >= fence)
         ):
             return
 

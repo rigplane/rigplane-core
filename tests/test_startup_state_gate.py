@@ -34,6 +34,7 @@ from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from support.tx_target import seed_tx_target
 
 from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
@@ -3331,6 +3332,9 @@ async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
             lambda: composition._active_provider is not None, timeout_s=5.0
         )
         assert composition._active_provider.transport_identity is radio._civ_transport
+        # No poller here: seed the in-band TX target a keyed-ready radio
+        # publishes, so the positive-TX admission (MOR-3632/3633) has one.
+        seed_tx_target(store)
         keyed = await composition.authority.submit_ptt(True, "late-open-owner")
         assert keyed.outcome is ManagedTxOutcome.ACCEPTED
         await keyed.wait_settlement()

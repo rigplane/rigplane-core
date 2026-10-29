@@ -1639,17 +1639,19 @@ class ControlHandler:
             error = "unsupported_command"
         else:
             error = "command_failed"
-        await self._ws.send_text(
-            encode_json(
-                {
-                    "type": "response",
-                    "id": cmd_id,
-                    "ok": False,
-                    "error": error,
-                    "message": message,
-                }
-            )
-        )
+        response: dict[str, Any] = {
+            "type": "response",
+            "id": cmd_id,
+            "ok": False,
+            "error": error,
+            "message": message,
+        }
+        if isinstance(exc, ControllerError) and exc.details:
+            # MOR-3633: the positive-TX admission's refusal evidence (why the
+            # TX target is unknown, the receiver that would transmit), built
+            # from a closed vocabulary, answered to the issuing socket only.
+            response["details"] = dict(exc.details)
+        await self._ws.send_text(encode_json(response))
 
     def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:
         authority = self._managed_tx_authority

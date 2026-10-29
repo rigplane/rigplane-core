@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from support.tx_target import seed_tx_target
 
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.yaesu_cat.parser import format_command
@@ -87,6 +88,12 @@ async def _run_route(
         assert await composition.shutdown(asyncio.Event()) is ShutdownResult.DRAINED
     elif route == "owner_disconnect":
         authority = composition.authority
+        # No poller here: seed the in-band TX target a keyed-ready radio
+        # publishes (7.074 MHz is a TX band row on both profiles used here),
+        # so the positive-TX admission (MOR-3632/3633) has one.
+        store = composition._state_store  # noqa: SLF001
+        assert store is not None
+        seed_tx_target(store, 7_074_000)
         assert await authority.ptt_down("owner-a") is ManagedTxOutcome.ACCEPTED
         assert await authority.owner_disconnect("owner-a") is ManagedTxOutcome.ACCEPTED
     else:

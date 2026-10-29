@@ -494,6 +494,26 @@ class YaesuCatPoller:
         )
         return True
 
+    async def _settle_tx_target(self) -> None:
+        """Read the TX target back before a key's admission (MOR-3632).
+
+        Runs in the positive TX entry's queue turn, before its admission is
+        released: the one positive-TX seat
+        (``ManagedTxComposition.tx_frequency_refusal``) then decides on the
+        radio's TX target as it is after every write queued ahead of the key,
+        not on the target a write of ours has since moved (the store fences
+        that one as unknown until it is read again). The medium lane reads
+        the native target (``FT;`` bracketing the TX VFO's frequency), so
+        there is no second read path. A failed read leaves the target as it
+        was -- unknown after a write -- and the seat refuses the key.
+        """
+        if self._observation_callback is None or self._tx_target_profile() is None:
+            return
+        try:
+            await self._poll_medium()
+        except Exception:
+            logger.debug("YaesuCatPoller: pre-key TX target read failed", exc_info=True)
+
     async def _post_write_freq_mode_readback(self) -> None:
         """Re-read both receivers' frequency and mode after a VFO exchange.
 
@@ -843,6 +863,7 @@ class YaesuCatPoller:
 
                 async def finish_positive(claimed: CommandQueueEntry) -> None:
                     validate_currency(claimed)
+                    await self._settle_tx_target()
                     await execute_positive_tx_queue_entry(claimed)
 
                 try:

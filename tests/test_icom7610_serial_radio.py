@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from support.tx_target import seed_tx_target
 
 from rigplane import IcomRadio, RadioConnectionState
 from rigplane.backends._icom_serial_base import (
@@ -517,6 +518,9 @@ async def test_serial_disconnect_retires_composition_before_transport_close(
     store.begin_provider_generation()
     await composition.bind_state_store(store)
     await radio.connect()
+    # No poller here: seed the in-band TX target a keyed-ready radio
+    # publishes, so the positive-TX admission (MOR-3632/3633) has one.
+    seed_tx_target(store)
     transport = radio._civ_transport
     keyed = await composition.authority.submit_ptt(True, "serial-owner")
     assert keyed.outcome is ManagedTxOutcome.ACCEPTED

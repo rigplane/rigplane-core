@@ -6,7 +6,7 @@ import asyncio
 import logging
 import secrets
 import time
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -16,9 +16,23 @@ logger = logging.getLogger(__name__)
 
 
 class ControllerError(PermissionError):
-    def __init__(self, code: str, status: int = 403) -> None:
+    """A refusal with a stable ``code``; ``details`` carries its evidence.
+
+    ``details`` (MOR-3633) is machine-readable refusal evidence for the
+    issuer only -- e.g. why the TX target is unknown -- built by the seat
+    that refuses from a closed vocabulary; empty for every other refusal.
+    """
+
+    def __init__(
+        self,
+        code: str,
+        status: int = 403,
+        *,
+        details: Mapping[str, str] | None = None,
+    ) -> None:
         self.code = code
         self.status = status
+        self.details: dict[str, str] = dict(details) if details is not None else {}
         super().__init__(code)
 
 

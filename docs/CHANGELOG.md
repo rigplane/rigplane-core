@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default; and the beta report form is now the 3.0 radio report form. The
   PyPI project page shows the new README and classifier from the next upload.
 
+### Fixed
+
+- **A managed key-up needs a known TX frequency inside a transmit band
+  (MOR-3632, MOR-3633).** Every managed key -- WebSocket `ptt_on`/`ptt`,
+  HTTP `transmit_on`, rigctld `T 1` in `web`/`station` (TCP and the rigctl
+  WebSocket channel) and the shared managed-key path -- is checked at one
+  place, right before the transmitter keys. On a radio that reports the
+  frequency it transmits on (IC-705, IC-7300, IC-7300MK2, IC-7610, FTX-1) a
+  key is refused with `ptt_tx_frequency_unknown` while that frequency is
+  unknown (the reply's `details` say why, and which receiver would
+  transmit), with `receive_only_band` inside a receive-only band row, and
+  with `outside_tx_range` outside every transmit band row. After a retune,
+  split or VFO change the key waits for the radio's own read-back of the new
+  TX frequency (up to about a second) instead of being judged on the old one.
+  Radios that cannot report it keep keying as before; standalone
+  `rigplane serve` (no TX-frequency reader) does not apply the check.
+
 ## [3.0.1] — 2026-10-28
 
 3.0.0 was prepared and tagged but never published to PyPI, so no user received

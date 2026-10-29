@@ -330,6 +330,7 @@ async def _stand_up_stack(
     unsolicited: bool,
     sim_options: dict[str, Any] | None = None,
     web_max_clients: int | None = None,
+    model: str = "IC-7610",
 ) -> _Stack:
     """Build the production stack over the simulator, in the CLI's order."""
     config_path = tmp_path / "managed-tx.json"
@@ -343,7 +344,9 @@ async def _stand_up_stack(
         stateful_ptt=True,
         ptt_on_session_loss=loss,
         unsolicited_civ=unsolicited,
-        **(sim_options or {}),
+        # The split read and 1C 03 TX-frequency read a managed key's
+        # TX-target admission needs (MOR-3632/3633).
+        **({"models_tx_frequency": True} | (sim_options or {})),
     )
     await sim.start()
 
@@ -353,7 +356,7 @@ async def _stand_up_stack(
         username="testuser",
         password="testpass",
         timeout=5.0,
-        model="IC-7610",
+        model=model,
         auto_reconnect=True,
         reconnect_delay=_RECONNECT_DELAY_S,
         reconnect_max_delay=_RECONNECT_MAX_DELAY_S,

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import partial
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from rigplane.core.command_dispatch import DescriptorTxPolicy, command_descriptor
 from rigplane.core.state_pipeline_contracts import CommandIntent
@@ -43,6 +43,9 @@ from rigplane.runtime.managed_tx_state import (
     TransmitOn,
     reduce_managed_tx,
 )
+
+if TYPE_CHECKING:
+    from rigplane.runtime.tx_interlock import TxInterlockRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +82,16 @@ _RADIO_TX_REFUSALS = {
 
 
 class TxFrequencyPermit(Protocol):
-    """The TX frequency permit, as the composition answers it (MOR-3632)."""
+    """The positive-TX admission probe, as the composition answers it.
 
-    def tx_frequency_refusal(self) -> str | None:
-        """Refusal code if keying on the current TX target is not permitted.
+    MOR-3632/MOR-3633: the TX target must be known and inside a transmit band.
+    """
+
+    def tx_frequency_refusal(self) -> TxInterlockRefusal | None:
+        """Refusal if keying on the current TX target is not admitted.
 
         Evaluated by the authority under its lock, immediately before a
-        positive transition; ``None`` permits (or does not apply).
+        positive transition; ``None`` admits (or does not apply).
         """
         ...
 
@@ -459,13 +465,15 @@ class ManagedTxAuthority:
                         if (refusal := self._radio_tx_refusal_locked()) is not None:
                             # MOR-3537: never key over a TX the radio reports.
                             raise ControllerError(refusal, 409)
-                        if (refusal := self._tx_frequency_refusal_locked()) is not None:
-                            # MOR-3632: evaluated here, after the ordered queue
-                            # barrier released this transition and still under
-                            # the lock, so a retune queued ahead of the key is
-                            # already applied and nothing can change the verdict
-                            # between it and the transition.
-                            raise ControllerError(refusal, 409)
+                        if (permit := self._tx_frequency_refusal_locked()) is not None:
+                            # MOR-3632/3633: evaluated here, after the ordered
+                            # queue barrier released this transition and still
+                            # under the lock, so a retune queued ahead of the
+                            # key is already applied and nothing can change the
+                            # verdict between it and the transition.
+                            raise ControllerError(
+                                permit.reason_code, 409, details=permit.details
+                            )
                         transition, full_force = self._transition_locked(action, owner)
                         if transition is None:
                             transition = ManagedTxTransition(
@@ -1587,11 +1595,15 @@ class ManagedTxAuthority:
         origin = self._radio_tx_origin_locked()
         return None if origin is None else _RADIO_TX_REFUSALS[origin]
 
-    def _tx_frequency_refusal_locked(self) -> str | None:
-        """Refusal code of the TX frequency permit for a positive transition."""
-        return (
-            None if self._tx_permit is None else self._tx_permit.tx_frequency_refusal()
-        )
+    def _tx_frequency_refusal_locked(self) -> TxInterlockRefusal | None:
+        """The positive-TX admission probe's refusal for a positive transition.
+
+        Without a provider nothing can key and the transition itself rejects;
+        the probe answers only for a transition that could otherwise run.
+        """
+        if self._tx_permit is None or self._provider_generation is None:
+            return None
+        return self._tx_permit.tx_frequency_refusal()
 
     def _pending_settlements_locked(self) -> tuple[_SubmissionCompletion, ...]:
         return tuple(task for task in self._settlement_tasks if not task.done())
