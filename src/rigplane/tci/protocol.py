@@ -89,4 +89,9 @@ def parse_int(value: str) -> int | None:
     text = value.strip()
     if _INT_RE.fullmatch(text) is None:
         return None
-    return int(text, 10)
+    try:
+        return int(text, 10)
+    except ValueError:
+        # Python 3.11+ caps digit-string conversion (default 4300
+        # digits): such input is invalid, not an error to raise.
+        return None
