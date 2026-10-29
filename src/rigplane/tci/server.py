@@ -120,7 +120,9 @@ async def _run_guarded_disconnect(handler: TciHandler, session_id: str) -> None:
             try:
                 await asyncio.wait_for(asyncio.shield(task), TEARDOWN_TIMEOUT_S)
             except asyncio.CancelledError:
-                logger.debug("tci %s: disconnect cancelled twice; abandoning", session_id)
+                logger.debug(
+                    "tci %s: disconnect cancelled twice; abandoning", session_id
+                )
                 task.cancel()
         except TimeoutError:
             logger.debug("tci %s: disconnect timed out; retrying once", session_id)
@@ -154,9 +156,7 @@ class TciSession:
         # Design 4.2: per-message deflate stays off for TCI (the upgrade
         # ignores the extension offer), so the connection never compresses.
         self._conn = WebSocketConnection(reader, writer, clock=clock)
-        self._outbox: asyncio.Queue[bytes] = asyncio.Queue(
-            maxsize=MAX_QUEUED_OUTBOUND
-        )
+        self._outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUED_OUTBOUND)
         self._pending: list[str] = []
         self._flush_handle: asyncio.TimerHandle | None = None
         self._tasks: set[asyncio.Task[None]] = set()

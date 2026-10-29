@@ -78,7 +78,9 @@ class FakeWriter:
         return self._closing
 
 
-def client_frame(opcode: int, payload: bytes, *, fin: bool = True, rsv1: bool = False) -> bytes:
+def client_frame(
+    opcode: int, payload: bytes, *, fin: bool = True, rsv1: bool = False
+) -> bytes:
     """One masked client->server frame with explicit FIN/RSV1."""
     mask = b"\x11\x22\x33\x44"
     masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
@@ -218,7 +220,9 @@ async def test_single_compressed_frame_still_decompresses() -> None:
     reader = asyncio.StreamReader()
     writer = FakeWriter()
     conn = WebSocketConnection(reader, writer, clock=FakeClock(), deflate=True)
-    reader.feed_data(client_frame(WS_OP_TEXT, deflate_raw(b"vfo:0,0,14074000;"), rsv1=True))
+    reader.feed_data(
+        client_frame(WS_OP_TEXT, deflate_raw(b"vfo:0,0,14074000;"), rsv1=True)
+    )
     opcode, payload = await conn.recv()
     assert (opcode, payload) == (WS_OP_TEXT, b"vfo:0,0,14074000;")
 

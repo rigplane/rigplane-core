@@ -667,9 +667,7 @@ async def test_stalled_sender_bounded_outbox() -> None:
     broadcast.
     """
     clock = FakeClock()
-    handler = FakeHandler(
-        replies={"echo": CommandOutcome(to_sender=["echo:1;"])}
-    )
+    handler = FakeHandler(replies={"echo": CommandOutcome(to_sender=["echo:1;"])})
     server = make_server(handler, clock)
     writer_a = FakeWriter()
     writer_a.block_drain()
