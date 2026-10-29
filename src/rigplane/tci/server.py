@@ -448,9 +448,7 @@ class TciSession:
         if self._teardown_started:
             return
         self._teardown_started = True
-        await _run_guarded_disconnect(
-            self._handler, self._id, self._server._unsettled
-        )
+        await _run_guarded_disconnect(self._handler, self._id, self._server._unsettled)
 
     async def _handle_text(self, payload: bytes) -> None:
         try:
@@ -492,9 +490,7 @@ class TciSession:
                     try:
                         self._inbox.put_nowait((opcode, payload))
                     except asyncio.QueueFull:
-                        logger.debug(
-                            "tci %s: inbound queue full; aborting", self._id
-                        )
+                        logger.debug("tci %s: inbound queue full; aborting", self._id)
                         self._overflow()
                         return
         except (EOFError, ConnectionError, OSError, WebSocketError):

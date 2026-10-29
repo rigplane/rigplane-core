@@ -1525,9 +1525,7 @@ async def test_gated_command_pong_keeps_session_alive() -> None:
     entered = asyncio.Event()
 
     class _GatedHandler(FakeHandler):
-        async def on_command(
-            self, name: str, args: tuple[str, ...]
-        ) -> CommandOutcome:
+        async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
             entered.set()
             await gate.wait()
             return CommandOutcome(to_sender=["done:1;"])
