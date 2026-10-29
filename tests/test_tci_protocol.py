@@ -105,6 +105,11 @@ def test_parse_int(text: str, expected: int | None) -> None:
     assert parse_int(text) == expected
 
 
+def test_parse_int_huge_digit_string_returns_none() -> None:
+    """A >4300-digit integer hits the interpreter digit limit: invalid, not raised."""
+    assert parse_int("9" * 5000) is None
+
+
 def test_format_round_trip() -> None:
     assert format_command("vfo", ("0", "0", "14074000")) == "vfo:0,0,14074000;"
     assert format_command("ready") == "ready;"
