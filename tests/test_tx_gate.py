@@ -20,7 +20,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import StateSnapshot, StateStore
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
 from rigplane.runtime.controller_authority import ControllerAuthority
-from rigplane.runtime.managed_tx_state import ManagedTxProjection
+from rigplane.runtime.managed_tx_authority import ManagedTxProjection
 from rigplane.runtime.tx_gate import tx_gate_open
 
 _SOURCE = SourceMetadata(source="test", provider="tests")
