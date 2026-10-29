@@ -4760,6 +4760,54 @@ def test_ic705_prime_skips_fm_contradicted_reads_then_reacquires_in_usb() -> Non
     assert store.snapshot().field(_IC705_FM_SHAPE).value == 1
 
 
+def test_availability_resolves_a_clause_source_stored_under_the_other_receiver_id() -> (
+    None
+):
+    """MOR-3630 round 3 finding 2: CI-V ingress spells MAIN ``receiver.0``.
+
+    The profile declares ``available_when`` over ``receiver.main...``; the
+    production ingress stores the same receiver as ``receiver.0...``
+    (``runtime/_civ_rx.py: CivRuntime._receiver_context``). A clause source
+    stored under the other spelling must resolve, or no receiver-sourced
+    condition ever holds or fails on a real radio.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    ingress_mode = FieldPath.active("0", "freq_mode", "mode")
+
+    in_fm = resolve_available_when(acquisition, _snapshot_of({ingress_mode: "FM"}))
+    in_usb = resolve_available_when(acquisition, _snapshot_of({ingress_mode: "USB"}))
+
+    for path in (*_IC705_FM_POLLED, _IC705_FM_SHAPE):
+        assert in_fm[path] is False, path
+        assert in_usb[path] is True, path
+
+
+def test_tick_discards_a_value_stored_under_the_other_receiver_id() -> None:
+    """MOR-3630 round 3 finding 2: the discard removes the stored spelling.
+
+    The value lives at ``receiver.0.operator_controls.pbt_inner`` while the
+    profile's policy key (and so the availability map) says ``receiver.main``.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    clock = FreshnessClock(start=1000.0)
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    stored_mode = FieldPath.active("0", "freq_mode", "mode")
+    stored_pbt = FieldPath.receiver("0", "operator_controls", "pbt_inner")
+    store.apply(_observation(stored_mode, "FM", at=clock.now()))
+    store.apply(_observation(stored_pbt, 128, at=clock.now()))
+
+    service.tick(now=clock.now())
+
+    assert stored_pbt not in {field.path for field in store.snapshot().fields}
+    assert stored_mode in {field.path for field in store.snapshot().fields}
+
+
 def _dispatchable_paths(scheduler: AcquisitionScheduler) -> set[FieldPath]:
     return {
         path for request in scheduler.dispatchable_requests() for path in request.paths

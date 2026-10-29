@@ -199,7 +199,7 @@ def _observed_paths(
     against. ``_profile_path_for_observation`` is how that same module
     already resolves an observed path against the profile
     (``CivRuntime._record_coalesced_meter_observation``), off the single
-    ``_RECEIVER_ALIASES`` table it also credits observations through
+    ``RECEIVER_ID_ALIASES`` table it also credits observations through
     (``_field_paths_match``); reusing it keeps that table the only one.
     Pinned by ``test_civ_ingress_counts_as_observed_against_profile_paths``.
     """

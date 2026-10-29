@@ -71,6 +71,7 @@ from rigplane.core.tx_target import (
 )
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
 from rigplane.core.state_pipeline_contracts import (
+    RECEIVER_ID_ALIASES,
     ChangeSet,
     FieldChange,
     FieldPath,
@@ -513,14 +514,6 @@ def _frame_native_id(frame: CivFrame) -> str:
     return f"civ:{frame.command:02x}:{frame.sub:02x}"
 
 
-_RECEIVER_ALIASES: dict[str, str] = {
-    "0": "main",
-    "main": "0",
-    "1": "sub",
-    "sub": "1",
-}
-
-
 def _field_paths_match(expected: FieldPath, observed: FieldPath) -> bool:
     if expected == observed:
         return True
@@ -533,14 +526,14 @@ def _field_paths_match(expected: FieldPath, observed: FieldPath) -> bool:
         return False
     if expected.receiver_id is None or observed.receiver_id is None:
         return bool(expected.receiver_id == observed.receiver_id)
-    return bool(_RECEIVER_ALIASES.get(expected.receiver_id) == observed.receiver_id)
+    return bool(RECEIVER_ID_ALIASES.get(expected.receiver_id) == observed.receiver_id)
 
 
 def _profile_path_for_observation(profile: Any, path: FieldPath) -> FieldPath:
     if path.receiver_id is None:
         return path
     candidates = [path]
-    alias = _RECEIVER_ALIASES.get(path.receiver_id)
+    alias = RECEIVER_ID_ALIASES.get(path.receiver_id)
     if alias is not None:
         candidates.append(_replace_dataclass(path, receiver_id=alias))
     for candidate in candidates:

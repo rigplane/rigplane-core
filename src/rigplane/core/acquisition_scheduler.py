@@ -2528,6 +2528,24 @@ def availability_clause_holds(clause: AvailabilityClause, value: Any) -> bool:
     return float(value) <= float(clause.value)
 
 
+def _clause_source(snapshot: StateSnapshot, path: FieldPath) -> FieldSnapshot | None:
+    """The stored field a clause reads, under either spelling of its receiver.
+
+    CI-V ingress stores MAIN as ``receiver.0`` while profiles spell clause
+    sources ``receiver.main`` (:data:`RECEIVER_ID_ALIASES`); the spelling
+    the clause names wins when both are stored.
+    """
+
+    for candidate in (path, path.receiver_alias()):
+        if candidate is None:
+            continue
+        try:
+            return snapshot.field(candidate)
+        except KeyError:
+            continue
+    return None
+
+
 def resolve_available_when(
     profile: RadioAcquisitionProfile,
     snapshot: StateSnapshot,
@@ -2547,9 +2565,8 @@ def resolve_available_when(
             continue
         state: bool | None = True
         for clause in policy.available_when:
-            try:
-                source = snapshot.field(clause.field)
-            except KeyError:
+            source = _clause_source(snapshot, clause.field)
+            if source is None:
                 state = None
                 continue
             if not availability_clause_holds(clause, source.value):
@@ -2691,12 +2708,16 @@ class StateFreshnessService:
             return
         snapshot = self._store.snapshot()
         stored = {field.path for field in snapshot.fields}
+        # The profile spells a receiver ``main``/``sub``, CI-V ingress stores
+        # it ``0``/``1``: discard whichever spelling holds the value.
         absent = tuple(
-            path
+            candidate
             for path, available in resolve_available_when(
                 scheduler._profile, snapshot
             ).items()
-            if available is False and path in stored
+            if available is False
+            for candidate in (path, path.receiver_alias())
+            if candidate is not None and candidate in stored
         )
         if absent:
             self._store.discard(absent)
