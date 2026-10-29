@@ -62,6 +62,7 @@ CommandSource = Literal[
     "websocket",
     "http",
     "rigctld",
+    "tci",
     "public_api",
     "internal_policy",
     "diagnostics",

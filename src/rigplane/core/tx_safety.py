@@ -28,6 +28,7 @@ BACKEND_MAX_KEY_DOWN_SECONDS: float = 180.0
 class TxSource(StrEnum):
     WEBSOCKET = "websocket"
     RIGCTLD = "rigctld"
+    TCI = "tci"
     SDK = "sdk"
     HAMLIB_BRIDGE = "hamlib_bridge"
     INTERNAL = "internal"

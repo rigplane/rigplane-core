@@ -1718,11 +1718,17 @@ class RelativeVfoModeWritable(Protocol):
         mode: int,
         *,
         selected: bool,
-        data: bool | None = None,
+        data: bool | int | None = None,
         filter_width: int | None = None,
         before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
-        """Preserve omitted fields; the synchronous hook may refuse before SET."""
+        """Preserve omitted fields; the synchronous hook may refuse before SET.
+
+        ``data`` is a boolean (legacy: DATA1 on/off) or an explicit
+        numeric DATA sub-mode bounded by the profile's ``data_mode_count``
+        (MOR-3821 P0e); the write is verified against an immediate
+        readback of the exact sub-mode.
+        """
         ...
 
 

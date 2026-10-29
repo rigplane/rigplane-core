@@ -64,21 +64,25 @@ def resolve_supervisor(radio: object) -> ManagedTxSupervisor | None:
 _STABLE_OWNER_SOURCES: dict[CommandSource, TxSource] = {
     "websocket": TxSource.WEBSOCKET,
     "rigctld": TxSource.RIGCTLD,
+    "tci": TxSource.TCI,
 }
 
 
 def _stable_owner(source: CommandSource, session_id: str | None) -> TxOwner | None:
     """The ingress identity a lease can be held against, or ``None``.
 
-    Two ingresses qualify, and for one reason: the id names a *connection* that
-    something is obliged to tear down, so a lease taken under it is releasable.
+    Three ingresses qualify, and for one reason: the id names a *connection*
+    that something is obliged to tear down, so a lease taken under it is
+    releasable.
 
     A websocket control session carries its long-lived
     ``ControlHandler._session_id``, not the throwaway the shared executor mints
     per request, which owner-matched ``release_owner`` would miss — stranding
     the rig keyed. A rigctld connection carries the ``rigctld-client-N`` id its
     TCP server mints once per accepted socket and releases on that socket's
-    teardown, however the socket ends (MOR-1014).
+    teardown, however the socket ends (MOR-1014). A TCI connection carries
+    the ``tci-client-N`` id its adapter mints once per accepted socket and
+    releases the same way (MOR-3821).
 
     Every other ingress has no teardown hook — HTTP params may even carry a
     ``session_id``, and nothing would ever hand its lease back — so its lease
