@@ -20,10 +20,14 @@ import pytest
 from rigplane.tci.server import TciServer
 from rigplane.tci.ws import (
     WS_OP_BINARY,
+    WS_OP_CLOSE,
     WS_OP_CONTINUATION,
     WS_OP_PING,
     WS_OP_PONG,
     WS_OP_TEXT,
+    _MAX_FRAGMENTS,
+    _MAX_MESSAGE_BYTES,
+    _MAX_WS_FRAME,
     WebSocketConnection,
     WebSocketError,
     make_upgrade_response,
@@ -254,3 +258,47 @@ async def test_fragmented_compressed_binary_reassembled() -> None:
     reader.feed_data(client_frame(WS_OP_CONTINUATION, rest, fin=True, rsv1=False))
     opcode, payload = await conn.recv()
     assert (opcode, payload) == (WS_OP_BINARY, b"\x00\x01\x02\x03" * 32)
+
+
+async def test_fragmented_bytes_overflow_rejected() -> None:
+    """Cumulative fragmented bytes past the budget are refused with 1009.
+
+    Each frame is individually within ``_MAX_WS_FRAME``; only their sum
+    exceeds ``_MAX_MESSAGE_BYTES``. The connection answers close 1009,
+    releases the retained fragments, and raises EOF.
+    """
+    assert 5 * 60000 > _MAX_MESSAGE_BYTES
+    reader = asyncio.StreamReader()
+    writer = FakeWriter()
+    conn = WebSocketConnection(reader, writer, clock=FakeClock())
+    chunk = b"y" * 60000
+    reader.feed_data(client_frame(WS_OP_BINARY, chunk, fin=False))
+    for _ in range(4):
+        reader.feed_data(client_frame(WS_OP_CONTINUATION, chunk, fin=False))
+    with pytest.raises(EOFError):
+        await conn.recv()
+    frames = parse_server_frames(writer.buffer)
+    assert frames[-1][0] == WS_OP_CLOSE
+    assert struct.unpack("!H", frames[-1][1][:2])[0] == 1009
+    assert conn._fragments == []
+    assert conn._fragmented_opcode == 0
+
+
+async def test_fragment_count_overflow_rejected() -> None:
+    """More than ``_MAX_FRAGMENTS`` fragments are refused with 1009.
+
+    Empty continuations carry no bytes but each occupies a slot, so an
+    endless stream of them cannot grow the fragment list without bound.
+    """
+    reader = asyncio.StreamReader()
+    writer = FakeWriter()
+    conn = WebSocketConnection(reader, writer, clock=FakeClock())
+    reader.feed_data(client_frame(WS_OP_BINARY, b"", fin=False))
+    for _ in range(_MAX_FRAGMENTS):
+        reader.feed_data(client_frame(WS_OP_CONTINUATION, b"", fin=False))
+    with pytest.raises(EOFError):
+        await conn.recv()
+    frames = parse_server_frames(writer.buffer)
+    assert frames[-1][0] == WS_OP_CLOSE
+    assert struct.unpack("!H", frames[-1][1][:2])[0] == 1009
+    assert conn._fragments == []

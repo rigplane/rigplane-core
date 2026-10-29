@@ -14,7 +14,15 @@ import time
 import pytest
 
 from rigplane.tci.server import TciServer
-from rigplane.tci.ws import WS_OP_BINARY, WS_OP_TEXT, UpgradeDecline
+from rigplane.tci.ws import (
+    WS_OP_BINARY,
+    WS_OP_CLOSE,
+    WS_OP_CONTINUATION,
+    WS_OP_TEXT,
+    _MAX_FRAGMENTS,
+    _MAX_MESSAGE_BYTES,
+    UpgradeDecline,
+)
 
 BURST = ["protocol:tciserver,1;", "device:rigplane;", "ready;"]
 
@@ -581,6 +589,101 @@ async def test_cancellation_during_accept(tcp_available: None) -> None:
     assert handler.disconnect_calls == 1
     client.writer.close()
     await client.writer.wait_closed()
+
+
+async def _send_fragment(
+    writer: asyncio.StreamWriter, opcode: int, payload: bytes, *, fin: bool
+) -> None:
+    """Write one masked client fragment with an explicit FIN bit."""
+    mask = b"\x55\x66\x77\x88"
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+    first = (0x80 if fin else 0x00) | (opcode & 0x0F)
+    length = len(payload)
+    if length <= 125:
+        header = struct.pack("!BB", first, 0x80 | length)
+    elif length <= 65535:
+        header = struct.pack("!BBH", first, 0x80 | 126, length)
+    else:
+        header = struct.pack("!BBQ", first, 0x80 | 127, length)
+    writer.write(header + mask + masked)
+    await writer.drain()
+
+
+async def test_fragmented_bytes_overflow_bounded(
+    tcp_available: None,
+) -> None:
+    """A message whose fragments sum past the budget is refused with 1009.
+
+    Every frame is individually valid; only the running total exceeds
+    the budget. The session answers close 1009, disconnects exactly
+    once, leaves the registry, and another client is served meanwhile.
+    """
+    handler = FakeHandler()
+    server = make_server(handler)
+    await server.start()
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        assert len(server.sessions) == 1
+        assert 5 * 60000 > _MAX_MESSAGE_BYTES
+        chunk = b"y" * 60000
+        await _send_fragment(client.writer, WS_OP_BINARY, chunk, fin=False)
+        for _ in range(4):
+            await _send_fragment(
+                client.writer, WS_OP_CONTINUATION, chunk, fin=False
+            )
+        opcode, payload = await client.next_frame()
+        assert opcode == WS_OP_CLOSE
+        assert struct.unpack("!H", payload[:2])[0] == 1009
+        await _read_until_closed(client)
+        assert handler.disconnect_calls == 1
+        assert len(server.sessions) == 0
+        other = await RawClient.connect(server.bound_port)
+        texts = await other.read_until_ready()
+        assert [t.decode() for t in texts] == BURST
+        await other.send_text("echo:1;")
+        opcode, payload = await other.next_frame()
+        assert (opcode, payload) == (WS_OP_TEXT, b"echo:1;")
+        await other.close()
+    finally:
+        await server.stop()
+    assert handler.disconnect_calls == 2
+
+
+async def test_fragment_count_overflow_bounded(
+    tcp_available: None,
+) -> None:
+    """More fragments than budgeted are refused with 1009, even when empty.
+
+    Empty continuations carry no bytes but each occupies a slot; the
+    count limit stops the list from growing without bound. Same
+    teardown and uninterrupted-service assertions as the byte limit.
+    """
+    handler = FakeHandler()
+    server = make_server(handler)
+    await server.start()
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        assert len(server.sessions) == 1
+        await _send_fragment(client.writer, WS_OP_BINARY, b"", fin=False)
+        for _ in range(_MAX_FRAGMENTS):
+            await _send_fragment(
+                client.writer, WS_OP_CONTINUATION, b"", fin=False
+            )
+        opcode, payload = await client.next_frame()
+        assert opcode == WS_OP_CLOSE
+        assert struct.unpack("!H", payload[:2])[0] == 1009
+        await _read_until_closed(client)
+        assert handler.disconnect_calls == 1
+        assert len(server.sessions) == 0
+        other = await RawClient.connect(server.bound_port)
+        texts = await other.read_until_ready()
+        assert [t.decode() for t in texts] == BURST
+        await other.close()
+    finally:
+        await server.stop()
+    assert handler.disconnect_calls == 2
 
 
 async def test_cancelled_join_still_closes_transport(
