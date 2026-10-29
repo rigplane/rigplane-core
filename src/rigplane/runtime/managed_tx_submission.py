@@ -140,8 +140,15 @@ class ManagedPttTracker:
         on: bool,
         expires_at_monotonic: float,
         connection_generation: object,
+        before_on: Callable[[], Awaitable[bool]] | None = None,
     ) -> tuple[asyncio.Task[ManagedTxSubmission], ManagedPttReady | None]:
-        """Start one managed key/unkey submission with membership installed."""
+        """Start one managed key/unkey submission with membership installed.
+
+        ``before_on`` (MOR-3821, spec 7.3a) runs inside the admitted key,
+        after the intent commits to ``PTT(owner)`` and before the PTT_ON
+        effect dispatches; a keying ingress that prepares the route (TCI)
+        passes it, ``rigctld`` passes nothing.
+        """
         if not on:
             self._revocation.set()
             self._revocation = asyncio.Event()
@@ -157,6 +164,7 @@ class ManagedPttTracker:
             owner,
             ready=ready,
             expires_at_monotonic=None if ready is None else ready.expires_at_monotonic,
+            before_on=before_on,
         )
         return submission, ready
 
