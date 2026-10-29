@@ -211,7 +211,10 @@ async def test_discover_serial_civ_prints_copy_paste_command(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status" in out
+    assert (
+        "rigplane --model IC-7300 --serial-port /dev/ttyUSB0"
+        " --serial-baud 115200 --radio-addr 0x94 status" in out
+    )
 
 
 @pytest.mark.asyncio
@@ -242,7 +245,10 @@ async def test_discover_serial_yaesu_prints_copy_paste_command(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model FTX-1 --serial-port /dev/ttyUSB1 status" in out
+    assert (
+        "rigplane --model FTX-1 --serial-port /dev/ttyUSB1"
+        " --serial-baud 38400 status" in out
+    )
 
 
 @pytest.mark.asyncio
@@ -263,7 +269,7 @@ async def test_discover_lan_unknown_model_prints_placeholder_and_models_hint(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model <MODEL> --host 192.168.1.60 status" in out
+    assert "rigplane --model <MODEL> --backend lan --host 192.168.1.60 status" in out
     assert "rigplane models" in out
 
 
@@ -287,7 +293,7 @@ async def test_discover_lan_known_model_prints_command(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model IC-7610 --host 192.168.1.50 status" in out
+    assert "rigplane --model IC-7610 --backend lan --host 192.168.1.50 status" in out
 
 
 @pytest.mark.asyncio
@@ -423,7 +429,7 @@ async def test_discover_serial_ftx1_off_default_baud_prints_serial_baud(
 
 
 @pytest.mark.asyncio
-async def test_discover_serial_ftx1_default_baud_prints_no_serial_baud(
+async def test_discover_serial_ftx1_default_baud_prints_serial_baud(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = _human_args()
@@ -450,8 +456,10 @@ async def test_discover_serial_ftx1_default_baud_prints_no_serial_baud(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model FTX-1 --serial-port /dev/ttyUSB1 status" in out
-    assert "--serial-baud" not in out
+    assert (
+        "rigplane --model FTX-1 --serial-port /dev/ttyUSB1"
+        " --serial-baud 38400 status" in out
+    )
 
 
 @pytest.mark.asyncio
@@ -486,7 +494,7 @@ async def test_discover_serial_ic7300_off_default_addr_prints_radio_addr(
 
 
 @pytest.mark.asyncio
-async def test_discover_serial_ic7300_default_addr_prints_no_radio_addr(
+async def test_discover_serial_ic7300_default_addr_prints_radio_addr(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     args = _human_args()
@@ -513,8 +521,10 @@ async def test_discover_serial_ic7300_default_addr_prints_no_radio_addr(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status" in out
-    assert "--radio-addr" not in out
+    assert (
+        "rigplane --model IC-7300 --serial-port /dev/ttyUSB0"
+        " --serial-baud 115200 --radio-addr 0x94 status" in out
+    )
 
 
 @pytest.mark.asyncio
@@ -571,6 +581,99 @@ async def test_discover_printed_commands_replay_into_backend_config(
     assert ic7300.radio_addr == 0x95
 
 
+@pytest.mark.asyncio
+async def test_discover_printed_commands_win_over_environment(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Printed lines replay with the observed settings, not env defaults."""
+    monkeypatch.setenv("ICOM_SERIAL_BAUDRATE", "9600")
+    monkeypatch.setenv("ICOM_SERIAL_DEVICE", "/dev/ttyENV")
+    args = _human_args()
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB1",
+            protocol="yaesu_cat",
+            model="FTX-1",
+            profile_id="yaesu_ftx1",
+            baudrate=38400,
+            address="0840",
+            description="FTX-1",
+        )
+    ]
+    lan = [
+        {"host": "192.168.1.50", "remote_id": 2, "model": "IC-7610", "address": 0x98}
+    ]
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=lan),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=serial),
+        ),
+    ):
+        assert await cli._cmd_discover(None, args) == 0
+    out = capsys.readouterr().out
+    lines = [line.strip() for line in out.splitlines() if "rigplane --model" in line]
+    assert len(lines) == 2
+    configs = {}
+    for line in lines:
+        tokens = shlex.split(line)
+        assert tokens[0] == "rigplane"
+        parsed = _build_parser().parse_args(tokens[1:])
+        configs[parsed.model] = await _build_backend_config(parsed)
+    ftx1 = configs["FTX-1"]
+    assert isinstance(ftx1, YaesuCatBackendConfig)
+    assert ftx1.baudrate == 38400
+    assert ftx1.device == "/dev/ttyUSB1"
+    lan_config = configs["IC-7610"]
+    assert isinstance(lan_config, LanBackendConfig)
+    assert lan_config.host == "192.168.1.50"
+
+
+@pytest.mark.asyncio
+async def test_discover_unknown_civ_model_prints_baud_and_addr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A `<MODEL>` placeholder line still carries baud and CI-V address."""
+    args = _human_args()
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB2",
+            protocol="civ",
+            model="Unknown (0x95)",
+            profile_id="unknown",
+            baudrate=115200,
+            address=0x95,
+            description="Unknown",
+        )
+    ]
+    with (
+        patch(
+            "rigplane.discovery.discover_lan_radios",
+            AsyncMock(return_value=[]),
+        ),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            AsyncMock(return_value=serial),
+        ),
+    ):
+        assert await cli._cmd_discover(None, args) == 0
+    out = capsys.readouterr().out
+    line = (
+        "rigplane --model <MODEL> --serial-port /dev/ttyUSB2"
+        " --serial-baud 115200 --radio-addr 0x95 status"
+    )
+    assert line in out
+    tokens = shlex.split(line.replace("<MODEL>", "IC-7300"))
+    assert tokens[0] == "rigplane"
+    parsed = _build_parser().parse_args(tokens[1:])
+    config = await _build_backend_config(parsed)
+    assert isinstance(config, SerialBackendConfig)
+    assert config.radio_addr == 0x95
+
+
 def test_main_discover_profile_load_failure_exits_1(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -609,3 +712,84 @@ def test_main_discover_profile_load_failure_exits_1(
     assert "Traceback" not in captured.err
     assert "Traceback" not in captured.out
     assert "Found" not in captured.out
+
+
+def test_discover_line_replays_through_main_into_status(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A printed `discover` line replays through `main()` into `status`."""
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    serial = [
+        RadioDiscoveryResult(
+            port="/dev/ttyUSB0",
+            protocol="civ",
+            model="IC-7300",
+            profile_id="icom_ic7300",
+            baudrate=115200,
+            address=0x94,
+            description="IC-7300",
+        )
+    ]
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_serial_radios",
+        AsyncMock(return_value=serial),
+    )
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_lan_radios",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(sys, "argv", ["rigplane", "discover"])
+    try:
+        with pytest.raises(SystemExit) as discover_exit:
+            cli.main()
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+    assert discover_exit.value.code == 0
+    assert signal.getsignal(signal.SIGTERM) is prev_sigterm
+    assert signal.getsignal(signal.SIGINT) is prev_sigint
+    out = capsys.readouterr().out
+    matches = re.findall(r"^    rigplane .*$", out, re.MULTILINE)
+    assert len(matches) == 1
+    tokens = shlex.split(matches[0].strip())
+    assert tokens[0] == "rigplane"
+
+    seen: dict[str, object] = {}
+    radio = AsyncMock()
+    radio.__aenter__.return_value = radio
+    radio.__aexit__.return_value = False
+    radio.capabilities = set()
+    radio.get_freq = AsyncMock(return_value=14_074_000)
+    radio.get_mode = AsyncMock(return_value=("USB", None))
+
+    def _fake_create_radio(config: object) -> object:
+        seen["config"] = config
+        return radio
+
+    monkeypatch.setattr("rigplane.cli.create_radio", _fake_create_radio)
+    monkeypatch.setattr("rigplane.cli.guards_backend", lambda _config: False)
+
+    def _fake_exit(code: int) -> None:
+        raise SystemExit(code)
+
+    monkeypatch.setattr("rigplane.cli.os._exit", _fake_exit)
+    monkeypatch.setattr(sys, "argv", ["rigplane", *tokens[1:]])
+    try:
+        with pytest.raises(SystemExit) as status_exit:
+            cli.main()
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+    assert status_exit.value.code == 0
+    assert signal.getsignal(signal.SIGTERM) is prev_sigterm
+    assert signal.getsignal(signal.SIGINT) is prev_sigint
+    config = seen["config"]
+    assert isinstance(config, SerialBackendConfig)
+    assert config.device == "/dev/ttyUSB0"
+    assert config.baudrate == 115200
+    assert config.radio_addr == 0x94
+    assert config.model == "IC-7300"
+    status_out = capsys.readouterr().out
+    assert "14,074,000" in status_out
+    assert "USB" in status_out

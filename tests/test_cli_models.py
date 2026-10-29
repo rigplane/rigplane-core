@@ -245,6 +245,15 @@ def test_connect_command_baud_and_addr_order() -> None:
     )
 
 
+def test_connect_command_lan_pins_backend() -> None:
+    line = _models.connect_command("IC-7610", host="192.168.1.50", backend="lan")
+    assert line == (
+        "rigplane --model IC-7610 --backend lan --host 192.168.1.50 status"
+    )
+    defaulted = _models.connect_command("IC-7610", host="192.168.1.50")
+    assert defaulted == line
+
+
 # ---------------------------------------------------------------------------
 # 7. _resolve_model unknown model
 # ---------------------------------------------------------------------------
@@ -372,8 +381,32 @@ def test_readme_supported_radios_match_profiles(capsys) -> None:
     for value in values:
         assert _models.match_rig(rigs, value) is not None, value
     command_models = {entry["model"] for entry in _json_entries(capsys)}
-    assert set(values) <= command_models
+    assert set(values) == command_models
     assert {"IC-7610", "IC-7300", "FTX-1", "TX-500", "X6100"} <= set(values)
+
+
+def _readme_supported_radios_section() -> str:
+    """Return the Supported radios section text (up to the next heading)."""
+    lines = (_repo_root() / "README.md").read_text(encoding="utf-8").splitlines()
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == "## Supported radios"
+    )
+    section: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.startswith("## "):
+            break
+        section.append(line)
+    return "\n".join(section)
+
+
+def test_readme_supported_radios_names_no_testing_claims() -> None:
+    section = _readme_supported_radios_section()
+    assert section.strip() != ""
+    lowered = section.lower()
+    for word in ("tested", "validated", "certified"):
+        assert word not in lowered, word
 
 
 def test_cli_guide_mentions_models_command() -> None:
