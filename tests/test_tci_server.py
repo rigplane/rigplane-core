@@ -1228,6 +1228,8 @@ async def test_ping_loop_recovers_after_stalled_write() -> None:
             await _wait_pings(stalled + 2)
         except TimeoutError:
             raise AssertionError("ping loop died after one stalled write") from None
+        assert await _ping_count() >= stalled + 2
+        assert session in server.sessions
     finally:
         await session.finish()
 

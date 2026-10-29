@@ -541,7 +541,10 @@ async def test_reset_releases_session(tcp_available: None) -> None:
         reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
         writer.write(
             b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
-            b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            b"Sec-WebSocket-Version: 13\r\n\r\n"
         )
         await writer.drain()
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
