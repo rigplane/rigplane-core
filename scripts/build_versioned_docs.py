@@ -22,8 +22,8 @@ sitemaps, and the top-level non-Markdown files of this checkout's ``docs/``
 Usage (from the repository root; versions are listed newest first, which is
 the selector's order):
 
-    uv run python scripts/build_versioned_docs.py --out site --default 2.11 \\
-        --version 3.0 "3.0 (beta)" . \\
+    uv run python scripts/build_versioned_docs.py --out site --default 3.0 \\
+        --version 3.0 3.0 . \\
         --version 2.11 2.11 v2.11.1
 
 An exported version installs only its ``dev`` dependency group: mkdocstrings
@@ -52,9 +52,19 @@ from urllib.parse import urlsplit
 REPO_ROOT = Path(__file__).resolve().parents[1]
 OVERLAY_NAME = ".mkdocs-versioned.yml"
 WORKING_TREE = "."
-# Material includes partials/integrations/analytics/<provider>.html from the
-# theme custom_dir (docs/overrides) when extra.analytics.provider is set.
-ANALYTICS_PARTIAL = Path("docs/overrides/partials/integrations/analytics/custom.html")
+OVERRIDES = Path("docs/overrides")
+# Files of the theme custom_dir that the overlay's settings rely on, installed
+# into every exported version. Material includes
+# partials/integrations/analytics/<provider>.html when extra.analytics.provider
+# is set; main.html fills the version warning's `outdated` block and
+# partials/javascripts/outdated.html replaces Material's own script for it
+# (which throws on MkDocs' relative base_url), both used when extra.version is
+# set.
+OVERLAY_TEMPLATES = (
+    OVERRIDES / "partials/integrations/analytics/custom.html",
+    OVERRIDES / "main.html",
+    OVERRIDES / "partials/javascripts/outdated.html",
+)
 
 REDIRECT_TEMPLATE = """\
 <!DOCTYPE html>
@@ -96,16 +106,17 @@ def overlay_config(site_url: str, version_id: str, default_id: str) -> str:
     )
 
 
-def install_analytics_partial(repo: Path, source: Path) -> None:
-    """Copy this checkout's analytics partial into an exported version.
+def install_overlay_templates(repo: Path, source: Path) -> None:
+    """Copy this checkout's overlay-dependent templates into an exported version.
 
-    A released tag predates the partial or carries an older copy of it; the
-    overlay enables the ``custom`` provider for every version, so each one
-    needs the current file.
+    A released tag predates these files or carries an older copy of them; the
+    overlay turns on the analytics provider and the version selector for every
+    version, so each one needs the current files.
     """
-    target = source / ANALYTICS_PARTIAL
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(repo / ANALYTICS_PARTIAL, target)
+    for template in OVERLAY_TEMPLATES:
+        target = source / template
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(repo / template, target)
 
 
 def page_dirs(version_root: Path) -> set[str]:
@@ -231,7 +242,7 @@ def _build_version(
         source = workdir / version.id
         source.mkdir(parents=True)
         _export(repo, version.source, source)
-        install_analytics_partial(repo, source)
+        install_overlay_templates(repo, source)
         subprocess.run(
             ["uv", "sync", "--frozen", "--only-group", "dev", "--quiet"],
             cwd=source,

@@ -43,12 +43,12 @@ Radio login credentials, bind selection and TLS options retain their existing
 roles. Diagnostic send/save/delete requests still use preview-bound
 `X-Diagnostic-CSRF`; diagnostic submission still requires consent. The
 diagnostic routes no longer carry their own Origin check: the
-state-changing-request Origin rule below (MOR-2881) covers them, and the old
+state-changing-request Origin rule below covers them, and the old
 per-handler `check_origin_or_loopback` with its loopback skip is gone. See
 `src/rigplane/web/web_routing.py: dispatch_http_request` and
 `src/rigplane/web/handlers/diagnostics.py: DiagnosticsHandler`.
 
-### Host allowlist, Origin guards (MOR-2880, MOR-2881)
+### Host allowlist, Origin guards
 
 Without an application credential, the listener itself is the boundary, so
 every HTTP route and every WebSocket upgrade now runs a Host allowlist before
@@ -269,7 +269,7 @@ Process liveness probe for local supervisors.
 {
   "status": "ok",
   "pid": 12345,
-  "version": "3.0.0b9"
+  "version": "3.0.1"
 }
 ```
 
@@ -310,7 +310,7 @@ Machine-readable runtime status for managed local supervisors and diagnostics.
 {
   "pid": 12345,
   "uptimeSeconds": 12.3,
-  "version": "3.0.0b9",
+  "version": "3.0.1",
   "bind": { "host": "127.0.0.1", "port": 8080 },
   "logPath": "/Users/me/Library/Caches/rigplane/logs/rigplane.log",
   "authRequired": false,
@@ -963,7 +963,7 @@ Friendly station-server status for desktop supervisors and setup tools.
   "schema": "rigplane.station.status.v1",
   "service": "rigplane",
   "kind": "station_server",
-  "version": "3.0.0b9",
+  "version": "3.0.1",
   "displayName": "IC-7610",
   "instanceId": null,
   "baseUrl": "http://127.0.0.1:58421",
@@ -1108,7 +1108,7 @@ ambiguous ids raise the existing unknown/ambiguous override error
 ```json
 {
   "server": "rigplane",
-  "version": "3.0.0b9",
+  "version": "3.0.1",
   "proto": 1,
   "radio": "IC-7300",
   "model": "IC-7300",
@@ -1223,7 +1223,7 @@ Notable fields:
 
 ### `cwText`
 
-`cwText` (MOR-3678) says whether typed CW text can be sent, from the
+`cwText` says whether typed CW text can be sent, from the
 profile's `[cw_text]` section. It is inside `capabilities` on
 `/api/v1/info` (next to `hasCw`) and a top-level key on
 `/api/v1/capabilities`; both carry the same three fields. It is absent only
@@ -1362,7 +1362,7 @@ Error response:
 High-frequency `set_*` commands (same command name and receiver — and, for
 `set_filter`, `set_vfo`, `select_vfo` and `set_band`, the same target — on one
 session, arriving faster than one per 50ms; `set_vfo_freq` is exempt) are coalesced with last-value-wins semantics
-(MOR-1427) instead of being dropped. Only one physical enqueue happens per
+instead of being dropped. Only one physical enqueue happens per
 50ms pacing window: the newest frame in the window always survives to that
 enqueue, and any frame it replaces before flush is ACKed immediately with an
 honest supersede reply instead of a real result:

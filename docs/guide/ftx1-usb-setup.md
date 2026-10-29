@@ -99,7 +99,7 @@ asyncio.run(main())
 
 The FTX-1 profile has two receivers that share one VFO (VFO scheme
 `ab_shared`). Some controls exist for MAIN only; see the FTX-1 items in the
-[beta known limitations](../release-notes/2026-beta-known-limitations.md).
+[3.0 known limitations](../release-notes/2026-beta-known-limitations.md).
 
 ## See Also
 

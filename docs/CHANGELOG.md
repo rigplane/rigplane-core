@@ -19,6 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
+- **Core 3.0 is marked stable.** The package declares
+  `Development Status :: 5 - Production/Stable`. The README, installation
+  guide, migration guide, What's New and known limitations no longer call 3.0
+  a beta or ask for `pip install --pre`; the README no
+  longer lists which radios were tested; the docs site opens on 3.0 by
+  default; and the beta report form is now the 3.0 radio report form. The
+  PyPI project page shows the new README and classifier from the next upload.
 
 ## [3.0.1] — 2026-10-28
 

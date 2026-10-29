@@ -17,7 +17,7 @@ This guide shows how to control the IC-7300 via **USB serial CI-V + USB audio de
 
 - IC-7300 transceiver (HF/50 MHz)
 - USB cable with a Type-B plug (the IC-7300 `[USB]` port is Type B)
-- macOS computer (tested on Ventura+ arm64/Intel)
+- macOS computer (Ventura or later, Apple Silicon or Intel)
 
 ## Radio Configuration
 
