@@ -154,7 +154,8 @@ These radios are also supported by native backends.
 - **VFO scheme:** Dual independent receivers (MAIN/SUB)
 - **Rig profile:** `rigs/ic9700.toml`
 - **Features:** frequency, mode, power, S-meter, scope/waterfall, audio RX/TX,
-  independent MAIN/SUB control, dual audio streaming
+  independent MAIN/SUB control. RX audio is one mono stream; separate MAIN/SUB
+  audio is not supported yet.
 - **Status:** Supported over LAN and USB. An FM/AM waterfall passband that
   rendered asymmetric
   ([#1719](https://github.com/rigplane/rigplane-core/issues/1719)) was fixed in
