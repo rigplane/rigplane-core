@@ -29,7 +29,7 @@ import pytest
 
 from test_web_server import _addr, _http_get, _read_http_response
 
-from rigplane.web.band_plan import BandPlanRegistry
+from rigplane.web.band_plan import _MAX_STR_LEN, _REGION_HAM_FILE, BandPlanRegistry
 from rigplane.web.server import WebConfig, WebServer
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -342,8 +342,8 @@ class TestCorrectedBoundaries:
             "R1 70 cm: 432.450 MHz must not be labelled SSB"
         )
         below = _covering(reg, 432_350_000)
-        assert any(s.get("label") == "SSB" for s in below), (
-            "R1 70 cm: 432.350 MHz stays SSB below the beacon band"
+        assert {s.get("label") for s in below} == {"ALL"}, (
+            "R1 70 cm: 432.350 MHz is the all-mode row below the beacon band"
         )
         above = _covering(reg, 432_492_000)
         assert any(s.get("label") == "DIGI" for s in above), (
@@ -404,15 +404,204 @@ class TestCorrectedBoundaries:
 
 
 # ---------------------------------------------------------------------------
+# IARU-R1 VHF/UHF rows against the VHF Handbook v10.03 (round-2 finding 1)
+# ---------------------------------------------------------------------------
+#
+# Every point is one the handbook's tables (printed pages 35, 38-39, 41-43,
+# 45-46) assign to a role. Points sit 1 kHz or more inside each row so the
+# inclusive row edges never make a boundary ambiguous; the same table
+# therefore pins both sides of every corrected boundary. ``None`` = a gap the
+# handbook leaves unassigned (no ham segment may claim it).
+
+# (frequency Hz, expected label | None)
+_R1_HANDBOOK_ROWS: tuple[tuple[int, str | None], ...] = (
+    # 6 m (page 35)
+    (50_000_000, "BCN"),  # Synchronised Beacon Project reservation
+    (50_029_000, "BCN"),
+    (50_031_000, "CW"),  # was labelled beacons up to 50.080
+    (50_050_000, "CW"),  # CW future international centre of activity
+    (50_090_000, "CW"),
+    (50_099_000, "CW"),
+    (50_101_000, "SSB"),
+    (50_250_000, "SSB"),
+    (50_350_000, "DIGI"),
+    (50_450_000, "BCN"),
+    (50_600_000, "ALL"),
+    (50_800_000, "RPT"),  # repeater outputs 50.710-50.890
+    (50_950_000, "ALL"),
+    (51_300_000, "RPT"),  # repeater inputs 51.210-51.390
+    (51_510_000, "ALL"),  # FM calling sits inside an all-modes row
+    # 2 m (pages 38-39)
+    (144_010_000, "SAT"),
+    (144_030_000, "CW"),
+    (144_099_000, "CW"),
+    (144_101_000, "CW/MGM"),
+    (144_125_000, "CW/MGM"),  # was labelled SSB
+    (144_149_000, "CW/MGM"),
+    (144_151_000, "SSB"),
+    (144_399_000, "SSB"),
+    (144_450_000, "BCN"),
+    (144_492_000, "MGM"),
+    (144_495_000, None),
+    (144_600_000, "ALL"),
+    (144_800_000, "DIGI"),
+    (144_960_000, "DIGI"),
+    (144_970_000, None),  # between the digital block and repeater inputs
+    (144_987_500, "RPT"),  # was labelled digital
+    (145_100_000, "RPT"),
+    (145_193_000, "RPT"),
+    (145_200_000, "SPC"),  # space communication, not a repeater slot
+    (145_207_000, "FM"),
+    (145_560_000, "FM"),
+    (145_570_000, None),
+    (145_587_500, "RPT"),  # was labelled simplex
+    (145_790_000, "RPT"),
+    (145_800_000, "SPC"),  # space communication, not a repeater slot
+    (145_807_000, "SAT"),
+    (145_999_000, "SAT"),
+    # 70 cm (pages 41-43): no analogue ATV since 2021
+    (430_100_000, "RPT"),
+    (430_380_000, None),
+    (430_500_000, "DIGI"),
+    (430_700_000, "DIGI"),
+    (430_950_000, "MULTI"),
+    (431_100_000, "RPT"),
+    (432_100_000, "ALL"),
+    (432_350_000, "ALL"),
+    (432_450_000, "BCN"),
+    (432_492_000, "DIGI"),
+    (432_550_000, "ALL"),
+    (432_700_000, "RPT"),
+    (432_900_000, "RPT"),
+    (433_100_000, "RPT"),
+    (433_450_000, "FM"),
+    (433_500_000, "FM"),
+    (433_700_000, "ALL"),
+    (434_100_000, "ALL"),  # was ATV
+    (434_700_000, "RPT"),
+    (435_500_000, "SAT"),
+    (437_000_000, "SAT"),
+    (438_100_000, "DIGI"),  # was ATV
+    (438_300_000, "DIGI"),
+    (438_600_000, "MULTI"),
+    (439_000_000, "RPT"),
+    (439_700_000, None),
+    (439_900_000, "DIGI"),
+    # 23 cm (pages 45-46)
+    (1_240_100_000, "ALL"),
+    (1_240_600_000, "BCN"),
+    (1_240_800_000, "FM"),
+    (1_241_500_000, "ALL"),
+    (1_242_100_000, "RPT"),
+    (1_243_000_000, "DIGI"),
+    (1_250_000_000, "ATV"),
+    (1_259_000_000, "RPT"),
+    (1_265_000_000, "SAT"),
+    (1_270_500_000, "RPT"),
+    (1_271_000_000, "DIGI"),
+    (1_280_000_000, "ATV"),
+    (1_291_200_000, "RPT"),
+    (1_291_487_000, None),
+    (1_292_500_000, "ALL"),  # was labelled a repeater input
+    (1_293_100_000, "ALL"),
+    (1_293_200_000, "RPT"),  # designated inputs R20-R68 start here
+    (1_294_300_000, "RPT"),
+    (1_294_400_000, "ALL"),
+    (1_296_010_000, "CW/MGM"),
+    (1_296_300_000, "SSB"),
+    (1_296_900_000, "BCN"),
+    (1_297_100_000, "RPT"),
+    (1_297_600_000, "FM"),
+    (1_298_500_000, "ALL"),
+    (1_299_300_000, "DD"),
+    (1_299_800_000, "ALL"),
+)
+
+
+class TestIaruR1HandbookRows:
+    @pytest.fixture(scope="class")
+    def r1(self, tmp_path_factory: pytest.TempPathFactory) -> BandPlanRegistry:
+        plans = _copy_plans(tmp_path_factory.mktemp("r1"))
+        _write_region(plans, "IARU-R1")
+        return _load(plans)
+
+    @pytest.mark.parametrize(
+        ("freq_hz", "label"),
+        _R1_HANDBOOK_ROWS,
+        ids=[f"{f / 1e6:.4f}MHz-{label}" for f, label in _R1_HANDBOOK_ROWS],
+    )
+    def test_role_at_frequency(
+        self, r1: BandPlanRegistry, freq_hz: int, label: str | None
+    ) -> None:
+        labels = {s["label"] for s in _covering(r1, freq_hz)}
+        assert labels == ({label} if label else set()), (
+            f"R1 {freq_hz / 1e6:.4f} MHz: handbook says {label}, plan says {labels}"
+        )
+
+    def test_no_analogue_atv_on_70cm(self, r1: BandPlanRegistry) -> None:
+        """Analogue ATV left 430-440 MHz on 2021-01-01 (handbook page 43)."""
+        assert all(
+            s["label"] != "ATV" for s in _ham_segments(r1, 430_000_000, 440_000_000)
+        )
+
+    @pytest.mark.parametrize(
+        ("freq_hz", "needle"),
+        (
+            (50_050_000, "50.050"),  # CW centre of activity named on the CW row
+            (50_090_000, "50.090"),
+            (50_110_000, "DX calling"),
+            (144_125_000, "EME"),  # EME belongs to the CW/MGM row
+            (432_700_000, "UK repeater outputs"),  # UK reverses the 2 MHz pairs
+            (433_100_000, "UK repeater outputs"),
+            (434_700_000, "UK repeater inputs"),
+            (1_293_200_000, "R20 (1293.150)"),
+        ),
+    )
+    def test_row_notes_carry_the_handbook_usage(
+        self, r1: BandPlanRegistry, freq_hz: int, needle: str
+    ) -> None:
+        segs = _covering(r1, freq_hz)
+        assert any(needle.lower() in (s.get("notes") or "").lower() for s in segs), (
+            f"R1 {freq_hz / 1e6:.4f} MHz: notes lack {needle!r}"
+        )
+
+    def test_beacon_reservation_is_not_a_cw_or_eme_row(
+        self, r1: BandPlanRegistry
+    ) -> None:
+        """50.000-50.030 is the Synchronised Beacon Project, not EME."""
+        for freq in (50_000_000, 50_029_000):
+            segs = _covering(r1, freq)
+            assert {s["label"] for s in segs} == {"BCN"}
+            assert all("EME" not in (s.get("notes") or "") for s in segs)
+
+
+@pytest.mark.parametrize("ham_file", sorted(set(_REGION_HAM_FILE.values())))
+def test_ham_notes_are_not_truncated_by_the_loader(
+    tmp_path: Path, ham_file: str
+) -> None:
+    """The loader cuts notes at ``_MAX_STR_LEN``; a longer one would lose data."""
+    import tomllib
+
+    raw = tomllib.loads((BAND_PLANS_SRC / ham_file).read_text(encoding="utf-8"))
+    too_long = [
+        (band["name"], seg["start"], len(seg["notes"]))
+        for band in raw.get("band", [])
+        for seg in band.get("segment", [])
+        if len(seg.get("notes", "")) > _MAX_STR_LEN
+    ]
+    assert not too_long, f"{ham_file}: notes cut at {_MAX_STR_LEN} chars: {too_long}"
+
+
+# ---------------------------------------------------------------------------
 # Integration across the real HTTP seam (pre-review finding 8a)
 # ---------------------------------------------------------------------------
 #
-# Production server startup (which loads band-plans/ from the repo),
-# real routing over real sockets, region selection persisted via the
-# config route. One sequential test mutates the repo _config.toml so
-# parallel xdist workers cannot race on it; the original bytes are
-# restored in ``finally``.
-
+# Production server startup (which loads the band-plan directory the server
+# was configured with), real routing over real sockets, region selection
+# persisted via the config route. Everything runs against an isolated copy
+# of band-plans/ injected through ``WebConfig.band_plans_dir``: startup, the
+# config POST and the reload all use that one directory, so no test touches
+# the shared checkout (and parallel xdist workers cannot race on it).
 
 REPO_CONFIG = REPO_ROOT / "band-plans" / "_config.toml"
 
@@ -467,18 +656,22 @@ def _ham_only(payload: dict) -> list[dict]:
 
 
 @pytest.mark.asyncio
-async def test_region_selection_over_real_http() -> None:
+async def test_region_selection_over_real_http(tmp_path: Path) -> None:
     """Select regions via POST, read segments/config via GET (finding 8a).
 
-    One sequential pass US -> IARU-R1 -> IARU-R3 -> US, then an unknown
-    region across a restart. Failing-first: restoring the pre-review rows
-    (R1 beacons at 432.800-433.000, R3 144.300-144.500 SAT) turns the
-    per-region assertions red; bypassing startup/routing cannot persist
-    the selection to disk.
+    One sequential pass US -> IARU-R1 -> IARU-R3 -> US, a restart that must
+    keep the persisted selection, then an unknown region across another
+    restart. All of it against an isolated copy of band-plans/ that the
+    server startup and the config route both use. Failing-first: restoring
+    the pre-review rows (R1 beacons at 432.800-433.000, R3 144.300-144.500
+    SAT) turns the per-region assertions red; bypassing startup/routing
+    cannot persist the selection to disk.
     """
-    original = REPO_CONFIG.read_bytes()
-    REPO_CONFIG.write_text(_US_CONFIG)
-    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    repo_config_before = REPO_CONFIG.read_bytes()
+    plans = _copy_plans(tmp_path)
+    config_file = plans / "_config.toml"
+    config_file.write_text(_US_CONFIG)
+    srv = WebServer(None, WebConfig(host="127.0.0.1", port=0, band_plans_dir=plans))
     try:
         await srv.start()
         host, port = _addr(srv)
@@ -499,8 +692,8 @@ async def test_region_selection_over_real_http() -> None:
         )
         assert status == 200, f"POST region IARU-R1: HTTP {status}"
         assert json.loads(raw)["region"] == "IARU-R1"
-        assert 'region = "IARU-R1"' in REPO_CONFIG.read_text(), (
-            "region selection was not persisted to _config.toml"
+        assert 'region = "IARU-R1"' in config_file.read_text(), (
+            "region selection was not persisted to the injected _config.toml"
         )
 
         # Config route: requested vs effective, no fallback for a known region.
@@ -528,6 +721,12 @@ async def test_region_selection_over_real_http() -> None:
         )
         assert any(s.get("label") == "RPT" for s in outputs), (
             "IARU-R1: 1297.100 MHz must sit in repeater outputs"
+        )
+        gap = _ham_only(
+            await _get_segments_json(host, port, 1_292_500_000, 1_292_500_000)
+        )
+        assert [s["label"] for s in gap] == ["ALL"], (
+            "IARU-R1: 1292.500 MHz is below the designated 23 cm repeater inputs"
         )
 
         # IARU-R3 serves the regional plan, not US-derived rows.
@@ -562,17 +761,41 @@ async def test_region_selection_over_real_http() -> None:
         assert any("146.520" in (s.get("notes") or "") for s in segs), (
             "US restore: 146.520 calling note did not come back"
         )
+
+        # Leave R1 selected on disk for the restart below.
+        status, _, _ = await _http_post_json(
+            host, port, "/api/v1/band-plan/config", {"region": "IARU-R1"}
+        )
+        assert status == 200
     finally:
-        REPO_CONFIG.write_bytes(original)
         await srv.stop()
+
+    # Restart: production startup reads the persisted selection back.
+    srv_restart = WebServer(
+        None, WebConfig(host="127.0.0.1", port=0, band_plans_dir=plans)
+    )
+    try:
+        await srv_restart.start()
+        host, port = _addr(srv_restart)
+        status, _, raw = await _http_get(host, port, "/api/v1/band-plan/config")
+        assert status == 200
+        cfg = json.loads(raw)
+        assert cfg["region"] == "IARU-R1" and cfg["fallbackReason"] is None, (
+            "restart lost the persisted region selection"
+        )
+        assert _ham_only(
+            await _get_segments_json(host, port, 432_450_000, 432_450_000)
+        ), "restart: R1 plan data not served after reload"
+    finally:
+        await srv_restart.stop()
 
     # Unknown region hand-written to disk: production startup falls back
     # to US data visibly instead of rendering R2 silently (MOR-1861).
-    REPO_CONFIG.write_text(
+    config_file.write_text(
         '# Band plan configuration\n\n[settings]\nregion = "XX-NOWHERE"\n\n'
         "[layers]\nham = true\nbroadcast = true\nutility = true\n"
     )
-    srv2 = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    srv2 = WebServer(None, WebConfig(host="127.0.0.1", port=0, band_plans_dir=plans))
     try:
         await srv2.start()
         host, port = _addr(srv2)
@@ -587,5 +810,9 @@ async def test_region_selection_over_real_http() -> None:
             "fallback: effective US data not served"
         )
     finally:
-        REPO_CONFIG.write_bytes(original)
         await srv2.stop()
+
+    # Isolation: nothing above wrote to the shared checkout.
+    assert REPO_CONFIG.read_bytes() == repo_config_before, (
+        "the HTTP test modified the repository band-plans/_config.toml"
+    )

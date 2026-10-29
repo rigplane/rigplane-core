@@ -144,7 +144,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/dx/spots` | Buffered DX spots |
 | `GET` | `/api/v1/band-plan/config` | Active band-plan region |
 | `GET` | `/api/v1/band-plan/layers` | Band-plan layers metadata |
-| `GET` | `/api/v1/band-plan/segments?start=<hz>&end=<hz>&layers=<csv>` | Band-plan overlay segments |
+| `GET` | `/api/v1/band-plan/segments?start=<hz>&end=<hz>&layers=<csv>` | Band-plan overlay segments; `plansLoaded` is false when this install has no band-plan data (an empty list is then not authoritative) |
 | `GET` | `/api/v1/eibi/status` | EiBi loader status |
 | `GET` | `/api/v1/eibi/stations` | EiBi station list (paged/filterable) |
 | `GET` | `/api/v1/eibi/segments?start=<hz>&end=<hz>&on_air=true` | EiBi overlay segments |

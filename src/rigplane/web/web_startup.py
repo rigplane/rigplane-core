@@ -14,7 +14,6 @@ from asyncio import Event
 import logging
 import time
 from collections.abc import Sequence
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from ..core.acquisition_scheduler import (
@@ -676,9 +675,9 @@ async def _start_web_server(
     """
     # Load band plan TOML files
     # Try project-level band-plans/ directory first, then package fallback
-    project_bp = Path(__file__).resolve().parents[3] / "band-plans"
-    if project_bp.is_dir():
-        server._band_plan.load(project_bp)
+    project_bp = server._band_plan.directory
+    if project_bp is not None and project_bp.is_dir():
+        server._band_plan.load()
     else:
         logger.info("band-plan: no band-plans/ directory found")
 

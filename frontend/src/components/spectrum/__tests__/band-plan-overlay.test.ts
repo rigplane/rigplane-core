@@ -8,6 +8,7 @@ import {
   computePosition,
   filterOverlapping,
   shouldSkipFetch,
+  parseSegmentsResponse,
   type RemoteSegment,
 } from '../band-plan-logic';
 
@@ -209,5 +210,31 @@ describe('VHF/UHF overlay (MOR-3631)', () => {
     const result = filterOverlapping([ham, utility], 144_000_000, 148_000_000);
     expect(result).toHaveLength(1);
     expect(result[0].layer).toBe('ham');
+  });
+});
+
+describe('parseSegmentsResponse', () => {
+  const seg = { start: 1, end: 2, mode: 'cw', label: 'X', color: '#000000', opacity: 0.2, band: '', layer: 'ham', priority: 1 };
+
+  it('returns the segments of a non-empty answer', () => {
+    expect(parseSegmentsResponse({ segments: [seg], plansLoaded: true })).toEqual([seg]);
+    // A server that predates plansLoaded still answers with segments.
+    expect(parseSegmentsResponse({ segments: [seg] })).toEqual([seg]);
+  });
+
+  it('keeps a successful empty answer authoritative (plans loaded, nothing in the window)', () => {
+    expect(parseSegmentsResponse({ segments: [], plansLoaded: true })).toEqual([]);
+    expect(parseSegmentsResponse({ segments: [] })).toEqual([]);
+  });
+
+  it('treats an empty answer from an install without band-plan data as unavailable', () => {
+    expect(parseSegmentsResponse({ segments: [], plansLoaded: false })).toBeNull();
+  });
+
+  it('treats a malformed body as unavailable', () => {
+    expect(parseSegmentsResponse(null)).toBeNull();
+    expect(parseSegmentsResponse('nope')).toBeNull();
+    expect(parseSegmentsResponse({})).toBeNull();
+    expect(parseSegmentsResponse({ segments: 'x' })).toBeNull();
   });
 });

@@ -21,6 +21,21 @@ export interface RemoteSegment {
   schedule?: string | null;
 }
 
+/**
+ * Interpret a `/api/v1/band-plan/segments` body. Returns the segments when
+ * the answer is authoritative (including an authoritative EMPTY list: plans
+ * are loaded and nothing falls in the window), or `null` when it is
+ * unavailable (malformed body, or the install has no band-plan data) so the
+ * caller uses its local copy instead.
+ */
+export function parseSegmentsResponse(data: unknown): RemoteSegment[] | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const { segments, plansLoaded } = data as { segments?: unknown; plansLoaded?: unknown };
+  if (!Array.isArray(segments)) return null;
+  if (segments.length === 0 && plansLoaded === false) return null;
+  return segments as RemoteSegment[];
+}
+
 /** Format frequency for human display: Hz → "X.XXXXXX GHz" / "X.XXX MHz" / "X.X kHz" / "X Hz". */
 export function formatFreq(hz: number): string {
   // GHz keeps six decimals so narrow 23 cm segments (e.g. 1296.000–1296.050 MHz)

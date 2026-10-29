@@ -75,6 +75,10 @@ MODE_COLORS: dict[str, str] = {
 DEFAULT_OPACITY = 0.20
 
 
+# Repository ``band-plans/`` directory, the default source of plan data and of
+# the persisted ``_config.toml`` (a WebConfig can inject another directory).
+DEFAULT_BAND_PLANS_DIR = Path(__file__).resolve().parents[3] / "band-plans"
+
 # Region → ham band plan file mapping
 _REGION_HAM_FILE: dict[str, str] = {
     "US": "arrl-hf.toml",
@@ -94,6 +98,11 @@ class BandPlanRegistry:
         self._region: str = "US"
         self._requested_region: str | None = "US"
         self._region_fallback_reason: str | None = None
+
+    @property
+    def directory(self) -> Path | None:
+        """Directory the plans (and ``_config.toml``) are read from and written to."""
+        return self._dir
 
     @property
     def region(self) -> str:

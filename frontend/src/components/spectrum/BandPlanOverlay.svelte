@@ -13,6 +13,7 @@
     computePosition,
     filterOverlapping,
     shouldSkipFetch,
+    parseSegmentsResponse,
     type RemoteSegment,
   } from './band-plan-logic';
   import { getAuthHeaders } from '$lib/auth';
@@ -35,10 +36,17 @@
 
   let containerWidth = $state(0);
 
-  let remoteSegments = $state<RemoteSegment[]>([]);
+  // null = no authoritative remote answer (never fetched, failed, region just
+  // switched, or the install has no band-plan data): the local copy is shown.
+  // An empty array is an authoritative "nothing in this window" and renders empty.
+  let remoteSegments = $state<RemoteSegment[] | null>(null);
   let lastFetchRange = $state({ start: 0, end: 0 });
   let lastFetchRegion = $state<string | null>(null);
   let fetchTimeout: ReturnType<typeof setTimeout> | null = null;
+  // Id of the newest issued request. A completion applies only while it is
+  // still the newest, so a slower response for a superseded viewport/region
+  // can never overwrite the display of a later one.
+  let fetchSeq = 0;
 
   // Popup state
   let popupSegment = $state<{
@@ -72,8 +80,22 @@
       return;
     }
 
+    // Region switched: what is on screen (and cached) belongs to the previous
+    // region. Drop it now and supersede any request still in flight for it,
+    // so neither a late old response nor a failed refresh can leave the old
+    // region's segments displayed.
+    untrack(() => {
+      if (currentRegion !== lastFetchRegion) {
+        fetchSeq++;
+        remoteSegments = null;
+        lastFetchRange = { start: 0, end: 0 };
+        lastFetchRegion = currentRegion;
+      }
+    });
+
     if (fetchTimeout) clearTimeout(fetchTimeout);
     fetchTimeout = setTimeout(async () => {
+      const seq = ++fetchSeq;
       try {
         const span = end - start;
         const margin = Math.round(span * 0.5);
@@ -83,9 +105,11 @@
           `/api/v1/band-plan/segments?start=${fetchStart}&end=${fetchEnd}`,
           { headers: getAuthHeaders() },
         );
+        if (seq !== fetchSeq) return;
         if (resp.ok) {
           const data = await resp.json();
-          remoteSegments = data.segments ?? [];
+          if (seq !== fetchSeq) return;
+          remoteSegments = parseSegmentsResponse(data);
           lastFetchRange = { start: fetchStart, end: fetchEnd };
           lastFetchRegion = currentRegion;
         }
@@ -109,12 +133,12 @@
     popupSegment = null;
   });
 
-  // Use remote segments if available, fall back to local
+  // Use the remote answer when there is one (even an empty one), else local
   let segments = $derived(() => {
     if (!visible || endFreq <= startFreq) return [];
     const span = endFreq - startFreq;
 
-    if (remoteSegments.length > 0) {
+    if (remoteSegments !== null) {
       const filtered = filterOverlapping(remoteSegments, startFreq, endFreq, hiddenLayers);
       return filtered
         .map((s) => {

@@ -2,7 +2,8 @@
 # Source: https://www.iaru-r1.org/on-the-air/band-plans/
 # VHF/UHF/SHF sections transcribe the IARU-R1 VHF Handbook v10.03 (Feb 2026):
 # https://www.iaru-r1.org/wp-content/uploads/2026/02/VHF_Handbook_V10_03_final.pdf
-# (transcribed 2026-10-29; only widely documented sub-bands are included).
+# (printed pages 35, 38-39, 41-43, 45-46; transcribed 2026-10-29). Rows the
+# handbook does not state are left out rather than filled from memory.
 
 [meta]
 name = "IARU Region 1"
@@ -390,6 +391,7 @@ end = 29_700_000
   notes = "FM repeaters"
 
 # ── 6m (50-52 MHz, Region 1) ──────────────────────────
+# IARU-R1 VHF Handbook v10.03, printed page 35 (section 7.2) and its notes.
 
 [[band]]
 name = "6m"
@@ -398,47 +400,83 @@ end = 52_000_000
 
   [[band.segment]]
   start = 50_000_000
+  end = 50_030_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Reserved for the Synchronised Beacon Project: 50.000-50.010 Region 1, 50.010-50.020 Region 2, 50.020-50.030 Region 3"
+
+  [[band.segment]]
+  start = 50_030_000
   end = 50_100_000
   mode = "cw"
   label = "CW"
-  notes = "Telegraphy, EME 50.000-50.010"
-
-  [[band.segment]]
-  start = 50_000_000
-  end = 50_080_000
-  mode = "beacon"
-  label = "BCN"
-  notes = "Beacons"
+  notes = "Telegraphy exclusive, 500 Hz; 50.050 CW future international centre of activity, 50.090 CW intercontinental centre of activity"
 
   [[band.segment]]
   start = 50_100_000
+  end = 50_200_000
+  mode = "phone"
+  label = "SSB"
+  notes = "SSB and telegraphy; 50.100-50.130 intercontinental, 50.110 intercontinental centre (DX calling), 50.130-50.200 international, 50.150 international centre"
+
+  [[band.segment]]
+  start = 50_200_000
   end = 50_300_000
   mode = "phone"
   label = "SSB"
-  notes = "SSB, DX calling 50.110, SSB calling 50.150"
+  notes = "SSB and telegraphy, general usage; 50.285 for crossband"
 
   [[band.segment]]
   start = 50_300_000
   end = 50_400_000
   mode = "digital"
   label = "DIGI"
-  notes = "MGM narrowband, PSK 50.305, EME 50.310-50.320, MS 50.320-50.380"
+  notes = "MGM, narrowband and telegraphy; 50.305 PSK centre, 50.310-50.320 EME centre, 50.320-50.380 MS centre"
 
   [[band.segment]]
   start = 50_400_000
   end = 50_500_000
   mode = "beacon"
   label = "BCN"
-  notes = "Beacons exclusive"
+  notes = "Beacons exclusive (MGM, telegraphy, 1000 Hz)"
 
   [[band.segment]]
   start = 50_500_000
-  end = 52_000_000
+  end = 50_700_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes; 50.540-50.580 simplex FM/DV Internet voice gateways, 50.600-50.700 digital communications, 50.630 DV calling"
+
+  [[band.segment]]
+  start = 50_700_000
+  end = 50_900_000
   mode = "phone"
-  label = "FM"
-  notes = "FM, FM calling 51.510"
+  label = "RPT"
+  notes = "FM/digital voice, 12 kHz; 50.710-50.890 repeater output channels"
+
+  [[band.segment]]
+  start = 50_900_000
+  end = 51_200_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes; wideband digital experiments (footnote e)"
+
+  [[band.segment]]
+  start = 51_200_000
+  end = 51_400_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM/digital voice, 12 kHz; 51.210-51.390 repeater input channels"
+
+  [[band.segment]]
+  start = 51_400_000
+  end = 52_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes; 51.410-51.590 FM/DV simplex, 51.510 FM calling, 51.810-51.990 FM/DV repeater output channels, wideband digital experiments (footnote e)"
 
 # ── 2m (144-146 MHz, Region 1) ────────────────────────
+# IARU-R1 VHF Handbook v10.03, printed pages 38-40 (section 7.4) and its notes.
 
 [[band]]
 name = "2m"
@@ -447,68 +485,107 @@ end = 146_000_000
 
   [[band.segment]]
   start = 144_000_000
-  end = 144_110_000
-  mode = "cw"
-  label = "CW"
-  notes = "CW; satellite downlinks only 144.000-144.025"
+  end = 144_025_000
+  mode = "phone"
+  label = "SAT"
+  notes = "All modes; satellite downlinks only; no transmission below 144.0025"
 
   [[band.segment]]
-  start = 144_110_000
+  start = 144_025_000
+  end = 144_100_000
+  mode = "cw"
+  label = "CW"
+  notes = "Telegraphy, 500 Hz; 144.050 centre of activity"
+
+  [[band.segment]]
+  start = 144_100_000
+  end = 144_150_000
+  mode = "cw"
+  label = "CW/MGM"
+  notes = "Telegraphy and MGM, 500 Hz; 144.110-144.160 CW and MGM EME"
+
+  [[band.segment]]
+  start = 144_150_000
   end = 144_400_000
   mode = "phone"
   label = "SSB"
-  notes = "SSB, SSB calling 144.300"
+  notes = "Telegraphy, SSB and MGM; 144.300 SSB centre of activity"
 
   [[band.segment]]
   start = 144_400_000
-  end = 144_500_000
+  end = 144_490_000
   mode = "beacon"
   label = "BCN"
-  notes = "Beacons"
+  notes = "Beacons exclusive (telegraphy, MGM, 500 Hz)"
+
+  [[band.segment]]
+  start = 144_491_000
+  end = 144_493_000
+  mode = "digital"
+  label = "MGM"
+  notes = "Personal weak signal MGM beacons; experimental MGM"
 
   [[band.segment]]
   start = 144_500_000
-  end = 144_800_000
-  mode = "phone"
+  end = 144_794_000
+  mode = "other"
   label = "ALL"
-  notes = "All modes, SSTV 144.500, RTTY 144.600"
+  notes = "All modes, 20 kHz; 144.500 image centre (SSTV, Fax), 144.600 data centre (MGM, RTTY), 144.750 ATV talk back"
 
   [[band.segment]]
-  start = 144_800_000
-  end = 144_990_000
+  start = 144_794_000
+  end = 144_962_500
   mode = "digital"
   label = "DIGI"
-  notes = "Digital, APRS 144.800"
+  notes = "MGM and digital communications, 12 kHz; 144.800 APRS; DV Internet voice gateways 144.8125, 144.8250, 144.8375, 144.8500, 144.8625"
 
   [[band.segment]]
-  start = 145_000_000
-  end = 145_200_000
+  start = 144_975_000
+  end = 145_194_000
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater inputs, 600 kHz shift, outputs 145.600-145.800"
+  notes = "FM/digital voice, 12 kHz; repeater input exclusive"
 
   [[band.segment]]
-  start = 145_200_000
-  end = 145_600_000
+  start = 145_194_000
+  end = 145_206_000
+  mode = "phone"
+  label = "SPC"
+  notes = "Space communication, FM/digital voice; 145.200 simplex or 145.200/145.800 split with manned spacecraft"
+
+  [[band.segment]]
+  start = 145_206_000
+  end = 145_562_500
   mode = "phone"
   label = "FM"
-  notes = "FM simplex, FM calling 145.500"
+  notes = "FM/digital voice simplex, 12 kHz; 145.2375, 145.2875, 145.3375 FM Internet voice gateways; 145.375 DV calling; 145.500 FM calling"
 
   [[band.segment]]
-  start = 145_600_000
-  end = 145_800_000
+  start = 145_575_000
+  end = 145_793_500
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater outputs, 600 kHz shift, inputs 145.000-145.200"
+  notes = "FM/digital voice, 12 kHz; repeater output exclusive; established simplex frequencies may be retained"
 
   [[band.segment]]
-  start = 145_800_000
+  start = 145_794_000
+  end = 145_806_000
+  mode = "phone"
+  label = "SPC"
+  notes = "Space communication, FM/digital voice; 145.800 downlink of manned space stations"
+
+  [[band.segment]]
+  start = 145_806_000
   end = 146_000_000
   mode = "phone"
   label = "SAT"
-  notes = "Satellite"
+  notes = "All modes; satellite exclusive"
 
 # ── 70cm (430-440 MHz, Region 1) ─────────────────────
+# IARU-R1 VHF Handbook v10.03, printed pages 41-44 (section 7.5) and its notes.
+# 430-432 MHz is sub-regional (national band planning); channel rows below
+# are the handbook's recommendations. Analogue ATV is not permitted in
+# 430-440 MHz since 2021, so no ATV rows are listed here.
 
 [[band]]
 name = "70cm"
@@ -516,104 +593,170 @@ start = 430_000_000
 end = 440_000_000
 
   [[band.segment]]
-  start = 430_000_000
-  end = 432_000_000
+  start = 430_025_000
+  end = 430_375_000
+  mode = "phone"
+  label = "RPT"
+  notes = "Sub-regional; FM repeater output channels (F/PA/ON), 12.5 kHz spacing, 1.6 MHz shift"
+
+  [[band.segment]]
+  start = 430_400_000
+  end = 430_575_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Sub-regional; digital communication link channels"
+
+  [[band.segment]]
+  start = 430_600_000
+  end = 430_925_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Sub-regional; digital communications repeater channels"
+
+  [[band.segment]]
+  start = 430_925_000
+  end = 431_025_000
   mode = "other"
-  label = "ATV"
-  notes = "ATV"
+  label = "MULTI"
+  notes = "Sub-regional; multi mode channels"
+
+  [[band.segment]]
+  start = 431_050_000
+  end = 431_987_500
+  mode = "phone"
+  label = "RPT"
+  notes = "Sub-regional; repeater inputs Region 1, 12.5 kHz spacing, 7.6 MHz shift"
+
+  [[band.segment]]
+  start = 431_625_000
+  end = 431_975_000
+  mode = "phone"
+  label = "RPT"
+  notes = "Sub-regional; repeater input channels (F/PA/ON), 12.5 kHz spacing, 1.6 MHz shift"
 
   [[band.segment]]
   start = 432_000_000
-  end = 432_150_000
-  mode = "cw"
-  label = "CW"
-  notes = "CW, EME 432.000-432.025"
-
-  [[band.segment]]
-  start = 432_150_000
   end = 432_400_000
-  mode = "phone"
-  label = "SSB"
-  notes = "SSB, SSB calling 432.200"
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 2700 Hz; 432.050 telegraphy centre, 432.200 SSB centre, 432.350 microwave talkback centre, 432.370 meteor scatter centre"
 
   [[band.segment]]
   start = 432_400_000
   end = 432_490_000
   mode = "beacon"
   label = "BCN"
-  notes = "Beacons exclusive"
+  notes = "Beacons exclusive (telegraphy, MGM, 500 Hz)"
 
   [[band.segment]]
-  start = 432_490_000
-  end = 432_500_000
+  start = 432_491_000
+  end = 432_493_000
   mode = "digital"
   label = "DIGI"
-  notes = "Experimental MGM 432.491-432.493; APRS 432.500"
+  notes = "Experimental MGM, 500 Hz"
 
   [[band.segment]]
   start = 432_500_000
-  end = 432_800_000
+  end = 432_600_000
   mode = "other"
-  label = "LIN"
-  notes = "Linear transponder in 432.500-432.600 / out 432.600-432.800 (national usage); overlaps Region 1 repeater inputs 432.600-432.975"
+  label = "ALL"
+  notes = "All modes; 432.500 APRS; national usage in some countries: linear transponder inputs 432.500-432.600"
 
   [[band.segment]]
-  start = 432_800_000
-  end = 433_000_000
+  start = 432_600_000
+  end = 432_987_500
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater inputs Region 1, 25 kHz spacing, 2 MHz shift (UK: outputs)"
+  notes = "Repeater inputs Region 1, 25 kHz spacing, 2 MHz shift; in the UK repeater outputs"
 
   [[band.segment]]
   start = 433_000_000
-  end = 433_375_000
+  end = 433_387_500
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater inputs, 1.6 MHz shift, outputs 434.600-434.975"
+  notes = "FM/digital voice; repeater inputs Region 1, 12.5 kHz spacing, 1.6 MHz shift; in the UK repeater outputs 433.000-433.375, 25 kHz spacing"
 
   [[band.segment]]
-  start = 433_375_000
-  end = 433_600_000
+  start = 433_400_000
+  end = 433_587_500
   mode = "phone"
   label = "FM"
-  notes = "FM simplex, FM calling 433.500"
+  notes = "FM/digital voice simplex channels, 25 kHz spacing; 433.400 SSTV, 433.450 DV calling, 433.500 FM calling"
 
   [[band.segment]]
   start = 433_600_000
   end = 434_000_000
-  mode = "digital"
-  label = "DIGI"
-  notes = "Digital, SSTV, APRS"
+  mode = "other"
+  label = "ALL"
+  notes = "All modes; 433.625-433.775 digital communications channels; 434.000 centre of digital experiments; LoRa (125 kHz max)"
 
   [[band.segment]]
   start = 434_000_000
-  end = 434_600_000
+  end = 434_587_500
   mode = "other"
-  label = "ATV"
-  notes = "ATV"
+  label = "ALL"
+  notes = "All modes; 434.450-434.575 digital communications channels (by exception)"
 
   [[band.segment]]
   start = 434_600_000
-  end = 434_975_000
+  end = 434_987_500
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater outputs, 1.6 MHz shift, inputs 433.000-433.375"
+  notes = "Repeater outputs Region 1, 12.5 kHz spacing, 1.6 or 2.0 MHz shift; in the UK repeater inputs 434.600-434.975, 25 kHz spacing"
 
   [[band.segment]]
   start = 435_000_000
+  end = 436_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite service"
+
+  [[band.segment]]
+  start = 436_000_000
   end = 438_000_000
   mode = "phone"
   label = "SAT"
-  notes = "Satellite"
+  notes = "Satellite service and digital television; 437.000 DATV/data centre of activity; no fixed repeaters, gateways or nodes"
 
   [[band.segment]]
-  start = 438_000_000
-  end = 440_000_000
+  start = 438_025_000
+  end = 438_175_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "All modes; digital communications channel frequencies"
+
+  [[band.segment]]
+  start = 438_200_000
+  end = 438_525_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "All modes; digital communications repeater channels"
+
+  [[band.segment]]
+  start = 438_550_000
+  end = 438_625_000
   mode = "other"
-  label = "ATV"
-  notes = "ATV"
+  label = "MULTI"
+  notes = "All modes; multi-mode channels for experiments with new transmission technologies"
+
+  [[band.segment]]
+  start = 438_650_000
+  end = 439_587_500
+  mode = "phone"
+  label = "RPT"
+  notes = "All modes; repeater outputs Region 1, 12.5 kHz spacing, 7.6 MHz shift"
+
+  [[band.segment]]
+  start = 439_800_000
+  end = 439_975_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "All modes; digital communications link channels"
 
 # ── 23cm (1240-1300 MHz, Region 1) ───────────────────
+# IARU-R1 VHF Handbook v10.03, printed pages 45-46 (section 7.6) and its notes.
+# Bandwidth limits of the ATV and 1291.494-1296.000 rows follow national
+# regulations.
 
 [[band]]
 name = "23cm"
@@ -622,77 +765,182 @@ end = 1_300_000_000
 
   [[band.segment]]
   start = 1_240_000_000
+  end = 1_240_500_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 2700 Hz, reserved for future; 1240.000-1240.750 is an alternative narrowband section (Cavtat 2008)"
+
+  [[band.segment]]
+  start = 1_240_500_000
+  end = 1_240_750_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons (telegraphy, MGM, 500 Hz), reserved for future"
+
+  [[band.segment]]
+  start = 1_240_750_000
+  end = 1_241_000_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM/digital voice, 20 kHz, reserved for future"
+
+  [[band.segment]]
+  start = 1_241_000_000
+  end = 1_242_025_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 20 kHz"
+
+  [[band.segment]]
+  start = 1_242_025_000
+  end = 1_242_700_000
+  mode = "phone"
+  label = "RPT"
+  notes = "Repeater outputs: RS1-RS10 1242.025-1242.250, RS11-RS28 1242.275-1242.700"
+
+  [[band.segment]]
+  start = 1_242_725_000
   end = 1_243_250_000
   mode = "digital"
   label = "DIGI"
-  notes = "Digital"
+  notes = "Digital communications, channels RS29-RS50"
 
   [[band.segment]]
   start = 1_243_250_000
+  end = 1_258_150_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV and digital ATV"
+
+  [[band.segment]]
+  start = 1_258_150_000
+  end = 1_259_350_000
+  mode = "phone"
+  label = "RPT"
+  notes = "Repeater outputs, channels R20-R68 (inside the ATV and digital ATV segment)"
+
+  [[band.segment]]
+  start = 1_259_350_000
   end = 1_260_000_000
   mode = "other"
   label = "ATV"
-  notes = "ATV"
+  notes = "ATV and digital ATV"
 
   [[band.segment]]
   start = 1_260_000_000
   end = 1_270_000_000
   mode = "phone"
   label = "SAT"
-  notes = "Satellite"
+  notes = "Satellite service"
+
+  [[band.segment]]
+  start = 1_270_025_000
+  end = 1_270_700_000
+  mode = "phone"
+  label = "RPT"
+  notes = "All modes, 20 kHz; repeater inputs, channels RS1-RS28"
+
+  [[band.segment]]
+  start = 1_270_725_000
+  end = 1_271_250_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "All modes, 20 kHz; digital communication, channels RS29-RS50"
+
+  [[band.segment]]
+  start = 1_271_250_000
+  end = 1_272_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 20 kHz"
 
   [[band.segment]]
   start = 1_272_000_000
   end = 1_290_994_000
   mode = "other"
   label = "ATV"
-  notes = "ATV"
+  notes = "ATV and digital ATV"
 
   [[band.segment]]
   start = 1_290_994_000
   end = 1_291_481_000
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater inputs RM0 (1291.000)-RM19 (1291.475), 25 kHz spacing"
+  notes = "FM/digital voice repeater inputs RM0 (1291.000)-RM19 (1291.475), 25 kHz spacing"
 
   [[band.segment]]
   start = 1_291_494_000
-  end = 1_296_000_000
+  end = 1_293_150_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes"
+
+  [[band.segment]]
+  start = 1_293_150_000
+  end = 1_294_350_000
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater inputs R20 (1293.150)-R68 (1294.350)"
+  notes = "All modes row; repeater inputs R20 (1293.150)-R68 (1294.350)"
+
+  [[band.segment]]
+  start = 1_294_350_000
+  end = 1_296_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes"
 
   [[band.segment]]
   start = 1_296_000_000
   end = 1_296_150_000
   mode = "cw"
-  label = "CW"
-  notes = "CW, EME"
+  label = "CW/MGM"
+  notes = "Telegraphy and MGM, 500 Hz; 1296.000-1296.025 moonbounce"
 
   [[band.segment]]
   start = 1_296_150_000
   end = 1_296_800_000
   mode = "phone"
   label = "SSB"
-  notes = "SSB, SSB calling 1296.200"
+  notes = "Telegraphy, SSB and MGM, 2700 Hz; 1296.200 narrow-band centre; 1296.400-1296.600 linear transponder input; 1296.600-1296.700 linear transponder output; 1296.750-1296.800 local beacon"
 
   [[band.segment]]
   start = 1_296_800_000
   end = 1_296_994_000
   mode = "beacon"
   label = "BCN"
-  notes = "Beacons exclusive"
+  notes = "Beacons exclusive (telegraphy, MGM, 500 Hz)"
 
   [[band.segment]]
   start = 1_296_994_000
   end = 1_297_481_000
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater outputs RM0 (1297.000)-RM19 (1297.475), 25 kHz spacing"
+  notes = "FM/digital voice repeater outputs RM0 (1297.000)-RM19 (1297.475), 25 kHz spacing"
 
   [[band.segment]]
   start = 1_297_494_000
-  end = 1_298_000_000
+  end = 1_297_981_000
   mode = "phone"
   label = "FM"
-  notes = "FM simplex SM20 (1297.500)-SM39 (1297.975), FM calling 1297.500, DV calling 1297.725"
+  notes = "FM/digital voice simplex SM20 (1297.500)-SM39 (1297.975), 25 kHz spacing; 1297.500 FM centre; 1297.725 DV calling; 1297.900-1297.975 FM Internet voice gateways"
+
+  [[band.segment]]
+  start = 1_298_000_000
+  end = 1_299_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes; general mixed analogue or digital use in 25 kHz channels RS1 (1298.025)-RS39 (1298.975)"
+
+  [[band.segment]]
+  start = 1_299_000_000
+  end = 1_299_750_000
+  mode = "digital"
+  label = "DD"
+  notes = "All modes, 150 kHz; five channels for high speed digital data, centres 1299.075, 1299.225, 1299.375, 1299.525, 1299.675"
+
+  [[band.segment]]
+  start = 1_299_750_000
+  end = 1_300_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes; 8 x 25 kHz channels available for FM/DV, centres 1299.775-1299.975"

@@ -476,6 +476,7 @@ import {
 import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
 import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 import type { Capabilities } from '$lib/types/capabilities';
+import bandPlanGoldens from './fixtures/band-plan-responses.json';
 
 // MOR-2497 (post-#3519): the captured IC-7300 capabilities predate
 // `pbtStepHz`, so AS CAPTURED they are the legacy payload — not what these
@@ -3406,5 +3407,94 @@ describe('SpectrumPanel scope handle hover-intent CSS (MOR-2562)', () => {
     expect(style).not.toMatch(
       /\.spectrum-split-separator:hover,\s*\.spectrum-split-separator\.active\s*\{/,
     );
+  });
+});
+
+// MOR-3631 — the production region-selection wiring. A region click in the
+// real SpectrumToolbar must reach the real BandPlanOverlay through
+// SpectrumPanel's `bind:currentRegion={bandPlanRegion}` and
+// `region={bandPlanRegion}`, and the overlay must then show the new region's
+// segments at an unchanged viewport. The fetch backend answers with
+// `fixtures/band-plan-responses.json`, the bodies the real server handlers
+// return (recorded and kept current by the Python real-handler replay
+// `tests/test_band_plan_response_goldens.py`). Deleting either binding leaves
+// the overlay on the previous region's segments and fails this test.
+describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
+  interface GoldenSegment { start: number; end: number; label: string; notes?: string | null }
+  type GoldenBody = { segments: GoldenSegment[] };
+  const goldens = bandPlanGoldens as unknown as {
+    layers: unknown;
+    config: Record<string, unknown>;
+    configPost: Record<string, unknown>;
+    segments: Record<string, GoldenBody>;
+  };
+  const VIEW = { startFreq: 145_800_000, endFreq: 146_200_000 };
+  const WINDOW = '145600000-146400000'; // viewport +/- 50 %, what the overlay requests
+  const ok = (body: unknown) => ({ ok: true, json: async () => body }) as Response;
+  const titlesFor = (region: string) =>
+    goldens.segments[`${region}|${WINDOW}`].segments
+      .filter((seg) => seg.end > VIEW.startFreq && seg.start < VIEW.endFreq)
+      .map((seg) => seg.notes ?? seg.label);
+  const overlayTitles = (target: HTMLElement) =>
+    Array.from(target.querySelectorAll('.bandplan-overlay .band-segment'))
+      .map((el) => el.getAttribute('title'));
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('a toolbar region click refetches and re-renders the overlay for the new region', async () => {
+    let serverRegion = 'US';
+    const segmentUrls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/v1/band-plan/layers') return ok(goldens.layers);
+      if (url === '/api/v1/band-plan/config') {
+        if (init?.method === 'POST') {
+          serverRegion = JSON.parse(String(init.body)).region;
+          return ok(goldens.configPost[serverRegion]);
+        }
+        return ok(goldens.config[serverRegion]);
+      }
+      if (url.startsWith('/api/v1/band-plan/segments?')) {
+        segmentUrls.push(url);
+        const key = /start=(\d+)&end=(\d+)/.exec(url)!;
+        const body = goldens.segments[`${serverRegion}|${key[1]}-${key[2]}`];
+        if (!body) throw new Error(`no golden for ${serverRegion} ${url}`);
+        return ok(body);
+      }
+      return { ok: false, status: 404 } as Response;
+    }));
+
+    const target = mountPanel();
+    emitFrame({ mode: 1, ...VIEW });
+
+    // US baseline: the overlay shows the golden US segments for the viewport.
+    await vi.waitFor(() => {
+      expect(overlayTitles(target)).toEqual(titlesFor('US'));
+    }, { timeout: 3000 });
+    expect(titlesFor('US')).not.toEqual(titlesFor('IARU-R1'));
+    const fetchesBefore = segmentUrls.length;
+    const urlBefore = segmentUrls.at(-1);
+
+    // Real toolbar: open the layer menu and pick the region.
+    await vi.waitFor(() => {
+      expect(target.querySelector('.layer-toggle-btn')).not.toBeNull();
+    }, { timeout: 3000 });
+    target.querySelector<HTMLButtonElement>('.layer-toggle-btn')!.click();
+    flushSync();
+    const r1 = Array.from(target.querySelectorAll<HTMLButtonElement>('.region-btn'))
+      .find((btn) => btn.textContent?.trim() === 'IARU-R1');
+    expect(r1).toBeDefined();
+    r1!.click();
+
+    await vi.waitFor(() => {
+      expect(overlayTitles(target)).toEqual(titlesFor('IARU-R1'));
+    }, { timeout: 3000 });
+    // One refetch for the switch (same viewport), and no loop afterwards.
+    expect(segmentUrls.length).toBe(fetchesBefore + 1);
+    expect(segmentUrls.at(-1)).toBe(urlBefore);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(segmentUrls.length).toBe(fetchesBefore + 1);
   });
 });
