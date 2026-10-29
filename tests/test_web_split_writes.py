@@ -51,7 +51,7 @@ CASES = [
 
 
 @asynccontextmanager
-async def _web_peer(model, *, profile=None):
+async def _web_peer(model, *, profile=None, consume=1):
     async with _peer(model, profile=profile) as (radio, peer, _server, reader, writer):
         radio._civ_stream_ready = True
         radio._last_civ_data_received = time.monotonic()
@@ -63,15 +63,20 @@ async def _web_peer(model, *, profile=None):
         executed = asyncio.Event()
         entries = []
 
-        async def consume():
-            await web.command_queue.wait(2)
-            entry = web.command_queue.take_entry()
-            assert entry is not None
-            entries.append(entry)
-            await poller._execute_queued_entry(entry)
-            executed.set()
+        async def consume_entries():
+            # ``consume`` queued commands run through the one poller that
+            # owns the queue's connection generation (a second RadioPoller
+            # over this queue cannot bind it); ``executed`` is set after
+            # each, so a caller driving several commands clears it first.
+            for _ in range(consume):
+                await web.command_queue.wait(10)
+                entry = web.command_queue.take_entry()
+                assert entry is not None
+                entries.append(entry)
+                await poller._execute_queued_entry(entry)
+                executed.set()
 
-        consumer = asyncio.create_task(consume())
+        consumer = asyncio.create_task(consume_entries())
         try:
             yield web, peer, entries, executed, (radio, reader, writer)
         finally:

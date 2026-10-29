@@ -26,7 +26,6 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.types import Mode
-from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebServer
 from test_web_server import _http_get
 from test_web_split_writes import _request, _web_peer
@@ -74,13 +73,15 @@ def _radio_reply(store: Any, path: FieldPath, value: Any) -> None:
     )
 
 
-async def _execute_enqueued(web: WebServer, poller: RadioPoller) -> None:
-    """Run the production poller execution path over the queued commands."""
-    await asyncio.wait_for(web.command_queue.wait(5.0), 6.0)
-    entries = web.command_queue.drain_entries()
-    assert entries, "the mode command never reached the command queue"
-    for entry in entries:
-        await poller._execute_queued_entry(entry)
+async def _command(
+    web: WebServer, executed: asyncio.Event, protocol: str, mode: str
+) -> None:
+    """Select ``mode`` through the real endpoint; the harness poller runs it."""
+    executed.clear()
+    status, result = await _request(web, protocol, "set_mode", {"mode": mode})
+    assert status == (200 if protocol == "http" else None)
+    assert result["ok"] is True
+    await asyncio.wait_for(executed.wait(), 6.0)
 
 
 async def _public_state(web: WebServer) -> dict[str, Any]:
@@ -113,10 +114,16 @@ async def test_ic705_fm_transition_clears_controls_over_real_http(
     from radio replies through the production observation path.
     """
 
-    async with _web_peer("IC-705") as (web, peer, _entries, _executed, rigctld):
-        radio, _reader, _writer = rigctld
+    async with _web_peer("IC-705", consume=2) as (
+        web,
+        peer,
+        _entries,
+        executed,
+        (radio, _reader, _writer),
+    ):
         store = web.command_state_store
-        poller = RadioPoller(radio, web.command_queue, state_store=store)
+        service = web._state_freshness_service
+        scheduler = radio._acquisition_scheduler
 
         _radio_reply(store, _MODE, "USB")
         for path, _, value in _CONTROLS:
@@ -126,12 +133,12 @@ async def test_ic705_fm_transition_clears_controls_over_real_http(
         assert state["main"]["mode"] == "USB"
         _assert_controls(state, available=True)
 
-        status, result = await _request(web, protocol, "set_mode", {"mode": "FM"})
-        assert status == (200 if protocol == "http" else None)
-        assert result["ok"] is True
-        await _execute_enqueued(web, poller)
+        await _command(web, executed, protocol, "FM")
         assert peer.slots["A"][1] is Mode.FM
-        assert any(command == 0x06 for command, _, _ in peer.requests)
+        assert any(
+            command == 0x26 and data[:2] == bytes([0, Mode.FM])
+            for command, _, data in peer.requests
+        ), peer.requests
 
         # The poller's next readback reports the commanded radio's mode;
         # before the freshness tick runs, the old values are still served.
@@ -140,15 +147,27 @@ async def test_ic705_fm_transition_clears_controls_over_real_http(
         assert state["main"]["mode"] == "FM"
         _assert_controls(state, available=True)
 
-        web._state_freshness_service.tick()
+        service.tick()
         state = await _public_state(web)
         assert state["main"]["mode"] == "FM"
         _assert_controls(state, available=False)
 
-        status, result = await _request(web, protocol, "set_mode", {"mode": "USB"})
-        assert status == (200 if protocol == "http" else None)
-        assert result["ok"] is True
-        await _execute_enqueued(web, poller)
+        # Two further prime windows in FM: the discarded controls are
+        # unobserved again, yet nothing re-queues a read of them (the
+        # radio NAKs those reads in FM).
+        for window in (1, 2):
+            service.tick(
+                now=time.monotonic()
+                + window * (service.PRIME_ADAPTIVE_INTERVAL_SECONDS + 0.1)
+            )
+            queued = {
+                path
+                for request in scheduler.pending_requests()
+                for path in request.paths
+            }
+            assert queued.isdisjoint(path for path, _, _ in _CONTROLS), queued
+
+        await _command(web, executed, protocol, "USB")
         assert peer.slots["A"][1] is Mode.USB
 
         # The radio answers the re-primed reads; recovery flows through
@@ -156,7 +175,7 @@ async def test_ic705_fm_transition_clears_controls_over_real_http(
         _radio_reply(store, _MODE, "USB")
         for path, _, value in _CONTROLS:
             _radio_reply(store, path, value)
-        web._state_freshness_service.tick()
+        service.tick()
         state = await _public_state(web)
         assert state["main"]["mode"] == "USB"
         _assert_controls(state, available=True)
