@@ -290,6 +290,26 @@ async def test_close_frame_disconnects_once() -> None:
     assert handler.disconnect_calls == 1
 
 
+async def test_close_frame_releases_transport() -> None:
+    """The close-frame path must still close the transport (regression pin).
+
+    ``recv()`` marks the connection closed when a close frame arrives;
+    ``finish()`` used to skip ``close()`` then, leaking the transport, so
+    the listener's ``wait_closed()`` never returned.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    session, writer, reader = await open_session(server, handler)
+    await wait_for_frames(writer, len(BURST))
+    reader.feed_data(client_frame(WS_OP_CLOSE, struct.pack("!H", 1000)))
+    async with asyncio.timeout(2.0):
+        while handler.disconnect_calls == 0:
+            await asyncio.sleep(0.005)
+    await session.finish()
+    assert writer.is_closing()
+
+
 async def test_reset_disconnects_once() -> None:
     clock = FakeClock()
     handler = FakeHandler()
