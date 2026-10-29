@@ -581,3 +581,60 @@ async def test_cancellation_during_accept(tcp_available: None) -> None:
     assert handler.disconnect_calls == 1
     client.writer.close()
     await client.writer.wait_closed()
+
+
+async def test_cancelled_join_still_closes_transport(
+    tcp_available: None,
+) -> None:
+    """Cancelling ``finish()`` mid-join still closes the transport.
+
+    One session task gates its cancellation cleanup so the task join
+    (``gather``) stays open long enough for the cancel to land inside
+    it — before the close/abort. The transport must still die (the
+    client observes EOF), the disconnect runs exactly once, the
+    session leaves the registry, and a repeated ``finish()`` is
+    harmless.
+    """
+    handler = FakeHandler()
+    server = make_server(handler)
+    await server.start()
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        assert len(server.sessions) == 1
+        session = server.sessions[0]
+
+        async def _slow_cleanup() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.3)
+                raise
+
+        slow = asyncio.create_task(_slow_cleanup())
+        session._tasks.add(slow)
+        finishing = asyncio.create_task(session.finish())
+        try:
+            async with asyncio.timeout(5.0):
+                while not session._done:
+                    await asyncio.sleep(0.005)
+            await asyncio.sleep(0.05)
+            finishing.cancel()
+            try:
+                async with asyncio.timeout(10.0):
+                    await finishing
+            except asyncio.CancelledError:
+                pass
+            await _read_until_closed(client)
+            assert handler.disconnect_calls == 1
+            assert session not in server.sessions
+            await session.finish()
+            assert handler.disconnect_calls == 1
+        finally:
+            slow.cancel()
+            try:
+                await slow
+            except (asyncio.CancelledError, Exception):
+                pass
+    finally:
+        await server.stop()
