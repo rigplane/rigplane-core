@@ -3,25 +3,36 @@
 Drives the real leaf server on an ephemeral port with a fake
 ``TciHandler`` using ``eesdr_tci.listener.Listener`` as the client.
 Covers connect, the init burst and the ``ready`` event, multi-client
-broadcast and coalescing, typed ``TciDataPacket`` frames both ways,
-and the output guard: a scripted session that completes proves the
-server emitted only commands from the ``eesdr-tci`` dictionary
-(``Listener._listen_main`` raises ``ValueError`` on any other name).
+broadcast, typed ``TciDataPacket`` frames both ways, and the output
+guard: an unknown command name raises ``ValueError`` in
+``Listener._listen_main``.
 
-API assumptions (verify against the eesdr-tci 0.1.0 README on the
-mini; each fails closed naming the exact attribute tried):
+Verified real API of ``eesdr-tci`` 0.1.0 (read from the installed
+source on the Mac mini; every attribute below fails closed at
+collection when it changes):
 
-- ``eesdr_tci.listener.Listener(host, port)`` connects on
-  ``await listener.connect()`` (or ``start()``) and exposes received
-  text commands as ``listener.received_commands: list[str]`` and a
-  ``ready: asyncio.Event`` set after the ``ready;`` line.
-- ``listener.send_command(name, *args)`` sends one text command.
-- ``eesdr_tci.tci.TciDataPacket(...)`` takes the eight header fields of
-  the 8.1 table plus ``data``, and ``bytes(packet)`` is the wire image
-  (``<8I32x`` header plus data).
+- ``Listener(uri)`` takes a ``ws://`` URI string (not host/port).
+- ``await listener.start()`` connects (raises ``TimeoutError`` when the
+  server never answers); ``await listener.ready()`` waits for the
+  ``ready;`` line; ``await listener.wait()`` re-raises whatever killed
+  the connection task (e.g. the ``ValueError`` for unknown commands).
+- ``await listener.send(data)`` / ``listener.send_nowait(data)`` pass a
+  text or binary message through as-is (no ``send_command`` helper).
+- ``listener.add_param_listener("*", cb)`` with
+  ``async def cb(name, rx, sub_rx, params)`` observes text commands
+  (callbacks must be coroutines: each is wrapped in a task).
+- ``listener.add_data_listener("*", cb)`` with
+  ``async def cb(packet)`` observes ``TciDataPacket`` frames.
+- ``listener.shutdown()`` cancels the connection task (it swallows the
+  resulting ``CancelledError`` itself, so ``wait()`` then returns).
+- ``TciDataPacket(rx, sample_rate, data_format, codec, crc, length,
+  data_type, channels, data)`` with ``to_bytes()`` / ``from_buf()``;
+  0.1.0 predates the 2.1 ``count`` header field (its wire image is
+  ``<8I32x`` with a zeroed tail).
 """
 
 import asyncio
+import importlib
 import socket
 import struct
 
@@ -37,13 +48,12 @@ from rigplane.tci.frames import (
 )
 from rigplane.tci.handler import CommandOutcome
 
-eesdr_tci = pytest.importorskip("eesdr_tci", reason="mini-only dev dependency")
+pytest.importorskip("eesdr_tci", reason="mini-only dev dependency")
+listener_mod = importlib.import_module("eesdr_tci.listener")
+tci_mod = importlib.import_module("eesdr_tci.tci")
 
-Listener = getattr(eesdr_tci.listener, "Listener", None)
-assert Listener is not None, "eesdr_tci.listener has no Listener"
-
-TciDataPacket = getattr(eesdr_tci.tci, "TciDataPacket", None)
-assert TciDataPacket is not None, "eesdr_tci.tci has no TciDataPacket"
+Listener = listener_mod.Listener
+TciDataPacket = tci_mod.TciDataPacket
 
 
 @pytest.fixture()
@@ -70,6 +80,24 @@ BURST = [
     "drive:0,50;",
     "receive_only:false;",
     "ready;",
+]
+
+#: What the real listener reports for BURST, in order: ``eesdr-tci``
+#: uppercases names, converts scalars (ints, bools) and unwraps
+#: single params, leaving multi-param lists as lists.
+EXPECTED_OBSERVED = [
+    ("PROTOCOL", None, None, ["tciserver", 1]),
+    ("DEVICE", None, None, "rigplane"),
+    ("TRX_COUNT", None, None, 1),
+    ("CHANNELS_COUNT", None, None, 2),
+    ("MODULATIONS_LIST", None, None, ["AM", "LSB", "USB", "CW", "FM", "DIGL", "DIGU"]),
+    ("VFO", 0, 0, 14074000),
+    ("VFO", 0, 1, 14074000),
+    ("MODULATION", 0, None, "USB"),
+    ("TRX", 0, None, False),
+    ("DRIVE", 0, None, 50),
+    ("RECEIVE_ONLY", None, None, False),
+    ("READY", None, None, None),
 ]
 
 
@@ -99,6 +127,20 @@ class FakeHandler:
         self.disconnect_calls += 1
 
 
+class Observed:
+    """Collects real-listener param and data callbacks."""
+
+    def __init__(self) -> None:
+        self.params: list[tuple[object, object, object, object]] = []
+        self.packets: list[object] = []
+
+    async def on_param(self, name: object, rx: object, sub_rx: object, params: object) -> None:
+        self.params.append((name, rx, sub_rx, params))
+
+    async def on_data(self, packet: object) -> None:
+        self.packets.append(packet)
+
+
 def make_server(handler: FakeHandler, **kwargs: object) -> object:
     import time
 
@@ -121,17 +163,45 @@ def make_server(handler: FakeHandler, **kwargs: object) -> object:
     )
 
 
-async def connect_listener(port: int) -> object:
-    """Connect a real eesdr-tci Listener (API assumption, fail-closed)."""
-    listener = Listener("127.0.0.1", port)
-    connect = getattr(listener, "connect", None)
-    if connect is None:
-        connect = getattr(listener, "start", None)
-    assert callable(connect), "Listener has neither connect() nor start()"
-    result = connect()
-    if asyncio.iscoroutine(result):
-        await result
+async def connect_listener(port: int, observed: Observed) -> object:
+    """Connect a real eesdr-tci Listener and wait for the init burst."""
+    listener = Listener(f"ws://127.0.0.1:{port}")
+    listener.add_param_listener("*", observed.on_param)
+    listener.add_data_listener("*", observed.on_data)
+    await listener.start()
+    await listener.ready()
     return listener
+
+
+async def close_listener(listener: object) -> None:
+    """Shut down a real Listener; cancel strays eesdr-tci leaves behind.
+
+    ``shutdown()`` cancels the connection task but does not await the
+    sender task it orphaned, so sweep up anything still pending (the
+    server is already stopped by the time this runs).
+    """
+    listener.shutdown()  # type: ignore[attr-defined]
+    try:
+        async with asyncio.timeout(5.0):
+            await listener.wait()  # type: ignore[attr-defined]
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        # The connection task may already have ended with the server's
+        # close reply (ConnectionClosedOK) winning the race against the
+        # shutdown cancel; teardown does not care which won.
+        pass
+    await asyncio.sleep(0)
+    current = asyncio.current_task()
+    stray = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not current and not task.done()
+    ]
+    for task in stray:
+        task.cancel()
+    if stray:
+        await asyncio.gather(*stray, return_exceptions=True)
 
 
 async def wait_until(predicate: object, timeout: float = 5.0) -> None:
@@ -142,115 +212,121 @@ async def wait_until(predicate: object, timeout: float = 5.0) -> None:
 
 async def test_connect_burst_and_ready(tcp_available: None) -> None:
     handler = FakeHandler()
+    observed = Observed()
     server = make_server(handler)
     await server.start()  # type: ignore[attr-defined]
     try:
-        listener = await connect_listener(server.bound_port)  # type: ignore[attr-defined]
-        ready = getattr(listener, "ready", None)
-        assert ready is not None, "Listener has no ready event"
-        async with asyncio.timeout(5.0):
-            await ready.wait()
-        received = getattr(listener, "received_commands", None)
-        assert received is not None, "Listener has no received_commands"
-        assert list(received) == BURST
+        listener = await connect_listener(server.bound_port, observed)  # type: ignore[attr-defined]
+        try:
+            await wait_until(lambda: len(observed.params) >= len(EXPECTED_OBSERVED))
+            assert observed.params == EXPECTED_OBSERVED
+        finally:
+            await close_listener(listener)
     finally:
         await server.stop()  # type: ignore[attr-defined]
 
 
 async def test_command_round_trip(tcp_available: None) -> None:
     handler = FakeHandler()
+    observed = Observed()
     server = make_server(handler)
     await server.start()  # type: ignore[attr-defined]
     try:
-        listener = await connect_listener(server.bound_port)  # type: ignore[attr-defined]
-        async with asyncio.timeout(5.0):
-            await listener.ready.wait()
-        send = getattr(listener, "send_command", None)
-        assert callable(send), "Listener has no send_command()"
-        result = send("vfo", "0", "0", "14074001")
-        if asyncio.iscoroutine(result):
-            await result
-        await wait_until(lambda: ("vfo", ("0", "0", "14074001")) in handler.commands)
+        listener = await connect_listener(server.bound_port, observed)  # type: ignore[attr-defined]
+        try:
+            await listener.send("vfo:0,0,14074001;")  # type: ignore[attr-defined]
+            await wait_until(lambda: ("vfo", ("0", "0", "14074001")) in handler.commands)
+        finally:
+            await close_listener(listener)
     finally:
         await server.stop()  # type: ignore[attr-defined]
 
 
 async def test_multi_client_broadcast(tcp_available: None) -> None:
     handler = FakeHandler()
+    first_seen = Observed()
+    second_seen = Observed()
     server = make_server(handler)
     await server.start()  # type: ignore[attr-defined]
     try:
-        first = await connect_listener(server.bound_port)  # type: ignore[attr-defined]
-        second = await connect_listener(server.bound_port)  # type: ignore[attr-defined]
-        async with asyncio.timeout(5.0):
-            await first.ready.wait()
-            await second.ready.wait()
-        before_first = len(first.received_commands)
-        before_second = len(second.received_commands)
-        server.broadcast(["vfo:0,0,14074001;"])  # type: ignore[attr-defined]
-        await wait_until(lambda: len(first.received_commands) > before_first)
-        await wait_until(lambda: len(second.received_commands) > before_second)
-        assert first.received_commands[-1] == "vfo:0,0,14074001;"
-        assert second.received_commands[-1] == "vfo:0,0,14074001;"
+        first = await connect_listener(server.bound_port, first_seen)  # type: ignore[attr-defined]
+        second = await connect_listener(server.bound_port, second_seen)  # type: ignore[attr-defined]
+        try:
+            server.broadcast(["vfo:0,0,14074001;"])  # type: ignore[attr-defined]
+            await wait_until(
+                lambda: ("VFO", 0, 0, 14074001) in first_seen.params
+                and ("VFO", 0, 0, 14074001) in second_seen.params
+            )
+        finally:
+            await close_listener(first)
+            await close_listener(second)
     finally:
         await server.stop()  # type: ignore[attr-defined]
 
 
 async def test_typed_packets_both_ways(tcp_available: None) -> None:
     handler = FakeHandler()
+    observed = Observed()
     server = make_server(handler)
     await server.start()  # type: ignore[attr-defined]
     try:
-        listener = await connect_listener(server.bound_port)  # type: ignore[attr-defined]
-        async with asyncio.timeout(5.0):
-            await listener.ready.wait()
-        payload = struct.pack("<4h", 0, 1000, -1000, 32767)
-        header = pack_header(
-            StreamHeader(
-                receiver=0,
-                sample_rate=48000,
-                sample_type=SampleType.INT16,
-                codec=0,
-                crc=0,
-                length=4,
-                stream_type=StreamType.TX_AUDIO,
-                channels=1,
-                count=5,
+        listener = await connect_listener(server.bound_port, observed)  # type: ignore[attr-defined]
+        try:
+            payload = struct.pack("<4h", 0, 1000, -1000, 32767)
+            header = pack_header(
+                StreamHeader(
+                    receiver=0,
+                    sample_rate=48000,
+                    sample_type=SampleType.INT16,
+                    codec=0,
+                    crc=0,
+                    length=4,
+                    stream_type=StreamType.TX_AUDIO,
+                    channels=1,
+                    count=5,
+                )
             )
-        )
-        send_binary = getattr(listener, "send_binary", None)
-        assert callable(send_binary), "Listener has no send_binary()"
-        result = send_binary(header + payload)
-        if asyncio.iscoroutine(result):
-            await result
-        await wait_until(lambda: len(handler.binaries) > 0)
-        parsed = unpack_header(handler.binaries[0][:HEADER_SIZE])
-        assert parsed.stream_type is StreamType.TX_AUDIO
-        assert parsed.count == 5
-        assert handler.binaries[0][HEADER_SIZE:] == payload
-        server.broadcast_binary(header + payload)  # type: ignore[attr-defined]
-        received_frames = getattr(listener, "received_binary", None)
-        assert received_frames is not None, "Listener has no received_binary"
-        await wait_until(lambda: len(received_frames) > 0)
-        assert received_frames[-1] == header + payload
+            await listener.send(header + payload)  # type: ignore[attr-defined]
+            await wait_until(lambda: len(handler.binaries) > 0)
+            parsed = unpack_header(handler.binaries[0][:HEADER_SIZE])
+            assert parsed.stream_type is StreamType.TX_AUDIO
+            assert parsed.count == 5
+            assert handler.binaries[0][HEADER_SIZE:] == payload
+            server.broadcast_binary(header + payload)  # type: ignore[attr-defined]
+            await wait_until(lambda: len(observed.packets) > 0)
+            packet = observed.packets[-1]
+            assert packet.rx == 0  # type: ignore[attr-defined]
+            assert packet.sample_rate == 48000  # type: ignore[attr-defined]
+            assert int(packet.data_format) == int(SampleType.INT16)  # type: ignore[attr-defined]
+            assert packet.length == 4  # type: ignore[attr-defined]
+            assert int(packet.data_type) == int(StreamType.TX_AUDIO)  # type: ignore[attr-defined]
+            assert packet.channels == 1  # type: ignore[attr-defined]
+            assert packet.data == payload  # type: ignore[attr-defined]
+        finally:
+            await close_listener(listener)
     finally:
         await server.stop()  # type: ignore[attr-defined]
 
 
-async def test_output_guard_scripted_session(tcp_available: None) -> None:
-    """A completing scripted session proves only dictionary commands
-    were emitted (unknown names raise in ``_listen_main``)."""
+async def test_output_guard_unknown_command_kills_listener(tcp_available: None) -> None:
+    """An unknown command name raises ``ValueError`` in ``_listen_main``.
+
+    A scripted session that only ever emits dictionary commands
+    completes (see above); anything else kills the real client, which
+    is the guard the leaf relies on.
+    """
     handler = FakeHandler()
+    observed = Observed()
     server = make_server(handler)
     await server.start()  # type: ignore[attr-defined]
     try:
-        listener = await connect_listener(server.bound_port)  # type: ignore[attr-defined]
-        async with asyncio.timeout(5.0):
-            await listener.ready.wait()
-        for line in BURST:
-            assert line in listener.received_commands
-        server.broadcast(["drive:0,50;", "trx:0,false;"])  # type: ignore[attr-defined]
-        await wait_until(lambda: "drive:0,50;" in listener.received_commands)
-        await wait_until(lambda: "trx:0,false;" in listener.received_commands)
+        listener = await connect_listener(server.bound_port, observed)  # type: ignore[attr-defined]
+        try:
+            server.broadcast(["frobnicate:1;"])  # type: ignore[attr-defined]
+            with pytest.raises(ValueError, match="unrecognized"):
+                async with asyncio.timeout(5.0):
+                    await listener.wait()  # type: ignore[attr-defined]
+        finally:
+            await close_listener(listener)
     finally:
         await server.stop()  # type: ignore[attr-defined]

@@ -226,27 +226,30 @@ def test_round_trip_with_eesdr_tci_packet() -> None:
     """Pack with ``eesdr_tci.tci.TciDataPacket`` and unpack with the leaf.
 
     Runs on the mini where the ``eesdr-tci`` dev dependency resolves.
-    Field names follow the 8.1 header table; the test fails closed with
-    the assumption spelled out if the packet API differs.
+    Field names are the real 0.1.0 API (``rx``, ``data_format``,
+    ``data_type``); the attribute access fails closed if it changes.
+    ``eesdr-tci`` 0.1.0 predates the 2.1 ``count`` header field, so its
+    wire image carries a zeroed tail and the leaf reads ``count == 0``.
     """
-    eesdr_tci = pytest.importorskip("eesdr_tci", reason="mini-only dev dependency")
-    packet_cls = getattr(eesdr_tci.tci, "TciDataPacket", None)
-    assert packet_cls is not None, "eesdr_tci.tci has no TciDataPacket"
+    import importlib
+
+    pytest.importorskip("eesdr_tci", reason="mini-only dev dependency")
+    tci_mod = importlib.import_module("eesdr_tci.tci")
+    packet_cls = tci_mod.TciDataPacket
     payload = struct.pack("<4h", 0, 1000, -1000, 32767)
     packet = packet_cls(
-        receiver=0,
+        rx=0,
         sample_rate=48000,
-        format=int(SampleType.INT16),
+        data_format=int(SampleType.INT16),
         codec=0,
         crc=0,
         length=4,
-        type=int(StreamType.RX_AUDIO),
+        data_type=int(StreamType.RX_AUDIO),
         channels=1,
         data=payload,
     )
-    to_bytes = getattr(packet, "to_bytes", None)
-    assert callable(to_bytes), "TciDataPacket has no to_bytes() (API assumption wrong)"
-    raw = bytes(to_bytes())
+    raw = bytes(packet.to_bytes())
+    assert len(raw) == HEADER_SIZE + len(payload)
     header = unpack_header(raw[:HEADER_SIZE])
     assert (
         header.receiver,
@@ -255,5 +258,6 @@ def test_round_trip_with_eesdr_tci_packet() -> None:
         header.length,
         header.stream_type,
         header.channels,
-    ) == (0, 48000, SampleType.INT16, 4, StreamType.RX_AUDIO, 1)
+        header.count,
+    ) == (0, 48000, SampleType.INT16, 4, StreamType.RX_AUDIO, 1, 0)
     assert raw[HEADER_SIZE:] == payload
