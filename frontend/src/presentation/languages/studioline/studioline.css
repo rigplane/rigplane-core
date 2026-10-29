@@ -142,7 +142,6 @@
   --dl-vfo-meter-value: #f4f8fc;
   --dl-vfo-meter-peak: #e8f1ff;
   --dl-vfo-meter-po-label: #c3ced9;
-  --dl-vfo-frequency-glow: var(--v2-vfo-glow-override, 0 0 10px rgba(190, 220, 255, 0.35), 0 0 2px rgba(255, 255, 255, 0.5));
   --dl-vfo-primary-glow: var(--v2-vfo-glow-override, 0 0 10px rgba(40, 120, 255, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.25));
   --dl-vfo-red-glow: var(--v2-vfo-glow-override, 0 0 8px rgba(226, 54, 44, 0.45), inset 0 1px 0 rgba(255, 190, 180, 0.15));
   --dl-vfo-amber-glow: var(--v2-vfo-glow-override, 0 0 8px rgba(255, 180, 50, 0.45), inset 0 1px 0 rgba(255, 220, 150, 0.18));
