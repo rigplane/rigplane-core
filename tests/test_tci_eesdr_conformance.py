@@ -134,7 +134,9 @@ class Observed:
         self.params: list[tuple[object, object, object, object]] = []
         self.packets: list[object] = []
 
-    async def on_param(self, name: object, rx: object, sub_rx: object, params: object) -> None:
+    async def on_param(
+        self, name: object, rx: object, sub_rx: object, params: object
+    ) -> None:
         self.params.append((name, rx, sub_rx, params))
 
     async def on_data(self, packet: object) -> None:
@@ -194,9 +196,7 @@ async def close_listener(listener: object) -> None:
     await asyncio.sleep(0)
     current = asyncio.current_task()
     stray = [
-        task
-        for task in asyncio.all_tasks()
-        if task is not current and not task.done()
+        task for task in asyncio.all_tasks() if task is not current and not task.done()
     ]
     for task in stray:
         task.cancel()
@@ -235,7 +235,9 @@ async def test_command_round_trip(tcp_available: None) -> None:
         listener = await connect_listener(server.bound_port, observed)  # type: ignore[attr-defined]
         try:
             await listener.send("vfo:0,0,14074001;")  # type: ignore[attr-defined]
-            await wait_until(lambda: ("vfo", ("0", "0", "14074001")) in handler.commands)
+            await wait_until(
+                lambda: ("vfo", ("0", "0", "14074001")) in handler.commands
+            )
         finally:
             await close_listener(listener)
     finally:
@@ -254,8 +256,10 @@ async def test_multi_client_broadcast(tcp_available: None) -> None:
         try:
             server.broadcast(["vfo:0,0,14074001;"])  # type: ignore[attr-defined]
             await wait_until(
-                lambda: ("VFO", 0, 0, 14074001) in first_seen.params
-                and ("VFO", 0, 0, 14074001) in second_seen.params
+                lambda: (
+                    ("VFO", 0, 0, 14074001) in first_seen.params
+                    and ("VFO", 0, 0, 14074001) in second_seen.params
+                )
             )
         finally:
             await close_listener(first)

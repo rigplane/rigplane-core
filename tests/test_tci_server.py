@@ -310,6 +310,29 @@ async def test_close_frame_releases_transport() -> None:
     assert writer.is_closing()
 
 
+async def test_protocol_violation_ends_session_cleanly() -> None:
+    """A compression bit without a negotiated deflate ends the session.
+
+    The violation must run the normal teardown (disconnect once, transport
+    closed), not kill the reader task with an unretrieved exception while
+    the session leaks.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    session, writer, reader = await open_session(server, handler)
+    await wait_for_frames(writer, len(BURST))
+    frame = bytearray(client_frame(WS_OP_TEXT, b"vfo:0,0,14074000;"))
+    frame[0] |= 0x40
+    reader.feed_data(bytes(frame))
+    async with asyncio.timeout(2.0):
+        while handler.disconnect_calls == 0:
+            await asyncio.sleep(0.005)
+    await session.finish()
+    assert handler.disconnect_calls == 1
+    assert writer.is_closing()
+
+
 async def test_reset_disconnects_once() -> None:
     clock = FakeClock()
     handler = FakeHandler()

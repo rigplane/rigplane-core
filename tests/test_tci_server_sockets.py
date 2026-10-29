@@ -160,6 +160,7 @@ class RawClient:
         )
         await self.writer.drain()
         self.writer.close()
+        await self.writer.wait_closed()
 
 
 async def test_start_stop_twice(tcp_available: None) -> None:
@@ -256,6 +257,7 @@ async def test_browser_origin_refused(tcp_available: None) -> None:
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
         assert head.startswith(b"HTTP/1.1 403 ")
         writer.close()
+        await writer.wait_closed()
     finally:
         await server.stop()
     assert handler.disconnect_calls == 0
@@ -275,6 +277,7 @@ async def test_rebinding_host_refused(tcp_available: None) -> None:
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
         assert head.startswith(b"HTTP/1.1 403 ")
         writer.close()
+        await writer.wait_closed()
     finally:
         await server.stop()
     assert handler.disconnect_calls == 0
@@ -364,6 +367,7 @@ async def test_reset_releases_session(tcp_available: None) -> None:
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 5.0)
         assert head.startswith(b"HTTP/1.1 101 ")
         writer.transport.abort()
+        await writer.wait_closed()
         async with asyncio.timeout(5.0):
             while handler.disconnect_calls == 0:
                 await asyncio.sleep(0.005)
@@ -381,6 +385,7 @@ async def test_server_stop_releases_open_session(tcp_available: None) -> None:
     await server.stop()
     assert handler.disconnect_calls == 1
     client.writer.close()
+    await client.writer.wait_closed()
 
 
 async def test_cancellation_during_accept(tcp_available: None) -> None:
@@ -399,3 +404,4 @@ async def test_cancellation_during_accept(tcp_available: None) -> None:
     await server.stop()
     assert handler.disconnect_calls == 1
     client.writer.close()
+    await client.writer.wait_closed()

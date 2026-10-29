@@ -24,6 +24,7 @@ from rigplane.tci.ws import (
     AllowHeaders,
     UpgradeDecline,
     WebSocketConnection,
+    WebSocketError,
     make_frame,
     upgrade_response,
 )
@@ -97,6 +98,7 @@ class TciSession:
         handler: TciHandler,
         server: TciServer,
         clock: Callable[[], float],
+        deflate: bool = False,
     ) -> None:
         self._id = session_id
         self._reader = reader
@@ -104,7 +106,7 @@ class TciSession:
         self._handler = handler
         self._server = server
         self._clock = clock
-        self._conn = WebSocketConnection(reader, writer, clock=clock)
+        self._conn = WebSocketConnection(reader, writer, clock=clock, deflate=deflate)
         self._outbox: asyncio.Queue[bytes] = asyncio.Queue()
         self._pending: list[str] = []
         self._flush_handle: asyncio.TimerHandle | None = None
@@ -179,8 +181,13 @@ class TciSession:
         if others:
             await asyncio.gather(*others, return_exceptions=True)
         try:
-            if not self._conn.closed:
-                await self._conn.close()
+            # Always close, even when a close frame already marked the
+            # connection closed: the transport still needs its own
+            # teardown. Skipping it here left the socket attached to the
+            # listener, so ``stop()`` hung in ``wait_closed()`` forever.
+            # ``close()`` sends the close frame only once and
+            # ``writer.close()`` is idempotent.
+            await self._conn.close()
         except OSError:
             pass
         try:
@@ -232,7 +239,10 @@ class TciSession:
                         logger.debug(
                             "tci %s: on_binary failed; session continues", self._id
                         )
-        except (EOFError, ConnectionError, OSError):
+        except (EOFError, ConnectionError, OSError, WebSocketError):
+            # A protocol violation (e.g. a compression bit without a
+            # negotiated deflate) ends the session like a reset does;
+            # ``finish()`` still runs the guarded teardown exactly once.
             pass
         finally:
             await self.finish()
@@ -350,22 +360,32 @@ class TciServer:
         logger.info("tci listening on %s", names)
 
     async def stop(self) -> None:
-        """Close the listener, then finish every session (bounded)."""
+        """Stop accepting, finish every session, wait for release.
+
+        Every phase is bounded by ``stop_timeout``: ``wait_closed()``
+        waits for each session transport to detach from the listener,
+        so sessions are finished first — waiting before finishing them
+        deadlocked when a session was still open.
+        """
         listener, self._listener = self._listener, None
         if listener is not None:
             listener.close()
-            await listener.wait_closed()
         sessions = list(self._sessions.values())
-        if not sessions:
-            return
-        try:
-            async with asyncio.timeout(self._stop_timeout):
-                await asyncio.gather(
-                    *(session.finish() for session in sessions),
-                    return_exceptions=True,
-                )
-        except TimeoutError:
-            logger.debug("tci stop: session teardown timed out")
+        if sessions:
+            try:
+                async with asyncio.timeout(self._stop_timeout):
+                    await asyncio.gather(
+                        *(session.finish() for session in sessions),
+                        return_exceptions=True,
+                    )
+            except TimeoutError:
+                logger.debug("tci stop: session teardown timed out")
+        if listener is not None:
+            try:
+                async with asyncio.timeout(self._stop_timeout):
+                    await listener.wait_closed()
+            except TimeoutError:
+                logger.debug("tci stop: listener wait_closed timed out")
 
     async def serve_forever(self) -> None:
         """Serve until cancelled; ``stop()`` still owns the teardown."""
@@ -405,6 +425,7 @@ class TciServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
         handler: TciHandler,
+        deflate: bool = False,
     ) -> TciSession | None:
         """Create a session, send the init burst, launch its tasks.
 
@@ -419,7 +440,9 @@ class TciServer:
             writer.close()
             await self._guarded_disconnect(handler)
             return None
-        session = TciSession(session_id, reader, writer, handler, self, self._clock)
+        session = TciSession(
+            session_id, reader, writer, handler, self, self._clock, deflate=deflate
+        )
         self._sessions[session_id] = session
         for line in burst:
             session._outbox.put_nowait(make_frame(WS_OP_TEXT, line.encode("utf-8")))
@@ -470,4 +493,7 @@ class TciServer:
         except OSError:
             writer.close()
             return
-        await self._open_session(reader, writer, handler)
+        # ``result`` is accepted here, so it carries the negotiated
+        # permessage-deflate flag (real clients compress once we accept;
+        # dropping it made the reader die on the first compressed frame).
+        await self._open_session(reader, writer, handler, deflate=result.deflate)
