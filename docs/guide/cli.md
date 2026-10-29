@@ -44,8 +44,9 @@ All commands accept these options:
     --model. Supported: ...`, listing the supported models — rigplane
     never picks a model for you. `--backend rigctld` and
     `--backend yaesu-cat` are exempt from the requirement and work
-    without `--model`; on the other backends, a `--radio-addr` that
-    matches a profile also identifies the radio.
+    without `--model`; on the `lan` backend, a `--radio-addr` that
+    matches a profile also identifies the radio (the `serial` backend
+    always needs `--model`).
 
     For permanent setups, set environment variables in your shell profile:
 
