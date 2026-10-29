@@ -3755,11 +3755,15 @@ class WebServer:
         controller audio gate below. Kept so existing references
         (``AudioBridge(tx_gate=...)``, the WebRTC session) keep working.
         """
-        return await tx_gate_open(
+        # Annotated local: under the web-scoped mypy run the runtime import
+        # resolves to Any (follow_imports = "skip"), and a bare return would
+        # trip no-any-return while the value is a real bool.
+        gate_open: bool = await tx_gate_open(
             self._managed_tx_authority(),
             self.command_state_store,
             getattr(self, "_controller", None),
         )
+        return gate_open
 
     async def start_audio_bridge(
         self,
@@ -5609,11 +5613,15 @@ class WebServer:
                     else self._controller.is_session_owner(held.tx_holder_nowait())
                 ):
                     return False
-                return await tx_gate_open(
+                # Annotated local: under the web-scoped mypy run the runtime
+                # import resolves to Any (follow_imports = "skip"), and a bare
+                # return would trip no-any-return while the value is a real bool.
+                gate_open: bool = await tx_gate_open(
                     self._managed_tx_authority(),
                     self.command_state_store,
                     self._controller,
                 )
+                return gate_open
             authority = self._managed_tx_authority()
             if authority is None:
                 return False
