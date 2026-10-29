@@ -25,7 +25,7 @@ env:
   # this checkout, 2.11 from its release tag (bump the tag here when a 2.11.x
   # release changes its docs). The unversioned URLs redirect to the default
   # version. See scripts/build_versioned_docs.py.
-  DOCS_DEFAULT_VERSION: "2.11"
+  DOCS_DEFAULT_VERSION: "3.0"
   DOCS_2_11_REF: v2.11.1
 
 jobs:
@@ -56,7 +56,7 @@ jobs:
           uv run --no-sync python scripts/build_versioned_docs.py
           --out site
           --default "$DOCS_DEFAULT_VERSION"
-          --version 3.0 "3.0 (beta)" .
+          --version 3.0 3.0 .
           --version 2.11 2.11 "$DOCS_2_11_REF"
 
       - name: Upload artifact

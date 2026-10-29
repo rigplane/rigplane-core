@@ -22,8 +22,8 @@ sitemaps, and the top-level non-Markdown files of this checkout's ``docs/``
 Usage (from the repository root; versions are listed newest first, which is
 the selector's order):
 
-    uv run python scripts/build_versioned_docs.py --out site --default 2.11 \\
-        --version 3.0 "3.0 (beta)" . \\
+    uv run python scripts/build_versioned_docs.py --out site --default 3.0 \\
+        --version 3.0 3.0 . \\
         --version 2.11 2.11 v2.11.1
 
 An exported version installs only its ``dev`` dependency group: mkdocstrings
