@@ -3937,33 +3937,26 @@ class RadioPoller:
         return float(tx_target_max_age(self._profile))
 
     def _fence_tx_target_after_write(self, written: Iterable[FieldPath]) -> None:
-        """Stop the published TX target standing for the pre-write radio (MOR-3632).
+        """Mark the TX-target inputs a write of ours changed (MOR-3632).
 
         A write does not make the observation of what it changed stale, it
         makes it wrong (see ``CommandService._request_write_confirmation``):
         the store keeps the pre-write value as FRESH until a read lands, and
-        every poll tick re-derives and republishes it. ``tx_target`` is the one
-        derived fact a transmit permit reads, so a successful write to any of
-        its inputs (frequency, split, active slot) withdraws it at once: the
-        written inputs are marked on the store until observed again
-        (``_tx_target_input``) and the target is re-derived now, which
-        publishes it unknown. The next post-write read restores it from the
-        new values.
+        every poll tick re-derives and republishes it. ``CommandService``
+        marks the inputs of every intent it acknowledges; this is the same mark
+        for the commands that reach the poller without one (the A/B exchange
+        and copy, a band jump, a memory recall). ``_tx_target_input`` then
+        refuses a marked input until it is observed again, so the next tick
+        derives the target unknown instead of republishing the old frequency,
+        and the permit does not use it either (``StateStore``).
 
-        Radios with a native target read (IC-7610's 1C 03) are not derived here
-        (``_publish_tx_target``): their read is queued with the post-write
-        readback instead, in ``_request_post_write_readback``.
+        Radios with a native target read (IC-7610's 1C 03) are not derived
+        here (``_publish_tx_target``): their read is queued with the
+        post-write readback instead, in ``_request_post_write_readback``.
         """
         if self._profile.vfo_readback != "selected_unselected":
             return
-        inputs = tx_target_inputs_written(written)
-        if not inputs:
-            return
-        self._state_store.mark_tx_target_inputs_written(inputs)
-        try:
-            self._publish_tx_target()
-        except Exception:
-            logger.debug("radio-poller: tx_target fence error", exc_info=True)
+        self._state_store.mark_tx_target_inputs_written(written)
 
     def _publish_tx_target(self) -> None:
         """Recompute and, if changed or stale, republish tx_target (MOR-1496).

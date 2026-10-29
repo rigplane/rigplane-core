@@ -71,7 +71,10 @@ from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime._poller_types import (
     CommandQueue as PollerCommandQueue,
+    SetBand,
     SetFreq,
+    VfoEqualize,
+    VfoSwap,
     execute_command_queue_entry,
     execute_positive_tx_queue_entry,
     validate_command_queue_entry_currency,
@@ -458,14 +461,12 @@ async def test_retune_withdraws_the_derived_target_until_the_read_back() -> None
         receiver="MAIN", slot="A", frequency_hz=_WFM
     )
 
-    # The write is acknowledged: the poller's post-write seat withdraws it.
+    # The write is acknowledged: the poller's post-write seat marks its input.
     poller._request_post_write_readback(  # noqa: SLF001
         SetFreq(freq=_TWENTY_METRES, receiver=0)
     )
-    assert store.snapshot().field(_TX_TARGET_PATH).value == UnknownTxTarget(
-        reason="stale"
-    )
-    # A poll tick before the read lands must not resurrect the old frequency.
+    assert store.pending_tx_target_inputs() == {_ACTIVE_FREQ}
+    # A poll tick before the read lands must not republish the old frequency.
     poller._publish_tx_target()  # noqa: SLF001
     assert store.snapshot().field(_TX_TARGET_PATH).value == UnknownTxTarget(
         reason="stale"
@@ -501,6 +502,24 @@ async def test_retune_withdraws_the_derived_target_until_the_read_back() -> None
     assert store.snapshot().field(_TX_TARGET_PATH).value == KnownTxTarget(
         receiver="MAIN", slot="A", frequency_hz=_TWENTY_METRES
     )
+
+
+@pytest.mark.parametrize("command", (VfoSwap(), VfoEqualize(), SetBand(band=5)))
+async def test_commands_that_retune_without_naming_a_field_mark_every_input(
+    command: Any,
+) -> None:
+    store = StateStore()
+    generation = store.begin_provider_generation()
+    _seed_tx_target_ready(store, generation=generation)
+    poller = RadioPoller(
+        _make_radio(model="IC-7300"), CommandQueue(), state_store=store
+    )
+    poller._request_post_write_readback(command)  # noqa: SLF001
+    assert store.pending_tx_target_inputs() == {
+        _ACTIVE_FREQ,
+        FieldPath.unselected("0", "freq_mode", "freq_hz"),
+        FieldPath.active_slot("0"),
+    }
 
 
 # ---------------------------------------------------------------------------
