@@ -418,55 +418,86 @@ class ManagedTxAuthority:
                 # MOR-3764: the outside-only audio lock is taken BEFORE
                 # ``self._lock`` so an admitted frame's push and this keying
                 # transition can never interleave.
-                async with self._outside_tx_lock, self._lock:
-                    self._require_ingress_open_locked()
-                    if controller_ticket is not None:
-                        controller_ticket.authority.validate_positive(controller_ticket)
-                    if not (
-                        self._provider_generation == generation
-                        and self._abort_fence.is_current(token)
-                        and self._abort_fence.remove(token)
-                    ):
-                        return ManagedTxTransition(
-                            self._state, ManagedTxOutcome.REJECTED
-                        ), None
-                    if (
-                        expires_at_monotonic is not None
-                        and self._clock() >= expires_at_monotonic
-                    ):
-                        return ManagedTxTransition(
-                            self._state, ManagedTxOutcome.REJECTED
-                        ), None
-                    if (refusal := self._radio_tx_refusal_locked()) is not None:
-                        # MOR-3537: never key over a TX the radio reports.
-                        raise ControllerError(refusal, 409)
-                    transition, full_force = self._transition_locked(action, owner)
-                    if transition is None:
-                        transition = ManagedTxTransition(
-                            self._state, ManagedTxOutcome.REJECTED
-                        )
+                async with self._outside_tx_lock:
+                    async with self._lock:
+                        self._require_ingress_open_locked()
+                        if controller_ticket is not None:
+                            controller_ticket.authority.validate_positive(
+                                controller_ticket
+                            )
+                        if not (
+                            self._provider_generation == generation
+                            and self._abort_fence.is_current(token)
+                            and self._abort_fence.remove(token)
+                        ):
+                            return ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            ), None
+                        if (
+                            expires_at_monotonic is not None
+                            and self._clock() >= expires_at_monotonic
+                        ):
+                            return ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            ), None
+                        if (refusal := self._radio_tx_refusal_locked()) is not None:
+                            # MOR-3537: never key over a TX the radio reports.
+                            raise ControllerError(refusal, 409)
+                        transition, full_force = self._transition_locked(action, owner)
+                        if transition is None:
+                            transition = ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            )
+                    hook_ran = False
                     if (
                         before_on is not None
                         and transition.outcome is ManagedTxOutcome.ACCEPTED
                     ):
+                        # The route-preparation hook runs WITHOUT ``self._lock``:
+                        # it awaits routing writes whose admission takes it
+                        # (spec 7.3a), so holding it would deadlock. It still
+                        # holds ``_outside_tx_lock``: no rival key or audio
+                        # push can interleave, only this lock's readers and
+                        # writers (admission, snapshots, an unkey).
                         transition = await self._prepare_key_inside_admission(
                             transition, before_on
                         )
-                    self._wakeup.wake()
-                    if controller_ticket is not None:
-                        controller_effects = {
-                            effect.token: controller_ticket
-                            for effect in transition.effects
-                            if isinstance(effect, ManagedTxEffect)
-                            and effect.operation is not ActuationOperation.FORCE_RECEIVE
-                        }
-                        if controller_effects:
-                            self._controller_effects = controller_effects
-                    execution = asyncio.create_task(
-                        self._execute(transition.effects, full_force=full_force)
-                    )
-                    if not admitted.done():
-                        admitted.set_result(transition)
+                        hook_ran = True
+                    async with self._lock:
+                        if (
+                            hook_ran
+                            and transition.outcome is ManagedTxOutcome.ACCEPTED
+                            and not self._key_intact_locked(owner)
+                        ):
+                            # An unkey or force-off committed while the hook
+                            # ran: the stale PTT_ON must not dispatch. The
+                            # teardown already settled, so report the
+                            # rejection without further effects.
+                            transition = ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            )
+                            execution = None
+                        else:
+                            self._wakeup.wake()
+                            if controller_ticket is not None:
+                                controller_effects = {
+                                    effect.token: controller_ticket
+                                    for effect in transition.effects
+                                    if isinstance(effect, ManagedTxEffect)
+                                    and effect.operation
+                                    is not ActuationOperation.FORCE_RECEIVE
+                                }
+                                if controller_effects:
+                                    self._controller_effects = controller_effects
+                            execution = asyncio.create_task(
+                                self._execute(
+                                    transition.effects, full_force=full_force
+                                )
+                            )
+                        if not admitted.done():
+                            admitted.set_result(transition)
+                if execution is None:
+                    return transition, None
                 return transition, await asyncio.shield(execution)
             except asyncio.CancelledError:
                 if execution is not None:
@@ -500,6 +531,16 @@ class ManagedTxAuthority:
             raise
         return worker, admitted
 
+    def _key_intact_locked(self, owner: str) -> bool:
+        """Whether the committed ``PTT(owner)`` intent still holds.
+
+        No await between reads: call holding ``_lock`` after the
+        route-preparation hook ran without it, to catch an unkey or
+        force-off that committed meanwhile.
+        """
+        intent = self._state.intent
+        return intent.kind is ManagedTxIntentKind.PTT and intent.owner_token == owner
+
     async def _prepare_key_inside_admission(
         self,
         transition: ManagedTxTransition,
@@ -507,9 +548,10 @@ class ManagedTxAuthority:
     ) -> ManagedTxTransition:
         """Run the keying preparation inside the admitted key (spec 7.3a).
 
-        Runs with ``_outside_tx_lock`` and ``_lock`` held, after the
-        admission block committed the intent to ``PTT(owner)`` — so no
-        other owner can key meanwhile — and before the PTT_ON effect is
+        Runs holding ``_outside_tx_lock`` but NOT ``_lock`` — the hook
+        awaits routing writes whose admission takes it — after the
+        admission block committed the intent to ``PTT(owner)`` (so no
+        other owner can key meanwhile) and before the PTT_ON effect is
         dispatched. Bounded by the attempt timeout; a hook the worker's
         own cancellation interrupts propagates as cancellation, anything
         else (a falsy return, an exception, a timeout) takes the existing
@@ -527,6 +569,7 @@ class ManagedTxAuthority:
         )
         if on_effect is None:
             return transition
+        owner = transition.state.intent.owner_token
         try:
             async with asyncio.timeout(self._attempt_timeout):
                 prepared = await before_on()
@@ -540,14 +583,22 @@ class ManagedTxAuthority:
             error = "before_on reported failure"
         if prepared:
             return transition
-        rejected = self._reduce_locked(
-            ActuationSettled(
-                token=on_effect.token,
-                operation=ActuationOperation.PTT_ON,
-                result=ActuationResult.REJECTED,
-                error=error,
+        async with self._lock:
+            if owner is None or not self._key_intact_locked(owner):
+                # An unkey or force-off committed while the hook ran: the
+                # teardown already settled, so report the rejection without
+                # piling release debt onto the new state.
+                return ManagedTxTransition(
+                    self._state, ManagedTxOutcome.REJECTED
+                )
+            rejected = self._reduce_locked(
+                ActuationSettled(
+                    token=on_effect.token,
+                    operation=ActuationOperation.PTT_ON,
+                    result=ActuationResult.REJECTED,
+                    error=error,
+                )
             )
-        )
         # A rejected key-down returns the held state; ``release_required``
         # with an RX intent is what marks the release as still owed
         # (MOR-3810). The empty effect list still schedules the
