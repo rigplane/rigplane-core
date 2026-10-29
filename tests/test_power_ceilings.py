@@ -32,6 +32,7 @@ import pytest
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.core.capabilities import CAP_POWER_CONTROL
 from rigplane.core.command_service import resolve_power_level_target
 from rigplane.core.radio_state import RadioState
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
@@ -598,7 +599,8 @@ async def test_backend_set_power_clamps_to_band_ceiling(
     radio = watts_radio_with_ceilings
     radio.radio_state.main.freq = freq_hz
     await radio.set_power(requested)
-    radio._transport.write.assert_called_once_with(wire)
+    writes = [call.args[0] for call in radio._transport.write.await_args_list]
+    assert writes == [wire]
 
 
 @pytest.mark.asyncio
@@ -606,7 +608,8 @@ async def test_backend_floor_still_lifts_under_a_ceiling(watts_radio_with_ceilin
     radio = watts_radio_with_ceilings
     radio.radio_state.main.freq = 435_000_000
     await radio.set_power(3)  # 5 W floor lifts, then the 50 W ceiling caps
-    radio._transport.write.assert_called_once_with("PC2005;")
+    writes = [call.args[0] for call in radio._transport.write.await_args_list]
+    assert writes == ["PC2005;"]
 
 
 @pytest.mark.asyncio
@@ -616,7 +619,44 @@ async def test_backend_without_tables_keeps_todays_wire():
     radio._transport.write = AsyncMock()
     radio.radio_state.main.freq = 435_000_000
     await radio.set_power(90)
-    radio._transport.write.assert_called_once_with("PC2090;")
+    writes = [call.args[0] for call in radio._transport.write.await_args_list]
+    assert writes == ["PC2090;"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("freq_hz", "requested", "wire"),
+    [
+        (435_000_000, 90, "PC2050;"),  # above the 70 cm ceiling: clamped
+        (0, 90, "PC2050;"),  # unknown band: lowest declared ceiling
+        (435_000_000, 3, "PC2005;"),  # floor lift under a ceiling
+    ],
+)
+async def test_backend_clamp_path_never_keys_the_transmitter(freq_hz, requested, wire):
+    """The clamp path adjusts power only: no PTT/TX keying frame goes out.
+
+    Yaesu CAT keys with ``TX1;``; a power write must emit exactly one
+    ``PC`` frame and nothing else, on every clamp outcome.
+    """
+    radio = _yaesu_radio_with_ceilings()
+    radio.radio_state.main.freq = freq_hz
+    await radio.set_power(requested)
+    writes = [call.args[0] for call in radio._transport.write.await_args_list]
+    assert writes == [wire]
+    assert all(not frame.startswith("TX") for frame in writes)
+
+
+@pytest.mark.asyncio
+async def test_backend_set_rf_power_alias_clamps_like_set_power(
+    watts_radio_with_ceilings,
+):
+    """The ``PowerControlCapable`` alias funnels through the same clamp."""
+    radio = watts_radio_with_ceilings
+    radio.radio_state.main.freq = 435_000_000
+    await radio.set_rf_power(90)
+    writes = [call.args[0] for call in radio._transport.write.await_args_list]
+    assert writes == ["PC2050;"]
+    assert all(not frame.startswith("TX") for frame in writes)
 
 
 @pytest.mark.asyncio
@@ -858,11 +898,47 @@ async def test_handler_raw_255_radio_keeps_the_raw_wire_scale():
     assert (second.level, second.unit) == (255, "raw_255")
 
 
+# ── Sync runtime seat: expectation follows the band ceiling ─────────
+
+
+def test_sync_runtime_clamps_power_expectation_to_the_band_ceiling():
+    """The sync seat resolves the band ceiling, not the flat max.
+
+    A watts radio parked on 70 cm (50 W ceiling under a 100 W flat max):
+    a 90 W write still actuates the raw request, but the published
+    expectation is the ceiling-clamped full scale (1.0 of the 50 W
+    ceiling), not 90/100 of the flat max.
+    """
+    from rigplane.sync import IcomRadio
+
+    r = IcomRadio("127.0.0.1")
+    try:
+        profile = get_radio_profile("FTX-1")
+        r._radio._profile = replace(  # noqa: SLF001
+            profile,
+            power_ceilings_w={"2m": 75, "70cm": 50},
+            capabilities=frozenset({*profile.capabilities, CAP_POWER_CONTROL}),
+        )
+        r._radio.native_power_unit = "watts"
+        r._radio.radio_state.main.freq = 435_000_000
+        r._radio.set_rf_power = AsyncMock()
+
+        r.set_rf_power(90)
+
+        r._radio.set_rf_power.assert_awaited_once_with(90)
+        field = r._state_store.snapshot().field(  # noqa: SLF001
+            "global.operator_controls.power_level"
+        )
+        assert field.value == pytest.approx(1.0)
+    finally:
+        r._loop.close()
+
+
 # ── Watt scale shown per band (observation + public projection) ──
 
 
 def _yaesu_poll_radio(profile: Any, state: RadioState) -> MagicMock:
-    radio = MagicMock()
+    radio = MagicMock(spec=YaesuCatRadio)
     radio.profile = profile
     radio.radio_state = state
     # No canonical store attached: the compatibility mirror answers.
