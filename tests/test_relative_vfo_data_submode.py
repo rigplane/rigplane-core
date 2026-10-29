@@ -1,14 +1,18 @@
 """MOR-3821 P0e: numeric DATA sub-mode on the relative-VFO mode surface.
 
 ``RelativeVfoModeWritable.write_relative_vfo_mode`` takes ``data`` as a
-boolean (legacy DATA1 on/off) or as an explicit numeric DATA sub-mode
-bounded by the profile's ``data_mode_count``, with write AND readback
-through the capability — no per-radio branch. The IC-7610 case runs over
-the LAN simulator (``rigplane_testkit/icom/simulator.py``): a split write
-of DATA2 asserts B's exact sub-mode and its LAN MOD input before any
-key-down. An IC-7300 profile (count 1) pins the bound, and the Yaesu
-backend is unaffected by the widened surface: DATA stays a boolean mode
-pair there, any integer is refused.
+boolean (legacy DATA on/off) or as an explicit numeric DATA sub-mode
+where the profile numbers one (``data_mode_count`` above 1), with write
+AND readback through the capability — no per-radio branch. The IC-7610
+case runs over the LAN simulator
+(``rigplane_testkit/icom/simulator.py``): a split write of DATA2
+asserts B's exact sub-mode and its LAN MOD input before any key-down.
+An IC-7300 profile (count 1) pins that numbering starts at two: plain
+booleans write, any integer is refused before any IO. The command layer
+(``set_split_mode`` binder) stays boolean-only, so the web and rigctld
+paths keep refusing integers before queueing. The Yaesu backend is
+unaffected by the widened surface: DATA stays a boolean mode pair
+there, any integer is refused.
 """
 
 from __future__ import annotations
@@ -126,27 +130,32 @@ async def test_split_write_selects_data2_with_lan_input_on_ic7610() -> None:
         await sim.stop()
 
 
-async def test_split_write_accepts_data1_on_a_count_1_profile(
+async def test_split_write_refuses_numeric_data_on_a_count_1_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """IC-7300 profile (count 1): bool and 1 write; 2 never reaches the wire."""
+    """IC-7300 profile (count 1): booleans write, integers never do.
+
+    Numbering starts where more than one DATA mode exists; a count-1
+    profile is bool-only, and the refusal lands before any IO.
+    """
     backend = _SubModeBackend(0x94)
     radio, commander = _wired_radio("IC-7300", backend, monkeypatch)
     try:
         assert radio.profile.data_mode_count == 1
-        observed = await radio.write_relative_vfo_mode(
-            Mode.USB.value, selected=False, data=1
-        )
-        assert observed.data_mode == 1
-        assert _mode_sets(backend.frames) == [bytes([0x01, 0x01, 0x01, 0x01])]
         observed_true = await radio.write_relative_vfo_mode(
             Mode.USB.value, selected=False, data=True
         )
         assert observed_true.data_mode == 1
+        assert _mode_sets(backend.frames) == [bytes([0x01, 0x01, 0x01, 0x01])]
         sets_before = len(_mode_sets(backend.frames))
-        with pytest.raises(CommandError):
-            await radio.write_relative_vfo_mode(Mode.USB.value, selected=False, data=2)
+        frames_before = len(backend.frames)
+        for rejected in (0, 1, 2):
+            with pytest.raises(CommandError):
+                await radio.write_relative_vfo_mode(
+                    Mode.USB.value, selected=False, data=rejected
+                )
         assert len(_mode_sets(backend.frames)) == sets_before
+        assert len(backend.frames) == frames_before
     finally:
         radio._connected = False
         await commander.stop()
@@ -203,16 +212,31 @@ class _AnyRadio:
         return True
 
 
-def test_split_mode_binder_accepts_a_numeric_data_submode() -> None:
+def test_split_mode_binder_stays_boolean_only() -> None:
+    """The command layer never carries a numeric DATA sub-mode.
+
+    Integers are refused at bind time — before queueing — on every
+    radio; numbering lives one layer down, in the radio capability.
+    """
+    for rejected in (0, 1, 2, "2"):
+        with pytest.raises(ValueError, match="data must be a boolean or None"):
+            prepare_command_intent(
+                _AnyRadio(),
+                "set_split_mode",
+                {"mode": Mode.USB.value, "data": rejected, "filter_width": None},
+                source="test",
+                command_id=f"split-mode-data-{rejected!r}",
+                session_id=None,
+            )
     intent = prepare_command_intent(
         _AnyRadio(),
         "set_split_mode",
-        {"mode": Mode.USB.value, "data": 2, "filter_width": None},
+        {"mode": Mode.USB.value, "data": True, "filter_width": None},
         source="test",
-        command_id="split-mode-data-2",
+        command_id="split-mode-data-true",
         session_id=None,
     )
-    assert intent.params["data"] == 2
+    assert intent.params["data"] is True
 
 
 def test_split_mode_binder_rejects_non_integer_data() -> None:
