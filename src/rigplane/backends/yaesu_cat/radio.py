@@ -1569,13 +1569,11 @@ class YaesuCatRadio:
             pass
         elif isinstance(data, bool):
             pass
-        elif type(data) is int and data in (0, 1):
-            # Yaesu exposes DATA as a mode pair, not a numbered sub-mode
-            # (MOR-3821 P0e): 0/1 alias False/True so a caller passing a
-            # normalized count-1 value still lands on the same state.
-            data = bool(data)
         else:
-            raise CommandError("relative DATA must be a boolean or 0/1")
+            # Yaesu exposes DATA as a mode pair, not a numbered sub-mode
+            # (MOR-3821 P0e): the widened numeric surface does not apply,
+            # so only a boolean selects the DATA partner.
+            raise CommandError("relative DATA must be a boolean")
         if filter_width is not None:
             raise CommandError(
                 "Icom filter-bank numbers are unavailable; use passband 0"

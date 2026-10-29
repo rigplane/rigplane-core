@@ -7,8 +7,8 @@ through the capability — no per-radio branch. The IC-7610 case runs over
 the LAN simulator (``rigplane_testkit/icom/simulator.py``): a split write
 of DATA2 asserts B's exact sub-mode and its LAN MOD input before any
 key-down. An IC-7300 profile (count 1) pins the bound, and the Yaesu
-backend implements the widened surface through its own DATA model (0/1
-are False/True aliases; other ints are refused).
+backend is unaffected by the widened surface: DATA stays a boolean mode
+pair there, any integer is refused.
 """
 
 from __future__ import annotations
@@ -178,17 +178,22 @@ async def test_split_write_bounded_by_data_mode_count_on_ic7610(
         await commander.stop()
 
 
-async def test_yaesu_relative_mode_implements_data_through_aliases() -> None:
-    """Yaesu has no numbered sub-modes: 0/1 alias False/True, else refused."""
+async def test_yaesu_relative_mode_keeps_data_boolean_only() -> None:
+    """Yaesu has no numbered sub-modes: booleans select the DATA partner,
+    any integer is refused (pins test_relative_mode_rejects_non_boolean_data)."""
     radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
     radio._transport._connected = True
     peer = RelativePeer()
     radio._transport.query = AsyncMock(side_effect=peer.query)
     radio._transport.write = AsyncMock(side_effect=peer.write)
-    observed = await radio.write_relative_vfo_mode(Mode.USB, selected=False, data=1)
+    observed = await radio.write_relative_vfo_mode(
+        Mode.USB, selected=False, data=True
+    )
     assert observed.data_mode == 1
     assert peer.modes[1] == "C"
     writes_before = list(peer.writes)
+    with pytest.raises(CommandError):
+        await radio.write_relative_vfo_mode(Mode.USB, selected=False, data=1)
     with pytest.raises(CommandError):
         await radio.write_relative_vfo_mode(Mode.USB, selected=False, data=2)
     assert peer.writes == writes_before
