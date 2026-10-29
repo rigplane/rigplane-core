@@ -9,6 +9,7 @@ loopback bind is unavailable (sandbox); the mini runs the whole file.
 import asyncio
 import socket
 import struct
+import time
 
 import pytest
 
@@ -161,6 +162,23 @@ class RawClient:
         await self.writer.drain()
         self.writer.close()
         await self.writer.wait_closed()
+
+
+async def _read_until_closed(client: "RawClient") -> None:
+    """Drain everything (e.g. in-flight pings) until EOF or reset.
+
+    The watchdog abort manifests as EOF or a connection reset; either
+    proves the transport is gone. Ping bytes still in flight are not
+    the outcome — the closed transport is.
+    """
+    async with asyncio.timeout(5.0):
+        while True:
+            try:
+                chunk = await client.reader.read(65536)
+            except (ConnectionResetError, asyncio.IncompleteReadError):
+                return
+            if chunk == b"":
+                return
 
 
 async def test_start_stop_twice(tcp_available: None) -> None:
@@ -443,6 +461,68 @@ async def test_blocked_on_connect_no_promotion_after_stop(
         if client is not None:
             client.writer.close()
         await server.stop()
+
+
+async def test_watchdog_expires_silent_session_automatically(
+    tcp_available: None,
+) -> None:
+    """Inbound silence past the deadline aborts the session on its own.
+
+    The test never calls ``check_deadline()``, ``finish()`` or
+    ``stop()`` before asserting: the client only observes the dropped
+    transport, and the handler records exactly one disconnect. The
+    short deadline (a constructor constant, real clock) keeps the run
+    fast; the elapsed time proves the firing came from the watchdog.
+    """
+    handler = FakeHandler()
+    server = make_server(handler, deadline=0.3)
+    await server.start()
+    started = time.monotonic()
+    stopped = False
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        async with asyncio.timeout(5.0):
+            while handler.disconnect_calls == 0:
+                await asyncio.sleep(0.005)
+        assert time.monotonic() - started < 5.0
+        await _read_until_closed(client)
+        assert handler.disconnect_calls == 1
+        await server.stop()
+        stopped = True
+    finally:
+        if not stopped:
+            await server.stop()
+
+
+async def test_watchdog_fires_despite_concurrent_pings(
+    tcp_available: None,
+) -> None:
+    """Ping writes in flight do not renew the watchdog deadline.
+
+    The server keeps pinging an unread socket while the client stays
+    silent: the watchdog still aborts at the deadline on its own (no
+    test-side ``check_deadline``/``finish``/``stop`` first). Genuine
+    write-block independence is pinned at unit level with a blocked
+    drain; this covers the automatic path with heartbeat output busy.
+    """
+    handler = FakeHandler()
+    server = make_server(handler, deadline=0.4, ping_interval=0.05)
+    await server.start()
+    stopped = False
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        async with asyncio.timeout(5.0):
+            while handler.disconnect_calls == 0:
+                await asyncio.sleep(0.005)
+        await _read_until_closed(client)
+        assert handler.disconnect_calls == 1
+        await server.stop()
+        stopped = True
+    finally:
+        if not stopped:
+            await server.stop()
 
 
 async def test_reset_releases_session(tcp_available: None) -> None:

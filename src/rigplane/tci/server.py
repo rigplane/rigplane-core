@@ -259,7 +259,7 @@ class TciSession:
         """
         if self._done:
             return False
-        if now - self._conn.last_activity <= DEADLINE_S:
+        if now - self._conn.last_activity <= self._server._deadline:
             return False
         self._conn.abort()
         await self.finish()
@@ -399,7 +399,9 @@ class TciSession:
     async def _watchdog_loop(self) -> None:
         try:
             while not self._done:
-                delay = (self._conn.last_activity + DEADLINE_S) - self._clock()
+                delay = (
+                    self._conn.last_activity + self._server._deadline
+                ) - self._clock()
                 await asyncio.sleep(max(0.0, delay))
                 if self._done:
                     break
@@ -431,6 +433,7 @@ class TciServer:
         ping_interval: float = PING_INTERVAL_S,
         coalesce_window: float = COALESCE_WINDOW_S,
         stop_timeout: float = STOP_TIMEOUT_S,
+        deadline: float = DEADLINE_S,
     ) -> None:
         self._handler_factory = handler_factory
         self._host = host
@@ -440,6 +443,7 @@ class TciServer:
         self._ping_interval = ping_interval
         self._coalesce_window = coalesce_window
         self._stop_timeout = stop_timeout
+        self._deadline = deadline
         self._listener: asyncio.Server | None = None
         self._sessions: dict[str, TciSession] = {}
         self._setup_tasks: set[asyncio.Task[Any]] = set()
@@ -455,6 +459,11 @@ class TciServer:
     def coalesce_window(self) -> float:
         """Broadcast hold window (defaults to COALESCE_WINDOW_S)."""
         return self._coalesce_window
+
+    @property
+    def deadline(self) -> float:
+        """Inbound-silence seconds before the watchdog aborts (defaults to DEADLINE_S)."""
+        return self._deadline
 
     @property
     def sessions(self) -> tuple[TciSession, ...]:

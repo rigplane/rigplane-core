@@ -654,6 +654,7 @@ async def test_server_defaults_use_leaf_constants() -> None:
     server = make_server(FakeHandler(), FakeClock())
     assert server._ping_interval == PING_INTERVAL_S
     assert server._coalesce_window == COALESCE_WINDOW_S
+    assert server._deadline == DEADLINE_S
 
 
 async def test_stalled_sender_bounded_outbox() -> None:
