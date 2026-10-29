@@ -221,6 +221,10 @@ async def test_selection_methods_mark_epoch_until_completion(
         assert radio._vfo_selection_epoch % 2 == 0
         if ending == "cancel":
             task.cancel()
+            # MOR-3623: the shared receiver switch-and-restore finishes its
+            # restoration frame inside a cancellation shield, so the fake
+            # transport must answer it; the cancel still lands afterwards.
+            release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
         else:
