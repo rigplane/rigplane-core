@@ -69,6 +69,7 @@ def _run_args(**overrides: object) -> argparse.Namespace:
         "json": False,
         "stats": False,
         "command": "status",
+        "model": "IC-7610",
     }
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -237,6 +238,7 @@ async def test_run_web_uses_serial_backend_factory_config() -> None:
     args = _run_args(
         command="web",
         backend="serial",
+        model="IC-7300",
         serial_port="/dev/tty.usbmodem-IC7610",
         serial_baud=115200,
         serial_ptt_mode="civ",
@@ -268,9 +270,11 @@ async def test_run_web_uses_serial_backend_factory_config() -> None:
             device="/dev/tty.usbmodem-IC7610",
             baudrate=115200,
             timeout=1.0,
+            radio_addr=0x94,
             rx_device=None,
             tx_device=None,
             ptt_mode="civ",
+            model="IC-7300",
         )
     )
     cmd_web.assert_awaited_once_with(
@@ -286,6 +290,7 @@ async def test_run_serve_uses_serial_backend_factory_config() -> None:
     args = _run_args(
         command="serve",
         backend="serial",
+        model="IC-7300",
         serial_port="/dev/tty.usbmodem-IC7610",
         serial_baud=115200,
         serial_ptt_mode="civ",
@@ -316,9 +321,11 @@ async def test_run_serve_uses_serial_backend_factory_config() -> None:
             device="/dev/tty.usbmodem-IC7610",
             baudrate=115200,
             timeout=1.0,
+            radio_addr=0x94,
             rx_device="IC-7610 USB Audio RX",
             tx_device="IC-7610 USB Audio TX",
             ptt_mode="civ",
+            model="IC-7300",
         )
     )
     cmd_serve.assert_awaited_once_with(radio, args)
@@ -359,7 +366,12 @@ async def test_run_resident_command_builds_lan_radio_with_auto_reconnect(
     assert create_radio.call_count == 1
     config = create_radio.call_args.args[0]
     assert config == LanBackendConfig(
-        host="127.0.0.1", port=50001, timeout=1.0, auto_reconnect=True
+        host="127.0.0.1",
+        port=50001,
+        timeout=1.0,
+        radio_addr=0x98,
+        auto_reconnect=True,
+        model="IC-7610",
     )
 
 
@@ -389,7 +401,13 @@ async def test_run_one_shot_command_builds_lan_radio_without_auto_reconnect(
     assert create_radio.call_count == 1
     config = create_radio.call_args.args[0]
     assert config.auto_reconnect is False
-    assert config == LanBackendConfig(host="127.0.0.1", port=50001, timeout=1.0)
+    assert config == LanBackendConfig(
+        host="127.0.0.1",
+        port=50001,
+        timeout=1.0,
+        radio_addr=0x98,
+        model="IC-7610",
+    )
 
 
 @pytest.mark.asyncio

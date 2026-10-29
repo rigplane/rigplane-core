@@ -17,7 +17,7 @@ This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio de
 
 - IC-7610 transceiver
 - USB A-to-B cable (typically included with the radio)
-- macOS computer (tested on Ventura+ arm64/Intel)
+- macOS computer (Ventura or later, Apple Silicon or Intel)
 
 ## Radio Configuration
 
@@ -26,8 +26,6 @@ This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio de
     
     - `Unlink from [REMOTE]` — the `[USB]` and `[REMOTE]` CI-V ports work independently; serial CI-V commands work, and the CI-V USB Baud Rate setting applies only in this mode
     - `Link to [REMOTE]` — the `[USB]` and `[REMOTE]` CI-V ports are connected internally; serial CI-V is blocked
-    
-    This finding was confirmed with live hardware validation in issue #146.
 
 ### Recommended Radio Settings
 
@@ -475,8 +473,6 @@ If you're currently using the LAN backend and want to switch to serial:
 - **Troubleshooting**: See [Troubleshooting Guide](troubleshooting.md)
 
 ---
-
-**Hardware validated**: 2026-03-06, IC-7610 over USB on macOS (Darwin arm64), Python 3.11.14, pytest 9.0.2 (issue #146)
 
 ## Get the Packaged Desktop App
 

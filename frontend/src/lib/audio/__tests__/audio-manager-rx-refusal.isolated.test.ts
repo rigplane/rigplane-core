@@ -1,7 +1,60 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { flushSync, mount, unmount } from 'svelte';
+import Toast from '../../../components/shared/Toast.svelte';
+import { setLocale } from '$lib/i18n';
+import { _resetLocale } from '$lib/i18n/store.svelte';
+// The rendered-toast describe runs the refusal through the REAL runtime
+// notification path. These imports are static on purpose: Toast, the i18n
+// runtime, the real ws-client bus, the audio manager singleton and the
+// frontend-runtime module (whose singleton constructor installs the
+// production operator-notifier binding) must all live in ONE module-registry
+// generation. The other describes re-import the audio manager per test
+// after `vi.resetModules()`; this file's static graph is unaffected by that.
+import { audioManager as runtimeBoundAudioManager } from '../audio-manager';
+import '$lib/runtime/frontend-runtime';
 
-const rxStart = vi.fn();
-const rxStop = vi.fn();
+// Same jsdom Web Animations stub as Toast.component.test.ts /
+// Toast.link-loss.component.test.ts: Svelte's `fly` transition needs
+// `element.animate(...)` with an `onfinish` completion.
+if (typeof (Element.prototype as any).animate !== 'function') {
+  (Element.prototype as any).animate = function animate(
+    _keyframes: unknown,
+    options?: number | { duration?: number },
+  ): Animation {
+    const duration = typeof options === 'number' ? options : (options?.duration ?? 0);
+    const fake = {
+      playState: 'running' as AnimationPlayState,
+      currentTime: 0,
+      onfinish: null as (() => void) | null,
+      oncancel: null,
+      cancel() {
+        fake.playState = 'idle';
+      },
+      finish() {
+        fake.playState = 'finished';
+        fake.onfinish?.();
+      },
+      addEventListener() {},
+      removeEventListener() {},
+    };
+    setTimeout(() => {
+      if (fake.playState === 'running') {
+        fake.playState = 'finished';
+        fake.onfinish?.();
+      }
+    }, duration);
+    return fake as unknown as Animation;
+  };
+}
+
+// Hoisted: the static audio-manager import above instantiates the mocked
+// RxPlayer/TxMic at module load, before any file-scope const would run.
+const { rxStart, rxStop, txStart, txStop } = vi.hoisted(() => ({
+  rxStart: vi.fn(),
+  rxStop: vi.fn(),
+  txStart: vi.fn().mockResolvedValue(null),
+  txStop: vi.fn(),
+}));
 
 vi.mock('../rx-player', () => ({
   RxPlayer: class {
@@ -26,9 +79,6 @@ vi.mock('../rx-player', () => ({
   },
 }));
 
-const txStart = vi.fn().mockResolvedValue(null);
-const txStop = vi.fn();
-
 vi.mock('../tx-mic', () => ({
   TxMic: class {
     start = txStart;
@@ -44,12 +94,39 @@ vi.mock('../tx-mic', () => ({
   },
 }));
 
-vi.mock('../../stores/connection.svelte', () => ({
+// Spread the real store modules so every consumer deeper in the import
+// graph (Toast, frontend-runtime) finds its named exports; only the writes
+// the audio manager performs are stubbed.
+vi.mock('../../stores/connection.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../stores/connection.svelte')>(),
   setAudioConnected: vi.fn(),
 }));
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
+vi.mock('$lib/stores/capabilities.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/stores/capabilities.svelte')>(),
   getCapabilities: vi.fn(() => null),
+}));
+
+// The rendered-toast describe imports the REAL frontend-runtime module so
+// the production operator-notifier binding is installed for real; the
+// subsystems that are not on the refusal-toast path are stubbed to keep the
+// import graph small.
+vi.mock('$lib/runtime/system-controller', () => ({
+  systemController: { connect: vi.fn(), disconnect: vi.fn(async () => {}) },
+}));
+vi.mock('$lib/runtime/scope-controller.svelte', () => ({
+  scopeController: {
+    hardwareScopeDriver: { start: vi.fn(), stop: vi.fn() },
+    registerPresentationDriver: vi.fn(),
+    subscribeHealth: vi.fn(() => () => {}),
+    snapshotHealth: vi.fn(() => ({ demanded: false, transport: 'disconnected', frameSeen: false })),
+  },
+}));
+vi.mock('$lib/runtime/commands/panel-commands', () => ({
+  makeAudioRoutingHandlers: () => ({ restoreFromStorage: vi.fn() }),
+}));
+vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
+  clearLegacyPendingModInputRestore: vi.fn(),
 }));
 
 class FakeWebSocket {
@@ -59,13 +136,16 @@ class FakeWebSocket {
 
   readyState = FakeWebSocket.CONNECTING;
   binaryType = '';
+  protocol: string;
   sent: unknown[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: ((event: unknown) => void) | null = null;
   onclose: ((event: { code: number; reason: string }) => void) | null = null;
 
-  constructor(public url: string) {
+  constructor(public url: string, protocols: string | string[] = []) {
+    const list = Array.isArray(protocols) ? protocols : [protocols];
+    this.protocol = list[0] ?? '';
     FakeWebSocket.instances.push(this);
   }
 
@@ -372,6 +452,211 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
     audioManager.destroy();
     expect(audio.getAudioState().rxError).toBe(false);
     expect(rxStop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('RX refusal reason routing (MOR-3823)', () => {
+  // The exact wire frame the backend emits for a pairing refusal, copied
+  // from tests/test_web_usb_pairing_integration.py
+  // ::test_w1_serial_ambiguous_refusal_reaches_ws_client_as_category_only.
+  const RX_REFUSAL_FRAME = {
+    type: 'error',
+    message: 'audio_start: RX audio failed to start: usb_ambiguous',
+    reason: 'usb_ambiguous',
+  };
+  const DEVICE_REASONS = ['usb_ambiguous', 'usb_topology_names', 'usb_topology_unavailable'];
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.useFakeTimers();
+  });
+
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  /** A bound controller reporting a REMOTE session: ready and current, with
+   *  no session subprotocols. The refusal branch must not consult
+   *  remote() — the toast is the same either way. */
+  const remoteReadyBinding = () => ({
+    remote: () => true,
+    ready: () => true,
+    epoch: () => 1,
+    current: () => true,
+    protocols: () => [] as string[],
+  });
+
+  /** Set the page hostname, start RX (the user's RX action) against a fresh
+   *  socket, and return the pieces a refusal assertion needs. */
+  async function rig(hostname: string, remoteBinding = false) {
+    const host = hostname === 'localhost' ? hostname : `${hostname}:8080`;
+    vi.stubGlobal('location', { protocol: 'http:', host, hostname });
+    const { audioManager } = await import('../audio-manager');
+    const audio = await import('../../stores/audio.svelte');
+    const notify = vi.fn();
+    audioManager.setOperatorNotifier(notify);
+    if (remoteBinding) audioManager.setControllerBinding(remoteReadyBinding());
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    return { audioManager, audio, notify, socket };
+  }
+
+  // A loopback page is NOT proof of station locality: the documented
+  // `ssh -L 8080:localhost:8080` tunnel (docs/guide/remote-operation.md)
+  // gives a remote user a localhost URL. The web UI therefore never guesses
+  // from the page hostname or the controller mode — every USB pairing
+  // refusal shows the one neutral toast, correct for a remote reader and
+  // for whoever runs the station alike.
+  it.each(DEVICE_REASONS)(
+    'a loopback page gets the one neutral station-must-choose toast (%s)',
+    async (reason) => {
+      const { audioManager, audio, notify, socket } = await rig('localhost');
+      serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+      expect(notify).toHaveBeenCalledWith(
+        'error', expect.any(String), 'rxAudioStationDeviceNeeded',
+      );
+      expect(audioManager.rxEnabled).toBe(false);
+      expect(audio.getAudioState().rxError).toBe(true);
+    },
+  );
+
+  it.each(DEVICE_REASONS)(
+    'a LAN page gets the same neutral toast (%s)',
+    async (reason) => {
+      const { audioManager, audio, notify, socket } = await rig('192.168.1.20');
+      serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+      expect(notify).toHaveBeenCalledWith(
+        'error', expect.any(String), 'rxAudioStationDeviceNeeded',
+      );
+      expect(audioManager.rxEnabled).toBe(false);
+      expect(audio.getAudioState().rxError).toBe(true);
+    },
+  );
+
+  it.each(DEVICE_REASONS)(
+    'a remote control session gets the same neutral toast (%s)',
+    async (reason) => {
+      const { audioManager, audio, notify, socket } = await rig('192.168.1.20', true);
+      serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+      expect(notify).toHaveBeenCalledWith(
+        'error', expect.any(String), 'rxAudioStationDeviceNeeded',
+      );
+      expect(audioManager.rxEnabled).toBe(false);
+      expect(audio.getAudioState().rxError).toBe(true);
+    },
+  );
+
+  it.each([
+    ['unknown', 'other'],
+    ['missing', undefined],
+  ])('an %s reason keeps the generic toast', async (_label, reason) => {
+    const { audio, notify, socket } = await rig('localhost');
+    serverText(socket, { ...RX_REFUSAL_FRAME, reason });
+    expect(notify).toHaveBeenCalledWith(
+      'error', expect.any(String), 'rxAudioStartFailed',
+    );
+    expect(audio.getAudioState().rxError).toBe(true);
+  });
+});
+
+describe('RX refusal toast through the real runtime notification path (MOR-3823)', () => {
+  // The exact refusal frame the backend emits, verbatim from the Python
+  // integration test
+  // tests/test_web_usb_pairing_integration.py
+  // ::test_w1_serial_ambiguous_refusal_reaches_ws_client_as_category_only
+  // (the W1-recording E2E that drives a real pairing refusal out the audio
+  // WebSocket).
+  const RX_REFUSAL_FRAME = {
+    type: 'error',
+    message: 'audio_start: RX audio failed to start: usb_ambiguous',
+    reason: 'usb_ambiguous',
+  };
+  // The neutral wording every client must render (en-US catalog entry for
+  // `core.toast.rxAudioStationDeviceNeeded`): no flags, no paths, correct
+  // for a remote reader and for whoever runs the station.
+  const NEUTRAL_TOAST_TEXT =
+    'The radio\'s audio devices could not be paired automatically. The station\'s audio device has to be chosen on the station computer — whoever runs the station can do it in its audio device settings.';
+
+  let host: HTMLDivElement;
+  let app: ReturnType<typeof mount> | null = null;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    // Loopback on purpose: even a localhost page must render the neutral
+    // wording (an `ssh -L` tunnel puts a remote user on a localhost URL).
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost', hostname: 'localhost' });
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    localStorage.clear();
+    _resetLocale();
+    setLocale('en-US');
+  });
+
+  afterEach(() => {
+    if (app) {
+      unmount(app);
+      app = null;
+    }
+    host.remove();
+    runtimeBoundAudioManager.destroy();
+    vi.unstubAllGlobals();
+  });
+
+  function renderedErrorToasts(): string[] {
+    return Array.from(host.querySelectorAll('.toast.error .toast-msg')).map(
+      (el) => el.textContent?.trim() ?? '',
+    );
+  }
+
+  it('renders the neutral localized toast from the user RX action through the production notifier binding', () => {
+    // The REAL runtime module was imported statically above: its
+    // module-scope singleton constructor ran the production binding
+    //   audioManager.setOperatorNotifier((level, message, code) =>
+    //     transport.emitLocalNotification(level, message, code))
+    // (frontend-runtime.ts), over the REAL ws-client notification bus, the
+    // REAL i18n catalogs and the REAL Toast component. This test installs no
+    // notifier of its own: remove that binding and nothing renders.
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    // The user's RX action; the server then refuses with the exact Python
+    // integration-test frame above.
+    runtimeBoundAudioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, RX_REFUSAL_FRAME);
+    flushSync();
+
+    expect(renderedErrorToasts()).toEqual([NEUTRAL_TOAST_TEXT]);
+  });
+
+  it('renders nothing when the runtime notifier binding was never installed', async () => {
+    // A fresh module registry without the frontend-runtime import: the
+    // audio manager's notifier is null, so a refusal cannot reach the
+    // mounted Toast. Documents that the binding — and only the binding —
+    // carries the refusal to the operator.
+    vi.resetModules();
+    const { audioManager: unboundAudioManager } = await import('../audio-manager');
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    unboundAudioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, RX_REFUSAL_FRAME);
+    flushSync();
+
+    expect(host.querySelectorAll('.toast')).toHaveLength(0);
+    unboundAudioManager.destroy();
   });
 });
 

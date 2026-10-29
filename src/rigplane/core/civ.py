@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -21,9 +21,106 @@ __all__ = [
     "CivEventType",
     "CivRequestKey",
     "CivRequestTracker",
+    "PTT_REPLY_QUIESCENCE_S",
+    "OwedReplyEntry",
+    "PttReplyLedger",
+    "is_directed_ptt_reply",
     "iter_civ_frames",
     "request_key_from_frame",
 ]
+
+PTT_REPLY_QUIESCENCE_S: float = 2.0
+
+
+def is_directed_ptt_reply(frame: CivFrame, radio_addr: int) -> bool:
+    return (
+        frame.to_addr == 0xE0
+        and frame.from_addr == radio_addr
+        and frame.command == 0x1C
+        and frame.sub == 0x00
+        and len(frame.data) == 1
+        and frame.data[0] in (0x00, 0x01)
+    )
+
+
+@dataclass(slots=True)
+class OwedReplyEntry:
+    dispatched_at: float | None = None
+    answered_by: CivFrame | None = None
+
+
+class PttReplyLedger:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        answer_window: float,
+        quiescence: float = PTT_REPLY_QUIESCENCE_S,
+    ) -> None:
+        self._clock = clock
+        self._lifetime = answer_window + quiescence
+        self._quiescence = quiescence
+        self._owed: deque[OwedReplyEntry] = deque()
+        self._orphan_count = 0
+        self._quarantine_until = 0.0
+
+    def _expire(self, now: float) -> None:
+        self._owed = deque(
+            entry
+            for entry in self._owed
+            if entry.dispatched_at is None
+            or now <= entry.dispatched_at + self._lifetime
+        )
+
+    def note_dispatch(self, frame: CivFrame) -> OwedReplyEntry | None:
+        now = self._clock()
+        self._expire(now)
+        if frame.command != 0x1C or frame.sub != 0x00 or frame.data:
+            return None
+        entry = OwedReplyEntry()
+        self._owed.append(entry)
+        return entry
+
+    def note_written(self, entry: OwedReplyEntry | None) -> None:
+        if entry is not None and entry.dispatched_at is None:
+            entry.dispatched_at = self._clock()
+
+    def discard(self, entry: OwedReplyEntry | None) -> None:
+        self._owed = deque(owed for owed in self._owed if owed is not entry)
+
+    def note_reply(self, frame: CivFrame) -> OwedReplyEntry | None:
+        """Account for a reply already classified by the runtime's D1 gate."""
+        now = self._clock()
+        self._expire(now)
+        # A reply can arrive while the sender is still awaiting serial drain.
+        entry = self._owed.popleft() if self._owed else None
+        if entry is not None:
+            entry.answered_by = frame
+            return entry
+        self._orphan_count += 1
+        self._quarantine_until = now + self._quiescence
+        return None
+
+    def eligible(self) -> bool:
+        now = self._clock()
+        self._expire(now)
+        return not self._owed and now >= self._quarantine_until
+
+    @property
+    def lifetime(self) -> float:
+        return self._lifetime
+
+    @property
+    def owed_count(self) -> int:
+        return len(self._owed)
+
+    @property
+    def orphan_count(self) -> int:
+        return self._orphan_count
+
+    @property
+    def quarantine_until(self) -> float:
+        return self._quarantine_until
 
 
 class CivEventType(StrEnum):

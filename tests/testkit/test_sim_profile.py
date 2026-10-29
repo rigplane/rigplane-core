@@ -46,6 +46,13 @@ CASES = (
     "answers.recorded[0].file: 'rec.jsonl' missing under root|[transport.serial]\nbaud = 19200\n[answers]\nrecorded = [{ file = 'rec.jsonl', transport = 'lan' }]",
     "answers.recorded[0].transport: required non-empty string, got None|[transport.serial]\nbaud = 19200\n[answers]\nrecorded = [{ file = 'e.jsonl' }]",
     "audio.rx.transport: lan_stream needs a LAN radio, 'IC-7300' has none|[transport.serial]\nbaud = 19200\n[audio.rx]\ntransport = 'lan_stream'",
+    "timing.frob: unknown key|[transport.serial]\nbaud = 19200\n[timing]\nfrob = 1",
+    "timing.ack_ms_set: must be a number >= 0, got -1|[transport.serial]\nbaud = 19200\n[timing]\nack_ms_set = -1",
+    "timing.ptt_set_ack_ms: must be a number >= 0, got nan|[transport.serial]\nbaud = 19200\n[timing]\nptt_set_ack_ms = nan",
+    "timing.readback_ms: must be a finite number >= 0, got inf|[transport.serial]\nbaud = 19200\n[timing]\nreadback_ms = inf",
+    "timing.write_drain_ms: must be a number >= 0, got True|[transport.serial]\nbaud = 19200\n[timing]\nwrite_drain_ms = true",
+    "timing.tx_on_switch_ms: must be a number >= 0, got -1|[transport.serial]\nbaud = 19200\n[timing]\ntx_on_switch_ms = -1",
+    "timing.tx_off_switch_ms: must be a number >= 0, got True|[transport.serial]\nbaud = 19200\n[timing]\ntx_off_switch_ms = true",
 )
 
 

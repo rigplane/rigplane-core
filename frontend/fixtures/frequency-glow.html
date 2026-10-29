@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Frequency glow fixture</title>
+    <style>body { margin: 24px; background: #080d13; } #app { max-width: 1000px; }</style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { mount, flushSync } from 'svelte';
+      import '../src/components-v2/theme/index';
+      import VfoSurface from '../src/semantic/VfoSurface.svelte';
+      import { topologyFixtures } from '../src/semantic/fixtures/topologies';
+      const mode = new URLSearchParams(location.search).get('mode') ?? 'interactive';
+      if (mode === 'desktop') {
+        await import('../src/presentation/languages/studioline/studioline.css');
+        document.documentElement.dataset.designLanguage = 'studioline';
+      }
+      const base = topologyFixtures['2/main_sub'];
+      const viewModel = mode === 'unknown' ? {
+        ...base,
+        vfos: base.vfos.map((vfo) => ({
+          ...vfo, frequencyHz: null,
+          display: { frequencyHz: { state: 'unknown', reason: 'not-observed' } },
+        })),
+      } : base;
+      mount(VfoSurface, {
+        target: document.getElementById('app'),
+        props: { viewModel, appearance: mode === 'desktop' ? 'standard' : 'sdr', onTuneFrequency: mode === 'passive' ? undefined : () => {} },
+      });
+      flushSync();
+      document.body.dataset.harnessReady = 'true';
+    </script>
+  </body>
+</html>

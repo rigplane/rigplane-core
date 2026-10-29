@@ -2011,6 +2011,54 @@ class TestToProfile:
         profile = load_rig(p).to_profile()
         assert profile.freq_ranges[0].repeater is True
 
+    def test_freq_band_rx_only_defaults_false(self):
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        assert all(
+            band.rx_only is False
+            for freq_range in profile.freq_ranges
+            for band in freq_range.bands
+        )
+
+    def test_freq_band_rx_only_rejects_non_boolean(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000',
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000\n\n'
+                "[[freq_ranges.ranges.bands]]\n"
+                'name = "160m"\n'
+                "start_hz = 1800000\n"
+                "end_hz = 2000000\n"
+                "default_hz = 1825000\n"
+                "rx_only = 1",
+            ),
+        )
+        with pytest.raises(
+            RigLoadError,
+            match=(
+                r"freq_ranges\.ranges\[0\]\.bands\[0\]\.rx_only must be a boolean "
+                r"\(band '160m'\)"
+            ),
+        ):
+            load_rig(p)
+
+    def test_freq_band_rx_only_true_loads(self, tmp_path):
+        p = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000',
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000\n\n'
+                "[[freq_ranges.ranges.bands]]\n"
+                'name = "160m"\n'
+                "start_hz = 1800000\n"
+                "end_hz = 2000000\n"
+                "default_hz = 1825000\n"
+                "rx_only = true",
+            ),
+        )
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].bands[0].rx_only is True
+
     def test_modes(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.modes == (
@@ -3012,6 +3060,41 @@ class TestFixedValueChecks:
 _SHIPPED_RIG_TOMLS = sorted(
     p for p in RIGS_DIR.glob("*.toml") if not p.name.startswith("_")
 )
+
+# MOR-3632: the per-profile literal of band rows flagged ``rx_only``. The
+# test below refuses a shipped profile missing from this mapping, so a new
+# profile cannot land with a receive-only row silently counting as a TX
+# band: its author must classify every row here first.
+_SHIPPED_RX_ONLY_BANDS = {
+    "ftx1.toml": (),
+    "ic705.toml": ("2200m", "630m", "WFM", "Air", "Gen"),
+    "ic7300.toml": (),
+    "ic7300mk2.toml": (),
+    "ic7610.toml": (),
+    "ic9700.toml": (),
+    "tx500.toml": (),
+    "x6100.toml": (),
+    "x6200.toml": (),
+}
+
+
+def test_every_shipped_profiles_rx_only_bands_are_pinned():
+    """Every shipped profile's ``rx_only`` band rows equal the literal
+    mapping above (MOR-3632), directory-driven like the AGC table below, so
+    neither an unclassified new profile nor a quiet reclassification of an
+    existing row can pass unnoticed."""
+    assert {p.name for p in _SHIPPED_RIG_TOMLS} == set(_SHIPPED_RX_ONLY_BANDS), (
+        "a shipped profile is missing from _SHIPPED_RX_ONLY_BANDS"
+    )
+    for toml_path in _SHIPPED_RIG_TOMLS:
+        profile = load_rig(toml_path).to_profile()
+        flagged = tuple(
+            band.name
+            for freq_range in profile.freq_ranges
+            for band in freq_range.bands
+            if band.rx_only
+        )
+        assert flagged == _SHIPPED_RX_ONLY_BANDS[toml_path.name], toml_path.name
 
 
 @pytest.mark.parametrize("toml_path", _SHIPPED_RIG_TOMLS, ids=lambda p: p.stem)

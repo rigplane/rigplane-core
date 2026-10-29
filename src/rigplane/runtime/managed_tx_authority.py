@@ -133,6 +133,15 @@ class ManagedTxSubmission:
     def settlement_done(self) -> bool:
         return self._completion.done()
 
+    @property
+    def pending_release(self) -> bool:
+        """Release debt was admitted without an available provider effect."""
+        return (
+            self.outcome is ManagedTxOutcome.ACCEPTED
+            and self.transition.state.release_required
+            and not self.transition.effects
+        )
+
     async def wait_settlement(self) -> ActuationSettled | None:
         """Join provider settlement without transferring cancellation ownership."""
         _transition, settlement = await asyncio.shield(self._completion)
@@ -210,6 +219,7 @@ class ManagedTxAuthority:
         # both); unkeying, settlement, scheduler and shutdown never take it.
         self._outside_tx_lock = asyncio.Lock()
         self._state = ManagedTxState()
+        self._latest_on_epoch = 0
         self._change_listeners: set[ManagedTxChangeListener] = set()
         self._provider_generation = provider_generation
         self._generation_high_water = (
@@ -293,12 +303,25 @@ class ManagedTxAuthority:
         *,
         ready: asyncio.Future[Any] | None = None,
         expires_at_monotonic: float | None = None,
+        before_on: Callable[[], Awaitable[bool]] | None = None,
     ) -> asyncio.Task[ManagedTxSubmission]:
         """Start a managed-ingress submission with membership installed.
 
         Unlike :meth:`submit_ptt`, this synchronous seam guarantees that the
         authority's canonical fence membership exists before it returns.
+
+        ``before_on`` (MOR-3821, spec 7.3a) runs inside the admitted key:
+        after the intent commits to ``PTT(owner)`` and before the PTT_ON
+        effect is dispatched, bounded by the attempt timeout. It must
+        return ``True``; anything else —
+        a falsy return, an exception, a timeout — takes the existing "ON
+        rejected before effect" path (intent back to RX, release debt,
+        scheduled ``force_receive``), with no RF effect and a rejection
+        for the requester. Only a key-down takes it: an unkey with a hook
+        is a programming error (``ValueError``).
         """
+        if before_on is not None and not on:
+            raise ValueError("before_on applies only to a key-down")
         started = asyncio.get_running_loop().create_future()
         worker, admitted = (
             self._begin_positive_operation(
@@ -307,6 +330,7 @@ class ManagedTxAuthority:
                 ready=ready,
                 started=started,
                 expires_at_monotonic=expires_at_monotonic,
+                before_on=before_on,
             )
             if on
             else self._begin_ptt_operation(False, owner, ready=ready, _started=started)
@@ -351,6 +375,7 @@ class ManagedTxAuthority:
         ready: asyncio.Future[Any] | None,
         started: asyncio.Future[None] | None = None,
         expires_at_monotonic: float | None = None,
+        before_on: Callable[[], Awaitable[bool]] | None = None,
     ) -> tuple[_SubmissionCompletion, asyncio.Future[ManagedTxTransition]]:
         """Register one cancellable positive transition before it can admit."""
         if action not in ("ptt_down", "transmit_on"):
@@ -393,48 +418,84 @@ class ManagedTxAuthority:
                 # MOR-3764: the outside-only audio lock is taken BEFORE
                 # ``self._lock`` so an admitted frame's push and this keying
                 # transition can never interleave.
-                async with self._outside_tx_lock, self._lock:
-                    self._require_ingress_open_locked()
-                    if controller_ticket is not None:
-                        controller_ticket.authority.validate_positive(controller_ticket)
-                    if not (
-                        self._provider_generation == generation
-                        and self._abort_fence.is_current(token)
-                        and self._abort_fence.remove(token)
-                    ):
-                        return ManagedTxTransition(
-                            self._state, ManagedTxOutcome.REJECTED
-                        ), None
+                async with self._outside_tx_lock:
+                    async with self._lock:
+                        self._require_ingress_open_locked()
+                        if controller_ticket is not None:
+                            controller_ticket.authority.validate_positive(
+                                controller_ticket
+                            )
+                        if not (
+                            self._provider_generation == generation
+                            and self._abort_fence.is_current(token)
+                            and self._abort_fence.remove(token)
+                        ):
+                            return ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            ), None
+                        if (
+                            expires_at_monotonic is not None
+                            and self._clock() >= expires_at_monotonic
+                        ):
+                            return ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            ), None
+                        if (refusal := self._radio_tx_refusal_locked()) is not None:
+                            # MOR-3537: never key over a TX the radio reports.
+                            raise ControllerError(refusal, 409)
+                        transition, full_force = self._transition_locked(action, owner)
+                        if transition is None:
+                            transition = ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            )
+                    hook_ran = False
                     if (
-                        expires_at_monotonic is not None
-                        and self._clock() >= expires_at_monotonic
+                        before_on is not None
+                        and transition.outcome is ManagedTxOutcome.ACCEPTED
                     ):
-                        return ManagedTxTransition(
-                            self._state, ManagedTxOutcome.REJECTED
-                        ), None
-                    if (refusal := self._radio_tx_refusal_locked()) is not None:
-                        # MOR-3537: never key over a TX the radio reports.
-                        raise ControllerError(refusal, 409)
-                    transition, full_force = self._transition_locked(action, owner)
-                    if transition is None:
-                        transition = ManagedTxTransition(
-                            self._state, ManagedTxOutcome.REJECTED
+                        # The route-preparation hook runs WITHOUT ``self._lock``:
+                        # it awaits routing writes whose admission takes it
+                        # (spec 7.3a), so holding it would deadlock. It still
+                        # holds ``_outside_tx_lock``: no rival key or audio
+                        # push can interleave, only this lock's readers and
+                        # writers (admission, snapshots, an unkey).
+                        transition = await self._prepare_key_inside_admission(
+                            transition, before_on
                         )
-                    self._wakeup.wake()
-                    if controller_ticket is not None:
-                        controller_effects = {
-                            effect.token: controller_ticket
-                            for effect in transition.effects
-                            if isinstance(effect, ManagedTxEffect)
-                            and effect.operation is not ActuationOperation.FORCE_RECEIVE
-                        }
-                        if controller_effects:
-                            self._controller_effects = controller_effects
-                    execution = asyncio.create_task(
-                        self._execute(transition.effects, full_force=full_force)
-                    )
-                    if not admitted.done():
-                        admitted.set_result(transition)
+                        hook_ran = True
+                    async with self._lock:
+                        if (
+                            hook_ran
+                            and transition.outcome is ManagedTxOutcome.ACCEPTED
+                            and not self._key_intact_locked(owner)
+                        ):
+                            # An unkey or force-off committed while the hook
+                            # ran: the stale PTT_ON must not dispatch. The
+                            # teardown already settled, so report the
+                            # rejection without further effects.
+                            transition = ManagedTxTransition(
+                                self._state, ManagedTxOutcome.REJECTED
+                            )
+                            execution = None
+                        else:
+                            self._wakeup.wake()
+                            if controller_ticket is not None:
+                                controller_effects = {
+                                    effect.token: controller_ticket
+                                    for effect in transition.effects
+                                    if isinstance(effect, ManagedTxEffect)
+                                    and effect.operation
+                                    is not ActuationOperation.FORCE_RECEIVE
+                                }
+                                if controller_effects:
+                                    self._controller_effects = controller_effects
+                            execution = asyncio.create_task(
+                                self._execute(transition.effects, full_force=full_force)
+                            )
+                        if not admitted.done():
+                            admitted.set_result(transition)
+                if execution is None:
+                    return transition, None
                 return transition, await asyncio.shield(execution)
             except asyncio.CancelledError:
                 if execution is not None:
@@ -467,6 +528,101 @@ class ManagedTxAuthority:
             worker.cancel()
             raise
         return worker, admitted
+
+    def _key_intact_locked(self, owner: str | None) -> bool:
+        """Whether the committed ``PTT(owner)`` intent still holds.
+
+        No await between reads: call holding ``_lock`` after the
+        route-preparation hook ran without it, to catch an unkey or
+        force-off that committed meanwhile. A ``None`` owner never
+        matches: only a ``PTT`` intent carries an owner token.
+        """
+        intent = self._state.intent
+        return intent.kind is ManagedTxIntentKind.PTT and intent.owner_token == owner
+
+    async def _prepare_key_inside_admission(
+        self,
+        transition: ManagedTxTransition,
+        before_on: Callable[[], Awaitable[bool]],
+    ) -> ManagedTxTransition:
+        """Run the keying preparation inside the admitted key (spec 7.3a).
+
+        Runs holding ``_outside_tx_lock`` but NOT ``_lock`` — the hook
+        awaits routing writes whose admission takes it — after the
+        admission block committed the intent to ``PTT(owner)`` (so no
+        other owner can key meanwhile) and before the PTT_ON effect is
+        dispatched. Bounded by the attempt timeout; a hook the worker's
+        own cancellation interrupts propagates as cancellation, anything
+        else (a falsy return, an exception, a timeout) takes the existing
+        "ON rejected before effect" path: the PTT_ON settlement is
+        reduced as rejected (intent back to RX, release debt, scheduled
+        ``force_receive``) and the admitted transition reports REJECTED.
+        """
+        on_effect = next(
+            (
+                effect
+                for effect in transition.effects
+                if effect.operation is ActuationOperation.PTT_ON
+            ),
+            None,
+        )
+        if on_effect is None:
+            return transition
+        owner = transition.state.intent.owner_token
+        try:
+            async with asyncio.timeout(self._attempt_timeout):
+                prepared = await before_on()
+        except TimeoutError:
+            error = "before_on timed out"
+            prepared = False
+        except asyncio.CancelledError:
+            # The key is cancelled while it prepares (a dropped requester
+            # cancels its submission): unwind the committed intent through
+            # the same rejection path, then propagate — the submission
+            # still ends cancelled, but nothing stays stranded.
+            async with self._lock:
+                if owner is not None and self._key_intact_locked(owner):
+                    self._reduce_locked(
+                        ActuationSettled(
+                            token=on_effect.token,
+                            operation=ActuationOperation.PTT_ON,
+                            result=ActuationResult.REJECTED,
+                            error="before_on cancelled",
+                        )
+                    )
+                    # The normal dispatch path refreshes the release retry
+                    # inside _execute; this path never starts one, so refresh
+                    # here — otherwise the debt below would wait for an
+                    # explicit force_off with no deadline scheduled.
+                    self._refresh_retry_locked()
+                    self._wakeup.wake()
+            raise
+        except Exception as exc:
+            error = f"before_on raised {exc!r}"
+            prepared = False
+        else:
+            error = "before_on reported failure"
+        if prepared:
+            return transition
+        async with self._lock:
+            if owner is None or not self._key_intact_locked(owner):
+                # An unkey or force-off committed while the hook ran: the
+                # teardown already settled, so report the rejection without
+                # piling release debt onto the new state.
+                return ManagedTxTransition(self._state, ManagedTxOutcome.REJECTED)
+            rejected = self._reduce_locked(
+                ActuationSettled(
+                    token=on_effect.token,
+                    operation=ActuationOperation.PTT_ON,
+                    result=ActuationResult.REJECTED,
+                    error=error,
+                )
+            )
+        # A rejected key-down returns the held state; ``release_required``
+        # with an RX intent is what marks the release as still owed
+        # (MOR-3810). The empty effect list still schedules the
+        # ``force_receive`` retry when ``_execute`` refreshes the retry.
+        return ManagedTxTransition(rejected.state, ManagedTxOutcome.REJECTED)
 
     async def _start_ptt_operation(
         self, on: bool, owner: str, *, ready: asyncio.Future[Any] | None = None
@@ -671,7 +827,15 @@ class ManagedTxAuthority:
     def is_effect_current(
         self, token: EffectToken, operation: ActuationOperation | AbortOperation
     ) -> bool:
-        """Check write currency synchronously against the live pending attempt."""
+        if operation is ActuationOperation.FORCE_RECEIVE:
+            return (
+                token.effect_epoch >= self._latest_on_epoch
+                and not (self._closing or self._closed or self._terminated)
+                and not (
+                    self._shutdown_termination is not None
+                    and self._shutdown_termination.is_set()
+                )
+            )
         pending = self._state.pending_effect
         if isinstance(operation, AbortOperation):
             operation = ActuationOperation.FORCE_RECEIVE
@@ -832,6 +996,43 @@ class ManagedTxAuthority:
             )
             return False
         return origin is RadioTxOrigin.FOREIGN
+
+    @contextlib.asynccontextmanager
+    async def owned_tx_submission(self, owner: str) -> AsyncIterator[bool]:
+        """Owner-specific TX audio admission, atomic with the push (MOR-3821).
+
+        Yields True only while ALL hold, evaluated synchronously at the
+        submission (no await between reading the state and yielding): the
+        authority is open (not closing/closed/shutting down/terminated) with
+        a provider generation and no ``last_error``; and the held intent is
+        ``PTT(owner)`` — a frame for A admitted before A's unkey never
+        survives into B's over.
+
+        Guarantee: a frame admitted for owner A completes before owner B's
+        keying transition is applied, or not at all after it. The caller's
+        body after a True yield is bounded by
+        ``OUTSIDE_TX_SUBMISSION_BUDGET_S`` — the same budget an admitted
+        outside-only push gets; on expiry the body is cancelled and
+        ``TimeoutError`` propagates to the caller. This context never takes
+        ``self._lock``; the keying side holds ``_outside_tx_lock`` before
+        ``self._lock``, so unkeying never waits behind audio.
+        """
+        async with self._outside_tx_lock:
+            if not self._owned_tx_admitted_locked(owner):
+                yield False
+                return
+            async with asyncio.timeout(OUTSIDE_TX_SUBMISSION_BUDGET_S):
+                yield True
+
+    def _owned_tx_admitted_locked(self, owner: str) -> bool:
+        """The owned-TX admission rule; no await between reads."""
+        if self._closing or self._closed or self._shutting_down or self._terminated:
+            return False
+        if self._provider_generation is None:
+            return False
+        if self._state.last_error is not None:
+            return False
+        return self._state.intent == ManagedTxIntent.ptt(owner)
 
     def _projection_locked(self) -> ManagedTxProjection:
         deadline = self._tot_deadline_locked()
@@ -1176,6 +1377,7 @@ class ManagedTxAuthority:
         if self._state.intent.kind is not ManagedTxIntentKind.TRANSMIT:
             self._transmit_owner = None
         if was_clean and self._state.intent.kind is not ManagedTxIntentKind.RX:
+            self._latest_on_epoch = self._state.effect_epoch
             self._keyed_at = self._clock()  # MOR-3537: Core keys
         if self._state_is_clean_locked():
             if not was_clean:
@@ -1273,6 +1475,8 @@ class ManagedTxAuthority:
         transition = None
         full_force = False
         async with self._lock:
+            if self._closing or self._closed or self._terminated:
+                return
             now = self._clock()
             tot_due = self._tot_deadline_locked()
             if tot_due is not None and tot_due <= now:

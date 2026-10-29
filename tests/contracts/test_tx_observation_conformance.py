@@ -63,8 +63,13 @@ CIV_BACKENDS: tuple[str, ...] = (
 @pytest.fixture
 async def harness(
     request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[TxObservationHarness]:
+    from rigplane.runtime.radio import CoreRadio
+
     built = await build_harness(request.param)
+    if request.param in CIV_BACKENDS:
+        monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.001)
     try:
         yield built
     finally:
@@ -137,7 +142,7 @@ def test_scripted_answer_vocabulary_pin() -> None:
         "refusal",
         "unmapped",
     )
-    assert CIV_NON_ANSWERS == ("ack", "setter_echo", "misaddressed")
+    assert CIV_NON_ANSWERS == ("ack", "setter_echo", "misaddressed", "broadcast")
 
 
 # ---------------------------------------------------------------------------
@@ -180,39 +185,6 @@ async def test_a_confirmed_rx_and_a_keyed_radio_read_their_values(
 async def test_a_civ_read_is_not_satisfied_by_an_ack_echo_or_misaddressed_frame(
     harness: TxObservationHarness, shape: str
 ) -> None:
-    """INV-13 on the CI-V family: the read is directed and exact.
-
-    An ACK, our own setter echo and a frame from a foreign bus address all go
-    onto the wire; none of them may answer the read. The discrimination is the
-    product's (``_civ_rx.py:1489-1492`` routing guards, ``:2636-2650``
-    provenance narrowing), not the fake's — the fake queues the bytes and asks
-    what the shipped code does with them.
-
-    What these three rows actually measure, so nobody cites them as proof of
-    the primitive's own shape check: empirically all three come back
-    ``failure='timeout'`` on every CI-V column, because the RX pump's
-    routing guards (``_civ_rx.py:1489-1492``) drop ``setter_echo`` and
-    ``misaddressed`` before either ever reaches the primitive's own
-    narrowing, and the decode ladder has no PTT branch for ``ack``'s
-    ``0xFB`` at all — none of the three ever reach the primitive's shape
-    check (``:2636-2650``) to exercise it. That check *is* load-bearing —
-    see ``test_the_civ_unmapped_shape_would_read_receiving_if_the_check_lapsed``
-    below, which reaches it with a correctly-addressed but wrong-shaped
-    reply and is the row that actually proves it.
-
-    # MUTATION (two edits, because two shipped checks stand in series): in
-    # `src/rigplane/runtime/_civ_rx.py`, (a) delete both routing guards at
-    # :1489-1492 (`from_addr != radio_addr` and `to_addr not in
-    # (CONTROLLER_ADDR, 0x00)`), and (b) replace the six conjuncts at
-    # :2639-2645 with `frame.command == 0x1C\n and frame.sub == 0x00`
-    # -> the `setter_echo` and `misaddressed` cases go red on all five CI-V
-    # columns (10 rows): both carry a `00` data byte, so a widened
-    # classification makes each of them answer "receiving".
-    # Deleting only guard (a) kills nothing — verified — because the
-    # provenance narrowing at (b) re-checks `from_addr` itself; the `ack`
-    # case is held by a third mechanism again, the decode ladder having no
-    # PTT branch for `0xFB` at all, and survives this mutation.
-    """
     harness.script(shape)
     reading = await harness.read_transmit_state()
     assert reading.value is None, f"{harness.name}: {shape} satisfied the read"

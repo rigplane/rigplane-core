@@ -14,7 +14,7 @@ no business logic lives here.
 
 - `main` — argparse-driven entry; dispatches subcommands (`status`,
   `freq`, `mode`, `power`, `meter`, `audio`, `att`, `preamp`, `ptt`,
-  `antenna`, `date`, `time`, `levels`, `discover`).
+  `antenna`, `date`, `time`, `levels`, `discover`, `models`).
 - `check_ports_available` — pre-flight UDP port probe used by
   `web`/`rigctld` integration.
 

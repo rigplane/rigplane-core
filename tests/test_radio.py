@@ -99,7 +99,7 @@ def _power_response(level: int) -> bytes:
     return _wrap_civ_in_udp(civ)
 
 
-def _ptt_response(on: bool) -> bytes:
+def _ptt_response(on: bool, *, seq: int = 1) -> bytes:
     """Build a CI-V PTT status response wrapped in UDP."""
     civ = build_civ_frame(
         CONTROLLER_ADDR,
@@ -108,7 +108,7 @@ def _ptt_response(on: bool) -> bytes:
         sub=_SUB_PTT,
         data=bytes([0x01 if on else 0x00]),
     )
-    return _wrap_civ_in_udp(civ)
+    return _wrap_civ_in_udp(civ, seq=seq)
 
 
 async def _route_ptt(
@@ -1181,7 +1181,7 @@ class TestPtt:
 
         await radio._civ_runtime.stop_pump()
         radio._civ_runtime.start_pump()
-        mock_transport.queue_response(_ptt_response(False))
+        mock_transport.queue_response(_ptt_response(False, seq=2))
         await asyncio.sleep(0.01)
         try:
             assert len(observations) == 1

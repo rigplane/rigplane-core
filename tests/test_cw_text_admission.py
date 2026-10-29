@@ -149,6 +149,8 @@ async def _cli(radio: YaesuCatRadio, text: str) -> int:
         timeout=0.1,
         command="cw",
         text=text,
+        # create_radio is patched: the model only has to pass the CLI check.
+        model="IC-7610",
     )
     with patch("rigplane.cli.create_radio", return_value=radio):
         return await _run(args)

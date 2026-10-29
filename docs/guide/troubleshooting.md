@@ -477,7 +477,7 @@ ls -l /dev/ttyUSB*
 4. Retry connection
 
 !!! danger "Critical Hardware Finding"
-    This was confirmed with live IC-7610 hardware validation (issue #146, 2026-03-06): with the USB port linked to `[REMOTE]`, serial CI-V commands are blocked.
+    With the IC-7610's USB port linked to `[REMOTE]`, serial CI-V commands are blocked (issue #146).
 
 ### USB audio device not found
 
