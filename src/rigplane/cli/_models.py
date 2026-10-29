@@ -24,9 +24,11 @@ if TYPE_CHECKING:
 __all__ = [
     "add_subparser",
     "backend_for_protocol",
+    "connect_command",
     "describe_rig",
     "match_rig",
     "run",
+    "supported_models_text",
 ]
 
 # USB transport label by profile protocol type.
@@ -49,6 +51,20 @@ def match_rig(rigs: Mapping[str, RigConfig], name: str) -> RigConfig | None:
         if model.lower() == wanted or rig.id.lower() == wanted_id:
             return rig
     return None
+
+
+def supported_models_text(rigs: Mapping[str, RigConfig]) -> str:
+    """Format the sorted ``--model`` values for user-facing messages."""
+    return ", ".join(sorted(rigs))
+
+
+def connect_command(
+    model_arg: str, *, host: str | None = None, serial_port: str | None = None
+) -> str:
+    """Format a ready-to-copy ``rigplane ... status`` command line."""
+    if host is not None:
+        return f"rigplane --model {model_arg} --host {host} status"
+    return f"rigplane --model {model_arg} --serial-port {serial_port} status"
 
 
 def backend_for_protocol(protocol_type: str | None, *, serial_port: bool) -> str | None:

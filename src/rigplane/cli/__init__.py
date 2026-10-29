@@ -110,8 +110,10 @@ from rigplane.cli._convert import (  # noqa: E402
 from rigplane.cli._models import (  # noqa: E402
     add_subparser as _add_models_subparser,
     backend_for_protocol as _backend_for_protocol,
+    connect_command as _connect_command,
     match_rig as _match_rig,
     run as _run_models,
+    supported_models_text as _supported_models_text,
 )
 from rigplane.core.exceptions import (  # noqa: E402
     ConnectionError as RigplaneConnectionError,
@@ -1958,7 +1960,7 @@ def _resolve_model(
     matched = _match_rig(rigs, model_name)
 
     if matched is None:
-        available = ", ".join(sorted(rigs.keys()))
+        available = _supported_models_text(rigs)
         raise ValueError(
             f"Unknown model {model_name!r}. Available: {available}. "
             "Run `rigplane models` for the list with the exact values."
@@ -2062,6 +2064,19 @@ async def _build_backend_config(
                     "which no backend supports"
                 )
             backend = inferred
+
+    if model_name is None and backend in ("lan", "serial"):
+        try:
+            resolve_radio_profile(radio_addr=radio_addr)
+        except ValueError:
+            from rigplane.rig_loader import discover_available_rigs
+
+            supported = _supported_models_text(discover_available_rigs(_rigs_dir()))
+            raise ValueError(
+                "Specify the radio model with --model. "
+                f"Supported: {supported}. "
+                "Run `rigplane discover` to see the radios connected now."
+            ) from None
 
     if backend == "yaesu-cat":
         host = getattr(args, "host", _HOST_NOT_SET)
@@ -5100,15 +5115,29 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         f"\nFound {n_radios} radio{'s' if n_radios != 1 else ''}"
         f" with {n_methods} connection method{'s' if n_methods != 1 else ''}:\n"
     )
+    from rigplane.rig_loader import discover_available_rigs
+
+    rigs = discover_available_rigs(_rigs_dir())
+    used_placeholder = False
     for radio in grouped:
         print(f"{radio['model']}:")
+        rig = _match_rig(rigs, radio["model"])
+        model_arg = rig.model if rig is not None else "<MODEL>"
+        if model_arg == "<MODEL>":
+            used_placeholder = True
         for lan in radio["lan"]:
             print(f"  \u2022 LAN: {lan['host']}")
+            print(f"    {_connect_command(model_arg, host=lan['host'])}")
         for serial in radio["serial"]:
             baud = serial.get("baudrate") or serial.get("baud", "?")
             print(f"  \u2022 Serial: {serial['port']} ({baud} baud)")
+            print(f"    {_connect_command(model_arg, serial_port=serial['port'])}")
     if hamlib_payload is not None:
         print_hamlib_human(hamlib_payload)
+    if used_placeholder:
+        print(
+            "Not sure of the model? Run `rigplane models` for the exact --model values."
+        )
     return 0
 
 

@@ -989,7 +989,7 @@ if WIDEN is not None:  # widen the arm-to-key window so a signal lands inside it
 
     cli._armed_for_ptt_hold = slow_arm
 
-sys.argv = ["rigplane", "--host", "127.0.0.1", "ptt", "on"]
+sys.argv = ["rigplane", "--host", "127.0.0.1", "--model", "IC-7610", "ptt", "on"]
 cli.main()
 '''
 
@@ -1585,6 +1585,7 @@ class TestRunErrorHandling:
             audio_command="caps",
             json=True,
             stats=True,
+            model="IC-7610",
         )
         runtime_stats = {
             "active": False,
@@ -1679,10 +1680,10 @@ class TestRunErrorHandling:
     async def test_run_reports_unresolvable_profile_cleanly(self, capsys) -> None:
         """A radio nothing identifies is a user-input error, not a crash.
 
-        `rigplane --host <ip>` with no --model leaves the config with neither a
-        model nor a radio_addr, so profiles.resolve_radio_profile refuses rather
-        than guessing a default rig, and that ValueError leaves create_radio by
-        way of IcomRadio's constructor. No mock: this is the real path.
+        `rigplane --host <ip>` with no --model is refused by
+        _build_backend_config before any radio is built, and that ValueError
+        reaches the user as `Error: ...`, not a traceback. No mock: this is
+        the real path.
         """
         args = Namespace(
             host="192.168.1.100",
@@ -1698,7 +1699,7 @@ class TestRunErrorHandling:
         rc = await _run(args)
         assert rc == 1
         err = capsys.readouterr().err
-        assert err.startswith("Error: Cannot resolve a radio profile")
+        assert err.startswith("Error: Specify the radio model with --model.")
         assert "Traceback" not in err
 
     @pytest.mark.asyncio
@@ -1717,6 +1718,7 @@ class TestRunErrorHandling:
             channels=1,
             json=False,
             stats=False,
+            model="IC-7610",
         )
         radio = AsyncMock()
         radio.__aenter__.return_value = radio
@@ -1743,6 +1745,7 @@ class TestRunErrorHandling:
             channels=1,
             json=False,
             stats=False,
+            model="IC-7610",
         )
         radio = AsyncMock()
         radio.__aenter__.return_value = radio
@@ -1769,6 +1772,7 @@ class TestRunErrorHandling:
             channels=1,
             json=False,
             stats=False,
+            model="IC-7610",
         )
         radio = AsyncMock()
         radio.__aenter__.return_value = radio

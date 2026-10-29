@@ -39,6 +39,11 @@ All commands accept these options:
 !!! tip "Zero-config startup"
     If you have a single radio on the network, run `rigplane --model IC-7610 web` (with your radio's model) — it auto-discovers the radio via LAN broadcast. No `--host` needed.
 
+    Without `--model` (and without a matching `--radio-addr`), commands
+    that connect to a radio stop with `Specify the radio model with
+    --model. Supported: ...`, listing the supported models — rigplane
+    never picks a model for you.
+
     For permanent setups, set environment variables in your shell profile:
 
     ```bash
@@ -193,6 +198,23 @@ rigplane --json discover --hamlib-validate --rigctld-host 127.0.0.1
 rigplane discover --timeout 5          # Longer LAN listen window
 rigplane --json discover               # Stable setup-wizard JSON
 ```
+
+After each connection line, human output prints a ready-to-copy command
+for that radio:
+
+```text
+IC-7300:
+  • Serial: /dev/ttyUSB0 (115200 baud)
+    rigplane --model IC-7300 --serial-port /dev/ttyUSB0 status
+192.168.1.60:
+  • LAN: 192.168.1.60
+    rigplane --model <MODEL> --host 192.168.1.60 status
+Not sure of the model? Run `rigplane models` for the exact --model values.
+```
+
+LAN discovery finds the IP address but cannot tell the model, so those
+commands use a `<MODEL>` placeholder — replace it with the exact
+`--model` value from `rigplane models`. (`--json` output is unchanged.)
 
 ## Commands
 

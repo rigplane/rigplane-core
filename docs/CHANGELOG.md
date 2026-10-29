@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added `rigplane models`: list supported radio profiles with the exact `--model` value for each, as a plain table or `rigplane models --json`.
+- `rigplane discover` prints a ready-to-copy `rigplane --model ... status` command after each radio connection line (a `<MODEL>` placeholder with a pointer to `rigplane models` when LAN discovery cannot tell the model).
+
+### Changed
+
+- Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
 
 ## [3.0.1] — 2026-10-28
 
