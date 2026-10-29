@@ -18,6 +18,7 @@ import itertools
 import logging
 import time
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from rigplane.tci.handler import CommandOutcome, TciHandler
 from rigplane.tci.protocol import parse_line
@@ -441,6 +442,8 @@ class TciServer:
         self._stop_timeout = stop_timeout
         self._listener: asyncio.Server | None = None
         self._sessions: dict[str, TciSession] = {}
+        self._setup_tasks: set[asyncio.Task[Any]] = set()
+        self._generation = 0
         self._ids = itertools.count(1)
 
     @property
@@ -475,6 +478,7 @@ class TciServer:
         self._listener = await asyncio.start_server(
             self._accept_request, self._host, self._port
         )
+        self._generation += 1
         sockets = self._listener.sockets or ()
         names = ", ".join(str(sock.getsockname()) for sock in sockets)
         logger.info("tci listening on %s", names)
@@ -485,21 +489,29 @@ class TciServer:
         Every phase is bounded by ``stop_timeout``: ``wait_closed()``
         waits for each session transport to detach from the listener,
         so sessions are finished first — waiting before finishing them
-        deadlocked when a session was still open.
+        deadlocked when a session was still open. Accepts still parked
+        in the upgrade or ``on_connect`` are cancelled first, and any
+        accept that outlives the stop is refused promotion, so no
+        session appears after ``stop()`` returns.
         """
+        self._generation += 1
         listener, self._listener = self._listener, None
         if listener is not None:
             listener.close()
         sessions = list(self._sessions.values())
-        if sessions:
+        pending = [task for task in list(self._setup_tasks) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if sessions or pending:
             try:
                 async with asyncio.timeout(self._stop_timeout):
                     await asyncio.gather(
                         *(session.finish() for session in sessions),
+                        *pending,
                         return_exceptions=True,
                     )
             except TimeoutError:
-                logger.debug("tci stop: session teardown timed out")
+                logger.debug("tci stop: teardown timed out")
         if listener is not None:
             try:
                 async with asyncio.timeout(self._stop_timeout):
@@ -548,14 +560,27 @@ class TciServer:
     ) -> TciSession | None:
         """Create a session, send the init burst, launch its tasks.
 
-        Returns ``None`` when ``on_connect`` fails: the transport is
-        closed and the guarded teardown has run exactly once.
+        Returns ``None`` when ``on_connect`` fails or the server
+        stopped while it ran: the transport is closed, the handler is
+        cleaned up exactly once, and no session is ever promoted after
+        ``stop()``.
         """
         session_id = f"tci-session-{next(self._ids)}"
+        setup_gen = self._generation
         try:
             burst = await handler.on_connect()
+        except asyncio.CancelledError:
+            # Shutdown cancelled the pending setup: the handler started
+            # but never completed, so it is cleaned up exactly once.
+            writer.close()
+            await self._guarded_disconnect(handler)
+            return None
         except Exception:
             logger.debug("tci %s: on_connect failed", session_id)
+            writer.close()
+            await self._guarded_disconnect(handler)
+            return None
+        if self._generation != setup_gen:
             writer.close()
             await self._guarded_disconnect(handler)
             return None
@@ -576,38 +601,61 @@ class TciServer:
     async def _accept_request(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        setup_gen = self._generation
+        if self._listener is None and setup_gen > 0:
+            # Stopped (or restarted): a connection accepted by the old
+            # listener must never become a session on the new state.
+            writer.close()
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._setup_tasks.add(task)
         try:
-            head = await reader.readuntil(b"\r\n\r\n")
-        except (asyncio.LimitOverrunError, asyncio.IncompleteReadError):
+            try:
+                head = await reader.readuntil(b"\r\n\r\n")
+            except (asyncio.LimitOverrunError, asyncio.IncompleteReadError):
+                writer.close()
+                return
+            if len(head) > _MAX_UPGRADE_HEAD:
+                writer.close()
+                return
+            parsed = _parse_http_request(head)
+            if parsed is None:
+                await self._refuse(
+                    writer, UpgradeDecline(400, "Bad Request", b"bad request")
+                )
+                return
+            _target, headers = parsed
+            # Design 4.2: the TCI upgrade ignores the extension offer (the
+            # 101 carries no Sec-WebSocket-Extensions), so no TCI frame is
+            # ever compressed, even when the client offers deflate.
+            result = upgrade_response(headers, allow=self._allow, allow_deflate=False)
+            if isinstance(result, UpgradeDecline):
+                await self._refuse(writer, result)
+                return
+            try:
+                handler = self._handler_factory()
+            except Exception:
+                logger.debug("tci: handler factory failed")
+                writer.close()
+                return
+            try:
+                writer.write(result.response)
+                await writer.drain()
+            except OSError:
+                writer.close()
+                return
+            if self._generation != setup_gen:
+                # Stopped after the 101 went out: ``on_connect`` never
+                # ran, so there is nothing to clean up — just close.
+                writer.close()
+                return
+            await self._open_session(reader, writer, handler)
+        except asyncio.CancelledError:
+            # Shutdown owns the pending accept: close it and let the
+            # cancellation continue.
             writer.close()
-            return
-        if len(head) > _MAX_UPGRADE_HEAD:
-            writer.close()
-            return
-        parsed = _parse_http_request(head)
-        if parsed is None:
-            await self._refuse(
-                writer, UpgradeDecline(400, "Bad Request", b"bad request")
-            )
-            return
-        _target, headers = parsed
-        # Design 4.2: the TCI upgrade ignores the extension offer (the
-        # 101 carries no Sec-WebSocket-Extensions), so no TCI frame is
-        # ever compressed, even when the client offers deflate.
-        result = upgrade_response(headers, allow=self._allow, allow_deflate=False)
-        if isinstance(result, UpgradeDecline):
-            await self._refuse(writer, result)
-            return
-        try:
-            handler = self._handler_factory()
-        except Exception:
-            logger.debug("tci: handler factory failed")
-            writer.close()
-            return
-        try:
-            writer.write(result.response)
-            await writer.drain()
-        except OSError:
-            writer.close()
-            return
-        await self._open_session(reader, writer, handler)
+            raise
+        finally:
+            if task is not None:
+                self._setup_tasks.discard(task)
