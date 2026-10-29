@@ -19,8 +19,8 @@ import pytest
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent / "src" / "rigplane" / "tci"
 
-# Modules P0a delivers. L1/L2 extend this set with their own modules.
-EXPECTED_MODULES = frozenset({"__init__.py", "ws.py"})
+# Modules P0a+L1 deliver. L2 extends this set with its own modules.
+EXPECTED_MODULES = frozenset({"__init__.py", "ws.py", "protocol.py", "frames.py"})
 
 
 def _forbidden_imports(source: str) -> list[str]:
