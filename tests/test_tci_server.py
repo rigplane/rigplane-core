@@ -624,7 +624,10 @@ async def test_accept_good_request_upgrades() -> None:
     reader.feed_data(
         b"GET / HTTP/1.1\r\n"
         b"Host: 127.0.0.1:50001\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
         b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        b"Sec-WebSocket-Version: 13\r\n"
         b"\r\n"
     )
     await server._accept_request(reader, writer)
@@ -666,6 +669,109 @@ async def test_accept_refused_predicate() -> None:
     )
     await server._accept_request(reader, writer)
     assert writer.buffer.startswith(b"HTTP/1.1 403 ")
+    assert server.sessions == ()
+
+
+@pytest.mark.parametrize(
+    ("raw", "status"),
+    [
+        pytest.param(
+            b"GET / HTTP/1.1\r\n"
+            b"Host: 127.0.0.1:50001\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            b"Sec-WebSocket-Version: 13\r\n"
+            b"\r\n",
+            b"HTTP/1.1 400 ",
+            id="missing-upgrade",
+        ),
+        pytest.param(
+            b"GET / HTTP/1.1\r\n"
+            b"Host: 127.0.0.1:50001\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: keep-alive\r\n"
+            b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            b"Sec-WebSocket-Version: 13\r\n"
+            b"\r\n",
+            b"HTTP/1.1 400 ",
+            id="wrong-connection-token",
+        ),
+        pytest.param(
+            b"GET / HTTP/1.1\r\n"
+            b"Host: 127.0.0.1:50001\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            b"Sec-WebSocket-Version: 12\r\n"
+            b"\r\n",
+            b"HTTP/1.1 426 ",
+            id="unsupported-version",
+        ),
+        pytest.param(
+            b"GET / HTTP/1.1\r\n"
+            b"Host: 127.0.0.1:50001\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            b"\r\n",
+            b"HTTP/1.1 426 ",
+            id="missing-version",
+        ),
+        pytest.param(
+            b"GET / HTTP/1.1\r\n"
+            b"Host: 127.0.0.1:50001\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Key: abc\r\n"
+            b"Sec-WebSocket-Version: 13\r\n"
+            b"\r\n",
+            b"HTTP/1.1 400 ",
+            id="invalid-key",
+        ),
+        pytest.param(
+            b"GET / HTTP/1.0\r\n"
+            b"Host: 127.0.0.1:50001\r\n"
+            b"Upgrade: websocket\r\n"
+            b"Connection: Upgrade\r\n"
+            b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            b"Sec-WebSocket-Version: 13\r\n"
+            b"\r\n",
+            b"HTTP/1.1 400 ",
+            id="bad-http-version",
+        ),
+    ],
+)
+async def test_accept_malformed_handshake_refused(raw: bytes, status: bytes) -> None:
+    """Malformed upgrades never reach the handler or the registry.
+
+    Each bad handshake is refused with its status, and nothing is
+    constructed: no handler factory call, no ``on_connect``, no session.
+    """
+    from rigplane.tci.server import TciServer
+
+    clock = FakeClock()
+    handler = FakeHandler()
+    factory_calls = 0
+
+    def _factory() -> FakeHandler:
+        nonlocal factory_calls
+        factory_calls += 1
+        return handler
+
+    server = TciServer(
+        _factory,  # type: ignore[arg-type]
+        host="127.0.0.1",
+        port=0,
+        allow=lambda headers: None,
+        clock=clock,
+    )
+    reader = asyncio.StreamReader()
+    writer = FakeWriter()
+    reader.feed_data(raw)
+    await server._accept_request(reader, writer)
+    assert bytes(writer.buffer).startswith(status)
+    assert factory_calls == 0
+    assert handler.connect_calls == 0
     assert server.sessions == ()
 
 
