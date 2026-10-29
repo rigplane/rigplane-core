@@ -64,6 +64,11 @@ _ENVELOPE_CASES = [
     for case in ("allObserved", "allUnobserved")
     if case in entry
 ]
+_POLLED_DCD_CASES = ("polledDcdOpen", "polledDcdClosed", "polledDcdUnanswered")
+_POLLED_DCD_MODELS = _GENERATOR.polled_dcd_models()
+_POLLED_DCD_ENVELOPES = [
+    (model, case) for model in _POLLED_DCD_MODELS for case in _POLLED_DCD_CASES
+]
 _ALL_RIG_MODELS = sorted(discover_rigs(_ROOT / "rigs"))
 # The generator keeps these profiles' state payloads out of the golden; their
 # capabilities entries must still be there.
@@ -200,3 +205,68 @@ def test_all_unobserved_observes_only_lifecycle_paths(model: str) -> None:
     assert observed
     assert all(path.startswith(_LIFECYCLE_PREFIXES) for path in observed)
     assert _declared_store_paths(model) & observed == set()
+
+
+def test_polled_dcd_cases_exist_exactly_for_the_profiles_that_poll_dcd() -> None:
+    """The BUSY-lamp cases exist for every profile that polls ``dcd``, no more."""
+    with_cases = {
+        model
+        for model, entry in _GOLDENS.items()
+        if any(case in entry for case in (*_POLLED_DCD_CASES, "polledDcdCapabilities"))
+    }
+
+    assert with_cases == set(_POLLED_DCD_MODELS)
+    assert {"IC-705", "IC-7300"} <= with_cases
+    for model in with_cases:
+        assert set(_GOLDENS[model]) >= {*_POLLED_DCD_CASES, "polledDcdCapabilities"}
+
+
+@pytest.mark.parametrize(("model", "case"), _POLLED_DCD_ENVELOPES)
+def test_polled_dcd_envelope_matches_wire_schema(model: str, case: str) -> None:
+    validated = StateUpdateEnvelope.model_validate(_GOLDENS[model][case])
+
+    assert validated.type == "full"
+
+
+@pytest.mark.parametrize(("model", "case"), _POLLED_DCD_ENVELOPES)
+def test_polled_dcd_envelope_and_capabilities_share_one_epoch(
+    model: str, case: str
+) -> None:
+    entry = _GOLDENS[model]
+    envelope = entry[case]
+    capabilities = entry["polledDcdCapabilities"]
+
+    assert envelope["stateContractVersion"] == capabilities["stateContractVersion"]
+    assert envelope["providerGeneration"] == capabilities["providerGeneration"]
+    assert capabilities["model"] == model
+
+
+@pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
+def test_polled_dcd_capabilities_declare_the_squelch_fact(model: str) -> None:
+    """The BUSY lamp exists only with the ``squelch`` tag a radio-backed server serves."""
+    entry = _GOLDENS[model]
+
+    assert "squelch" in entry["polledDcdCapabilities"]["capabilities"]
+    assert "squelch" not in entry["capabilities"]["capabilities"]
+
+
+@pytest.mark.parametrize(
+    ("case", "value"),
+    [
+        ("polledDcdOpen", True),
+        ("polledDcdClosed", False),
+        ("polledDcdUnanswered", None),
+    ],
+)
+@pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
+def test_polled_squelch_reply_publishes_dcd_in_the_envelope(
+    model: str, case: str, value: bool | None
+) -> None:
+    """A polled 0x15 0x01 reply moves dcd; no reply leaves it unobserved."""
+    data = _GOLDENS[model][case]["data"]
+    row = data["fieldStatus"]["main.dcd"]
+
+    assert data["main"].get("dcd") is value
+    assert data["main"].get("sMeterSqlOpen") is value
+    assert row["observed"] is (value is not None)
+    assert row["availability"] == ("available" if value is not None else "missing")

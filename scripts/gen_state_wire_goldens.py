@@ -10,6 +10,16 @@ For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
 - ``allObserved``: the same call after every field path the profile's
   ``[state_acquisition]`` declares has been observed once. A profile with no
   ``[state_acquisition]`` block declares nothing, so it has no ``allObserved``.
+- ``polledDcd*`` (MOR-3630): for every Icom CI-V profile that polls the
+  receiver ``dcd`` leaf, the capabilities body and the ``full`` envelope the
+  web server builds around a real ``IcomRadio`` after one polled CI-V
+  0x15 0x01 SQL-status reply ("Open": 0x01, "Closed": 0x00) or none at all
+  ("Unanswered"). The radio ingests the reply through its own CI-V
+  state-cache path, so the BUSY lamp's wire inputs (the ``dcd`` value, its
+  ``fieldStatus`` row, the ``squelch`` capability tag only a radio-backed
+  server publishes) come from the producers, not from this script.
+  ``tests/test_dcd_busy_wire_e2e.py`` proves the same fields arrive over
+  the real HTTP and WebSocket API from a polled simulator stack.
 
 ``_EXCLUDED_MODELS`` profiles contribute a ``capabilities`` entry only: their
 state payloads are left out to keep the committed file small.
@@ -31,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import sys
@@ -42,6 +53,11 @@ from unittest import mock
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+from rigplane.commands._frame import (  # noqa: E402
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    parse_civ_frame,
+)
 from rigplane.core.state_pipeline_contracts import (  # noqa: E402
     DEFAULT_FIELD_REGISTRY,
     FieldFamily,
@@ -52,6 +68,11 @@ from rigplane.core.state_pipeline_contracts import (  # noqa: E402
 from rigplane.core.types import ToneSquelchType  # noqa: E402
 from rigplane.profiles import RadioProfile, get_radio_profile  # noqa: E402
 from rigplane.profiles.rig_loader import discover_rigs  # noqa: E402
+from rigplane.radio import IcomRadio  # noqa: E402
+from rigplane.runtime._state_queries import (  # noqa: E402
+    build_state_queries,
+    wire_parts_for_query,
+)
 from rigplane.web.runtime_helpers import declared_field_paths  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 
@@ -78,6 +99,18 @@ _JITTER_ENV_VARS = (
 # State payloads for these models stay out of the golden to keep the committed
 # file small; their capabilities entries are still written.
 _EXCLUDED_MODELS = frozenset({"IC-7300MK2", "X6100"})
+
+# RFC 5737 documentation address: the radios below are never connected.
+_UNCONNECTED_RADIO_HOST = "192.0.2.1"
+# The single-byte CI-V 0x15 0x01 SQL-status payload of a polled reply.
+_SQL_OPEN = 0x01
+_SQL_CLOSED = 0x00
+_POLLED_DCD_CASES = (
+    ("polledDcdOpen", _SQL_OPEN),
+    ("polledDcdClosed", _SQL_CLOSED),
+    ("polledDcdUnanswered", None),
+)
+_DCD_PATH = FieldPath.receiver("main", "operator_toggles", "dcd")
 
 _INT_BY_NAME = {"filter_width": 2400, "receiver": 0}
 _BOOL_BY_NAME = {"ptt": False}
@@ -187,6 +220,65 @@ def _capabilities(server: WebServer) -> dict[str, Any]:
     return capabilities
 
 
+@functools.cache
+def polled_dcd_models() -> tuple[str, ...]:
+    """The golden models whose profile polls the main receiver ``dcd`` leaf.
+
+    Icom CI-V profiles only: the polled reply is a CI-V frame. The
+    capabilities-only ``_EXCLUDED_MODELS`` contribute no state payloads.
+    """
+    models = []
+    for model in sorted(discover_rigs(_REPO_ROOT / "rigs")):
+        acquisition = get_radio_profile(model).state_acquisition
+        if (
+            model not in _EXCLUDED_MODELS
+            and acquisition is not None
+            and acquisition.provider == "icom_civ"
+            and _DCD_PATH in acquisition.pollable_paths()
+        ):
+            models.append(model)
+    return tuple(models)
+
+
+def _polled_dcd_reply(profile: RadioProfile, sql_byte: int) -> bytes:
+    """The radio's answer to the profile's own polled main-receiver 0x15 0x01.
+
+    The wire form (plain, or cmd29-wrapped on dual-receiver Icoms) comes from
+    the profile's built state queries, the same ones the scheduler sends.
+    """
+    query = next(
+        query
+        for query in build_state_queries(profile)
+        if query.command == 0x15 and query.sub == 0x01 and query.receiver in (None, 0)
+    )
+    command, sub, data = wire_parts_for_query(query, 0)
+    return build_civ_frame(
+        CONTROLLER_ADDR,
+        profile.civ_addr,
+        command,
+        sub=sub,
+        data=data + bytes([sql_byte]),
+    )
+
+
+def _polled_dcd_server(model: str, sql_byte: int | None) -> WebServer:
+    """A web server around a real, never-connected radio after one polled reply."""
+    radio = IcomRadio(_UNCONNECTED_RADIO_HOST, model=model)
+    if sql_byte is not None:
+        reply = _polled_dcd_reply(get_radio_profile(model), sql_byte)
+        radio._update_state_cache_from_frame(parse_civ_frame(reply))
+    return WebServer(radio, WebConfig(radio_model=model))
+
+
+def _build_polled_dcd_goldens(model: str) -> dict[str, Any]:
+    golden: dict[str, Any] = {
+        case: _full_envelope(_polled_dcd_server(model, sql_byte))
+        for case, sql_byte in _POLLED_DCD_CASES
+    }
+    golden["polledDcdCapabilities"] = _capabilities(_polled_dcd_server(model, None))
+    return golden
+
+
 def _build_profile_goldens(model: str) -> dict[str, Any]:
     profile = get_radio_profile(model)
     config = WebConfig(radio_model=model)
@@ -201,6 +293,8 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
         observed = WebServer(None, config)
         _observe_declared(observed, profile)
         golden["allObserved"] = _full_envelope(observed)
+    if model in polled_dcd_models():
+        golden.update(_build_polled_dcd_goldens(model))
     return golden
 
 
