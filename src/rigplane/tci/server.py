@@ -524,6 +524,7 @@ class TciServer:
         self._stop_timeout = stop_timeout
         self._deadline = deadline
         self._listener: asyncio.Server | None = None
+        self._starting = False
         self._sessions: dict[str, TciSession] = {}
         self._setup_tasks: set[asyncio.Task[Any]] = set()
         self._generation = 0
@@ -560,12 +561,42 @@ class TciServer:
         return int(sockets[0].getsockname()[1])
 
     async def start(self) -> None:
-        """Bind the listener; raises ``OSError`` when the port is taken."""
-        if self._listener is not None:
+        """Bind the listener; raises ``OSError`` when the port is taken.
+
+        Lifecycle ownership covers the in-flight bind: overlapping
+        ``start()`` calls are rejected, and a bind outlived by a
+        concurrent ``stop()`` is closed instead of installed, with the
+        invalidation reported.
+        """
+        if self._listener is not None or self._starting:
             raise RuntimeError("server is already started")
-        self._listener = await asyncio.start_server(
-            self._accept_request, self._host, self._port
-        )
+        self._starting = True
+        start_gen = self._generation
+        try:
+            listener = await asyncio.start_server(
+                self._accept_request, self._host, self._port
+            )
+        except BaseException:
+            self._starting = False
+            raise
+        if (
+            not self._starting
+            or self._generation != start_gen
+            or self._listener is not None
+        ):
+            # A concurrent stop() invalidated this bind (or an
+            # overlapping start slipped in): close the orphan instead
+            # of installing a listener after shutdown.
+            listener.close()
+            try:
+                async with asyncio.timeout(self._stop_timeout):
+                    await listener.wait_closed()
+            except TimeoutError:
+                logger.debug("tci start: orphan wait_closed timed out")
+            self._starting = False
+            raise RuntimeError("server was stopped during startup")
+        self._listener = listener
+        self._starting = False
         self._generation += 1
         sockets = self._listener.sockets or ()
         names = ", ".join(str(sock.getsockname()) for sock in sockets)
@@ -583,6 +614,8 @@ class TciServer:
         session appears after ``stop()`` returns.
         """
         self._generation += 1
+        # Invalidate an in-flight bind: its result is closed, not installed.
+        self._starting = False
         listener, self._listener = self._listener, None
         if listener is not None:
             listener.close()
