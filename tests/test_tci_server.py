@@ -1652,13 +1652,16 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
         task = asyncio.create_task(session.finish())
         async with asyncio.timeout(2.0):
             await cleaning.wait()
-        try:
-            async with asyncio.timeout(TEARDOWN_TIMEOUT_S + 5.0):
-                await task
-        except TimeoutError:
+        # Observe with ``wait`` (never ``await`` the task under a timeout:
+        # cancelling the waiter would propagate into the join under test
+        # and mask the wedge). ``wait`` returns bounded either way.
+        _, pending_wait = await asyncio.wait(
+            [task], timeout=TEARDOWN_TIMEOUT_S + 5.0
+        )
+        if pending_wait:
             raise AssertionError(
                 "finish() wedged on a repeat-cancel command cleanup"
-            ) from None
+            )
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert writer.is_closing()
@@ -1678,11 +1681,7 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
         gate.set()
         if task is not None and not task.done():
             task.cancel()
-            try:
-                async with asyncio.timeout(10.0):
-                    await task
-            except (asyncio.CancelledError, TimeoutError):
-                pass
+            await asyncio.wait([task], timeout=10.0)
         for pending_task in list(session._tasks):
             if not pending_task.done():
                 pending_task.cancel()
@@ -1735,13 +1734,15 @@ async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
         task = asyncio.create_task(session.finish())
         async with asyncio.timeout(2.0):
             await cleaning.wait()
-        try:
-            async with asyncio.timeout(TEARDOWN_TIMEOUT_S + 5.0):
-                await task
-        except TimeoutError:
+        # Observe with ``wait``: awaiting under a timeout would cancel
+        # the join under test and mask the wedge.
+        _, pending_wait = await asyncio.wait(
+            [task], timeout=TEARDOWN_TIMEOUT_S + 5.0
+        )
+        if pending_wait:
             raise AssertionError(
                 "finish() wedged on a repeat-cancel binary cleanup"
-            ) from None
+            )
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert not cleaned.is_set()
@@ -1759,11 +1760,7 @@ async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
         gate.set()
         if task is not None and not task.done():
             task.cancel()
-            try:
-                async with asyncio.timeout(10.0):
-                    await task
-            except (asyncio.CancelledError, TimeoutError):
-                pass
+            await asyncio.wait([task], timeout=10.0)
         for pending_task in list(session._tasks):
             if not pending_task.done():
                 pending_task.cancel()
@@ -1816,21 +1813,21 @@ async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
         stop_task = asyncio.create_task(server.stop())
         async with asyncio.timeout(2.0):
             await cleaning.wait()
-        try:
-            async with asyncio.timeout(10.0):
-                await stop_task
-        except TimeoutError:
+        # Observe with ``wait``: awaiting under a timeout would cancel
+        # the join under test and mask the wedge.
+        _, pending_wait = await asyncio.wait([stop_task], timeout=10.0)
+        if pending_wait:
             raise AssertionError(
                 "stop() wedged on a repeat-cancel on_connect cleanup"
-            ) from None
+            )
         assert not cleaned.is_set()
         assert not setup_task.done()
         setup_task.cancel()
         await asyncio.sleep(0.05)
         assert not cleaned.is_set()
         gate.set()
-        async with asyncio.timeout(5.0):
-            await setup_task
+        _, pending_setup = await asyncio.wait([setup_task], timeout=5.0)
+        assert not pending_setup, "setup did not complete after the gate opened"
         async with asyncio.timeout(5.0):
             while not cleaned.is_set():
                 await asyncio.sleep(0.005)
@@ -1840,18 +1837,10 @@ async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
         server._setup_tasks.discard(setup_task)
         if not setup_task.done():
             setup_task.cancel()
-            try:
-                async with asyncio.timeout(5.0):
-                    await setup_task
-            except (asyncio.CancelledError, TimeoutError):
-                pass
+            await asyncio.wait([setup_task], timeout=5.0)
         if stop_task is not None and not stop_task.done():
             stop_task.cancel()
-            try:
-                async with asyncio.timeout(5.0):
-                    await stop_task
-            except (asyncio.CancelledError, TimeoutError):
-                pass
+            await asyncio.wait([stop_task], timeout=5.0)
         try:
             async with asyncio.timeout(10.0):
                 await server.stop()
