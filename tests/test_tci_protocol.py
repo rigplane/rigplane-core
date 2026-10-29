@@ -115,3 +115,51 @@ def test_format_round_trip() -> None:
 
 def test_format_lowercases_name() -> None:
     assert format_command("VFO", ("0",)) == "vfo:0;"
+
+
+@pytest.mark.parametrize(
+    ("text", "args"),
+    [
+        ("audio_start:0;", ("0",)),
+        ("audio_start:0,x;", ("0", "x")),
+    ],
+)
+def test_audio_start_arity_pinned(text: str, args: tuple[str, ...]) -> None:
+    # The leaf has no per-command arity: both shapes parse to the sent tuple
+    # (the adapter decides); formatting round-trips.
+    (cmd,) = parse_line(text)
+    assert cmd == TciCommand(name="audio_start", args=args)
+    assert format_command(cmd.name, cmd.args) == text
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "rx_enable",
+        "ecoder_switch_1",
+        "hw_sensors",
+        "cw_mon",
+        "channels_count",
+    ],
+)
+def test_spec_21_names_parse_like_any_other(name: str) -> None:
+    # 2.1-only names and the renamed channels_count: no special casing,
+    # no crash; an unknown name behaves the same (adapter ignores it).
+    (cmd,) = parse_line(f"{name}:0;")
+    assert cmd == TciCommand(name=name, args=("0",))
+    assert format_command(cmd.name, cmd.args) == f"{name}:0;"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("  Audio_Start : 0 , x ;", TciCommand(name="audio_start", args=("0", "x"))),
+        ("RX_ENABLE:0;", TciCommand(name="rx_enable", args=("0",))),
+        (
+            "  Channels_Count : 0, 1 ;",
+            TciCommand(name="channels_count", args=("0", "1")),
+        ),
+    ],
+)
+def test_mixed_case_and_whitespace_pinned(text: str, expected: TciCommand) -> None:
+    assert parse_line(text) == [expected]
