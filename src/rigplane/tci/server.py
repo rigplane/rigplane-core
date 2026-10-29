@@ -466,7 +466,12 @@ class TciSession:
                     async with asyncio.timeout(self._server.ping_interval):
                         await self._conn.send_ping()
                 except Exception:
-                    break
+                    # One bounded write failing (a peer that briefly
+                    # stops reading) must not kill the heartbeat: keep
+                    # attempting within the deadline policy. The
+                    # watchdog still owns liveness, so a dead session
+                    # is finished from there.
+                    continue
         except asyncio.CancelledError:
             pass
 
