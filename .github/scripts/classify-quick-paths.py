@@ -26,7 +26,25 @@ DOC_EXACT = {
     "NOTICE",
 }
 CI_EXACT = {"tests/test_ci_path_filters.py"}
-CORE_EXACT = {"pyproject.toml", "uv.lock", ".importlinter"}
+# MOR-3839: the publish-path radio-smoke gate (checker + workflow + the two
+# test modules that pin them) must route to the core checks — quick.yml's
+# core route is the only one whose full tests/ run executes
+# tests/test_check_radio_smoke.py and tests/test_publish_radio_smoke_gate.py.
+# The exact entries matter for the two files NOT already core by prefix rule:
+# scripts/release/ is no classified root at all, and publish.yml would
+# otherwise take the CI-only route whose fixed contract-test list excludes
+# both receipt modules. CORE_EXACT is checked before the CI-control exclusion
+# in is_core, so publish.yml keeps ci=true (workflow contract tests still
+# run) AND gains core=true.
+CORE_EXACT = {
+    "pyproject.toml",
+    "uv.lock",
+    ".importlinter",
+    ".github/workflows/publish.yml",
+    "scripts/release/check_radio_smoke.py",
+    "tests/test_check_radio_smoke.py",
+    "tests/test_publish_radio_smoke_gate.py",
+}
 # Rule (not a hand list): machine-readable data files under docs/ are never
 # documentation, because tests parse them — e.g.
 # tests/architecture/test_ui_radio_control_contract.py and
@@ -143,9 +161,16 @@ def is_core(path: str) -> bool:
     parts = _parts(path)
     if path in CORE_DOCS_TEST_INPUT_EXACT or _is_docs_data_file(parts, path):
         return True
-    if is_documentation(path) or is_ci_control(path):
+    if is_documentation(path):
         return False
-    return parts[0] in {"src", "tests", "rigs", "contracts"} or path in CORE_EXACT
+    # Exact core files win over the CI-control exclusion: publish.yml is both
+    # a workflow control (ci stays true) and a receipt-gate input whose pins
+    # only the core route runs (MOR-3839).
+    if path in CORE_EXACT:
+        return True
+    if is_ci_control(path):
+        return False
+    return parts[0] in {"src", "tests", "rigs", "contracts"}
 
 
 def classify(paths: Sequence[str]) -> dict[str, bool]:

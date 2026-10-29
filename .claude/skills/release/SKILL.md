@@ -31,9 +31,10 @@ User-facing prompts in Russian. Commits / CHANGELOG / tags / release notes in En
 
 ## Step 2 — Pre-flight checks
 
-Pre-flight covers every gate in `publish.yml`'s `validate` job: frontend (2g),
-ruff (2d), mypy (2f), import-linter (2e), pytest (2h). Run sequentially. STOP on
-first failure.
+Pre-flight covers every gate in `publish.yml`'s `validate` job except the
+radio-smoke receipt gate (receipts are produced against the tag in Step 8 —
+there is nothing to pre-flight here): frontend (2g), ruff (2d), mypy (2f),
+import-linter (2e), pytest (2h). Run sequentially. STOP on first failure.
 
 ```bash
 # 2a. Clean tree
@@ -189,7 +190,8 @@ Release plan for vNEW:
   Changelog:      [counts] Added / Changed / Fixed entries
   Tag:            vNEW
   Push target:    origin/main (atomic --follow-tags)
-  GH release:     gh release create vNEW (triggers publish.yml → PyPI)
+  GH release:     gh release create vNEW --draft → RX + TX radio smoke →
+                  upload both receipts → publish the draft (triggers publish.yml → PyPI)
 
   Dry-run: [yes/no]
 ```
@@ -222,9 +224,9 @@ git tag -a vNEW -m "Release NEW"
 
 Show `git show HEAD --stat` and `git tag -l vNEW`.
 
-## Step 7 — Push and publish (SECOND confirmation gate)
+## Step 7 — Push and create the DRAFT GitHub release (SECOND confirmation gate)
 
-Ask once: **Push commit + tag to origin and create GitHub release?** On `no` → stop; print rollback. On `yes`:
+Ask once: **Push commit + tag to origin and create the draft GitHub release?** On `no` → stop; print rollback. On `yes`:
 
 ```bash
 git push --follow-tags
@@ -235,21 +237,56 @@ Failure → stop. On success:
 ```bash
 NOTES=$(mktemp)
 # Extract the [NEW] section from docs/CHANGELOG.md to $NOTES
-gh release create vNEW --notes-file "$NOTES" --title "NEW"
+gh release create vNEW --draft --notes-file "$NOTES" --title "NEW"
 rm -f "$NOTES"
 ```
 
-**State explicitly that `gh release create` is what triggers `publish.yml` (`on: release: published`); pushing the tag alone does NOT publish to PyPI.**
+**State explicitly that a draft release triggers nothing: `publish.yml` fires only on `release: published`, which happens when the draft is published in Step 9. Pushing the tag alone does NOT publish to PyPI either.**
+
+Print draft release URL.
+
+## Step 8 — Radio smoke against the tag
+
+Both receipts must be produced against the tagged commit before the draft is published — `publish.yml`'s `validate` job downloads them from the release and refuses anything missing, malformed, or non-PASS (format contract: `docs/development/release-gates.md`, "Radio-smoke receipts"). The tagged commit SHA: `SHA=$(git rev-parse vNEW^{commit})`.
+
+1. **Build the wheel from the tag** — `git worktree add / checkout vNEW` (or reuse the current checkout, which IS the tag after Step 7) and `uv build`; this is the artifact `publish.yml` will rebuild and upload.
+2. **RX smoke** — run the existing RX-only smoke procedure; it writes `radio-smoke-rx.json` (`kind: "rx"`, `core_version: NEW`, `git_sha: SHA`, `verdict: "PASS"`, non-empty all-PASS `radios`).
+3. **TX smoke** — in the **rigplane-pro** repo, `qa/bench/dogfood/tx_smoke.py`: keys the IC-705 into the dummy load on the bench mini through the five pinned sequences. See `qa/bench/dogfood/README.md` there for the commands — do not copy code here. With `--release-fragment radio-smoke-tx.json --core-version NEW --git-sha SHA` it writes the TX receipt.
+4. **Local pre-check** (same checker the workflow runs):
+
+```bash
+python3 scripts/release/check_radio_smoke.py check \
+  --tag vNEW --git-sha "$SHA" \
+  --rx radio-smoke-rx.json --tx radio-smoke-tx.json
+```
+
+5. **Upload both receipts to the draft:**
+
+```bash
+gh release upload vNEW radio-smoke-rx.json radio-smoke-tx.json
+```
+
+Any FAIL, NOTRUN, or a smoke that cannot produce a receipt → STOP. Do not publish the draft; see Error recovery.
+
+## Step 9 — Publish the release (THIRD confirmation gate)
+
+Ask once: **Publish release vNEW? This triggers publish.yml → PyPI.** On `yes`:
+
+```bash
+gh release edit vNEW --draft=false
+```
+
+**State explicitly that publishing the draft is what triggers `publish.yml` (`on: release: published`); its `validate` job re-checks both receipts against the tag and `$GITHUB_SHA` before the test matrix, build, and PyPI upload.**
 
 Print release URL.
 
-## Step 8 — Post-release housekeeping
+## Step 10 — Post-release housekeeping
 
 1. Update `.claude/metrics.json`: `releases_count` += 1, `last_release_version = "NEW"`.
 2. Append to `.claude/workflow/release-notes.md`: version, date, commit count, headline.
 3. Print monitor link: `https://github.com/rigplane/rigplane-core/actions`.
 
-## Step 9 — Summary
+## Step 11 — Summary
 
 ```
 Release vNEW complete.
@@ -258,10 +295,11 @@ Release vNEW complete.
   CHANGELOG:      docs/CHANGELOG.md updated
   Git tag:        vNEW
   GitHub release: <URL>
+  Radio receipts: radio-smoke-rx.json + radio-smoke-tx.json uploaded and checked
   Commits since vPREV: N
 
 CI will now:
-  - publish.yml → PyPI
+  - publish.yml → receipt gate → tests → PyPI
   - docs.yml → docs deploy
 
 Monitor: https://github.com/rigplane/rigplane-core/actions
@@ -287,8 +325,17 @@ git reset --hard HEAD~1
 
 **Push succeeded but GitHub release failed:**
 ```bash
-gh release create vNEW --notes-file <path-to-extracted-changelog-section> --title "NEW"
+gh release create vNEW --draft --notes-file <path-to-extracted-changelog-section> --title "NEW"
 ```
+
+**Radio smoke failed (Step 8) — receipt missing, NOTRUN, or any FAIL:** do NOT publish the draft. Fix the cause, re-run the smoke; only a pair of PASS receipts goes up. If the tag itself must move, delete the draft and the tag and cut a fresh one:
+```bash
+gh release delete vNEW --yes   # draft was never published
+git push --delete origin vNEW
+git tag -d vNEW
+```
+
+**Radio-smoke step red in `publish.yml` (the release was already published):** the release is public but PyPI was never touched — `build` needs the red `validate`, and `publish` needs `build`. Do NOT re-publish or "retry" this release, and do not edit its assets to force a pass: the receipts and the tag no longer tell one story. Fix the cause and cut the NEXT tag (new patch/rc version) through the full draft-and-smoke flow. The failed release and tag may stay as the record (or be deleted per owner), but they are never published to PyPI.
 
 **Fully undo a pushed release:**
 ```bash

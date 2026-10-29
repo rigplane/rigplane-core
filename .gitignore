@@ -102,6 +102,8 @@ scripts/*
 !scripts/build_versioned_docs.py
 # And the weekly mutation-testing summarizer is tracked.
 !scripts/mutation/
+# And the radio-smoke release-receipt checker is tracked (MOR-3839).
+!scripts/release/
 # But CI scripts under .github/ are tracked.
 !.github/scripts/
 # And frontend tooling scripts (e.g. i18n lint) are tracked.

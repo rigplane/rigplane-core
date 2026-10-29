@@ -919,7 +919,7 @@ class TestBackendArgs:
 class TestBuildBackendConfig:
     async def test_lan_default(self):
         p = _build_parser()
-        args = p.parse_args(["--host", "192.168.1.1", "status"])
+        args = p.parse_args(["--host", "192.168.1.1", "--model", "IC-7610", "status"])
         config = await _build_backend_config(args)
         assert isinstance(config, LanBackendConfig)
         assert config.backend == "lan"
@@ -929,7 +929,17 @@ class TestBuildBackendConfig:
     async def test_lan_preserves_user_pass(self):
         p = _build_parser()
         args = p.parse_args(
-            ["--host", "10.0.0.1", "--user", "admin", "--pass", "secret", "status"]
+            [
+                "--host",
+                "10.0.0.1",
+                "--user",
+                "admin",
+                "--pass",
+                "secret",
+                "--model",
+                "IC-7610",
+                "status",
+            ]
         )
         config = await _build_backend_config(args)
         assert isinstance(config, LanBackendConfig)
@@ -938,7 +948,17 @@ class TestBuildBackendConfig:
 
     async def test_lan_custom_port(self):
         p = _build_parser()
-        args = p.parse_args(["--host", "10.0.0.1", "--control-port", "50010", "status"])
+        args = p.parse_args(
+            [
+                "--host",
+                "10.0.0.1",
+                "--control-port",
+                "50010",
+                "--model",
+                "IC-7610",
+                "status",
+            ]
+        )
         config = await _build_backend_config(args)
         assert isinstance(config, LanBackendConfig)
         assert config.port == 50010
@@ -946,7 +966,15 @@ class TestBuildBackendConfig:
     async def test_serial_config_built(self):
         p = _build_parser()
         args = p.parse_args(
-            ["--backend", "serial", "--serial-port", "/dev/tty.usb0", "status"]
+            [
+                "--backend",
+                "serial",
+                "--serial-port",
+                "/dev/tty.usb0",
+                "--model",
+                "IC-7300",
+                "status",
+            ]
         )
         config = await _build_backend_config(args)
         assert isinstance(config, SerialBackendConfig)
@@ -964,6 +992,8 @@ class TestBuildBackendConfig:
                 "/dev/tty.usb0",
                 "--serial-baud",
                 "9600",
+                "--model",
+                "IC-7300",
                 "status",
             ]
         )
@@ -983,6 +1013,8 @@ class TestBuildBackendConfig:
                 "IC-7610 RX",
                 "--tx-device",
                 "IC-7610 TX",
+                "--model",
+                "IC-7300",
                 "status",
             ]
         )
@@ -1001,6 +1033,8 @@ class TestBuildBackendConfig:
                 "/dev/tty.usb0",
                 "--serial-ptt-mode",
                 "civ",
+                "--model",
+                "IC-7300",
                 "status",
             ]
         )
@@ -1011,7 +1045,7 @@ class TestBuildBackendConfig:
     async def test_serial_missing_port_triggers_discovery(self):
         """When --backend serial is set without --serial-port, auto-discovery runs."""
         p = _build_parser()
-        args = p.parse_args(["--backend", "serial", "status"])
+        args = p.parse_args(["--backend", "serial", "--model", "IC-7300", "status"])
         # Discovery finds nothing → sys.exit(1)
         with patch(
             "rigplane.discovery.discover_serial_radios", AsyncMock(return_value=[])
@@ -1022,7 +1056,9 @@ class TestBuildBackendConfig:
     async def test_serial_inferred_from_serial_port(self):
         """--serial-port without --backend infers serial backend."""
         p = _build_parser()
-        args = p.parse_args(["--serial-port", "/dev/tty.usb0", "status"])
+        args = p.parse_args(
+            ["--serial-port", "/dev/tty.usb0", "--model", "IC-7300", "status"]
+        )
         config = await _build_backend_config(args)
         assert isinstance(config, SerialBackendConfig)
         assert config.device == "/dev/tty.usb0"
@@ -1066,17 +1102,17 @@ class TestBackendInferenceFromModel:
         assert isinstance(config, LanBackendConfig)
         assert config.model == "IC-7300"
 
-    async def test_no_model_keeps_serial_inference(self):
+    async def test_no_model_serial_is_refused(self):
         p = _build_parser()
         args = p.parse_args(["--serial-port", "/dev/ttyUSB0", "status"])
-        config = await _build_backend_config(args)
-        assert isinstance(config, SerialBackendConfig)
+        with pytest.raises(ValueError, match="Specify the radio model"):
+            await _build_backend_config(args)
 
-    async def test_no_model_keeps_lan_default(self):
+    async def test_no_model_lan_is_refused(self):
         p = _build_parser()
         args = p.parse_args(["--host", "1.2.3.4", "status"])
-        config = await _build_backend_config(args)
-        assert isinstance(config, LanBackendConfig)
+        with pytest.raises(ValueError, match="Specify the radio model"):
+            await _build_backend_config(args)
 
     async def test_unsupported_protocol_refused(self):
         p = _build_parser()
@@ -1191,7 +1227,7 @@ class TestAutoDiscovery:
 
     async def test_lan_discovery_single_radio(self):
         p = _build_parser()
-        args = p.parse_args(["status"])
+        args = p.parse_args(["--model", "IC-7610", "status"])
         with patch(
             "rigplane.discovery.discover_lan_radios",
             AsyncMock(return_value=[{"host": "10.0.0.42", "remote_id": 1}]),
@@ -1202,7 +1238,7 @@ class TestAutoDiscovery:
 
     async def test_lan_discovery_no_radios_exits(self):
         p = _build_parser()
-        args = p.parse_args(["status"])
+        args = p.parse_args(["--model", "IC-7610", "status"])
         with patch(
             "rigplane.discovery.discover_lan_radios",
             AsyncMock(return_value=[]),
@@ -1212,7 +1248,7 @@ class TestAutoDiscovery:
 
     async def test_lan_discovery_multiple_radios_exits(self):
         p = _build_parser()
-        args = p.parse_args(["status"])
+        args = p.parse_args(["--model", "IC-7610", "status"])
         with patch(
             "rigplane.discovery.discover_lan_radios",
             AsyncMock(
@@ -1227,14 +1263,16 @@ class TestAutoDiscovery:
 
     async def test_explicit_host_skips_discovery(self):
         p = _build_parser()
-        args = p.parse_args(["--host", "192.168.1.1", "status"])
+        args = p.parse_args(["--host", "192.168.1.1", "--model", "IC-7610", "status"])
         # No mock needed — discovery should not be called.
         config = await _build_backend_config(args)
         assert config.host == "192.168.1.1"
 
     async def test_backend_inferred_from_serial_port(self):
         p = _build_parser()
-        args = p.parse_args(["--serial-port", "/dev/ttyUSB0", "status"])
+        args = p.parse_args(
+            ["--serial-port", "/dev/ttyUSB0", "--model", "IC-7300", "status"]
+        )
         config = await _build_backend_config(args)
         assert isinstance(config, SerialBackendConfig)
 
@@ -2172,6 +2210,8 @@ class TestCheckPortsAvailable:
                 [
                     "--host",
                     "192.168.1.100",
+                    "--model",
+                    "IC-7610",
                     "web",
                     "--port",
                     str(occupied_port),
@@ -2216,6 +2256,8 @@ class TestCheckPortsAvailable:
                 [
                     "--host",
                     "1.2.3.4",
+                    "--model",
+                    "IC-7610",
                     "web",
                     "--port",
                     str(free_web_port),
@@ -2256,7 +2298,9 @@ class TestCheckPortsAvailable:
         from rigplane.cli import _run
         from rigplane.cli._instance_guard import radio_lock_identity
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web"]
+        )
         identity = radio_lock_identity(
             LanBackendConfig(host="1.2.3.4", port=args.control_port)
         )
@@ -2329,7 +2373,9 @@ class TestCheckPortsAvailable:
         from rigplane.cli import _run
         from rigplane.cli._instance_guard import radio_lock_identity
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web"]
+        )
         identity = radio_lock_identity(
             LanBackendConfig(host="1.2.3.4", port=args.control_port)
         )
@@ -2392,17 +2438,23 @@ class TestCheckPortsAvailable:
     @pytest.mark.parametrize(
         ("argv", "expect"),
         [
-            pytest.param(["--host", "1.2.3.4", "web"], "resident-refused", id="web"),
             pytest.param(
-                ["--host", "1.2.3.4", "station"],
+                ["--host", "1.2.3.4", "--model", "IC-7610", "web"],
+                "resident-refused",
+                id="web",
+            ),
+            pytest.param(
+                ["--host", "1.2.3.4", "--model", "IC-7610", "station"],
                 "resident-refused",
                 id="station",
             ),
             pytest.param(
-                ["--host", "1.2.3.4", "serve"], "resident-refused", id="serve"
+                ["--host", "1.2.3.4", "--model", "IC-7610", "serve"],
+                "resident-refused",
+                id="serve",
             ),
             pytest.param(
-                ["--host", "1.2.3.4", "status"],
+                ["--host", "1.2.3.4", "--model", "IC-7610", "status"],
                 "one-shot-refused",
                 id="one-shot-status",
             ),
@@ -2442,7 +2494,9 @@ class TestCheckPortsAvailable:
         from rigplane.cli import _run
         from rigplane.cli._instance_guard import radio_lock_identity
 
-        lan_args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        lan_args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web"]
+        )
         identity = radio_lock_identity(
             LanBackendConfig(host="1.2.3.4", port=lan_args.control_port)
         )
@@ -2553,7 +2607,9 @@ class TestCheckPortsAvailable:
             async def get_mode(self) -> tuple[str, None]:
                 return ("USB", None)
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "status"]
+        )
         identity = radio_lock_identity(
             LanBackendConfig(host="1.2.3.4", port=args.control_port)
         )
@@ -2635,7 +2691,9 @@ class TestCheckPortsAvailable:
 
         device = tmp_path / "tty-fake"
         device.write_bytes(b"")
-        args = _build_parser().parse_args(["--serial-port", str(device), "status"])
+        args = _build_parser().parse_args(
+            ["--serial-port", str(device), "--model", "IC-7300", "status"]
+        )
         identity = radio_lock_identity(SerialBackendConfig(device=str(device)))
         child_script = (
             "import sys, time\n"
@@ -2704,7 +2762,9 @@ class TestCheckPortsAvailable:
 
         fake_default = tmp_path / "fake-default-cache"
         monkeypatch.setattr(_guard, "_default_lock_dir", lambda: fake_default)
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "web"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web"]
+        )
         identity = radio_lock_identity(
             LanBackendConfig(host="1.2.3.4", port=args.control_port)
         )
@@ -2780,7 +2840,9 @@ class TestProductionManagedTxComposition:
     async def test_web_passes_the_exact_preconnect_composition_to_cmd_web(self) -> None:
         from rigplane.cli import _run
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld"]
+        )
         radio = self._Radio()
         with (
             patch("rigplane.cli.create_radio", return_value=radio),
@@ -2806,7 +2868,9 @@ class TestProductionManagedTxComposition:
     ) -> None:
         from rigplane.cli import _run
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld"]
+        )
         radio = self._Radio()
         candidate = MagicMock()
         candidate.shutdown = AsyncMock()
@@ -2877,7 +2941,9 @@ class TestProductionManagedTxComposition:
     async def test_cli_shutdowns_once_when_radio_enter_fails(self) -> None:
         from rigplane.cli import _run
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld"]
+        )
         radio = self._Radio()
         radio.__aenter__ = AsyncMock(side_effect=RuntimeError("connect failed"))  # type: ignore[method-assign]
         radio.__aexit__ = AsyncMock(return_value=False)  # type: ignore[method-assign]
@@ -3027,7 +3093,7 @@ class TestStartupBusyHoldOrdering:
     @staticmethod
     def _args(*extra: str) -> Any:
         return _build_parser().parse_args(
-            ["--host", "1.2.3.4", "web", "--no-rigctld", *extra]
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld", *extra]
         )
 
     @staticmethod
@@ -3155,6 +3221,8 @@ class TestStartupBusyHoldOrdering:
             [
                 "--host",
                 "1.2.3.4",
+                "--model",
+                "IC-7610",
                 "web",
                 "--managed",
                 "--port",
@@ -3361,7 +3429,9 @@ class TestDisconnectDuringStartupBusyHold:
 
     @staticmethod
     def _args() -> Any:
-        return _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        return _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld"]
+        )
 
     @staticmethod
     def _make(*, busy_first: bool) -> tuple[Any, Any, Any]:
@@ -3718,7 +3788,9 @@ class TestFirstSignalShutdownBound:
             )
             return 0
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--no-rigctld"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld"]
+        )
         with (
             patch(
                 "rigplane.cli.create_radio",
@@ -3868,6 +3940,8 @@ class TestRemainingPortPreflight:
                 [
                     "--host",
                     "1.2.3.4",
+                    "--model",
+                    "IC-7610",
                     "web",
                     "--no-rigctld",
                     "--port",
@@ -3934,6 +4008,8 @@ class TestRemainingPortPreflight:
                 [
                     "--host",
                     "1.2.3.4",
+                    "--model",
+                    "IC-7610",
                     "station",
                     "--port",
                     str(free_web_port),
@@ -4162,7 +4238,9 @@ class TestLiveOwnerExitCode:
         """The awaited first connect maps the live-owner stop to 3."""
         from rigplane.cli import _run
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "status"]
+        )
         radio = self._lifecycle_radio()
         with patch("rigplane.cli.create_radio", return_value=radio):
             result = await _run(args)
@@ -4217,7 +4295,9 @@ class TestLiveOwnerExitCode:
             ConnectionError as RigplaneConnectionError,
         )
 
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "status"]
+        )
 
         class _RefusedRadio:
             capabilities: set[str] = set()
@@ -4263,7 +4343,9 @@ class TestLiveOwnerExitCode:
             "rigplane.runtime.session_lifecycle.asyncio.sleep", clock.sleep
         )
         radio = self._cap_lifecycle_radio()
-        args = _build_parser().parse_args(["--host", "1.2.3.4", "status"])
+        args = _build_parser().parse_args(
+            ["--host", "1.2.3.4", "--model", "IC-7610", "status"]
+        )
         with patch("rigplane.cli.create_radio", return_value=radio):
             result = await _run(args)
 
