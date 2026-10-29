@@ -222,22 +222,42 @@ def _reap_session_task(task: asyncio.Task[Any]) -> None:
         pass
 
 
-async def _join_session_tasks(tasks: list[asyncio.Task[Any]], session_id: str) -> None:
+async def _join_session_tasks(
+    tasks: list[asyncio.Task[Any]],
+    session_id: str,
+    unsettled: set[asyncio.Task[Any]],
+) -> None:
     """Join session tasks, bounded independently of child cancellation.
 
     A cancelled callback that awaits gated cleanup forever must not wedge
     this join past :data:`TEARDOWN_TIMEOUT_S`: the graceful close and the
-    guarded disconnect still run while unfinished tasks are retained and
-    reaped on completion.
+    guarded disconnect still run while unfinished tasks are retained in
+    ``unsettled`` (the one retention registry, reaped on completion).
+    Observation uses :func:`asyncio.wait`, never ``timeout`` + ``gather``:
+    a bound built around ``gather`` re-cancels the children on expiry, so
+    a cancellation-resistant child wedges the join forever, while ``wait``
+    leaves the children running and just reports them pending.
     """
+    if not tasks:
+        return
     try:
-        async with asyncio.timeout(TEARDOWN_TIMEOUT_S):
-            await asyncio.gather(*tasks, return_exceptions=True)
-    except TimeoutError:
-        logger.debug("tci %s: task join timed out; disconnecting anyway", session_id)
+        done, pending = await asyncio.wait(tasks, timeout=TEARDOWN_TIMEOUT_S)
+    except asyncio.CancelledError:
+        # This waiter was cancelled: retain everything unfinished and let
+        # the cancellation continue. The children keep running under the
+        # registry; nothing is dropped or left unretrieved.
         for task in tasks:
             if not task.done():
-                task.add_done_callback(_reap_session_task)
+                _retain_unsettled(task, unsettled)
+            else:
+                _reap_session_task(task)
+        raise
+    for task in done:
+        _reap_session_task(task)
+    if pending:
+        logger.debug("tci %s: task join timed out; disconnecting anyway", session_id)
+        for task in pending:
+            _retain_unsettled(task, unsettled)
 
 
 class TciSession:
@@ -405,7 +425,9 @@ class TciSession:
                 task.cancel()
             if others:
                 try:
-                    await _join_session_tasks(others, self._id)
+                    await _join_session_tasks(
+                    others, self._id, self._server._unsettled
+                )
                 finally:
                     # Transport cleanup is unconditional across
                     # cancellation during the join: a cancel landing
@@ -721,16 +743,31 @@ class TciServer:
         pending = [task for task in list(self._setup_tasks) if not task.done()]
         for task in pending:
             task.cancel()
-        if sessions or pending:
+        finish_tasks = [asyncio.create_task(session.finish()) for session in sessions]
+        joined: list[asyncio.Task[Any]] = [*finish_tasks, *pending]
+        if joined:
+            # Cancellation-independent bounded observation (never
+            # ``timeout`` + ``gather``: the bound would re-cancel a
+            # cancellation-resistant ``on_connect`` and wedge the stop).
+            # Unfinished work is retained in the one ``_unsettled``
+            # registry and reaped on completion, like the join above.
             try:
-                async with asyncio.timeout(self._stop_timeout):
-                    await asyncio.gather(
-                        *(session.finish() for session in sessions),
-                        *pending,
-                        return_exceptions=True,
-                    )
-            except TimeoutError:
+                done, still_pending = await asyncio.wait(
+                    joined, timeout=self._stop_timeout
+                )
+            except asyncio.CancelledError:
+                for task in joined:
+                    if not task.done():
+                        _retain_unsettled(task, self._unsettled)
+                    else:
+                        _reap_session_task(task)
+                raise
+            for task in done:
+                _reap_session_task(task)
+            if still_pending:
                 logger.debug("tci stop: teardown timed out")
+                for task in still_pending:
+                    _retain_unsettled(task, self._unsettled)
         if listener is not None:
             try:
                 async with asyncio.timeout(self._stop_timeout):

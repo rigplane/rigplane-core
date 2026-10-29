@@ -92,18 +92,36 @@ def _forbidden_imports(source: str, package: str = "rigplane.tci") -> list[str]:
     return bad
 
 
+def _package_for_path(path: Path, package_dir: Path) -> str:
+    """Containing package for *path* under the scanned leaf root.
+
+    The scanned root maps to ``rigplane.tci``: ``ws.py`` lives in
+    ``rigplane.tci``, ``extra/__init__.py`` and ``extra/foo.py`` both
+    live in ``rigplane.tci.extra``. Relative imports resolve against
+    this package, not the top one.
+    """
+    rel = path.relative_to(package_dir)
+    parts = [part for part in rel.parent.parts if part not in ("", ".")]
+    return ".".join(["rigplane", "tci", *parts])
+
+
 def _scan_package(directory: Path) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
-    for path in sorted(directory.glob("*.py")):
-        bad = _forbidden_imports(path.read_text(encoding="utf-8"))
+    for path in sorted(directory.rglob("*.py")):
+        package = _package_for_path(path, directory)
+        bad = _forbidden_imports(
+            path.read_text(encoding="utf-8"), package=package
+        )
         if bad:
-            found[path.name] = bad
+            found[path.relative_to(directory).as_posix()] = bad
     return found
 
 
 def test_tci_package_has_expected_modules() -> None:
     assert PACKAGE_DIR.is_dir(), "src/rigplane/tci/ does not exist"
-    actual = frozenset(p.name for p in PACKAGE_DIR.glob("*.py"))
+    actual = frozenset(
+        p.relative_to(PACKAGE_DIR).as_posix() for p in PACKAGE_DIR.rglob("*.py")
+    )
     assert actual == EXPECTED_MODULES
 
 
