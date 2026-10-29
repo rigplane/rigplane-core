@@ -25,6 +25,7 @@ through the same shared, profile-driven paths the IC-705 tests use:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -58,6 +59,7 @@ from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebConfig, WebServer
 from test_icom_memory_entry import _block, _ic9700_reply
 from test_radio import MockTransport, _wrap_civ_in_udp
+from test_web_server import _ws_connect, _ws_recv_frame, _ws_send_text
 from test_web_split_writes import _request
 
 RIGS = Path(__file__).resolve().parent.parent / "rigs"
@@ -710,6 +712,39 @@ def _observe_mode(radio: IcomRadio, mode_byte: int) -> None:
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
 
+async def _ws_session_requests(web, commands: list[tuple[str, dict]]) -> list[dict]:
+    """Run several commands over ONE websocket connection.
+
+    One session stays registered (and the socket open) until every queued
+    command has executed and answered: unlike one connection per request,
+    no per-request teardown can unregister the session ahead of the
+    consumer draining its entry (MOR-3623 CI: ``queued command session is
+    no longer active`` under load). This is also the production shape —
+    clients hold one long-lived connection for many commands. The timeout
+    is a wedged-test deadline only; the passing path never waits for it.
+    Simulated; fake wire only.
+    """
+    reader, writer, _ = await _ws_connect("127.0.0.1", web.port, "/api/v1/ws")
+    try:
+        results = []
+        for index, (name, params) in enumerate(commands):
+            payload = {"id": f"ic9700-parity-{index}", "name": name, "params": params}
+            await _ws_send_text(writer, json.dumps({"type": "cmd", **payload}))
+            while True:
+                _opcode, response = await _ws_recv_frame(reader, timeout=10)
+                result = json.loads(response)
+                if (
+                    result.get("type") == "response"
+                    and result.get("id") == payload["id"]
+                ):
+                    results.append(result)
+                    break
+        return results
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["http", "ws"])
 async def test_ic9700_controls_through_the_real_endpoint(
@@ -723,27 +758,25 @@ async def test_ic9700_controls_through_the_real_endpoint(
     for n in (1, 2, 3):
         transport.queue_response_on_send(n, _reply(0xFB))
     consumer = asyncio.create_task(consume(3))
-    try:
-        status, shift = await _request(
-            web,
-            protocol,
+    commands = [
+        (
             "set_repeater_shift",
             {"direction": int(RepeaterShiftDirection.MINUS), "receiver": 1},
-        )
-        assert status == (200 if protocol == "http" else None)
-        assert shift["ok"] is True
-
-        status, dv = await _request(
-            web, protocol, "set_mode", {"mode": "DV", "receiver": 0}
-        )
-        assert status == (200 if protocol == "http" else None)
-        assert dv["ok"] is True
-
-        status, dd = await _request(
-            web, protocol, "set_mode", {"mode": "DD", "receiver": 0}
-        )
-        assert status == (200 if protocol == "http" else None)
-        assert dd["ok"] is True
+        ),
+        ("set_mode", {"mode": "DV", "receiver": 0}),
+        ("set_mode", {"mode": "DD", "receiver": 0}),
+    ]
+    try:
+        if protocol == "ws":
+            shift, dv, dd = await _ws_session_requests(web, commands)
+            assert shift["ok"] is True
+            assert dv["ok"] is True
+            assert dd["ok"] is True
+        else:
+            for name, params in commands:
+                status, result = await _request(web, protocol, name, params)
+                assert status == 200
+                assert result["ok"] is True
     finally:
         await asyncio.wait_for(consumer, 5)
 
