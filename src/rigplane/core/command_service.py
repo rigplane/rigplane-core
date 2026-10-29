@@ -209,6 +209,7 @@ class CommandService:
         sent_event = self.emit_lifecycle(intent, "sent")
         key = (intent.source, _session_id(intent), intent.id)
         provider_generation = self._state_store.provider_generation
+        started_at = self._clock()
 
         try:
             selected_executor = self._executor if executor is None else executor
@@ -272,6 +273,19 @@ class CommandService:
                 )
             )
 
+        # MOR-3632: the write made the stored value of what it changed wrong,
+        # not stale. Withdraw it from consumers that must not act on the
+        # pre-write value (the TX target permit) until it is observed again,
+        # unless the executor already brought that observation back.
+        returned = {observation.path for observation in executor_result.observations}
+        self._state_store.mark_tx_target_inputs_written(
+            (
+                path
+                for path in _observable_paths_for_intent(intent)
+                if path not in returned
+            ),
+            observed_since=started_at,
+        )
         self._request_write_confirmation(intent, executor_result)
 
         return CommandServiceResult(

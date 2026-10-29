@@ -55,7 +55,6 @@ from ...runtime.tx_interlock import (
     resolve_rf_state,
     send_civ_frame,
 )
-from ...runtime.tx_frequency_permit import tx_frequency_permit_refusal
 from ...runtime.managed_tx_authority import ManagedTxAuthority
 from ...runtime.managed_tx_state import (
     ManagedTxIntentKind,
@@ -1837,18 +1836,6 @@ class ControlHandler:
                 raise ValueError("PTT state must be a boolean")
         else:
             on = name == "ptt_on"
-        if on:
-            # MOR-3632: server-side TX frequency permit at PTT-on. The same
-            # gate the rigctld T 1 path runs; PTT-off never reaches it. A
-            # refusal is raised before any submission state exists, so a
-            # refused key leaves neither _last_ptt_on nor an authority
-            # submission behind.
-            refusal = tx_frequency_permit_refusal(
-                getattr(self._radio, "profile", None),
-                getattr(self._server, "command_state_store", None),
-            )
-            if refusal is not None:
-                raise refusal
         # Before the submission: a close while the key is in flight releases.
         self._last_ptt_on = on
         pending: asyncio.Task[Any] | None = None

@@ -7,6 +7,7 @@ being corrected, and a missing union member cannot create a privileged path.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
@@ -15,6 +16,12 @@ from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import FreshnessState, StateSnapshot
+from rigplane.core.tx_target import (
+    KnownTxTarget,
+    TxTarget,
+    UnknownTxTarget,
+    tx_target_from_dict,
+)
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
     TxInterlockCommandFamily,
@@ -70,6 +77,7 @@ __all__ = [
     "TxInterlockRefusal",
     "classify_raw_civ_frame_tx_family",
     "classify_tx_interlock",
+    "current_tx_target",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
     "is_exact_raw_dekey_frame",
@@ -295,6 +303,45 @@ def resolve_rf_state(snapshot: StateSnapshot) -> RfState:
     ):
         return RfState.UNKNOWN
     return RfState.TX if field.value else RfState.RX
+
+
+_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
+
+
+def current_tx_target(snapshot: StateSnapshot) -> TxTarget | None:
+    """Return the current published ``tx_state.tx_target``, else None (MOR-3632).
+
+    None means the server does not know the TX target right now: never
+    observed, not FRESH, from another provider generation, or older than its
+    own ``max_age`` at the snapshot. Like :func:`resolve_rf_state` the age is
+    recomputed from the snapshot instead of trusting the FRESH flag, because
+    the freshness service only clears it on its next tick. A stored mapping
+    (wire form) parses through the ``tx_target_from_dict`` contract the
+    pipeline uses; an unparseable value reads as unknown, never raises.
+    """
+
+    try:
+        field = snapshot.field(_TX_TARGET_PATH)
+    except KeyError:
+        return None
+    if (
+        field.freshness is not FreshnessState.FRESH
+        or field.provider_generation != snapshot.provider_generation
+    ):
+        return None
+    if field.max_age is not None:
+        age = snapshot.generated_at_monotonic - field.last_observed_monotonic
+        if not (isfinite(age) and age < field.max_age):
+            return None
+    value = field.value
+    if isinstance(value, (KnownTxTarget, UnknownTxTarget)):
+        return value
+    if isinstance(value, Mapping):
+        try:
+            return tx_target_from_dict(value)
+        except (TypeError, ValueError):
+            return None
+    return None
 
 
 # These structural exemptions are intentionally checked before all disruptive

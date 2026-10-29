@@ -19,8 +19,11 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
     VfoSlot,
 )
+from rigplane.core.tx_target_inputs import tx_target_inputs_written
 
 _DEFAULT_MAX_HISTORY_COUNT = 4096
+# How long an own write withholds the TX-target inputs it changed (MOR-3632).
+_TX_TARGET_WRITE_GRACE_SECONDS = 5.0
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -267,6 +270,7 @@ class StateStore:
         "_provider_generation",
         "_relative_vfo_retention",
         "_state_revision",
+        "_written",
     )
 
     def __init__(
@@ -290,6 +294,9 @@ class StateStore:
         self._provider_generation_notifying = False
         self._relative_vfo_retention: _RelativeVfoRetention | None = None
         self._entries: dict[FieldPath, _FieldEntry] = {}
+        # Paths one of our own acknowledged writes made wrong -> clock reading
+        # of that write (see :meth:`mark_written`).
+        self._written: dict[FieldPath, float] = {}
         self._history: list[SnapshotDelta] = []
         self._history_floor_state_revision = 0
         self._history_floor_freshness_revision = 0
@@ -315,6 +322,7 @@ class StateStore:
             )
         )
         self._entries.clear()
+        self._written.clear()
         if removed:
             self._state_revision += 1
             self._append_history(
@@ -417,6 +425,14 @@ class StateStore:
         else:
             changes = ()
 
+        if self._written:
+            for key in tx_target_inputs_written((observation.path,)):
+                written_at = self._written.get(key)
+                if (
+                    written_at is not None
+                    and observation.timestamp_monotonic > written_at
+                ):
+                    del self._written[key]
         self._entries[observation.path] = _FieldEntry(
             value=_copy_value(observation.value),
             freshness=FreshnessState.FRESH,
@@ -762,6 +778,49 @@ class StateStore:
                 path for part in parts for path in part.freshness_paths
             ),
         )
+
+    def mark_tx_target_inputs_written(
+        self, paths: Iterable[FieldPath], *, observed_since: float | None = None
+    ) -> None:
+        """Record that an acknowledged write of ours made TX-target inputs wrong.
+
+        A write does not make the stored observation of what it changed stale,
+        it makes it wrong: the value stays FRESH until the next read lands.
+        ``paths`` is whatever the write names; only the frequency, split and
+        active-slot facts the TX target is derived from are kept (see
+        :func:`tx_target_inputs_written`, which also folds the profile and
+        index spellings of a receiver into one key). A path already observed
+        after ``observed_since`` (the write's own readback) is not marked.
+        Consumers that must not act on a pre-write target ask
+        :meth:`pending_tx_target_inputs`; the first observation of such a path
+        stamped after the write clears it, a new provider generation clears all
+        of them, and a mark expires after ``_TX_TARGET_WRITE_GRACE_SECONDS``
+        so a field nothing ever reads back cannot withhold the target for
+        good. Not an observation and not part of any snapshot.
+        """
+
+        now = self._freshness_clock.now()
+        for path in tx_target_inputs_written(paths):
+            entry = self._entries.get(path)
+            if (
+                observed_since is not None
+                and entry is not None
+                and entry.last_observed_monotonic > observed_since
+            ):
+                continue
+            self._written[path] = now
+
+    def pending_tx_target_inputs(self) -> frozenset[FieldPath]:
+        """TX-target inputs written by us and not observed again since."""
+
+        now = self._freshness_clock.now()
+        for path in [
+            path
+            for path, written_at in self._written.items()
+            if now - written_at >= _TX_TARGET_WRITE_GRACE_SECONDS
+        ]:
+            del self._written[path]
+        return frozenset(self._written)
 
     def discard(self, paths: Iterable[FieldPath | str]) -> ChangeSet:
         """Remove session-scoped facts so a new provider epoch starts unknown.

@@ -11,6 +11,7 @@ from typing import Protocol, runtime_checkable
 from rigplane.core.radio_protocol import ManagedTxSupervisor
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateSnapshot, StateStore
+from rigplane.core.tx_target import evaluate_tx_frequency_permit
 from rigplane.core.tx_safety import (
     RadioTx,
     TxOutcome,
@@ -20,6 +21,7 @@ from rigplane.core.tx_safety import (
     TxSafetySnapshot,
     TxTransition,
 )
+from rigplane.profiles import RadioProfile
 from rigplane.runtime.local_tx_work import LocalTxWorkRunner
 from rigplane.runtime.managed_tx_authority import (
     ManagedTxAuthority,
@@ -33,7 +35,17 @@ from rigplane.runtime.managed_tx_effect_lane import (
 )
 from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
-from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+from rigplane.runtime.tx_interlock import (
+    RfState,
+    current_tx_target,
+    resolve_rf_state,
+)
+
+# Stable refusal codes of the TX frequency permit (MOR-3632).
+_TX_PERMIT_REFUSALS = {
+    "receive-only-band": "receive_only_band",
+    "outside-tx-range": "outside_tx_range",
+}
 
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
 
@@ -127,6 +139,7 @@ class ManagedTxComposition:
         self._retire_provider = retire_provider
         self._abort_fence = TxAbortFence()
         self._local_tx_work_runner = LocalTxWorkRunner(self._abort_fence)
+        self._actuator = actuator
         self._tot_config_store = ManagedTxTotConfigStore(config_path)
         # MOR-3537: the store as it stood when Core's own TX last ended, and
         # when Core keyed that TX.
@@ -140,6 +153,7 @@ class ManagedTxComposition:
             self._abort_fence,
             provider_generation=None,
             radio_tx=self,
+            tx_permit=self,
         )
         self._legacy_supervisor = _LegacyManagedTxCutoverGate(self._authority)
         self._state_store: StateStore | None = None
@@ -228,6 +242,37 @@ class ManagedTxComposition:
         ):
             return RadioTxOrigin.FOREIGN
         return RadioTxOrigin.UNRELEASED
+
+    def tx_frequency_refusal(self) -> str | None:
+        """Refusal code if the current TX target is not in a transmit band.
+
+        MOR-3632. The adversary is an operator typo or an external client
+        (rigctld, WSJT-X, a tracker) that sets a TX frequency and keys up; the
+        radio firmware stays the last line of defence against everything
+        else. Band-only: it decides solely from a current KNOWN TX target
+        that carries a frequency, against the active profile's band rows
+        (non-``rx_only`` rows permit TX; a permitting row wins over an
+        overlapping receive-only row). Everything else is not applicable and
+        returns ``None``: no state store yet, a profile without band rows,
+        or a target that is unknown, stale, malformed or without a frequency
+        (the unknown-target guard, MOR-3633, owns those). So is a target whose
+        inputs one of our own acknowledged writes changed since it was
+        derived or read (``StateStore.pending_tx_target_inputs``): the stored target
+        still describes the radio before that write, so it is not used.
+        """
+        store = self._state_store
+        profile = getattr(self._actuator, "profile", None)
+        if store is None or not isinstance(profile, RadioProfile):
+            return None
+        if store.pending_tx_target_inputs():
+            return None
+        bands = tuple(band for rng in profile.freq_ranges for band in rng.bands)
+        decision = evaluate_tx_frequency_permit(
+            bands, current_tx_target(store.snapshot())
+        )
+        if decision.permitted or decision.reason is None:
+            return None
+        return _TX_PERMIT_REFUSALS[decision.reason]
 
     def _provider_generation_changed(self, generation: int) -> None:
         self._observation_generation = int(generation)

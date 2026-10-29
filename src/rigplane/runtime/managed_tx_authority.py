@@ -78,6 +78,18 @@ _RADIO_TX_REFUSALS = {
 }
 
 
+class TxFrequencyPermit(Protocol):
+    """The TX frequency permit, as the composition answers it (MOR-3632)."""
+
+    def tx_frequency_refusal(self) -> str | None:
+        """Refusal code if keying on the current TX target is not permitted.
+
+        Evaluated by the authority under its lock, immediately before a
+        positive transition; ``None`` permits (or does not apply).
+        """
+        ...
+
+
 class _Wakeup(Protocol):
     async def wait_until(self, deadline: float | None) -> None: ...
 
@@ -195,6 +207,7 @@ class ManagedTxAuthority:
         attempt_timeout_seconds: float = ATTEMPT_TIMEOUT_S,
         retry_delay_seconds: float = RETRY_DELAY_S,
         radio_tx: RadioTxProbe | None = None,
+        tx_permit: TxFrequencyPermit | None = None,
     ) -> None:
         if not 0 < attempt_timeout_seconds < float("inf") or not 0 < (
             retry_delay_seconds
@@ -245,6 +258,9 @@ class ManagedTxAuthority:
         # Core's own TX last ended. A TX the radio reports after that refuses
         # every TX start; it never blocks force_off.
         self._radio_tx = radio_tx
+        # MOR-3632: the TX frequency permit, read at the one place every
+        # positive transition (PTT and latched transmit_on) is admitted.
+        self._tx_permit = tx_permit
         self._idle_since = float("-inf")
         # When Core last keyed, until that TX's release settles.
         self._keyed_at: float | None = None
@@ -442,6 +458,13 @@ class ManagedTxAuthority:
                             ), None
                         if (refusal := self._radio_tx_refusal_locked()) is not None:
                             # MOR-3537: never key over a TX the radio reports.
+                            raise ControllerError(refusal, 409)
+                        if (refusal := self._tx_frequency_refusal_locked()) is not None:
+                            # MOR-3632: evaluated here, after the ordered queue
+                            # barrier released this transition and still under
+                            # the lock, so a retune queued ahead of the key is
+                            # already applied and nothing can change the verdict
+                            # between it and the transition.
                             raise ControllerError(refusal, 409)
                         transition, full_force = self._transition_locked(action, owner)
                         if transition is None:
@@ -1563,6 +1586,12 @@ class ManagedTxAuthority:
         """Refusal code while the radio transmits and Core holds and owes no TX."""
         origin = self._radio_tx_origin_locked()
         return None if origin is None else _RADIO_TX_REFUSALS[origin]
+
+    def _tx_frequency_refusal_locked(self) -> str | None:
+        """Refusal code of the TX frequency permit for a positive transition."""
+        return (
+            None if self._tx_permit is None else self._tx_permit.tx_frequency_refusal()
+        )
 
     def _pending_settlements_locked(self) -> tuple[_SubmissionCompletion, ...]:
         return tuple(task for task in self._settlement_tasks if not task.done())
