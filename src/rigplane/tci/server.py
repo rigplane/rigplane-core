@@ -670,7 +670,11 @@ class TciServer:
                 self._accept_request, self._host, self._port
             )
         except BaseException:
-            self._starting = False
+            # Only release the flag while this invocation still owns
+            # the generation: a concurrent stop() may already have
+            # allowed a replacement start that owns it now.
+            if self._generation == start_gen:
+                self._starting = False
             raise
         if (
             not self._starting
@@ -679,17 +683,22 @@ class TciServer:
         ):
             # A concurrent stop() invalidated this bind (or an
             # overlapping start slipped in): close the orphan instead
-            # of installing a listener after shutdown.
+            # of installing a listener after shutdown. The flag is
+            # released only by the generation owner, so an orphan
+            # never clears a replacement start that began after the
+            # invalidation.
             listener.close()
             try:
                 async with asyncio.timeout(self._stop_timeout):
                     await listener.wait_closed()
             except TimeoutError:
                 logger.debug("tci start: orphan wait_closed timed out")
-            self._starting = False
+            if self._generation == start_gen:
+                self._starting = False
             raise RuntimeError("server was stopped during startup")
         self._listener = listener
-        self._starting = False
+        if self._generation == start_gen:
+            self._starting = False
         self._generation += 1
         sockets = self._listener.sockets or ()
         names = ", ".join(str(sock.getsockname()) for sock in sockets)
