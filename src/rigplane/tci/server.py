@@ -33,11 +33,13 @@ from rigplane.tci.ws import (
 )
 
 __all__ = [
+    "CLOSE_TIMEOUT_S",
     "COALESCE_WINDOW_S",
     "DEADLINE_S",
     "MAX_QUEUED_OUTBOUND",
     "PING_INTERVAL_S",
     "STOP_TIMEOUT_S",
+    "TEARDOWN_TIMEOUT_S",
     "TciServer",
     "TciSession",
 ]
@@ -50,6 +52,10 @@ DEADLINE_S = 15.0
 COALESCE_WINDOW_S = 0.03
 #: Upper bound for the whole session-teardown phase of ``stop()``.
 STOP_TIMEOUT_S = 5.0
+#: Bound on one graceful ``close()``: past it the transport is aborted.
+CLOSE_TIMEOUT_S = 2.0
+#: Bound on each wait for a session's ``on_disconnect`` (two waits max).
+TEARDOWN_TIMEOUT_S = 2.0
 #: Bound on queued outbound payload per session: frames in the outbox
 #: plus lines held for coalescing (one held line becomes one frame at
 #: flush). Past it the session is aborted instead of retaining more.
@@ -93,6 +99,37 @@ def _status_line(status: int, reason: str, body: bytes) -> bytes:
         "Connection: close\r\n"
         "\r\n"
     ).encode("ascii") + body
+
+
+async def _run_guarded_disconnect(handler: TciHandler, session_id: str) -> None:
+    """Run ``on_disconnect`` exactly once; survives one cancellation.
+
+    The callback task is retained and re-awaited after the first
+    cancellation (the bounded handback shape of ``rigctld``): a second
+    cancellation abandons the wait, and each wait lasts at most
+    :data:`TEARDOWN_TIMEOUT_S`. A handler error is absorbed
+    (fail-soft). Used both for live sessions and for handlers whose
+    ``on_connect`` never completed.
+    """
+    task = asyncio.ensure_future(handler.on_disconnect())
+    try:
+        try:
+            await asyncio.wait_for(asyncio.shield(task), TEARDOWN_TIMEOUT_S)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.wait_for(asyncio.shield(task), TEARDOWN_TIMEOUT_S)
+            except asyncio.CancelledError:
+                logger.debug("tci %s: disconnect cancelled twice; abandoning", session_id)
+                task.cancel()
+        except TimeoutError:
+            logger.debug("tci %s: disconnect timed out; retrying once", session_id)
+            try:
+                await asyncio.wait_for(asyncio.shield(task), TEARDOWN_TIMEOUT_S)
+            except (asyncio.CancelledError, TimeoutError):
+                logger.debug("tci %s: disconnect unsettled; abandoning", session_id)
+                task.cancel()
+    except Exception:
+        logger.debug("tci %s: disconnect failed", session_id, exc_info=True)
 
 
 class TciSession:
@@ -236,6 +273,12 @@ class TciSession:
         return) before ``on_disconnect`` has run. Session tasks themselves
         never wait (the winner reaps them; waiting would deadlock the
         winner's gather against the waiter's task).
+
+        The graceful ``close()`` is bounded (a blocked ``drain`` falls
+        back to ``abort()``), and the disconnect plus registry removal
+        run unconditionally: even when this ``finish()`` is cancelled
+        mid-close, the session is released and latecomers observe
+        completion.
         """
         current = asyncio.current_task()
         if self._done:
@@ -259,25 +302,27 @@ class TciSession:
                 # listener, so ``stop()`` hung in ``wait_closed()`` forever.
                 # ``close()`` sends the close frame only once and
                 # ``writer.close()`` is idempotent.
-                await self._conn.close()
-            except OSError:
-                pass
+                async with asyncio.timeout(CLOSE_TIMEOUT_S):
+                    await self._conn.close()
+            except (TimeoutError, OSError, asyncio.CancelledError):
+                # A close that cannot flush (or a shutdown racing it)
+                # must not wedge the teardown: drop the transport.
+                self._conn.abort()
+        finally:
             try:
                 await self._teardown()
+            except asyncio.CancelledError:
+                pass
             finally:
                 self._server._drop_session(self)
-        finally:
-            self._finished.set()
+                self._finished.set()
 
     async def _teardown(self) -> None:
         """Run ``on_disconnect`` exactly once; survives one cancellation."""
         if self._teardown_started:
             return
         self._teardown_started = True
-        try:
-            await asyncio.shield(self._handler.on_disconnect())
-        except (asyncio.CancelledError, Exception):
-            pass
+        await _run_guarded_disconnect(self._handler, self._id)
 
     async def _handle_text(self, payload: bytes) -> None:
         try:
@@ -523,10 +568,7 @@ class TciServer:
         return session
 
     async def _guarded_disconnect(self, handler: TciHandler) -> None:
-        try:
-            await asyncio.shield(handler.on_disconnect())
-        except (asyncio.CancelledError, Exception):
-            pass
+        await _run_guarded_disconnect(handler, "startup")
 
     def _drop_session(self, session: TciSession) -> None:
         self._sessions.pop(session.session_id, None)

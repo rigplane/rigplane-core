@@ -703,8 +703,6 @@ async def test_finish_completes_with_blocked_drain() -> None:
     once, release the transport, drop the session, and stay harmless
     when called again.
     """
-    import time
-
     clock = FakeClock()
     handler = FakeHandler()
     server = make_server(handler, clock)
