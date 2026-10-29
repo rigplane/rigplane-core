@@ -4275,10 +4275,13 @@ class WebServer:
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
+                    # MOR-3632: receive-only band rows (``rx_only``) never
+                    # grant transmit permission, so they stay out of txBands.
                     "txBands": [
                         {"name": b.name, "start": b.start, "end": b.end}
                         for fr in profile.freq_ranges
                         for b in fr.bands
+                        if not b.rx_only
                     ]
                     or None,
                 }
@@ -4993,10 +4996,13 @@ class WebServer:
             )
             if profile.controls:
                 payload["controls"] = profile.controls
+            # MOR-3632: receive-only band rows (``rx_only``) never grant
+            # transmit permission, so they stay out of txBands.
             payload["txBands"] = [
                 {"name": b.name, "start": b.start, "end": b.end}
                 for fr in profile.freq_ranges
                 for b in fr.bands
+                if not b.rx_only
             ] or None
         payload["webrtc"] = {
             "available": webrtc_available(),
