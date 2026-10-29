@@ -965,6 +965,42 @@ async def test_close_with_blocked_echo_watchdog_aborts() -> None:
     assert handler.disconnect_calls == 1
 
 
+async def test_ping_loop_recovers_after_stalled_write() -> None:
+    """A stalled ping write must not kill the heartbeat forever.
+
+    The drain blocks past one bounded write (timeout), then recovers:
+    subsequent pings must still go out while the session is live.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock, ping_interval=0.05)
+    session, writer, _reader = await open_session(server, handler)
+    try:
+
+        async def _ping_count() -> int:
+            return sum(
+                1 for opcode, _ in parse_server_frames(writer.buffer)
+                if opcode == WS_OP_PING
+            )
+
+        async def _wait_pings(count: int, timeout: float = 5.0) -> None:
+            async with asyncio.timeout(timeout):
+                while await _ping_count() < count:
+                    await asyncio.sleep(0.005)
+
+        await _wait_pings(1)
+        writer.block_drain()
+        await asyncio.sleep(0.2)
+        stalled = await _ping_count()
+        writer._drain = None
+        try:
+            await _wait_pings(stalled + 2)
+        except TimeoutError:
+            raise AssertionError("ping loop died after one stalled write") from None
+    finally:
+        await session.finish()
+
+
 async def test_pong_answers_ping() -> None:
     clock = FakeClock()
     handler = FakeHandler()
