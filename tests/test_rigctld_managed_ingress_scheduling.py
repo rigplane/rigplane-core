@@ -54,7 +54,10 @@ async def managed():
     await radio.connect()
     service = CommandService(executor=default, state_store=store)
     queue = CommandQueue()
-    bind_connection_generation = lambda: "rigctld-connection-1"  # noqa: E731
+
+    def bind_connection_generation() -> str:
+        return "rigctld-connection-1"
+
     queue.bind_connection_generation(bind_connection_generation)
     server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0, command_timeout=1.0), managed_tx_authority=managed, command_queue=queue, command_service=service)
     await server.start()

@@ -344,7 +344,17 @@ async def test_before_on_cancel_during_hook_unwinds_without_dispatch() -> None:
         out: list[bool] = []
         await _enter_owned(managed, "a", out)
         assert out == [False]
-        assert await managed.force_off() is ACCEPTED
+        # No explicit force_off: the scheduled release retry must clear
+        # the debt on its own, then another owner can key.
+        assert managed._retry_due is not None
+        _clock.now = managed._retry_due
+        await managed._process_due()
+        assert [
+            effect.operation
+            for effect in lane.effects
+            if effect.operation is ActuationOperation.FORCE_RECEIVE
+        ] != []
+        assert (await managed.snapshot()).state.release_required is False
         assert await managed.ptt_down("b") is ACCEPTED
         assert await managed.ptt_up("b") is ACCEPTED
     finally:

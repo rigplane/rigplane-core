@@ -590,6 +590,11 @@ class ManagedTxAuthority:
                             error="before_on cancelled",
                         )
                     )
+                    # The normal dispatch path refreshes the release retry
+                    # inside _execute; this path never starts one, so refresh
+                    # here — otherwise the debt below would wait for an
+                    # explicit force_off with no deadline scheduled.
+                    self._refresh_retry_locked()
                     self._wakeup.wake()
             raise
         except Exception as exc:
