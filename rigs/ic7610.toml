@@ -185,6 +185,9 @@ polling_only = [
     "receiver.main.operator_toggles.ipplus",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
+    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp — the 0x15 0x01
+    # single-byte SQL-status read, same cadence class as the sibling toggles.
+    "receiver.main.operator_toggles.dcd",
     "receiver.main.operator_toggles.auto_notch",
     "receiver.main.operator_toggles.manual_notch",
     "receiver.main.operator_toggles.twin_peak_filter",
@@ -194,6 +197,9 @@ polling_only = [
     "receiver.sub.operator_toggles.ipplus",
     "receiver.sub.operator_toggles.nb",
     "receiver.sub.operator_toggles.nr",
+    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp, SUB receiver —
+    # same 0x15 0x01 read, cmd29-routed like the sibling SUB toggles.
+    "receiver.sub.operator_toggles.dcd",
     "receiver.sub.operator_toggles.auto_notch",
     "receiver.sub.operator_toggles.manual_notch",
     "receiver.sub.operator_toggles.twin_peak_filter",

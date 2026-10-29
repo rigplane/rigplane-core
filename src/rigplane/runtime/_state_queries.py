@@ -27,6 +27,10 @@ _RECEIVER_TOGGLE_GETTERS = {
     "ipplus": "get_ip_plus",
     "nb": "get_nb",
     "nr": "get_nr",
+    # MOR-3630: the squelch-open (RX-busy) status reads through the shared
+    # S-meter SQL-status getter (CI-V 0x15 0x01). Profiles that do not declare
+    # it resolve None here, so no radio gains a query it cannot answer.
+    "dcd": "get_s_meter_sql_status",
     "auto_notch": "get_auto_notch",
     "manual_notch": "get_manual_notch",
     "twin_peak_filter": "get_twin_peak_filter",
