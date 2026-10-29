@@ -183,7 +183,10 @@ async def test_tci_accept_ignores_deflate_offer() -> None:
     reader.feed_data(
         b"GET / HTTP/1.1\r\n"
         b"Host: 127.0.0.1:50001\r\n"
+        b"Upgrade: websocket\r\n"
+        b"Connection: Upgrade\r\n"
         b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        b"Sec-WebSocket-Version: 13\r\n"
         b"Sec-WebSocket-Extensions: permessage-deflate\r\n"
         b"\r\n"
     )

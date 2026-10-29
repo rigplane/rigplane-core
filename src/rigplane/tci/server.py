@@ -70,8 +70,8 @@ logger = logging.getLogger(__name__)
 def _parse_http_request(head: bytes) -> tuple[str, dict[str, str]] | None:
     """Split an upgrade head into (target, lowercase headers).
 
-    Returns ``None`` for anything that is not a ``GET`` request with
-    ``name: value`` header lines.
+    Returns ``None`` for anything that is not a ``GET`` request over
+    ``HTTP/1.1`` with ``name: value`` header lines.
     """
     try:
         text = head.decode("ascii")
@@ -79,7 +79,7 @@ def _parse_http_request(head: bytes) -> tuple[str, dict[str, str]] | None:
         return None
     lines = text.split("\r\n")
     request = lines[0].split(" ")
-    if len(request) != 3 or request[0] != "GET":
+    if len(request) != 3 or request[0] != "GET" or request[2] != "HTTP/1.1":
         return None
     headers: dict[str, str] = {}
     for line in lines[1:]:
@@ -750,7 +750,9 @@ class TciServer:
             # Design 4.2: the TCI upgrade ignores the extension offer (the
             # 101 carries no Sec-WebSocket-Extensions), so no TCI frame is
             # ever compressed, even when the client offers deflate.
-            result = upgrade_response(headers, allow=self._allow, allow_deflate=False)
+            result = upgrade_response(
+                headers, allow=self._allow, allow_deflate=False, strict_tci=True
+            )
             if isinstance(result, UpgradeDecline):
                 await self._refuse(writer, result)
                 return

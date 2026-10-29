@@ -40,6 +40,7 @@ __all__ = [
     "make_upgrade_response",
     "negotiate_deflate",
     "upgrade_response",
+    "validate_tci_handshake",
     "WebSocketConnection",
 ]
 
@@ -486,11 +487,42 @@ def check_upgrade_headers(
     return allow(headers)
 
 
+def _header_tokens(headers: Mapping[str, str], name: str) -> list[str]:
+    """Split a comma-separated header into lowercase tokens."""
+    return [part.strip().lower() for part in headers.get(name, "").split(",")]
+
+
+def validate_tci_handshake(headers: Mapping[str, str]) -> UpgradeDecline | None:
+    """Validate the complete TCI upgrade request; ``None`` means admitted.
+
+    Checks the ``Upgrade``/``Connection`` tokens, ``Sec-WebSocket-Version:
+    13``, and strict Base64 decoding of the key to 16 bytes. ``web``
+    performs these checks upstream in its routing, so it calls
+    :func:`make_upgrade_response` without this step and its behaviour is
+    byte-identical; only the TCI caller opts in.
+    """
+    if "websocket" not in _header_tokens(headers, "upgrade"):
+        return UpgradeDecline(400, "Bad Request", b"missing upgrade token")
+    if "upgrade" not in _header_tokens(headers, "connection"):
+        return UpgradeDecline(400, "Bad Request", b"missing connection token")
+    if headers.get("sec-websocket-version", "").strip() != "13":
+        return UpgradeDecline(426, "Upgrade Required", b"unsupported version")
+    raw = headers.get("sec-websocket-key", "").strip()
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+    except ValueError:
+        return UpgradeDecline(400, "Bad Request", b"invalid key")
+    if len(decoded) != 16:
+        return UpgradeDecline(400, "Bad Request", b"invalid key")
+    return None
+
+
 def make_upgrade_response(
     headers: Mapping[str, str],
     *,
     protocol: str = "",
     allow_deflate: bool = True,
+    strict_tci: bool = False,
 ) -> UpgradeAccept | UpgradeDecline:
     """Validate ``Sec-WebSocket-Key`` and build the 101 response bytes.
 
@@ -499,7 +531,14 @@ def make_upgrade_response(
     ``allow_deflate=False`` ignores the extension offer entirely: the
     101 carries no ``Sec-WebSocket-Extensions`` line, so no frame on
     the connection is ever compressed (the TCI leaf per design 4.2).
+    ``strict_tci=True`` additionally runs :func:`validate_tci_handshake`
+    first (the checks ``web`` performs upstream); ``web`` leaves it off,
+    so its responses are unchanged.
     """
+    if strict_tci:
+        decline = validate_tci_handshake(headers)
+        if decline is not None:
+            return decline
     key = headers.get("sec-websocket-key", "")
     if not key:
         return UpgradeDecline(400, "Bad Request", b"Missing key")
@@ -526,13 +565,16 @@ def upgrade_response(
     *,
     allow: AllowHeaders,
     allow_deflate: bool = True,
+    strict_tci: bool = False,
 ) -> UpgradeAccept | UpgradeDecline:
     """Full server-side upgrade: policy, key check, accept, response bytes.
 
     ``allow_deflate=False`` answers 101 without the extension header,
     so the connection never negotiates compression (the TCI leaf).
+    ``strict_tci=True`` additionally validates the complete handshake
+    (the TCI caller; ``web`` performs these checks upstream instead).
     """
     decline = check_upgrade_headers(headers, allow=allow)
     if decline is not None:
         return decline
-    return make_upgrade_response(headers, allow_deflate=allow_deflate)
+    return make_upgrade_response(headers, allow_deflate=allow_deflate, strict_tci=strict_tci)
