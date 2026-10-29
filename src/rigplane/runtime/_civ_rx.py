@@ -3489,6 +3489,9 @@ class CivRuntime:
             val07 = frame.data[1]
             if sub07 == 0xD2:
                 new_active = "SUB" if val07 else "MAIN"
+                # The radio's own reading: the routed MAIN/SUB operations
+                # may now trust the mirror (MOR-3623).
+                self._host._active_receiver_civ_epoch = self._host._civ_epoch
                 if rs.active != new_active:
                     rs.active = new_active
                     logger.debug("civ-rx: active receiver → %s", new_active)

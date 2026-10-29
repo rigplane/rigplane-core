@@ -86,6 +86,52 @@ def _relative_vfo_routing_available(
     )
 
 
+class _SelectionWatch:
+    """Notes whether another task started a VFO selection change (MOR-3623)."""
+
+    __slots__ = ("owner", "moved")
+
+    def __init__(self, owner: "asyncio.Task[Any] | None") -> None:
+        self.owner = owner
+        self.moved = False
+
+
+class _JoinedCleanup:
+    """Run cleanup steps to completion even when the caller is cancelled.
+
+    Each step runs in its own task and the caller waits for it: a
+    cancellation delivered while waiting is held back (``cancelled``) and
+    the wait resumes until the step finished, so the step's result or
+    error reaches the caller's own handling (the restoration's timeout
+    retry). :meth:`raise_if_cancelled` then propagates the held
+    cancellation (MOR-3623).
+    """
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    async def run(self, step: "Awaitable[None]") -> None:
+        task = asyncio.ensure_future(step)
+        while not task.done():
+            try:
+                # ``wait`` never cancels the step it waits for.
+                await asyncio.wait((task,))
+            except asyncio.CancelledError:
+                self.cancelled = True
+        if task.cancelled():
+            raise asyncio.CancelledError
+        error = task.exception()
+        if error is not None:
+            # Raised here, in the caller's frame, so the error chains to
+            # whatever the caller is handling (an action failure, a first
+            # restoration timeout) like an inline await would.
+            raise error
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            raise asyncio.CancelledError
+
+
 def require_receiver_for_profile(
     profile: RadioProfile, receiver: int, *, operation: str
 ) -> None:
@@ -107,12 +153,42 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # every entry adds a factor of two, and every exit removes one while
         # advancing the revision. Overlapping/nested changes stay even until
         # ALL have exited, including on cancellation or an uncertain failure.
+        # The owning task of every in-flight change is counted alongside, and
+        # every watch held by another task is marked, so a caller nested
+        # inside its own change still sees a competitor's (MOR-3623: the
+        # receiver-routed operation below).
+        owner = asyncio.current_task()
+        owners = self._vfo_selection_owners
+        owners[owner] = owners.get(owner, 0) + 1
+        for watch in self._vfo_selection_watches:
+            if watch.owner is not owner:
+                watch.moved = True
         self._vfo_selection_epoch <<= 1
         try:
             yield
         finally:
             epoch = self._vfo_selection_epoch
             self._vfo_selection_epoch = (epoch >> 1) + (epoch & -epoch)
+            remaining = owners[owner] - 1
+            if remaining:
+                owners[owner] = remaining
+            else:
+                del owners[owner]
+
+    @contextmanager
+    def _watch_vfo_selection(self) -> "Iterator[_SelectionWatch]":
+        """Watch for selection changes started by other tasks (MOR-3623)."""
+        watch = _SelectionWatch(asyncio.current_task())
+        self._vfo_selection_watches.add(watch)
+        try:
+            yield watch
+        finally:
+            self._vfo_selection_watches.discard(watch)
+
+    def _foreign_vfo_selection_in_flight(self) -> bool:
+        """True while another task holds a VFO selection change open."""
+        current = asyncio.current_task()
+        return any(owner is not current for owner in self._vfo_selection_owners)
 
     def _vfo_selection_epoch_moved(self, selection_epoch: int | None) -> bool:
         """True when the pinned selection epoch changed or a change is in flight.
@@ -169,36 +245,52 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             return "SUB"
         return "MAIN"
 
+    def _mark_active_receiver(self, name: str) -> None:
+        """Record ``name`` as the active receiver the radio itself confirmed."""
+        self._radio_state.active = name
+        self._active_receiver_civ_epoch = self._civ_epoch
+
+    async def _established_active_receiver(self, *, operation: str) -> str:
+        """The active receiver, read from the radio unless already established.
+
+        ``RadioState.active`` defaults to ``"MAIN"`` and the initial ``07 D2``
+        query is fire-and-forget, so until the radio answered in this CI-V
+        generation (a ``07 D2`` readback or an acknowledged MAIN/SUB
+        selection) the cached name is a default, not a reading. It is then
+        read through the profile-declared ``get_main_sub_band``; a profile
+        that declares none is refused rather than trusted (MOR-3623).
+        """
+        if self._active_receiver_civ_epoch == self._civ_epoch:
+            return self._active_receiver_name()
+        cmd_map = self._profile.command_map
+        if cmd_map is None or not cmd_map.has("get_main_sub_band"):
+            raise CommandError(
+                f"{operation}: the selected receiver of {self._profile.model} is "
+                "unknown and the profile declares no get_main_sub_band readback"
+            )
+        civ = self._commands.get_main_sub_band(to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_main_sub_band")
+        if len(resp.data) != 2 or resp.data[0] != 0xD2 or resp.data[1] not in (0, 1):
+            raise CommandError(
+                f"invalid main/sub band readback: {resp.data.hex() or 'empty'}"
+            )
+        name = "SUB" if resp.data[1] else "MAIN"
+        self._mark_active_receiver(name)
+        return name
+
     async def _run_with_receiver_vfo_fallback(
         self,
         *,
         receiver: int,
         operation: str,
-        action: "Callable[..., Awaitable[Any]]",
+        action: "Callable[[Callable[[], bool]], Awaitable[Any]]",
     ) -> Any:
         """Run an operation for a receiver using temporary MAIN/SUB VFO switching.
 
-        MOR-3623 pre-review hardening:
-
-        * the initial selection sits inside the failure boundary: when its
-          ACK is lost (or the awaiting task is cancelled while it is
-          pending) the switch may still have reached the radio, so one
-          best-effort restoration is attempted before the original error
-          propagates;
-        * the restoration is skipped when another caller moved the
-          selection meanwhile (``RadioState.active`` no longer names the
-          receiver we switched to): their selection owns the radio, and a
-          blind restore would overwrite it.
-
-        Known limit, deliberate for this slice: a competing selection
-        dispatched in the window between our switch and our action can
-        still redirect the action's frame at the radio. Closing that
-        window needs the MOR-3743 selection-epoch discipline extended to
-        nested selection scopes — ``set_vfo_slot`` wraps this helper in
-        ``_vfo_selection_change``, so the epoch's in-flight encoding
-        cannot simply be pinned here — plus a currency hook on every
-        routed action's send; that mechanism change is the deferred
-        follow-up recorded in MOR-3623's PR body.
+        ``action`` receives the routed operation's currency predicate and
+        must pass it as ``is_current`` to the send that carries its frame:
+        the wire refuses the frame when the selection it was routed to is no
+        longer ours. See :meth:`_run_receiver_routed_once` (MOR-3623).
         """
         return await self._run_receiver_routed_once(
             receiver, operation=operation, action=action
@@ -209,23 +301,46 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         receiver: int,
         *,
         operation: str,
-        action: "Callable[..., Awaitable[Any]]",
+        action: "Callable[[Callable[[], bool]], Awaitable[Any]]",
     ) -> Any:
-        """One switch → action → restore attempt for the fallback above."""
+        """One switch → action → restore critical section (MOR-3623).
+
+        * The whole operation is one VFO selection change, so a competing
+          routed operation or selection-sensitive write sees it in flight.
+          It is refused (``CommandRejectedError``) while another task's
+          selection change is in flight, and when another task starts one
+          before its action: neither can route its frame through the
+          other's selection.
+        * "No switch needed" rests on a reading: an active receiver not
+          established by the radio is read back first
+          (:meth:`_established_active_receiver`).
+        * The selection is ours while no other task started a selection
+          change since this operation began (:meth:`_watch_vfo_selection`)
+          and the radio has not reported another active receiver (``07 D2``
+          → ``RadioState.active``). The action's frame carries that
+          predicate as ``is_current`` to the wire currency hook, which
+          refuses a stale frame before it is sent.
+        * Restoration runs only while the selection is still ours: a later
+          selection by anyone, even of the same receiver, owns the radio
+          and is preserved.
+        * Restoration (with its one timeout retry) runs in its own task and
+          is joined: a cancellation of the caller waits for it, then
+          propagates.
+
+        The commander's interference scope is deliberately not used here:
+        it marks every foreign frame, including commands that cannot move
+        the selection, and would refuse this action for them.
+        """
         target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
-        current = self._active_receiver_name()
-        switched = False
-
-        async def restore_selection() -> None:
-            await self._set_vfo_wire(current)
-            self._radio_state.active = current
-
-        def selection_still_ours() -> bool:
-            """False once another caller (or a radio announcement) moved the
-            active receiver away from the one we switched to."""
-            return not switched or self._radio_state.active == target
-
-        try:
+        if self._foreign_vfo_selection_in_flight():
+            raise CommandRejectedError(
+                f"{operation}: the receiver selection is changing; retry"
+            )
+        cleanup = _JoinedCleanup()
+        with self._vfo_selection_change(), self._watch_vfo_selection() as watch:
+            current = self._active_receiver_name()
+            if current == target:
+                current = await self._established_active_receiver(operation=operation)
             if current != target:
                 if target == "SUB" and self._profile.vfo_sub_code is None:
                     raise CommandError(
@@ -237,52 +352,128 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                         f"{operation} receiver={receiver} is unsupported for profile "
                         f"{self._profile.model}: no MAIN VFO select code"
                     )
-                try:
-                    await self._set_vfo_wire(target)
-                except BaseException:
-                    # The switch may have reached the radio while its answer
-                    # was lost: attempt one restoration, then propagate the
-                    # original error whatever the restoration did. The
-                    # restoration is shielded so a cancellation delivered
-                    # while it runs cannot cut it short and strand the radio
-                    # on a receiver nobody asked for.
+            switched = False
+
+            async def restore_selection() -> None:
+                await self._set_vfo_wire(current)
+                self._mark_active_receiver(current)
+
+            def selection_is_ours() -> bool:
+                return not watch.moved and self._radio_state.active == target
+
+            try:
+                if current != target:
                     try:
-                        await asyncio.shield(restore_selection())
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        logger.warning(
-                            "%s: restoring receiver %s after a failed %s selection "
-                            "also failed; the radio's receiver selection is "
-                            "uncertain",
-                            operation,
-                            current,
-                            target,
+                        await self._set_vfo_wire(target)
+                    except BaseException:
+                        await self._restore_after_failed_switch(
+                            cleanup,
+                            restore_selection,
+                            watch,
+                            operation=operation,
+                            current=current,
+                            target=target,
                         )
-                    raise
-                self._radio_state.active = target
-                switched = True
-            return await action()
-        finally:
-            if switched and selection_still_ours():
-                try:
-                    # Shielded for the same reason as the failure-path
-                    # restoration above: cancellation of the caller must not
-                    # strand the radio on the temporary receiver.
-                    await asyncio.shield(restore_selection())
-                except asyncio.CancelledError:
-                    raise
-                except TimeoutError:
-                    # Do not swallow — radio would silently remain on the
-                    # temporary receiver. Retry once (the first attempt may
-                    # fail because a prior fire-and-forget ACK sink consumed
-                    # the timeout budget), then propagate on a second failure.
-                    logger.warning(
-                        "%s: timeout restoring VFO receiver to %s, retrying once",
-                        operation,
-                        current,
+                        raise
+                    switched = True
+                    if not watch.moved:
+                        self._mark_active_receiver(target)
+                if not selection_is_ours():
+                    # Another task's selection change started during our
+                    # readback or switch: its frame may sit between ours.
+                    self._active_receiver_civ_epoch = None
+                    raise CommandRejectedError(
+                        f"{operation}: the receiver selection changed; retry"
                     )
-                    await asyncio.shield(restore_selection())
+                try:
+                    return await action(selection_is_ours)
+                except StaleBeforeWireError as exc:
+                    if selection_is_ours():
+                        raise
+                    raise CommandRejectedError(
+                        f"{operation}: the receiver selection changed before the "
+                        "command was sent; retry"
+                    ) from exc
+                except ConnectionError as exc:
+                    if selection_is_ours():
+                        raise
+                    raise CommandError(
+                        f"{operation}: the receiver selection changed while the "
+                        "command was pending; its outcome is unknown, re-read"
+                    ) from exc
+            finally:
+                try:
+                    if switched and selection_is_ours():
+                        await self._restore_routed_selection(
+                            cleanup,
+                            restore_selection,
+                            operation=operation,
+                            current=current,
+                        )
+                finally:
+                    cleanup.raise_if_cancelled()
+
+    async def _restore_after_failed_switch(
+        self,
+        cleanup: "_JoinedCleanup",
+        restore: "Callable[[], Awaitable[None]]",
+        watch: "_SelectionWatch",
+        *,
+        operation: str,
+        current: str,
+        target: str,
+    ) -> None:
+        """One best-effort restoration after a switch whose outcome is unknown.
+
+        The switch may have reached the radio while its answer was lost (or
+        the caller was cancelled while it was pending). Never raises: the
+        switch's own error is what the caller propagates. Skipped once
+        another task started a selection change — that selection owns the
+        radio.
+        """
+        if watch.moved or self._foreign_vfo_selection_in_flight():
+            self._active_receiver_civ_epoch = None
+            return
+        try:
+            await cleanup.run(restore())
+        except Exception:
+            self._active_receiver_civ_epoch = None
+            logger.warning(
+                "%s: restoring receiver %s after a failed %s selection also "
+                "failed; the radio's receiver selection is uncertain",
+                operation,
+                current,
+                target,
+            )
+
+    async def _restore_routed_selection(
+        self,
+        cleanup: "_JoinedCleanup",
+        restore: "Callable[[], Awaitable[None]]",
+        *,
+        operation: str,
+        current: str,
+    ) -> None:
+        """Restore the pre-operation receiver, retrying once on a timeout.
+
+        Not swallowed: the radio would silently remain on the temporary
+        receiver. The first attempt may fail because a prior
+        fire-and-forget ACK sink consumed the timeout budget; a second
+        failure propagates and leaves the selection unestablished.
+        """
+        try:
+            try:
+                await cleanup.run(restore())
+            except TimeoutError:
+                logger.warning(
+                    "%s: timeout restoring VFO receiver to %s, retrying once",
+                    operation,
+                    current,
+                )
+                await cleanup.run(restore())
+        except BaseException:
+            self._active_receiver_civ_epoch = None
+            raise
 
     async def _get_frequency_main(
         self, *, bypass_cache: bool = False, update_cache: bool = True
@@ -317,12 +508,18 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         freq_hz: int,
         *,
         update_cache: bool = True,
+        is_current: "Callable[[], bool] | None" = None,
     ) -> None:
         """Set MAIN receiver frequency with optional cache updates."""
         civ = self._commands.set_freq(
             freq_hz, to_addr=self._radio_addr, receiver=RECEIVER_MAIN
         )
-        resp = await self._send_civ_expect(civ, label="set_frequency_main")
+        if is_current is None:
+            resp = await self._send_civ_expect(civ, label="set_frequency_main")
+        else:
+            resp = await self._send_civ_expect(
+                civ, label="set_frequency_main", is_current=is_current
+            )
         if parse_ack_nak(resp) is False:
             raise CommandRejectedError(f"Radio rejected MAIN set_frequency({freq_hz})")
         if update_cache:
@@ -359,6 +556,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         *,
         filter_width: int | None = None,
         update_cache: bool = True,
+        is_current: "Callable[[], bool] | None" = None,
     ) -> None:
         """Set MAIN receiver mode/filter with optional cache updates."""
         if self._profile.set_mode_via_selected:
@@ -383,7 +581,10 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 to_addr=self._radio_addr,
                 receiver=RECEIVER_MAIN,
             )
-        await self._send_civ_raw(civ, wait_response=False)
+        if is_current is None:
+            await self._send_civ_raw(civ, wait_response=False)
+        else:
+            await self._send_civ_raw(civ, wait_response=False, is_current=is_current)
         self._last_mode = mode
         if update_cache:
             if filter_width is not None:
@@ -915,7 +1116,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             return
         target = "MAIN" if index == 0 else "SUB"
         await self._set_vfo_wire(target)
-        self._radio_state.active = target
+        self._mark_active_receiver(target)
 
     async def get_active_receiver(self) -> int:
         """Return the index of the currently active receiver.
@@ -999,7 +1200,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         norm_slot = self._normalize_vfo_slot(slot)
         slot_code = 0x00 if norm_slot == "A" else 0x01
 
-        async def emit() -> None:
+        async def emit(is_current: "Callable[[], bool] | None" = None) -> None:
             civ = build_civ_frame(
                 self._radio_addr,
                 CONTROLLER_ADDR,
@@ -1007,11 +1208,20 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 data=bytes([slot_code]),
             )
             if confirmed:
-                response = await self._send_civ_expect(civ, label=operation)
+                if is_current is None:
+                    response = await self._send_civ_expect(civ, label=operation)
+                else:
+                    response = await self._send_civ_expect(
+                        civ, label=operation, is_current=is_current
+                    )
                 if parse_ack_nak(response) is not True:
                     raise CommandError(f"Radio rejected VFO slot {norm_slot}")
-            else:
+            elif is_current is None:
                 await self._send_civ_raw(civ, wait_response=False)
+            else:
+                await self._send_civ_raw(
+                    civ, wait_response=False, is_current=is_current
+                )
             rx_state = (
                 self._radio_state.sub
                 if (receiver == 1 and self.receiver_count > 1)

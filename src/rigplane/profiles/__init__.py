@@ -20,11 +20,13 @@ from rigplane.commands._codec import (
     hz_to_table_index,
 )
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
+from rigplane.core.command_dispatch import CommandUnsupportedError
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.types import (
     MemoryProfile,
     MemoryWriteLayout,
+    Mode,
     ToneSquelchType,
 )
 from rigplane.core.usb_identity import UsbAudioIdentity
@@ -37,6 +39,7 @@ __all__ = [
     "await_fenced_cw_text",
     "admit_cw_text",
     "admit_memory_write",
+    "admit_mode",
     "ControlLookupPoint",
     "EncodedControlChoice",
     "ControlDomainSpec",
@@ -966,6 +969,41 @@ def admit_cw_text(profile: RadioProfile, text: str) -> None:
             f"CW text too long for {profile.model}: got {len(text)} characters, "
             f"limit is {spec.max_length}"
         )
+
+
+def admit_mode(profile: RadioProfile, mode: str, freq_hz: int | None) -> None:
+    """The one band admission every mode selection passes (MOR-3623).
+
+    A listed mode is selectable on every band except D-STAR DD (CI-V
+    ``0x22``): the profile's ``[memory] dd_groups`` names the bands where
+    the radio runs DD and ``[memory] frequency_ranges`` locates them, so DD
+    is admitted only when ``freq_hz`` (the target receiver's observed
+    frequency) lies inside one of those ranges. An unknown frequency
+    refuses. The radio's own refusal cannot be relied on: the bare mode-set
+    is fire-and-forget, so a refused DD would read as success. Called by
+    the web control handler before enqueueing (so HTTP and WebSocket
+    callers see the refusal) and by the Icom runtime's ``set_mode``.
+
+    Raises:
+        CommandUnsupportedError: DD outside the profile's DD bands.
+    """
+    if mode.strip().upper() != Mode.DD.name:
+        return
+    memory = profile.memory
+    if (
+        memory is not None
+        and freq_hz is not None
+        and any(
+            group in memory.dd_groups and low <= freq_hz <= high
+            for group, low, high in memory.frequency_ranges
+        )
+    ):
+        return
+    where = "an unknown frequency" if freq_hz is None else f"{freq_hz} Hz"
+    raise CommandUnsupportedError(
+        f"{profile.model} does not support mode DD at {where}: DD is available "
+        "only in the bands named by the profile's [memory] dd_groups"
+    )
 
 
 class MemoryWriteUnverifiedError(CommandError):

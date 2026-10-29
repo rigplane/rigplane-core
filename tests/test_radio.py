@@ -285,7 +285,12 @@ class MockTransport:
     def start_retransmit_loop(self) -> None:
         pass
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(self, data: bytes, *, is_current=None) -> None:
+        # The real transports' contract (``core/transport.py:
+        # IcomTransport.send_tracked``): a stale caller is refused with
+        # ``CommandError`` before anything is written.
+        if is_current is not None and not is_current():
+            raise CommandError("send refused: caller is no longer current")
         self.sent_packets.append(data)
         self.send_seq += 1
         for pkt in self._responses_by_send.pop(self.send_seq, []):
@@ -3709,8 +3714,17 @@ class TestDspLevelParity:
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         # IC-7610 profile omits 0x1A 0x06 from cmd29 (wfview Command29=false): sub
-        # DATA mode uses VFO select + plain 0x1A 0x06. Active SUB avoids extra VFO traffic.
-        radio._radio_state.active = "SUB"
+        # DATA mode uses VFO select + plain 0x1A 0x06. A reported SUB selection
+        # (07 D2 01, MOR-3623) avoids extra VFO traffic.
+        radio._civ_runtime._update_state_cache_from_frame(
+            CivFrame(
+                to_addr=CONTROLLER_ADDR,
+                from_addr=radio.profile.civ_addr,
+                command=0x07,
+                sub=None,
+                data=b"\xd2\x01",
+            )
+        )
         mock_transport.queue_response(_ack_response())
         await radio.set_data_mode(3, receiver=1)
         assert mock_transport.sent_packets[-1].endswith(b"\x1a\x06\x03\xfd")

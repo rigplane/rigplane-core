@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from rigplane._runtime_protocols import ControlPhaseHost
     from rigplane.core.acquisition_scheduler import RadioStateModelService
     from rigplane.core.tx_safety import ProviderPttObservation
+    from rigplane.runtime._dual_rx_runtime import _SelectionWatch
     from rigplane.runtime.local_tx_work import LocalTxWorkRunner
     from rigplane.runtime.managed_tx_composition import ManagedTxCompositionPort
 
@@ -192,7 +193,7 @@ from rigplane.core.radio_protocol import (
     RadioIdentityStatus,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessState, StateStore
 from rigplane.core.tx_observation import (
     TX_READ_DEADLINE_SECONDS,
     TxStateReading,
@@ -208,6 +209,7 @@ from rigplane.profiles import (
     RadioProfile,
     admit_cw_text,
     admit_memory_write,
+    admit_mode,
     await_fenced_cw_text,
     cw_text_cancelled,
     resolve_radio_profile,
@@ -541,6 +543,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._last_split: bool | None = None
         self._last_vfo: str | None = None
         self._vfo_selection_epoch: int = 1
+        # In-flight VFO selection changes per owning task (MOR-3623).
+        self._vfo_selection_owners: dict[asyncio.Task[Any] | None, int] = {}
+        self._vfo_selection_watches: set[_SelectionWatch] = set()
+        # The CI-V generation in which ``RadioState.active`` was last
+        # established by the radio itself (a 07 D2 readback or an
+        # acknowledged MAIN/SUB selection); ``None`` until then, so the
+        # dataclass default "MAIN" is never mistaken for a reading
+        # (MOR-3623).
+        self._active_receiver_civ_epoch: int | None = None
         self._token_task: asyncio.Task[None] | None = None
         self._auto_reconnect = auto_reconnect
         self._reconnect_delay = reconnect_delay
@@ -2830,7 +2841,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
                 operation="set_freq",
-                action=lambda: self._set_frequency_main(freq_hz, update_cache=False),
+                action=lambda is_current: self._set_frequency_main(
+                    freq_hz, update_cache=False, is_current=is_current
+                ),
             )
 
         self._radio_state.receiver("SUB").freq = freq_hz
@@ -2934,8 +2947,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
                 operation="set_filter_width",
-                action=lambda: self.send_civ(
-                    0x1A, sub=0x03, data=bcd_index_byte, wait_response=False
+                action=lambda is_current: self.send_civ(
+                    0x1A,
+                    sub=0x03,
+                    data=bcd_index_byte,
+                    wait_response=False,
+                    is_current=is_current,
                 ),
             )
             return
@@ -2986,13 +3003,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # available, else is rejected below.
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1A, 0x03):
 
-            async def _action() -> CivFrame:
+            async def _action(is_current: Callable[[], bool]) -> CivFrame:
                 civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
                 return await self._send_civ_expect(
                     civ,
                     key=f"get_filter_width:{receiver}",
                     dedupe=True,
                     label="get_filter_width",
+                    is_current=is_current,
                 )
 
             resp = await self._run_with_receiver_vfo_fallback(
@@ -3050,6 +3068,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 return value
         return value
 
+    def _observed_freq_hz(self, receiver: int) -> int | None:
+        """The receiver's fresh observed frequency, or ``None`` when unknown."""
+        try:
+            field = self._state_store.snapshot().field(
+                FieldPath.active(str(receiver), "freq_mode", "freq_hz")
+            )
+        except KeyError:
+            return None
+        value = field.value
+        if field.freshness is not FreshnessState.FRESH or type(value) is not int:
+            return None
+        return value
+
     async def set_mode(
         self, mode: Mode | str, filter_width: int | None = None, receiver: int = 0
     ) -> None:
@@ -3063,6 +3094,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="set_mode")
         parsed_mode = self._coerce_mode(mode)
+        admit_mode(self._profile, parsed_mode.name, self._observed_freq_hz(receiver))
 
         if receiver == RECEIVER_MAIN:
             await self._set_mode_main(parsed_mode, filter_width=filter_width)
@@ -3080,8 +3112,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
                 operation="set_mode",
-                action=lambda: self._set_mode_main(
-                    parsed_mode, filter_width=filter_width, update_cache=False
+                action=lambda is_current: self._set_mode_main(
+                    parsed_mode,
+                    filter_width=filter_width,
+                    update_cache=False,
+                    is_current=is_current,
                 ),
             )
 
@@ -3123,14 +3158,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1A, 0x06):
 
-            async def _action() -> None:
+            async def _action(is_current: Callable[[], bool]) -> None:
                 civ = self._commands.set_data_mode(
                     on,
                     to_addr=self._radio_addr,
                     receiver=RECEIVER_MAIN,
                     filter_width=filter_width,
                 )
-                resp = await self._send_civ_expect(civ, label="action")
+                resp = await self._send_civ_expect(
+                    civ, label="action", is_current=is_current
+                )
                 ack = parse_ack_nak(resp)
                 if ack is False:
                     raise CommandError(
@@ -3195,12 +3232,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         command: int,
         sub: int,
         prefix: bytes = b"",
+        is_current: Callable[[], bool] | None = None,
     ) -> bool:
         """Send a GET command and parse a boolean response."""
         self._check_connected()
-        resp = await self._send_civ_expect(
-            civ, key=key, dedupe=True, label="get_bool_value"
-        )
+        if is_current is None:
+            resp = await self._send_civ_expect(
+                civ, key=key, dedupe=True, label="get_bool_value"
+            )
+        else:
+            resp = await self._send_civ_expect(
+                civ,
+                key=key,
+                dedupe=True,
+                label="get_bool_value",
+                is_current=is_current,
+            )
         return parse_bool_response(resp, command=command, sub=sub, prefix=prefix)
 
     def _expect_shape(self, builder: Callable[..., bytes]) -> tuple[int, int, bytes]:
@@ -3219,10 +3266,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         return command, sub, prefix
 
-    async def _send_fire_and_forget(self, civ: bytes) -> None:
+    async def _send_fire_and_forget(
+        self, civ: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
         """Send a fire-and-forget CI-V command after connection checks."""
         self._check_connected()
-        await self._send_civ_raw(civ, wait_response=False)
+        if is_current is None:
+            await self._send_civ_raw(civ, wait_response=False)
+        else:
+            await self._send_civ_raw(civ, wait_response=False, is_current=is_current)
 
     # commands/levels.py, migrated onto the bound command map (MOR-2006
     # Steps 5..N module 2, plan §4): requests go through
@@ -4920,9 +4972,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="get_repeater_shift")
 
-        async def read() -> RepeaterShiftDirection:
+        async def read(
+            is_current: Callable[[], bool] | None = None,
+        ) -> RepeaterShiftDirection:
             civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
-            resp = await self._send_civ_expect(civ, label="get_repeater_shift")
+            if is_current is None:
+                resp = await self._send_civ_expect(civ, label="get_repeater_shift")
+            else:
+                resp = await self._send_civ_expect(
+                    civ, label="get_repeater_shift", is_current=is_current
+                )
             direction = parse_repeater_shift_response(resp.data)
             if direction is None:
                 raise CommandError(
@@ -4959,8 +5018,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # not even its selection.
         civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
 
-        async def write() -> None:
-            resp = await self._send_civ_expect(civ, label="set_repeater_shift")
+        async def write(is_current: Callable[[], bool] | None = None) -> None:
+            if is_current is None:
+                resp = await self._send_civ_expect(civ, label="set_repeater_shift")
+            else:
+                resp = await self._send_civ_expect(
+                    civ, label="set_repeater_shift", is_current=is_current
+                )
             if parse_ack_nak(resp) is False:
                 raise CommandError(f"Radio rejected repeater shift {direction!r}")
 
@@ -5511,7 +5575,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x16, _SUB_REPEATER_TONE
         ):
 
-            async def _action() -> bool:
+            async def _action(is_current: Callable[[], bool]) -> bool:
                 civ = self._commands.get_repeater_tone(
                     to_addr=self._radio_addr,
                     receiver=RECEIVER_MAIN,
@@ -5522,6 +5586,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     key=f"get_repeater_tone:{receiver}",
                     command=command,
                     sub=sub,
+                    is_current=is_current,
                 )
 
             return await self._run_with_receiver_vfo_fallback(
@@ -5553,14 +5618,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x16, _SUB_REPEATER_TONE
         ):
 
-            async def _action() -> None:
+            async def _action(is_current: Callable[[], bool]) -> None:
                 await self._send_fire_and_forget(
                     self._commands.set_repeater_tone(
                         on,
                         to_addr=self._radio_addr,
                         receiver=RECEIVER_MAIN,
                         command29=False,
-                    )
+                    ),
+                    is_current=is_current,
                 )
 
             await self._run_with_receiver_vfo_fallback(
@@ -5590,7 +5656,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x16, _SUB_REPEATER_TSQL
         ):
 
-            async def _action() -> bool:
+            async def _action(is_current: Callable[[], bool]) -> bool:
                 civ = self._commands.get_repeater_tsql(
                     to_addr=self._radio_addr,
                     receiver=RECEIVER_MAIN,
@@ -5601,6 +5667,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     key=f"get_repeater_tsql:{receiver}",
                     command=command,
                     sub=sub,
+                    is_current=is_current,
                 )
 
             return await self._run_with_receiver_vfo_fallback(
@@ -5632,14 +5699,15 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             0x16, _SUB_REPEATER_TSQL
         ):
 
-            async def _action() -> None:
+            async def _action(is_current: Callable[[], bool]) -> None:
                 await self._send_fire_and_forget(
                     self._commands.set_repeater_tsql(
                         on,
                         to_addr=self._radio_addr,
                         receiver=RECEIVER_MAIN,
                         command29=False,
-                    )
+                    ),
+                    is_current=is_current,
                 )
 
             await self._run_with_receiver_vfo_fallback(
@@ -5673,8 +5741,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ctcss_tones_centihz=domain,
             )
 
-            async def _action() -> int:
-                resp = await self._send_civ_expect(civ, label="get_tone_freq")
+            async def _action(is_current: Callable[[], bool]) -> int:
+                resp = await self._send_civ_expect(
+                    civ, label="get_tone_freq", is_current=is_current
+                )
                 _, freq = parse_tone_freq_response(resp, ctcss_tones_centihz=domain)
                 return freq
 
@@ -5726,8 +5796,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ctcss_tones_centihz=domain,
             )
 
-            async def _action() -> None:
-                await self._send_fire_and_forget(civ)
+            async def _action(is_current: Callable[[], bool]) -> None:
+                await self._send_fire_and_forget(civ, is_current=is_current)
 
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,
@@ -5764,8 +5834,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ctcss_tones_centihz=domain,
             )
 
-            async def _action() -> int:
-                resp = await self._send_civ_expect(civ, label="get_tsql_freq")
+            async def _action(is_current: Callable[[], bool]) -> int:
+                resp = await self._send_civ_expect(
+                    civ, label="get_tsql_freq", is_current=is_current
+                )
                 _, freq = parse_tsql_freq_response(resp, ctcss_tones_centihz=domain)
                 return freq
 
@@ -5817,8 +5889,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 ctcss_tones_centihz=domain,
             )
 
-            async def _action() -> None:
-                await self._send_fire_and_forget(civ)
+            async def _action(is_current: Callable[[], bool]) -> None:
+                await self._send_fire_and_forget(civ, is_current=is_current)
 
             await self._run_with_receiver_vfo_fallback(
                 receiver=receiver,

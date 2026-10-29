@@ -182,6 +182,14 @@ async def test_selected_mode_uses_existing_selected_command_declaration(route):
     assert wire.frames[0] == bytes.fromhex(f"FE FE {addr:02X} E0 26 00 01 00 01 FD")
 
 
+# Selection methods that address SUB through the shared MAIN/SUB
+# switch-and-restore (``_run_receiver_routed_once``).
+_ROUTED_SELECTIONS = {
+    ("IC-7610", "set_vfo_slot"),
+    ("IC-7610", "_set_vfo_slot_confirmed"),
+}
+
+
 @pytest.mark.parametrize(
     "model,method,args,kwargs",
     [
@@ -203,8 +211,10 @@ async def test_selection_methods_mark_epoch_until_completion(
 ):
     radio = IcomRadio("127.0.0.1", model=model)
     entered, release = asyncio.Event(), asyncio.Event()
+    frames = []
 
     async def send(frame, **_kwargs):
+        frames.append(frame)
         entered.set()
         await release.wait()
         if ending == "error":
@@ -221,9 +231,15 @@ async def test_selection_methods_mark_epoch_until_completion(
         assert radio._vfo_selection_epoch % 2 == 0
         if ending == "cancel":
             task.cancel()
-            # MOR-3623: the shared receiver switch-and-restore finishes its
-            # restoration frame inside a cancellation shield, so the fake
-            # transport must answer it; the cancel still lands afterwards.
+            if (model, method) in _ROUTED_SELECTIONS:
+                # MOR-3623: a cancelled receiver switch is joined with its
+                # restoration — the caller is still running while the
+                # restoring frame waits for its answer.
+                async with asyncio.timeout(1):
+                    while len(frames) < 2:
+                        await asyncio.sleep(0)
+                assert not task.done()
+                assert frames[1][4:6] == bytes([0x07, radio.profile.vfo_main_code])
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task

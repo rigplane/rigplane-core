@@ -40,6 +40,7 @@ from ...profiles import (
     MemoryWriteUnverifiedError,
     RadioProfile,
     admit_memory_write,
+    admit_mode,
     cw_text_sender,
     resolve_radio_profile,
 )
@@ -521,14 +522,33 @@ def _with_admitted_level(
 
 
 def _observed_receiver_mode(server: Any, receiver: int) -> str | None:
-    """The state store's fresh observed mode for *receiver*, if any.
+    """The state store's fresh observed mode for *receiver*, if any."""
+    value = _observed_freq_mode_field(
+        server, receiver, "mode", lambda v: isinstance(v, str) and bool(v)
+    )
+    return cast("str | None", value)
+
+
+def _observed_receiver_freq(server: Any, receiver: int) -> int | None:
+    """The state store's fresh observed frequency for *receiver*, if any."""
+    value = _observed_freq_mode_field(
+        server, receiver, "freq_hz", lambda v: type(v) is int
+    )
+    return cast("int | None", value)
+
+
+def _observed_freq_mode_field(
+    server: Any, receiver: int, name: str, accept: Callable[[Any], bool]
+) -> Any:
+    """The state store's fresh observed ``freq_mode`` field for *receiver*.
 
     Snapshots key the primary receiver under "0" (legacy Icom poller) or
     "main" (Yaesu CAT, rigctld) — see
     ``web/runtime_helpers._SNAPSHOT_RECEIVER_IDS`` — so both spellings are
     probed, "0" first to preserve the historical Icom-first lookup order
-    documented on ``primary_receiver_snapshot_ids``. A stale mode is omitted
-    rather than used to admit against the wrong table. Pinned by
+    documented on ``primary_receiver_snapshot_ids``. A stale value (or one
+    ``accept`` refuses) is omitted rather than used to admit against the
+    wrong table or band. Pinned by
     ``test_set_filter_width_omits_admitted_width_when_observed_mode_is_stale``
     and the receiver-1 case in tests/test_filter_width_admitted_width.py.
     """
@@ -539,14 +559,10 @@ def _observed_receiver_mode(server: Any, receiver: int) -> str | None:
     receiver_ids = primary_receiver_snapshot_ids() if receiver == 0 else ("1", "sub")
     for receiver_id in receiver_ids:
         try:
-            field = snapshot.field(FieldPath.active(receiver_id, "freq_mode", "mode"))
+            field = snapshot.field(FieldPath.active(receiver_id, "freq_mode", name))
         except KeyError:
             continue
-        if (
-            field.freshness is FreshnessState.FRESH
-            and isinstance(field.value, str)
-            and field.value
-        ):
+        if field.freshness is FreshnessState.FRESH and accept(field.value):
             return field.value
     return None
 
@@ -2728,6 +2744,12 @@ class ControlHandler:
                 mode = str(params["mode"])
                 rx = _int_param(params.get("receiver", 0), "receiver")
                 _refuse_unsupported_receiver(self._radio, rx, operation="set_mode")
+                profile = getattr(self._radio, "profile", None)
+                if isinstance(profile, RadioProfile):
+                    # MOR-3623: refuse before enqueueing, so the HTTP and
+                    # WebSocket caller sees the refusal (the queued write
+                    # answers before it runs).
+                    admit_mode(profile, mode, _observed_receiver_freq(self._server, rx))
                 # MOR-495: an optional filter (1-3) recalls the destination
                 # mode's remembered filter, mirroring the radio front panel.
                 # Accept either `filter` or `filter_num`; absent → mode-only

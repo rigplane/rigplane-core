@@ -362,6 +362,7 @@ last_group = 3
 first_channel = 1
 last_channel = 99
 # CI-V Reference Guide rev 4, 1A 00 offset digit; Advanced manual, DD mode: 1.2 GHz only.
+# dd_groups also scopes a live DD mode selection (MOR-3623, profiles.admit_mode).
 dd_groups = [3]
 offset_10mhz_groups = [3]
 frequency_ranges = [
@@ -431,11 +432,11 @@ table = "standard_50"
 9 = "tone_t_tsql_r"
 
 [modes]
-# MOR-3623 adds the D-STAR modes: DV (CI-V 0x17) on every band, DD (0x22)
-# only on the 1.2 GHz band. The band scope is this profile's own
-# [memory] dd_groups = [3] fact (mode byte 0x22 is DD only in band 3) and
-# the radio's own refusal below 1.2 GHz; the mode-set path carries no
-# frequency, so no band gate exists there. Tier B-: not hardware-verified.
+# D-STAR: DV (CI-V 0x17) on every band; MOR-3623 adds DD (0x22), which
+# runs only on the 1.2 GHz band. That band scope is this profile's own
+# [memory] dd_groups = [3] fact: memory records decode with it, and a DD
+# selection is admitted only at an observed frequency inside band 3
+# (profiles.admit_mode). Tier B-: not hardware-verified.
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R", "DV", "DD"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }

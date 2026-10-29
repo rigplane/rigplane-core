@@ -13,11 +13,10 @@ through the same shared, profile-driven paths the IC-705 tests use:
   table — the pattern of ``tests/test_mor2955_tone_squelch_type.py``
   (same selector command and codes as the IC-705);
 * DV (CI-V 0x17) on every band and DD (0x22) only on the 1.2 GHz band.
-  The band scope is the profile's own ``[memory] dd_groups = [3]`` fact
-  (``commands/memory.py: _parse_block``), the only band-scoped mode
-  mechanism the profiles carry; the mode-set path carries no frequency,
-  so a band-conditional gate there would be a new mechanism, out of this
-  profile-data slice;
+  The band scope is the profile's own ``[memory] dd_groups = [3]`` fact:
+  memory records decode with it (``commands/memory.py: _parse_block``)
+  and a mode selection is admitted by it against the receiver's observed
+  frequency (``profiles.admit_mode``);
 * the band ``default_hz`` values (each band's start edge — the manuals
   state no separate default tuning frequency).
 """
@@ -41,15 +40,19 @@ from rigplane.commands import (
     set_mode,
     set_repeater_shift,
 )
-from rigplane.core.command_dispatch import prepare_command_intent
+from rigplane.core.command_dispatch import (
+    CommandUnsupportedError,
+    prepare_command_intent,
+)
 from rigplane.core.radio_protocol import RepeaterShiftCapable
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     SourceMetadata,
 )
-from rigplane.core.types import Mode, RepeaterShiftDirection
+from rigplane.core.types import Mode, RepeaterShiftDirection, bcd_decode, bcd_encode
 from rigplane.exceptions import CommandError, TimeoutError
+from rigplane.profiles import admit_mode, resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
@@ -59,7 +62,12 @@ from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebConfig, WebServer
 from test_icom_memory_entry import _block, _ic9700_reply
 from test_radio import MockTransport, _wrap_civ_in_udp
-from test_web_server import _ws_connect, _ws_recv_frame, _ws_send_text
+from test_web_server import (
+    _read_http_response,
+    _ws_connect,
+    _ws_recv_frame,
+    _ws_send_text,
+)
 from test_web_split_writes import _request
 
 RIGS = Path(__file__).resolve().parent.parent / "rigs"
@@ -195,7 +203,10 @@ async def test_set_sends_the_guide_code_on_every_band(
 
     radio = _radio(transport)
     transport.queue_response_on_send(1, _reply(0xFB))  # set_freq ACK
-    transport.queue_response_on_send(2, _reply(0xFB))  # shift ACK
+    # The routed MAIN write first reads the selection the radio has not
+    # reported yet (MOR-3623): MAIN, so no switch is needed.
+    transport.queue_response_on_send(2, _reply(0x07, b"\xd2\x00"))
+    transport.queue_response_on_send(3, _reply(0xFB))  # shift ACK
     await radio.set_freq(freq)
     await radio.set_repeater_shift(RepeaterShiftDirection.MINUS)
     sent = _sent_frames(transport)
@@ -206,8 +217,36 @@ async def test_set_sends_the_guide_code_on_every_band(
 @pytest.mark.parametrize(("byte", "direction"), _READBACKS)
 async def test_get_decodes_the_readback(transport, byte, direction) -> None:
     radio = _radio(transport)
-    transport.queue_response(_reply(0x0F, bytes([byte])))
+    transport.queue_response_on_send(1, _reply(0x07, b"\xd2\x00"))  # MAIN
+    transport.queue_response_on_send(2, _reply(0x0F, bytes([byte])))
     assert await radio.get_repeater_shift() is direction
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+        (0x07, b"\xd2"),
+        (0x0F, b""),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_main_shift_with_sub_selected_and_the_selection_answer_lost(
+    transport,
+) -> None:
+    """Pre-review P1 (MOR-3623): SUB is physically selected and the initial
+    ``07 D2`` answer was lost, so the mirror holds its default MAIN. A MAIN
+    shift must not trust it: the selection is read back, MAIN is selected
+    for the write, and SUB is restored — the bare 0F never reaches SUB."""
+    radio = _radio(transport)
+    assert radio._radio_state.active == "MAIN"  # the default, never reported
+    transport.queue_response_on_send(1, _reply(0x07, b"\xd2\x01"))  # SUB
+    for n in (2, 3, 4):
+        transport.queue_response_on_send(n, _reply(0xFB))
+    await radio.set_repeater_shift(RepeaterShiftDirection.PLUS, receiver=0)
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+        (0x07, b"\xd2"),  # read the selection
+        (0x07, b"\xd0"),  # select MAIN
+        (0x0F, b"\x12"),  # DUP+ on MAIN
+        (0x07, b"\xd1"),  # restore SUB
+    ]
+    assert radio._radio_state.active == "SUB"
 
 
 @pytest.mark.asyncio
@@ -314,8 +353,8 @@ async def test_a_foreign_selection_during_the_action_skips_the_restore(
 
     radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
 
-    async def action():
-        # The competitor's selection lands while our write is on the radio.
+    async def action(is_current):
+        # The radio reports another selection while our write is on it.
         radio._radio_state.active = "MAIN"
         return "written"
 
@@ -328,18 +367,15 @@ async def test_a_foreign_selection_during_the_action_skips_the_restore(
 
 
 @pytest.mark.asyncio
-async def test_cancellation_during_the_restore_still_completes_it(
-    transport,
-) -> None:
-    """Pre-review round 3: cancelling the caller while the restoration is
-    on the wire must not strand the radio on the temporary receiver — the
-    shielded restoration runs to completion (simulated; fake wire only)."""
-    import asyncio as _asyncio
-
+async def test_cancellation_during_the_restore_waits_for_it(transport) -> None:
+    """Pre-review P1 (MOR-3623): cancelling the caller while the restoration
+    is on the wire must not strand the radio on the temporary receiver, and
+    the caller does not finish before the restoration did — then the
+    cancellation propagates (simulated; fake wire only)."""
     radio = _radio(transport)
     radio._radio_state.active = "MAIN"
-    restore_started = _asyncio.Event()
-    restore_gate = _asyncio.Event()
+    restore_started = asyncio.Event()
+    restore_gate = asyncio.Event()
     calls: list[str] = []
 
     async def fake_set_vfo_wire(vfo: str) -> None:
@@ -350,25 +386,28 @@ async def test_cancellation_during_the_restore_still_completes_it(
 
     radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
 
-    async def action():
+    async def action(is_current):
         return "written"
 
-    task = _asyncio.create_task(
+    task = asyncio.create_task(
         radio._run_receiver_routed_once(
             1, operation="set_repeater_shift", action=action
         )
     )
-    await _asyncio.wait_for(restore_started.wait(), 5.0)
-    task.cancel()
-    with pytest.raises(_asyncio.CancelledError):
-        await task
-    # The shielded restoration finishes once its gate opens.
-    restore_gate.set()
-    for _ in range(100):
-        if len(calls) >= 2:
-            break
-        await _asyncio.sleep(0)
-    await _asyncio.sleep(0)
+    try:
+        await asyncio.wait_for(restore_started.wait(), 5.0)
+        task.cancel()
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert not task.done()  # joined: waits for the restoration
+        restore_gate.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 5.0)
+    finally:
+        restore_gate.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     assert calls == ["SUB", "MAIN"]
     assert radio._radio_state.active == "MAIN"
 
@@ -584,6 +623,74 @@ def test_dv_declares_the_fixed_width_dd_none(ic9700_profile) -> None:
     assert ic9700_profile.declared_filter_width("DD", 1) is None
 
 
+@pytest.mark.parametrize(
+    ("freq", "admitted"),
+    [
+        pytest.param(144_000_000, False, id="2m"),
+        pytest.param(430_000_000, False, id="70cm"),
+        pytest.param(1_240_000_000, True, id="23cm-low-edge"),
+        pytest.param(1_300_000_000, True, id="23cm-high-edge"),
+        pytest.param(None, False, id="unknown-frequency"),
+    ],
+)
+def test_dd_admission_is_the_dd_groups_band(ic9700_profile, freq, admitted) -> None:
+    """The live mode admission reads the same profile fact as the memory
+    decoder: DD only inside the ``dd_groups`` band; an unknown frequency
+    refuses. DV and FM are admitted anywhere."""
+    for mode in ("DV", "FM"):
+        admit_mode(ic9700_profile, mode, freq)
+    if admitted:
+        admit_mode(ic9700_profile, "DD", freq)
+    else:
+        with pytest.raises(CommandUnsupportedError, match="DD"):
+            admit_mode(ic9700_profile, "DD", freq)
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-7610"])
+def test_dd_is_refused_where_no_band_declares_it(model) -> None:
+    profile = resolve_radio_profile(model=model)
+    with pytest.raises(CommandUnsupportedError):
+        admit_mode(profile, "DD", 1_295_000_000)
+    admit_mode(profile, "USB", 1_295_000_000)
+
+
+def _observe_freq(radio: IcomRadio, freq_hz: int) -> None:
+    radio._civ_runtime._update_state_cache_from_frame(
+        CivFrame(
+            to_addr=CONTROLLER_ADDR,
+            from_addr=IC9700_ADDR,
+            command=0x03,
+            sub=None,
+            data=bcd_encode(freq_hz),
+        )
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("freq", "admitted"),
+    [
+        pytest.param(144_390_000, False, id="2m"),
+        pytest.param(439_000_000, False, id="70cm"),
+        pytest.param(1_295_000_000, True, id="23cm"),
+    ],
+)
+async def test_runtime_set_mode_admits_dd_by_band(transport, freq, admitted) -> None:
+    """An SDK or rigctld caller passes the same admission: outside 23 cm
+    nothing is sent and the refusal reaches the caller."""
+    radio = _radio(transport)
+    _observe_freq(radio, freq)
+    if admitted:
+        await radio.set_mode("DD")
+        assert [(f.command, f.data) for f in _sent_frames(transport)] == [
+            (0x06, b"\x22")
+        ]
+    else:
+        with pytest.raises(CommandUnsupportedError):
+            await radio.set_mode("DD")
+        assert _sent_frames(transport) == []
+
+
 # ── Band defaults ─────────────────────────────────────────────────────
 
 
@@ -652,19 +759,90 @@ def test_parity_table(model) -> None:
 # ── Real-endpoint integration ─────────────────────────────────────────
 
 
+class _FakeIc9700(MockTransport):
+    """Answers like an IC-9700 for the frames these tests exchange.
+
+    Simulated, not a bench capture: per-receiver frequency, mode, shift and
+    tone selector, with the selected receiver deciding where a bare frame
+    lands — the behaviour the routed switch-and-restore exists for. Reads
+    it does not model are refused (``FA``), as a radio refuses an
+    unsupported read. Mode-set refuses DD outside the 1.2 GHz band, the
+    radio's own rule (IC-9700 CI-V Reference Guide p.13).
+    """
+
+    def __init__(self, main_hz: int, sub_hz: int) -> None:
+        super().__init__()
+        self.selected = 0
+        self.receivers = [
+            {"freq": main_hz, "mode": 0x05, "shift": 0x00, "tone": 0x00},
+            {"freq": sub_hz, "mode": 0x05, "shift": 0x00, "tone": 0x00},
+        ]
+
+    async def send_tracked(self, data: bytes, *, is_current=None) -> None:
+        await super().send_tracked(data, is_current=is_current)
+        civ = data[data.index(b"\xfe\xfe") :]
+        reply = self._answer(civ[4], civ[5:-1])
+        if reply is not None:
+            command, payload = reply
+            self.queue_response(
+                _wrap_civ_in_udp(
+                    build_civ_frame(CONTROLLER_ADDR, IC9700_ADDR, command, data=payload)
+                )
+            )
+
+    def _answer(self, command: int, body: bytes) -> tuple[int, bytes] | None:
+        rx = self.receivers[self.selected]
+        ack, nak = (0xFB, b""), (0xFA, b"")
+        if command == 0x07 and body in (b"\xd0", b"\xd1"):
+            self.selected = body[0] - 0xD0
+            return ack
+        if command == 0x07 and body == b"\xd2":
+            return 0x07, bytes([0xD2, self.selected])
+        if command == 0x03 and not body:
+            return 0x03, bcd_encode(rx["freq"])
+        if command == 0x25 and body == b"\x00":  # selected-receiver frequency
+            return 0x25, b"\x00" + bcd_encode(rx["freq"])
+        if command == 0x26 and body == b"\x00":  # selected mode, DATA off, FIL1
+            return 0x26, bytes([0x00, rx["mode"], 0x00, 0x01])
+        if command == 0x05 and len(body) == 5:
+            rx["freq"] = bcd_decode(body)
+            return ack
+        if command == 0x04 and not body:
+            return 0x04, bytes([rx["mode"], 0x01])
+        if command == 0x06 and body:
+            if body[0] == 0x22 and not 1_240_000_000 <= rx["freq"] <= 1_300_000_000:
+                return nak
+            rx["mode"] = body[0]
+            return ack
+        if command == 0x0F and not body:
+            return 0x0F, bytes([rx["shift"]])
+        if command == 0x0F and body[:1] in (b"\x10", b"\x11", b"\x12"):
+            rx["shift"] = 0x00 if body[0] == 0x10 else body[0]
+            return ack
+        if command == 0x16 and body == b"\x5d":
+            return 0x16, bytes([0x5D, rx["tone"]])
+        if command == 0x16 and body[:1] == b"\x42" and len(body) == 2:
+            rx["tone"] = 0x01 if body[1] else 0x00
+            return ack
+        return nak
+
+
 @pytest.fixture
-async def ic9700_web():
-    """A live HTTP/WS server over the real IC-9700 runtime (fake wire).
+async def ic9700_web(request):
+    """A live HTTP/WS server over the real IC-9700 runtime (fake radio).
 
     The pattern of ``test_memory_recall.py: recall_web``: ``IcomRadio``
-    with the shipped IC-9700 profile, a ``MockTransport`` in place of the
+    with the shipped IC-9700 profile, a stateful fake radio in place of the
     hardware, and commands drained through a real ``RadioPoller``.
     Simulated; fake wire only.
     """
-    transport = MockTransport()
+    main_hz = getattr(request, "param", 145_000_000)
+    transport = _FakeIc9700(main_hz=main_hz, sub_hz=435_000_000)
     radio = _radio(transport)
     radio._civ_stream_ready = True
     radio._last_civ_data_received = time.monotonic()
+    # Production acquisition, unpaced: the fake answers at once.
+    radio._INITIAL_STATE_GAP_LAN = 0.0
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
     web.command_state_store.apply_current(
@@ -701,15 +879,43 @@ async def ic9700_web():
         await radio._force_cleanup_civ()
 
 
-def _observe_mode(radio: IcomRadio, mode_byte: int) -> None:
-    frame = CivFrame(
-        to_addr=CONTROLLER_ADDR,
-        from_addr=IC9700_ADDR,
-        command=0x04,
-        sub=None,
-        data=bytes([mode_byte]),
-    )
-    radio._civ_runtime._update_state_cache_from_frame(frame)
+async def _public_state(web) -> dict:
+    """``GET /api/v1/state`` over a real socket: the public state."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", web.port)
+    try:
+        writer.write(
+            (
+                "GET /api/v1/state HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{web.port}\r\nConnection: close\r\n\r\n"
+            ).encode()
+        )
+        await writer.drain()
+        status, _headers, body = await asyncio.wait_for(_read_http_response(reader), 5)
+        assert status == 200
+        return json.loads(body)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _acquire(web, radio: IcomRadio, expected) -> dict:
+    """Run production state acquisition against the fake radio and wait,
+    with a deadline, until the public state shows ``expected``."""
+    await radio._fetch_initial_state()
+    state: dict = {}
+    try:
+        async with asyncio.timeout(10):
+            while True:
+                state = await _public_state(web)
+                if expected(state):
+                    return state
+                await asyncio.sleep(0.01)
+    except asyncio.TimeoutError:
+        main = state.get("main", {})
+        shown = {key: main.get(key) for key in ("freqHz", "mode", "repeaterShift")}
+        raise AssertionError(
+            f"public state never matched: active={state.get('active')} {shown}"
+        ) from None
 
 
 async def _ws_session_requests(web, commands: list[tuple[str, dict]]) -> list[dict]:
@@ -745,75 +951,121 @@ async def _ws_session_requests(web, commands: list[tuple[str, dict]]) -> list[di
         await writer.wait_closed()
 
 
+async def _send_commands(web, protocol: str, commands) -> list[dict]:
+    """Each command's public answer: ``ok`` plus the error code if refused."""
+    if protocol == "ws":
+        return [
+            {"ok": result["ok"], "error": result.get("error")}
+            for result in await _ws_session_requests(web, commands)
+        ]
+    answers = []
+    for name, params in commands:
+        status, result = await _request(web, protocol, name, params)
+        ok = status == 200 and result.get("ok") is True
+        answers.append({"ok": ok, "error": None if ok else result.get("error")})
+    return answers
+
+
+def _mode_sets(transport: MockTransport) -> list[bytes]:
+    return [f.data for f in _sent_frames(transport) if f.command == 0x06]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["http", "ws"])
 async def test_ic9700_controls_through_the_real_endpoint(
     ic9700_web, protocol: str
 ) -> None:
-    """Shift, tone readback and DV/DD selection, starting at the real
-    HTTP/WS endpoint with the actual IC-9700 runtime (pre-review P2,
-    MOR-3623). Only the transport is faked. Simulated; fake wire only."""
+    """Shift on each receiver, a tone change and DV/DD mode selection,
+    from the real HTTP/WS endpoint through the actual IC-9700 runtime to a
+    fake radio, and back through production acquisition to the public
+    state (pre-review P2, MOR-3623). Nothing is injected into the state:
+    every public value is the fake radio's answer to a production query.
+    Simulated; fake wire only."""
     web, radio, transport, entries, consume = ic9700_web
-    radio._radio_state.active = "MAIN"
-    for n in (1, 2, 3):
-        transport.queue_response_on_send(n, _reply(0xFB))
-    consumer = asyncio.create_task(consume(3))
+    await _acquire(
+        web,
+        radio,
+        lambda s: s["active"] == "MAIN" and s["main"]["freqHz"] == 145_000_000,
+    )
     commands = [
         (
             "set_repeater_shift",
             {"direction": int(RepeaterShiftDirection.MINUS), "receiver": 1},
         ),
+        (
+            "set_repeater_shift",
+            {"direction": int(RepeaterShiftDirection.PLUS), "receiver": 0},
+        ),
+        ("set_repeater_tone", {"on": True, "receiver": 0}),
         ("set_mode", {"mode": "DV", "receiver": 0}),
-        ("set_mode", {"mode": "DD", "receiver": 0}),
+        ("set_mode", {"mode": "DD", "receiver": 0}),  # 2 m: refused
     ]
+    consumer = asyncio.create_task(consume(4))
     try:
-        if protocol == "ws":
-            shift, dv, dd = await _ws_session_requests(web, commands)
-            assert shift["ok"] is True
-            assert dv["ok"] is True
-            assert dd["ok"] is True
-        else:
-            for name, params in commands:
-                status, result = await _request(web, protocol, name, params)
-                assert status == 200
-                assert result["ok"] is True
+        answers = await _send_commands(web, protocol, commands)
     finally:
-        await asyncio.wait_for(consumer, 5)
+        await asyncio.wait_for(consumer, 10)
+    assert [a["ok"] for a in answers] == [True, True, True, True, False]
+    assert answers[-1]["error"] == "unsupported_command"
+    assert len(entries) == 4  # the refused DD never reached the queue
 
-    assert len(entries) == 3
-    # Receiver targeting: the SUB shift rode the shared MAIN/SUB
-    # switch-and-restore; the MAIN mode sets went out as bare 06.
-    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
-        (0x07, b"\xd1"),  # select SUB
-        (0x0F, b"\x11"),  # DUP− on SUB
-        (0x07, b"\xd0"),  # restore MAIN
-        (0x06, b"\x17"),  # DV on MAIN
-        (0x06, b"\x22"),  # DD on MAIN
-    ]
-    assert radio._radio_state.active == "MAIN"
+    # The commanded receiver at the radio: DUP− on SUB, DUP+ on MAIN, the
+    # tone and DV on MAIN, and MAIN selected again afterwards.
+    assert transport.receivers[1]["shift"] == 0x11
+    assert transport.receivers[0]["shift"] == 0x12
+    assert transport.receivers[0]["tone"] == 0x01
+    assert transport.receivers[1]["tone"] == 0x00
+    assert transport.selected == 0
+    assert _mode_sets(transport) == [b"\x17"]  # no DD byte ever sent
 
-    # Resulting public state: the shift readback, the tone-selector
-    # readback and the DV/DD mode readbacks land in the runtime store.
-    _observe_0f(radio, 0x11, IC9700_ADDR)
-    assert radio._state_store.snapshot().field(SHIFT_OBSERVED).value == int(
-        RepeaterShiftDirection.MINUS
+    state = await _acquire(
+        web,
+        radio,
+        lambda s: (
+            s["main"]["mode"] == "DV"
+            and s["main"]["toneSquelchType"] == "tone"
+            and s["main"]["repeaterShift"] == int(RepeaterShiftDirection.PLUS)
+        ),
     )
-    radio._civ_runtime._update_state_cache_from_frame(_tone_frame(0x01))
-    snapshot = radio._state_store.snapshot()
-    assert snapshot.field(TYPE_OBSERVED).value == "tone"
-    assert snapshot.field("receiver.0.operator_toggles.repeater_tone").value is True
-    assert snapshot.field("receiver.0.operator_toggles.repeater_tsql").value is False
-    _observe_mode(radio, 0x17)
-    assert (
-        radio._state_store.snapshot()
-        .field(FieldPath.active("0", "freq_mode", "mode"))
-        .value
-        == "DV"
-    )
-    _observe_mode(radio, 0x22)
-    assert (
-        radio._state_store.snapshot()
-        .field(FieldPath.active("0", "freq_mode", "mode"))
-        .value
-        == "DD"
-    )
+    assert state["active"] == "MAIN"
+    assert state["main"]["repeaterTone"] is True
+    assert state["main"]["repeaterTsql"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+@pytest.mark.parametrize(
+    ("ic9700_web", "accepted"),
+    [
+        pytest.param(145_000_000, False, id="2m"),
+        pytest.param(435_000_000, False, id="70cm"),
+        pytest.param(1_295_000_000, True, id="23cm"),
+    ],
+    indirect=["ic9700_web"],
+)
+async def test_dd_selection_follows_the_band(ic9700_web, accepted, protocol) -> None:
+    """Pre-review P2 (MOR-3623): DD is refused to the HTTP/WS caller on 2 m
+    and 70 cm, before anything is sent — the bare mode-set is
+    fire-and-forget, so the radio's own refusal would read as success —
+    and accepted on 23 cm, where the public state then shows it."""
+    web, radio, transport, entries, consume = ic9700_web
+    tuned = transport.receivers[0]["freq"]
+    await _acquire(web, radio, lambda s: s["main"]["freqHz"] == tuned)
+    consumer = asyncio.create_task(consume(1 if accepted else 0))
+    try:
+        (answer,) = await _send_commands(
+            web, protocol, [("set_mode", {"mode": "DD", "receiver": 0})]
+        )
+    finally:
+        await asyncio.wait_for(consumer, 10)
+    if not accepted:
+        assert answer == {"ok": False, "error": "unsupported_command"}
+        assert entries == []
+        assert _mode_sets(transport) == []
+        state = await _public_state(web)
+        assert state["main"]["mode"] == "FM"
+        return
+    assert answer["ok"] is True
+    assert _mode_sets(transport) == [b"\x22"]
+    assert transport.receivers[0]["mode"] == 0x22
+    await _acquire(web, radio, lambda s: s["main"]["mode"] == "DD")

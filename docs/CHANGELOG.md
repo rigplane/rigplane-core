@@ -23,22 +23,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   70 cm and 23 cm. It gains a `[tone_squelch_types]` table and the
   `16 5D` selector pair — the same selector codes as the IC-705 — and
   polls the tone-squelch type and the two CTCSS booleans through that
-  one read. The mode list adds DV (CI-V `0x17`) on every band and DD
-  (`0x22`, now a member of the shared CI-V `Mode` enum) scoped to the
-  1.2 GHz band by the profile's existing `[memory] dd_groups = [3]`
-  fact: a DD mode byte outside band 3 is refused with an explicit
-  error, and the mode-set path carries no frequency, so it has no band
-  gate. The band `default_hz` values stay the band start edges and the
-  `repeater` range flags stay. On a dual-receiver radio every shift
-  read/write is routed through the shared MAIN/SUB switch-and-restore
-  for the requested receiver (including MAIN, so a shift set while SUB
-  is selected no longer writes SUB by accident), the switch runs inside
-  the failure boundary (a lost ACK still gets one best-effort
-  restoration), and a restoration is skipped when another caller moved
-  the selection meanwhile. Not
-  hardware-verified (tier B-): no IC-9700 has been on the bench, and
-  the older MOR-2015 0x16-family sub-list cited in the profile does
-  not name `5D` — reconciled in the MOR-3623 PR body.
+  one read. The mode list, which already had DV, adds DD (`0x22`, now a
+  member of the shared CI-V `Mode` enum) with fixed-width filter rows
+  for both D-STAR modes. DD is scoped to the 1.2 GHz band by the
+  profile's existing `[memory] dd_groups = [3]` fact: a DD memory
+  record outside band 3 is refused, and a DD mode selection is admitted
+  only when the receiver's observed frequency lies in that band
+  (`profiles.admit_mode`, shared by the web control handler and the
+  Icom runtime), so HTTP and WebSocket callers get `unsupported_command`
+  on 2 m and 70 cm instead of a silent radio refusal. The band
+  `default_hz` values stay the band start edges and the `repeater` range
+  flags stay. Not hardware-verified (tier B-): no IC-9700 has been on the
+  bench, and the older MOR-2015 0x16-family sub-list cited in the profile
+  does not name `5D` — reconciled in the MOR-3623 PR body.
+
+### Fixed
+
+- **The shared MAIN/SUB switch-and-restore is one critical section
+  (MOR-3623).** Dual-receiver radios that address a receiver by
+  selecting it (IC-9700 per-receiver commands, IC-7610 VFO-slot
+  selection) now route every such operation — the IC-9700 repeater
+  shift included, on MAIN as well as SUB — through one guarded sequence:
+  an active receiver the radio has not reported is read back (`07 D2`)
+  before a switch is skipped; the operation is refused while another
+  selection change is in flight; its frame is refused at the wire when a
+  later selection moved the radio, and that later selection is never
+  overwritten by the restore; a cancelled caller waits for the
+  restoration, including its timeout retry, before the cancellation
+  propagates.
 
 ## [3.0.1] — 2026-10-28
 
@@ -152,6 +164,7 @@ The same code as 3.0.0rc1 plus three fixes made during the release freeze.
   a finger drift of more than 8 px released an already-pressed button.
   Verified in Chromium with emulated touch (Playwright); not verified on real
   iOS or Android devices.
+
 ## [3.0.0rc1] — 2026-10-26
 
 ### Added
