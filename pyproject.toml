@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rigplane"
-version = "3.0.0"
+version = "3.0.1"
 description = "Multi-vendor radio control library and Web UI with native providers and planned Hamlib-backed CAT coverage"
 readme = "README.md"
 license = "MIT"
@@ -24,7 +24,7 @@ authors = [
 ]
 keywords = ["rigplane", "ham-radio", "amateur-radio", "transceiver", "icom", "yaesu", "xiegu", "lab599", "ci-v", "cat", "rigctld", "ic-7610", "ic-7300", "ic-705", "ftx-1"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Topic :: Communications :: Ham Radio",

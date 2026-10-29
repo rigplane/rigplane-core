@@ -98,6 +98,7 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..runtime.tx_gate import tx_gate_open
 from ..runtime.tx_interlock import (
     RfState,
     TxInterlockRefusal,
@@ -3770,25 +3771,21 @@ class WebServer:
     async def _bridge_tx_gate_open(self) -> bool:
         """Whether the bridge may push captured audio to the radio.
 
-        Fail-closed (MOR-2863). Open only when the managed TX intent is
-        keyed — RigPlane itself keyed the rig — or a fresh observed PTT
-        is exactly ON. Everything else closes the gate: unknown or stale
-        observation, no authority, or a snapshot that cannot be read.
+        Thin delegate to :func:`rigplane.runtime.tx_gate.tx_gate_open`
+        (MOR-3821 P0b): the fail-closed rule lives there, shared by the
+        bridge, the web TX handler, the WebRTC audio channel and the
+        controller audio gate below. Kept so existing references
+        (``AudioBridge(tx_gate=...)``, the WebRTC session) keep working.
         """
-        controller = getattr(self, "_controller", None)
-        if isinstance(controller, ControllerAuthority) and controller.mode == "remote":
-            return False
-        authority = self._managed_tx_authority()
-        if authority is None:
-            return False
-        try:
-            projection = await authority.snapshot()
-            observed = project_observed_ptt(self.command_state_store.snapshot())
-        except Exception:
-            logger.debug("audio-bridge: TX gate failed closed", exc_info=True)
-            return False
-        keyed = projection.state.intent.kind is not ManagedTxIntentKind.RX
-        return keyed or observed is ObservedPtt.ON
+        # Annotated local: under the web-scoped mypy run the runtime import
+        # resolves to Any (follow_imports = "skip"), and a bare return would
+        # trip no-any-return while the value is a real bool.
+        gate_open: bool = await tx_gate_open(
+            self._managed_tx_authority(),
+            self.command_state_store,
+            getattr(self, "_controller", None),
+        )
+        return gate_open
 
     async def start_audio_bridge(
         self,
@@ -4300,10 +4297,13 @@ class WebServer:
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
+                    # MOR-3632: receive-only band rows (``rx_only``) never
+                    # grant transmit permission, so they stay out of txBands.
                     "txBands": [
                         {"name": b.name, "start": b.start, "end": b.end}
                         for fr in profile.freq_ranges
                         for b in fr.bands
+                        if not b.rx_only
                     ]
                     or None,
                 }
@@ -5021,10 +5021,13 @@ class WebServer:
             )
             if profile.controls:
                 payload["controls"] = profile.controls
+            # MOR-3632: receive-only band rows (``rx_only``) never grant
+            # transmit permission, so they stay out of txBands.
             payload["txBands"] = [
                 {"name": b.name, "start": b.start, "end": b.end}
                 for fr in profile.freq_ranges
                 for b in fr.bands
+                if not b.rx_only
             ] or None
         payload["webrtc"] = {
             "available": webrtc_available(),
@@ -5641,7 +5644,15 @@ class WebServer:
                     else self._controller.is_session_owner(held.tx_holder_nowait())
                 ):
                     return False
-                return await self._bridge_tx_gate_open()
+                # Annotated local: under the web-scoped mypy run the runtime
+                # import resolves to Any (follow_imports = "skip"), and a bare
+                # return would trip no-any-return while the value is a real bool.
+                gate_open: bool = await tx_gate_open(
+                    self._managed_tx_authority(),
+                    self.command_state_store,
+                    self._controller,
+                )
+                return gate_open
             authority = self._managed_tx_authority()
             if authority is None:
                 return False
@@ -5849,6 +5860,12 @@ class WebServer:
                 # (another owner holds TX, MOR-3534) as a command error.
                 submission = None
             accepted = submission is not None and submission.outcome.value == "accepted"
+            # An offline release is retained for provider rearm, not settled.
+            pending = (
+                accepted
+                and operation == "force_off"
+                and getattr(submission, "pending_release", False)
+            )
             await self._send_json(
                 writer,
                 202 if accepted else 409,
@@ -5856,7 +5873,11 @@ class WebServer:
                 {
                     "ok": accepted,
                     "operation": operation,
-                    "result": "accepted" if accepted else "rejected",
+                    "result": "pending"
+                    if pending
+                    else "accepted"
+                    if accepted
+                    else "rejected",
                 },
             )
             return

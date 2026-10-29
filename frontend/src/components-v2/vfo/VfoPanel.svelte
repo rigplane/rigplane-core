@@ -128,6 +128,7 @@
   const staleId = `vfo-panel-stale-${++sequence}`;
   let receiverChromeVars = $derived({
     '--receiver-accent': `var(--v2-receiver-${receiver}-accent)`,
+    '--receiver-frequency-glow': `var(--v2-vfo-${receiver}-freq-glow)`,
     '--receiver-control-border': `var(--v2-vfo-${receiver}-control-border)`,
     '--receiver-control-glow': `var(--v2-vfo-${receiver}-control-glow)`,
     '--receiver-panel-glow-outer': `var(--v2-vfo-${receiver}-panel-glow-outer)`,
@@ -372,7 +373,7 @@
     --vfo-unlit-text: var(--dl-vfo-unlit-text, var(--v2-text-muted, #5a6875));
     --vfo-unlit-border: var(--dl-vfo-unlit-border, #1f2832);
     --vfo-unlit-fill: var(--dl-vfo-unlit-fill, rgba(255, 255, 255, 0.012));
-    --vfo-frequency-glow: var(--dl-vfo-frequency-glow, none);
+    --vfo-frequency-glow: var(--dl-vfo-frequency-glow, var(--v2-vfo-glow-override, var(--receiver-frequency-glow)));
     --vfo-primary-glow: var(--dl-vfo-primary-glow, none);
     --vfo-red-glow: var(--dl-vfo-red-glow, none);
     --vfo-amber-glow: var(--dl-vfo-amber-glow, none);

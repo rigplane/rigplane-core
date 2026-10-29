@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from rigplane.audio.route import profile_data_mode_count
 
 if TYPE_CHECKING:
     from typing import Any, Awaitable, Callable, Iterator
@@ -454,7 +456,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         mode: int,
         *,
         selected: bool,
-        data: bool | None = None,
+        data: bool | int | None = None,
         filter_width: int | None = None,
         before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
@@ -490,8 +492,10 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             mode_code = int(Mode(mode))
         except (TypeError, ValueError) as exc:
             raise CommandError(f"Unsupported direct VFO mode: {mode!r}") from exc
-        if data is not None and not isinstance(data, bool):
-            raise CommandError("direct VFO DATA must be a boolean")
+        if data is not None and not isinstance(data, int):
+            raise CommandError(
+                "direct VFO DATA must be a boolean or a DATA sub-mode number"
+            )
         if filter_width is not None and (
             type(filter_width) is not int or filter_width not in (1, 2, 3)
         ):
@@ -540,7 +544,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         mode_code: int,
         *,
         selected: bool,
-        data: bool | None,
+        data: bool | int | None,
         filter_width: int | None,
         before_set: Callable[[], None] | None,
         scope: InterferenceScope | None,
@@ -562,6 +566,18 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """
         role = "selected" if selected else "unselected"
         cmd_map = self._profile.command_map
+        count = profile_data_mode_count(cast("Any", self))
+        if data is not None and not isinstance(data, bool):
+            # Numbered DATA sub-modes exist only where the profile numbers
+            # more than one (MOR-3821 P0e): a count-1 profile is bool-only,
+            # and sub-modes are 1-based. Refused before any IO — ahead of
+            # the preservation read below and any wire SET.
+            if type(data) is not int or count < 2 or not 1 <= data <= count:
+                raise CommandError(
+                    "direct VFO DATA sub-mode "
+                    f"{data!r} is not numbered by this profile "
+                    f"(data_mode_count {count})"
+                )
         if self._vfo_selection_epoch_moved(selection_epoch):
             raise CommandRejectedError(
                 "VFO selection changed during preservation; retry"
@@ -583,11 +599,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             # Explicit fields do not depend on the preservation read. In
             # particular, clearing DATA must work from IC-7610 DATA2/3.
             if data is None:
-                if current.data_mode not in (0, 1):
+                if not 0 <= current.data_mode <= count:
                     raise CommandError(
                         "direct VFO mode preservation readback is unavailable"
                     )
-                data = bool(current.data_mode)
+                data = int(current.data_mode)
             if filter_width is None:
                 if current.filter_num not in (1, 2, 3):
                     raise CommandError(
@@ -596,6 +612,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 filter_width = current.filter_num
         if data is None or filter_width is None or filter_width not in (1, 2, 3):
             raise CommandError("direct VFO filter readback is unavailable")
+        if not 0 <= int(data) <= count:
+            raise CommandError(
+                "direct VFO DATA sub-mode "
+                f"{data!r} is outside the profile's data_mode_count of {count}"
+            )
         opcode, sub, prefix = decode_wire_tuple(cmd_map.get(f"set_{role}_mode"))
 
         def is_current() -> bool:
@@ -658,7 +679,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # (MOR-3743).  Interference behind it is not a retry trigger —
         # the readback below is the verdict: consistent means success,
         # contradictory raises the readback error.
-        if observed.data_mode not in (0, 1) or observed.filter_num not in (1, 2, 3):
+        if not 0 <= observed.data_mode <= count or observed.filter_num not in (1, 2, 3):
             raise CommandError("direct VFO mode readback is unavailable")
         # ACK alone is not success: a valid but contradictory readback
         # means the radio did not end up in the requested state.

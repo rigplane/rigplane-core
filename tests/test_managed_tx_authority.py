@@ -8,7 +8,11 @@ from typing import Any, cast
 import pytest
 
 from rigplane.core.exceptions import CommandError
-from rigplane.runtime.managed_tx_authority import ManagedTxAuthority, ShutdownResult
+from rigplane.core.transport import IcomTransport
+from rigplane.runtime.managed_tx_authority import (
+    ManagedTxAuthority,
+    ShutdownResult,
+)
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
 from rigplane.runtime.managed_tx_fence import TxAbortFence
@@ -760,7 +764,7 @@ async def test_unavailable_start_and_shutdown_overlap_drains_new_generation(
         old_release = await asyncio.wait_for(lane.started.get(), 0.2)
         assert old_release.token.provider_generation == 7
         await managed.start_provider_unavailable()
-        assert lane.guards[-1]() is False
+        assert lane.guards[-1]() is True
 
     await managed.provider_available(8)
     if old_gate is not None:
@@ -1309,20 +1313,17 @@ async def test_late_physical_on_retains_debt_until_a_fresh_off(
     try:
         await asyncio.wait_for(started.wait(), 1)
         off = asyncio.create_task(managed.force_off())
-        await asyncio.wait_for(off_written.wait(), 1)
+        await asyncio.wait_for(on, 1)
+        await asyncio.wait_for(off_written.wait(), 0.2)
+        assert managed._state.release_required
         allow_late_on.set()
         await asyncio.wait_for(late_on.wait(), 1)
         await asyncio.wait_for(asyncio.gather(on, off), 1)
         state = (await managed.snapshot()).state
-        assert state.release_required
-        assert state.last_actuation.result is ActuationResult.UNCERTAIN
-        assert [value for value, _ in writes] == ["OFF", "ON"]
-        assert managed._retry_due is not None
-        clock.now = managed._retry_due
-        await managed._process_due()
+        assert not state.release_required
+        assert state.last_actuation.result is ActuationResult.ACCEPTED
         assert [value for value, _ in writes] == ["OFF", "ON", "OFF"]
-        assert writes[0][1] != writes[-1][1]
-        assert not (await managed.snapshot()).state.release_required
+        assert managed._retry_due is None
     finally:
         allow_late_on.set()
         await asyncio.wait_for(asyncio.gather(on, *(() if off is None else (off,))), 1)
@@ -1748,3 +1749,62 @@ async def test_shutdown_logs_whether_its_release_was_confirmed(
             " drained the release",
         )
     ]
+
+
+async def test_offline_force_off_retains_debt_and_retries_after_rearm() -> None:
+    managed, clock, _, _, _, lane = authority(generation=None)
+    try:
+        submission = await managed.submit_force_off()
+        assert submission.pending_release
+        assert await submission.wait_settlement() is None
+        assert managed._state.release_required and not lane.effects
+        lane.results.append(ActuationResult.UNCERTAIN)
+        await managed.provider_available(7)
+        assert managed._state.release_required
+        assert managed._retry_due == clock.now + managed._retry_delay
+        clock.now = managed._retry_due
+        await managed._process_due()
+        assert not managed._state.release_required and len(lane.effects) == 2
+    finally:
+        await managed.close()
+
+
+async def test_running_and_completed_unkeys_retire_on_new_key_on(monkeypatch) -> None:
+    managed, _, _, _, _, _ = authority()
+    entered, release, wire = asyncio.Event(), asyncio.Event(), []
+    transport = IcomTransport()
+    monkeypatch.setattr(transport, "_raw_send", wire.append)
+
+    class Actuator:
+        async def actuate(self, token, operation, *, is_current):
+            if isinstance(operation, ActuationOperation):
+                off = operation is ActuationOperation.FORCE_RECEIVE
+                if off and not entered.is_set():
+                    entered.set()
+                    await release.wait()
+                await transport.send_tracked(
+                    bytes(16) + operation.value.encode(), is_current=is_current
+                )
+            return ActuationResult.ACCEPTED
+
+    managed._lane = ManagedTxEffectLane(Actuator(), clock=managed._clock)
+    first = asyncio.create_task(managed.force_off())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await managed.force_off()
+        assert not managed._state.release_required
+        seq, frame = next(iter(transport.tx_buffer.items()))
+        transport._retransmit(seq)
+        assert wire == [frame, frame]
+        await managed.transmit_on()
+        transport._retransmit(seq)
+        assert wire[-1] != frame and wire[-1][4:6] == b"\x00\x00"
+        release.set()
+        await asyncio.wait_for(first, 1)
+        assert wire.count(frame) == 2 and len(wire) == 4
+        assert managed._state.intent.kind is ManagedTxIntentKind.TRANSMIT
+    finally:
+        release.set()
+        await first
+        await managed.force_off()
+        await managed.close()

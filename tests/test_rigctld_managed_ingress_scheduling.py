@@ -54,7 +54,11 @@ async def managed():
     await radio.connect()
     service = CommandService(executor=default, state_store=store)
     queue = CommandQueue()
-    queue.bind_connection_generation(lambda: "rigctld-connection-1")
+
+    def bind_connection_generation() -> str:
+        return "rigctld-connection-1"
+
+    queue.bind_connection_generation(bind_connection_generation)
     server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0, command_timeout=1.0), managed_tx_authority=managed, command_queue=queue, command_service=service)
     await server.start()
     drained_entries = []
@@ -86,7 +90,7 @@ async def managed():
                     pass
     drain_task = asyncio.create_task(drain())
     reader, writer = await asyncio.open_connection("127.0.0.1", server._server.sockets[0].getsockname()[1])
-    rig = SimpleNamespace(authority=managed, fence=fence, lane=lane, store=store, radio=radio, default=default, service=service, server=server, queue=queue, reader=reader, writer=writer, drained_entries=drained_entries)
+    rig = SimpleNamespace(authority=managed, fence=fence, lane=lane, store=store, radio=radio, default=default, service=service, server=server, queue=queue, bind_connection_generation=bind_connection_generation, reader=reader, writer=writer, drained_entries=drained_entries)
     try:
         yield rig
     finally:
@@ -392,6 +396,19 @@ async def test_invalid_validation_committed_before_off_preserves_evfo(managed):
     release.set()
     assert await _replies(managed, 2) == [b"RPRT -16\n", b"RPRT 0\n"]
     assert len(submissions) == 1 and not submissions[0][1].done() and managed.lane.effects == []
+async def test_unkey_after_queue_unbind_still_releases(managed):
+    """An unkey never captures the connection generation (P0c fix round).
+
+    After the queue consumer unbinds (RadioPoller.stop), T 0 must still
+    release and answer: only key-down may capture.
+    """
+    await _send(managed, "T 1")
+    assert await _replies(managed, 1) == [b"RPRT 0\n"]
+    managed.queue.unbind_connection_generation(managed.bind_connection_generation)
+    await _send(managed, "T 0")
+    assert await _replies(managed, 1) == [b"RPRT 0\n"]
+    state = (await managed.authority.snapshot()).state
+    assert state.intent.kind is ManagedTxIntentKind.RX
 async def test_pending_on_defers_handler_state_evaluation_until_predecessor(managed):
     handler, seen = managed.server._rig_handler, []
     execute = handler.execute
