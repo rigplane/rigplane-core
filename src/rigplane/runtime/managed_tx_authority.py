@@ -575,6 +575,23 @@ class ManagedTxAuthority:
         except TimeoutError:
             error = "before_on timed out"
             prepared = False
+        except asyncio.CancelledError:
+            # The key is cancelled while it prepares (a dropped requester
+            # cancels its submission): unwind the committed intent through
+            # the same rejection path, then propagate — the submission
+            # still ends cancelled, but nothing stays stranded.
+            async with self._lock:
+                if owner is not None and self._key_intact_locked(owner):
+                    self._reduce_locked(
+                        ActuationSettled(
+                            token=on_effect.token,
+                            operation=ActuationOperation.PTT_ON,
+                            result=ActuationResult.REJECTED,
+                            error="before_on cancelled",
+                        )
+                    )
+                    self._wakeup.wake()
+            raise
         except Exception as exc:
             error = f"before_on raised {exc!r}"
             prepared = False
