@@ -14,7 +14,7 @@ source = "https://www.arrl.org/band-plan"
 layer = "ham"
 priority = 10
 version = "2025.1"
-updated = "2026-10-27"
+updated = "2026-10-29"
 
 # ── 160m ──────────────────────────────────────────────
 
@@ -393,28 +393,49 @@ end = 54_000_000
   end = 50_100_000
   mode = "cw"
   label = "CW"
-  notes = "CW, EME"
+  notes = "CW, beacons"
 
   [[band.segment]]
   start = 50_060_000
   end = 50_080_000
   mode = "beacon"
   label = "BCN"
-  notes = "Beacons"
+  notes = "Beacon subband"
 
   [[band.segment]]
   start = 50_100_000
   end = 50_300_000
   mode = "phone"
   label = "SSB"
-  notes = "SSB, SSB calling 50.125"
+  notes = "SSB, CW; 50.100-50.125 DX window; 50.125 SSB calling"
 
   [[band.segment]]
   start = 50_300_000
   end = 50_600_000
-  mode = "phone"
-  label = "SSB"
+  mode = "other"
+  label = "ALL"
   notes = "All modes"
+
+  [[band.segment]]
+  start = 50_600_000
+  end = 50_800_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Nonvoice communications; 50.620 digital (packet) calling"
+
+  [[band.segment]]
+  start = 50_800_000
+  end = 51_000_000
+  mode = "other"
+  label = "CTRL"
+  notes = "Radio remote control (20 kHz channels)"
+
+  [[band.segment]]
+  start = 51_000_000
+  end = 51_100_000
+  mode = "other"
+  label = "DX"
+  notes = "Pacific DX window"
 
   [[band.segment]]
   start = 51_120_000
@@ -422,6 +443,13 @@ end = 54_000_000
   mode = "phone"
   label = "RPT"
   notes = "FM repeater inputs (19 channels), 500 kHz split, outputs 51.620-51.980; 51.120-51.180 digital repeater inputs"
+
+  [[band.segment]]
+  start = 51_500_000
+  end = 51_600_000
+  mode = "phone"
+  label = "SIMP"
+  notes = "Simplex (six channels)"
 
   [[band.segment]]
   start = 51_620_000
@@ -477,7 +505,7 @@ end = 148_000_000
   end = 144_275_000
   mode = "phone"
   label = "SSB"
-  notes = "SSB, SSB calling 144.200"
+  notes = "EME and weak-signal SSB 144.100-144.200; general SSB 144.200-144.275; SSB calling 144.200"
 
   [[band.segment]]
   start = 144_275_000
@@ -491,7 +519,14 @@ end = 148_000_000
   end = 144_500_000
   mode = "phone"
   label = "SAT"
-  notes = "Satellite (OSCAR)"
+  notes = "Satellite (OSCAR), new OSCAR subband"
+
+  [[band.segment]]
+  start = 144_500_000
+  end = 144_600_000
+  mode = "other"
+  label = "LIN"
+  notes = "Linear translator inputs"
 
   [[band.segment]]
   start = 144_600_000
@@ -501,11 +536,32 @@ end = 148_000_000
   notes = "FM repeater inputs, -600 kHz offset, outputs 145.200-145.500"
 
   [[band.segment]]
+  start = 144_900_000
+  end = 145_100_000
+  mode = "phone"
+  label = "WS/FM"
+  notes = "Weak signal and FM simplex; 145.010, 145.030, 145.050, 145.070 and 145.090 are widely used for packet"
+
+  [[band.segment]]
+  start = 145_100_000
+  end = 145_200_000
+  mode = "other"
+  label = "LIN"
+  notes = "Linear translator outputs"
+
+  [[band.segment]]
   start = 145_200_000
   end = 145_500_000
   mode = "phone"
   label = "RPT"
   notes = "FM repeater outputs, -600 kHz offset, inputs 144.600-144.900"
+
+  [[band.segment]]
+  start = 145_500_000
+  end = 145_800_000
+  mode = "other"
+  label = "EXP"
+  notes = "Miscellaneous and experimental modes"
 
   [[band.segment]]
   start = 145_800_000
@@ -565,10 +621,17 @@ end = 450_000_000
 
   [[band.segment]]
   start = 420_000_000
+  end = 426_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV repeater or simplex with 421.250 MHz video carrier; control links and experimental"
+
+  [[band.segment]]
+  start = 426_000_000
   end = 432_000_000
   mode = "other"
   label = "ATV"
-  notes = "ATV repeater outputs 420.000-426.000, simplex and links 426.000-432.000"
+  notes = "ATV simplex with 427.250 MHz video carrier frequency"
 
   [[band.segment]]
   start = 432_000_000
@@ -580,9 +643,9 @@ end = 450_000_000
   [[band.segment]]
   start = 432_100_000
   end = 432_300_000
-  mode = "phone"
-  label = "SSB"
-  notes = "SSB, SSB calling 432.100"
+  mode = "other"
+  label = "ALL"
+  notes = "Mixed-mode and weak-signal work; 70 cm calling frequency 432.100"
 
   [[band.segment]]
   start = 432_300_000
@@ -590,6 +653,13 @@ end = 450_000_000
   mode = "beacon"
   label = "BCN"
   notes = "Beacons"
+
+  [[band.segment]]
+  start = 432_400_000
+  end = 433_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "Mixed-mode and weak-signal work"
 
   [[band.segment]]
   start = 433_000_000
@@ -610,7 +680,7 @@ end = 450_000_000
   end = 442_000_000
   mode = "other"
   label = "ATV"
-  notes = "ATV repeater inputs"
+  notes = "ATV repeater input with 439.250 MHz video carrier frequency and repeater links (the source row runs 438.000-444.000)"
 
   [[band.segment]]
   start = 442_000_000
@@ -645,14 +715,42 @@ end = 1_300_000_000
   end = 1_246_000_000
   mode = "other"
   label = "ATV"
-  notes = "ATV"
+  notes = "ATV channel 1; 1240.000-1260.000 FM ATV is a regional option"
+
+  [[band.segment]]
+  start = 1_246_000_000
+  end = 1_248_000_000
+  mode = "other"
+  label = "LINK"
+  notes = "FM, digital point-to-point links paired with 1258.000-1260.000"
+
+  [[band.segment]]
+  start = 1_248_000_000
+  end = 1_252_000_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Digital"
+
+  [[band.segment]]
+  start = 1_252_000_000
+  end = 1_258_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV channel 2; 1240.000-1260.000 FM ATV is a regional option"
+
+  [[band.segment]]
+  start = 1_258_000_000
+  end = 1_260_000_000
+  mode = "other"
+  label = "LINK"
+  notes = "FM, digital point-to-point links paired with 1246.000-1248.000"
 
   [[band.segment]]
   start = 1_260_000_000
   end = 1_270_000_000
   mode = "phone"
   label = "SAT"
-  notes = "Satellite uplinks"
+  notes = "Satellite uplinks, experimental, simplex ATV"
 
   [[band.segment]]
   start = 1_270_000_000
@@ -662,11 +760,25 @@ end = 1_300_000_000
   notes = "FM repeater inputs, -12 MHz offset, outputs 1282.000-1288.000"
 
   [[band.segment]]
+  start = 1_276_000_000
+  end = 1_282_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "ATV channel 3"
+
+  [[band.segment]]
   start = 1_282_000_000
   end = 1_288_000_000
   mode = "phone"
   label = "RPT"
   notes = "FM repeater outputs, -12 MHz offset, inputs 1270.000-1276.000"
+
+  [[band.segment]]
+  start = 1_288_000_000
+  end = 1_290_000_000
+  mode = "other"
+  label = "EXP"
+  notes = "Broadband experimental, simplex ATV (the source row runs 1288.000-1294.000)"
 
   [[band.segment]]
   start = 1_290_000_000
@@ -683,11 +795,18 @@ end = 1_300_000_000
   notes = "FM simplex, FM calling 1294.500"
 
   [[band.segment]]
+  start = 1_295_000_000
+  end = 1_295_800_000
+  mode = "other"
+  label = "EXP"
+  notes = "Narrow band image, experimental"
+
+  [[band.segment]]
   start = 1_295_800_000
   end = 1_296_080_000
   mode = "cw"
   label = "EME"
-  notes = "EME"
+  notes = "EME (CW, SSB, digital)"
 
   [[band.segment]]
   start = 1_296_080_000
@@ -706,6 +825,13 @@ end = 1_300_000_000
   [[band.segment]]
   start = 1_296_400_000
   end = 1_297_000_000
-  mode = "phone"
-  label = "SSB"
-  notes = "General narrowband"
+  mode = "other"
+  label = "NB"
+  notes = "General narrowband (various modes)"
+
+  [[band.segment]]
+  start = 1_297_000_000
+  end = 1_300_000_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Digital"

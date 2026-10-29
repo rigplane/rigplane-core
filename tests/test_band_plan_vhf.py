@@ -407,7 +407,7 @@ class TestCorrectedBoundaries:
 # IARU-R1 VHF/UHF rows against the VHF Handbook v10.03 (round-2 finding 1)
 # ---------------------------------------------------------------------------
 #
-# Every point is one the handbook's tables (printed pages 35, 38-39, 41-43,
+# Every point is one the handbook's tables (printed pages 35-36, 38-39, 41-43,
 # 45-46) assign to a role. Points sit 1 kHz or more inside each row so the
 # inclusive row edges never make a boundary ambiguous; the same table
 # therefore pins both sides of every corrected boundary. ``None`` = a gap the
@@ -431,6 +431,11 @@ _R1_HANDBOOK_ROWS: tuple[tuple[int, str | None], ...] = (
     (50_950_000, "ALL"),
     (51_300_000, "RPT"),  # repeater inputs 51.210-51.390
     (51_510_000, "ALL"),  # FM calling sits inside an all-modes row
+    (51_999_000, "ALL"),  # top of the 50.5-52.0 all-modes sections
+    (52_001_000, "ALL"),  # 52-54 MHz, 500 kHz all-modes blocks (footnote f)
+    (53_000_000, "ALL"),
+    (53_999_000, "ALL"),
+    (54_001_000, None),  # above the 6 m band
     # 2 m (pages 38-39)
     (144_010_000, "SAT"),
     (144_030_000, "CW"),
@@ -575,6 +580,205 @@ class TestIaruR1HandbookRows:
             assert all("EME" not in (s.get("notes") or "") for s in segs)
 
 
+class TestIaruR1UpperSixMetres:
+    """52-54 MHz is an all-modes section of the R1 6 m plan (handbook p. 35-36)."""
+
+    @pytest.fixture(scope="class")
+    def r1(self, tmp_path_factory: pytest.TempPathFactory) -> BandPlanRegistry:
+        plans = _copy_plans(tmp_path_factory.mktemp("r1_6m"))
+        _write_region(plans, "IARU-R1")
+        return _load(plans)
+
+    def test_row_spans_52_to_54_mhz_with_its_qualifications(
+        self, r1: BandPlanRegistry
+    ) -> None:
+        for freq in (52_001_000, 53_000_000, 53_999_000):
+            covering = _covering(r1, freq)
+            assert [(s["start"], s["end"], s["label"]) for s in covering] == [
+                (52_000_000, 54_000_000, "ALL")
+            ], f"R1 6 m: {freq / 1e6:.3f} MHz must sit in the 52-54 MHz all-modes row"
+        notes = _covering(r1, 53_000_000)[0]["notes"]
+        assert "500 kHz" in notes and "allocated" in notes, (
+            "the row must say it applies only where 52-54 MHz is allocated"
+        )
+
+    def test_boundaries_do_not_leak_past_either_edge(
+        self, r1: BandPlanRegistry
+    ) -> None:
+        below = _covering(r1, 51_999_000)
+        assert [(s["start"], s["end"]) for s in below] == [(51_400_000, 52_000_000)]
+        assert _covering(r1, 54_001_000) == []
+
+    def test_band_header_spans_50_to_54_mhz(self) -> None:
+        import tomllib
+
+        raw = tomllib.loads((BAND_PLANS_SRC / "iaru-r1.toml").read_text("utf-8"))
+        band = next(b for b in raw["band"] if b["name"] == "6m")
+        assert (band["start"], band["end"]) == (50_000_000, 54_000_000)
+
+
+# ---------------------------------------------------------------------------
+# ARRL (US) VHF/UHF rows against https://www.arrl.org/band-plan (round-3 finding)
+# ---------------------------------------------------------------------------
+#
+# Every (start, end) below is a row of the ARRL page's 6 m, 2 m, 70 cm and
+# 23 cm tables, fetched 2026-10-29. The plan must assign every one of them
+# without a hole (432.450 MHz, for example, is "Mixed-mode and weak-signal
+# work", not unassigned). Frequencies the page itself leaves unassigned (the
+# channel guard gaps between repeater rows) are NOT listed and no test
+# expects them to stay empty.
+
+_US_SOURCE_ROWS: tuple[tuple[int, int], ...] = (
+    # 6 m
+    (50_000_000, 50_100_000),
+    (50_100_000, 50_300_000),
+    (50_300_000, 50_600_000),
+    (50_600_000, 50_800_000),
+    (50_800_000, 51_000_000),
+    (51_000_000, 51_100_000),
+    (51_120_000, 51_480_000),
+    (51_500_000, 51_600_000),
+    (51_620_000, 51_980_000),
+    (52_000_000, 52_480_000),
+    (52_500_000, 52_980_000),
+    (53_000_000, 53_480_000),
+    (53_500_000, 53_980_000),
+    # 2 m
+    (144_000_000, 144_275_000),
+    (144_275_000, 144_300_000),
+    (144_300_000, 144_500_000),
+    (144_500_000, 144_600_000),
+    (144_600_000, 144_900_000),
+    (144_900_000, 145_100_000),
+    (145_100_000, 145_200_000),
+    (145_200_000, 145_500_000),
+    (145_500_000, 145_800_000),
+    (145_800_000, 146_000_000),
+    (146_010_000, 146_370_000),
+    (146_400_000, 146_580_000),
+    (146_610_000, 146_970_000),
+    (147_000_000, 147_390_000),
+    (147_420_000, 147_570_000),
+    (147_600_000, 147_990_000),
+    # 70 cm
+    (420_000_000, 426_000_000),
+    (426_000_000, 432_000_000),
+    (432_000_000, 432_070_000),
+    (432_070_000, 432_100_000),
+    (432_100_000, 432_300_000),
+    (432_300_000, 432_400_000),
+    (432_400_000, 433_000_000),
+    (433_000_000, 435_000_000),
+    (435_000_000, 438_000_000),
+    (438_000_000, 444_000_000),
+    (442_000_000, 445_000_000),
+    (445_000_000, 447_000_000),
+    (447_000_000, 450_000_000),
+    # 23 cm
+    (1_240_000_000, 1_246_000_000),
+    (1_246_000_000, 1_248_000_000),
+    (1_248_000_000, 1_252_000_000),
+    (1_252_000_000, 1_258_000_000),
+    (1_258_000_000, 1_260_000_000),
+    (1_260_000_000, 1_270_000_000),
+    (1_270_000_000, 1_276_000_000),
+    (1_276_000_000, 1_282_000_000),
+    (1_282_000_000, 1_288_000_000),
+    (1_288_000_000, 1_294_000_000),
+    (1_294_000_000, 1_295_000_000),
+    (1_295_000_000, 1_295_800_000),
+    (1_295_800_000, 1_296_080_000),
+    (1_296_080_000, 1_296_200_000),
+    (1_296_200_000, 1_296_400_000),
+    (1_296_400_000, 1_297_000_000),
+    (1_297_000_000, 1_300_000_000),
+)
+
+# (frequency Hz, text the covering rows' notes must mention): the roles the
+# page assigns to rows that used to be missing, and two that were mislabelled.
+_US_ROLES: tuple[tuple[int, str], ...] = (
+    (50_050_000, "beacons"),
+    (50_650_000, "nonvoice"),
+    (50_620_000, "packet"),
+    (50_900_000, "remote control"),
+    (51_050_000, "pacific dx window"),
+    (51_550_000, "simplex"),
+    (144_550_000, "linear translator inputs"),
+    (145_050_000, "weak signal and fm simplex"),
+    (145_150_000, "linear translator outputs"),
+    (145_650_000, "experimental"),
+    (422_000_000, "421.250"),
+    (430_000_000, "427.250"),
+    (432_200_000, "mixed-mode"),
+    (432_450_000, "mixed-mode and weak-signal"),
+    (440_000_000, "439.250"),
+    (1_247_000_000, "point-to-point"),
+    (1_250_000_000, "digital"),
+    (1_255_000_000, "atv channel 2"),
+    (1_279_000_000, "atv channel 3"),
+    (1_289_000_000, "broadband experimental"),
+    (1_295_400_000, "narrow band image"),
+    (1_298_000_000, "digital"),
+)
+
+
+def _holes(reg: BandPlanRegistry, lo: int, hi: int) -> list[tuple[int, int]]:
+    """Sub-ranges of [lo, hi] that no ham segment covers."""
+    cursor = lo
+    holes: list[tuple[int, int]] = []
+    for seg in sorted(_ham_segments(reg, lo, hi), key=lambda s: (s["start"], s["end"])):
+        if seg["start"] > cursor:
+            holes.append((cursor, seg["start"]))
+        cursor = max(cursor, seg["end"])
+    if cursor < hi:
+        holes.append((cursor, hi))
+    return holes
+
+
+class TestArrlSourceRowsAreAssigned:
+    @pytest.fixture(scope="class")
+    def us(self, tmp_path_factory: pytest.TempPathFactory) -> BandPlanRegistry:
+        plans = _copy_plans(tmp_path_factory.mktemp("us_rows"))
+        _write_region(plans, "US")
+        return _load(plans)
+
+    @pytest.mark.parametrize(
+        ("lo", "hi"),
+        _US_SOURCE_ROWS,
+        ids=[f"{lo / 1e6:.3f}-{hi / 1e6:.3f}MHz" for lo, hi in _US_SOURCE_ROWS],
+    )
+    def test_source_row_has_no_hole(
+        self, us: BandPlanRegistry, lo: int, hi: int
+    ) -> None:
+        assert _holes(us, lo, hi) == [], (
+            f"US plan leaves part of the ARRL row {lo / 1e6:.3f}-{hi / 1e6:.3f} "
+            "MHz unassigned"
+        )
+
+    @pytest.mark.parametrize(
+        ("freq_hz", "needle"),
+        _US_ROLES,
+        ids=[f"{f / 1e6:.4f}MHz-{n}" for f, n in _US_ROLES],
+    )
+    def test_role_at_frequency(
+        self, us: BandPlanRegistry, freq_hz: int, needle: str
+    ) -> None:
+        covering = _covering(us, freq_hz)
+        assert any(needle in (s.get("notes") or "").lower() for s in covering), (
+            f"US {freq_hz / 1e6:.4f} MHz: the ARRL page says '{needle}'; "
+            f"plan has {[s.get('notes') for s in covering]}"
+        )
+
+    def test_432_450_is_mixed_mode_not_a_gap(self, us: BandPlanRegistry) -> None:
+        covering = _covering(us, 432_450_000)
+        assert [(s["start"], s["end"]) for s in covering] == [
+            (432_400_000, 433_000_000)
+        ]
+        # Both sides of the 432.400 beacon boundary.
+        assert {s["label"] for s in _covering(us, 432_399_000)} == {"BCN"}
+        assert {s["label"] for s in _covering(us, 432_401_000)} == {"ALL"}
+
+
 @pytest.mark.parametrize("ham_file", sorted(set(_REGION_HAM_FILE.values())))
 def test_ham_notes_are_not_truncated_by_the_loader(
     tmp_path: Path, ham_file: str
@@ -681,10 +885,12 @@ async def test_region_selection_over_real_http(tmp_path: Path) -> None:
         assert any("146.520" in (s.get("notes") or "") for s in segs), (
             "US startup: no 146.520 calling note on 2 m"
         )
-        assert (
-            _ham_only(await _get_segments_json(host, port, 432_450_000, 432_450_000))
-            == []
-        ), "US startup: 432.450 MHz must be a plan gap, not R1 beacons"
+        us_432 = _ham_only(
+            await _get_segments_json(host, port, 432_450_000, 432_450_000)
+        )
+        assert [(s["start"], s["end"], s["label"]) for s in us_432] == [
+            (432_400_000, 433_000_000, "ALL")
+        ], "US startup: 432.450 MHz is mixed-mode/weak-signal work, not R1 beacons"
 
         # Region switch via the production config route.
         status, _, raw = await _http_post_json(
@@ -722,6 +928,19 @@ async def test_region_selection_over_real_http(tmp_path: Path) -> None:
         assert any(s.get("label") == "RPT" for s in outputs), (
             "IARU-R1: 1297.100 MHz must sit in repeater outputs"
         )
+        for freq, expected in (
+            (51_999_000, (51_400_000, 52_000_000)),
+            (52_001_000, (52_000_000, 54_000_000)),
+            (53_999_000, (52_000_000, 54_000_000)),
+        ):
+            six_m = _ham_only(await _get_segments_json(host, port, freq, freq))
+            assert [(s["start"], s["end"]) for s in six_m] == [expected], (
+                f"IARU-R1: {freq / 1e6:.3f} MHz must sit in the handbook 6 m rows"
+            )
+        assert (
+            _ham_only(await _get_segments_json(host, port, 54_001_000, 54_001_000))
+            == []
+        ), "IARU-R1: 54.001 MHz is above the 6 m band"
         gap = _ham_only(
             await _get_segments_json(host, port, 1_292_500_000, 1_292_500_000)
         )

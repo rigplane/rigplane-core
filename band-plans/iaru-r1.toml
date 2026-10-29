@@ -2,7 +2,7 @@
 # Source: https://www.iaru-r1.org/on-the-air/band-plans/
 # VHF/UHF/SHF sections transcribe the IARU-R1 VHF Handbook v10.03 (Feb 2026):
 # https://www.iaru-r1.org/wp-content/uploads/2026/02/VHF_Handbook_V10_03_final.pdf
-# (printed pages 35, 38-39, 41-43, 45-46; transcribed 2026-10-29). Rows the
+# (printed pages 35-36, 38-39, 41-43, 45-46; transcribed 2026-10-29). Rows the
 # handbook does not state are left out rather than filled from memory.
 
 [meta]
@@ -390,13 +390,13 @@ end = 29_700_000
   label = "FM-RPT"
   notes = "FM repeaters"
 
-# ── 6m (50-52 MHz, Region 1) ──────────────────────────
-# IARU-R1 VHF Handbook v10.03, printed page 35 (section 7.2) and its notes.
+# ── 6m (50-54 MHz, Region 1) ──────────────────────────
+# IARU-R1 VHF Handbook v10.03, printed pages 35-36 (section 7.2) and its notes.
 
 [[band]]
 name = "6m"
 start = 50_000_000
-end = 52_000_000
+end = 54_000_000
 
   [[band.segment]]
   start = 50_000_000
@@ -474,6 +474,13 @@ end = 52_000_000
   mode = "other"
   label = "ALL"
   notes = "All modes; 51.410-51.590 FM/DV simplex, 51.510 FM calling, 51.810-51.990 FM/DV repeater output channels, wideband digital experiments (footnote e)"
+
+  [[band.segment]]
+  start = 52_000_000
+  end = 54_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 500 kHz maximum bandwidth; only in Region 1 countries where 52-54 MHz (or parts of it) is allocated, planned as up to four 500 kHz blocks (footnote f)"
 
 # ── 2m (144-146 MHz, Region 1) ────────────────────────
 # IARU-R1 VHF Handbook v10.03, printed pages 38-40 (section 7.4) and its notes.
