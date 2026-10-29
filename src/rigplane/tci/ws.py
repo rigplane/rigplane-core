@@ -399,10 +399,12 @@ class WebSocketConnection:
         write buffer — ``close()``'s close-frame write (and its own
         best-effort ``self._writer.close()``) can otherwise wedge behind
         ``drain()`` for as long as the peer never drains its receive
-        window (MOR-1429 review). Safe to call more than once.
+        window (MOR-1429 review). Runs even when the connection is
+        already protocol-closed (a received CLOSE with a saturated
+        echo drain still leaves the transport attached otherwise), so
+        the watchdog teardown always reaches the real transport. Safe
+        to call more than once.
         """
-        if self._closed:
-            return
         self._closed = True
         try:
             self._writer.transport.abort()
