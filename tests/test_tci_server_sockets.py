@@ -75,13 +75,13 @@ def tci_allow(headers: dict[str, str]) -> UpgradeDecline | None:
     return None
 
 
-def make_server(handler: FakeHandler, **kwargs: object) -> TciServer:
+def make_server(handler: FakeHandler, port: int = 0, **kwargs: object) -> TciServer:
     import time
 
     return TciServer(
         lambda: handler,  # type: ignore[return-value]
         host="127.0.0.1",
-        port=0,
+        port=port,
         allow=tci_allow,  # type: ignore[arg-type]
         clock=time.monotonic,
         **kwargs,  # type: ignore[arg-type]
