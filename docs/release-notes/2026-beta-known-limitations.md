@@ -1,6 +1,6 @@
 # 3.0 known limitations
 
-This file is the list of operator-visible limitations RigPlane 3.0 ships with.
+This page lists the operator-visible limitations of RigPlane 3.0.
 
 None of the items below produces false transmit state or routes RF incorrectly;
 that class of defect is release-blocking by definition and is not on this list.
@@ -16,6 +16,15 @@ that class of defect is release-blocking by definition and is not on this list.
   resulting `https://` URL. Alternatively, access a loopback endpoint through
   an SSH tunnel. This limitation concerns microphone capture and voice TX; it
   does not make all control or RX operations unavailable over HTTP.
+
+## Receive-control feedback and precision
+
+- **PBT values across gaps in the radio's reports: the last confirmed value is
+  kept in software, but its behavior on a real radio is still being checked.**
+- **The combined RF/SQL control follows the gesture in software, but its
+  behavior on a real radio is still being checked.**
+- **Filter Shape and grouped Notch choices show pending feedback in software,
+  but their behavior on a real radio is still being checked.**
 
 ## FTX-1 specific
 
@@ -49,10 +58,10 @@ that class of defect is release-blocking by definition and is not on this list.
   change; it discovers the real value on its next read.
 - **For up to about a second after an unkey, the seat may still read the
   radio as transmitting and drop a mode/VFO/split write the same way.**
-- **Frequency and RIT/XIT are exempt from both limitations above.** These writes are accepted
-  while the radio is keyed, so the two families are classified TX-SAFE and are always
-  applied, in any RF state, including the up-to-a-second post-unkey
-  window. This also resolves the case previously recorded here of a
+- **Frequency and RIT/XIT are exempt from both limitations above.** These
+  writes are accepted while the radio is keyed, so the two families are
+  classified TX-SAFE and are always applied, in any RF state, including the
+  up-to-a-second post-unkey window. This also resolves the case previously recorded here of a
   WSJT-X "Fake It" split-mode dial restore issued right after unkey being
   swallowed: that restore is a frequency write and is no longer subject to
   any drop or refusal.
@@ -69,9 +78,9 @@ that class of defect is release-blocking by definition and is not on this list.
 
 ## Dual-receiver topology
 
-**Dual-receiver operation is covered by automated profile fixtures and
+**Dual-receiver paths are checked by automated profile fixtures and
 fail-closed tests.** This includes the IC-7610's dual-watch, dual-scope and
-simultaneous MAIN/SUB audio-routing paths. Expect rough edges there and
+simultaneous MAIN/SUB audio routing. Expect rough edges there, and please
 report them. On the FTX-1, the SUB receiver supports single-receive
 operation; see the FTX-1 items above for the controls that exist for MAIN
 only.

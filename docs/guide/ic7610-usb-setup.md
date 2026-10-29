@@ -17,7 +17,7 @@ This guide shows how to control the IC-7610 via **USB serial CI-V + USB audio de
 
 - IC-7610 transceiver
 - USB A-to-B cable (typically included with the radio)
-- macOS computer (tested on Ventura+ arm64/Intel)
+- macOS computer (Ventura or later, Apple Silicon or Intel)
 
 ## Radio Configuration
 

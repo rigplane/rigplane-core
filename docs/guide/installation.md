@@ -16,10 +16,10 @@ description: Install RigPlane from PyPI on macOS, Linux, or Windows — Python 3
 pip install rigplane
 ```
 
-This installs RigPlane 3.0, the current release. Upgrading from 2.x? Read
-[What's New in 3.0](../whats-new.md) and the [migration guide](../migrate.md)
-first: every command that talks to a radio now needs the radio model. To stay
-on 2.x for now, pin it with `pip install "rigplane<3"`.
+This installs RigPlane 3.0. Upgrading from 2.x? 3.0 requires the radio model,
+so read [What's New in 3.0](../whats-new.md) and the
+[migration guide](../migrate.md) first. To stay on 2.x for now, pin it with
+`pip install "rigplane<3"`.
 
 The prebuilt wheel includes the Web UI and does not require Node.js or npm.
 If pip must build from a source distribution instead, follow the source-build

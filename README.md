@@ -6,8 +6,9 @@
 [![Docs](https://img.shields.io/badge/docs-rigplane.dev-blue.svg)](https://rigplane.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/rigplane/rigplane-core/blob/main/LICENSE)
 
-> **RigPlane 3.0 is released.** A plain `pip install rigplane` installs it. Coming
-> from 2.x? See [What's New in 3.0](https://rigplane.dev/3.0/whats-new/) and the
+> **RigPlane 3.0 is released.** A plain `pip install rigplane` installs it.
+> Upgrading from 2.x? 3.0 requires the radio model (`--model`); see
+> [What's New in 3.0](https://rigplane.dev/3.0/whats-new/) and the
 > [migration guide](https://rigplane.dev/3.0/migrate/). Known gaps are listed in
 > [3.0 known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md).
 > Tried it on your radio? [Send a 3.0 report](https://github.com/rigplane/rigplane-core/issues/new?template=beta_report.yml).
@@ -165,8 +166,8 @@ telemetry, headless mode is sacred, no hollowing out — are codified in
 
 ## Status
 
-KN4KYD's personal project. Every supported radio is driven through the same
-Capability Protocols and declared in its `rigs/*.toml` profile.
+KN4KYD's personal project. Each supported radio is described by its
+`rigs/*.toml` profile and uses the same Capability Protocols.
 Issues, profile contributions, and field reports are welcome.
 
 73 de KN4KYD

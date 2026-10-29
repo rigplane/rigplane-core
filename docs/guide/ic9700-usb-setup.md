@@ -29,7 +29,7 @@ The IC-9700 has **dual independent receivers**:
 - IC-9700 satellite/VHF/UHF transceiver
 - USB cable with a Type-B plug (the IC-9700 `[USB]` port is Type B) for the serial backend
 - Ethernet (RJ-45) for the LAN backend
-- macOS computer (tested on Ventura+ arm64/Intel)
+- macOS computer (Ventura or later, Apple Silicon or Intel)
 
 ## Radio Configuration
 
