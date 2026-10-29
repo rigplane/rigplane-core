@@ -1,8 +1,8 @@
 ---
-description: "Migrate RigPlane 2.11.1 consumers to Core 3.0 beta, with historical icom-lan to RigPlane rename guidance."
+description: "Migrate RigPlane 2.11.1 consumers to Core 3.0, with historical icom-lan to RigPlane rename guidance."
 ---
 
-# Migrating to RigPlane Core 3.0 beta
+# Migrating to RigPlane Core 3.0
 
 This is a major-version migration with
 selected compatibility aliases, not a promise that every 2.x consumer works
@@ -39,7 +39,7 @@ candidate witness before it becomes a tested compatibility claim.
 | EXT2 | Permissive extension command/parameter dispatch | Use strict non-TX intents with required parameters and receiver. |
 | EXT3 | Host numeric `1`, manifest `host_api: "1.0"` or omission | Host `2`, explicit `host_api: "2.0"`; reject old or omitted declarations. Manifest schema remains `version: 1`. |
 | CLI1 | `ptt on && sleep 10 && ptt off` | Use `rigplane --model <MODEL> ptt --for 10`; the command owns the hold and release. |
-| CLI2 | Other CLI inventory, entrypoints, Python/dependencies/extras | Preserve audited inventory except the retired application-token options below; package metadata changes to the beta version. |
+| CLI2 | Other CLI inventory, entrypoints, Python/dependencies/extras | Preserve audited inventory except the retired application-token options below; package metadata changes to the 3.0 version. |
 | CFG1 | Tone-capable custom profile without a table | Declare a supported named `[ctcss]` table. |
 | WIRE1 | Empty successful response after raw timeout | Handle `RPRT -5` as an error. |
 | WIRE2 | Raw `w` in read-only mode | Handle `RPRT -22`, including for raw reads; use structured reads. |
@@ -297,7 +297,7 @@ and `src/rigplane/rigctld/server.py: RigctldServer`.
 The 2.11.1 SDR behavior is the required migration baseline: retain available
 spectrum/waterfall controls, tuning, VFO/mode/filter, radio controls, RX audio,
 meters, reachable managed PTT/ForceOff, screen navigation and persistence.
-This is an acceptance requirement, not a claim that the beta has passed it.
+This is an acceptance requirement, not a claim that every 2.11.1 workflow was re-tested.
 Use each radio's actual capabilities; an unavailable stream is not a blank
 successful spectrum. Core packaging/install/rollback and browser/hardware
 acceptance remain separate evidence from these compatibility examples.

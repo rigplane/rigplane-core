@@ -776,7 +776,7 @@ The unused pre-v2 `static.old` source copy was removed in #2400; it is not the
 rollback UI. Retained workspace keys preserve the documented legacy-read
 window, but do not by themselves prove package or active-session rollback.
 Final candidate install/browser/rollback evidence remains separate from the
-source contracts here. Core beta scope and the later Pro release are described
+source contracts here. Core 3.0 scope and the separate Pro product are described
 in the [migration guide](../migrate.md#core-sdr-and-acceptance-scope).
 
 ### Quick health checks

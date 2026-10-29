@@ -6,11 +6,11 @@
 [![Docs](https://img.shields.io/badge/docs-rigplane.dev-blue.svg)](https://rigplane.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/rigplane/rigplane-core/blob/main/LICENSE)
 
-> **RigPlane 3.0 is in public beta.** Install it with `pip install --pre rigplane`;
-> a plain `pip install rigplane` still installs the 2.x line. See
-> [What's New in 3.0](https://rigplane.dev/3.0/whats-new/) and the
-> [3.0 beta known limitations](https://github.com/rigplane/rigplane-core/blob/v3.0.0b10/docs/release-notes/2026-beta-known-limitations.md).
-> Testing the beta? [File a 3.0 beta report](https://github.com/rigplane/rigplane-core/issues/new?template=beta_report.yml).
+> **RigPlane 3.0 is released.** A plain `pip install rigplane` installs it. Coming
+> from 2.x? See [What's New in 3.0](https://rigplane.dev/3.0/whats-new/) and the
+> [migration guide](https://rigplane.dev/3.0/migrate/). Known gaps are listed in
+> [3.0 known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md).
+> Tried it on your radio? [Send a 3.0 report](https://github.com/rigplane/rigplane-core/issues/new?template=beta_report.yml).
 
 **rigplane** is an open-source (MIT) Python asyncio library and web UI for
 Icom radios (LAN/USB) and the Yaesu FTX-1 (USB), with a rigctld server. It
@@ -25,7 +25,7 @@ radio.
 ## Quickstart
 
 ```bash
-pip install --pre rigplane     # 3.0 is in beta; without --pre, pip installs 2.x
+pip install rigplane
 rigplane --model IC-7610 web   # discovers the radio's IP on the LAN
 # open http://localhost:8080
 ```
@@ -56,7 +56,7 @@ Full guides: [getting started](https://rigplane.dev/3.0/guide/quickstart/),
 
 | Radio              | Transport          | Status              | Notes                                  |
 |--------------------|--------------------|---------------------|----------------------------------------|
-| **Icom IC-7610**   | LAN, USB CI-V      | Tested on 3.0 hardware (LAN) | MAIN+SUB dual-receive not hardware-certified this beta, see [known limitations](https://github.com/rigplane/rigplane-core/blob/v3.0.0b10/docs/release-notes/2026-beta-known-limitations.md#dual-receiver-topology) |
+| **Icom IC-7610**   | LAN, USB CI-V      | Tested on 3.0 hardware (LAN) | MAIN+SUB dual-receive not hardware-certified in 3.0, see [known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md#dual-receiver-topology) |
 | **Icom IC-7300**   | USB CI-V           | Tested on 3.0 hardware | Single receiver, USB-only              |
 | **Yaesu FTX-1**    | USB CAT            | Tested on 3.0 hardware | 17 modes, VHF/UHF, C4FM, audio-derived panadapter (no hardware scope) |
 | Icom IC-705        | LAN (WiFi), USB CI-V | Community-validated on 2.x; not yet validated on 3.0 | CI-V `0xA4`, QRP 10 W |

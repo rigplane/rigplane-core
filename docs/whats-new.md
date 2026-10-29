@@ -1,13 +1,13 @@
 ---
-description: What changes for an operator in RigPlane 3.0 (beta) — the radio model is required, readings show only what the radio reported, clearer transmit feedback, faster LAN recovery, and more radio controls.
+description: What changes for an operator in RigPlane 3.0 — the radio model is required, readings show only what the radio reported, clearer transmit feedback, faster LAN recovery, and more radio controls.
 ---
 
 # What's New in 3.0
 
-RigPlane 3.0 is in beta. This page lists the changes an operator notices.
+This page lists the changes an operator notices in RigPlane 3.0.
 Code written for 2.x is covered by the [migration guide](migrate.md), every
-change is in the [changelog](CHANGELOG.md), and the known gaps of this beta
-are in [2026 beta known limitations](release-notes/2026-beta-known-limitations.md).
+change is in the [changelog](CHANGELOG.md), and the known gaps of 3.0
+are in [3.0 known limitations](release-notes/2026-beta-known-limitations.md).
 
 ## Name Your Radio
 

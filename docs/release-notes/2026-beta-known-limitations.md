@@ -1,7 +1,7 @@
-# 2026 beta — known limitations
+# 3.0 known limitations
 
-This file is the single authoritative list of operator-visible limitations the
-2026 beta ships with. Every line traces to an explicit owner decision on the
+This file is the single authoritative list of operator-visible limitations
+RigPlane 3.0 ships with. Every line traces to an explicit owner decision on the
 MOR-1410 hardware-conformance gate (scope freeze of 2026-08-16: bucket B =
 release-note scope) or to a standalone owner ruling cited inline.
 
@@ -69,7 +69,7 @@ that class of defect is release-blocking by definition and is not on this list.
 - **For up to about a second after an unkey, the seat may still read the
   radio as transmitting and drop a mode/VFO/split write the same way.**
   (MOR-1881; owner ruling 2026-09-17 on MOR-1892: not to be narrowed further
-  for the beta)
+  for 3.0)
 - **Frequency and RIT/XIT are exempt from both limitations above.** Bench
   measurement showed both radios accept and apply these writes while
   keyed, so the two families are classified TX-SAFE and are always
@@ -101,9 +101,9 @@ that class of defect is release-blocking by definition and is not on this list.
 
 ## Dual-receiver topology
 
-**Dual-receiver hardware certification is not part of this beta.** The
+**Dual-receiver hardware certification is not part of 3.0.** The
 IC-7610's dual-watch, dual-scope and simultaneous MAIN/SUB audio-routing
-paths were not re-run for this beta and remain covered by automated
+paths were not re-run for 3.0 and remain covered by automated
 profile fixtures and fail-closed tests only. What was accepted on
 hardware: single-receive SUB operation on the FTX-1 — frequency, mode,
 width, S-meter, AF/RF/squelch, repeater shift, NB/NR, notch, IF shift,
