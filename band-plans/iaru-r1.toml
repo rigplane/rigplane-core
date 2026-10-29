@@ -1,7 +1,8 @@
 # IARU Region 1 Band Plan (Europe, Africa, Middle East, Northern Asia; HF + VHF/UHF)
 # Source: https://www.iaru-r1.org/on-the-air/band-plans/
-# VHF/UHF/SHF sections follow the IARU-R1 VHF Handbook band plans;
-# only widely documented sub-bands are included (MOR-3631, owner review pending).
+# VHF/UHF/SHF sections transcribe the IARU-R1 VHF Handbook v10.03 (Feb 2026):
+# https://www.iaru-r1.org/wp-content/uploads/2026/02/VHF_Handbook_V10_03_final.pdf
+# (transcribed 2026-10-29; only widely documented sub-bands are included).
 
 [meta]
 name = "IARU Region 1"
@@ -10,7 +11,7 @@ source = "https://www.iaru-r1.org/on-the-air/band-plans/"
 layer = "ham"
 priority = 10
 version = "2025.1"
-updated = "2026-10-27"
+updated = "2026-10-29"
 
 # ── 160m ──────────────────────────────────────────────
 
@@ -418,10 +419,17 @@ end = 52_000_000
 
   [[band.segment]]
   start = 50_300_000
-  end = 50_500_000
+  end = 50_400_000
   mode = "digital"
   label = "DIGI"
-  notes = "Digital"
+  notes = "MGM narrowband, PSK 50.305, EME 50.310-50.320, MS 50.320-50.380"
+
+  [[band.segment]]
+  start = 50_400_000
+  end = 50_500_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons exclusive"
 
   [[band.segment]]
   start = 50_500_000
@@ -442,7 +450,7 @@ end = 146_000_000
   end = 144_110_000
   mode = "cw"
   label = "CW"
-  notes = "CW, EME 144.000-144.025"
+  notes = "CW; satellite downlinks only 144.000-144.025"
 
   [[band.segment]]
   start = 144_110_000
@@ -523,24 +531,38 @@ end = 440_000_000
 
   [[band.segment]]
   start = 432_150_000
-  end = 432_500_000
+  end = 432_400_000
   mode = "phone"
   label = "SSB"
   notes = "SSB, SSB calling 432.200"
+
+  [[band.segment]]
+  start = 432_400_000
+  end = 432_490_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons exclusive"
+
+  [[band.segment]]
+  start = 432_490_000
+  end = 432_500_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Experimental MGM 432.491-432.493; APRS 432.500"
 
   [[band.segment]]
   start = 432_500_000
   end = 432_800_000
   mode = "other"
   label = "LIN"
-  notes = "Linear transponders"
+  notes = "Linear transponder in 432.500-432.600 / out 432.600-432.800 (national usage); overlaps Region 1 repeater inputs 432.600-432.975"
 
   [[band.segment]]
   start = 432_800_000
   end = 433_000_000
-  mode = "beacon"
-  label = "BCN"
-  notes = "Beacons"
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs Region 1, 25 kHz spacing, 2 MHz shift (UK: outputs)"
 
   [[band.segment]]
   start = 433_000_000
@@ -621,17 +643,24 @@ end = 1_300_000_000
 
   [[band.segment]]
   start = 1_272_000_000
-  end = 1_290_000_000
+  end = 1_290_994_000
   mode = "other"
   label = "ATV"
   notes = "ATV"
 
   [[band.segment]]
-  start = 1_290_000_000
+  start = 1_290_994_000
+  end = 1_291_481_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater inputs RM0 (1291.000)-RM19 (1291.475), 25 kHz spacing"
+
+  [[band.segment]]
+  start = 1_291_494_000
   end = 1_296_000_000
   mode = "phone"
-  label = "FM"
-  notes = "FM"
+  label = "RPT"
+  notes = "FM repeater inputs R20 (1293.150)-R68 (1294.350)"
 
   [[band.segment]]
   start = 1_296_000_000
@@ -648,8 +677,22 @@ end = 1_300_000_000
   notes = "SSB, SSB calling 1296.200"
 
   [[band.segment]]
-  start = 1_297_000_000
+  start = 1_296_800_000
+  end = 1_296_994_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons exclusive"
+
+  [[band.segment]]
+  start = 1_296_994_000
+  end = 1_297_481_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM repeater outputs RM0 (1297.000)-RM19 (1297.475), 25 kHz spacing"
+
+  [[band.segment]]
+  start = 1_297_494_000
   end = 1_298_000_000
   mode = "phone"
   label = "FM"
-  notes = "FM simplex, FM calling 1297.500"
+  notes = "FM simplex SM20 (1297.500)-SM39 (1297.975), FM calling 1297.500, DV calling 1297.725"
