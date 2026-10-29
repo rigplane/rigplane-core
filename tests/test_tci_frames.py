@@ -198,6 +198,17 @@ def test_float32_to_int16_clamps_and_rounds() -> None:
     assert struct.unpack("<5h", out) == (0, 32767, -32768, 32767, -32768)
 
 
+def test_negative_ties_round_half_away_from_zero() -> None:
+    """Exact ties round away from zero, like the positive side does.
+
+    Half an INT16 LSB below zero (exactly representable: 2**-16) must
+    convert to -1, mirroring +0.5 LSB converting to +1.
+    """
+    data = struct.pack("<2f", 0.5 / 32768, -0.5 / 32768)
+    out = convert_samples(data, SampleType.FLOAT32, SampleType.INT16)
+    assert struct.unpack("<2h", out) == (1, -1)
+
+
 def test_int24_sign_and_widening() -> None:
     data = b"\xff\xff\x7f" + b"\x00\x00\x80"  # max, min
     as32 = convert_samples(data, SampleType.INT24, SampleType.INT32)
