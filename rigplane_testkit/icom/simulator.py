@@ -2353,15 +2353,7 @@ class MockIcomRadio(AudioPortMixin):
                 return self._civ_nak(to, frm)
             sub = payload[0]
             if sub == _SUB_SQL_STATUS:  # 0x01
-                # MOR-3630: single-byte squelch-open readback, the polled
-                # counterpart of the spontaneous 0x15 frames real Icoms emit.
-                return self._civ_frame(
-                    to,
-                    frm,
-                    _CMD_METER,
-                    sub=_SUB_SQL_STATUS,
-                    data=bytes([0x01 if self._squelch_open else 0x00]),
-                )
+                return self._squelch_status_reply(to, frm)
             if sub == _SUB_S_METER:  # 0x02
                 return self._civ_frame(
                     to,
@@ -2773,6 +2765,11 @@ class MockIcomRadio(AudioPortMixin):
                 to, frm, _CMD_CMD29, data=bytes([receiver, _CMD_ATT, bcd])
             )
 
+        # S-meter squelch status (0x15 0x01): dual-receiver Icoms route the
+        # read through Command29, the reply comes back wrapped (MOR-3630).
+        if real_cmd == _CMD_METER and inner[:1] == bytes([_SUB_SQL_STATUS]):
+            return self._squelch_status_reply(to, frm, receiver=receiver)
+
         # PREAMP / DIGI-SEL (0x16)
         if real_cmd == _CMD_PREAMP:
             if not inner:
@@ -2815,6 +2812,25 @@ class MockIcomRadio(AudioPortMixin):
     # ------------------------------------------------------------------
     # CI-V frame builders
     # ------------------------------------------------------------------
+
+    def _squelch_status_reply(
+        self, to: int, frm: int, *, receiver: int | None = None
+    ) -> bytes:
+        """The single-byte squelch-open readback to a 0x15 0x01 poll (MOR-3630).
+
+        The polled counterpart of the spontaneous 0x15 frames real Icoms
+        emit. ``receiver`` is None for the plain frame and the Command29
+        receiver byte when the radio routes the read through Command29.
+        """
+        state = bytes([0x01 if self._squelch_open else 0x00])
+        if receiver is None:
+            return self._civ_frame(to, frm, _CMD_METER, sub=_SUB_SQL_STATUS, data=state)
+        return self._civ_frame(
+            to,
+            frm,
+            _CMD_CMD29,
+            data=bytes([receiver, _CMD_METER, _SUB_SQL_STATUS]) + state,
+        )
 
     def _civ_refused(self, cmd: int, payload: bytes) -> bool:
         """True when the refusal hook matches this (cmd, payload).

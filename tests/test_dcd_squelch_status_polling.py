@@ -14,6 +14,8 @@ scheduler stops dispatching).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from rigplane.commands._frame import (
@@ -87,19 +89,37 @@ async def test_polled_squelch_status_reply_publishes_dcd_open_then_closed() -> N
     spontaneous frame. The reply bytes travel the real parse + ingress path
     into a real ``IcomRadio`` store, open (0x01) then closed (0x00).
     """
-    await _run_polled_rounds(model="IC-7300", sql_bytes=(0x01, 0x00))
+    rounds = await _run_polled_rounds(model="IC-7300", sql_bytes=(0x01, 0x00))
+
+    assert [r.published for r in rounds] == [True, False]
+    assert [r.wire for r in rounds] == [[_SQL_STATUS_WIRE], [_SQL_STATUS_WIRE]]
+    assert [r.before for r in rounds] == [None, True]
 
 
 async def test_polled_squelch_status_reply_publishes_dcd_on_ic705() -> None:
     """The IC-705 polls the same shared getter (MOR-3630)."""
-    await _run_polled_rounds(model="IC-705", sql_bytes=(0x01, 0x00))
+    rounds = await _run_polled_rounds(model="IC-705", sql_bytes=(0x01, 0x00))
+
+    assert [r.published for r in rounds] == [True, False]
+    assert [r.wire for r in rounds] == [[_SQL_STATUS_WIRE], [_SQL_STATUS_WIRE]]
+    assert [r.before for r in rounds] == [None, True]
 
 
-async def _run_polled_rounds(*, model: str, sql_bytes: tuple[int, ...]) -> None:
+@dataclass(frozen=True)
+class _Round:
+    """One poll round: the wire frame sent and the dcd value before/after."""
+
+    wire: list[tuple[int, int | None, bytes]]
+    before: bool | None
+    published: bool | None
+
+
+async def _run_polled_rounds(*, model: str, sql_bytes: tuple[int, ...]) -> list[_Round]:
     profile = resolve_radio_profile(model=model)
     acquisition = profile.state_acquisition
     assert acquisition is not None
     radio = IcomRadio("192.0.2.1", model=model)
+    rounds: list[_Round] = []
     try:
         clock = FreshnessClock(start=1000.0)
         sched_store = StateStore(freshness_clock=clock)
@@ -131,23 +151,22 @@ async def _run_polled_rounds(*, model: str, sql_bytes: tuple[int, ...]) -> None:
             execution = await executor.execute(request, already_sent_paths=frozenset())
             assert _DCD in execution.sent_paths
             assert execution.failed_paths == ()
-            dcd_queries = [
-                query for query in sent if query.command == 0x15 and query.sub == 0x01
+            wire = [
+                wire_parts_for_query(query, 0)
+                for query in sent
+                if query.command == 0x15 and query.sub == 0x01
             ]
-            assert dcd_queries, f"{model}: dcd poll never reached the wire"
-            for query in dcd_queries:
-                assert wire_parts_for_query(query, 0) == _SQL_STATUS_WIRE
             previous = _published_dcd(radio)
             _feed_polled_sql_reply(radio, profile.civ_addr, sql_byte)
             current = _published_dcd(radio)
-            assert current is (sql_byte == 0x01)
+            rounds.append(_Round(wire=wire, before=previous, published=current))
             _record_round(scheduler, sched_store, request, previous, current)
             # A CONTROL-class cadence (2.0 s) re-dispatches well inside the
             # freshness window even at the decay ceiling (TTL/2 = 2.5 s).
             clock.advance(3.0)
-        assert _published_dcd(radio) is (sql_bytes[-1] == 0x01)
     finally:
         radio._connected = False
+    return rounds
 
 
 def _dispatch_dcd(
