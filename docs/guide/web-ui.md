@@ -663,10 +663,9 @@ and lazy-loaded through `skins/registry.ts`:
    - `sdr-test` -> SDR Screen test skin
    - `peer-split`, `unified-instrument`, `panadapter-first` -> their respective LCD shell presentations on a dual-receiver radio; on a single-receiver radio each falls back to `lcd-cockpit`
    - `dual-sdr-face` -> dual-receiver SDR instrument face
-   - `auto` -> desktop-v2 unconditionally (MOR-1097 cutover); scope availability does not affect this resolution.
+   - `auto` -> desktop-v2 unconditionally; scope availability does not affect this resolution.
 
-`normalizeLayoutMode()` (`frontend/src/presentation/layout-mode.ts`, since
-MOR-2059; re-exported from `lib/stores/layout.svelte.ts` for existing
+`normalizeLayoutMode()` (`frontend/src/presentation/layout-mode.ts`, re-exported from `lib/stores/layout.svelte.ts` for existing
 callers) normalizes legacy persisted values so old localStorage entries
 keep resolving: `amber-lcd`/`lcd` -> `lcd-cockpit`, `spectrum`/`desktop-v2`
 -> `standard`.
@@ -776,7 +775,7 @@ The unused pre-v2 `static.old` source copy was removed in #2400; it is not the
 rollback UI. Retained workspace keys preserve the documented legacy-read
 window, but do not by themselves prove package or active-session rollback.
 Final candidate install/browser/rollback evidence remains separate from the
-source contracts here. Core beta scope and the later Pro release are described
+source contracts here. Core 3.0 scope and the separate Pro product are described
 in the [migration guide](../migrate.md#core-sdr-and-acceptance-scope).
 
 ### Quick health checks

@@ -545,7 +545,7 @@ def test_one_managed_write_leaf_and_three_positive_ingress_memberships() -> None
         )
     ]
     assert sorted(memberships) == [
-        ("src/rigplane/rigctld/server.py", "start_ptt_submission"),
+        ("src/rigplane/runtime/managed_tx_submission.py", "start_ptt_submission"),
         ("src/rigplane/web/handlers/control.py", "start_ptt_submission"),
         ("src/rigplane/web/server.py", "start_transmit_on_submission"),
     ]
@@ -566,7 +566,8 @@ def test_every_managed_enqueue_stamps_the_consumer_connection_generation() -> No
             _ROOT / "src/rigplane/rigctld/server.py", "_handle_client"
         ),
         "rigctld PTT enqueue": _function_source(
-            _ROOT / "src/rigplane/rigctld/handler.py", "_execute_managed_ptt"
+            _ROOT / "src/rigplane/runtime/managed_tx_submission.py",
+            "execute_managed_ptt",
         ),
         "rigctld tuner": _function_source(
             _ROOT / "src/rigplane/rigctld/handler.py", "_execute_managed_tuner"

@@ -6,11 +6,12 @@
 [![Docs](https://img.shields.io/badge/docs-rigplane.dev-blue.svg)](https://rigplane.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/rigplane/rigplane-core/blob/main/LICENSE)
 
-> **RigPlane 3.0 is in public beta.** Install it with `pip install --pre rigplane`;
-> a plain `pip install rigplane` still installs the 2.x line. See
+> **RigPlane 3.0 is released.** A plain `pip install rigplane` installs it.
+> Upgrading from 2.x? 3.0 requires the radio model (`--model`); see
 > [What's New in 3.0](https://rigplane.dev/3.0/whats-new/) and the
-> [3.0 beta known limitations](https://github.com/rigplane/rigplane-core/blob/v3.0.0b10/docs/release-notes/2026-beta-known-limitations.md).
-> Testing the beta? [File a 3.0 beta report](https://github.com/rigplane/rigplane-core/issues/new?template=beta_report.yml).
+> [migration guide](https://rigplane.dev/3.0/migrate/). Known gaps are listed in
+> [3.0 known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md).
+> Tried it on your radio? [Send a 3.0 report](https://github.com/rigplane/rigplane-core/issues/new?template=beta_report.yml).
 
 **rigplane** is an open-source (MIT) Python asyncio library and web UI for
 Icom radios (LAN/USB) and the Yaesu FTX-1 (USB), with a rigctld server. It
@@ -25,7 +26,7 @@ radio.
 ## Quickstart
 
 ```bash
-pip install --pre rigplane     # 3.0 is in beta; without --pre, pip installs 2.x
+pip install rigplane
 rigplane --model IC-7610 web   # discovers the radio's IP on the LAN
 # open http://localhost:8080
 ```
@@ -166,9 +167,8 @@ telemetry, headless mode is sacred, no hollowing out — are codified in
 
 ## Status
 
-KN4KYD's personal project. Production-grade for IC-7610 (the author's
-daily driver) and the Yaesu FTX-1; secondary radios are validated against
-the same Capability Protocols but receive less hardware-in-the-loop time.
+KN4KYD's personal project. Each supported radio is described by its
+`rigs/*.toml` profile and uses the same Capability Protocols.
 Issues, profile contributions, and field reports are welcome.
 
 73 de KN4KYD

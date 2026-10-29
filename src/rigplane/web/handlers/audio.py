@@ -1544,8 +1544,8 @@ class AudioHandler:
         broadcaster: Optional RX audio broadcaster.
         tx_gate: Optional async predicate — ``True`` means a browser TX
             frame may reach the radio. The server passes its managed TX
-            predicate (``WebServer._bridge_tx_gate_open``, MOR-2863), so
-            mic audio flows only while RigPlane holds the key: managed
+            predicate (``rigplane.runtime.tx_gate.tx_gate_open``, MOR-2863),
+            so mic audio flows only while RigPlane holds the key: managed
             intent keyed or a fresh ``ObservedPtt.ON`` (MOR-2870). ``None``
             leaves the handler ungated (direct-construction test doubles).
         outside_tx_admission: Optional async-context-manager factory —

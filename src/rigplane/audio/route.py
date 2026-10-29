@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -24,7 +25,11 @@ __all__ = [
     "resolve_lan_audio_stream_request",
     "resolve_audio_route",
     "rigctld_wsjtx_policy",
+    "apply_wsjtx_data_mod_input",
+    "profile_data_mode_count",
 ]
+
+logger = logging.getLogger(__name__)
 
 _AUDIO_CAPABILITIES = get_audio_capabilities()
 _DEFAULT_RX_CODEC = _AUDIO_CAPABILITIES.default_codec
@@ -149,10 +154,45 @@ def audio_stream_contract_from_request(
     )
 
 
-def _profile_data_mode_count(radio: "Radio") -> int:
+def profile_data_mode_count(radio: "Radio") -> int:
+    """Bound an explicit numeric DATA sub-mode by the radio's profile.
+
+    The profile's ``data_mode_count`` (IC-7610: 3, IC-7300: 1) caps the
+    sub-mode a caller may write; a missing or unusable count reads as 1,
+    the one DATA mode every data-capable profile declares.
+    """
     profile = getattr(radio, "profile", None)
     count = getattr(profile, "data_mode_count", 1)
     return count if isinstance(count, int) and count > 0 else 1
+
+
+async def apply_wsjtx_data_mod_input(
+    radio: "Radio",
+    *,
+    data_mode: int | bool,
+    source: int | None,
+) -> None:
+    """Select the profile's MOD input for an explicit DATA sub-mode.
+
+    Shared WSJT-X glue (MOR-3821 P0d): with an explicit numeric sub-mode
+    (``rigctld_wsjtx_policy`` of the resolved route) the radio transmits
+    from the input assigned to that sub-mode, so the matching
+    ``set_data<N>_mod_input`` setter runs before the key. A plain boolean
+    DATA flag carries no sub-mode, a missing source selects nothing, and
+    a radio without that setter keeps its current input: all three are a
+    no-op, never an error.
+    """
+    if source is None or type(data_mode) is not int:
+        return
+    setter_name = f"set_data{data_mode}_mod_input"
+    setter = getattr(radio, setter_name, None)
+    if setter is None:
+        logger.debug(
+            "WSJT-X compat: radio has no %s, skipping DATA mod input",
+            setter_name,
+        )
+        return
+    await setter(source)
 
 
 def _profile_codec(name: str | None) -> AudioCodec | None:
@@ -265,7 +305,7 @@ def resolve_audio_route(radio: "Radio") -> AudioRoute:
         supports_command = getattr(radio, "supports_command", None)
         data_policy = (
             DataModePolicy.DATA2_LAN
-            if _profile_data_mode_count(radio) >= 2
+            if profile_data_mode_count(radio) >= 2
             else DataModePolicy.LEGACY
         )
         if (
