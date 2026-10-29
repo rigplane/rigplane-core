@@ -37,6 +37,7 @@ __all__ = [
     "CLOSE_TIMEOUT_S",
     "COALESCE_WINDOW_S",
     "DEADLINE_S",
+    "MAX_PENDING_INBOUND",
     "MAX_QUEUED_OUTBOUND",
     "PING_INTERVAL_S",
     "STOP_TIMEOUT_S",
@@ -61,6 +62,12 @@ TEARDOWN_TIMEOUT_S = 2.0
 #: plus lines held for coalescing (one held line becomes one frame at
 #: flush). Past it the session is aborted instead of retaining more.
 MAX_QUEUED_OUTBOUND = 128
+#: Bound on data messages waiting for the handler: the reader enqueues
+#: text/binary payloads while a separate dispatch task runs the
+#: callbacks in order, so control frames keep flowing (and liveness
+#: stays fresh) while a handler is parked. Past it the session is
+#: aborted instead of retained, like the outbound bound.
+MAX_PENDING_INBOUND = 128
 #: Largest HTTP upgrade head accepted (bytes, before the blank line).
 _MAX_UPGRADE_HEAD = 16 * 1024
 
@@ -255,6 +262,9 @@ class TciSession:
         # ignores the extension offer), so the connection never compresses.
         self._conn = WebSocketConnection(reader, writer, clock=clock)
         self._outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUED_OUTBOUND)
+        self._inbox: asyncio.Queue[tuple[int, bytes]] = asyncio.Queue(
+            maxsize=MAX_PENDING_INBOUND
+        )
         self._pending: list[str] = []
         self._flush_handle: asyncio.TimerHandle | None = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -339,12 +349,13 @@ class TciSession:
                 break
 
     def launch(self) -> None:
-        """Start reader, sender, ping, and watchdog tasks."""
+        """Start reader, sender, ping, watchdog, and dispatch tasks."""
         for coro in (
             self._reader_loop(),
             self._sender_loop(),
             self._ping_loop(),
             self._watchdog_loop(),
+            self._dispatch_loop(),
         ):
             self._tasks.add(asyncio.create_task(coro))
 
@@ -474,6 +485,38 @@ class TciSession:
         try:
             while not self._done:
                 opcode, payload = await self._conn.recv()
+                # Control frames (ping/pong/close) are consumed inside
+                # ``recv()`` and refresh liveness there: only data
+                # messages wait for the handler, on the dispatch queue.
+                if opcode == WS_OP_TEXT or opcode == WS_OP_BINARY:
+                    try:
+                        self._inbox.put_nowait((opcode, payload))
+                    except asyncio.QueueFull:
+                        logger.debug(
+                            "tci %s: inbound queue full; aborting", self._id
+                        )
+                        self._overflow()
+                        return
+        except (EOFError, ConnectionError, OSError, WebSocketError):
+            # A protocol violation (e.g. a compression bit without a
+            # negotiated deflate) ends the session like a reset does;
+            # ``finish()`` still runs the guarded teardown exactly once.
+            pass
+        finally:
+            await self.finish()
+
+    async def _dispatch_loop(self) -> None:
+        """Run handler callbacks in received order, off the reader.
+
+        The reader keeps consuming frames (so pongs keep refreshing
+        liveness) while a callback is parked: a long ``on_command`` or
+        ``on_binary`` delays later messages, never the watchdog. The
+        queue is bounded; an overfull one aborts the session through
+        the same overflow path as a stalled writer.
+        """
+        try:
+            while not self._done:
+                opcode, payload = await self._inbox.get()
                 if opcode == WS_OP_TEXT:
                     await self._handle_text(payload)
                 elif opcode == WS_OP_BINARY:
@@ -483,10 +526,7 @@ class TciSession:
                         logger.debug(
                             "tci %s: on_binary failed; session continues", self._id
                         )
-        except (EOFError, ConnectionError, OSError, WebSocketError):
-            # A protocol violation (e.g. a compression bit without a
-            # negotiated deflate) ends the session like a reset does;
-            # ``finish()`` still runs the guarded teardown exactly once.
+        except asyncio.CancelledError:
             pass
         finally:
             await self.finish()
