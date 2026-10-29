@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 
@@ -640,8 +640,10 @@ class TestIcomSetFilterWidthRouting:
         assert select_frames[0].hex() == "fefea2e007d1fd"  # select SUB
         assert select_frames[-1].hex() == "fefea2e007d0fd"  # restore MAIN
         radio.send_civ.assert_awaited_once_with(
-            0x1A, sub=0x03, data=b"\x28", wait_response=False
+            0x1A, sub=0x03, data=b"\x28", wait_response=False, is_current=ANY
         )
+        # MOR-3623: the routed frame carries the selection currency check.
+        assert callable(radio.send_civ.await_args.kwargs["is_current"])
 
     @pytest.mark.asyncio
     async def test_ic7610_sub_receiver_still_cmd29_wrapped(self) -> None:

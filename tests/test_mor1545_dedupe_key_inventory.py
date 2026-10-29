@@ -55,7 +55,7 @@ import pytest
 import rigplane.runtime.radio as radio_module
 from rigplane import IC_7610_ADDR
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, build_cmd29_frame
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.types import AudioPeakFilter, FilterShape
 from rigplane.radio import IcomRadio
 
@@ -528,11 +528,20 @@ async def test_concurrent_same_receiver_reads_still_dedupe(row: _Race) -> None:
 
     Both reads use SUB, the receiver that reaches the VFO-select fallback on
     IC-9700; on IC-7610 both receivers share the one direct call site anyway.
+    On IC-9700 the fallback is one MAIN/SUB critical section (MOR-3623): the
+    second concurrent routed read is refused before the wire instead of
+    riding the first one's temporary selection, so exactly one frame still
+    goes out and the first reader gets the SUB answer.
     """
     async with _reader(row) as (radio, transport):
         read = getattr(radio, row.family)
         transport.queue_response_on_send(1, _reply(row, row.sub_payload, receiver=1))
-        first, second = await asyncio.gather(read(receiver=1), read(receiver=1))
+        first, second = await asyncio.gather(
+            read(receiver=1), read(receiver=1), return_exceptions=True
+        )
         assert first == row.sub_value
-        assert second == row.sub_value
+        if row.profile == "IC-9700":
+            assert isinstance(second, CommandRejectedError)
+        else:
+            assert second == row.sub_value
         assert len(transport.sent_packets) == 1

@@ -23,6 +23,7 @@ import pytest
 
 from rigplane import IC_7610_ADDR
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, build_cmd29_frame
+from rigplane.core.exceptions import CommandRejectedError
 from rigplane.radio import IcomRadio
 
 from _helpers import wrap_civ_in_udp
@@ -251,7 +252,9 @@ class TestFilterWidthVfoFallbackDedupeKeyReceiverScoped:
         Both reads use ``receiver=1`` (SUB), the only receiver that reaches
         the fallback call site on this profile -- ``receiver=0`` (MAIN)
         takes the direct branch, already covered by the direct-branch
-        class's own control.
+        class's own control. The fallback is one MAIN/SUB critical section
+        (MOR-3623): the second concurrent routed read is refused before the
+        wire, so exactly one frame goes out and the first reader gets it.
         """
         ic9700_radio._civ_runtime.start_worker()
         try:
@@ -261,9 +264,10 @@ class TestFilterWidthVfoFallbackDedupeKeyReceiverScoped:
             first, second = await asyncio.gather(
                 ic9700_radio.get_filter_width(receiver=1),
                 ic9700_radio.get_filter_width(receiver=1),
+                return_exceptions=True,
             )
             assert first == _WIDTH_SUB_HZ
-            assert second == _WIDTH_SUB_HZ
+            assert isinstance(second, CommandRejectedError)
             assert len(mock_transport.sent_packets) == 1
         finally:
             await ic9700_radio._civ_runtime.stop_worker()
