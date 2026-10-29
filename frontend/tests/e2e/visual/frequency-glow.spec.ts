@@ -52,6 +52,24 @@ for (const deviceScaleFactor of [1.25, 1.5]) {
   test.describe(`frequency glow at DPR ${deviceScaleFactor} (MOR-3860)`, () => {
     test.use({ deviceScaleFactor });
 
+    for (const theme of ['crt-green', 'nixie-tube']) {
+      for (const attribute of ['data-theme', 'data-vfo-theme']) {
+        test(`desktop: ${theme} via ${attribute} preserves strong glow`, async ({ page }) => {
+          await page.goto('/fixtures/skin-witness.html?skin=desktop-v2&fixture=topology-2-main-sub&theme=v2&language=studioline');
+          await page.waitForSelector('body[data-harness-ready="true"]');
+          await page.evaluate(({ attribute, theme }) => {
+            document.documentElement.removeAttribute('data-theme');
+            document.documentElement.removeAttribute('data-vfo-theme');
+            document.documentElement.setAttribute(attribute, theme);
+          }, { attribute, theme });
+          expect(await page.evaluate(() => window.devicePixelRatio)).toBe(deviceScaleFactor);
+          for (const shadow of await activeReadoutShadows(page)) {
+            expect(Math.max(...blurRadii(shadow)), `expected strong glow: ${shadow}`).toBeGreaterThan(4);
+          }
+        });
+      }
+    }
+
     for (const language of ['fieldline', 'segmentline', 'studioline']) {
       test(`${language}: preserves no-glow language or contrast settings`, async ({ page }) => {
         if (language === 'studioline') await page.emulateMedia({ contrast: 'more' });
