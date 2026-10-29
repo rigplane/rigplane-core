@@ -880,6 +880,154 @@ async def test_stop_during_bind_closes_orphan(
         await server.stop()
 
 
+async def test_replacement_start_survives_completed_predecessor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed orphan must not clear its replacement's ownership.
+
+    A parks in the bind, ``stop()`` invalidates it, B parks in the
+    bind, then A completes: A closes its orphan and reports the
+    invalidation but leaves B's ``_starting`` alone, so B installs and
+    serves when its own bind completes.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    entered_a = asyncio.Event()
+    gate_a = asyncio.Event()
+    entered_b = asyncio.Event()
+    gate_b = asyncio.Event()
+    created: list[_FakeListener] = []
+    calls = 0
+
+    async def _gated_start(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered_a.set()
+            await gate_a.wait()
+        else:
+            entered_b.set()
+            await gate_b.wait()
+        listener = _FakeListener()
+        created.append(listener)
+        return listener
+
+    monkeypatch.setattr(asyncio, "start_server", _gated_start)
+    task_a = asyncio.create_task(server.start())
+    task_b: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(2.0):
+            await entered_a.wait()
+        await server.stop()
+        task_b = asyncio.create_task(server.start())
+        async with asyncio.timeout(2.0):
+            await entered_b.wait()
+        gate_a.set()
+        try:
+            async with asyncio.timeout(10.0):
+                await task_a
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("invalidated start() must not install")
+        assert server._listener is None
+        assert created[0].closed
+        assert server._starting is True
+        gate_b.set()
+        async with asyncio.timeout(10.0):
+            await task_b
+        assert server._listener is created[1]
+        assert not created[1].closed
+        assert server._starting is False
+    finally:
+        gate_a.set()
+        gate_b.set()
+        for task in (task_a, task_b):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, RuntimeError):
+                    pass
+        for listener in created:
+            listener.close()
+        await server.stop()
+
+
+async def test_replacement_start_survives_failing_predecessor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed orphan must not clear its replacement's ownership.
+
+    Same as above, but A's bind raises instead of completing: the
+    original error propagates from A, B's ``_starting`` stays set, and
+    B installs when its own bind completes.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    entered_a = asyncio.Event()
+    gate_a = asyncio.Event()
+    entered_b = asyncio.Event()
+    gate_b = asyncio.Event()
+    created: list[_FakeListener] = []
+    calls = 0
+
+    async def _gated_start(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered_a.set()
+            await gate_a.wait()
+            raise OSError("bind failed")
+        entered_b.set()
+        await gate_b.wait()
+        listener = _FakeListener()
+        created.append(listener)
+        return listener
+
+    monkeypatch.setattr(asyncio, "start_server", _gated_start)
+    task_a = asyncio.create_task(server.start())
+    task_b: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(2.0):
+            await entered_a.wait()
+        await server.stop()
+        task_b = asyncio.create_task(server.start())
+        async with asyncio.timeout(2.0):
+            await entered_b.wait()
+        gate_a.set()
+        try:
+            async with asyncio.timeout(10.0):
+                await task_a
+        except OSError:
+            pass
+        else:
+            raise AssertionError("failed bind must raise its own error")
+        assert server._listener is None
+        assert server._starting is True
+        gate_b.set()
+        async with asyncio.timeout(10.0):
+            await task_b
+        assert server._listener is created[0]
+        assert not created[0].closed
+        assert server._starting is False
+    finally:
+        gate_a.set()
+        gate_b.set()
+        for task in (task_a, task_b):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, RuntimeError, OSError):
+                    pass
+        for listener in created:
+            listener.close()
+        await server.stop()
+
+
 async def test_concurrent_starts_reject_overlap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
