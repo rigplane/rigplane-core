@@ -835,3 +835,52 @@ async def test_pong_answers_ping() -> None:
         assert frames[-1] == (WS_OP_PONG, b"hi")
     finally:
         await session.finish()
+
+
+async def test_overflowed_sender_observers_still_updated() -> None:
+    """An accepted change reaches observers even when the sender overflows.
+
+    Session A stalls (blocked drain) while inbound stays alive; the
+    command that overflows A's own reply queue must still fan its
+    accepted ``to_others`` change out to healthy session B, and A must
+    then disconnect exactly once.
+    """
+    clock = FakeClock()
+
+    class EchoBoth(FakeHandler):
+        async def on_command(
+            self, name: str, args: tuple[str, ...]
+        ) -> CommandOutcome:
+            self.commands.append((name, args))
+            (value,) = args
+            return CommandOutcome(
+                to_sender=[f"s:{value};"], to_others=[f"o:{value};"]
+            )
+
+    handler = EchoBoth()
+    server = make_server(handler, clock)
+    writer_a = FakeWriter()
+    writer_a.block_drain()
+    session_a, _writer, reader_a = await open_session(server, handler, writer_a)
+    session_b, writer_b, _reader_b = await open_session(server, handler)
+    try:
+        await wait_for_frames(writer_b, len(BURST))
+        total = MAX_QUEUED_OUTBOUND + 50
+        for index in range(total):
+            reader_a.feed_data(client_frame(WS_OP_TEXT, f"cmd:{index};".encode()))
+        last = total - 1
+        async with asyncio.timeout(5.0):
+            while handler.disconnect_calls == 0:
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+        assert session_a not in server.sessions
+        expected = len(handler.commands) - 1
+        assert handler.commands[-1] == ("cmd", (str(expected),))
+        frames_b = await wait_for_frames(
+            writer_b, len(BURST) + len(handler.commands)
+        )
+        observed = [payload for _, payload in frames_b[len(BURST):]]
+        assert observed[-1] == f"o:{expected};".encode()
+    finally:
+        await session_a.finish()
+        await session_b.finish()
