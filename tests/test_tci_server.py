@@ -11,6 +11,8 @@ import struct
 import time
 from collections.abc import Awaitable, Callable, Sequence
 
+import pytest
+
 from rigplane.tci.handler import CommandOutcome
 from rigplane.tci.server import (
     COALESCE_WINDOW_S,
@@ -696,6 +698,129 @@ async def test_stop_without_start_is_clean() -> None:
     await server.stop()
     await server.stop()
     assert server.sessions == ()
+
+
+class _FakeListener:
+    """Stand-in for ``asyncio.Server``: no sockets, records close."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.wait_closed_calls = 0
+
+    @property
+    def sockets(self) -> list[object]:
+        return []
+
+    def close(self) -> None:
+        self.closed = True
+
+    async def wait_closed(self) -> None:
+        self.wait_closed_calls += 1
+
+    def is_serving(self) -> bool:
+        return not self.closed
+
+
+async def test_stop_during_bind_closes_orphan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bind outlived by a concurrent stop is closed, never installed.
+
+    ``start()`` parks inside the bind while ``stop()`` runs: when the
+    bind completes, the orphan is closed and ``start()`` reports the
+    invalidation instead of installing a listener after shutdown.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    created: list[_FakeListener] = []
+
+    async def _gated_start(*args: object, **kwargs: object) -> object:
+        entered.set()
+        await gate.wait()
+        listener = _FakeListener()
+        created.append(listener)
+        return listener
+
+    monkeypatch.setattr(asyncio, "start_server", _gated_start)
+    start_task = asyncio.create_task(server.start())
+    try:
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        await server.stop()
+        gate.set()
+        try:
+            async with asyncio.timeout(10.0):
+                await start_task
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("start() outlived by stop() must not install")
+        assert server._listener is None
+        assert len(created) == 1
+        assert created[0].closed
+    finally:
+        gate.set()
+        if not start_task.done():
+            start_task.cancel()
+            try:
+                await start_task
+            except (asyncio.CancelledError, RuntimeError):
+                pass
+        for listener in created:
+            listener.close()
+        await server.stop()
+
+
+async def test_concurrent_starts_reject_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two overlapping ``start()`` calls never bind twice."""
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    created: list[_FakeListener] = []
+
+    async def _gated_start(*args: object, **kwargs: object) -> object:
+        entered.set()
+        await gate.wait()
+        listener = _FakeListener()
+        created.append(listener)
+        return listener
+
+    monkeypatch.setattr(asyncio, "start_server", _gated_start)
+    first = asyncio.create_task(server.start())
+    try:
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        try:
+            async with asyncio.timeout(2.0):
+                await server.start()
+        except RuntimeError:
+            pass
+        except TimeoutError:
+            raise AssertionError("overlapping start() was not rejected") from None
+        else:
+            raise AssertionError("overlapping start() was not rejected")
+        gate.set()
+        async with asyncio.timeout(10.0):
+            await first
+        assert len(created) == 1
+    finally:
+        gate.set()
+        if not first.done():
+            first.cancel()
+            try:
+                await first
+            except (asyncio.CancelledError, RuntimeError):
+                pass
+        for listener in created:
+            listener.close()
+        await server.stop()
 
 
 async def test_server_defaults_use_leaf_constants() -> None:
