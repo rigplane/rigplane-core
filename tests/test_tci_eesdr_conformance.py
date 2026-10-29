@@ -262,6 +262,8 @@ async def test_multi_client_broadcast(tcp_available: None) -> None:
                     and ("VFO", 0, 0, 14074001) in second_seen.params
                 )
             )
+            assert ("VFO", 0, 0, 14074001) in first_seen.params
+            assert ("VFO", 0, 0, 14074001) in second_seen.params
         finally:
             await close_listener(first)
             await close_listener(second)
