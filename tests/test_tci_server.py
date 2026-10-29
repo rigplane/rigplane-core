@@ -823,6 +823,38 @@ async def test_reply_ordered_behind_pending_broadcast() -> None:
         await session.finish()
 
 
+async def test_close_with_blocked_echo_watchdog_aborts() -> None:
+    """A received CLOSE with a saturated echo drain still dies on watchdog.
+
+    The close path marks the connection closed and parks in the echo
+    drain (blocked peer). When the watchdog fires it must still abort
+    the actual transport — not return early on protocol-close state —
+    run the disconnect exactly once, drop the session, and finish
+    bounded.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    writer = FakeWriter()
+    writer.block_drain()
+    session, _writer, reader = await open_session(server, handler, writer)
+    try:
+        await wait_for_frames(writer, 1)
+        reader.feed_data(client_frame(WS_OP_CLOSE, b"\x03\xe8"))
+        async with asyncio.timeout(5.0):
+            while not session._conn.closed:
+                await asyncio.sleep(0.005)
+        clock.advance(DEADLINE_S + 1.0)
+        async with asyncio.timeout(10.0):
+            assert await session.check_deadline(clock()) is True
+        assert writer.transport.aborted
+        assert handler.disconnect_calls == 1
+        assert session not in server.sessions
+    finally:
+        await session.finish()
+    assert handler.disconnect_calls == 1
+
+
 async def test_pong_answers_ping() -> None:
     clock = FakeClock()
     handler = FakeHandler()
