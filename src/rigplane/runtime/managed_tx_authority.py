@@ -490,9 +490,7 @@ class ManagedTxAuthority:
                                 if controller_effects:
                                     self._controller_effects = controller_effects
                             execution = asyncio.create_task(
-                                self._execute(
-                                    transition.effects, full_force=full_force
-                                )
+                                self._execute(transition.effects, full_force=full_force)
                             )
                         if not admitted.done():
                             admitted.set_result(transition)
@@ -531,12 +529,13 @@ class ManagedTxAuthority:
             raise
         return worker, admitted
 
-    def _key_intact_locked(self, owner: str) -> bool:
+    def _key_intact_locked(self, owner: str | None) -> bool:
         """Whether the committed ``PTT(owner)`` intent still holds.
 
         No await between reads: call holding ``_lock`` after the
         route-preparation hook ran without it, to catch an unkey or
-        force-off that committed meanwhile.
+        force-off that committed meanwhile. A ``None`` owner never
+        matches: only a ``PTT`` intent carries an owner token.
         """
         intent = self._state.intent
         return intent.kind is ManagedTxIntentKind.PTT and intent.owner_token == owner
@@ -588,9 +587,7 @@ class ManagedTxAuthority:
                 # An unkey or force-off committed while the hook ran: the
                 # teardown already settled, so report the rejection without
                 # piling release debt onto the new state.
-                return ManagedTxTransition(
-                    self._state, ManagedTxOutcome.REJECTED
-                )
+                return ManagedTxTransition(self._state, ManagedTxOutcome.REJECTED)
             rejected = self._reduce_locked(
                 ActuationSettled(
                     token=on_effect.token,
