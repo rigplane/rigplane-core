@@ -37,6 +37,7 @@ from ..core.acquisition_scheduler import (
     civ_transport_budget_hz,
     provider_uses_civ_acquisition,
 )
+from ..audio.route import apply_wsjtx_data_mod_input, profile_data_mode_count
 from ..profiles import RadioProfile
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import FieldPath
@@ -110,35 +111,10 @@ class _AcquisitionExecutorUnavailable(RuntimeError):
     """Raised when a configured acquisition executor cannot run on this radio."""
 
 
-def _profile_data_mode_count(radio: "Radio") -> int:
-    profile = getattr(radio, "profile", None)
-    count = getattr(profile, "data_mode_count", 1)
-    return count if isinstance(count, int) and count > 0 else 1
-
-
 def _wsjtx_data_mode_value(radio: "Radio", config: RigctldConfig) -> int | bool:
     if config.wsjtx_data_mode is not None:
         return int(config.wsjtx_data_mode)
     return True
-
-
-async def _apply_wsjtx_data_mod_input(
-    radio: "Radio",
-    *,
-    data_mode: int | bool,
-    source: int | None,
-) -> None:
-    if source is None or type(data_mode) is not int:
-        return
-    setter_name = f"set_data{data_mode}_mod_input"
-    setter = getattr(radio, setter_name, None)
-    if setter is None:
-        logger.debug(
-            "WSJT-X compat: radio has no %s, skipping DATA mod input",
-            setter_name,
-        )
-        return
-    await setter(source)
 
 
 def _mode_to_name(mode: object) -> str:
@@ -1102,11 +1078,11 @@ class RigctldServer:
                 explicit_data_mode or not data_on
             ):
                 data_mode = _wsjtx_data_mode_value(self._radio, self._config)
-                if type(data_mode) is int and data_mode > _profile_data_mode_count(
+                if type(data_mode) is int and data_mode > profile_data_mode_count(
                     self._radio
                 ):
                     data_mode = True
-                await _apply_wsjtx_data_mod_input(
+                await apply_wsjtx_data_mod_input(
                     self._radio,
                     data_mode=data_mode,
                     source=self._config.wsjtx_data_mod_input,

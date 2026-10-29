@@ -39,6 +39,7 @@ from ..core.radio_protocol import (
     RelativeVfoModeWritable,
     RelativeVfoReadbackCapable,
 )
+from ..audio.route import apply_wsjtx_data_mod_input, profile_data_mode_count
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import (
     CommandIntent,
@@ -429,12 +430,6 @@ _APPLIED_LIFECYCLE_STATES: frozenset[str] = frozenset(
 _UNAPPLIED_LIFECYCLE_ERRORS: dict[str, HamlibError] = {
     "timed_out": HamlibError.ETIMEOUT,
 }
-
-
-def _profile_data_mode_count(radio: Any) -> int:
-    profile = getattr(radio, "profile", None)
-    count = getattr(profile, "data_mode_count", 1)
-    return count if isinstance(count, int) and count > 0 else 1
 
 
 def _mode_to_hamlib_str(mode: object) -> str:
@@ -1116,7 +1111,7 @@ class RigctldHandler:
         value = self._config.wsjtx_data_mode
         if value is None:
             return True
-        if value > _profile_data_mode_count(self._radio):
+        if value > profile_data_mode_count(self._radio):
             return True
         return int(value)
 
@@ -1124,16 +1119,11 @@ class RigctldHandler:
         self, *, receiver: int = 0, filter_width: int | None = None
     ) -> int | bool:
         data_mode = self._packet_data_mode_value()
-        source = self._config.wsjtx_data_mod_input
-        if source is not None and type(data_mode) is int:
-            setter = getattr(self._radio, f"set_data{data_mode}_mod_input", None)
-            if setter is not None:
-                await setter(source)
-            else:
-                logger.debug(
-                    "rigctld: radio has no set_data%d_mod_input, skipping",
-                    data_mode,
-                )
+        await apply_wsjtx_data_mod_input(
+            self._radio,
+            data_mode=data_mode,
+            source=self._config.wsjtx_data_mod_input,
+        )
         profile = getattr(self._radio, "profile", None)
         cmd_map = getattr(profile, "command_map", None)
         if (
