@@ -1247,6 +1247,123 @@ async def test_pong_answers_ping() -> None:
         await session.finish()
 
 
+async def test_gated_finalizer_does_not_wedge_finish() -> None:
+    """A disconnect parked in an async finalizer must not wedge ``finish()``.
+
+    The callback is cancelled after entry and parks in a gated
+    ``finally``: ``finish()`` must still return bounded (registry
+    dropped, transport released) before the gate opens; opening the
+    gate then completes the cleanup exactly once.
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
+    clock = FakeClock()
+    entered = asyncio.Event()
+    finalizing = asyncio.Event()
+    finalized = asyncio.Event()
+    cleanup_gate = asyncio.Event()
+
+    class _FinalizingHandler(FakeHandler):
+        async def on_disconnect(self) -> None:
+            self.disconnect_calls += 1
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finalizing.set()
+                await cleanup_gate.wait()
+                finalized.set()
+
+    handler = _FinalizingHandler()
+    server = make_server(handler, clock)
+    session, writer, _reader = await open_session(server, handler)
+    task = asyncio.create_task(session.finish())
+    try:
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        try:
+            async with asyncio.timeout(TEARDOWN_TIMEOUT_S * 3 + 5.0):
+                await task
+        except TimeoutError:
+            raise AssertionError(
+                "finish() wedged on a gated disconnect finalizer"
+            ) from None
+        assert finalizing.is_set()
+        assert not finalized.is_set()
+        assert handler.disconnect_calls == 1
+        assert session not in server.sessions
+        assert writer.is_closing()
+        cleanup_gate.set()
+        async with asyncio.timeout(5.0):
+            while not finalized.is_set():
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+    finally:
+        cleanup_gate.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+        await session.finish()
+
+
+async def test_stop_returns_while_disconnect_finalizer_gated() -> None:
+    """``stop()`` must return bounded with a gated disconnect finalizer.
+
+    The session teardown parks in an async ``finally`` behind the two
+    bounded waits: the aggregate ``stop()`` wait still returns within
+    its own budget, and opening the gate completes the disconnect
+    exactly once.
+    """
+    clock = FakeClock()
+    entered = asyncio.Event()
+    finalized = asyncio.Event()
+    cleanup_gate = asyncio.Event()
+
+    class _FinalizingHandler(FakeHandler):
+        async def on_disconnect(self) -> None:
+            self.disconnect_calls += 1
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await cleanup_gate.wait()
+                finalized.set()
+
+    handler = _FinalizingHandler()
+    server = make_server(handler, clock, stop_timeout=10.0)
+    session, _writer, _reader = await open_session(server, handler)
+    task = asyncio.create_task(server.stop())
+    try:
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        try:
+            async with asyncio.timeout(15.0):
+                await task
+        except TimeoutError:
+            raise AssertionError(
+                "stop() wedged on a gated disconnect finalizer"
+            ) from None
+        assert handler.disconnect_calls == 1
+        assert session not in server.sessions
+        cleanup_gate.set()
+        async with asyncio.timeout(5.0):
+            while not finalized.is_set():
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+    finally:
+        cleanup_gate.set()
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+        await server.stop()
+
+
 async def test_overflowed_sender_observers_still_updated() -> None:
     """An accepted change reaches observers even when the sender overflows.
 
