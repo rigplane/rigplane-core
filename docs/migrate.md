@@ -15,8 +15,7 @@ consumer.
 
 ## Compatibility decisions from 2.11.1
 
-The row IDs below follow the frozen
-[MOR-2336 compatibility matrix](https://linear.app/morozsm/issue/MOR-2336).
+The row IDs below follow the frozen compatibility matrix.
 Its source baseline is tag `v2.11.1` at
 `997cca0e385e78cd47f630d398488d34df29cb17`; its static comparison snapshot is
 `0126ca218526ef9b3e1a29e821596a1009d06b2d`. A preservation decision is a tested
