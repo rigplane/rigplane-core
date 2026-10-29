@@ -84,10 +84,11 @@ def _float_to_int(value: float, sample_type: SampleType) -> int:
     if value <= -1.0:
         return minimum
     # Round half away from zero onto the asymmetric two's-complement
-    # rails (positive full scale is maximum, negative is minimum).
+    # rails (positive full scale is maximum, negative is minimum):
+    # the negative magnitude is rounded the same way, then negated.
     if value >= 0.0:
         return min(maximum, math.floor(value * maximum + 0.5))
-    return max(minimum, math.floor(value * -minimum + 0.5))
+    return max(minimum, -math.floor(-value * -minimum + 0.5))
 
 
 def _decode_int24(data: bytes) -> list[int]:
