@@ -170,8 +170,12 @@ def test_scan_package_nested_valid_relative_passes(tmp_path: Path) -> None:
     extra.mkdir()
     # From ``rigplane.tci.extra``, ``from .. import x`` stays inside the
     # leaf (``rigplane.tci``); against the top package it would escape.
+    # The sentinel proves the scan actually recursed (pre-fix it misses
+    # both files, so both assertions fail there).
     (extra / "__init__.py").write_text(
         "from .. import x\n", encoding="utf-8"
     )
+    (extra / "bad.py").write_text("import numpy\n", encoding="utf-8")
     found = _scan_package(tmp_path)
-    assert found == {}
+    assert "extra/bad.py" in found
+    assert "extra/__init__.py" not in found

@@ -1683,7 +1683,14 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
                     await task
             except (asyncio.CancelledError, TimeoutError):
                 pass
-        await session.finish()
+        for pending_task in list(session._tasks):
+            if not pending_task.done():
+                pending_task.cancel()
+        try:
+            async with asyncio.timeout(5.0):
+                await session.finish()
+        except (asyncio.CancelledError, TimeoutError):
+            pass
 
 
 async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
@@ -1757,7 +1764,14 @@ async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
                     await task
             except (asyncio.CancelledError, TimeoutError):
                 pass
-        await session.finish()
+        for pending_task in list(session._tasks):
+            if not pending_task.done():
+                pending_task.cancel()
+        try:
+            async with asyncio.timeout(5.0):
+                await session.finish()
+        except (asyncio.CancelledError, TimeoutError):
+            pass
 
 
 async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
@@ -1834,10 +1848,15 @@ async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
         if stop_task is not None and not stop_task.done():
             stop_task.cancel()
             try:
-                await stop_task
+                async with asyncio.timeout(5.0):
+                    await stop_task
             except (asyncio.CancelledError, TimeoutError):
                 pass
-        await server.stop()
+        try:
+            async with asyncio.timeout(10.0):
+                await server.stop()
+        except (asyncio.CancelledError, TimeoutError):
+            pass
 
 
 async def test_overflowed_sender_observers_still_updated() -> None:
