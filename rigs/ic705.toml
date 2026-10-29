@@ -420,7 +420,12 @@ adaptive_decay = false
 # width keeps its declared FM publication (MOR-2503) and the AGC time stays
 # undeclared (MOR-2915). Cadence/TTL/adaptive mirror the PANEL class
 # nominals these paths resolved to without an entry (5.0 s/20.0 s/no
-# decay), so the entries only add the availability clause.
+# decay), so the entries only add the availability clause. The spelled
+# cadences are reserved demand the shared budget fit never stretches
+# (AcquisitionScheduler._fit_transport_budget): nominal traffic is
+# unchanged — the transmit-budget pin still closes on the same limit —
+# while under pressure the remaining class-derived groups absorb the
+# stretch instead.
 [state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
 reason = "available_when: the 14 07 read NAKs in FM (MOR-3630 bench probe); gated on MAIN's own mode"
 cadence_seconds = 5.0
