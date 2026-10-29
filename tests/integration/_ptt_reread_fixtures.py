@@ -69,6 +69,7 @@ from rigplane.core.state_store import StateStore
 from rigplane.runtime import tx_interlock
 from rigplane.runtime._civ_rx import _observation_max_age
 from rigplane.types import CivFrame
+from support.tx_target import seed_tx_target
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -222,3 +223,23 @@ async def wait_for_rf_state(
     await _poll_rf_state(
         server, lambda state: state is expected, str(expected), timeout
     )
+
+
+def seed_keyed_ready_tx_target(
+    server: "RigctldServer", frequency_hz: int = 14_074_000
+) -> None:
+    """Seed the TX target a keyed-ready radio publishes (MOR-3633).
+
+    The PTT-on guard refuses ``T 1`` on a profile that publishes
+    ``global.tx_state.tx_target`` until a FRESH known target is in the
+    canonical store. A real radio gets there through its poller; these
+    fixtures have no poller, so seed it the way production publishes it
+    (``support.tx_target.seed_tx_target``: bound to the store's provider
+    generation). Call after :func:`wait_for_known_rf_state`, so the target
+    lands in the store the handler actually reads.
+    """
+    handler = server._rig_handler  # noqa: SLF001
+    assert handler is not None, (
+        "server._rig_handler not initialised — call after start()"
+    )
+    seed_tx_target(handler._state_store, frequency_hz)  # noqa: SLF001

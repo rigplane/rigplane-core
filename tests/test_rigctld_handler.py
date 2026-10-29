@@ -229,6 +229,27 @@ def _seed_known_rx(store: StateStore) -> None:
     _apply_store_value(store, "global.tx_state.ptt", False, max_age=1e9)
 
 
+def _seed_current_known_rx(store: StateStore) -> None:
+    """Known RX bound to the store's CURRENT provider generation.
+
+    ``_seed_known_rx`` applies at generation 0, which a store already rolled by
+    ``_seed_store_current`` drops. TONE/TSQL writes (MOR-3633) are DEFER
+    repeater writes: with the RF state unknown they answer ``RPRT -9`` rather
+    than execute, so tests on a rolled store state the RX premise here, after
+    the roll.
+    """
+    store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=1.0,
+            max_age=1e9,
+            quality=("confirmed",),
+        )
+    )
+
+
 def _apply_handler_value(
     handler: RigctldHandler,
     path: str,
@@ -5035,6 +5056,7 @@ async def test_yaesu_tone_no_vfo_arg_follows_active_receiver(
     radio, _ct, writes = _real_ftx1_ct_radio()
     store = StateStore()
     _seed_store_current(store, "global.slow_state.active", active)
+    _seed_current_known_rx(store)
     handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
 
     assert (await handler.execute(_vfo_func_cmd("set_func", None, "TONE", "1"))).ok
@@ -5115,6 +5137,7 @@ async def test_yaesu_func_read_after_write_uses_pending_value(
     the write records it on the same repeater_* path the read projects."""
     store = StateStore()
     _seed_store_current(store, path, False)
+    _seed_current_known_rx(store)
     yaesu_radio.get_repeater_tone.return_value = True
     yaesu_radio.get_repeater_tsql.return_value = True
     handler = RigctldHandler(yaesu_radio, RigctldConfig(), state_store=store)
@@ -5137,6 +5160,7 @@ async def test_icom_func_read_after_write_uses_pending_value(
     _seed_store_current(store, f"receiver.main.operator_toggles.{name}", False)
     live_getter = getattr(mock_radio, f"get_{name}")
     live_getter.return_value = False
+    _seed_current_known_rx(store)
     handler = RigctldHandler(mock_radio, RigctldConfig(), state_store=store)
     assert (await handler.execute(set_cmd("set_func", func, "1"))).ok
     resp = await handler.execute(get_cmd("get_func", func))

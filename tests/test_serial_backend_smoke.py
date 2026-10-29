@@ -21,6 +21,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.exceptions import CommandError
 from serial_stub import SerialMockRadio
+from support.tx_target import seed_tx_target
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.handlers import AudioBroadcaster
@@ -373,6 +374,9 @@ async def test_rigctld_smoke_with_serial_mock_backend() -> None:
                 provider_generation=store.provider_generation,
             )
         )
+        # No poller here: seed the TX target a keyed-ready radio publishes, so
+        # the PTT-on guard (MOR-3633) sees a known TX-side frequency.
+        seed_tx_target(store)
         host, port = _addr_from_asyncio_server(server._server)
         reader, writer = await asyncio.open_connection(host, port)
         try:

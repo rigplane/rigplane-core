@@ -55,6 +55,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio_state import RadioState
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.rigctld.state_cache import StateCache
+from support.tx_target import seed_tx_target
 from rigplane.web.radio_poller import (
     CommandQueue,
     DisableScope,
@@ -4150,6 +4151,10 @@ async def test_release_critical_web_setters_do_not_confirm_state_without_readbac
 ) -> None:
     radio = _make_radio()
     store = StateStore()
+    # A keyed-ready radio already publishes its TX target; the PTT-on guard
+    # (MOR-3633) refuses ``PttOn`` without one (``observed_rx_dispatch_premise``
+    # states only the RF half of the premise).
+    seed_tx_target(store)
     poller = RadioPoller(
         radio,
         StateCache(),

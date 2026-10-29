@@ -7,11 +7,10 @@ being corrected, and a missing union member cannot create a privileged path.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from math import isfinite
-from typing import Any
 
 from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
@@ -49,7 +48,6 @@ from rigplane.runtime._poller_types import (
     SetMemoryMode,
     SetMode,
     SetPowerstat,
-    SetRepeaterShift,
     SetRepeaterTone,
     SetRepeaterTsql,
     SetRitFrequency,
@@ -58,8 +56,6 @@ from rigplane.runtime._poller_types import (
     SetRxAntennaAnt1,
     SetRxAntennaAnt2,
     SetSplit,
-    SetToneFreq,
-    SetTsqlFreq,
     SetTunerStatus,
     VfoEqualize,
     VfoSwap,
@@ -80,7 +76,6 @@ __all__ = [
     "classify_tx_interlock",
     "evaluate_tx_interlock",
     "get_tx_interlock_command_family_metadata",
-    "interlock_policy_token",
     "is_exact_raw_dekey_frame",
     "is_exact_raw_transmission_end_frame",
     "ptt_on_tx_target_refusal",
@@ -327,15 +322,37 @@ _ALWAYS_PASS_TYPES = (PttOff, ScanStop)
 # TSQL or tone-frequency write while keyed moves the TX frequency (up to
 # 5 MHz on 70 cm) mid-transmission, so every member defers like the VFO
 # topology and memory families — never a hard block, so a known-RX pass
-# stays easy. A later repeater command joins by adding one row here; the
-# DEFER table and the family branch below both read this tuple.
-_REPEATER_DEFER_TYPES = (
-    SetRepeaterShift,
-    SetRepeaterTone,
-    SetRepeaterTsql,
-    SetToneFreq,
-    SetTsqlFreq,
+# stays easy. These commands are descriptor-backed: their only name source
+# is the command descriptor (``core/command_dispatch.py``), so the table is
+# keyed by descriptor intent name and no typed command exists for them. A
+# later repeater command joins by adding one name here; classification and
+# the family metadata below both read this set.
+_REPEATER_DEFER_INTENTS = frozenset(
+    {
+        "set_repeater_shift",
+        "set_repeater_tone",
+        "set_repeater_tsql",
+        "set_tone_freq",
+        "set_tsql_freq",
+    }
 )
+
+# rigctld ``set_func TONE`` / ``TSQL`` classify through these typed tokens
+# (no dispatch arm executes them); each stands for the descriptor intent
+# named here, so the one name set above decides for every ingress.
+_TOKEN_INTENT_NAMES: Mapping[type, str] = {
+    SetRepeaterTone: "set_repeater_tone",
+    SetRepeaterTsql: "set_repeater_tsql",
+}
+
+
+def _is_repeater_write(command: object) -> bool:
+    """Whether ``command`` is a repeater write: a descriptor intent or its token."""
+
+    if isinstance(command, CommandIntent):
+        return command.name in _REPEATER_DEFER_INTENTS
+    return _TOKEN_INTENT_NAMES.get(type(command)) in _REPEATER_DEFER_INTENTS
+
 
 _DEFER_TYPES = (
     SetSplit,
@@ -352,7 +369,6 @@ _DEFER_TYPES = (
     # family members, never a hard block (a known-RX pass must stay easy).
     MemoryClear,
     SetMemoryContents,
-    *_REPEATER_DEFER_TYPES,
 )
 
 _HARD_BLOCK_TYPES = (
@@ -426,7 +442,7 @@ def get_tx_interlock_command_family_metadata(
         command, (SetMemoryMode, MemoryToVfo, MemoryClear, SetMemoryContents)
     ):
         family = TxInterlockCommandFamily.MEMORY
-    elif isinstance(command, _REPEATER_DEFER_TYPES):
+    elif _is_repeater_write(command):
         family = TxInterlockCommandFamily.REPEATER
     elif isinstance(command, (SetRitTxStatus, SetRitFrequency)):
         family = TxInterlockCommandFamily.RIT_XIT
@@ -436,9 +452,11 @@ def get_tx_interlock_command_family_metadata(
 
 
 def classify_tx_interlock(command: object) -> TxInterlockDisposition:
-    """Return the non-negotiable disposition for one typed command.
+    """Return the non-negotiable disposition for one typed command or intent.
 
-    Commands not explicitly disruptive are TX-SAFE by default.
+    A descriptor-backed repeater intent classifies by its intent name (the
+    descriptor is the only name source for migrated commands). Commands not
+    explicitly disruptive are TX-SAFE by default.
     """
 
     if isinstance(command, _ALWAYS_PASS_TYPES):
@@ -452,7 +470,7 @@ def classify_tx_interlock(command: object) -> TxInterlockDisposition:
         return TxInterlockDisposition.BLOCK
     if isinstance(command, _HARD_BLOCK_TYPES):
         return TxInterlockDisposition.BLOCK
-    if isinstance(command, _DEFER_TYPES):
+    if isinstance(command, _DEFER_TYPES) or _is_repeater_write(command):
         return TxInterlockDisposition.DEFER
     return TxInterlockDisposition.TX_SAFE
 
@@ -492,66 +510,6 @@ def evaluate_tx_interlock(
     return TxInterlockDecision(
         disposition, False, "RF state is TX; command is blocked."
     )
-
-
-# ---------------------------------------------------------------------------
-# Descriptor bridge: one table from intent names to typed policy tokens
-# ---------------------------------------------------------------------------
-#
-# Descriptor-backed intents (``set_repeater_shift`` and friends, WS/HTTP)
-# never become typed commands on the dispatch path — the drain invokes the
-# Radio method directly — so classifying the tokens above does not gate
-# them by itself. This bridge is the one mapping the dispatch seat
-# (``ManagedTxAuthority.admit_managed_write``) uses to reach the same typed
-# policy; the descriptors keep no second list of which commands defer.
-
-
-def _repeater_shift_policy_token(params: Mapping[str, Any]) -> SetRepeaterShift:
-    return SetRepeaterShift(params["direction"], params.get("receiver", 0))
-
-
-def _repeater_tone_policy_token(params: Mapping[str, Any]) -> SetRepeaterTone:
-    return SetRepeaterTone(params["on"], params.get("receiver", 0))
-
-
-def _repeater_tsql_policy_token(params: Mapping[str, Any]) -> SetRepeaterTsql:
-    return SetRepeaterTsql(params["on"], params.get("receiver", 0))
-
-
-def _tone_freq_policy_token(params: Mapping[str, Any]) -> SetToneFreq:
-    return SetToneFreq(params["freq_hz"], params.get("receiver", 0))
-
-
-def _tsql_freq_policy_token(params: Mapping[str, Any]) -> SetTsqlFreq:
-    return SetTsqlFreq(params["freq_hz"], params.get("receiver", 0))
-
-
-_INTERLOCK_POLICY_TOKEN_BUILDERS: Mapping[
-    str, Callable[[Mapping[str, Any]], object]
-] = {
-    "set_repeater_shift": _repeater_shift_policy_token,
-    "set_repeater_tone": _repeater_tone_policy_token,
-    "set_repeater_tsql": _repeater_tsql_policy_token,
-    "set_tone_freq": _tone_freq_policy_token,
-    "set_tsql_freq": _tsql_freq_policy_token,
-}
-
-
-def interlock_policy_token(intent: object) -> object | None:
-    """Bridge one descriptor-backed intent to its typed interlock token.
-
-    Bound intents carry canonical descriptor names, so aliases resolve
-    without a second lookup. Anything the table does not name — other
-    descriptors, non-descriptor intents, typed commands, anything else —
-    bridges to ``None`` and keeps its existing admission path.
-    """
-
-    if not isinstance(intent, CommandIntent):
-        return None
-    builder = _INTERLOCK_POLICY_TOKEN_BUILDERS.get(intent.name)
-    if builder is None:
-        return None
-    return builder(intent.params)
 
 
 # ---------------------------------------------------------------------------

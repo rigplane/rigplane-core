@@ -29,6 +29,7 @@ from _audio_pipeline_helpers import (
 )
 from _ptt_reread_fixtures import (
     answer_ptt_reread,
+    seed_keyed_ready_tx_target,
     wait_for_known_rf_state,
     wait_for_rf_state,
 )
@@ -281,6 +282,7 @@ async def test_defer_split_is_dropped_while_the_radio_transmits(
     client = await _make_client(server)
     try:
         await wait_for_known_rf_state(server)
+        seed_keyed_ready_tx_target(server)
         assert await client.send("T 1") == "RPRT 0"
         # The key state reaches the gate only via the next re-read tick.
         await wait_for_rf_state(server, tx_interlock.RfState.TX)
@@ -321,6 +323,7 @@ async def test_rigctld_wsjtx_replay_drives_data2_lan_tx_audio_pipeline(
     client = await _make_client(server)
     try:
         await wait_for_known_rf_state(server)
+        seed_keyed_ready_tx_target(server)
         assert await client.send("M PKTUSB") == "RPRT 0"
         assert await client.send("T 1") == "RPRT 0"
 

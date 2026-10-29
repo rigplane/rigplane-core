@@ -241,6 +241,7 @@ async def test_descriptor_preflight_rejects_without_queue_or_overlay() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("observed_rx_dispatch_premise")
 async def test_all_three_drains_execute_the_same_neutral_intent() -> None:
     from rigplane.core.command_dispatch import prepare_command_intent
 
@@ -347,6 +348,7 @@ def _install_non_admitted_descriptor(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("observed_rx_dispatch_premise")
 async def test_icom_drain_rejects_non_admitted_policy_before_radio_invocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1119,6 +1121,7 @@ def test_tone_invalid_params_are_refused_at_prepare(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("observed_rx_dispatch_premise")
 async def test_icom_drain_executes_tone_intents_against_the_radio_methods() -> None:
     radio = _radio(model="IC-7300")
     radio.set_tone_freq = AsyncMock()
@@ -1205,6 +1208,7 @@ def test_tone_family_refused_without_the_profile_capability_tag(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("observed_rx_dispatch_premise")
 async def test_set_tsql_freq_schedules_its_own_post_write_readback_on_icom() -> None:
     """The tsql write's readback names the tsql leaf alone: a descriptor
     target swapped to the tone field must fail here (same shape as the

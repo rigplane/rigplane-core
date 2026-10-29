@@ -1644,6 +1644,80 @@ async def test_yaesu_deferred_release_requires_continuous_fresh_rx(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "params"),
+    (
+        ("set_repeater_shift", {"direction": 1}),
+        ("set_repeater_tone", {"on": True}),
+        ("set_repeater_tsql", {"on": True}),
+        ("set_tone_freq", {"freq": 8850}),
+        ("set_tsql_freq", {"freq": 8850}),
+    ),
+)
+async def test_yaesu_queued_repeater_intent_is_held_while_keyed_and_runs_in_rx(
+    monkeypatch: pytest.MonkeyPatch, name: str, params: dict[str, object]
+) -> None:
+    """MOR-3633: a descriptor repeater write (WS/HTTP) joins the DEFER lane.
+
+    Held while keyed (no Radio method, nothing keys), released after the
+    continuous quiet-RX window, and run exactly once.
+    """
+
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    write = AsyncMock()
+    setattr(radio, name, write)
+    radio.set_ptt = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    intent = bind_command_intent(name, params, source="http")
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(intent, future=future, command_id=intent.id)
+
+    await _drain_with_ptt(poller, clock, 20.0, True)
+    assert poller._deferred_tx_lane.pending is not None  # noqa: SLF001
+    assert not future.done()
+    assert write.await_count == 0
+
+    await _drain_with_ptt(poller, clock, 20.5, False)
+    await _drain_with_ptt(poller, clock, 21.4, False)
+    assert not future.done()
+    assert write.await_count == 0
+
+    await _drain_with_ptt(poller, clock, 21.5, False)
+    await poller._drain_commands()  # noqa: SLF001
+    assert future.result() is None
+    assert write.await_count == 1
+    assert radio.set_ptt.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_yaesu_queued_repeater_intent_fails_on_unknown_rf_without_a_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_repeater_shift = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    intent = bind_command_intent("set_repeater_shift", {"direction": 1}, source="http")
+    future = asyncio.get_running_loop().create_future()
+    queue.put_ordered(intent, future=future, command_id=intent.id)
+
+    await _drain_with_ptt(poller, clock, 20.0, None)
+
+    error = future.exception()
+    assert isinstance(error, CommandError)
+    assert "unknown" in str(error)
+    assert radio.set_repeater_shift.await_count == 0
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
+@pytest.mark.asyncio
 async def test_yaesu_frequency_now_dispatches_without_entering_the_deferred_lane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

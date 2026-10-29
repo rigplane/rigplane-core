@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 import pytest
 
 from serial_stub import SplitIcomTransport
+from support.tx_target import seed_tx_target
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -119,6 +120,10 @@ async def test_wsjtx_rig_split_sequence_preserves_physical_rx(model, initial):
                 await _exchange(other_writer, other_reader, b"x\n", lines=2)
                 == b"PKTUSB\n2400\n"
             )
+        # No poller runs here: seed the TX target a keyed-ready radio would
+        # publish for this split (TX VFO at the written frequency), so the
+        # PTT-on guard (MOR-3633) sees a known TX-side frequency.
+        seed_tx_target(server._state_store, 14_080_100, slot=tx_slot)
         assert await _exchange(writer, reader, b"T 1\n") == b"RPRT 0\n"
         assert await _exchange(writer, reader, b"T 0\n") == b"RPRT 0\n"
         assert peer.ptt_writes == [True, False]

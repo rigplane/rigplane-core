@@ -2046,6 +2046,12 @@ class RadioPoller:
             session_id=session_id,
         )
         if isinstance(cmd, CommandIntent):
+            # MOR-3633: a descriptor-backed repeater write is classified by
+            # intent name in the one interlock table, so the unmanaged
+            # execute seat refuses it on unknown/keyed RF exactly like the
+            # typed DEFER writes. Every other descriptor intent classifies
+            # TX-safe and passes; managed mode keeps its admission relay.
+            self._enforce_tx_interlock(cmd)
             await execute_command_intent(
                 self._radio,
                 cmd,

@@ -6,16 +6,17 @@ Two behaviours, one policy module:
   frequencies) is DEFER-classified while the radio is keyed and passes in
   known RX — the same single-slot deferred lane the memory and VFO-topology
   families already use.  Descriptor-backed intents (``set_repeater_shift``
-  and friends, WS/HTTP) reach the same classification through one
-  token bridge, so the dispatch layer holds no second list of which
-  commands are deferred.
+  and friends, WS/HTTP) classify directly by intent name through the one
+  table in ``tx_interlock`` (the descriptor is the only name source for
+  migrated commands, so no typed command exists for them); the rigctld
+  ``set_func TONE``/``TSQL`` tokens resolve to the same names.
 * PTT-on is refused while the TX side's frequency is unknown, resolved
   through the one ``global.tx_state.tx_target`` observation
   (``core/tx_target.py``); the refusal names the receiver that would
   transmit when the target knows it.
 
-Fakes, never hardware: ``SimpleNamespace``/``MagicMock`` radios against the
-real ``RadioPoller``/``YaesuCatPoller``/``ManagedTxAuthority``/rigctld seats.
+Fakes, never hardware: fake radios against the real
+``RadioPoller``/``YaesuCatPoller``/``ManagedTxAuthority``/rigctld seats.
 """
 
 from __future__ import annotations
@@ -23,12 +24,17 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, call
 
 import pytest
 
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
-from rigplane.core.command_dispatch import bind_command_intent, execute_command_intent
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.core.command_dispatch import (
+    bind_command_intent,
+    command_descriptor,
+    execute_command_intent,
+)
 from rigplane.core.command_service import CommandExecutionResult, CommandService
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -40,20 +46,16 @@ from rigplane.core.state_store import FreshnessClock, FreshnessState, StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.exceptions import CommandError
 from rigplane.profiles import RadioProfile, resolve_radio_profile
-from rigplane.rigctld.handler import (
-    HamlibError,
-    RigctldConfig,
-    RigctldHandler,
-    parse_line,
-)
+from rigplane.radio import IcomRadio
+from rigplane.rigctld.contract import HamlibError, RigctldConfig
+from rigplane.rigctld.handler import RigctldHandler
+from rigplane.rigctld.protocol import parse_line
+from rigplane.runtime import _poller_types
 from rigplane.runtime._poller_types import (
     PttOff,
     PttOn,
-    SetRepeaterShift,
     SetRepeaterTone,
     SetRepeaterTsql,
-    SetToneFreq,
-    SetTsqlFreq,
 )
 from rigplane.runtime._state_queries import profile_publishes_tx_target
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
@@ -66,23 +68,38 @@ from rigplane.runtime.tx_interlock import (
     classify_tx_interlock,
     evaluate_tx_interlock,
     get_tx_interlock_command_family_metadata,
-    interlock_policy_token,
     ptt_on_tx_target_refusal,
     tx_frequency_unknown_refusal,
 )
 from rigplane.web.radio_poller import CommandQueue, CommandQueueEntry, RadioPoller
+from support.tx_target import seed_tx_target_value
 from test_managed_tx_authority import authority
 
 _TX_TARGET = FieldPath.global_("tx_state", "tx_target")
 _PTT = FieldPath.global_("tx_state", "ptt")
 
-_REPEATER_TOKENS = (
-    SetRepeaterShift(direction=1),
-    SetRepeaterTone(on=True),
-    SetRepeaterTsql(on=True),
-    SetToneFreq(freq_hz=8850),
-    SetTsqlFreq(freq_hz=8850),
+# Descriptor-backed repeater writes (WS/HTTP) and the rigctld ``set_func``
+# tokens that stand for two of them; every ingress must reach one verdict.
+_DESCRIPTOR_INTENTS = (
+    ("set_repeater_shift", {"direction": 1}),
+    ("set_repeater_tone", {"on": True}),
+    ("set_repeater_tsql", {"on": True}),
+    ("set_tone_freq", {"freq": 8850}),
+    ("set_tsql_freq", {"freq": 8850}),
 )
+_REPEATER_NAMES = tuple(name for name, _params in _DESCRIPTOR_INTENTS)
+_RIGCTLD_TOKENS = (SetRepeaterTone(on=True), SetRepeaterTsql(on=True))
+
+
+def _intent(name: str, params: dict) -> CommandIntent:
+    return bind_command_intent(name, params, source="test")
+
+
+_REPEATER_COMMANDS = tuple(
+    _intent(name, params) for name, params in _DESCRIPTOR_INTENTS
+)
+_REPEATER_COMMANDS += _RIGCTLD_TOKENS
+_REPEATER_IDS = (*_REPEATER_NAMES, "token-set_func-TONE", "token-set_func-TSQL")
 
 
 def test_ptt_off_passes_in_every_rf_state_first() -> None:
@@ -94,7 +111,7 @@ def test_ptt_off_passes_in_every_rf_state_first() -> None:
         assert decision.allowed is True
 
 
-@pytest.mark.parametrize("command", _REPEATER_TOKENS)
+@pytest.mark.parametrize("command", _REPEATER_COMMANDS, ids=_REPEATER_IDS)
 def test_repeater_writes_defer_while_keyed_and_pass_in_known_rx(command) -> None:
     decision_tx = evaluate_tx_interlock(command, rf_state=RfState.TX)
     assert decision_tx.disposition is TxInterlockDisposition.DEFER
@@ -111,8 +128,8 @@ def test_repeater_writes_defer_while_keyed_and_pass_in_known_rx(command) -> None
     assert classify_tx_interlock(command) is TxInterlockDisposition.DEFER
 
 
-@pytest.mark.parametrize("command", _REPEATER_TOKENS)
-def test_repeater_tokens_carry_repeater_family_metadata(command) -> None:
+@pytest.mark.parametrize("command", _REPEATER_COMMANDS, ids=_REPEATER_IDS)
+def test_repeater_writes_carry_repeater_family_metadata(command) -> None:
     metadata = get_tx_interlock_command_family_metadata(command)
 
     assert metadata is not None
@@ -120,43 +137,39 @@ def test_repeater_tokens_carry_repeater_family_metadata(command) -> None:
     assert metadata.base_disposition is TxInterlockDisposition.DEFER
 
 
-_DESCRIPTOR_INTENTS = (
-    ("set_repeater_shift", {"direction": 1}, SetRepeaterShift),
-    ("set_repeater_tone", {"on": True}, SetRepeaterTone),
-    ("set_repeater_tsql", {"on": True}, SetRepeaterTsql),
-    ("set_tone_freq", {"freq": 8850}, SetToneFreq),
-    ("set_tsql_freq", {"freq": 8850}, SetTsqlFreq),
-)
+@pytest.mark.parametrize("name", _REPEATER_NAMES)
+def test_repeater_names_are_canonical_descriptor_names(name: str) -> None:
+    """The classification table is keyed by descriptor name, never an alias.
+
+    A bound intent carries the canonical descriptor name; this pins that the
+    five table names are exactly that, so classification by ``intent.name``
+    cannot drift from the descriptor that owns the name.
+    """
+
+    descriptor = command_descriptor(name)
+
+    assert descriptor is not None
+    assert descriptor.name == name
 
 
-@pytest.mark.parametrize(("name", "params", "token_type"), _DESCRIPTOR_INTENTS)
-def test_repeater_descriptor_intents_bridge_to_policy_tokens(
-    name: str, params: dict, token_type: type
-) -> None:
-    """One table maps descriptor intents to the typed policy tokens."""
+def test_descriptor_is_the_only_name_source_for_repeater_commands() -> None:
+    """No typed command exists for a migrated repeater write."""
 
-    intent = bind_command_intent(name, params, source="http")
-
-    token = interlock_policy_token(intent)
-
-    assert type(token) is token_type
-    assert classify_tx_interlock(token) is TxInterlockDisposition.DEFER
-    assert (
-        get_tx_interlock_command_family_metadata(token).family
-        is TxInterlockCommandFamily.REPEATER
-    )
+    for typed_name in ("SetRepeaterShift", "SetToneFreq", "SetTsqlFreq"):
+        assert not hasattr(_poller_types, typed_name)
 
 
-def test_bridge_leaves_non_repeater_commands_alone() -> None:
-    """Only the table's rows bridge; everything else stays untouched."""
+def test_classification_leaves_non_repeater_commands_alone() -> None:
+    """Only the table's names defer; everything else keeps its verdict."""
 
-    level = bind_command_intent("set_af_level", {"level": 100}, source="http")
+    level = _intent("set_af_level", {"level": 100})
 
-    assert interlock_policy_token(level) is None
-    assert interlock_policy_token(SetRepeaterTone(on=True)) is None
-    assert interlock_policy_token(object()) is None
-    assert interlock_policy_token("set_repeater_shift") is None
-    assert interlock_policy_token(None) is None
+    assert classify_tx_interlock(level) is TxInterlockDisposition.TX_SAFE
+    assert get_tx_interlock_command_family_metadata(level) is None
+    # A bare string, an arbitrary object and None are not intents.
+    for not_an_intent in ("set_repeater_shift", object(), None):
+        assert classify_tx_interlock(not_an_intent) is TxInterlockDisposition.TX_SAFE
+        assert get_tx_interlock_command_family_metadata(not_an_intent) is None
 
 
 # ---------------------------------------------------------------------------
@@ -167,24 +180,12 @@ def test_bridge_leaves_non_repeater_commands_alone() -> None:
 def _tx_target_store(
     value: object,
     *,
-    max_age: float | None = 3.0,
+    max_age: float = 3.0,
     advance: float = 0.0,
 ) -> tuple[StateStore, FreshnessClock]:
     clock = FreshnessClock(start=10.0)
     store = StateStore(freshness_clock=clock)
-    store.apply(
-        Observation(
-            path=_TX_TARGET,
-            value=value,
-            source=SourceMetadata(
-                source="local_reconcile",
-                provider="test",
-                native_id="tx_target_derivation",
-            ),
-            timestamp_monotonic=clock.now(),
-            max_age=max_age,
-        )
-    )
+    seed_tx_target_value(store, value, timestamp_monotonic=clock.now(), max_age=max_age)
     if advance:
         clock.advance(advance)
     return store, clock
@@ -317,9 +318,13 @@ def test_tx_frequency_value_core_answers_without_a_snapshot() -> None:
     (
         ("IC-705", True),  # derived (selected_unselected readback)
         ("IC-7300", True),  # derived
+        ("IC-7300MK2", True),  # derived
         ("IC-7610", True),  # native 1C 03 read
         ("FTX-1", True),  # native FT read
         ("IC-9700", False),  # no readback, no declared capability
+        ("TX-500", False),  # no VFO readback to derive a target from
+        ("X6100", False),
+        ("X6200", False),
     ),
 )
 def test_profile_publishes_tx_target_rows(model: str, expected: bool) -> None:
@@ -348,6 +353,7 @@ def _radio(model: str = "IC-705") -> SimpleNamespace:
         capabilities=set(),
         send_civ=AsyncMock(),
         set_ptt=AsyncMock(),
+        **{name: AsyncMock() for name in _REPEATER_NAMES},
     )
 
 
@@ -372,29 +378,6 @@ def _observe_ptt(
     )
 
 
-def _observe_tx_target(
-    store: StateStore,
-    value: object,
-    *,
-    observed_at: float,
-    max_age: float = 3.0,
-) -> None:
-    store.apply(
-        Observation(
-            path=_TX_TARGET,
-            value=value,
-            source=SourceMetadata(
-                source="local_reconcile",
-                provider="test",
-                native_id="tx_target_derivation",
-            ),
-            timestamp_monotonic=observed_at,
-            max_age=max_age,
-            provider_generation=store.provider_generation,
-        )
-    )
-
-
 def _poller(
     model: str = "IC-705",
 ) -> tuple[RadioPoller, SimpleNamespace, StateStore, FreshnessClock]:
@@ -410,15 +393,14 @@ def _poller(
     )
 
 
-@pytest.mark.parametrize("command", _REPEATER_TOKENS)
-def test_repeater_tokens_are_held_while_keyed_and_ready_in_quiet_rx(
+@pytest.mark.parametrize("command", _REPEATER_COMMANDS, ids=_REPEATER_IDS)
+def test_repeater_writes_are_held_while_keyed_and_ready_in_quiet_rx(
     command: object,
 ) -> None:
     """PTT flipped against a fake IC-705: keyed holds, quiet RX readies.
 
-    The lane holds classification-only tokens exactly like the memory
-    family; nothing here executes them (no dispatch arm ever runs a
-    repeater token — descriptor intents execute through the Radio method).
+    Queued descriptor intents (WS/HTTP) and the rigctld tokens share the
+    memory family's single-slot lane; staging executes nothing.
     """
 
     poller, radio, store, clock = _poller()
@@ -436,20 +418,59 @@ def test_repeater_tokens_are_held_while_keyed_and_ready_in_quiet_rx(
     clock.advance(1.0)
     _observe_ptt(store, False, observed_at=clock.now())
     assert poller._stage_tx_interlocked_entries([]) == [entry]  # noqa: SLF001
+    radio.set_ptt.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
 
 
-@pytest.mark.parametrize("command", _REPEATER_TOKENS)
+@pytest.mark.parametrize("command", _REPEATER_COMMANDS, ids=_REPEATER_IDS)
 def test_repeater_execute_seat_fails_closed_on_unknown_rf(command: object) -> None:
-    """Unknown RF never dispatches a repeater token; known RX does not refuse."""
+    """Unknown RF and TX refuse a repeater write; known RX does not."""
 
     poller, _radio, store, clock = _poller()
 
-    with pytest.raises(TxInterlockRefusal) as excinfo:
+    with pytest.raises(TxInterlockRefusal) as unknown:
         poller._enforce_tx_interlock(command)  # noqa: SLF001
-    assert excinfo.value.reason_code == "rf_state_unknown"
+    assert unknown.value.reason_code == "rf_state_unknown"
+
+    _observe_ptt(store, True, observed_at=clock.now())
+    with pytest.raises(TxInterlockRefusal) as keyed:
+        poller._enforce_tx_interlock(command)  # noqa: SLF001
+    assert keyed.value.reason_code == "radio_transmitting"
 
     _observe_ptt(store, False, observed_at=clock.now())
-    poller._enforce_tx_interlock(command)  # noqa: SLF001
+    assert poller._enforce_tx_interlock(command) is None  # noqa: SLF001
+
+
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
+async def test_descriptor_repeater_write_reaches_the_radio_only_in_known_rx(
+    name: str, params: dict
+) -> None:
+    """The WS/HTTP descriptor path is gated at the execute seat too.
+
+    Refused while the RF state is unknown or keyed — before any Radio
+    method runs — and executed exactly once in known RX.  Nothing else
+    keys the radio on any branch.
+    """
+
+    poller, radio, store, clock = _poller()
+    intent = _intent(name, params)
+    write = getattr(radio, name)
+
+    with pytest.raises(TxInterlockRefusal) as unknown:
+        await poller._execute(intent)  # noqa: SLF001
+    assert unknown.value.reason_code == "rf_state_unknown"
+
+    _observe_ptt(store, True, observed_at=clock.now())
+    with pytest.raises(TxInterlockRefusal) as keyed:
+        await poller._execute(intent)  # noqa: SLF001
+    assert keyed.value.reason_code == "radio_transmitting"
+    write.assert_not_awaited()
+
+    _observe_ptt(store, False, observed_at=clock.now())
+    await poller._execute(intent)  # noqa: SLF001
+    write.assert_awaited_once()
+    radio.set_ptt.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
 
 
 @pytest.mark.parametrize("model", ("IC-705", "IC-7300", "IC-7610"))
@@ -469,22 +490,24 @@ def test_ptt_on_is_refused_without_a_tx_target_observation(model: str) -> None:
 def test_ptt_on_passes_with_a_fresh_known_tx_target() -> None:
     poller, _radio, store, clock = _poller()
     _observe_ptt(store, False, observed_at=clock.now())
-    _observe_tx_target(
+    seed_tx_target_value(
         store,
         KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=7_100_000),
-        observed_at=clock.now(),
+        timestamp_monotonic=clock.now(),
+        max_age=3.0,
     )
 
-    poller._enforce_tx_interlock(PttOn())  # noqa: SLF001
+    assert poller._enforce_tx_interlock(PttOn()) is None  # noqa: SLF001
 
 
 def test_ptt_on_refusal_names_the_receiver_that_would_transmit() -> None:
     poller, radio, store, clock = _poller()
     _observe_ptt(store, False, observed_at=clock.now())
-    _observe_tx_target(
+    seed_tx_target_value(
         store,
         KnownTxTarget(receiver="SUB", slot="A", frequency_hz=None),
-        observed_at=clock.now(),
+        timestamp_monotonic=clock.now(),
+        max_age=3.0,
     )
 
     with pytest.raises(TxInterlockRefusal) as excinfo:
@@ -495,13 +518,55 @@ def test_ptt_on_refusal_names_the_receiver_that_would_transmit() -> None:
     radio.set_ptt.assert_not_awaited()
 
 
-def test_ptt_on_passes_without_a_target_on_profiles_that_cannot_publish() -> None:
-    """IC-9700 never publishes tx_target, so the guard must not brick PTT."""
+@pytest.mark.parametrize("model", ("IC-9700", "TX-500", "X6100", "X6200"))
+def test_ptt_on_passes_without_a_target_on_profiles_that_cannot_publish(
+    model: str,
+) -> None:
+    """A profile that never publishes tx_target must not be bricked by the guard.
 
-    poller, _radio, store, clock = _poller("IC-9700")
+    The applicability is profile data (``profile_publishes_tx_target``), never a
+    model name in code: the same poller seat that refuses the publishing
+    profiles above lets these key.
+    """
+
+    poller, _radio, store, clock = _poller(model)
+    assert profile_publishes_tx_target(_radio.profile) is False
     _observe_ptt(store, False, observed_at=clock.now())
 
-    poller._enforce_tx_interlock(PttOn())  # noqa: SLF001
+    assert poller._enforce_tx_interlock(PttOn()) is None  # noqa: SLF001
+
+
+@pytest.mark.parametrize("model", ("IC-705", "IC-7300", "IC-7300MK2", "IC-7610"))
+@pytest.mark.parametrize(
+    ("value", "advance", "reason"),
+    (
+        (UnknownTxTarget(reason="contradiction"), 0.0, "contradiction"),
+        (UnknownTxTarget(reason="unsupported"), 0.0, "unsupported"),
+        (UnknownTxTarget(reason="stale"), 0.0, "stale"),
+        (
+            KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=7_100_000),
+            3.5,
+            "stale",
+        ),
+    ),
+    ids=("contradiction", "unsupported", "unknown-stale", "aged-past-ttl"),
+)
+def test_ptt_on_is_refused_for_an_unknown_or_aged_target(
+    model: str, value: object, advance: float, reason: str
+) -> None:
+    poller, radio, store, clock = _poller(model)
+    assert profile_publishes_tx_target(radio.profile) is True
+    seed_tx_target_value(store, value, timestamp_monotonic=clock.now(), max_age=3.0)
+    clock.advance(advance)
+    _observe_ptt(store, False, observed_at=clock.now())  # RF is known RX
+
+    with pytest.raises(TxInterlockRefusal) as excinfo:
+        poller._enforce_tx_interlock(PttOn())  # noqa: SLF001
+
+    assert excinfo.value.reason_code == "ptt_tx_frequency_unknown"
+    assert excinfo.value.details["txTargetReason"] == reason
+    radio.set_ptt.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
 
 
 def test_keyed_ptt_on_keeps_the_rf_refusal_first() -> None:
@@ -526,10 +591,11 @@ async def test_refused_ptt_on_reports_the_tx_receiver_in_lifecycle_details() -> 
     radio, store = _radio(), StateStore(freshness_clock=clock)
     store.begin_provider_generation()
     _observe_ptt(store, False, observed_at=clock.now())
-    _observe_tx_target(
+    seed_tx_target_value(
         store,
         KnownTxTarget(receiver="SUB", slot="A", frequency_hz=None),
-        observed_at=clock.now(),
+        timestamp_monotonic=clock.now(),
+        max_age=3.0,
     )
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
     service = _service(clock, store)
@@ -578,12 +644,11 @@ async def test_refused_ptt_on_reports_the_tx_receiver_in_lifecycle_details() -> 
 # ---------------------------------------------------------------------------
 
 
-def _yaesu_radio() -> MagicMock:
-    radio = MagicMock()
-    radio.profile = resolve_radio_profile(model="FTX-1")
-    radio.radio_state = SimpleNamespace(ptt=False)
-    radio.capabilities = {"tx"}
-    radio.set_ptt = AsyncMock()
+def _yaesu_radio() -> YaesuCatRadio:
+    """A real FTX-1 radio object (no I/O until connect); keying is a spy."""
+
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    radio.set_ptt = AsyncMock()  # type: ignore[method-assign]
     return radio
 
 
@@ -616,7 +681,8 @@ def _stage_yaesu_tx_target(
 
 
 async def test_ftx1_ptt_on_is_refused_without_a_tx_target_observation() -> None:
-    poller = YaesuCatPoller(_yaesu_radio())
+    radio = _yaesu_radio()
+    poller = YaesuCatPoller(radio)
     _stage_yaesu_ptt(poller, False, now=asyncio.get_running_loop().time())
 
     with pytest.raises(TxInterlockRefusal) as excinfo:
@@ -624,6 +690,7 @@ async def test_ftx1_ptt_on_is_refused_without_a_tx_target_observation() -> None:
 
     assert excinfo.value.reason_code == "ptt_tx_frequency_unknown"
     assert excinfo.value.details["txTargetReason"] == "not-observed"
+    radio.set_ptt.assert_not_awaited()
 
 
 async def test_ftx1_ptt_on_passes_the_guard_with_a_fresh_known_target() -> None:
@@ -643,10 +710,12 @@ async def test_ftx1_ptt_on_passes_the_guard_with_a_fresh_known_target() -> None:
 
 
 async def test_yaesu_guard_skips_radios_without_a_real_profile() -> None:
-    radio = MagicMock()
-    radio.radio_state = SimpleNamespace(ptt=False)
-    radio.capabilities = {"tx"}
-    poller = YaesuCatPoller(radio)
+    radio = SimpleNamespace(
+        radio_state=SimpleNamespace(ptt=False),
+        capabilities={"tx"},
+        set_ptt=AsyncMock(),
+    )
+    poller = YaesuCatPoller(radio)  # type: ignore[arg-type]
     _stage_yaesu_ptt(poller, False, now=asyncio.get_running_loop().time())
 
     with pytest.raises(NotImplementedError, match="Yaesu CAT dispatcher"):
@@ -683,14 +752,14 @@ async def _finish(managed: ManagedTxAuthority) -> None:
     await managed.close()
 
 
-@pytest.mark.parametrize(("name", "params", "_token_type"), _DESCRIPTOR_INTENTS)
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
 async def test_managed_transmit_refuses_repeater_writes(
-    name: str, params: dict, _token_type: type
+    name: str, params: dict
 ) -> None:
     managed, _, _, _, _, _ = authority()
     try:
         assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
-        intent = bind_command_intent(name, params, source="test")
+        intent = _intent(name, params)
         before = intent.to_dict()
 
         assert await managed.admit_managed_write(intent) is False
@@ -699,13 +768,11 @@ async def test_managed_transmit_refuses_repeater_writes(
         await _finish(managed)
 
 
-@pytest.mark.parametrize(("name", "params", "_token_type"), _DESCRIPTOR_INTENTS)
-async def test_managed_receive_admits_repeater_writes(
-    name: str, params: dict, _token_type: type
-) -> None:
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
+async def test_managed_receive_admits_repeater_writes(name: str, params: dict) -> None:
     managed, _, _, _, _, _ = authority()
     try:
-        intent = bind_command_intent(name, params, source="test")
+        intent = _intent(name, params)
 
         assert await managed.admit_managed_write(intent) is True
     finally:
@@ -751,7 +818,9 @@ async def test_dispatch_seam_executes_shift_outside_transmit() -> None:
 
         await execute_command_intent(radio, intent, managed_tx_authority=managed)
 
-        radio.set_repeater_shift.assert_awaited_once_with(direction=1, receiver=0)
+        assert radio.set_repeater_shift.await_args_list == [
+            call(direction=1, receiver=0)
+        ]
     finally:
         await _finish(managed)
 
@@ -774,28 +843,20 @@ def _rigctld_store(*, ptt: bool, tx_target: object | None = None) -> StateStore:
         )
     )
     if tx_target is not None:
-        store.apply(
-            Observation(
-                path=_TX_TARGET,
-                value=tx_target,
-                source=SourceMetadata(source="test", provider="tests"),
-                timestamp_monotonic=10.0,
-                max_age=3.0,
-            )
-        )
+        seed_tx_target_value(store, tx_target, timestamp_monotonic=10.0, max_age=3.0)
     return store
 
 
 def _rigctld_handler(
     store: StateStore, *, model: str = "IC-7300"
 ) -> tuple[RigctldHandler, AsyncMock]:
-    radio = AsyncMock()
+    radio = AsyncMock(spec=IcomRadio)
     radio.capabilities = set()
     routing = Mock()
     routing.set_func = AsyncMock()
     routing.set_level = AsyncMock()
     radio.rigctld_routing = Mock(return_value=routing)
-    radio._send_civ_raw = AsyncMock(return_value=None)
+    radio._send_civ_raw = AsyncMock()
     radio.get_data_mode = AsyncMock(return_value=False)
     handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
     # Assigned after construction so handler wiring matches the existing
@@ -820,6 +881,15 @@ async def test_rigctld_ptt_on_dispatches_with_a_fresh_known_target() -> None:
             tx_target=KnownTxTarget(receiver="MAIN", slot="A", frequency_hz=7_100_000),
         )
     )
+
+    response = await handler.execute(parse_line(b"T 1"))
+
+    assert response.ok
+    radio.set_ptt.assert_awaited_once()
+
+
+async def test_rigctld_ptt_on_is_not_refused_on_profiles_that_cannot_publish() -> None:
+    handler, radio = _rigctld_handler(_rigctld_store(ptt=False), model="IC-9700")
 
     response = await handler.execute(parse_line(b"T 1"))
 

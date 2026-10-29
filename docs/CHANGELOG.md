@@ -32,8 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Repeater writes defer while keyed; PTT-on needs a known TX-side
   frequency (MOR-3633).** Repeater shift, tone/TSQL and tone-frequency
   writes join the TX interlock's new REPEATER family (deferred while
-  keyed, like the memory family); managed-mode admission refuses them
-  through the same typed policy instead of a second list. PTT-on is
+  keyed, like the memory family), classified by command name in one
+  table that every ingress reads (managed admission, the unmanaged
+  queue and execute seats, rigctld `set_func TONE`/`TSQL`). PTT-on is
   refused with the stable error `ptt_tx_frequency_unknown` while the
   TX-side frequency is unknown on profiles that report a TX target
   (IC-705, IC-7300, IC-7610, FTX-1), at the interlock seats and unmanaged
