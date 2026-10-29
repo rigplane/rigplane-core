@@ -7,7 +7,7 @@
   /** MOR-2852: the phone meta row's fact vocabulary — the subset the 'chips'
    *  appearance can draw. Exported for the ReceiverInstrumentHost handle
    *  handles, whose `mainFacts`/`subFacts` snippets re-expose this type. */
-  export type VfoFactKind = 'bandwidth' | 'agc' | 'nb' | 'nr';
+  export type VfoFactKind = 'bandwidth' | 'agc' | 'nb' | 'nr' | 'busy';
 
   // MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
   // every fact reserves the width of its widest lit text, the same way RFG
@@ -198,7 +198,13 @@
 
 {#snippet factSpan(fact: VfoFactKind)}
   {#if indicator}
-    {#if fact === 'bandwidth' && indicator.bandwidthHz.availability.structural}
+    {#if fact === 'busy' && indicator.squelchOpen?.availability.structural}
+      <!-- MOR-3630: the BUSY lamp on the phone — label only, the lit
+           state lives in data-state like the NB/NR chips. Nothing renders
+           without the squelch fact. -->
+      <span class="fact" data-indicator-fact="busy" data-state={booleanState(indicator.squelchOpen)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.busy}ch`}>BUSY</span>
+    {:else if fact === 'bandwidth' && indicator.bandwidthHz.availability.structural}
       <span class="fact" data-indicator-fact="bandwidth" data-state={indicator.bandwidthHz.reading.status}
         style:min-inline-size={`${bandwidthReservationCh}ch`}>BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} ${t('core.filter.unit.hz')}`)}</span>
     {:else if fact === 'agc' && indicator.agcMode.availability.structural}

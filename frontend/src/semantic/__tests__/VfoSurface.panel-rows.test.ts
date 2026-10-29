@@ -46,8 +46,16 @@ const availableAction = { structural: true, operational: true };
 function receiverIndicator(
   receiver: ReceiverId,
   readings: 'known' | 'unknown' = 'known',
+  // MOR-3630: the squelch-open lamp state. Known readings default to a
+  // closed squelch; unknown readings to an unread one.
+  squelch: 'open' | 'closed' | 'unknown' | 'absent' = readings === 'known' ? 'closed' : 'unknown',
 ): ReceiverIndicatorViewModel {
   const field = readings === 'known' ? indicatorField : unknownField;
+  const squelchOpen = squelch === 'absent'
+    ? undefined
+    : squelch === 'unknown'
+      ? unknownField<boolean>()
+      : indicatorField(squelch === 'open');
   return {
     receiver,
     availability: { structural: true, operational: true },
@@ -68,6 +76,7 @@ function receiverIndicator(
     rfGain: field(receiver === 'MAIN' ? 0 : 0.75),
     digiSel: field(receiver === 'SUB'),
     ipPlus: field(receiver === 'MAIN'),
+    ...(squelchOpen === undefined ? {} : { squelchOpen }),
   };
 }
 
@@ -75,6 +84,7 @@ function receiverIndicator(
  *  (single-receiver schemes get no MAIN/SUB selector actions). */
 function standardFixture(
   id: TopologyFixtureId, readings: 'known' | 'unknown' = 'known', antennaPorts = 2,
+  squelch: 'open' | 'closed' | 'unknown' | 'absent' = readings === 'known' ? 'closed' : 'unknown',
 ): RadioViewModel {
   const base = topologyFixtures[id];
   const dual = id.startsWith('2/');
@@ -111,7 +121,7 @@ function standardFixture(
     ...banded,
     ...band,
     receiverIndicators: (dual ? (['MAIN', 'SUB'] as const) : (['MAIN'] as const))
-      .map((receiver) => receiverIndicator(receiver, readings)),
+      .map((receiver) => receiverIndicator(receiver, readings, squelch)),
     antenna: {
       txAntenna: readings === 'known' ? indicatorField(1) : unknownField(),
       rxAnt: readings === 'known' ? indicatorField(false) : unknownField(),
@@ -324,13 +334,15 @@ describe('standard tray tabs (2/main_sub)', () => {
 });
 
 describe('standard annunciator lamps (2/main_sub)', () => {
-  it('AGC, P.AMP, ATT, IP+, DIGI-SEL and RFG keep their slots with no placeholder text', () => {
+  it('AGC, BUSY, P.AMP, ATT, IP+, DIGI-SEL and RFG keep their slots with no placeholder text', () => {
     const root = mountSurface({ viewModel: standardFixture('2/main_sub'), appearance: 'standard' });
     const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
     const receiverRow = row(mainPanel, 'receiver');
     const keys = Array.from(receiverRow.querySelectorAll('.lamp'))
       .map((lamp) => lamp.getAttribute('data-chip'));
-    expect(keys).toEqual(['agc', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
+    // MOR-3630: BUSY rides the existing front-lamp mechanism, first of the
+    // group so it sits nearest the meter row above.
+    expect(keys).toEqual(['agc', 'busy', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
     const text = receiverRow.textContent ?? '';
     for (const forbidden of ['—', '?', 'null', 'undefined', 'NaN', 'UNKNOWN', 'N/A']) {
       expect(text, `receiver row must not print ${forbidden}`).not.toContain(forbidden);
@@ -342,11 +354,11 @@ describe('standard annunciator lamps (2/main_sub)', () => {
     const root = mountSurface({ viewModel: standardFixture('2/main_sub', 'unknown'), appearance: 'standard' });
     const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
     const lamps = row(mainPanel, 'receiver').querySelectorAll('.lamp');
-    expect(lamps.length).toBe(6);
+    expect(lamps.length).toBe(7);
     // Owner ruling 2026-09-23: with the gain unread, RFG shows nothing at
     // all — an empty reserved slot — while the other lamps keep their labels.
     const expected: Record<string, string> = {
-      agc: 'AGC', preamp: 'P.AMP', att: 'ATT', 'ip-plus': 'IP+', 'digi-sel': 'DIGI-SEL', rfg: '',
+      agc: 'AGC', busy: 'BUSY', preamp: 'P.AMP', att: 'ATT', 'ip-plus': 'IP+', 'digi-sel': 'DIGI-SEL', rfg: '',
     };
     for (const lamp of lamps) {
       expect(lamp.getAttribute('data-lit')).toBe('false');
@@ -367,6 +379,49 @@ describe('standard annunciator lamps (2/main_sub)', () => {
     expect(mainPanel.querySelector('[data-chip="ip-plus"]')).toBeNull();
     expect(mainPanel.querySelector('[data-chip="digi-sel"]')).toBeNull();
     expect(mainPanel.querySelector('[data-chip="agc"]')).not.toBeNull();
+    // MOR-3630: the FTX-1 declares the squelch capability but its dcd leaf
+    // is never observed (the RI0 mapping is deferred), so BUSY keeps its
+    // unlit slot with the label — the unknown-until-observed contract.
+    const busy = mainPanel.querySelector('[data-chip="busy"]');
+    expect(busy?.textContent).toBe('BUSY');
+    expect(busy?.getAttribute('data-lit')).toBe('false');
+  });
+});
+
+// MOR-3630: the BUSY lamp on the real standard VfoSurface mount — the
+// desktop-v2 'standard' appearance renders VfoPanel through
+// standardPanelSections (RadioLayout carries no fact of its own, so the
+// surface mount is the integrated seam).
+describe('standard BUSY lamp (2/main_sub)', () => {
+  const busyChip = (squelch: 'open' | 'closed' | 'unknown' | 'absent') => {
+    const root = mountSurface({
+      viewModel: standardFixture('2/main_sub', 'known', 2, squelch), appearance: 'standard',
+    });
+    const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
+    return row(mainPanel, 'receiver').querySelector('[data-chip="busy"]');
+  };
+
+  it('lights while the squelch reads open', () => {
+    const busy = busyChip('open');
+    expect(busy?.textContent).toBe('BUSY');
+    expect(busy?.getAttribute('data-lit')).toBe('true');
+  });
+
+  it('darkens while the squelch reads closed, keeping the label', () => {
+    const busy = busyChip('closed');
+    expect(busy?.textContent).toBe('BUSY');
+    expect(busy?.getAttribute('data-lit')).toBe('false');
+  });
+
+  it('stays unlit with the label while the squelch is unread', () => {
+    const busy = busyChip('unknown');
+    expect(busy?.textContent).toBe('BUSY');
+    expect(busy?.getAttribute('data-lit')).toBe('false');
+  });
+
+  it('draws nothing when the radio declares no squelch fact', () => {
+    const busy = busyChip('absent');
+    expect(busy).toBeNull();
   });
 });
 

@@ -531,6 +531,111 @@ describe('MobileRadioLayout structure', () => {
     });
   });
 
+  // MOR-3630 — the BUSY lamp on the real mobile layout mount: the phone
+  // meta row carries the same receiver-owned squelch-open fact as the
+  // desktop, first of the chips, through the existing VfoFactKind/factSpan
+  // mechanism. Radios without the squelch capability draw no chip.
+  describe('meta row BUSY lamp (MOR-3630)', () => {
+    const squelchCaps = (withSquelch: boolean): Capabilities => ({
+      freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'], stateContractVersion: 1,
+      providerGeneration: 1,
+      receivers: 2, vfoScheme: 'main_sub',
+      capabilities: withSquelch
+        ? ['dual_rx', 'filter_width', 'agc', 'nb', 'nr', 'squelch']
+        : ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'],
+      agcModes: [0, 1, 2],
+      agcLabels: { 0: 'OFF', 1: 'FAST', 2: 'SLOW' },
+    } as unknown as Capabilities);
+    const seen = () => ({ observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 });
+    function squelchFacts(dcd: boolean | undefined, withSquelch: boolean) {
+      const caps = squelchCaps(withSquelch);
+      vi.mocked(hasDualReceiver).mockReturnValue(true);
+      (radio as unknown as { current: ServerState | null }).current = {
+        active: 'MAIN', providerGeneration: 1,
+        main: {
+          freqHz: 14_250_000, mode: 'USB', filter: 0, dataMode: 0, activeSlot: 'A', sMeter: -12,
+          vfoA: {}, vfoB: {}, filterWidth: 2400, agc: 1, nb: false, nr: false,
+          ...(dcd === undefined ? {} : { dcd }),
+        } as unknown,
+        sub: {
+          freqHz: 7_100_000, mode: 'LSB', filter: 1, dataMode: 0, activeSlot: 'A', sMeter: -12,
+          vfoA: {}, vfoB: {}, filterWidth: 500, agc: 2, nb: true, nr: true,
+          ...(dcd === undefined ? {} : { dcd }),
+        } as unknown,
+        connection: {} as ServerState['connection'],
+        fieldStatus: {
+          'main.filterWidth': seen(), 'main.agc': seen(), 'main.nb': seen(), 'main.nr': seen(),
+          'sub.filterWidth': seen(), 'sub.agc': seen(), 'sub.nb': seen(), 'sub.nr': seen(),
+          ...(dcd === undefined ? {} : { 'main.dcd': seen(), 'sub.dcd': seen() }),
+        } as unknown as ServerState['fieldStatus'],
+      } as unknown as ServerState;
+      vi.mocked(getCapabilities).mockReturnValue(caps);
+    }
+    function restore(previous: Capabilities) {
+      vi.mocked(getCapabilities).mockReturnValue(previous);
+      vi.mocked(hasDualReceiver).mockReturnValue(false);
+    }
+
+    it('lights BUSY first while the squelch reads open', () => {
+      const previous = getCapabilities();
+      squelchFacts(true, true);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
+        expect(facts.map((node) => node.getAttribute('data-indicator-fact')))
+          .toEqual(['busy', 'bandwidth', 'agc', 'nb', 'nr']);
+        expect(facts.map((node) => node.textContent?.trim()))
+          .toEqual(['BUSY', 'BW 2400 Hz', 'AGC FAST', 'NB', 'NR']);
+        expect(meta.querySelector('[data-indicator-fact="busy"]')?.getAttribute('data-state')).toBe('on');
+      } finally {
+        restore(previous);
+      }
+    });
+
+    it('darkens BUSY while the squelch reads closed, keeping the label', () => {
+      const previous = getCapabilities();
+      squelchFacts(false, true);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const busy = meta.querySelector('[data-indicator-fact="busy"]');
+        expect(busy?.textContent?.trim()).toBe('BUSY');
+        expect(busy?.getAttribute('data-state')).toBe('off');
+      } finally {
+        restore(previous);
+      }
+    });
+
+    it('dims BUSY while the squelch is unread', () => {
+      const previous = getCapabilities();
+      squelchFacts(undefined, true);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const busy = meta.querySelector('[data-indicator-fact="busy"]');
+        expect(busy?.textContent?.trim()).toBe('BUSY');
+        expect(busy?.getAttribute('data-state')).toBe('unknown');
+      } finally {
+        restore(previous);
+      }
+    });
+
+    it('draws no BUSY chip when the radio declares no squelch fact', () => {
+      const previous = getCapabilities();
+      squelchFacts(true, false);
+      try {
+        const t = mountMobile();
+        const meta = t.querySelector('.m-vfo-meta')!;
+        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
+        expect(facts.map((node) => node.getAttribute('data-indicator-fact')))
+          .toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+      } finally {
+        restore(previous);
+      }
+    });
+  });
+
   // MOR-2511 — this suite's module-level `hasSpectrum` mock returns false, so
   // both orientations here are the no-spectrum case: no panorama slot renders
   // at all, and nothing substitutes the amber LCD cockpit in its place.

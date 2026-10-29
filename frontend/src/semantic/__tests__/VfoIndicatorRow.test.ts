@@ -598,6 +598,42 @@ describe('chips appearance (MOR-2852) — the phone meta facts', () => {
     }
   });
 
+  // MOR-3630 — the BUSY chip on the phone: label only, lit state in
+  // data-state like the NB/NR chips, first when listed first.
+  it('draws the BUSY chip first, lit while the squelch reads open', () => {
+    const root = render({ indicator: indicator({ squelchOpen: known(true) }),
+      appearance: 'chips', facts: ['busy', 'bandwidth', 'agc', 'nb', 'nr'] });
+    const facts = [...root.querySelectorAll('[data-indicator-fact]')];
+    expect(facts.map((node) => node.getAttribute('data-indicator-fact'))[0]).toBe('busy');
+    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
+    expect(busy.getAttribute('data-state')).toBe('on');
+    expect(busy.textContent).toBe('BUSY');
+    expect(busy.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.busy}ch`);
+  });
+
+  it('darkens the BUSY chip while the squelch reads closed, keeping the label', () => {
+    const root = render({ indicator: indicator({ squelchOpen: known(false) }),
+      appearance: 'chips', facts: ['busy', 'nb'] });
+    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
+    expect(busy.getAttribute('data-state')).toBe('off');
+    expect(busy.textContent).toBe('BUSY');
+  });
+
+  it('dims the BUSY chip while the squelch is unread', () => {
+    const root = render({ indicator: indicator({ squelchOpen: unknown<boolean>() }),
+      appearance: 'chips', facts: ['busy', 'nb'] });
+    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
+    expect(busy.getAttribute('data-state')).toBe('unknown');
+    expect(busy.textContent).toBe('BUSY');
+  });
+
+  it('omits the BUSY chip when the radio declares no squelch fact', () => {
+    const root = render({ indicator: indicator({ squelchOpen: undefined }),
+      appearance: 'chips', facts: ['busy', 'nb'] });
+    expect(root.querySelector('[data-indicator-fact="busy"]')).toBeNull();
+    expect(root.querySelector('[data-indicator-fact="nb"]')).not.toBeNull();
+  });
+
   it('keeps BW and AGC texts/rules identical to the existing appearances', () => {
     const root = render({ indicator: indicator({ bandwidthHz: known(2400), agcMode: known('SLOW') }),
       appearance: 'chips', facts: ['bandwidth', 'agc'] });

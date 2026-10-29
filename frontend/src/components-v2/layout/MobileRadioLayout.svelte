@@ -181,7 +181,9 @@
     overrides: {},
   }));
   // MOR-2852: the meta row's chips order and subset, frozen.
-  const metaFacts: readonly VfoFactKind[] = ['bandwidth', 'agc', 'nb', 'nr'];
+  // MOR-3630: BUSY leads — the phone's squelch-open lamp, first like on
+  // the desktop facts row. Radios without the squelch fact draw no chip.
+  const metaFacts: readonly VfoFactKind[] = ['busy', 'bandwidth', 'agc', 'nb', 'nr'];
 
   // ── Modals ──
   // Renamed from settingsOpen for #841 — this sheet now holds only
