@@ -5,7 +5,10 @@ from a task of their own, while a separate deadline watchdog aborts a
 session whose last inbound frame is older than :data:`DEADLINE_S` —
 independent of whether heartbeat writes make progress. Broadcasts hold
 for :data:`COALESCE_WINDOW_S` and flush back-to-back, so a slow reader
-never stalls other sessions or the watchdog.
+never stalls other sessions or the watchdog. Each session retains at
+most :data:`MAX_QUEUED_OUTBOUND` outbound payloads: a stalled writer
+that keeps inbound alive is aborted through the normal teardown
+instead of growing memory.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from rigplane.tci.ws import (
 __all__ = [
     "COALESCE_WINDOW_S",
     "DEADLINE_S",
+    "MAX_QUEUED_OUTBOUND",
     "PING_INTERVAL_S",
     "STOP_TIMEOUT_S",
     "TciServer",
@@ -46,6 +50,10 @@ DEADLINE_S = 15.0
 COALESCE_WINDOW_S = 0.03
 #: Upper bound for the whole session-teardown phase of ``stop()``.
 STOP_TIMEOUT_S = 5.0
+#: Bound on queued outbound payload per session: frames in the outbox
+#: plus lines held for coalescing (one held line becomes one frame at
+#: flush). Past it the session is aborted instead of retaining more.
+MAX_QUEUED_OUTBOUND = 128
 #: Largest HTTP upgrade head accepted (bytes, before the blank line).
 _MAX_UPGRADE_HEAD = 16 * 1024
 
@@ -108,7 +116,9 @@ class TciSession:
         # Design 4.2: per-message deflate stays off for TCI (the upgrade
         # ignores the extension offer), so the connection never compresses.
         self._conn = WebSocketConnection(reader, writer, clock=clock)
-        self._outbox: asyncio.Queue[bytes] = asyncio.Queue()
+        self._outbox: asyncio.Queue[bytes] = asyncio.Queue(
+            maxsize=MAX_QUEUED_OUTBOUND
+        )
         self._pending: list[str] = []
         self._flush_handle: asyncio.TimerHandle | None = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -121,12 +131,60 @@ class TciSession:
         """Stable per-connection id (``tci-session-N``)."""
         return self._id
 
-    def _send_now(self, line: str) -> None:
-        self._outbox.put_nowait(make_frame(WS_OP_TEXT, line.encode("utf-8")))
+    def _offer(self, frame: bytes) -> bool:
+        """Enqueue one frame; ``False`` when the stalled peer overflowed.
+
+        A full queue means the writer stopped draining while inbound
+        stayed alive (so the watchdog cannot fire): the session is
+        aborted and its normal teardown scheduled, and the frame is
+        dropped instead of retained.
+        """
+        try:
+            self._outbox.put_nowait(frame)
+        except asyncio.QueueFull:
+            self._overflow()
+            return False
+        return True
+
+    def _overflow(self) -> None:
+        """Abort a stalled session and schedule its normal teardown.
+
+        Runs synchronously from any enqueue path (reader task, timer
+        callback, loop-thread broadcast): the transport drops at once,
+        and ``finish()`` is scheduled next tick so a sender blocked in
+        ``drain`` is cancelled too. Latecomers just wait it out.
+        """
+        self._conn.abort()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        if not self._done:
+            loop.call_soon(lambda: asyncio.create_task(self.finish()))
+
+    def _send_now(self, line: str) -> bool:
+        """Queue one reply; ``False`` when the session overflowed.
+
+        When a coalesced flush is already scheduled, the reply queues
+        behind it: a peer that just received an older broadcast line
+        must never display this newer reply first.
+        """
+        if self._done:
+            return False
+        if self._pending:
+            if len(self._pending) + 1 > MAX_QUEUED_OUTBOUND:
+                self._overflow()
+                return False
+            self._pending.append(line)
+            return True
+        return self._offer(make_frame(WS_OP_TEXT, line.encode("utf-8")))
 
     def _hold(self, lines: Sequence[str]) -> None:
         """Hold broadcast lines for one coalescing window, then flush."""
         if self._done:
+            return
+        if len(self._pending) + len(lines) > MAX_QUEUED_OUTBOUND:
+            self._overflow()
             return
         self._pending.extend(lines)
         if self._flush_handle is None:
@@ -141,7 +199,8 @@ class TciSession:
             return
         lines, self._pending = self._pending, []
         for line in lines:
-            self._outbox.put_nowait(make_frame(WS_OP_TEXT, line.encode("utf-8")))
+            if not self._offer(make_frame(WS_OP_TEXT, line.encode("utf-8"))):
+                break
 
     def launch(self) -> None:
         """Start reader, sender, ping, and watchdog tasks."""
@@ -237,7 +296,8 @@ class TciSession:
                 logger.debug("tci %s: bad outcome type; ignored", self._id)
                 continue
             for line in outcome.to_sender:
-                self._send_now(line)
+                if not self._send_now(line):
+                    return
             if outcome.to_others:
                 self._server._fanout(outcome.to_others, exclude=self)
 
@@ -416,7 +476,7 @@ class TciServer:
         """Fan one binary frame out to every session at once (loop thread)."""
         frame = make_frame(WS_OP_BINARY, bytes(payload))
         for session in list(self._sessions.values()):
-            session._outbox.put_nowait(frame)
+            session._offer(frame)
 
     def _fanout(self, lines: Sequence[str], exclude: TciSession | None = None) -> None:
         for session in list(self._sessions.values()):
@@ -457,7 +517,7 @@ class TciServer:
         session = TciSession(session_id, reader, writer, handler, self, self._clock)
         self._sessions[session_id] = session
         for line in burst:
-            session._outbox.put_nowait(make_frame(WS_OP_TEXT, line.encode("utf-8")))
+            session._offer(make_frame(WS_OP_TEXT, line.encode("utf-8")))
         session.launch()
         logger.info("tci %s: connected", session_id)
         return session
