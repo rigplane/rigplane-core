@@ -209,6 +209,7 @@ async def test_before_on_blocks_a_rival_key_until_it_returns() -> None:
 async def test_before_on_raise_leaves_rx_with_debt_and_no_ptt_on() -> None:
     managed, _clock, lane, _probe = radio_tx_authority()
     try:
+
         async def hook() -> bool:
             raise RuntimeError("route refused")
 
@@ -238,6 +239,7 @@ async def test_before_on_raise_leaves_rx_with_debt_and_no_ptt_on() -> None:
 async def test_before_on_timeout_leaves_rx_with_debt_and_no_ptt_on() -> None:
     managed, _clock, lane, _probe = radio_tx_authority()
     try:
+
         async def hook() -> bool:
             await asyncio.sleep(30.0)
             return True
@@ -276,6 +278,7 @@ async def test_before_on_defaults_to_no_preparation() -> None:
 async def test_before_on_is_rejected_for_an_unkey() -> None:
     managed, _clock, _lane, _probe = radio_tx_authority()
     try:
+
         async def hook() -> bool:
             return True
 

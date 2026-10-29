@@ -668,10 +668,7 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         # (MOR-3743).  Interference behind it is not a retry trigger —
         # the readback below is the verdict: consistent means success,
         # contradictory raises the readback error.
-        if (
-            not 0 <= observed.data_mode <= count
-            or observed.filter_num not in (1, 2, 3)
-        ):
+        if not 0 <= observed.data_mode <= count or observed.filter_num not in (1, 2, 3):
             raise CommandError("direct VFO mode readback is unavailable")
         # ACK alone is not success: a valid but contradictory readback
         # means the radio did not end up in the requested state.

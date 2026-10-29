@@ -218,7 +218,9 @@ async def execute_managed_ptt(
                 raise ManagedKeySetupError("managed PTT key requires a submission")
             release_queue = getattr(ready, "release_queue", None)
             if not callable(release_queue):
-                raise ManagedKeySetupError("managed PTT key requires a releasable ready")
+                raise ManagedKeySetupError(
+                    "managed PTT key requires a releasable ready"
+                )
             queue_ready = _PttQueueReady(release_queue)
             completion = loop.create_future()
             expires_at = getattr(ready, "expires_at_monotonic", None)
@@ -344,9 +346,7 @@ async def release_managed_session_tx(
             return
         handback = asyncio.ensure_future(result)
         try:
-            await asyncio.wait_for(
-                asyncio.shield(handback), timeout=handback_timeout_s
-            )
+            await asyncio.wait_for(asyncio.shield(handback), timeout=handback_timeout_s)
         except asyncio.CancelledError:
             # Shutdown reached this session mid-handback. Every other step
             # of a teardown can be abandoned; this one cannot, and nothing

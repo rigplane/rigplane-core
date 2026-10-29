@@ -142,19 +142,21 @@ async def test_release_calls_the_handler_release_and_returns() -> None:
 
 
 async def test_release_without_a_handler_release_is_a_noop() -> None:
-    assert (
-        await release_managed_session_tx(None, "s1", handback_timeout_s=1.0)
-        is None
-    )
+    finished: list[str] = []
+    await release_managed_session_tx(None, "s1", handback_timeout_s=1.0)
+    finished.append("returned")
+    assert finished == ["returned"]
 
 
 async def test_release_that_raises_is_fail_soft() -> None:
-    assert (
-        await release_managed_session_tx(
-            _failing_release, "s1", handback_timeout_s=1.0
-        )
-        is None
-    )
+    calls: list[str] = []
+
+    async def _recording_release(session_id: str) -> None:
+        calls.append(session_id)
+        await _failing_release(session_id)
+
+    await release_managed_session_tx(_recording_release, "s1", handback_timeout_s=1.0)
+    assert calls == ["s1"]
 
 
 async def test_release_that_hangs_is_abandoned_after_the_bound() -> None:
@@ -253,7 +255,7 @@ async def test_tracker_forwards_before_on_only_when_set() -> None:
                 before_on=before_on,
             )
 
-        managed.start_ptt_submission = _spy  # type: ignore[method-assign]
+        managed.start_ptt_submission = _spy
         tracker = ManagedPttTracker()
         loop = asyncio.get_running_loop()
 

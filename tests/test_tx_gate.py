@@ -61,8 +61,7 @@ async def test_gate_is_closed_when_unkeyed() -> None:
     managed = _gate_authority()
     try:
         assert (
-            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller())
-            is False
+            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller()) is False
         )
     finally:
         await managed.close()
@@ -73,13 +72,11 @@ async def test_gate_opens_while_the_managed_intent_is_keyed() -> None:
     try:
         await managed.ptt_down("web")
         assert (
-            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller())
-            is True
+            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller()) is True
         )
         await managed.ptt_up("web")
         assert (
-            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller())
-            is False
+            await tx_gate_open(managed, _store(ObservedPtt.OFF), _controller()) is False
         )
     finally:
         await managed.close()
@@ -89,8 +86,7 @@ async def test_gate_opens_on_fresh_observed_ptt_on() -> None:
     managed = _gate_authority()
     try:
         assert (
-            await tx_gate_open(managed, _store(ObservedPtt.ON), _controller())
-            is True
+            await tx_gate_open(managed, _store(ObservedPtt.ON), _controller()) is True
         )
     finally:
         await managed.close()
@@ -142,7 +138,7 @@ async def test_gate_is_closed_when_the_remote_controller_holds() -> None:
 async def test_gate_is_closed_when_the_projection_cannot_be_read() -> None:
     assert (
         await tx_gate_open(
-            _ExplodingAuthority(),  # type: ignore[arg-type]
+            _ExplodingAuthority(),
             _store(ObservedPtt.ON),
             _controller(),
         )
@@ -160,7 +156,7 @@ async def test_gate_is_closed_when_the_store_cannot_be_read() -> None:
         assert (
             await tx_gate_open(
                 managed,
-                _ExplodingStore(),  # type: ignore[arg-type]
+                _ExplodingStore(),
                 _controller(),
             )
             is False

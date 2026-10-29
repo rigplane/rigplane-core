@@ -86,7 +86,7 @@ def _wired_radio(
     commander = IcomCommander(backend)
     radio._commander = commander
     radio._connected = True
-    radio._civ_transport = object()  # type: ignore[assignment]
+    radio._civ_transport = object()
     monkeypatch.setattr(radio, "_check_connected", lambda: None)
     commander.start()
     return radio, commander
@@ -145,9 +145,7 @@ async def test_split_write_accepts_data1_on_a_count_1_profile(
         assert observed_true.data_mode == 1
         sets_before = len(_mode_sets(backend.frames))
         with pytest.raises(CommandError):
-            await radio.write_relative_vfo_mode(
-                Mode.USB.value, selected=False, data=2
-            )
+            await radio.write_relative_vfo_mode(Mode.USB.value, selected=False, data=2)
         assert len(_mode_sets(backend.frames)) == sets_before
     finally:
         radio._connected = False
@@ -166,12 +164,12 @@ async def test_split_write_bounded_by_data_mode_count_on_ic7610(
         )
         assert observed.data_mode == 3
         with pytest.raises(CommandError):
-            await radio.write_relative_vfo_mode(
-                Mode.USB.value, selected=False, data=4
-            )
+            await radio.write_relative_vfo_mode(Mode.USB.value, selected=False, data=4)
         with pytest.raises(CommandError):
             await radio.write_relative_vfo_mode(
-                Mode.USB.value, selected=False, data="2"  # type: ignore[arg-type]
+                Mode.USB.value,
+                selected=False,
+                data="2",
             )
     finally:
         radio._connected = False
@@ -186,9 +184,7 @@ async def test_yaesu_relative_mode_keeps_data_boolean_only() -> None:
     peer = RelativePeer()
     radio._transport.query = AsyncMock(side_effect=peer.query)
     radio._transport.write = AsyncMock(side_effect=peer.write)
-    observed = await radio.write_relative_vfo_mode(
-        Mode.USB, selected=False, data=True
-    )
+    observed = await radio.write_relative_vfo_mode(Mode.USB, selected=False, data=True)
     assert observed.data_mode == 1
     assert peer.modes[1] == "C"
     writes_before = list(peer.writes)
