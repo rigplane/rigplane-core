@@ -83,9 +83,7 @@ class FakeHandler:
     async def on_connect(self) -> list[str]:
         return list(self.burst)
 
-    async def on_command(
-        self, name: str, args: tuple[str, ...]
-    ) -> CommandOutcome:
+    async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
         self.commands.append((name, args))
         if name == "vfo":
             joined = ",".join(args)
@@ -136,9 +134,7 @@ async def connect_listener(port: int) -> object:
     return listener
 
 
-async def wait_until(
-    predicate: object, timeout: float = 5.0
-) -> None:
+async def wait_until(predicate: object, timeout: float = 5.0) -> None:
     async with asyncio.timeout(timeout):
         while not predicate():  # type: ignore[operator]
             await asyncio.sleep(0.005)

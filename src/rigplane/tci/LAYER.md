@@ -2,13 +2,13 @@
 
 ## Charter
 
-Radio-agnostic TCI (Transceiver Control Interface) protocol package.
-First module: RFC 6455 framing and server-side upgrade (`tci/ws.py`).
-The package grows, per the design, a command grammar, binary stream
-frames with sample-type conversion, and a listener with per-session
-broadcast plumbing. It carries no radio vocabulary: a command reaches
-the handler as a name plus a tuple of strings, and the adapter decides
-what it means.
+Radio-agnostic TCI (Transceiver Control Interface) protocol package:
+RFC 6455 framing and server-side upgrade (`tci/ws.py`), the command
+grammar (`tci/protocol.py`), binary stream frames with sample-type
+conversion (`tci/frames.py`), and the listener with per-session
+broadcast plumbing (`tci/server.py`, `tci/handler.py`). It carries no
+radio vocabulary: a command reaches `TciHandler.on_command` as a name
+plus a tuple of strings, and the adapter decides what it means.
 
 ## Allowed dependencies
 
@@ -18,8 +18,9 @@ package or module, and no third-party package (not `numpy`, not
 forbidden contract and `tests/test_tci_leaf_boundary.py` (the AST
 scan is the complete rule). Needs that appear to require Core are met
 by injection: the Origin/Host predicate is a callable the caller
-passes in (`tci/ws.py: AllowHeaders`); the session handler is a
-Protocol the leaf defines and the adapter implements.
+passes in (`tci/ws.py: AllowHeaders`); the session handler is the
+`tci/handler.py: TciHandler` Protocol the leaf defines and the adapter
+implements.
 
 The package is lifted into its own MIT package only when a second
 user outside Core appears; no separate repository exists now.

@@ -213,6 +213,7 @@ class WebSocketConnection:
         self._fragmented_opcode: int = 0
         self._fragments: list[bytes] = []
         self._last_pong: float = clock()
+        self._last_frame: float = clock()
         self._pong_timeout: float = 60.0
         self._clock = clock
 
@@ -263,6 +264,7 @@ class WebSocketConnection:
                 await self.close(1009, "frame too large")
                 raise EOFError("frame too large") from exc
 
+            self._last_frame = self._clock()
             if opcode == WS_OP_PING:
                 await self._send_raw(make_frame(WS_OP_PONG, payload))
                 continue
@@ -377,6 +379,20 @@ class WebSocketConnection:
     def closed(self) -> bool:
         """True if the connection has been closed."""
         return self._closed
+
+    @property
+    def last_activity(self) -> float:
+        """Clock time of the last inbound frame (any opcode).
+
+        Updated on every successfully read frame — data, ping, pong,
+        close — on the connection's injected clock, so a liveness check
+        can use it without depending on heartbeat writes.
+        """
+        return self._last_frame
+
+    async def send_ping(self, payload: bytes = b"") -> None:
+        """Send one ping frame (the caller bounds the write)."""
+        await self._send_raw(make_frame(WS_OP_PING, payload))
 
     async def keepalive_loop(self, interval: float = 20.0) -> None:
         """Send periodic ping frames to detect dead connections."""

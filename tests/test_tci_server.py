@@ -10,9 +10,7 @@ import asyncio
 import struct
 from collections.abc import Awaitable, Callable, Sequence
 
-import pytest
-
-from rigplane.tci.handler import CommandOutcome, TciHandler
+from rigplane.tci.handler import CommandOutcome
 from rigplane.tci.server import (
     COALESCE_WINDOW_S,
     DEADLINE_S,
@@ -89,7 +87,13 @@ def client_frame(opcode: int, payload: bytes) -> bytes:
     """One masked client→server frame (masking done by hand here)."""
     mask = b"\x11\x22\x33\x44"
     masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    header = struct.pack("!BB", 0x80 | opcode, 0x80 | len(payload))
+    length = len(payload)
+    if length <= 125:
+        header = struct.pack("!BB", 0x80 | opcode, 0x80 | length)
+    elif length <= 65535:
+        header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, length)
+    else:
+        header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, length)
     return header + mask + masked
 
 
@@ -151,9 +155,7 @@ class FakeHandler:
             raise self.fail_connect
         return list(self._burst)
 
-    async def on_command(
-        self, name: str, args: tuple[str, ...]
-    ) -> CommandOutcome:
+    async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
         self.commands.append((name, args))
         if name in self.fail_commands:
             raise RuntimeError(f"boom on {name}")
@@ -235,9 +237,7 @@ async def test_command_routing_sender_and_others() -> None:
 
 async def test_refusal_reaches_sender_only() -> None:
     clock = FakeClock()
-    handler = FakeHandler(
-        replies={"trx": CommandOutcome(to_sender=["trx:0,false;"])}
-    )
+    handler = FakeHandler(replies={"trx": CommandOutcome(to_sender=["trx:0,false;"])})
     server = make_server(handler, clock)
     session_a, writer_a, reader_a = await open_session(server, handler)
     session_b, writer_b, _reader_b = await open_session(server, handler)
@@ -317,7 +317,9 @@ async def test_invalid_utf8_ends_session_without_reply() -> None:
     await session.finish()
     assert handler.disconnect_calls == 1
     assert handler.commands == []
-    assert len(parse_server_frames(writer.buffer)) == len(BURST)
+    frames = parse_server_frames(writer.buffer)
+    assert [opcode for opcode, _ in frames[: len(BURST)]] == [WS_OP_TEXT] * len(BURST)
+    assert frames[len(BURST)][0] == WS_OP_CLOSE
 
 
 async def test_failing_command_keeps_session_alive() -> None:
@@ -533,9 +535,17 @@ async def test_accept_good_request_upgrades() -> None:
     await server._accept_request(reader, writer)
     assert writer.buffer.startswith(b"HTTP/1.1 101 ")
     assert len(server.sessions) == 1
+    head_end = bytes(writer.buffer).index(b"\r\n\r\n") + 4
     try:
-        frames = await wait_for_frames(writer, len(BURST))
-        assert frames[0][1] == BURST[0].encode()
+
+        async def _tail_frames() -> list[tuple[int, bytes]]:
+            return parse_server_frames(writer.buffer[head_end:])
+
+        async with asyncio.timeout(2.0):
+            while len(await _tail_frames()) < len(BURST):
+                await asyncio.sleep(0.005)
+        frames = await _tail_frames()
+        assert [payload for _, payload in frames] == [line.encode() for line in BURST]
     finally:
         await server.stop()
     assert handler.disconnect_calls == 1

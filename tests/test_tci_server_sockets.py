@@ -13,7 +13,7 @@ import struct
 import pytest
 
 from rigplane.tci.server import TciServer
-from rigplane.tci.ws import WS_OP_BINARY, WS_OP_CLOSE, WS_OP_TEXT, UpgradeDecline
+from rigplane.tci.ws import WS_OP_BINARY, WS_OP_TEXT, UpgradeDecline
 
 BURST = ["protocol:tciserver,1;", "device:rigplane;", "ready;"]
 
@@ -39,9 +39,7 @@ class FakeHandler:
     async def on_connect(self) -> list[str]:
         return list(self.burst)
 
-    async def on_command(
-        self, name: str, args: tuple[str, ...]
-    ) -> object:
+    async def on_command(self, name: str, args: tuple[str, ...]) -> object:
         from rigplane.tci.handler import CommandOutcome
 
         self.commands.append((name, args))
@@ -103,10 +101,14 @@ class RawClient:
         cls, port: int, headers: dict[str, str] | None = None
     ) -> "RawClient":
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        lines = ["GET / HTTP/1.1", "Host: 127.0.0.1", "Connection: Upgrade",
-                 "Upgrade: websocket",
-                 "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-                 "Sec-WebSocket-Version: 13"]
+        lines = [
+            "GET / HTTP/1.1",
+            "Host: 127.0.0.1",
+            "Connection: Upgrade",
+            "Upgrade: websocket",
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+            "Sec-WebSocket-Version: 13",
+        ]
         for name, value in (headers or {}).items():
             lines.append(f"{name}: {value}")
         lines.extend(["", ""])
@@ -153,7 +155,9 @@ class RawClient:
                     return texts
 
     async def close(self) -> None:
-        self.writer.write(struct.pack("!BB", 0x88, 0x80 | 2) + b"\x00" * 4 + b"\x03\xe8")
+        self.writer.write(
+            struct.pack("!BB", 0x88, 0x80 | 2) + b"\x00" * 4 + b"\x03\xe8"
+        )
         await self.writer.drain()
         self.writer.close()
 
