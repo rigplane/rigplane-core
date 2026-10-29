@@ -425,9 +425,7 @@ class TciSession:
                 task.cancel()
             if others:
                 try:
-                    await _join_session_tasks(
-                    others, self._id, self._server._unsettled
-                )
+                    await _join_session_tasks(others, self._id, self._server._unsettled)
                 finally:
                     # Transport cleanup is unconditional across
                     # cancellation during the join: a cancel landing

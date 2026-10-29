@@ -109,9 +109,7 @@ def _scan_package(directory: Path) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
     for path in sorted(directory.rglob("*.py")):
         package = _package_for_path(path, directory)
-        bad = _forbidden_imports(
-            path.read_text(encoding="utf-8"), package=package
-        )
+        bad = _forbidden_imports(path.read_text(encoding="utf-8"), package=package)
         if bad:
             found[path.relative_to(directory).as_posix()] = bad
     return found
@@ -151,9 +149,7 @@ def test_scanner_allows_same_package_relative_import() -> None:
 
 def test_scanner_nested_package_forbidden_import_fails() -> None:
     """A forbidden import inside ``tci/extra/__init__.py`` must fail."""
-    assert (
-        _forbidden_imports("import numpy\n", package="rigplane.tci.extra") != []
-    )
+    assert _forbidden_imports("import numpy\n", package="rigplane.tci.extra") != []
 
 
 def test_scanner_nested_package_valid_relative_passes() -> None:
@@ -171,9 +167,7 @@ def test_scan_package_recurses_into_nested_packages(tmp_path: Path) -> None:
     """The scan sees every ``*.py`` under the package, with real packages."""
     extra = tmp_path / "extra"
     extra.mkdir()
-    (extra / "__init__.py").write_text(
-        "import numpy\n", encoding="utf-8"
-    )
+    (extra / "__init__.py").write_text("import numpy\n", encoding="utf-8")
     (tmp_path / "ws.py").write_text(
         "from .protocol import TciCommand\n", encoding="utf-8"
     )
@@ -190,9 +184,7 @@ def test_scan_package_nested_valid_relative_passes(tmp_path: Path) -> None:
     # leaf (``rigplane.tci``); against the top package it would escape.
     # The sentinel proves the scan actually recursed (pre-fix it misses
     # both files, so both assertions fail there).
-    (extra / "__init__.py").write_text(
-        "from .. import x\n", encoding="utf-8"
-    )
+    (extra / "__init__.py").write_text("from .. import x\n", encoding="utf-8")
     (extra / "bad.py").write_text("import numpy\n", encoding="utf-8")
     found = _scan_package(tmp_path)
     assert "extra/bad.py" in found

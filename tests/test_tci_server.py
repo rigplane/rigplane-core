@@ -1624,9 +1624,7 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
     gate = asyncio.Event()
 
     class _RepeatCancelHandler(FakeHandler):
-        async def on_command(
-            self, name: str, args: tuple[str, ...]
-        ) -> CommandOutcome:
+        async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
             entered.set()
             try:
                 await asyncio.Event().wait()
@@ -1655,13 +1653,9 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
         # Observe with ``wait`` (never ``await`` the task under a timeout:
         # cancelling the waiter would propagate into the join under test
         # and mask the wedge). ``wait`` returns bounded either way.
-        _, pending_wait = await asyncio.wait(
-            [task], timeout=TEARDOWN_TIMEOUT_S + 5.0
-        )
+        _, pending_wait = await asyncio.wait([task], timeout=TEARDOWN_TIMEOUT_S + 5.0)
         if pending_wait:
-            raise AssertionError(
-                "finish() wedged on a repeat-cancel command cleanup"
-            )
+            raise AssertionError("finish() wedged on a repeat-cancel command cleanup")
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert writer.is_closing()
@@ -1736,13 +1730,9 @@ async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
             await cleaning.wait()
         # Observe with ``wait``: awaiting under a timeout would cancel
         # the join under test and mask the wedge.
-        _, pending_wait = await asyncio.wait(
-            [task], timeout=TEARDOWN_TIMEOUT_S + 5.0
-        )
+        _, pending_wait = await asyncio.wait([task], timeout=TEARDOWN_TIMEOUT_S + 5.0)
         if pending_wait:
-            raise AssertionError(
-                "finish() wedged on a repeat-cancel binary cleanup"
-            )
+            raise AssertionError("finish() wedged on a repeat-cancel binary cleanup")
         assert handler.disconnect_calls == 1
         assert session not in server.sessions
         assert not cleaned.is_set()
@@ -1817,9 +1807,7 @@ async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
         # the join under test and mask the wedge.
         _, pending_wait = await asyncio.wait([stop_task], timeout=10.0)
         if pending_wait:
-            raise AssertionError(
-                "stop() wedged on a repeat-cancel on_connect cleanup"
-            )
+            raise AssertionError("stop() wedged on a repeat-cancel on_connect cleanup")
         assert not cleaned.is_set()
         assert not setup_task.done()
         setup_task.cancel()
