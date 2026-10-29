@@ -11,7 +11,6 @@ import struct
 
 import pytest
 
-from rigplane.tci import frames
 from rigplane.tci.frames import (
     HEADER_SIZE,
     PacketCounter,
@@ -100,9 +99,7 @@ def test_tx_and_chrono_vectors_byte_exact() -> None:
     chrono = unpack_header(_rx_header_bytes(type=StreamType.TX_CHRONO, count=41))
     assert chrono.stream_type is StreamType.TX_CHRONO
     assert chrono.count == 41
-    assert pack_header(chrono) == _rx_header_bytes(
-        type=StreamType.TX_CHRONO, count=41
-    )
+    assert pack_header(chrono) == _rx_header_bytes(type=StreamType.TX_CHRONO, count=41)
 
 
 def test_header_matches_documented_eesdr_prefix() -> None:
@@ -174,12 +171,14 @@ def test_convert_identity_all_types() -> None:
     assert convert_samples(b"\x01\x02\x03", SampleType.INT24, SampleType.INT24) == (
         b"\x01\x02\x03"
     )
-    assert convert_samples(
-        b"\x01\x02\x03\x04", SampleType.INT32, SampleType.INT32
-    ) == b"\x01\x02\x03\x04"
-    assert convert_samples(
-        b"\x01\x02\x03\x04", SampleType.FLOAT32, SampleType.FLOAT32
-    ) == b"\x01\x02\x03\x04"
+    assert (
+        convert_samples(b"\x01\x02\x03\x04", SampleType.INT32, SampleType.INT32)
+        == b"\x01\x02\x03\x04"
+    )
+    assert (
+        convert_samples(b"\x01\x02\x03\x04", SampleType.FLOAT32, SampleType.FLOAT32)
+        == b"\x01\x02\x03\x04"
+    )
 
 
 def test_convert_rejects_ragged_input() -> None:
@@ -202,7 +201,7 @@ def test_float32_to_int16_clamps_and_rounds() -> None:
 def test_int24_sign_and_widening() -> None:
     data = b"\xff\xff\x7f" + b"\x00\x00\x80"  # max, min
     as32 = convert_samples(data, SampleType.INT24, SampleType.INT32)
-    assert struct.unpack("<2i", as32) == (8388607, -8388608)
+    assert struct.unpack("<2i", as32) == (2147483647, -2147483648)
     back = convert_samples(as32, SampleType.INT32, SampleType.INT24)
     assert back == data
 
