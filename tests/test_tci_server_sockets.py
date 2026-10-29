@@ -377,6 +377,74 @@ async def test_broadcast_then_reply_keep_fifo_order(tcp_available: None) -> None
     assert handler.disconnect_calls == 1
 
 
+async def test_partial_headers_closed_on_stop(tcp_available: None) -> None:
+    """A connection parked mid-upgrade is owned by shutdown.
+
+    The client sends a partial HTTP head and never completes it:
+    ``stop()`` must close the pending accept (the client sees EOF),
+    never promote a session, and never touch the handler.
+    """
+    handler = FakeHandler()
+    server = make_server(handler)
+    await server.start()
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.bound_port)
+    try:
+        writer.write(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n")
+        await writer.drain()
+        await asyncio.sleep(0.1)
+        await server.stop()
+        async with asyncio.timeout(5.0):
+            data = await reader.read()
+        assert data == b""
+        assert server.sessions == ()
+        assert handler.disconnect_calls == 0
+    finally:
+        writer.close()
+        await server.stop()
+
+
+async def test_blocked_on_connect_no_promotion_after_stop(
+    tcp_available: None,
+) -> None:
+    """A gated ``on_connect`` cannot create a session after shutdown.
+
+    ``stop()`` cancels the pending setup; releasing the gate later must
+    close the transport (EOF) without running any command, and the
+    handler is cleaned up exactly once.
+    """
+    handler = FakeHandler()
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    real_on_connect = handler.on_connect
+
+    async def _gated_on_connect() -> list[str]:
+        entered.set()
+        await gate.wait()
+        return await real_on_connect()
+
+    handler.on_connect = _gated_on_connect  # type: ignore[method-assign]
+    server = make_server(handler)
+    await server.start()
+    client: RawClient | None = None
+    try:
+        client = await RawClient.connect(server.bound_port)
+        async with asyncio.timeout(5.0):
+            await entered.wait()
+        await server.stop()
+        gate.set()
+        async with asyncio.timeout(5.0):
+            data = await client.reader.read()
+        assert data == b""
+        assert server.sessions == ()
+        assert handler.commands == []
+        assert handler.disconnect_calls == 1
+    finally:
+        gate.set()
+        if client is not None:
+            client.writer.close()
+        await server.stop()
+
+
 async def test_reset_releases_session(tcp_available: None) -> None:
     handler = FakeHandler()
     server = make_server(handler)
