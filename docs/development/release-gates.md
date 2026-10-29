@@ -21,7 +21,7 @@ On 2026-10-12 it returned two contexts, `quick` and `Agent Review Gate`; [base-c
 | Development | Every pull request to `main`, before merge: the two required contexts and the other per-pull-request checks; `focused.yml` is an optional author tool | `ubuntu-latest`, `[self-hosted, linux, build]` | `pull_request`, `pull_request_target`, `issue_comment`, `workflow_run`; `workflow_dispatch` for `focused.yml` and `visual.yml` | Required: `quick`, `Agent Review Gate`. All else informational |
 | Integration | After merge and on a schedule, on `main`: push-to-`main` runs and the scheduled runs | `ubuntu-latest`, `[self-hosted, linux, build]`, `[self-hosted, macOS, ARM64, platform]`, `[self-hosted, macOS, ARM64, bench]` | `push` to `main`, `schedule` | Informational |
 | Release Candidate | `full.yml` dispatched with `rc=true` | `[self-hosted, linux, build]` | `workflow_dispatch` | Informational |
-| Release (Stable) | `publish.yml`: `validate`, `build`, `publish` | `ubuntu-latest` | `release` `published`, pre-releases included | Not a status; the `needs` chain gates the PyPI upload |
+| Release (Stable) | `publish.yml`: `validate` (including the radio-smoke receipt gate), `build`, `publish` | `ubuntu-latest` | `release` `published`, pre-releases included | Not a status; the `needs` chain gates the PyPI upload |
 
 ## Development
 
@@ -83,11 +83,29 @@ The run is a workflow run on `main`, not a status on any pull request, and it is
 
 `publish.yml` runs on `release` `published`:
 
-1. `validate` on `ubuntu-latest`, Python 3.12 and 3.13 (3.11 is not in its matrix): frontend `npm run check`, Vitest and build; Ruff check and format check on `src/` and `tests/`; mypy strict on `src/rigplane/web`; import-linter; `pytest tests/ -n auto -m 'not benchmark'`, so `slow`-marked tests run (`test_publish_validate_runs_the_slow_tests` in `tests/test_ci_pytest_invocation.py`).
+1. `validate` on `ubuntu-latest`, Python 3.12 and 3.13 (3.11 is not in its matrix). Its first step after checkout is the radio-smoke receipt gate (see below): it downloads `radio-smoke-rx.json` and `radio-smoke-tx.json` from the triggering release with the job's `GITHUB_TOKEN` and runs `scripts/release/check_radio_smoke.py check --tag "$TAG" --git-sha "$GITHUB_SHA"` on them. A missing asset fails the download; a red receipt fails the checker — either way the job is red before the expensive steps start. The rest of the job: frontend `npm run check`, Vitest and build; Ruff check and format check on `src/` and `tests/`; mypy strict on `src/rigplane/web`; import-linter; `pytest tests/ -n auto -m 'not benchmark'`, so `slow`-marked tests run (`test_publish_validate_runs_the_slow_tests` in `tests/test_ci_pytest_invocation.py`).
 2. `build`, which `needs` `validate`: frontend build, `uv build`, an installed-profile smoke of the wheel, artifact upload.
 3. `publish`, which `needs` `build`: uploads to PyPI through the `pypi` environment. On 2026-10-12 that environment had no protection rules (`gh api repos/rigplane/rigplane-core/environments`), so no approval step sits between `build` and `publish`.
 
 The release exists before this workflow starts, so a red `validate` or `build` stops the PyPI upload and leaves the tag and the GitHub Release in place. `publish.yml` has no `prerelease` condition, so it also runs for a release marked pre-release: on 2026-10-12 `gh release list` showed `v3.0.0b15` as a pre-release, and `gh run list --workflow publish.yml` showed a `release`-event run for it. The only workflow that checks the pre-release flag is `dispatch-downstream.yml`, listed below.
+
+### Radio-smoke receipts
+
+Both receipts are JSON objects written before the release is published and uploaded as release assets — `radio-smoke-rx.json` by the RX-only smoke procedure and `radio-smoke-tx.json` by the live TX smoke (Pro `qa/bench/dogfood/tx_smoke.py`, which keys an IC-705 into a dummy load). The format below is the contract between those producers and `scripts/release/check_radio_smoke.py`; the checker exits non-zero with one line per violation when any rule breaks.
+
+| Field | Fragment | Type | Rule |
+|---|---|---|---|
+| `schema` | both | number | exactly `1` |
+| `kind` | both | string | `"rx"` in the RX fragment, `"tx"` in the TX fragment |
+| `core_version` | both | string | the tag version without its leading `v` |
+| `git_sha` | both | string | the tagged commit (`GITHUB_SHA` of the release event) |
+| `verdict` | both | string | `"PASS"` |
+| `generated_at` | both | string | ISO 8601 timestamp, parseable and not in the future |
+| `radios` | `rx` | object | non-empty map of radio name to `"PASS"` |
+| `sequences` | `tx` | object | exactly the keys `single`, `rekey_150ms`, `rekey_immediate`, `double_cycle`, `force_off_inflight`, each `"PASS"` |
+| `stuck_tx` | `tx` | boolean | `false` — no wedged transmitter was observed |
+| `release_debt` | `tx` | boolean | `false` — no undrained TX-side work remained |
+| `ended_rx` | `tx` | boolean | `true` — a fresh radio-sourced RX observation closed the run |
 
 ## Outside the tiers
 
@@ -102,4 +120,4 @@ The release exists before this workflow starts, so a red `validate` or `build` s
 
 ## What no workflow enforces
 
-No workflow in `.github/workflows/` makes a bench-certification night, a 24-hour soak or an open-issue count a condition of an RC dispatch or of `publish.yml`.
+Live radio smoke **is** enforced: since MOR-3839, `publish.yml`'s `validate` job refuses a release whose `radio-smoke-rx.json` or `radio-smoke-tx.json` assets are missing, malformed, attached to the wrong tag or commit, or carry anything but PASS (see "Radio-smoke receipts" above). What no workflow still enforces: a bench-certification night, a 24-hour soak, or an open-issue count as a condition of an RC dispatch or of `publish.yml`. Those remain operator judgement.
