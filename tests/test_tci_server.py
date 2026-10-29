@@ -602,6 +602,7 @@ async def test_stop_without_start_is_clean() -> None:
     server = make_server(FakeHandler(), FakeClock())
     await server.stop()
     await server.stop()
+    assert server.sessions == ()
 
 
 async def test_server_defaults_use_leaf_constants() -> None:
