@@ -832,6 +832,68 @@ async def test_disconnect_reawaited_after_first_cancel() -> None:
     assert session not in server.sessions
 
 
+async def test_bounded_join_runs_disconnect_before_gated_cleanup() -> None:
+    """A gated cancellation cleanup must not wedge the disconnect.
+
+    The handler's ``on_command`` catches its cancellation and parks in a
+    gated cleanup: ``finish()`` still completes bounded (disconnect runs
+    exactly once, session dropped) before the gate is released.
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
+    clock = FakeClock()
+    entered = asyncio.Event()
+    cleanup_entered = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _GatedHandler(FakeHandler):
+        async def on_command(
+            self, name: str, args: tuple[str, ...]
+        ) -> CommandOutcome:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_entered.set()
+                await gate.wait()
+                raise
+            raise AssertionError("unreachable")
+
+    handler = _GatedHandler()
+    server = make_server(handler, clock)
+    session, _writer, reader = await open_session(server, handler)
+    task: asyncio.Task[None] | None = None
+    try:
+        reader.feed_data(client_frame(WS_OP_TEXT, b"gated:1;"))
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        # The finish starts only once the handler is parked inside the
+        # command: the cancel must land mid-callback, not mid-read.
+        task = asyncio.create_task(session.finish())
+        async with asyncio.timeout(2.0):
+            await cleanup_entered.wait()
+        try:
+            async with asyncio.timeout(TEARDOWN_TIMEOUT_S + 5.0):
+                await task
+        except TimeoutError:
+            raise AssertionError(
+                "finish() did not complete before the gate was released"
+            ) from None
+        assert handler.disconnect_calls == 1
+        assert session not in server.sessions
+    finally:
+        gate.set()
+        if task is not None:
+            if not task.done():
+                task.cancel()
+            try:
+                async with asyncio.timeout(10.0):
+                    await task
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+        await session.finish()
+
+
 async def test_hung_disconnect_is_abandoned_bounded() -> None:
     """A disconnect that never settles is abandoned, not hung on.
 
