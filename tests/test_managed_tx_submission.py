@@ -266,6 +266,9 @@ async def test_tracker_forwards_before_on_only_when_set() -> None:
         receipt = await key
         assert receipt.transition.state.intent.owner_token == "rigctld-client-1"
         await managed.ptt_up("rigctld-client-1")
+        # The unkey above is itself a submission without a hook; only the
+        # two key-downs below matter.
+        forwarded.clear()
         keyed, ready2 = tracker.begin_key(
             managed,
             owner="rigctld-client-1",
@@ -274,7 +277,7 @@ async def test_tracker_forwards_before_on_only_when_set() -> None:
             connection_generation=object(),
             before_on=_hook,
         )
-        assert forwarded == [False, True]
+        assert forwarded == [True]
         assert ready2 is not None
         ready2.set_result(None)
         ready2.release_queue()

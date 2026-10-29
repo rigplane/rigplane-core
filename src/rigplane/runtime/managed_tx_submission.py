@@ -159,13 +159,24 @@ class ManagedPttTracker:
                 expires_at_monotonic=expires_at_monotonic,
                 connection_generation=connection_generation,
             )
-        submission = authority.start_ptt_submission(
-            on,
-            owner,
-            ready=ready,
-            expires_at_monotonic=None if ready is None else ready.expires_at_monotonic,
-            before_on=before_on,
-        )
+        expires_at = None if ready is None else ready.expires_at_monotonic
+        if before_on is None:
+            # The rigctld path passes nothing: the authority sees exactly
+            # the origin/main arguments (MOR-3821 fix round).
+            submission = authority.start_ptt_submission(
+                on,
+                owner,
+                ready=ready,
+                expires_at_monotonic=expires_at,
+            )
+        else:
+            submission = authority.start_ptt_submission(
+                on,
+                owner,
+                ready=ready,
+                expires_at_monotonic=expires_at,
+                before_on=before_on,
+            )
         return submission, ready
 
 
