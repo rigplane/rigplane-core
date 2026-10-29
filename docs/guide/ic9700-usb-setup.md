@@ -67,7 +67,7 @@ The IC-9700 supports LAN operation:
     When using both receivers:
     - MAIN and SUB can be on different frequencies
     - Each receiver has independent controls (AF/RF/mode/etc.)
-    - Audio from both receivers can be simultaneously RX
+    - RX audio is one mono stream; separate MAIN/SUB audio is not supported yet
     - Library enforces receiver-aware operations via receiver parameter
 
 ## macOS Setup: Serial Backend
@@ -220,7 +220,7 @@ async with radio:
 | **Mode** | ✅ | ✅ | Independent control |
 | **Power** | ✅ | N/A | MAIN only (radio limitation) |
 | **Scope/Waterfall** | ✅ | ✅ (SUB) | Both receivers, switchable |
-| **Audio RX** | ✅ | ✅ | Simultaneous dual audio |
+| **Audio RX** | ✅ | — | One mono stream; separate MAIN/SUB audio not supported yet |
 | **Meters** | ✅ | ✅ | Per-receiver S-meter |
 | **Filters** | ✅ | ✅ | Independent per receiver |
 | **DSP** | ✅ | ✅ | Per-receiver settings |
@@ -256,7 +256,6 @@ CommandError: get_freq does not support receiver=1 for profile IC-7300 (receiver
 ## Performance Notes
 
 - **Dual-receiver switching**: ~200ms per receiver (web UI smoothing applied)
-- **Dual audio RX**: ~10-20ms latency per receiver
 - **Scope data rate**: ~50 Hz at 115200 baud
 
 ## See Also
