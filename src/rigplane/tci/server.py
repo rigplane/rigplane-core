@@ -102,33 +102,82 @@ def _status_line(status: int, reason: str, body: bytes) -> bytes:
     ).encode("ascii") + body
 
 
-async def _settle_disconnect_task(task: asyncio.Task[Any], session_id: str) -> None:
-    """Cancel the callback and observe its finalization.
+def _retain_unsettled(
+    task: asyncio.Task[Any], unsettled: set[asyncio.Task[Any]]
+) -> None:
+    """Keep ownership of an unfinished callback until it ends, then reap.
+
+    A settled-but-abandoned task is referenced only by reference cycles
+    (its own frame, shield leftovers): without a strong root it can be
+    garbage-collected mid-finalizer, so the ``unsettled`` registry on
+    the server holds it. The done-callback drops it and retrieves any
+    late outcome, so nothing is ever unretrieved.
+    """
+    if task.done():
+        _reap_session_task(task)
+        return
+    unsettled.add(task)
+
+    def _done(finished: asyncio.Task[Any]) -> None:
+        unsettled.discard(finished)
+        _reap_session_task(finished)
+
+    task.add_done_callback(_done)
+
+
+async def _settle_disconnect_task(
+    task: asyncio.Task[Any], session_id: str, unsettled: set[asyncio.Task[Any]]
+) -> None:
+    """Cancel the callback and observe its finalization, bounded.
 
     Called after the bounded waits are spent: the ``cancel()`` lets a
     callback parked in ``try/finally`` run its finalizers, and awaiting
-    the task keeps ownership until that finalization is observed (a
-    bare return left the finalizers pending forever). A handler error
-    stays absorbed (fail-soft).
+    the task keeps ownership until that finalization is observed. The
+    wait itself is bounded by :data:`TEARDOWN_TIMEOUT_S`, independent
+    of child cancellation: a callback that keeps awaiting past it is
+    retained in ``unsettled`` (never dropped, registry removal and
+    transport release do not wait for it). A handler error stays
+    absorbed (fail-soft).
     """
     task.cancel()
     try:
-        await task
+        async with asyncio.timeout(TEARDOWN_TIMEOUT_S):
+            # Shielded: cancelling this settle (a stop/finish timeout)
+            # must not propagate a second cancellation into the child
+            # (an ``await task`` chains the waiter's cancellation into
+            # the child's ``_fut_waiter`` and would kill the finalizer
+            # it just entered). The shield keeps the wait bounded while
+            # the child runs on; an unfinished child is retained below.
+            await asyncio.shield(task)
+    except TimeoutError:
+        logger.debug("tci %s: disconnect did not settle; retaining", session_id)
+        _retain_unsettled(task, unsettled)
     except asyncio.CancelledError:
-        pass
+        if task.done():
+            # The error is the child's own outcome (it ended cancelled);
+            # finalization was observed, nothing to retain.
+            logger.debug("tci %s: disconnect settled as cancelled", session_id)
+            return
+        # This settle was cancelled while the child was still running:
+        # retain it and let the cancellation continue.
+        logger.debug("tci %s: settle cancelled; retaining disconnect", session_id)
+        _retain_unsettled(task, unsettled)
+        raise
     except Exception:
         logger.debug("tci %s: disconnect failed", session_id, exc_info=True)
 
 
-async def _run_guarded_disconnect(handler: TciHandler, session_id: str) -> None:
+async def _run_guarded_disconnect(
+    handler: TciHandler, session_id: str, unsettled: set[asyncio.Task[Any]]
+) -> None:
     """Run ``on_disconnect`` exactly once; survives cancellation.
 
     The callback task is retained and re-awaited after the first
     cancellation (the bounded handback shape of ``rigctld``): when the
     bounded re-wait itself is cancelled or times out, the callback is
-    cancelled and its cancellation awaited, so ``try/finally``
-    finalizers still run. Each wait lasts at most
-    :data:`TEARDOWN_TIMEOUT_S`. A handler error is absorbed
+    cancelled and its settlement is bounded, so ``try/finally``
+    finalizers still run but never wedge the teardown. Each wait lasts
+    at most :data:`TEARDOWN_TIMEOUT_S`. A handler error is absorbed
     (fail-soft). Used both for live sessions and for handlers whose
     ``on_connect`` never completed.
     """
@@ -144,14 +193,14 @@ async def _run_guarded_disconnect(handler: TciHandler, session_id: str) -> None:
                     "tci %s: disconnect wait failed after cancel; settling",
                     session_id,
                 )
-                await _settle_disconnect_task(task, session_id)
+                await _settle_disconnect_task(task, session_id, unsettled)
         except TimeoutError:
             logger.debug("tci %s: disconnect timed out; retrying once", session_id)
             try:
                 await asyncio.wait_for(asyncio.shield(task), TEARDOWN_TIMEOUT_S)
             except (asyncio.CancelledError, TimeoutError):
                 logger.debug("tci %s: disconnect unsettled; settling", session_id)
-                await _settle_disconnect_task(task, session_id)
+                await _settle_disconnect_task(task, session_id, unsettled)
     except Exception:
         logger.debug("tci %s: disconnect failed", session_id, exc_info=True)
 
@@ -388,7 +437,9 @@ class TciSession:
         if self._teardown_started:
             return
         self._teardown_started = True
-        await _run_guarded_disconnect(self._handler, self._id)
+        await _run_guarded_disconnect(
+            self._handler, self._id, self._server._unsettled
+        )
 
     async def _handle_text(self, payload: bytes) -> None:
         try:
@@ -525,6 +576,10 @@ class TciServer:
         self._starting = False
         self._sessions: dict[str, TciSession] = {}
         self._setup_tasks: set[asyncio.Task[Any]] = set()
+        # Disconnect callbacks that outlived their bounded waits: held
+        # strongly until they end (then dropped and reaped), so an
+        # abandoned finalizer is never garbage-collected mid-cleanup.
+        self._unsettled: set[asyncio.Task[Any]] = set()
         self._generation = 0
         self._ids = itertools.count(1)
 
@@ -712,7 +767,7 @@ class TciServer:
         return session
 
     async def _guarded_disconnect(self, handler: TciHandler) -> None:
-        await _run_guarded_disconnect(handler, "startup")
+        await _run_guarded_disconnect(handler, "startup", self._unsettled)
 
     def _drop_session(self, session: TciSession) -> None:
         self._sessions.pop(session.session_id, None)

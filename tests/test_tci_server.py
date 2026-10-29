@@ -582,7 +582,7 @@ async def test_disconnect_cancel_then_timeout_still_finalizes() -> None:
 
     handler = _Handler()
     task = asyncio.create_task(
-        _run_guarded_disconnect(handler, "s1")  # type: ignore[arg-type]
+        _run_guarded_disconnect(handler, "s1", set())  # type: ignore[arg-type]
     )
     try:
         async with asyncio.timeout(2.0):
