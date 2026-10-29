@@ -295,20 +295,36 @@ class TciSession:
             for task in others:
                 task.cancel()
             if others:
-                await asyncio.gather(*others, return_exceptions=True)
-            try:
-                # Always close, even when a close frame already marked the
-                # connection closed: the transport still needs its own
-                # teardown. Skipping it here left the socket attached to the
-                # listener, so ``stop()`` hung in ``wait_closed()`` forever.
-                # ``close()`` sends the close frame only once and
-                # ``writer.close()`` is idempotent.
-                async with asyncio.timeout(CLOSE_TIMEOUT_S):
-                    await self._conn.close()
-            except (TimeoutError, OSError, asyncio.CancelledError):
-                # A close that cannot flush (or a shutdown racing it)
-                # must not wedge the teardown: drop the transport.
-                self._conn.abort()
+                try:
+                    await asyncio.gather(*others, return_exceptions=True)
+                finally:
+                    # Transport cleanup is unconditional across
+                    # cancellation during the join: a cancel landing
+                    # inside ``gather`` must not skip the close/abort
+                    # below (it used to jump straight to the outer
+                    # ``finally``, leaving an open socket with no
+                    # session owner). The shield lets the bounded
+                    # close run even while this finish is being
+                    # cancelled; any failure still aborts.
+                    try:
+                        async with asyncio.timeout(CLOSE_TIMEOUT_S):
+                            await asyncio.shield(self._conn.close())
+                    except (TimeoutError, OSError, asyncio.CancelledError):
+                        self._conn.abort()
+            else:
+                try:
+                    # Always close, even when a close frame already marked the
+                    # connection closed: the transport still needs its own
+                    # teardown. Skipping it here left the socket attached to the
+                    # listener, so ``stop()`` hung in ``wait_closed()`` forever.
+                    # ``close()`` sends the close frame only once and
+                    # ``writer.close()`` is idempotent.
+                    async with asyncio.timeout(CLOSE_TIMEOUT_S):
+                        await self._conn.close()
+                except (TimeoutError, OSError, asyncio.CancelledError):
+                    # A close that cannot flush (or a shutdown racing it)
+                    # must not wedge the teardown: drop the transport.
+                    self._conn.abort()
         finally:
             try:
                 await self._teardown()
