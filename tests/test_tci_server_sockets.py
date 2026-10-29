@@ -18,6 +18,8 @@ from rigplane.tci.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
     WS_OP_CONTINUATION,
+    WS_OP_PING,
+    WS_OP_PONG,
     WS_OP_TEXT,
     _MAX_FRAGMENTS,
     _MAX_MESSAGE_BYTES,
@@ -746,3 +748,150 @@ async def test_cancelled_join_still_closes_transport(
                 pass
     finally:
         await server.stop()
+
+
+async def test_gated_handlers_survive_while_client_pongs(
+    tcp_available: None,
+) -> None:
+    """Gated text and binary handlers do not starve liveness on the wire.
+
+    The client answers every server ping while both handlers are
+    parked past several watchdog deadlines: the session must survive
+    (no disconnect, still registered) and both operations must
+    complete in order once the gates open.
+    """
+    from rigplane.tci.handler import CommandOutcome
+
+    gate_text = asyncio.Event()
+    entered_text = asyncio.Event()
+    gate_binary = asyncio.Event()
+    entered_binary = asyncio.Event()
+
+    class _GatedHandler(FakeHandler):
+        async def on_command(self, name: str, args: tuple[str, ...]) -> object:
+            if name == "gated":
+                self.commands.append((name, args))
+                entered_text.set()
+                await gate_text.wait()
+                return CommandOutcome(to_sender=["done:1;"])
+            return await super().on_command(name, args)
+
+        async def on_binary(self, payload: bytes) -> None:
+            entered_binary.set()
+            await gate_binary.wait()
+            await super().on_binary(payload)
+
+    handler = _GatedHandler()
+    server = make_server(handler, deadline=0.4, ping_interval=0.05)
+    await server.start()
+    pump: asyncio.Task[None] | None = None
+    pump_stop = asyncio.Event()
+    try:
+        client = await RawClient.connect(server.bound_port)
+
+        async def _answer_pings() -> None:
+            try:
+                while not pump_stop.is_set():
+                    try:
+                        opcode, payload = await client.next_frame(timeout=1.0)
+                    except TimeoutError:
+                        continue
+                    if opcode == WS_OP_PING:
+                        await client._send(WS_OP_PONG, payload)
+            except (
+                asyncio.CancelledError,
+                asyncio.IncompleteReadError,
+                ConnectionResetError,
+            ):
+                pass
+
+        pump = asyncio.create_task(_answer_pings())
+
+        def _texts() -> list[bytes]:
+            return [p for op, p in client.received if op == WS_OP_TEXT]
+
+        async with asyncio.timeout(5.0):
+            while b"ready;" not in _texts():
+                await asyncio.sleep(0.005)
+        await client.send_text("gated:1;")
+        await client.send_binary(b"\x01\x02")
+        async with asyncio.timeout(5.0):
+            await entered_text.wait()
+        # Several deadlines pass with the command parked; the answered
+        # pongs must keep the session alive.
+        await asyncio.sleep(1.2)
+        assert handler.disconnect_calls == 0
+        assert len(server.sessions) == 1
+        gate_text.set()
+        # The binary handler runs only after the text one completes
+        # (ordered dispatch); the session must still be alive then.
+        async with asyncio.timeout(5.0):
+            await entered_binary.wait()
+        assert handler.disconnect_calls == 0
+        gate_binary.set()
+        async with asyncio.timeout(5.0):
+            while b"done:1;" not in _texts() or not handler.binaries:
+                await asyncio.sleep(0.005)
+        assert handler.binaries == [b"\x01\x02"]
+        assert handler.disconnect_calls == 0
+        pump_stop.set()
+        await client.close()
+    finally:
+        gate_text.set()
+        gate_binary.set()
+        pump_stop.set()
+        if pump is not None:
+            pump.cancel()
+            try:
+                await pump
+            except (asyncio.CancelledError, Exception):
+                pass
+        await server.stop()
+    assert handler.disconnect_calls == 1
+
+
+async def test_gated_handler_silent_client_still_expires(
+    tcp_available: None,
+) -> None:
+    """A gated handler does not keep a silent session alive.
+
+    The client sends one command, then stops answering pings while the
+    handler is parked: the watchdog must still expire the session at
+    the deadline (disconnect exactly once, transport closed). Pin: the
+    liveness split must not pin sessions open forever.
+    """
+    from rigplane.tci.handler import CommandOutcome
+
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    class _GatedHandler(FakeHandler):
+        async def on_command(self, name: str, args: tuple[str, ...]) -> object:
+            self.commands.append((name, args))
+            entered.set()
+            await gate.wait()
+            return CommandOutcome()
+
+    handler = _GatedHandler()
+    server = make_server(handler, deadline=0.3)
+    await server.start()
+    stopped = False
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        await client.send_text("gated:1;")
+        async with asyncio.timeout(5.0):
+            await entered.wait()
+        async with asyncio.timeout(5.0):
+            while handler.disconnect_calls == 0:
+                await asyncio.sleep(0.005)
+        await _read_until_closed(client)
+        assert handler.disconnect_calls == 1
+        gate.set()
+        await server.stop()
+        stopped = True
+    finally:
+        gate.set()
+        if not stopped:
+            await server.stop()
+    assert handler.disconnect_calls == 1

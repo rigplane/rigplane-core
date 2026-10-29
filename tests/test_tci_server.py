@@ -1364,6 +1364,102 @@ async def test_stop_returns_while_disconnect_finalizer_gated() -> None:
         await server.stop()
 
 
+async def test_gated_command_pong_keeps_session_alive() -> None:
+    """A pong received while a command runs must still renew liveness.
+
+    The reader keeps consuming inbound frames while the command
+    handler is parked: with the deadline already passed since the
+    command arrived, a pong still releases the session instead of the
+    watchdog aborting a responsive peer.
+    """
+    clock = FakeClock()
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    class _GatedHandler(FakeHandler):
+        async def on_command(
+            self, name: str, args: tuple[str, ...]
+        ) -> CommandOutcome:
+            entered.set()
+            await gate.wait()
+            return CommandOutcome(to_sender=["done:1;"])
+
+    handler = _GatedHandler()
+    server = make_server(handler, clock)
+    session, writer, reader = await open_session(server, handler)
+    try:
+        await wait_for_frames(writer, len(BURST))
+        reader.feed_data(client_frame(WS_OP_TEXT, b"gated:1;"))
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        clock.advance(DEADLINE_S + 1.0)
+        reader.feed_data(client_frame(WS_OP_PONG, b""))
+        try:
+            async with asyncio.timeout(2.0):
+                while session._conn.last_activity < clock():
+                    await asyncio.sleep(0.005)
+        except TimeoutError:
+            raise AssertionError(
+                "reader stalled behind a gated command; pong unread"
+            ) from None
+        assert await session.check_deadline(clock()) is False
+        assert handler.disconnect_calls == 0
+        gate.set()
+        frames = await wait_for_frames(writer, len(BURST) + 1)
+        assert frames[-1] == (WS_OP_TEXT, b"done:1;")
+        assert handler.disconnect_calls == 0
+    finally:
+        gate.set()
+        await session.finish()
+
+
+async def test_gated_binary_pong_keeps_session_alive() -> None:
+    """A pong received while binary handling runs must still renew liveness.
+
+    Binary callbacks run on the same dispatch path as commands: a
+    parked ``on_binary`` must not stall the reader either.
+    """
+    clock = FakeClock()
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+
+    class _GatedHandler(FakeHandler):
+        async def on_binary(self, payload: bytes) -> None:
+            entered.set()
+            await gate.wait()
+            await super().on_binary(payload)
+
+    handler = _GatedHandler()
+    server = make_server(handler, clock)
+    session, writer, reader = await open_session(server, handler)
+    try:
+        await wait_for_frames(writer, len(BURST))
+        reader.feed_data(client_frame(WS_OP_BINARY, b"\x01\x02\x03"))
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        clock.advance(DEADLINE_S + 1.0)
+        reader.feed_data(client_frame(WS_OP_PONG, b""))
+        try:
+            async with asyncio.timeout(2.0):
+                while session._conn.last_activity < clock():
+                    await asyncio.sleep(0.005)
+        except TimeoutError:
+            raise AssertionError(
+                "reader stalled behind gated binary; pong unread"
+            ) from None
+        assert await session.check_deadline(clock()) is False
+        assert handler.disconnect_calls == 0
+        gate.set()
+        async with asyncio.timeout(2.0):
+            while not handler.binaries:
+                await asyncio.sleep(0.005)
+        assert handler.binaries == [b"\x01\x02\x03"]
+        assert handler.disconnect_calls == 0
+    finally:
+        gate.set()
+        await session.finish()
+
+
 async def test_overflowed_sender_observers_still_updated() -> None:
     """An accepted change reaches observers even when the sender overflows.
 
