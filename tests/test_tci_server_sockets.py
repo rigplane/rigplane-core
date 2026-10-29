@@ -636,6 +636,9 @@ async def test_fragmented_bytes_overflow_bounded(
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
         await _read_until_closed(client)
+        async with asyncio.timeout(5.0):
+            while handler.disconnect_calls == 0:
+                await asyncio.sleep(0.005)
         assert handler.disconnect_calls == 1
         assert len(server.sessions) == 0
         other = await RawClient.connect(server.bound_port)
@@ -675,6 +678,9 @@ async def test_fragment_count_overflow_bounded(
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
         await _read_until_closed(client)
+        async with asyncio.timeout(5.0):
+            while handler.disconnect_calls == 0:
+                await asyncio.sleep(0.005)
         assert handler.disconnect_calls == 1
         assert len(server.sessions) == 0
         other = await RawClient.connect(server.bound_port)
