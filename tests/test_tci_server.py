@@ -8,6 +8,7 @@ conformance live in ``test_tci_server_sockets.py`` and
 
 import asyncio
 import struct
+import time
 from collections.abc import Awaitable, Callable, Sequence
 
 from rigplane.tci.handler import CommandOutcome
@@ -692,6 +693,117 @@ async def test_stalled_sender_bounded_outbox() -> None:
         await session_a.finish()
         await session_b.finish()
     assert handler.disconnect_calls == 2
+
+
+async def test_finish_completes_with_blocked_drain() -> None:
+    """``finish()`` bounds the graceful close and falls back to abort.
+
+    With ``drain`` blocked forever the close frame can never flush:
+    finish must still complete (bounded), run the disconnect exactly
+    once, release the transport, drop the session, and stay harmless
+    when called again.
+    """
+    import time
+
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    writer = FakeWriter()
+    writer.block_drain()
+    session, _writer, _reader = await open_session(server, handler, writer)
+    started = time.monotonic()
+    async with asyncio.timeout(10.0):
+        await session.finish()
+    assert time.monotonic() - started < 10.0
+    assert handler.disconnect_calls == 1
+    assert session not in server.sessions
+    assert writer.transport.aborted
+    await session.finish()
+    assert handler.disconnect_calls == 1
+
+
+async def test_cancelled_finish_still_releases() -> None:
+    """Cancelling ``finish()`` mid-close still releases everything.
+
+    The abort fires, the disconnect runs exactly once, the session
+    leaves the registry, and latecomers observe completion.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    server = make_server(handler, clock)
+    writer = FakeWriter()
+    writer.block_drain()
+    session, _writer, _reader = await open_session(server, handler, writer)
+    task = asyncio.create_task(session.finish())
+    async with asyncio.timeout(2.0):
+        while not session._done:
+            await asyncio.sleep(0.005)
+    await asyncio.sleep(0.05)
+    task.cancel()
+    async with asyncio.timeout(10.0):
+        while not task.done():
+            await asyncio.sleep(0.005)
+    assert handler.disconnect_calls == 1
+    assert session not in server.sessions
+    await session.finish()
+    assert handler.disconnect_calls == 1
+
+
+async def test_disconnect_reawaited_after_first_cancel() -> None:
+    """A cancelled disconnect wait is retained and re-awaited.
+
+    Cancelling ``finish()`` while ``on_disconnect`` is blocked must not
+    complete the finish or drop the session: the callback task is kept
+    and waited on again, and only its completion releases the session.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    entered = asyncio.Event()
+    completed = asyncio.Event()
+    gate = asyncio.Event()
+
+    async def _gated_disconnect() -> None:
+        handler.disconnect_calls += 1
+        entered.set()
+        await gate.wait()
+        completed.set()
+
+    handler.on_disconnect = _gated_disconnect  # type: ignore[method-assign]
+    server = make_server(handler, clock)
+    session, _writer, _reader = await open_session(server, handler)
+    task = asyncio.create_task(session.finish())
+    async with asyncio.timeout(2.0):
+        await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done()
+    assert not completed.is_set()
+    assert session in server.sessions
+    gate.set()
+    async with asyncio.timeout(5.0):
+        await task
+    assert completed.is_set()
+    assert handler.disconnect_calls == 1
+    assert session not in server.sessions
+
+
+async def test_hung_disconnect_is_abandoned_bounded() -> None:
+    """A disconnect that never settles is abandoned, not hung on.
+
+    Each wait on the callback is bounded (two waits, like the managed
+    handback): finish still completes, drops the session, and marks
+    completion even when the handler never returns.
+    """
+    clock = FakeClock()
+    handler = FakeHandler()
+    handler.disconnect_gate = asyncio.Event()
+    server = make_server(handler, clock)
+    session, _writer, _reader = await open_session(server, handler)
+    started = time.monotonic()
+    async with asyncio.timeout(15.0):
+        await session.finish()
+    assert time.monotonic() - started < 15.0
+    assert session not in server.sessions
 
 
 async def test_reply_ordered_behind_pending_broadcast() -> None:
