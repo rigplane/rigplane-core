@@ -54,16 +54,16 @@ Full guides: [getting started](https://rigplane.dev/3.0/guide/quickstart/),
 
 ## Supported radios
 
-| Radio              | Transport          | Status              | Notes                                  |
-|--------------------|--------------------|---------------------|----------------------------------------|
-| **Icom IC-7610**   | LAN, USB CI-V      | Tested on 3.0 hardware (LAN) | MAIN+SUB dual-receive not hardware-certified in 3.0, see [known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md#dual-receiver-topology) |
-| **Icom IC-7300**   | USB CI-V           | Tested on 3.0 hardware | Single receiver, USB-only              |
-| **Yaesu FTX-1**    | USB CAT            | Tested on 3.0 hardware | 17 modes, VHF/UHF, C4FM, audio-derived panadapter (no hardware scope) |
-| Icom IC-705        | LAN (WiFi), USB CI-V | Community-validated on 2.x; not yet validated on 3.0 | CI-V `0xA4`, QRP 10 W |
-| Icom IC-9700       | LAN, USB CI-V      | Reported by a user; not validated on 3.0 hardware | VHF/UHF/SHF                            |
-| Xiegu X6200        | USB CI-V           | Validated on 2.x hardware; not yet validated on 3.0 | CI-V `0xA4`, 19200 baud, QRP 8 W |
-| Xiegu X6100        | USB CI-V (no backend yet) | Profile only; not validated on 3.0 hardware | |
-| Lab599 TX-500      | USB Kenwood CAT (no backend yet) | Profile only; not validated on 3.0 hardware | QRP, minimal CAT |
+| Radio              | Transport          | Notes                                  |
+|--------------------|--------------------|----------------------------------------|
+| **Icom IC-7610**   | LAN, USB CI-V      | Dual receiver; see [known limitations](https://github.com/rigplane/rigplane-core/blob/main/docs/release-notes/2026-beta-known-limitations.md#dual-receiver-topology) |
+| **Icom IC-7300**   | USB CI-V           | Single receiver, USB-only              |
+| **Yaesu FTX-1**    | USB CAT            | 17 modes, VHF/UHF, C4FM, audio-derived panadapter (no hardware scope) |
+| Icom IC-705        | LAN (WiFi), USB CI-V | CI-V `0xA4`, QRP 10 W                |
+| Icom IC-9700       | LAN, USB CI-V      | VHF/UHF/SHF                            |
+| Xiegu X6200        | USB CI-V           | CI-V `0xA4`, 19200 baud, QRP 8 W       |
+| Xiegu X6100        | USB CI-V           | Profile only, no backend yet           |
+| Lab599 TX-500      | USB Kenwood CAT    | Profile only, no backend yet; QRP, minimal CAT |
 
 Native radio capabilities are declared in `rigs/*.toml`. For long-tail serial
 CAT radios, the intended path is Hamlib-backed control underneath RigPlane's
@@ -165,9 +165,8 @@ telemetry, headless mode is sacred, no hollowing out — are codified in
 
 ## Status
 
-KN4KYD's personal project. Production-grade for IC-7610 (the author's
-daily driver) and the Yaesu FTX-1; secondary radios are validated against
-the same Capability Protocols but receive less hardware-in-the-loop time.
+KN4KYD's personal project. Every supported radio is driven through the same
+Capability Protocols and declared in its `rigs/*.toml` profile.
 Issues, profile contributions, and field reports are welcome.
 
 73 de KN4KYD

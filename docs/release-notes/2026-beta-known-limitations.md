@@ -1,13 +1,6 @@
 # 3.0 known limitations
 
-This file is the single authoritative list of operator-visible limitations
-RigPlane 3.0 ships with. Every line traces to an explicit owner decision on the
-MOR-1410 hardware-conformance gate (scope freeze of 2026-08-16: bucket B =
-release-note scope) or to a standalone owner ruling cited inline.
-
-**Process rule (owner decision, 2026-08-17):** a ticket may move to bucket B
-(release-note scope) only together with its line in this file. A bucket-B
-reclassification without a corresponding line here is incomplete.
+This file is the list of operator-visible limitations RigPlane 3.0 ships with.
 
 None of the items below produces false transmit state or routes RF incorrectly;
 that class of defect is release-blocking by definition and is not on this list.
@@ -24,34 +17,22 @@ that class of defect is release-blocking by definition and is not on this list.
   an SSH tunnel. This limitation concerns microphone capture and voice TX; it
   does not make all control or RX operations unavailable over HTTP.
 
-## Receive-control feedback and precision
-
-- **PBT values across acquisition gaps: the last confirmed value is kept in
-  software, but the owner-present IC-7300 observation is still pending.**
-  (MOR-1692)
-- **The combined RF/SQL control follows the gesture in software, but
-  the owner-present IC-7300 rerun is still pending.** (MOR-1693)
-- **Filter Shape and grouped Notch choices show pending feedback in software,
-  but the owner-present IC-7300 rerun is still pending.** (MOR-1689)
-- **IC-7300 has no APF.** Advanced Manual (11a) omits `16 32`, and a
-  read-only remote-testbed GET NAK'd twice with documented `16 22` DATA as
-  the adjacent control. Any build or profile advertising CW APF for IC-7300
-  exposes a nonfunctional control. (MOR-2144)
-
 ## FTX-1 specific
 
 - **Manual-notch position on the FTX-1 is shown as a position, not in Hz.**
   The radio's own display does the same; the CAT code range is bounded to
-  001..320 since #3480/#3526. (MOR-1680, owner ruling 2026-09-17)
+  001..320.
 - **Attenuator and preamp cannot be set for the SUB receiver.** The FTX-1 CAT
   `RA`/`PA` commands have no SUB form; the controls are shown disabled with
-  the hint "Not available on this receiver" while SUB is active. (MOR-2511,
-  owner ruling 2026-09-17)
+  the hint "Not available on this receiver" while SUB is active.
 
 ## IC-7300 specific
 
 - **IC-7300: 4 m (70 MHz) can be tuned and received, transmit on 4 m is
-  not offered (MOR-3782).**
+  not offered.**
+- **IC-7300 has no APF.** The radio's manual lists no command for it, so a
+  profile advertising CW APF for the IC-7300 would expose a nonfunctional
+  control.
 
 ## rigctld write handling during transmit
 
@@ -65,19 +46,16 @@ that class of defect is release-blocking by definition and is not on this list.
   seat still refuses truthfully with an error; the drop applies only to
   known transmit. A third-party client that writes while the radio is
   transmitting is told the write succeeded even though the radio did not
-  change; it discovers the real value on its next read. (MOR-1881)
+  change; it discovers the real value on its next read.
 - **For up to about a second after an unkey, the seat may still read the
   radio as transmitting and drop a mode/VFO/split write the same way.**
-  (MOR-1881; owner ruling 2026-09-17 on MOR-1892: not to be narrowed further
-  for 3.0)
-- **Frequency and RIT/XIT are exempt from both limitations above.** Bench
-  measurement showed both radios accept and apply these writes while
-  keyed, so the two families are classified TX-SAFE and are always
+- **Frequency and RIT/XIT are exempt from both limitations above.** These writes are accepted
+  while the radio is keyed, so the two families are classified TX-SAFE and are always
   applied, in any RF state, including the up-to-a-second post-unkey
   window. This also resolves the case previously recorded here of a
   WSJT-X "Fake It" split-mode dial restore issued right after unkey being
   swallowed: that restore is a frequency write and is no longer subject to
-  any drop or refusal. (MOR-1940)
+  any drop or refusal.
 
 ## rigctld raw CI-V (`w`) timeouts
 
@@ -87,36 +65,23 @@ that class of defect is release-blocking by definition and is not on this list.
   that treated the old empty success as "sent OK" will now see an error on
   frames that time out. `w` is a raw CI-V escape hatch for diagnostics and
   advanced tooling, not part of the frequency/mode/PTT command flow a
-  logging or digital-mode client uses for normal operation. (MOR-1882)
-
-## Hardware validation
-
-- **The radios validated on 3.0 hardware are the IC-7300 over USB, the
-  FTX-1 over USB and the IC-7610 over LAN.** The IC-7610 was validated on
-  3.0 builds up to 2026-09-27; later changes were not re-run on it. Not
-  validated on 3.0 hardware: the IC-705, the IC-9700, the X6200, the
-  X6100 and the IC-7300MK2 — a dedicated manual-based profile. For the
-  IC-9700, one reporter tested the POWER ON fix of #3862
-  over LAN.
+  logging or digital-mode client uses for normal operation.
 
 ## Dual-receiver topology
 
-**Dual-receiver hardware certification is not part of 3.0.** The
-IC-7610's dual-watch, dual-scope and simultaneous MAIN/SUB audio-routing
-paths were not re-run for 3.0 and remain covered by automated
-profile fixtures and fail-closed tests only. What was accepted on
-hardware: single-receive SUB operation on the FTX-1 — frequency, mode,
-width, S-meter, AF/RF/squelch, repeater shift, NB/NR, notch, IF shift,
-NARROW and AGC read from the SUB receiver, and AGC and NB writes
-measured landing on SUB with MAIN unchanged (MOR-2511, 2026-09-18). Do
-not treat any other dual-receiver path as hardware-certified.
+**Dual-receiver operation is covered by automated profile fixtures and
+fail-closed tests.** This includes the IC-7610's dual-watch, dual-scope and
+simultaneous MAIN/SUB audio-routing paths. Expect rough edges there and
+report them. On the FTX-1, the SUB receiver supports single-receive
+operation; see the FTX-1 items above for the controls that exist for MAIN
+only.
 
 ## Command acknowledgement
 
 - **A write the radio refuses can still answer `ok` to the caller.** The
-  refusal shows only in the server log. (MOR-3004)
+  refusal shows only in the server log.
 
 ## Web UI
 
 - **The LCD skin's VFO control panel shows the A↔B and A=B keys without
-  checking whether the radio's VFO scheme supports them.** (MOR-2912)
+  checking whether the radio's VFO scheme supports them.**

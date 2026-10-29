@@ -27,7 +27,7 @@ from build_versioned_docs import (  # noqa: E402
 )
 
 SITE_URL = "https://rigplane.dev/"
-V3 = DocsVersion(id="3.0", title="3.0 (beta)", source=".")
+V3 = DocsVersion(id="3.0", title="3.0", source=".")
 V2 = DocsVersion(id="2.11", title="2.11", source="v2.11.1")
 
 
@@ -81,7 +81,7 @@ def test_versions_json_keeps_the_given_order(site: Path, static_dir: Path) -> No
     assemble_root(site, [V3, V2], "2.11", SITE_URL, static_dir)
 
     assert json.loads((site / "versions.json").read_text()) == [
-        {"version": "3.0", "title": "3.0 (beta)", "aliases": []},
+        {"version": "3.0", "title": "3.0", "aliases": []},
         {"version": "2.11", "title": "2.11", "aliases": []},
     ]
 

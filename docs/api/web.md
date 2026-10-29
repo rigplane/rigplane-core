@@ -269,7 +269,7 @@ Process liveness probe for local supervisors.
 {
   "status": "ok",
   "pid": 12345,
-  "version": "3.0.0b9"
+  "version": "3.0.1"
 }
 ```
 
@@ -310,7 +310,7 @@ Machine-readable runtime status for managed local supervisors and diagnostics.
 {
   "pid": 12345,
   "uptimeSeconds": 12.3,
-  "version": "3.0.0b9",
+  "version": "3.0.1",
   "bind": { "host": "127.0.0.1", "port": 8080 },
   "logPath": "/Users/me/Library/Caches/rigplane/logs/rigplane.log",
   "authRequired": false,
@@ -963,7 +963,7 @@ Friendly station-server status for desktop supervisors and setup tools.
   "schema": "rigplane.station.status.v1",
   "service": "rigplane",
   "kind": "station_server",
-  "version": "3.0.0b9",
+  "version": "3.0.1",
   "displayName": "IC-7610",
   "instanceId": null,
   "baseUrl": "http://127.0.0.1:58421",
@@ -1108,7 +1108,7 @@ ambiguous ids raise the existing unknown/ambiguous override error
 ```json
 {
   "server": "rigplane",
-  "version": "3.0.0b9",
+  "version": "3.0.1",
   "proto": 1,
   "radio": "IC-7300",
   "model": "IC-7300",

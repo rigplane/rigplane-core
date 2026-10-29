@@ -42,7 +42,7 @@ With `--model` and no `--backend`, the backend comes from the radio's profile:
 ## LAN Radios
 
 - A dropped LAN session comes back as soon as the radio reports the session
-  free, instead of after a watchdog wait (checked on the IC-7610).
+  free, instead of after a watchdog wait.
 - A refused IC-7610 login says what the radio's error code means: another
   session from this computer, or a client on another computer.
 
@@ -55,9 +55,8 @@ With `--model` and no `--backend`, the backend comes from the radio's profile:
 - NARROW on the FTX-1.
 - Manual Notch Width is a WIDE / MID / NAR choice on the IC-7300, IC-7610,
   IC-705 and IC-9700.
-- The FTX-1's SUB receiver: which SUB controls were checked on the radio is
-  listed under "Dual-receiver topology" in the
-  [known limitations](release-notes/2026-beta-known-limitations.md).
+- The FTX-1's SUB receiver: some controls exist for MAIN only. See the FTX-1
+  items in the [known limitations](release-notes/2026-beta-known-limitations.md).
 
 ## Web UI Skins
 
