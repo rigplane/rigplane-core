@@ -1,9 +1,10 @@
-"""Leaf boundary for ``rigplane.tci`` (MOR-3821, spec 4.1 item 2).
+"""Leaf boundary for ``rigplane.tci`` plus the shared ``rigplane.ws`` (MOR-3821).
 
 Every module under ``src/rigplane/tci/`` may import only the standard
-library, ``__future__``, and ``rigplane.tci`` itself. This test is the
-complete rule; the import-linter ``tci-is-a-leaf`` contract is the
-visible early signal.
+library, ``__future__``, ``rigplane.tci`` itself, and the shared
+lowest-layer module ``rigplane.ws``. ``src/rigplane/ws.py`` itself may
+import only the standard library. This test is the complete rule; the
+import-linter ``tci-is-a-leaf`` contract is the visible early signal.
 
 The scan parses real ``ast`` import statements (relative imports
 included) instead of grepping text.
@@ -18,10 +19,12 @@ from pathlib import Path
 import pytest
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent / "src" / "rigplane" / "tci"
+WS_PATH = Path(__file__).resolve().parent.parent / "src" / "rigplane" / "ws.py"
 
-# Modules P0a+L1+L2 deliver (the full leaf package).
+# Modules the leaf package holds (round 7: framing lives in the shared
+# lowest-layer module ``rigplane.ws``, not in the leaf).
 EXPECTED_MODULES = frozenset(
-    {"__init__.py", "ws.py", "protocol.py", "frames.py", "handler.py", "server.py"}
+    {"__init__.py", "protocol.py", "frames.py", "handler.py", "server.py"}
 )
 
 
@@ -40,8 +43,14 @@ def _resolve_relative(level: int, module: str | None, package: str) -> str | Non
     return ".".join(base)
 
 
+#: Other ``rigplane`` modules the leaf (or the shared module) may import.
+#: ``rigplane.ws`` is the stdlib-only lowest layer both ``rigplane.tci``
+#: and ``rigplane.web`` build on; it is not in the forbidden list.
+_ALLOWED_RIGPLANE_SECOND = frozenset({"tci", "ws"})
+
+
 def _bad_absolute(dotted: str) -> str | None:
-    """Return *dotted* when it escapes stdlib and ``rigplane.tci``."""
+    """Return *dotted* when it escapes stdlib, ``rigplane.tci`` and ``rigplane.ws``."""
     top = dotted.split(".")[0]
     if top == "__future__":
         return None
@@ -49,7 +58,7 @@ def _bad_absolute(dotted: str) -> str | None:
         return None
     if top == "rigplane":
         rest = dotted.split(".")
-        if len(rest) >= 2 and rest[1] == "tci":
+        if len(rest) >= 2 and rest[1] in _ALLOWED_RIGPLANE_SECOND:
             return None
     return dotted
 
@@ -72,7 +81,7 @@ def _forbidden_imports(source: str, package: str = "rigplane.tci") -> list[str]:
                     bad.append(alias.name)
                 elif top == "rigplane":
                     rest = alias.name.split(".")
-                    if len(rest) < 2 or rest[1] != "tci":
+                    if len(rest) < 2 or rest[1] not in _ALLOWED_RIGPLANE_SECOND:
                         bad.append(alias.name)
         elif isinstance(node, ast.ImportFrom):
             if node.level and node.level > 0:
@@ -133,6 +142,7 @@ def test_tci_imports_only_stdlib_and_itself() -> None:
     [
         "import numpy\n",
         "from rigplane.core import x\n",
+        "from rigplane.core.types import x\n",
         "from ..diagnostics._logging import x\n",
         "from .. import x\n",
     ],
@@ -140,6 +150,29 @@ def test_tci_imports_only_stdlib_and_itself() -> None:
 def test_scanner_reports_forbidden_imports(source: str) -> None:
     """The check itself must be able to fail (spec 4.1: shown able to fail)."""
     assert _forbidden_imports(source) != []
+
+
+def test_scanner_allows_shared_ws_import() -> None:
+    """The leaf may import the shared lowest layer ``rigplane.ws``."""
+    assert (
+        _forbidden_imports("from rigplane.ws import WebSocketConnection\n") == []
+    )
+
+
+def test_shared_ws_module_is_stdlib_only() -> None:
+    """``src/rigplane/ws.py`` exists and imports only the standard library."""
+    assert WS_PATH.is_file(), "src/rigplane/ws.py does not exist"
+    assert (
+        _forbidden_imports(WS_PATH.read_text(encoding="utf-8"), package="rigplane")
+        == []
+    )
+
+
+def test_scanner_nested_extra_forbidden_import_fails() -> None:
+    """A forbidden import inside ``tci/extra/foo.py`` must fail."""
+    assert (
+        _forbidden_imports("import numpy\n", package="rigplane.tci.extra") != []
+    )
 
 
 def test_scanner_allows_same_package_relative_import() -> None:
