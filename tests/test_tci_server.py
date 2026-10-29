@@ -1719,8 +1719,8 @@ async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
                         await gate.wait()
                     except asyncio.CancelledError:
                         continue
+                self.binaries.append(bytes(payload))
                 cleaned.set()
-            self.binaries.append(bytes(payload))
 
     handler = _RepeatCancelBinaryHandler()
     server = make_server(handler, clock)
