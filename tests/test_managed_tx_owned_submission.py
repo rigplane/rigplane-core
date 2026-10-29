@@ -275,6 +275,38 @@ async def test_before_on_defaults_to_no_preparation() -> None:
         await managed.close()
 
 
+async def test_before_on_force_off_during_hook_rejects_without_dispatch() -> None:
+    """A teardown that commits while the hook runs supersedes the key.
+
+    The stale PTT_ON must not dispatch: the requester gets REJECTED and
+    the teardown's settlement stands.
+    """
+    managed, _clock, lane, _probe = radio_tx_authority()
+    try:
+
+        async def hook() -> bool:
+            assert await managed.force_off() is ACCEPTED
+            return True
+
+        submission = managed.start_ptt_submission(
+            True,
+            "a",
+            expires_at_monotonic=100.0 + 3.0,
+            before_on=hook,
+        )
+        receipt = await submission
+        assert receipt.outcome is REJECTED
+        assert [
+            effect.operation
+            for effect in lane.effects
+            if effect.operation is ActuationOperation.PTT_ON
+        ] == []
+        state = (await managed.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+    finally:
+        await managed.close()
+
+
 async def test_before_on_may_read_the_authority_while_routing() -> None:
     """A hook awaiting an authority read must not deadlock (spec 7.3a).
 
