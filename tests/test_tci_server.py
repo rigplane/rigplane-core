@@ -1606,6 +1606,240 @@ async def test_gated_binary_pong_keeps_session_alive() -> None:
         await session.finish()
 
 
+async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
+    """A command cleanup surviving repeated cancel must not wedge ``finish()``.
+
+    The dispatch callback parks in a gated ``finally`` that ignores
+    further cancellation (re-awaits the gate): ``finish()`` must still
+    complete bounded (disconnect once, session dropped, transport
+    released) before the gate opens; the retained cleanup completes
+    after the gate opens.
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
+    clock = FakeClock()
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleaned = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _RepeatCancelHandler(FakeHandler):
+        async def on_command(
+            self, name: str, args: tuple[str, ...]
+        ) -> CommandOutcome:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                while not gate.is_set():
+                    try:
+                        await gate.wait()
+                    except asyncio.CancelledError:
+                        continue
+                cleaned.set()
+                return CommandOutcome()
+
+    handler = _RepeatCancelHandler()
+    server = make_server(handler, clock)
+    session, writer, reader = await open_session(server, handler)
+    task: asyncio.Task[None] | None = None
+    try:
+        await wait_for_frames(writer, len(BURST))
+        reader.feed_data(client_frame(WS_OP_TEXT, b"gated:1;"))
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        task = asyncio.create_task(session.finish())
+        async with asyncio.timeout(2.0):
+            await cleaning.wait()
+        try:
+            async with asyncio.timeout(TEARDOWN_TIMEOUT_S + 5.0):
+                await task
+        except TimeoutError:
+            raise AssertionError(
+                "finish() wedged on a repeat-cancel command cleanup"
+            ) from None
+        assert handler.disconnect_calls == 1
+        assert session not in server.sessions
+        assert writer.is_closing()
+        assert not cleaned.is_set()
+        # The retained cleanup survives a second cancellation too.
+        pending = [t for t in list(session._tasks) if not t.done()]
+        for t in pending:
+            t.cancel()
+        await asyncio.sleep(0.05)
+        assert not cleaned.is_set()
+        gate.set()
+        async with asyncio.timeout(5.0):
+            while not cleaned.is_set():
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+    finally:
+        gate.set()
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                async with asyncio.timeout(10.0):
+                    await task
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+        await session.finish()
+
+
+async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
+    """A binary cleanup surviving repeated cancel must not wedge ``finish()``.
+
+    Same join as the command path (the dispatch task runs both
+    callbacks): ``finish()`` completes bounded before the gate opens,
+    the retained binary cleanup completes after.
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
+    clock = FakeClock()
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleaned = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _RepeatCancelBinaryHandler(FakeHandler):
+        async def on_binary(self, payload: bytes) -> None:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                while not gate.is_set():
+                    try:
+                        await gate.wait()
+                    except asyncio.CancelledError:
+                        continue
+                cleaned.set()
+            self.binaries.append(bytes(payload))
+
+    handler = _RepeatCancelBinaryHandler()
+    server = make_server(handler, clock)
+    session, writer, reader = await open_session(server, handler)
+    task: asyncio.Task[None] | None = None
+    try:
+        await wait_for_frames(writer, len(BURST))
+        reader.feed_data(client_frame(WS_OP_BINARY, b"\x01\x02"))
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        task = asyncio.create_task(session.finish())
+        async with asyncio.timeout(2.0):
+            await cleaning.wait()
+        try:
+            async with asyncio.timeout(TEARDOWN_TIMEOUT_S + 5.0):
+                await task
+        except TimeoutError:
+            raise AssertionError(
+                "finish() wedged on a repeat-cancel binary cleanup"
+            ) from None
+        assert handler.disconnect_calls == 1
+        assert session not in server.sessions
+        assert not cleaned.is_set()
+        pending = [t for t in list(session._tasks) if not t.done()]
+        for t in pending:
+            t.cancel()
+        await asyncio.sleep(0.05)
+        assert not cleaned.is_set()
+        gate.set()
+        async with asyncio.timeout(5.0):
+            while not cleaned.is_set():
+                await asyncio.sleep(0.005)
+        assert handler.binaries == [b"\x01\x02"]
+    finally:
+        gate.set()
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                async with asyncio.timeout(10.0):
+                    await task
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+        await session.finish()
+
+
+async def test_stop_observed_before_gate_with_repeated_cancel_connect() -> None:
+    """An ``on_connect`` cleanup surviving repeated cancel must not wedge ``stop()``.
+
+    The pending setup parks in a gated ``finally`` that ignores further
+    cancellation: ``stop()`` still returns bounded before the gate
+    opens; the retained setup completes after.
+    """
+    clock = FakeClock()
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleaned = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _RepeatCancelConnectHandler(FakeHandler):
+        async def on_connect(self) -> Sequence[str]:
+            self.connect_calls += 1
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                while not gate.is_set():
+                    try:
+                        await gate.wait()
+                    except asyncio.CancelledError:
+                        continue
+                cleaned.set()
+            return list(BURST)
+
+    handler = _RepeatCancelConnectHandler()
+    server = make_server(handler, clock)
+    reader = asyncio.StreamReader()
+    writer = FakeWriter()
+    setup_task = asyncio.create_task(server._open_session(reader, writer, handler))
+    server._setup_tasks.add(setup_task)
+    stop_task: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        stop_task = asyncio.create_task(server.stop())
+        async with asyncio.timeout(2.0):
+            await cleaning.wait()
+        try:
+            async with asyncio.timeout(10.0):
+                await stop_task
+        except TimeoutError:
+            raise AssertionError(
+                "stop() wedged on a repeat-cancel on_connect cleanup"
+            ) from None
+        assert not cleaned.is_set()
+        assert not setup_task.done()
+        setup_task.cancel()
+        await asyncio.sleep(0.05)
+        assert not cleaned.is_set()
+        gate.set()
+        async with asyncio.timeout(5.0):
+            await setup_task
+        async with asyncio.timeout(5.0):
+            while not cleaned.is_set():
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+    finally:
+        gate.set()
+        server._setup_tasks.discard(setup_task)
+        if not setup_task.done():
+            setup_task.cancel()
+            try:
+                async with asyncio.timeout(5.0):
+                    await setup_task
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+        if stop_task is not None and not stop_task.done():
+            stop_task.cancel()
+            try:
+                await stop_task
+            except (asyncio.CancelledError, TimeoutError):
+                pass
+        await server.stop()
+
+
 async def test_overflowed_sender_observers_still_updated() -> None:
     """An accepted change reaches observers even when the sender overflows.
 
