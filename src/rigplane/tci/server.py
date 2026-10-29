@@ -357,11 +357,18 @@ class TciSession:
             if not isinstance(outcome, CommandOutcome):
                 logger.debug("tci %s: bad outcome type; ignored", self._id)
                 continue
+            sender_ok = True
             for line in outcome.to_sender:
                 if not self._send_now(line):
-                    return
+                    sender_ok = False
+                    break
             if outcome.to_others:
+                # The accepted change is already applied: observers get
+                # it even when this sender's own reply overflowed (its
+                # teardown is already scheduled by ``_overflow``).
                 self._server._fanout(outcome.to_others, exclude=self)
+            if not sender_ok:
+                return
 
     async def _reader_loop(self) -> None:
         try:

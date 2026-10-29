@@ -846,41 +846,49 @@ async def test_overflowed_sender_observers_still_updated() -> None:
     then disconnect exactly once.
     """
     clock = FakeClock()
-
-    class EchoBoth(FakeHandler):
-        async def on_command(
-            self, name: str, args: tuple[str, ...]
-        ) -> CommandOutcome:
-            self.commands.append((name, args))
-            (value,) = args
-            return CommandOutcome(
-                to_sender=[f"s:{value};"], to_others=[f"o:{value};"]
-            )
-
-    handler = EchoBoth()
+    handler = FakeHandler(
+        replies={
+            "fill": CommandOutcome(to_sender=["x;"]),
+            "f": CommandOutcome(to_sender=["s:1;"], to_others=["o:F2;"]),
+        }
+    )
     server = make_server(handler, clock)
     writer_a = FakeWriter()
     writer_a.block_drain()
-    session_a, _writer, reader_a = await open_session(server, handler, writer_a)
+    session_a, writer_a2, reader_a = await open_session(
+        server, handler, writer_a
+    )
+    assert writer_a2 is writer_a
     session_b, writer_b, _reader_b = await open_session(server, handler)
     try:
         await wait_for_frames(writer_b, len(BURST))
-        total = MAX_QUEUED_OUTBOUND + 50
-        for index in range(total):
-            reader_a.feed_data(client_frame(WS_OP_TEXT, f"cmd:{index};".encode()))
-        last = total - 1
+        # Pin A's outbox occupancy: once the first burst frame reaches
+        # the wire, A's sender is parked in the blocked drain with
+        # exactly one frame in flight, so 3 burst frames stay queued.
+        await wait_for_frames(writer_a, 1)
+        assert session_a._outbox.qsize() == len(BURST) - 1
+        # Fill A's queue with reply-only commands (B observes nothing),
+        # stopping exactly at capacity: no overflow yet.
+        for _ in range(MAX_QUEUED_OUTBOUND - (len(BURST) - 1)):
+            reader_a.feed_data(client_frame(WS_OP_TEXT, b"fill;"))
+        async with asyncio.timeout(5.0):
+            while len(handler.commands) < MAX_QUEUED_OUTBOUND - (
+                len(BURST) - 1
+            ):
+                await asyncio.sleep(0.005)
+        assert session_a._outbox.qsize() == MAX_QUEUED_OUTBOUND
+        assert handler.disconnect_calls == 0
+        # The accepted write overflows A's own reply queue: its
+        # observer update must still reach healthy B, then A goes.
+        reader_a.feed_data(client_frame(WS_OP_TEXT, b"f:1;"))
         async with asyncio.timeout(5.0):
             while handler.disconnect_calls == 0:
                 await asyncio.sleep(0.005)
         assert handler.disconnect_calls == 1
         assert session_a not in server.sessions
-        expected = len(handler.commands) - 1
-        assert handler.commands[-1] == ("cmd", (str(expected),))
-        frames_b = await wait_for_frames(
-            writer_b, len(BURST) + len(handler.commands)
-        )
-        observed = [payload for _, payload in frames_b[len(BURST):]]
-        assert observed[-1] == f"o:{expected};".encode()
+        frames_b = await wait_for_frames(writer_b, len(BURST) + 1)
+        assert frames_b[-1] == (WS_OP_TEXT, b"o:F2;")
     finally:
         await session_a.finish()
         await session_b.finish()
+    assert handler.disconnect_calls == 2
