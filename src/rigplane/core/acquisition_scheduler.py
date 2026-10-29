@@ -1221,6 +1221,7 @@ class AcquisitionScheduler:
         *,
         reason: str = "prime-unobserved",
         limit: int = _PRIME_UNOBSERVED_BURST_LIMIT,
+        availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY,
     ) -> tuple[AcquisitionRequest, ...]:
         """Queue BACKGROUND reads for never-observed fields with a policy.
 
@@ -1274,6 +1275,23 @@ class AcquisitionScheduler:
         RIT/XIT enables, CW keyer setpoints, twin-peak filter, tone/TSQL
         frequency). The panel knobs that were also in this group until
         MOR-2425 are cadence-polled now, so this method skips them.
+
+        **Conditionally absent paths are skipped while contradicted**
+        (MOR-3630): ``availability`` carries what
+        :func:`resolve_available_when` made of each conditional field's
+        declared ``available_when`` clauses against the caller's current
+        snapshot — the same map :meth:`due_requests` takes. A path it maps
+        to ``False`` is not queued and consumes no burst budget, exactly
+        like the cadence-owned skip above, so a prime re-derived after the
+        freshness tick discarded the field (e.g. the IC-705 filter-shape
+        read once MAIN leaves USB for FM) sends nothing while the clause
+        set stays contradicted. A ``None`` resolution (a clause source
+        nobody has observed) and any path absent from the map keep their
+        previous membership — unknown counts as available, the MOR-2748
+        rule. The skip is state-dependent, not a change of responsibility:
+        the contradicted path stays unobserved, so the adaptive re-prime
+        cadence keeps re-deriving and the read goes out again the first
+        pass the clause set holds.
 
         Two further guards keep one call from flooding the transport:
 
@@ -1343,6 +1361,14 @@ class AcquisitionScheduler:
                 # group; priming it here would collide with that group's
                 # request key and starve due_requests()'s t0 poll for every
                 # other path sharing the group (MOR-1490 review R3).
+                continue
+            if availability.get(path) is False:
+                # MOR-3630: the caller's snapshot contradicts this path's
+                # declared available_when clauses (e.g. an FM-NAKed read
+                # while the mode reads FM). Queue nothing and consume no
+                # burst budget; the path stays unobserved, so the next
+                # re-derivation re-primes it the moment the clause set
+                # holds again. None/absent keeps the path (MOR-2748).
                 continue
             max_age = policy.freshness_ttl_seconds
             if max_age is None or max_age <= 0:
@@ -2702,8 +2728,16 @@ class StateFreshnessService:
             return
         if now < self._next_prime_monotonic:
             return
-        observed = tuple(field.path for field in self._store.snapshot().fields)
-        scheduler.prime_unobserved(observed)
+        snapshot = self._store.snapshot()
+        observed = tuple(field.path for field in snapshot.fields)
+        # MOR-3630: resolve the conditional availability against the same
+        # snapshot the never-observed set is derived from, so the prime
+        # skips contradicted fields (no FM-NAKed re-reads) while still
+        # re-deriving — and re-acquiring — once the clause set holds again.
+        scheduler.prime_unobserved(
+            observed,
+            availability=resolve_available_when(scheduler._profile, snapshot),
+        )
         still_unobserved = scheduler.has_unobserved_policy_fields(observed)
         interval = (
             self.PRIME_ADAPTIVE_INTERVAL_SECONDS

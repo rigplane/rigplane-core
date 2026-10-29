@@ -17,6 +17,7 @@ import pytest
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
+    AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionStatus,
@@ -4637,6 +4638,126 @@ def test_ic705_fm_absent_reads_are_gated_by_main_mode() -> None:
         assert path in dispatched, path
     for query in _IC705_FM_QUERIES:
         assert query in sent, query
+
+
+_IC705_FM_SHAPE_QUERY = acquisition_query(0x16, sub=0x56, receiver=0)
+_IC705_FM_MODE = FieldPath.active("main", "freq_mode", "mode")
+
+
+def _ic705_live_service() -> tuple[
+    StateStore,
+    FreshnessClock,
+    AcquisitionScheduler,
+    StateFreshnessService,
+]:
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    clock = FreshnessClock(start=1000.0)
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    return store, clock, scheduler, service
+
+
+def test_ic705_prime_skips_fm_contradicted_reads_then_reacquires_in_usb() -> None:
+    """MOR-3630 finding 1: priming honours ``available_when`` across USB→FM→USB.
+
+    One scheduler plus its freshness service drives the whole journey while
+    a recording executor captures the actual dispatched queries. In USB the
+    on-demand filter-shape read (16 56) goes out and its answer is kept.
+    After the MAIN mode flips to FM the freshness tick discards the FM-NAKed
+    values, and two full prime windows must neither queue nor send any of
+    the contradicted reads — on the old code the shape prime re-queues here
+    and 16 56 goes out in FM, where the bench probe NAKed it
+    (tests/fixtures/ic705/README.md), leaving it unobserved and retried
+    forever. Returning to USB re-primes the shape read and the answer
+    recovers the value.
+    """
+
+    store, clock, scheduler, service = _ic705_live_service()
+    executor, sent = recording_executor(get_radio_profile("IC-705"))
+    contradicted = (*_IC705_FM_POLLED, _IC705_FM_SHAPE)
+    forbidden_queries = (*_IC705_FM_QUERIES, _IC705_FM_SHAPE_QUERY)
+    seen_ids: set[str] = set()
+
+    def dispatch_new() -> tuple[list[AcquisitionRequest], list[AcquisitionQuery]]:
+        dispatched: list[AcquisitionRequest] = []
+        base = len(sent)
+        for request in scheduler.dispatchable_requests():
+            if request.id in seen_ids:
+                continue
+            seen_ids.add(request.id)
+            asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+            dispatched.append(request)
+        return dispatched, list(sent[base:])
+
+    def settle(dispatched: list[AcquisitionRequest], shape_value: int | None) -> None:
+        for request in dispatched:
+            if shape_value is not None and _IC705_FM_SHAPE in request.paths:
+                change = store.apply(
+                    _observation(_IC705_FM_SHAPE, shape_value, at=clock.now())
+                )
+                scheduler.record_acquisition_result(request, change)
+            else:
+                scheduler.record_acquisition_failure(
+                    request, reason="test-consumed", now=clock.now()
+                )
+
+    def pending_contradicted() -> set[FieldPath]:
+        return {
+            path
+            for request in scheduler.pending_requests()
+            for path in request.paths
+            if path in contradicted
+        }
+
+    # USB: the shape prime must go out on the wire and its answer sticks.
+    store.apply(_observation(_IC705_FM_MODE, "USB", at=clock.now()))
+    for _ in range(60):
+        service.tick(now=clock.now())
+        dispatched, _ = dispatch_new()
+        shape_requests = [
+            request for request in dispatched if _IC705_FM_SHAPE in request.paths
+        ]
+        if shape_requests:
+            settle(dispatched, 1)
+            break
+        settle(dispatched, None)
+        clock.advance(5.1)
+    else:
+        pytest.fail("USB prime never dispatched the filter-shape read")
+    assert store.snapshot().field(_IC705_FM_SHAPE).value == 1
+
+    # FM: the tick discards the FM-NAKed values; two prime windows after
+    # the discard must queue nothing contradicted and send none of the
+    # forbidden queries.
+    store.apply(_observation(_IC705_FM_MODE, "FM", at=clock.now()))
+    for _ in range(3):
+        clock.advance(5.1)
+        service.tick(now=clock.now())
+        _, fm_sent = dispatch_new()
+        assert pending_contradicted() == set()
+        assert not (set(fm_sent) & set(forbidden_queries)), fm_sent
+    assert _IC705_FM_SHAPE not in {field.path for field in store.snapshot().fields}
+
+    # USB again: the shape prime re-fires on the wire and the answer
+    # recovers the value through the same observation path.
+    store.apply(_observation(_IC705_FM_MODE, "USB", at=clock.now()))
+    for _ in range(60):
+        clock.advance(5.1)
+        service.tick(now=clock.now())
+        dispatched, usb_sent = dispatch_new()
+        shape_requests = [
+            request for request in dispatched if _IC705_FM_SHAPE in request.paths
+        ]
+        if shape_requests:
+            assert _IC705_FM_SHAPE_QUERY in usb_sent
+            settle(dispatched, 1)
+            break
+        settle(dispatched, None)
+    else:
+        pytest.fail("USB return never re-primed the filter-shape read")
+    assert store.snapshot().field(_IC705_FM_SHAPE).value == 1
 
 
 def test_tick_discards_the_attenuator_above_the_declared_band_bound() -> None:
