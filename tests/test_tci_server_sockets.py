@@ -219,6 +219,28 @@ async def test_native_client_gets_burst_and_ready(tcp_available: None) -> None:
     assert handler.disconnect_calls == 1
 
 
+async def test_close_then_stop_releases_transport(tcp_available: None) -> None:
+    """Stopping right after a client close must return (regression pin).
+
+    The close-frame path used to leave the server transport attached to
+    the listener, so ``stop()`` hung in ``wait_closed()`` forever.
+    """
+    handler = FakeHandler()
+    server = make_server(handler)
+    await server.start()
+    stopped = False
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        await client.close()
+        await asyncio.wait_for(server.stop(), 10.0)
+        stopped = True
+    finally:
+        if not stopped:
+            await server.stop()
+    assert handler.disconnect_calls == 1
+
+
 async def test_browser_origin_refused(tcp_available: None) -> None:
     handler = FakeHandler()
     server = make_server(handler)
