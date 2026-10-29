@@ -9,6 +9,7 @@ import {
   filterOverlapping,
   shouldSkipFetch,
   parseSegmentsResponse,
+  localCopyServesRegion,
   type RemoteSegment,
 } from '../band-plan-logic';
 
@@ -236,5 +237,20 @@ describe('parseSegmentsResponse', () => {
     expect(parseSegmentsResponse('nope')).toBeNull();
     expect(parseSegmentsResponse({})).toBeNull();
     expect(parseSegmentsResponse({ segments: 'x' })).toBeNull();
+  });
+});
+
+describe('localCopyServesRegion', () => {
+  it('serves the legacy no-region caller, the US plan and IARU Region 2 (same ARRL file)', () => {
+    expect(localCopyServesRegion(null)).toBe(true);
+    expect(localCopyServesRegion(undefined)).toBe(true);
+    expect(localCopyServesRegion('US')).toBe(true);
+    expect(localCopyServesRegion('IARU-R2')).toBe(true);
+  });
+
+  it('never serves another region', () => {
+    expect(localCopyServesRegion('IARU-R1')).toBe(false);
+    expect(localCopyServesRegion('IARU-R3')).toBe(false);
+    expect(localCopyServesRegion('')).toBe(false);
   });
 });

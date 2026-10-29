@@ -38,7 +38,7 @@
  "configPost": {
   "IARU-R1": {
    "region": "IARU-R1",
-   "segments": 177,
+   "segments": 178,
    "status": "ok"
   },
   "IARU-R3": {
@@ -48,7 +48,7 @@
   },
   "US": {
    "region": "US",
-   "segments": 141,
+   "segments": 159,
    "status": "ok"
   }
  },
@@ -61,7 +61,7 @@
     "priority": 10,
     "region": "US",
     "source": "https://www.arrl.org/band-plan",
-    "updated": "2026-10-27"
+    "updated": "2026-10-29"
    },
    {
     "file": "broadcast.toml",
@@ -156,6 +156,23 @@
   "US|145600000-146400000": {
    "plansLoaded": true,
    "segments": [
+    {
+     "band": "2m",
+     "color": "#9CA3AF",
+     "end": 145800000,
+     "label": "EXP",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "other",
+     "notes": "Miscellaneous and experimental modes",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 145500000,
+     "station": null,
+     "url": null
+    },
     {
      "band": "2m",
      "color": "#60A5FA",

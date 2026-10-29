@@ -115,3 +115,15 @@ export function shouldSkipFetch(
   if (region !== undefined && region !== lastRegion) return false;
   return start >= lastStart && end <= lastEnd;
 }
+
+/**
+ * Does the bundled local copy (`lib/data/arrl-band-plan.ts`, the ARRL HF plan)
+ * describe this effective band-plan region? It does for the US plan and for
+ * IARU Region 2, which the server also serves from the ARRL file, and for a
+ * caller that passes no region (legacy behavior). Any other region must never
+ * show it: after a failed or empty refresh the overlay renders nothing rather
+ * than another region's segments.
+ */
+export function localCopyServesRegion(region: string | null | undefined): boolean {
+  return region == null || region === 'US' || region === 'IARU-R2';
+}

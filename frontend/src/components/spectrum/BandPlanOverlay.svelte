@@ -13,6 +13,7 @@
     computePosition,
     filterOverlapping,
     shouldSkipFetch,
+    localCopyServesRegion,
     parseSegmentsResponse,
     type RemoteSegment,
   } from './band-plan-logic';
@@ -37,15 +38,19 @@
   let containerWidth = $state(0);
 
   // null = no authoritative remote answer (never fetched, failed, region just
-  // switched, or the install has no band-plan data): the local copy is shown.
+  // switched, or the install has no band-plan data): the local copy is shown,
+  // but only when it belongs to the effective region (it is the ARRL/US HF
+  // plan, see localCopyServesRegion); for any other region nothing is shown
+  // until the matching answer arrives.
   // An empty array is an authoritative "nothing in this window" and renders empty.
   let remoteSegments = $state<RemoteSegment[] | null>(null);
   let lastFetchRange = $state({ start: 0, end: 0 });
   let lastFetchRegion = $state<string | null>(null);
   let fetchTimeout: ReturnType<typeof setTimeout> | null = null;
-  // Id of the newest issued request. A completion applies only while it is
-  // still the newest, so a slower response for a superseded viewport/region
-  // can never overwrite the display of a later one.
+  // Single request token. Every viewport or region change takes a new
+  // one, cancelling the pending timer, and a completion applies only while its
+  // token is still the newest, so abandoned work (a pan away and back to the
+  // cached range included) can never overwrite what is displayed.
   let fetchSeq = 0;
 
   // Popup state
@@ -76,26 +81,32 @@
     const skip = untrack(() =>
       shouldSkipFetch(start, end, lastFetchRange.start, lastFetchRange.end, currentRegion, lastFetchRegion),
     );
+    // Supersede earlier pending work on EVERY state change, a cache hit
+    // included: a timer or request started for an abandoned viewport must not
+    // land after the view returned to the cached one.
+    const seq = ++fetchSeq;
+    if (fetchTimeout) {
+      clearTimeout(fetchTimeout);
+      fetchTimeout = null;
+    }
     if (skip) {
       return;
     }
 
     // Region switched: what is on screen (and cached) belongs to the previous
-    // region. Drop it now and supersede any request still in flight for it,
-    // so neither a late old response nor a failed refresh can leave the old
-    // region's segments displayed.
+    // region. Drop it now (the work for it was superseded above), so neither a
+    // late old response nor a failed refresh can leave the old region's
+    // segments displayed.
     untrack(() => {
       if (currentRegion !== lastFetchRegion) {
-        fetchSeq++;
         remoteSegments = null;
         lastFetchRange = { start: 0, end: 0 };
         lastFetchRegion = currentRegion;
       }
     });
 
-    if (fetchTimeout) clearTimeout(fetchTimeout);
     fetchTimeout = setTimeout(async () => {
-      const seq = ++fetchSeq;
+      fetchTimeout = null;
       try {
         const span = end - start;
         const margin = Math.round(span * 0.5);
@@ -167,7 +178,8 @@
         });
     }
 
-    // Fallback to local hardcoded data
+    // Fallback to local hardcoded data, only for the region it describes
+    if (!localCopyServesRegion(region)) return [];
     return getVisibleSegments(startFreq, endFreq).map(({ segment }) => {
       const { leftPct, widthPct } = computePosition(segment.startHz, segment.endHz, startFreq, endFreq);
       const widthPx = (widthPct / 100) * containerWidth;
