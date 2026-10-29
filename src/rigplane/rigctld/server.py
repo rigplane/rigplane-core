@@ -1304,6 +1304,9 @@ class RigctldServer:
                     else:
                         assert self._command_queue is not None
                         assert self._managed_tx_authority is not None
+                        # Only a key-down captures the connection generation:
+                        # an unkey never touches the queue, so it must keep
+                        # working after the consumer unbinds (MOR-3821).
                         ptt_submission, ptt_ready = ptt_tracker.begin_key(
                             self._managed_tx_authority,
                             owner=session_id,
@@ -1313,6 +1316,8 @@ class RigctldServer:
                             ),
                             connection_generation=(
                                 self._command_queue.capture_connection_generation()
+                                if ptt_on
+                                else None
                             ),
                         )
 
