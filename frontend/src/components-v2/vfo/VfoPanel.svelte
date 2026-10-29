@@ -128,6 +128,7 @@
   const staleId = `vfo-panel-stale-${++sequence}`;
   let receiverChromeVars = $derived({
     '--receiver-accent': `var(--v2-receiver-${receiver}-accent)`,
+    '--receiver-frequency-glow': `var(--v2-vfo-${receiver}-freq-glow)`,
     '--receiver-control-border': `var(--v2-vfo-${receiver}-control-border)`,
     '--receiver-control-glow': `var(--v2-vfo-${receiver}-control-glow)`,
     '--receiver-panel-glow-outer': `var(--v2-vfo-${receiver}-panel-glow-outer)`,
@@ -407,6 +408,10 @@
       var(--dl-vfo-panel-shadow, inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 -18px 30px rgba(0, 0, 0, 0.45), 0 6px 18px rgba(0, 0, 0, 0.5)),
       inset 0 0 0 1px var(--receiver-control-glow),
       0 0 12px 1px var(--receiver-panel-glow-outer);
+  }
+
+  :global([data-design-language='studioline']) .panel.active {
+    --vfo-frequency-glow: var(--v2-vfo-glow-override, var(--receiver-frequency-glow));
   }
 
   /* The glass OVER the content — dark mode only (the mock-up is dark-only,
