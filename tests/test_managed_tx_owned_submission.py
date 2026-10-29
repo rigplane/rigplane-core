@@ -126,8 +126,11 @@ async def test_owned_push_inside_excludes_the_rival_key() -> None:
         release_push.set()
         await frame_task
         assert pushed == [b"a-frame"]
-        assert (await rival).outcome is ACCEPTED
-        assert await managed.ptt_up("b") is ACCEPTED
+        # B's key is decided only after A's frame finished: A still holds
+        # the intent, so the rival is refused — the push was never
+        # interleaved with B's keying.
+        assert (await rival).outcome is REJECTED
+        assert await managed.ptt_up("a") is ACCEPTED
     finally:
         await managed.close()
 
