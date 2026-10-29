@@ -18,10 +18,6 @@ from ..core.state_store import (
 )
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
-from ..profiles.power_ceilings import (
-    band_frequency_hz_from_snapshot,
-    effective_power_max_watts,
-)
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
@@ -1231,17 +1227,11 @@ def _normalize_public_level_snapshot_value(
     return value
 
 
-def _power_level_max_value(
-    field: FieldSnapshot, radio: "Radio | None", freq_hz: int | None = None
-) -> float:
+def _power_level_max_value(field: FieldSnapshot, radio: "Radio | None") -> float:
     if field.source.provider != "yaesu_cat":
         return 255.0
     profile = getattr(radio, "profile", None) if radio is not None else None
-    # MOR-3634: the watt scale follows the per-band/per-source rated
-    # ceiling when the profile declares one (the active receiver's band),
-    # the flat max_watts otherwise — so full scale tracks the band the
-    # write path clamps against.
-    max_watts = effective_power_max_watts(profile, freq_hz=freq_hz)
+    max_watts = getattr(profile, "max_watts", None)
     if isinstance(max_watts, (int, float)) and not isinstance(max_watts, bool):
         if max_watts > 0:
             return float(max_watts)
@@ -1338,7 +1328,6 @@ def _apply_snapshot_field(
     field: FieldSnapshot,
     *,
     radio: "Radio | None",
-    freq_hz: int | None = None,
 ) -> None:
     path = field.path
     value = field.value
@@ -1433,7 +1422,7 @@ def _apply_snapshot_field(
             if path.name in _NORMALIZED_GLOBAL_OPERATOR_CONTROL_FIELDS:
                 value = _normalize_public_level_snapshot_value(
                     value,
-                    max_value=_power_level_max_value(field, radio, freq_hz=freq_hz),
+                    max_value=_power_level_max_value(field, radio),
                 )
             state[path.name] = value
             return
@@ -1485,14 +1474,8 @@ def _project_snapshot_state_dict(
     radio: "Radio | None",
 ) -> dict[str, Any]:
     state = copy.deepcopy(_EMPTY_STATE_DICT)
-    # MOR-3634: the watt scale the public ``powerLevel`` projects follows
-    # the band ceiling; the band comes from the same snapshot (a known TX
-    # target's frequency, else the active receiver's), resolved once so
-    # field order cannot matter. Shared with the write-side clamp in
-    # ``profiles/power_ceilings.py``.
-    active_freq_hz = band_frequency_hz_from_snapshot(snapshot)
     for field in snapshot.fields:
-        _apply_snapshot_field(state, field, radio=radio, freq_hz=active_freq_hz)
+        _apply_snapshot_field(state, field, radio=radio)
     required_relative_fields = frozenset(_VFO_SLOT_FIELDS.values())
     for receiver_key in ("main", "sub"):
         receiver = state.get(receiver_key)

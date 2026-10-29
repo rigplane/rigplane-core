@@ -2,61 +2,69 @@
 
 Pure profile-data arithmetic in the spirit of ``profiles/control_domain.py``:
 no backend, model name or ``if model == X`` branch lives here. A profile
-declares per-band ceilings in ``[power.ceilings_w]`` (band name → watts, the
+declares per-band ceilings in ``[power.ceilings_w]`` (band name -> watts, the
 band names being the ``[[freq_ranges.ranges.bands]]`` entries) and per-source
-ceilings in ``[power.sources]`` (source name → watts). The loader validates
+ceilings in ``[power.sources]`` (source name -> watts). The loader validates
 both against ``[power].max_watts`` and the declared bands; this module turns
-them into the single effective watt ceiling the existing power-limit seats
-(``command_service.py: resolve_power_level_target`` inputs, the Yaesu
-backend's ``set_power`` floor site, and the watt scale the UI projects)
-consume.
+them into the single effective watt ceiling that the existing power-limit
+seats consume: ``command_service.py: resolve_power_level_target`` (admission)
+and the Yaesu backend's ``set_power`` (the wire).
+
+The ceiling only CAPS a write. The normalized 0.0-1.0 power domain stays a
+fraction of the flat ``[power].max_watts`` on every band, so a stored,
+echoed or projected level never changes meaning when the band does.
 
 Resolution rules, shared by band and source:
 
-- a known band (the frequency the ceiling-defining observation resolves,
-  inside a declared band that carries a row) or a known source names its own
-  row;
-- anything unknown — no frequency observed yet, a frequency no declared band
-  covers, a source the state has not observed — resolves to the LOWEST
+- a known band (a frequency inside a declared band that carries a row) or a
+  known source names its own row;
+- anything unknown (no frequency evidence, a frequency no declared band
+  covers, a source the state has not observed) resolves to the LOWEST
   declared row of that table, never the widest: an over-rated write is the
   failure this mechanism exists to prevent;
 - band and source tables combine as their minimum;
 - a profile declaring neither table resolves ``None`` and every caller keeps
   today's flat-``max_watts`` behaviour.
 
-Which frequency defines the band: a KNOWN, FRESH ``global.tx_state.tx_target``
-names the transmitting receiver (also during split / cross-band operation)
-and the band is that receiver's own current frequency — so a frequency
-write or poll after the target was read still moves the band — falling
-back to the target's embedded frequency. A tx_target that is
-OBSERVED-but-unknown, or STALE, does not fall back to the selected
-receiver — the authority exists and says it cannot name the transmitter,
-so no band is known and the lowest declared ceiling applies; only a radio
-that never observes tx_target at all (no such field in the snapshot, e.g.
-a single-receiver profile) uses the selected receiver, and a STALE
-selector is equally unknown. STALE frequency fields count as unobserved.
-All of this is read from the canonical StateStore snapshot when the radio
-carries one — with a store attached it is the only authority (production
-observation polling feeds it; the compatibility mirror may lag or survive
-a provider reset) — falling back to the mirror only for store-less
-radios. No shipped observation populates the power source yet, so
-callers pass ``power_source=None`` and the lower source ceiling applies
-until one does.
+Which frequencies define the band (:func:`band_frequencies_hz_from_snapshot`
+for the canonical store, :func:`observed_band_freqs_hz` for the radio):
+
+- a KNOWN, fresh ``global.tx_state.tx_target`` names the transmitting
+  receiver. Its band is the NEWEST fresh evidence about that receiver's
+  transmit frequency: the frequency the target read embedded, or (only when
+  the target does not name a VFO slot) the receiver's own polled frequency.
+  Equal timestamps keep both, so the lower ceiling applies;
+- a ``tx_target`` that is observed but unknown or stale, or a transmit
+  frequency nothing fresh supports, is unknown;
+- a snapshot that never observed ``tx_target`` proves nothing about the
+  transmit route, so every candidate transmitting receiver counts: MAIN
+  alone on a single-receiver profile, MAIN and SUB otherwise, and a
+  receiver with no fresh frequency is unknown.
+
+The result is a tuple of frequencies; the ceiling is the minimum over them.
+Stale frequency fields count as unobserved. The canonical store is the only
+authority when attached (production polling feeds it); the compatibility
+mirror serves store-less radios. No shipped observation names the power
+source yet, so callers pass ``power_source=None`` and the lower source row
+applies.
+
+These readings are an admission-time ESTIMATE (they decide the expected
+readback). The authority at the wire is the backend, which re-reads the
+transmit band from the radio under its own serialization lock.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, VfoSlot
 from ..core.state_store import FreshnessState
 
 __all__ = [
-    "active_receiver_freq_hz",
-    "band_frequency_hz_from_snapshot",
-    "effective_power_max_watts",
-    "observed_band_freq_hz",
+    "band_frequencies_hz_from_snapshot",
+    "has_power_ceilings",
+    "observed_band_freqs_hz",
     "resolve_power_ceiling_watts",
 ]
 
@@ -72,9 +80,15 @@ def _watts_table(profile: Any, attr: str) -> dict[str, int] | None:
     }
 
 
-def _band_ceiling_watts(
-    profile: Any, ceilings: dict[str, int], freq_hz: int | None
-) -> int:
+def has_power_ceilings(profile: Any) -> bool:
+    """True when the profile declares a band or a source ceiling table."""
+    return (
+        _watts_table(profile, "power_ceilings_w") is not None
+        or _watts_table(profile, "power_sources_w") is not None
+    )
+
+
+def _band_ceiling_watts(profile: Any, ceilings: dict[str, int], freq_hz: Any) -> int:
     if isinstance(freq_hz, bool) or not isinstance(freq_hz, int) or freq_hz <= 0:
         return min(ceilings.values())
     matched: list[int] = []
@@ -97,13 +111,16 @@ def _band_ceiling_watts(
 def resolve_power_ceiling_watts(
     profile: Any,
     *,
-    freq_hz: int | None = None,
+    freqs_hz: Sequence[int | None] = (),
     power_source: str | None = None,
 ) -> int | None:
-    """The rated-power ceiling in watts for the given band and source.
+    """The rated-power ceiling in watts for the given bands and source.
 
-    ``None`` when the profile declares neither ``[power.ceilings_w]`` nor
-    ``[power.sources]`` — today's flat-``max_watts`` behaviour. See the
+    *freqs_hz* holds every frequency that may define the transmit band
+    (``None`` for a candidate with no evidence); the band ceiling is the
+    minimum over them, and an empty sequence is an unknown band. ``None``
+    when the profile declares neither ``[power.ceilings_w]`` nor
+    ``[power.sources]`` -- today's flat-``max_watts`` behaviour. See the
     module docstring for the unknown-band/unknown-source rules.
     """
     ceilings = _watts_table(profile, "power_ceilings_w")
@@ -113,7 +130,10 @@ def resolve_power_ceiling_watts(
 
     candidates: list[int] = []
     if ceilings is not None:
-        candidates.append(_band_ceiling_watts(profile, ceilings, freq_hz))
+        candidates.extend(
+            _band_ceiling_watts(profile, ceilings, freq_hz)
+            for freq_hz in (tuple(freqs_hz) or (None,))
+        )
     if sources is not None:
         if isinstance(power_source, str) and power_source in sources:
             candidates.append(sources[power_source])
@@ -127,110 +147,67 @@ def resolve_power_ceiling_watts(
     return min(candidates)
 
 
-def effective_power_max_watts(
-    profile: Any,
-    *,
-    freq_hz: int | None = None,
-    power_source: str | None = None,
-) -> int | float | None:
-    """The watt scale a caller should use where it used ``profile.max_watts``.
-
-    The resolved ceiling when the profile declares one, the flat
-    ``max_watts`` otherwise (and ``None`` when the profile has neither).
-    """
-    ceiling = resolve_power_ceiling_watts(
-        profile, freq_hz=freq_hz, power_source=power_source
-    )
-    if ceiling is not None:
-        return ceiling
-    max_watts = getattr(profile, "max_watts", None)
-    if isinstance(max_watts, (int, float)) and not isinstance(max_watts, bool):
-        return max_watts
-    return None
-
-
 def _positive_int(value: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return None
 
 
-def _known_tx_target_receiver(value: Any) -> str | None:
-    """The receiver a KNOWN ``tx_target`` names (``"MAIN"``/``"SUB"``)."""
+def _known_tx_target(value: Any) -> tuple[str, str | None, int | None] | None:
+    """``(receiver key, slot, embedded frequency)`` of a KNOWN ``tx_target``."""
     if isinstance(value, Mapping):
-        if value.get("status") != "known":
-            return None
+        status = value.get("status")
         receiver = value.get("receiver")
+        slot = value.get("slot")
+        frequency = value.get("frequencyHz")
     else:
-        if getattr(value, "status", None) != "known":
-            return None
+        status = getattr(value, "status", None)
         receiver = getattr(value, "receiver", None)
-    return receiver if receiver in ("MAIN", "SUB") else None
+        slot = getattr(value, "slot", None)
+        frequency = getattr(value, "frequency_hz", None)
+    if status != "known" or receiver not in ("MAIN", "SUB"):
+        return None
+    return (
+        "sub" if receiver == "SUB" else "main",
+        slot if isinstance(slot, str) else None,
+        _positive_int(frequency),
+    )
 
 
-def _known_tx_target_freq_hz(value: Any) -> int | None:
-    """The embedded frequency of a KNOWN ``tx_target`` value, if any.
+def _receiver_keys(receiver_count: int | None) -> tuple[str, ...]:
+    """The receivers that may transmit when the TX route is not proven."""
+    if isinstance(receiver_count, int) and receiver_count == 1:
+        return ("main",)
+    return ("main", "sub")
 
-    The bracketed TX-target reader stamps the frequency it read at its
-    own observation time; for ceiling resolution it is only the fallback
-    behind that receiver's own (continuously polled) frequency field.
+
+def band_frequencies_hz_from_snapshot(
+    snapshot: Any, *, receiver_count: int | None = None
+) -> tuple[int | None, ...]:
+    """The frequencies that may define the transmit band in one snapshot.
+
+    See the module docstring for the rules. ``(None,)`` / a ``None`` entry
+    marks a candidate with no fresh evidence (the lowest ceiling applies).
     """
-    if isinstance(value, Mapping):
-        return _positive_int(value.get("frequencyHz"))
-    return _positive_int(getattr(value, "frequency_hz", None))
-
-
-def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
-    """The band-defining frequency of one canonical state snapshot.
-
-    Precedence: a KNOWN, FRESH ``global.tx_state.tx_target`` names the
-    transmitting receiver, whose band is that receiver's own (fresh)
-    frequency — falling back to the target's embedded frequency — so a
-    frequency write or poll after the target was read still moves the
-    band. A tx_target that is present but unknown or STALE resolves
-    ``None``: the authority exists and cannot name the transmitter, so
-    no band is known (the lowest declared ceiling applies). A snapshot
-    with no tx_target field at all (a radio that never observes one)
-    uses the active receiver's frequency; a STALE active selector is
-    likewise unknown, while an absent one defaults to MAIN (a snapshot
-    that never observed a selector describes a single-receiver shape).
-    STALE frequency fields count as unobserved. Receiver-id aliases
-    (``"0"``/``"main"``, ``"1"``/``"sub"``) collapse onto the same
-    receiver. ``None`` when nothing qualifies.
-    """
-    active: str | None = None
-    active_observed = False
-    freqs: dict[str, int] = {}
     tx_observed = False
-    tx_receiver: str | None = None
-    tx_embedded_freq: int | None = None
+    tx_known: tuple[str, str | None, int | None] | None = None
+    tx_observed_at = 0.0
+    freqs: dict[str, tuple[int, float]] = {}
     for field in getattr(snapshot, "fields", ()) or ():
         path = getattr(field, "path", None)
         if path is None:
             continue
         stale = getattr(field, "freshness", None) is FreshnessState.STALE
+        observed_at = getattr(field, "last_observed_monotonic", 0.0)
         if (
             path.scope is FieldScope.GLOBAL
             and path.family is FieldFamily.TX_STATE
             and path.name == "tx_target"
         ):
             tx_observed = True
-            if stale:
-                continue
-            value = getattr(field, "value", None)
-            tx_receiver = _known_tx_target_receiver(value)
-            tx_embedded_freq = (
-                _known_tx_target_freq_hz(value) if tx_receiver is not None else None
-            )
-            continue
-        if (
-            path.scope is FieldScope.GLOBAL
-            and path.family is FieldFamily.SLOW_STATE
-            and path.name == "active"
-        ):
-            active_observed = True
-            if not stale and getattr(field, "value", None) in ("MAIN", "SUB"):
-                active = field.value
+            if not stale:
+                tx_known = _known_tx_target(getattr(field, "value", None))
+                tx_observed_at = observed_at
             continue
         if (
             path.scope is FieldScope.RECEIVER
@@ -242,52 +219,54 @@ def band_frequency_hz_from_snapshot(snapshot: Any) -> int | None:
             receiver_id = str(getattr(path, "receiver_id", ""))
             receiver_key = "sub" if receiver_id in ("1", "sub") else "main"
             if freq_hz is not None and not stale:
-                freqs[receiver_key] = freq_hz
+                freqs[receiver_key] = (freq_hz, observed_at)
     if tx_observed:
-        if tx_receiver is None:
-            return None
-        receiver_key = "sub" if tx_receiver == "SUB" else "main"
-        return freqs.get(receiver_key) or tx_embedded_freq
-    if active_observed and active is None:
-        # A selector that was observed and then expired is unknown, not a
-        # silent MAIN default; an absent selector describes a snapshot
-        # that never observes one (single-receiver shape).
-        return None
-    return freqs.get("sub" if (active or "MAIN") == "SUB" else "main")
-
-
-def active_receiver_freq_hz(radio: Any) -> int | None:
-    """The active receiver's frequency from the compatibility mirror.
-
-    Reads the backend-neutral ``radio.radio_state`` (``RadioState``:
-    ``main``/``sub`` receivers plus the ``active`` selector). A missing
-    attribute, a non-``RadioState`` object or a non-positive frequency
-    resolves ``None`` — the caller then applies the lowest declared
-    ceiling. Production observation polling does not feed this mirror on
-    every backend; prefer :func:`observed_band_freq_hz`.
-    """
-    state = getattr(radio, "radio_state", None)
-    receiver = (
-        getattr(state, "sub", None)
-        if getattr(state, "active", None) == "SUB"
-        else getattr(state, "main", None)
+        if tx_known is None:
+            return (None,)
+        receiver_key, slot, embedded = tx_known
+        evidence: list[tuple[int, float]] = []
+        if embedded is not None:
+            evidence.append((embedded, tx_observed_at))
+        if slot is None and receiver_key in freqs:
+            # Only an unnamed slot means "the receiver's own VFO", which is
+            # what the receiver's polled frequency describes.
+            evidence.append(freqs[receiver_key])
+        if not evidence:
+            return (None,)
+        newest = max(observed_at for _, observed_at in evidence)
+        return tuple(sorted({hz for hz, at in evidence if at == newest}))
+    return tuple(
+        freqs[key][0] if key in freqs else None
+        for key in _receiver_keys(receiver_count)
     )
-    return _positive_int(getattr(receiver, "freq", None))
 
 
-def observed_band_freq_hz(radio: Any) -> int | None:
-    """The band-defining frequency from the radio's canonical observations.
+def _mirror_band_frequencies_hz(
+    radio: Any, receiver_count: int | None
+) -> tuple[int | None, ...]:
+    state = getattr(radio, "radio_state", None)
+    return tuple(
+        _positive_int(getattr(getattr(state, key, None), "freq", None))
+        for key in _receiver_keys(receiver_count)
+    )
+
+
+def observed_band_freqs_hz(radio: Any) -> tuple[int | None, ...]:
+    """The transmit-band candidate frequencies from a radio's observations.
 
     The canonical StateStore the web layer attaches as ``radio._state_store``
-    (the only thing production observation polling feeds) is the sole
-    authority when attached: its answer stands even when ``None`` (an empty
-    or provider-reset store must apply the unknown-band ceiling, not
-    resurrect the compatibility mirror, which may hold the previous
-    connection's frequency). Store-less radios (direct backend use) fall
-    back to the ``radio_state`` mirror, which ``set_freq`` keeps current.
+    (the only thing production polling feeds) is the sole authority when
+    attached: its answer stands even when empty (an empty or provider-reset
+    store must apply the unknown-band ceiling, not resurrect the
+    compatibility mirror, which may hold the previous connection's
+    frequency). Store-less radios fall back to the ``radio_state`` mirror.
+    An admission-time estimate; the backend re-reads the band at the wire.
     """
+    receiver_count = getattr(getattr(radio, "profile", None), "receiver_count", None)
     store = getattr(radio, "_state_store", None)
     snapshot = getattr(store, "snapshot", None)
     if callable(snapshot):
-        return band_frequency_hz_from_snapshot(snapshot())
-    return active_receiver_freq_hz(radio)
+        return band_frequencies_hz_from_snapshot(
+            snapshot(), receiver_count=receiver_count
+        )
+    return _mirror_band_frequencies_hz(radio, receiver_count)

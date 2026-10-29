@@ -45,8 +45,8 @@ from ...profiles import (
 )
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
 from ...profiles.power_ceilings import (
-    effective_power_max_watts,
-    observed_band_freq_hz,
+    observed_band_freqs_hz,
+    resolve_power_ceiling_watts,
 )
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
@@ -357,22 +357,12 @@ def _level_for_power(value: Any, radio: Any) -> int:
     on a watts radio to 50 W, which the old magnitude heuristic also
     produced (any value ``> 1`` passed through raw) but by accident of
     bucketing on magnitude rather than by declared type.
-
-    MOR-3634: on a watts radio whose profile declares per-band /
-    per-source ceilings, the effective watt scale is the ceiling for the
-    active receiver's band (and source) — ``max_watts`` otherwise — so
-    both the bare-int clamp and the normalized scaling follow the band's
-    rated power. Raw-255 radios are unchanged: the resolved ceiling is
-    ignored there exactly as ``max_watts`` is today.
     """
-    profile = getattr(radio, "profile", None)
     native, _ = resolve_power_level_target(
         value,
         power_native_unit=getattr(radio, "native_power_unit", "raw_255"),
-        power_max_watts=effective_power_max_watts(
-            profile, freq_hz=observed_band_freq_hz(radio)
-        ),
-        power_min_watts=getattr(profile, "min_watts", None),
+        power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
+        power_min_watts=getattr(getattr(radio, "profile", None), "min_watts", None),
     )
     return int(native)
 
@@ -1783,15 +1773,20 @@ class ControlHandler:
                 intent_params["receiver_count"] = receiver_count
         power_max_watts = None
         power_min_watts = None
+        power_ceiling_watts = None
         power_native_unit = getattr(self._radio, "native_power_unit", "raw_255")
         if power_native_unit == "watts":
             profile = getattr(self._radio, "profile", None)
-            # MOR-3634: the per-band/per-source rated ceiling when the
-            # profile declares one, the flat max otherwise.
-            power_max_watts = effective_power_max_watts(
-                profile, freq_hz=observed_band_freq_hz(self._radio)
-            )
+            power_max_watts = getattr(profile, "max_watts", None)
             power_min_watts = getattr(profile, "min_watts", None)
+            # MOR-3634: the expected readback follows the per-band/per-source
+            # rated ceiling the backend will apply at the wire. An estimate
+            # from the latest observations; the queued request itself stays
+            # the operator's, unclamped by band, so a band change queued
+            # ahead of it does not silently shrink or inflate it.
+            power_ceiling_watts = resolve_power_ceiling_watts(
+                profile, freqs_hz=observed_band_freqs_hz(self._radio)
+            )
         descriptor = command_descriptor(name)
         if (
             descriptor is not None
@@ -1822,6 +1817,7 @@ class ControlHandler:
                 power_native_unit=power_native_unit,
                 power_max_watts=power_max_watts,
                 power_min_watts=power_min_watts,
+                power_ceiling_watts=power_ceiling_watts,
             )
         executor = (
             _ControlCommandExecutor(self, wait_for_completion=False)

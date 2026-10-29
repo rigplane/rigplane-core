@@ -2,26 +2,28 @@
 
 The shipped profiles carry one flat ``[power].max_watts``; the manuals differ
 per band and per power source (IC-9700: 144 MHz 100 W / 430 MHz 75 W /
-1.2 GHz 10 W, tier B- — not hardware-verified; IC-705: 10 W on DC, 5 W on
+1.2 GHz 10 W, tier B- -- not hardware-verified; IC-705: 10 W on DC, 5 W on
 battery). The failure this pins: an absolute-watt write above the rated power
-of the active receiver's band or of the power source — from band stacking
+of the transmitting band or of the power source -- from band stacking
 carrying a wide-band setting into a narrow band, an operator mistake, or a
 percent-to-watt conversion that differs per band.
 
 The mechanism is radio-agnostic profile data: ``[power.ceilings_w]`` (band
-name → watts) and ``[power.sources]`` (source name → watts), resolved by
-``rigplane.profiles.power_ceilings`` and applied where ``max_watts`` already
-acts — admission (``command_service.py: resolve_power_level_target`` inputs),
-the backend's ``set_power`` floor site, and the watt scale the UI projects
-(``_normalize_power_level`` / ``_power_level_max_value``). A profile without
-the tables keeps today's flat-``max_watts`` behaviour (the FTX-1: its
-per-band rows are unverified, so it declares none).
+name -> watts) and ``[power.sources]`` (source name -> watts), resolved by
+``rigplane.profiles.power_ceilings``. The ceiling only CAPS a write: admission
+(``command_service.py: resolve_power_level_target``) estimates it for the
+expected readback, and the Yaesu backend's ``set_power`` is the authority at
+the wire -- it re-reads the transmit band from the radio under its lock, so no
+poll, echo or cached context can be out of date. The normalized 0.0-1.0 power
+domain stays a fraction of the flat ``max_watts`` on every band. A profile
+without the tables keeps today's behaviour (the FTX-1: its per-band rows are
+unverified, so it declares none).
 """
 
 from __future__ import annotations
 
 import asyncio
-import time
+import json
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,11 +33,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
-from rigplane.core.capabilities import CAP_POWER_CONTROL
-from rigplane.core.command_service import resolve_power_level_target
+from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+from rigplane.core.command_service import (
+    command_intent_from_request,
+    resolve_power_level_target,
+)
 from rigplane.core.radio_state import RadioState
-from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -45,14 +50,20 @@ from rigplane.core.state_store import StateStore
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.power_ceilings import (
-    active_receiver_freq_hz,
-    band_frequency_hz_from_snapshot,
-    effective_power_max_watts,
-    observed_band_freq_hz,
+    band_frequencies_hz_from_snapshot,
+    has_power_ceilings,
+    observed_band_freqs_hz,
     resolve_power_ceiling_watts,
 )
 from rigplane.rig_loader import RigLoadError, load_rig
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+from rigplane.web.server import WebConfig, WebServer
+from test_web_server import (
+    _read_http_response,
+    _ws_connect,
+    _ws_recv_frame,
+    _ws_send_text,
+)
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 
@@ -218,24 +229,31 @@ def test_loader_refuses_malformed_power_tables(tmp_path, extra, match):
 
 # ── Resolver (profile data + band/source facts) ──────────────────
 
+_IC9700 = "IC-9700"
+
 
 @pytest.mark.parametrize(
-    ("freq_hz", "expected"),
+    ("freqs_hz", "expected"),
     [
-        (145_500_000, 100),
-        (435_000_000, 75),
-        (1_297_000_000, 10),
+        ((145_500_000,), 100),
+        ((435_000_000,), 75),
+        ((1_297_000_000,), 10),
         # Unknown or not-yet-observed frequency: the lowest declared
         # ceiling, never the widest band's.
-        (None, 10),
-        (0, 10),
+        ((None,), 10),
+        ((0,), 10),
+        ((), 10),
         # A frequency no declared band covers resolves the same way.
-        (7_100_000, 10),
+        ((7_100_000,), 10),
+        # Several candidates for the transmitting band: the minimum wins,
+        # and one unknown candidate drags it to the lowest row.
+        ((145_500_000, 435_000_000), 75),
+        ((145_500_000, None), 10),
     ],
 )
-def test_band_ceiling_follows_the_active_band(freq_hz, expected):
-    profile = get_radio_profile("IC-9700")
-    assert resolve_power_ceiling_watts(profile, freq_hz=freq_hz) == expected
+def test_band_ceiling_is_the_minimum_over_the_candidate_bands(freqs_hz, expected):
+    profile = get_radio_profile(_IC9700)
+    assert resolve_power_ceiling_watts(profile, freqs_hz=freqs_hz) == expected
 
 
 @pytest.mark.parametrize(
@@ -255,272 +273,242 @@ def test_source_ceiling_follows_the_known_source(power_source, expected):
 
 def test_band_and_source_ceiling_combine_as_the_minimum():
     profile = replace(
-        get_radio_profile("IC-9700"), power_sources_w={"dc": 100, "battery": 50}
+        get_radio_profile(_IC9700), power_sources_w={"dc": 100, "battery": 50}
     )
     assert (
         resolve_power_ceiling_watts(
-            profile, freq_hz=435_000_000, power_source="battery"
+            profile, freqs_hz=(435_000_000,), power_source="battery"
         )
         == 50
     )
     assert (
-        resolve_power_ceiling_watts(profile, freq_hz=435_000_000, power_source="dc")
+        resolve_power_ceiling_watts(profile, freqs_hz=(435_000_000,), power_source="dc")
         == 75
     )
 
 
 def test_profile_without_tables_resolves_no_ceiling():
     profile = get_radio_profile("FTX-1")
-    assert resolve_power_ceiling_watts(profile, freq_hz=145_000_000) is None
-    # Today's flat max survives untouched as the effective scale.
-    assert effective_power_max_watts(profile, freq_hz=145_000_000) == 100
+    assert not has_power_ceilings(profile)
+    assert resolve_power_ceiling_watts(profile, freqs_hz=(145_000_000,)) is None
+    assert has_power_ceilings(get_radio_profile(_IC9700))
+    assert has_power_ceilings(get_radio_profile("IC-705"))
 
 
-def test_effective_max_follows_the_band_or_falls_back_to_flat_max():
-    profile = get_radio_profile("IC-9700")
-    assert effective_power_max_watts(profile, freq_hz=435_000_000) == 75
-    assert effective_power_max_watts(profile, freq_hz=None) == 10
+# ── Which observations define the transmit band ───────────────────
+
+_FTX1_ROWS = {"2m": 75, "70cm": 50}
+_MAIN_FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
+_SUB_FREQ = FieldPath.active("sub", "freq_mode", "freq_hz")
+_TX_TARGET = FieldPath.global_("tx_state", "tx_target")
 
 
-# ── Active-receiver frequency from the radio state ───────────────
+def _observe(
+    store: StateStore,
+    path: FieldPath,
+    value: Any,
+    *,
+    at: float = 10.0,
+    max_age: float | None = 30.0,
+) -> None:
+    store.apply(
+        Observation(
+            path=path,
+            value=value,
+            source=SourceMetadata("poll_response", "test", "fake", "test"),
+            timestamp_monotonic=at,
+            max_age=max_age,
+        )
+    )
 
 
-def _state_double(*, active: str = "MAIN", main_hz: int = 0, sub_hz: int = 0):
+def _freqs(store: StateStore, *, receiver_count: int | None = 2):
+    return band_frequencies_hz_from_snapshot(
+        store.snapshot(), receiver_count=receiver_count
+    )
+
+
+def test_known_tx_target_names_the_transmitting_band():
+    """Split/cross-band: the TRANSMITTING receiver's band governs."""
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000)
+    _observe(store, _SUB_FREQ, 435_000_000)
+    _observe(
+        store,
+        _TX_TARGET,
+        KnownTxTarget(receiver="SUB", slot=None, frequency_hz=435_000_000),
+    )
+    profile = replace(get_radio_profile("FTX-1"), power_ceilings_w=_FTX1_ROWS)
+
+    freqs = _freqs(store)
+    assert freqs == (435_000_000,)
+    # MAIN sits on 2 m (75 W) but TX routes to 70 cm: 50 W.
+    assert resolve_power_ceiling_watts(profile, freqs_hz=freqs) == 50
+
+
+def test_newer_tx_target_beats_an_older_receiver_read():
+    """Pre-review round 2: the older 145 MHz read must not win over the
+    later bracketed TX-target read of 435 MHz."""
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000, at=10.0)
+    _observe(
+        store,
+        _TX_TARGET,
+        KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=435_000_000),
+        at=11.0,
+    )
+    assert _freqs(store) == (435_000_000,)
+
+
+def test_newer_receiver_read_beats_an_older_tx_target():
+    store = StateStore()
+    _observe(
+        store,
+        _TX_TARGET,
+        KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=145_000_000),
+        at=10.0,
+    )
+    _observe(store, _MAIN_FREQ, 435_000_000, at=11.0)
+    assert _freqs(store) == (435_000_000,)
+
+
+def test_equally_old_disagreeing_evidence_keeps_both_candidates():
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000, at=10.0)
+    _observe(
+        store,
+        _TX_TARGET,
+        KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=435_000_000),
+        at=10.0,
+    )
+    assert _freqs(store) == (145_000_000, 435_000_000)
+
+
+def test_tx_target_on_a_named_slot_ignores_the_receivers_active_frequency():
+    """Pre-review round 2: a split target on MAIN/B is not MAIN's active A."""
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000, at=11.0)
+    _observe(
+        store,
+        _TX_TARGET,
+        KnownTxTarget(receiver="MAIN", slot="B", frequency_hz=435_000_000),
+        at=10.0,
+    )
+    assert _freqs(store) == (435_000_000,)
+
+    # A named slot without its own frequency has no evidence at all.
+    bare = StateStore()
+    _observe(bare, _MAIN_FREQ, 145_000_000)
+    _observe(
+        bare, _TX_TARGET, KnownTxTarget(receiver="MAIN", slot="B", frequency_hz=None)
+    )
+    assert _freqs(bare) == (None,)
+
+
+def test_unproven_tx_route_counts_every_receiver_that_could_transmit():
+    """Pre-review round 2: no tx_target is no proof that focus transmits.
+
+    MAIN's frequency arrived before the first TX-target poll while the
+    physical transmitter may already be routed to SUB: both receivers are
+    candidates, and a receiver nobody observed is unknown.
+    """
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000)
+    profile = replace(get_radio_profile("FTX-1"), power_ceilings_w=_FTX1_ROWS)
+
+    freqs = _freqs(store)
+    assert freqs == (145_000_000, None)
+    assert resolve_power_ceiling_watts(profile, freqs_hz=freqs) == 50
+
+    _observe(store, _SUB_FREQ, 435_000_000)
+    assert _freqs(store) == (145_000_000, 435_000_000)
+
+
+def test_single_receiver_profile_reads_its_only_receiver():
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000)
+    _observe(store, _SUB_FREQ, 435_000_000)
+    assert _freqs(store, receiver_count=1) == (145_000_000,)
+
+
+def test_observed_unknown_tx_target_is_conservative():
+    """A tx_target the authority cannot name resolves no band at all."""
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000)
+    _observe(store, _TX_TARGET, UnknownTxTarget(reason="not-observed"))
+    assert _freqs(store) == (None,)
+
+
+def test_stale_frequency_is_unobserved_evidence():
+    """A frequency the freshness driver aged to STALE does not count."""
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000, at=10.0, max_age=1.0)
+    store.mark_stale_due(now=20.0)
+    assert _freqs(store, receiver_count=1) == (None,)
+
+
+def test_expired_tx_target_stays_conservative():
+    """An expired target must not resurrect receiver focus (pre-review r3)."""
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 145_000_000, max_age=30.0)
+    _observe(store, _SUB_FREQ, 435_000_000, max_age=30.0)
+    _observe(
+        store,
+        _TX_TARGET,
+        KnownTxTarget(receiver="SUB", slot=None, frequency_hz=435_000_000),
+        max_age=1.0,
+    )
+    store.mark_stale_due(now=20.0)
+    assert _freqs(store) == (None,)
+
+
+def _state_double(*, main_hz: int = 0, sub_hz: int = 0) -> RadioState:
     state = RadioState()
-    state.active = active
     state.main.freq = main_hz
     state.sub.freq = sub_hz
     return state
 
 
-def test_active_receiver_freq_reads_the_selected_receiver():
-    radio = SimpleNamespace(
-        radio_state=_state_double(main_hz=435_000_000, sub_hz=145_000_000)
-    )
-    assert active_receiver_freq_hz(radio) == 435_000_000
-    radio.radio_state.active = "SUB"
-    assert active_receiver_freq_hz(radio) == 145_000_000
+def _profile_double(receiver_count: int) -> SimpleNamespace:
+    return SimpleNamespace(receiver_count=receiver_count)
 
 
-def test_active_receiver_freq_is_none_when_unobserved():
-    assert active_receiver_freq_hz(SimpleNamespace(radio_state=_state_double())) is None
-    assert active_receiver_freq_hz(SimpleNamespace()) is None
-
-
-# ── Which observation defines the band ────────────────────────────
-
-
-def _store_with_observations(*observations: Observation) -> StateStore:
-    store = StateStore()
-    for observation in observations:
-        store.apply(observation)
-    return store
-
-
-def test_known_tx_target_frequency_defines_the_band():
-    """Split/cross-band: the TRANSMITTING receiver's band governs."""
-    store = _store_with_observations(
-        _snapshot_observation(
-            FieldPath.active("main", "freq_mode", "freq_hz"),
-            145_000_000,
-            provider="test",
-        ),
-        _snapshot_observation(
-            FieldPath.active("sub", "freq_mode", "freq_hz"),
-            435_000_000,
-            provider="test",
-        ),
-        _snapshot_observation(
-            FieldPath.global_("slow_state", "active"), "MAIN", provider="test"
-        ),
-        _snapshot_observation(
-            FieldPath.global_("tx_state", "tx_target"),
-            KnownTxTarget(receiver="SUB", slot=None, frequency_hz=435_000_000),
-            provider="test",
-        ),
-    )
-    profile = replace(
-        get_radio_profile("FTX-1"), power_ceilings_w={"2m": 75, "70cm": 50}
-    )
-
-    freq_hz = band_frequency_hz_from_snapshot(store.snapshot())
-    assert freq_hz == 435_000_000
-    # The active receiver sits on 2 m (75 W) but TX routes to 70 cm: 50 W.
-    assert effective_power_max_watts(profile, freq_hz=freq_hz) == 50
-
-
-def test_absent_tx_target_uses_the_active_receiver():
-    """A radio that never observes tx_target (e.g. single-receiver) reads focus."""
-    store = _store_with_observations(
-        _snapshot_observation(
-            FieldPath.active("main", "freq_mode", "freq_hz"),
-            145_000_000,
-            provider="test",
-        ),
-        _snapshot_observation(
-            FieldPath.global_("slow_state", "active"), "MAIN", provider="test"
-        ),
-    )
-    assert band_frequency_hz_from_snapshot(store.snapshot()) == 145_000_000
-
-
-def test_observed_unknown_tx_target_is_conservative():
-    """A tx_target the authority cannot name resolves no band at all.
-
-    Pre-review round 2: substituting receiver focus here would let an
-    unreadable FT answer authorize the focused (possibly wider) band
-    while TX is routed elsewhere — the lowest declared ceiling applies.
-    """
-    store = _store_with_observations(
-        _snapshot_observation(
-            FieldPath.active("main", "freq_mode", "freq_hz"),
-            145_000_000,
-            provider="test",
-        ),
-        _snapshot_observation(
-            FieldPath.global_("tx_state", "tx_target"),
-            UnknownTxTarget(reason="not-observed"),
-            provider="test",
-        ),
-    )
-    profile = replace(
-        get_radio_profile("FTX-1"), power_ceilings_w={"2m": 75, "70cm": 50}
-    )
-    assert band_frequency_hz_from_snapshot(store.snapshot()) is None
-    assert effective_power_max_watts(profile, freq_hz=None) == 50
-
-
-def test_stale_band_context_resolves_no_band():
-    """A frequency the freshness driver aged to STALE is unobserved evidence."""
-    store = StateStore()
-    store.apply(
-        Observation(
-            path=FieldPath.active("main", "freq_mode", "freq_hz"),
-            value=145_000_000,
-            source=SourceMetadata("poll_response", "test", "fake", "test"),
-            timestamp_monotonic=10.0,
-            max_age=1.0,
-        )
-    )
-    store.mark_stale_due(now=20.0)
-
-    assert band_frequency_hz_from_snapshot(store.snapshot()) is None
-
-
-def _stale_tx_target_store() -> StateStore:
-    """Fresh receiver frequencies, an EXPIRED TX-target authority."""
-    store = StateStore()
-    for path, value, max_age in (
-        (
-            FieldPath.active("main", "freq_mode", "freq_hz"),
-            145_000_000,
-            30.0,
-        ),
-        (
-            FieldPath.active("sub", "freq_mode", "freq_hz"),
-            435_000_000,
-            30.0,
-        ),
-        (
-            FieldPath.global_("tx_state", "tx_target"),
-            KnownTxTarget(receiver="SUB", slot=None, frequency_hz=435_000_000),
-            1.0,
-        ),
-    ):
-        store.apply(
-            Observation(
-                path=path,
-                value=value,
-                source=SourceMetadata("poll_response", "test", "fake", "test"),
-                timestamp_monotonic=10.0,
-                max_age=max_age,
-            )
-        )
-    # Age ONLY the TX target past its TTL; the receiver frequencies stay
-    # inside theirs.
-    store.mark_stale_due(now=20.0)
-    return store
-
-
-def test_expired_tx_target_stays_conservative():
-    """Pre-review round 3: an expired target must not resurrect focus.
-
-    MAIN sits on the 75 W band and TX was routed to SUB on the 50 W band;
-    with the target expired, substituting receiver focus would authorize
-    75 W. No band is known: the lowest declared ceiling applies.
-    """
-    profile = replace(
-        get_radio_profile("FTX-1"), power_ceilings_w={"2m": 75, "70cm": 50}
-    )
-    snapshot = _stale_tx_target_store().snapshot()
-
-    assert band_frequency_hz_from_snapshot(snapshot) is None
-    assert effective_power_max_watts(profile, freq_hz=None) == 50
-
-
-def test_expired_active_selector_stays_conservative():
-    """An expired selector is unknown, not a silent MAIN default."""
-    store = StateStore()
-    store.apply(
-        Observation(
-            path=FieldPath.active("main", "freq_mode", "freq_hz"),
-            value=145_000_000,
-            source=SourceMetadata("poll_response", "test", "fake", "test"),
-            timestamp_monotonic=10.0,
-            max_age=30.0,
-        )
-    )
-    store.apply(
-        Observation(
-            path=FieldPath.global_("slow_state", "active"),
-            value="SUB",
-            source=SourceMetadata("poll_response", "test", "fake", "test"),
-            timestamp_monotonic=10.0,
-            max_age=1.0,
-        )
-    )
-    store.mark_stale_due(now=20.0)
-
-    assert band_frequency_hz_from_snapshot(store.snapshot()) is None
-
-
-def test_observed_band_freq_prefers_the_canonical_store_over_the_mirror():
+def test_observed_band_freqs_prefer_the_canonical_store_over_the_mirror():
     """Production polling feeds the store; the mirror may lag or stay empty.
 
-    With a store attached its answer is final even when ``None`` (an
+    With a store attached its answer is final even when it holds nothing (an
     emptied/provider-reset store must not resurrect the mirror's
     previous-connection frequency).
     """
-    store = _store_with_observations(
-        _snapshot_observation(
-            FieldPath.active("main", "freq_mode", "freq_hz"),
-            435_000_000,
-            provider="test",
-        )
-    )
+    store = StateStore()
+    _observe(store, _MAIN_FREQ, 435_000_000)
     radio = SimpleNamespace(
+        profile=_profile_double(1),
         _state_store=store,
         radio_state=_state_double(main_hz=145_000_000),
     )
-    assert observed_band_freq_hz(radio) == 435_000_000
+    assert observed_band_freqs_hz(radio) == (435_000_000,)
 
-    emptied = _store_with_observations()
-    assert (
-        observed_band_freq_hz(
-            SimpleNamespace(
-                _state_store=emptied,
-                radio_state=_state_double(main_hz=145_000_000),
-            )
-        )
-        is None
+    emptied = SimpleNamespace(
+        profile=_profile_double(1),
+        _state_store=StateStore(),
+        radio_state=_state_double(main_hz=145_000_000),
     )
-    # Without a store the compatibility mirror answers.
-    assert (
-        observed_band_freq_hz(
-            SimpleNamespace(radio_state=_state_double(main_hz=145_000_000))
-        )
-        == 145_000_000
+    assert observed_band_freqs_hz(emptied) == (None,)
+
+
+def test_store_less_radio_reads_every_possible_transmitter_from_the_mirror():
+    dual = SimpleNamespace(
+        profile=_profile_double(2),
+        radio_state=_state_double(main_hz=145_000_000),
     )
+    assert observed_band_freqs_hz(dual) == (145_000_000, None)
+    single = SimpleNamespace(
+        profile=_profile_double(1),
+        radio_state=_state_double(main_hz=145_000_000),
+    )
+    assert observed_band_freqs_hz(single) == (145_000_000,)
+    assert observed_band_freqs_hz(SimpleNamespace()) == (None, None)
 
 
 # ── Admission clamp in the watts domain ───────────────────────────
@@ -529,8 +517,7 @@ def test_observed_band_freq_prefers_the_canonical_store_over_the_mirror():
 @pytest.mark.parametrize(
     ("value", "ceiling", "floor", "expected_native"),
     [
-        # Above the active band's ceiling: clamped down, exactly as a
-        # flat max_watts clamps today.
+        # Above the transmitting band's ceiling: clamped down.
         (90, 75, None, 75),
         (300, 75, None, 75),
         (75, 75, None, 75),
@@ -538,258 +525,318 @@ def test_observed_band_freq_prefers_the_canonical_store_over_the_mirror():
         # The floor keeps lifting within the ceiling's range.
         (2, 75, 5, 5),
         (0, 75, 5, 5),
+        # A ceiling below the flat max also caps a normalized request.
+        (0.9, 50, None, 50),
+        (0.3, 50, 5, 30),
     ],
 )
 def test_watts_admission_clamps_to_the_ceiling(value, ceiling, floor, expected_native):
     native, level = resolve_power_level_target(
         value,
         power_native_unit="watts",
-        power_max_watts=ceiling,
+        power_max_watts=100,
         power_min_watts=floor,
+        power_ceiling_watts=ceiling,
     )
     assert native == expected_native
-    assert level == expected_native / ceiling
+    # The normalized readback is always a fraction of the flat maximum.
+    assert level == expected_native / 100
 
 
-def test_normalized_write_scales_by_the_ceiling():
+def test_raw_255_admission_ignores_the_ceiling():
     native, level = resolve_power_level_target(
-        1.0, power_native_unit="watts", power_max_watts=75
+        1.0, power_native_unit="raw_255", power_ceiling_watts=10
     )
-    assert native == 75
-    assert level == 1.0
+    assert (native, level) == (255, 1.0)
 
 
-# ── Backend clamp (paths that bypass admission) ───────────────────
+def test_intent_expectation_is_the_clamped_fraction_of_the_flat_maximum():
+    intent = command_intent_from_request(
+        "set_power",
+        {"level": 90},
+        source="http",
+        power_native_unit="watts",
+        power_max_watts=100,
+        power_min_watts=5,
+        power_ceiling_watts=50,
+    )
+    assert intent.params["power_level"] == 0.5
 
 
-def _yaesu_radio_with_ceilings(*, store: bool = False) -> YaesuCatRadio:
+# ── Backend: the ceiling is resolved from the radio at the wire ───
+
+
+class _FakeYaesuWire:
+    """A tiny CAT radio behind the transport: it answers reads and applies
+    writes, so every read in the tests is the radio's real current state."""
+
+    def __init__(self, *, main_hz: int, sub_hz: int = 0, tx: int = 0) -> None:
+        self.main_hz = main_hz
+        self.sub_hz = sub_hz
+        self.tx = tx
+        self.power_w = 0
+        self.writes: list[str] = []
+        self.queries: list[str] = []
+        self.unanswered: set[str] = set()
+        # Awaited after a write's bytes took effect on the radio and before
+        # the transport call returns (the "drain" of a real serial write).
+        self.after_effect: Any = None
+
+    async def query(self, command: str, **_kwargs: object) -> str:
+        self.queries.append(command)
+        if command in self.unanswered:
+            raise CatTimeoutError("no answer")
+        if command == "FA;":
+            return f"FA{self.main_hz:09d}"
+        if command == "FB;":
+            return f"FB{self.sub_hz:09d}"
+        if command == "FT;":
+            return f"FT{self.tx}"
+        if command == "PC;":
+            return f"PC2{self.power_w:03d}"
+        raise AssertionError(f"unexpected read {command!r}")
+
+    async def write(self, command: str, **_kwargs: object) -> None:
+        self.writes.append(command)
+        if command.startswith("FA"):
+            self.main_hz = int(command[2:-1])
+        elif command.startswith("FB"):
+            self.sub_hz = int(command[2:-1])
+        elif command.startswith("FT"):
+            self.tx = int(command[2:-1])
+        elif command.startswith("PC"):
+            self.power_w = int(command[3:-1])
+        if self.after_effect is not None:
+            await self.after_effect(command)
+
+    @property
+    def power_writes(self) -> list[str]:
+        return [w for w in self.writes if w.startswith("PC")]
+
+
+def _yaesu(
+    *,
+    ceilings: dict[str, int] | None = None,
+    main_hz: int = 145_000_000,
+    sub_hz: int = 435_000_000,
+    tx: int = 0,
+) -> tuple[YaesuCatRadio, _FakeYaesuWire]:
     """A YaesuCatRadio on the ftx1 profile plus per-band ceiling rows."""
     config = replace(
         load_rig(_RIGS_DIR / "ftx1.toml"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
+        power_ceilings_w=_FTX1_ROWS if ceilings is None else ceilings,
     )
     radio = YaesuCatRadio("/dev/null", profile=config)
+    wire = _FakeYaesuWire(main_hz=main_hz, sub_hz=sub_hz, tx=tx)
     radio._transport._connected = True
-    radio._transport.write = AsyncMock()
-    if store:
-        radio._state_store = StateStore()
-    return radio
-
-
-@pytest.fixture()
-def watts_radio_with_ceilings():
-    return _yaesu_radio_with_ceilings()
+    radio._transport.query = wire.query
+    radio._transport.write = wire.write
+    return radio, wire
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("freq_hz", "requested", "wire"),
+    ("main_hz", "requested", "wire"),
     [
         # 2 m ceiling 75: a request under it is untouched on the wire.
         (145_000_000, 60, "PC2060;"),
+        (145_000_000, 90, "PC2075;"),
         # 70 cm ceiling 50: a 90 W request is clamped down.
         (435_000_000, 90, "PC2050;"),
-        # Unknown band: the lowest declared ceiling.
-        (0, 90, "PC2050;"),
+        # A band no row covers: the lowest declared ceiling.
+        (7_100_000, 90, "PC2050;"),
+        # The floor lifts under a ceiling (5 W floor, 50 W ceiling).
+        (435_000_000, 3, "PC2005;"),
     ],
 )
-async def test_backend_set_power_clamps_to_band_ceiling(
-    watts_radio_with_ceilings, freq_hz, requested, wire
+async def test_backend_set_power_clamps_to_the_transmit_band_ceiling(
+    main_hz, requested, wire
 ):
-    radio = watts_radio_with_ceilings
-    radio.radio_state.main.freq = freq_hz
+    radio, fake = _yaesu(main_hz=main_hz)
     await radio.set_power(requested)
-    writes = [call.args[0] for call in radio._transport.write.await_args_list]
-    assert writes == [wire]
+    assert fake.power_writes == [wire]
+    # The clamp path adjusts power only: no keying frame goes out.
+    assert all(not frame.startswith("TX") for frame in fake.writes)
 
 
 @pytest.mark.asyncio
-async def test_backend_floor_still_lifts_under_a_ceiling(watts_radio_with_ceilings):
-    radio = watts_radio_with_ceilings
-    radio.radio_state.main.freq = 435_000_000
-    await radio.set_power(3)  # 5 W floor lifts, then the 50 W ceiling caps
-    writes = [call.args[0] for call in radio._transport.write.await_args_list]
-    assert writes == ["PC2005;"]
-
-
-@pytest.mark.asyncio
-async def test_backend_without_tables_keeps_todays_wire():
-    radio = YaesuCatRadio("/dev/null", profile=load_rig(_RIGS_DIR / "ftx1.toml"))
-    radio._transport._connected = True
-    radio._transport.write = AsyncMock()
-    radio.radio_state.main.freq = 435_000_000
-    await radio.set_power(90)
-    writes = [call.args[0] for call in radio._transport.write.await_args_list]
-    assert writes == ["PC2090;"]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("freq_hz", "requested", "wire"),
-    [
-        (435_000_000, 90, "PC2050;"),  # above the 70 cm ceiling: clamped
-        (0, 90, "PC2050;"),  # unknown band: lowest declared ceiling
-        (435_000_000, 3, "PC2005;"),  # floor lift under a ceiling
-    ],
-)
-async def test_backend_clamp_path_never_keys_the_transmitter(freq_hz, requested, wire):
-    """The clamp path adjusts power only: no PTT/TX keying frame goes out.
-
-    Yaesu CAT keys with ``TX1;``; a power write must emit exactly one
-    ``PC`` frame and nothing else, on every clamp outcome.
-    """
-    radio = _yaesu_radio_with_ceilings()
-    radio.radio_state.main.freq = freq_hz
-    await radio.set_power(requested)
-    writes = [call.args[0] for call in radio._transport.write.await_args_list]
-    assert writes == [wire]
-    assert all(not frame.startswith("TX") for frame in writes)
-
-
-@pytest.mark.asyncio
-async def test_backend_set_rf_power_alias_clamps_like_set_power(
-    watts_radio_with_ceilings,
-):
-    """The ``PowerControlCapable`` alias funnels through the same clamp."""
-    radio = watts_radio_with_ceilings
-    radio.radio_state.main.freq = 435_000_000
+async def test_backend_set_rf_power_alias_clamps_like_set_power():
+    radio, fake = _yaesu(main_hz=435_000_000)
     await radio.set_rf_power(90)
-    writes = [call.args[0] for call in radio._transport.write.await_args_list]
-    assert writes == ["PC2050;"]
-    assert all(not frame.startswith("TX") for frame in writes)
+    assert fake.power_writes == ["PC2050;"]
 
 
 @pytest.mark.asyncio
-async def test_backend_band_change_then_power_uses_destination_ceiling():
-    """Pre-review rounds 2-3: set_freq must refresh the band the clamp reads.
-
-    With a canonical store attached (production shape) that already holds
-    a KNOWN TX target on MAIN at 145 MHz, a direct-backend band change
-    echoes into the store under the same lock, so the next power write
-    resolves the DESTINATION band instead of the TX target's stale
-    embedded frequency (75 W would leave the wire at PC2075).
-    """
-    radio = _yaesu_radio_with_ceilings(store=True)
-    radio._state_store.apply(
-        _snapshot_observation(
-            FieldPath.active("main", "freq_mode", "freq_hz"),
-            145_000_000,
-            provider="test",
-        )
-    )
-    radio._state_store.apply(
-        _snapshot_observation(
-            FieldPath.global_("tx_state", "tx_target"),
-            KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=145_000_000),
-            provider="test",
-        )
-    )
-
-    await radio.set_freq(435_000_000)
+async def test_backend_without_tables_reads_nothing_and_keeps_todays_wire():
+    config = load_rig(_RIGS_DIR / "ftx1.toml")
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    fake = _FakeYaesuWire(main_hz=435_000_000)
+    radio._transport._connected = True
+    radio._transport.query = fake.query
+    radio._transport.write = fake.write
     await radio.set_power(90)
+    assert fake.power_writes == ["PC2090;"]
+    assert fake.queries == []
 
-    wires = [call.args[0] for call in radio._transport.write.await_args_list]
-    assert wires == ["FA435000000;", "PC2050;"]
+
+@pytest.mark.asyncio
+async def test_backend_power_follows_the_routed_transmitter():
+    """MAIN on 2 m (75 W), SUB on 70 cm (50 W): FT; names who transmits."""
+    radio, fake = _yaesu(tx=1)
+    await radio.set_power(90)
+    assert fake.power_writes == ["PC2050;"]
+    assert fake.queries == ["FT;", "FB;"]
+
+    radio, fake = _yaesu(tx=0)
+    await radio.set_power(90)
+    assert fake.power_writes == ["PC2075;"]
+    assert fake.queries == ["FT;", "FA;"]
+
+
+@pytest.mark.asyncio
+async def test_backend_band_change_then_power_uses_the_destination_ceiling():
+    radio, fake = _yaesu(main_hz=145_000_000)
+    await radio.set_freq(435_000_000)
+    await radio.set_power(90)  # before any poll could have run
+    assert fake.writes == ["FA435000000;", "PC2050;"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["set_tx_func", "set_tx_source"])
+async def test_backend_tx_route_change_then_power_uses_the_new_transmitter(route):
+    """Pre-review round 2: a TX-route change moves the ceiling immediately."""
+    radio, fake = _yaesu(tx=0)
+    await getattr(radio, route)(1)
+    await radio.set_power(90)
+    assert fake.power_writes == ["PC2050;"]
+
+
+@pytest.mark.asyncio
+async def test_backend_partial_frequency_write_cannot_leave_the_old_band():
+    """Pre-review round 2: bytes reached the radio, then the call was cancelled.
+
+    The radio is on 70 cm now; whatever the caller (or a cache) believes, the
+    next power write reads the radio and clamps to 70 cm.
+    """
+    radio, fake = _yaesu(main_hz=145_000_000)
+
+    async def cancel_after_effect(command: str) -> None:
+        if command.startswith("FA"):
+            raise asyncio.CancelledError
+
+    fake.after_effect = cancel_after_effect
+    task = asyncio.create_task(radio.set_freq(435_000_000))
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    fake.after_effect = None
+
+    await radio.set_power(90)
+    assert fake.main_hz == 435_000_000
+    assert fake.power_writes == ["PC2050;"]
 
 
 @pytest.mark.asyncio
 async def test_backend_power_waits_for_an_in_flight_band_change():
-    """A power write racing a band change resolves the new band (lock).
-
-    The frequency write pauses inside the lock; the concurrent power
-    write must not resolve the ceiling until the band change (wire and
-    store echo) completes, then clamp to the destination band.
-    """
-    radio = _yaesu_radio_with_ceilings(store=True)
-    radio._state_store.apply(
-        _snapshot_observation(
-            FieldPath.active("main", "freq_mode", "freq_hz"),
-            145_000_000,
-            provider="test",
-        )
-    )
-    freq_started = asyncio.Event()
-    freq_release = asyncio.Event()
-    wire_mock = AsyncMock()
-
-    async def gated_write(payload: str, **kwargs: object) -> None:
-        if payload.startswith("FA"):
-            freq_started.set()
-            await freq_release.wait()
-        await wire_mock(payload, **kwargs)
-
-    radio._transport.write = gated_write
-
-    freq_task = asyncio.create_task(radio.set_freq(435_000_000))
-    await asyncio.wait_for(freq_started.wait(), timeout=1.0)
-    power_task = asyncio.create_task(radio.set_power(90))
-    await asyncio.sleep(0)  # let the power write reach the lock
-    assert not power_task.done(), "power write must wait for the band change"
-    freq_release.set()
-    await asyncio.wait_for(freq_task, timeout=1.0)
-    await asyncio.wait_for(power_task, timeout=1.0)
-
-    wires = [call.args[0] for call in wire_mock.await_args_list]
-    assert wires == ["FA435000000;", "PC2050;"]
-
-
-@pytest.mark.asyncio
-async def test_backend_freq_echo_is_bound_to_the_provider_generation():
-    """A provider reset during a suspended write discards its echo.
-
-    Pre-review round 3: applying the echo unconditionally would install
-    the previous generation's requested frequency as fresh proof in the
-    newly emptied store.
-    """
-    radio = _yaesu_radio_with_ceilings(store=True)
-    write_started = asyncio.Event()
+    radio, fake = _yaesu(main_hz=145_000_000)
+    started = asyncio.Event()
     release = asyncio.Event()
-    wire_mock = AsyncMock()
 
-    async def gated_write(payload: str, **kwargs: object) -> None:
-        write_started.set()
-        await release.wait()
-        await wire_mock(payload, **kwargs)
+    async def hold(command: str) -> None:
+        if command.startswith("FA"):
+            started.set()
+            await release.wait()
 
-    radio._transport.write = gated_write
-
-    freq_task = asyncio.create_task(radio.set_freq(145_000_000))
-    await asyncio.wait_for(write_started.wait(), timeout=1.0)
-    radio._state_store.begin_provider_generation()
+    fake.after_effect = hold
+    freq_task = asyncio.create_task(radio.set_freq(435_000_000))
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    power_task = asyncio.create_task(radio.set_power(90))
+    await asyncio.sleep(0)
+    assert not power_task.done(), "power write must wait for the band change"
+    assert fake.power_writes == []
     release.set()
-    await asyncio.wait_for(freq_task, timeout=1.0)
-
-    # The reset emptied the store; the obsolete echo must not repopulate it
-    # (its 2 m frequency would authorize PC2075 — the emptied store's
-    # unknown band clamps to the lowest declared ceiling instead).
-    assert radio._state_store.snapshot().fields == ()
-
-    await radio.set_power(90)
-    assert wire_mock.await_args_list[-1].args[0] == "PC2050;"
+    await asyncio.wait_for(asyncio.gather(freq_task, power_task), timeout=1.0)
+    assert fake.writes == ["FA435000000;", "PC2050;"]
 
 
 @pytest.mark.asyncio
-async def test_backend_freq_echo_expires_like_an_observed_frequency():
-    """The echo carries the profile TTL: unanswered polls age it out.
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda radio: radio.set_freq(435_000_000),
+        lambda radio: radio.set_band(14),
+        lambda radio: radio.band_up(),
+        lambda radio: radio.band_down(),
+        lambda radio: radio.set_split(True),
+        lambda radio: radio.set_tx_func(1),
+        lambda radio: radio.set_tx_source(1),
+        lambda radio: radio.set_vfo_select(1),
+        lambda radio: radio.vfo_a_to_b(),
+        lambda radio: radio.vfo_b_to_a(),
+    ],
+    ids=[
+        "set_freq",
+        "set_band",
+        "band_up",
+        "band_down",
+        "set_split",
+        "set_tx_func",
+        "set_tx_source",
+        "set_vfo_select",
+        "vfo_a_to_b",
+        "vfo_b_to_a",
+    ],
+)
+async def test_every_band_or_route_mutation_waits_for_an_in_flight_power_write(
+    operation,
+):
+    """Pre-review round 2: no mutation interleaves with resolve + write."""
+    radio, fake = _yaesu()
+    async with radio._mode_lock:
+        task = asyncio.create_task(operation(radio))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert fake.writes == []
+    await asyncio.wait_for(task, timeout=1.0)
+    assert fake.writes != []
 
-    Pre-review round 3: without a ``max_age`` the echo would replace the
-    polled entry's TTL and stay FRESH forever, authorizing its band past
-    the freshness budget.
-    """
-    radio = _yaesu_radio_with_ceilings(store=True)
 
-    # Park on 2 m (75 W): an unexpired echo would authorize PC2075.
-    await radio.set_freq(145_000_000)
-    ttl = radio._band_context_max_age(0)  # noqa: SLF001
-    assert isinstance(ttl, float) and ttl > 0
-
-    # No poll answers; drive the store's freshness loop past the TTL.
-    radio._state_store.mark_stale_due(now=time.monotonic() + ttl + 10.0)
+@pytest.mark.asyncio
+async def test_backend_unanswered_reads_fall_back_to_the_lowest_ceiling():
+    radio, fake = _yaesu(main_hz=145_000_000, tx=0)
+    fake.unanswered = {"FA;"}
     await radio.set_power(90)
-    assert radio._transport.write.await_args_list[-1].args[0] == "PC2050;"
+    assert fake.power_writes == ["PC2050;"]  # unknown band: 70 cm row, not 2 m
 
 
-# ── Web handler seam: enqueue set_power on a watts radio ─────────
+@pytest.mark.asyncio
+async def test_backend_unreadable_tx_route_counts_every_receiver():
+    radio, fake = _yaesu(main_hz=145_000_000, sub_hz=435_000_000)
+    fake.unanswered = {"FT;"}
+    await radio.set_power(90)
+    # Either receiver could transmit; the lower row (70 cm, 50 W) applies.
+    assert fake.power_writes == ["PC2050;"]
+    assert fake.queries == ["FT;", "FA;", "FB;"]
+
+
+@pytest.mark.asyncio
+async def test_backend_reading_the_band_never_widens_a_failed_write():
+    """A write error still propagates; the failed read is not swallowed into
+    a wider ceiling."""
+    radio, fake = _yaesu(main_hz=435_000_000)
+    original = fake.write
+
+    async def refuse(command: str, **kwargs: object) -> None:
+        raise RuntimeError("serial down")
+
+    radio._transport.write = refuse
+    with pytest.raises(RuntimeError):
+        await radio.set_power(90)
+    radio._transport.write = original
+    assert fake.power_writes == []
+
+
+# ── Web seam: real handler, queue, poller and backend over the API ─
 
 
 class _QueueRecorder:
@@ -803,9 +850,7 @@ class _QueueRecorder:
         self.items.append(item)
 
 
-def _watts_handler(
-    profile: Any, state: RadioState, *, native_power_unit: str = "watts"
-):
+def _watts_handler(profile: Any, state: RadioState, *, native_power_unit="watts"):
     from rigplane.web.handlers.control import ControlHandler
 
     radio = SimpleNamespace(
@@ -827,65 +872,68 @@ def _watts_handler(
             SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
             radio,
             "9.9.9",
-            "IC-9700",
+            _IC9700,
             server=server,
             session_id=f"power-ceilings-{native_power_unit}",
         ),
     )
 
 
-async def _enqueued_level(profile: Any, state: RadioState, level: int) -> int:
+async def _enqueued_power(profile: Any, state: RadioState, level: Any):
     _radio, handler = _watts_handler(profile, state)
-    await handler._enqueue_command("set_power", {"level": level})
+    result = await handler._enqueue_command("set_power", {"level": level})
     [command] = handler._server.command_queue.items
     assert type(command).__name__ == "SetPower"
     assert command.unit == "watts"
-    return command.level
+    return command.level, result
 
 
 @pytest.mark.asyncio
-async def test_handler_clamps_watts_write_to_the_active_band_ceiling():
-    state = _state_double(main_hz=435_000_000)
-    assert await _enqueued_level(get_radio_profile("IC-9700"), state, 90) == 75
+async def test_handler_queues_the_operators_request_unclamped_by_band():
+    """Pre-review round 2: the band the request is admitted on is not the
+    band it executes on, so the queued value is the request itself (inside
+    the flat range); the backend clamps at the wire."""
+    profile = get_radio_profile(_IC9700)
+    state = _state_double(main_hz=1_297_000_000)  # 23 cm: 10 W row
+    queued, _ = await _enqueued_power(profile, state, 90)
+    assert queued == 90
+    # Normalized requests keep their meaning on every band: a fraction of the
+    # flat 100 W maximum, so 0.5 is 50 W whatever band is current.
+    queued, _ = await _enqueued_power(profile, state, 0.5)
+    assert queued == 50
 
 
 @pytest.mark.asyncio
-async def test_handler_band_change_then_too_high_write_is_clamped():
-    profile = get_radio_profile("IC-9700")
-    state = _state_double(main_hz=145_500_000)
-    # On 2 m the 90 W request passes under the 100 W ceiling…
-    assert await _enqueued_level(profile, state, 90) == 90
-    # …a band change to 1.2 GHz must not carry it across.
-    state.main.freq = 1_297_000_000
-    assert await _enqueued_level(profile, state, 90) == 10
+async def test_handler_reply_expects_the_clamped_fraction_of_the_flat_maximum():
+    profile = get_radio_profile(_IC9700)
+    both_70cm = _state_double(main_hz=435_000_000, sub_hz=435_000_000)
+    _, reply = await _enqueued_power(profile, both_70cm, 90)
+    assert reply["level"] == 90
+    assert reply["admitted_level"] == 0.75  # 75 W row of the 100 W maximum
 
-
-@pytest.mark.asyncio
-async def test_handler_unknown_band_clamps_to_the_lowest_declared_ceiling():
-    state = _state_double()  # no frequency observed yet
-    assert await _enqueued_level(get_radio_profile("IC-9700"), state, 90) == 10
+    # Nothing observed yet: the lowest declared row. So is a dual-receiver
+    # radio whose second receiver is unobserved (it might be the transmitter).
+    _, reply = await _enqueued_power(profile, _state_double(), 90)
+    assert reply["admitted_level"] == 0.1
+    one_known = _state_double(main_hz=435_000_000)
+    _, reply = await _enqueued_power(profile, one_known, 90)
+    assert reply["admitted_level"] == 0.1
 
 
 @pytest.mark.asyncio
 async def test_handler_profile_without_tables_keeps_flat_max_and_floor():
     state = _state_double(main_hz=435_000_000)
     profile = get_radio_profile("FTX-1")
-    assert await _enqueued_level(profile, state, 90) == 90
-    assert await _enqueued_level(profile, state, 150) == 100
-    assert await _enqueued_level(profile, state, 2) == 5
+    assert (await _enqueued_power(profile, state, 90))[0] == 90
+    assert (await _enqueued_power(profile, state, 150))[0] == 100
+    assert (await _enqueued_power(profile, state, 2))[0] == 5
 
 
 @pytest.mark.asyncio
 async def test_handler_raw_255_radio_keeps_the_raw_wire_scale():
-    """The shipped IC-9700 rides raw-255 CI-V: the ceiling never re-scales it.
-
-    The watts doubles above force ``native_power_unit = "watts"`` to
-    exercise the radio-agnostic mechanism; on the real Icom wire a bare
-    int is the documented 0-255 raw value and a float scales onto 0-255,
-    exactly as before the ceilings landed.
-    """
+    """The shipped IC-9700 rides raw-255 CI-V: the ceiling never re-scales it."""
     _radio, handler = _watts_handler(
-        get_radio_profile("IC-9700"),
+        get_radio_profile(_IC9700),
         _state_double(main_hz=1_297_000_000),
         native_power_unit="raw_255",
     )
@@ -898,175 +946,144 @@ async def test_handler_raw_255_radio_keeps_the_raw_wire_scale():
     assert (second.level, second.unit) == (255, "raw_255")
 
 
-# ── Sync runtime seat: expectation follows the band ceiling ─────────
+@pytest.fixture()
+async def yaesu_web():
+    """A real WebServer + Yaesu poller over the fake-wire FTX-1 (2 m / 70 cm)."""
+    radio, fake = _yaesu(main_hz=145_000_000, sub_hz=435_000_000, tx=0)
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = YaesuCatPoller(radio, command_queue=web.command_queue)
+    poller.bind_provider_generation(
+        capture=lambda: web.command_state_store.provider_generation
+    )
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
 
+    async def drain() -> None:
+        while True:
+            await web.command_queue.wait(timeout=5.0)
+            await poller._drain_commands()
 
-def test_sync_runtime_clamps_power_expectation_to_the_band_ceiling():
-    """The sync seat resolves the band ceiling, not the flat max.
-
-    A watts radio parked on 70 cm (50 W ceiling under a 100 W flat max):
-    a 90 W write still actuates the raw request, but the published
-    expectation is the ceiling-clamped full scale (1.0 of the 50 W
-    ceiling), not 90/100 of the flat max.
-    """
-    from rigplane.sync import IcomRadio
-
-    r = IcomRadio("127.0.0.1")
+    consumer = asyncio.create_task(drain())
     try:
-        profile = get_radio_profile("FTX-1")
-        r._radio._profile = replace(  # noqa: SLF001
-            profile,
-            power_ceilings_w={"2m": 75, "70cm": 50},
-            capabilities=frozenset({*profile.capabilities, CAP_POWER_CONTROL}),
-        )
-        r._radio.native_power_unit = "watts"
-        r._radio.radio_state.main.freq = 435_000_000
-        r._radio.set_rf_power = AsyncMock()
-
-        r.set_rf_power(90)
-
-        r._radio.set_rf_power.assert_awaited_once_with(90)
-        field = r._state_store.snapshot().field(  # noqa: SLF001
-            "global.operator_controls.power_level"
-        )
-        assert field.value == pytest.approx(1.0)
+        yield web, radio, fake
     finally:
-        r._loop.close()
+        consumer.cancel()
+        web._server.close()
+        await web._server.wait_closed()
+        web._server = None
+        tasks = list(web._client_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(consumer, *tasks, return_exceptions=True)
 
 
-# ── Watt scale shown per band (observation + public projection) ──
+async def _until(predicate: Any) -> None:
+    async with asyncio.timeout(5.0):
+        while not predicate():
+            await asyncio.sleep(0.01)
 
 
-def _yaesu_poll_radio(profile: Any, state: RadioState) -> MagicMock:
-    radio = MagicMock(spec=YaesuCatRadio)
-    radio.profile = profile
-    radio.radio_state = state
-    # No canonical store attached: the compatibility mirror answers.
-    radio._state_store = None
-    radio.capabilities = {"tx"}
-    radio.read_power = AsyncMock(return_value=(2, 40))
-    # mic_gain rides the same lane ungated by any capability.
-    radio.read_mic_gain = AsyncMock(return_value=40)
-    return radio
+def _poll_source(radio: YaesuCatRadio) -> MagicMock:
+    """The radio as the observation adapter polls it: the setpoint read goes
+    through the real backend and the fake wire; unrelated reads are stubbed."""
+    source = MagicMock(spec=YaesuCatRadio)
+    source.profile = radio.profile
+    source.capabilities = {"tx"}
+    source._state_store = None
+    source.read_power = radio.read_power
+    source.read_mic_gain = AsyncMock(return_value=40)
+    return source
 
 
-def _observation_profile() -> RadioAcquisitionProfile:
-    profile = get_radio_profile("FTX-1")
-    assert profile.state_acquisition is not None
-    return profile.state_acquisition
+def _observation_profile(radio: YaesuCatRadio):
+    acquisition = radio.profile.state_acquisition
+    assert acquisition is not None
+    return acquisition
 
 
-async def _polled_power_level(
-    profile: Any, state: RadioState, watts: int
-) -> tuple[StateStore, MagicMock]:
-    radio = _yaesu_poll_radio(profile, state)
-    radio.read_power = AsyncMock(return_value=(2, watts))
-    store = StateStore()
+async def _http_post(web: WebServer, payload: dict[str, Any]) -> tuple[int, Any]:
+    reader, writer = await asyncio.open_connection("127.0.0.1", web.port)
+    try:
+        body = json.dumps(payload).encode()
+        writer.write(
+            (
+                "POST /api/v1/commands HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{web.port}\r\n"
+                "Connection: close\r\nContent-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n\r\n"
+            ).encode()
+            + body
+        )
+        await writer.drain()
+        status, _headers, response = await asyncio.wait_for(
+            _read_http_response(reader), 5
+        )
+        return status, json.loads(response)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _ws_commands(web: WebServer, commands: list[dict[str, Any]]) -> list[Any]:
+    reader, writer, _ = await _ws_connect("127.0.0.1", web.port, "/api/v1/ws")
+    try:
+        for expected in ("hello", "state_update"):
+            _, frame = await _ws_recv_frame(reader, timeout=5.0)
+            assert json.loads(frame)["type"] == expected
+        for command in commands:
+            await _ws_send_text(writer, json.dumps({"type": "cmd", **command}))
+        pending = {command["id"] for command in commands}
+        results = []
+        while pending:
+            _, frame = await _ws_recv_frame(reader, timeout=5.0)
+            message = json.loads(frame)
+            if message.get("type") == "response" and message.get("id") in pending:
+                pending.discard(message["id"])
+                results.append(message)
+        return results
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+@pytest.mark.parametrize("level", [0.9, 90])
+async def test_api_band_change_then_power_request_reaches_the_wire_clamped(
+    yaesu_web, protocol, level
+):
+    """Pre-review round 2: API entry -> queue -> poller -> backend -> state.
+
+    MAIN starts on 2 m (75 W row). The operator asks for 435 MHz and 90 W
+    (as an absolute or a normalized request) through the real API; the radio
+    ends up on 70 cm, the wire carries the 70 cm ceiling, and the public
+    state agrees with it.
+    """
+    web, radio, fake = yaesu_web
+    commands = [
+        {"id": "band", "name": "set_freq", "params": {"freq": 435_000_000}},
+        {"id": "power", "name": "set_power", "params": {"level": level}},
+    ]
+    if protocol == "http":
+        for command in commands:
+            status, result = await _http_post(web, command)
+            assert (status, result["ok"]) == (200, True), result
+    else:
+        results = await _ws_commands(web, commands)
+        assert all(result["ok"] for result in results), results
+
+    await _until(lambda: fake.power_writes)
+    assert fake.writes == ["FA435000000;", "PC2050;"]
+    assert fake.main_hz == 435_000_000
+
+    # The radio answers the next poll; the public state reports what it
+    # actually runs: 50 W, on the one scale every band shares (the flat
+    # 100 W maximum).
+    store = web.command_state_store
     for observation in await YaesuObservationAdapter(
-        radio, profile=_observation_profile(), clock=lambda: 123.456
+        _poll_source(radio), profile=_observation_profile(radio), clock=lambda: 1.0
     ).poll_tx_controls():
         store.apply(observation)
-    return store, radio
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("freq_hz", "expected_fraction"),
-    [
-        (145_000_000, 40 / 75),  # 2 m: full scale is the 75 W ceiling
-        (435_000_000, 40 / 50),  # 70 cm: full scale is the 50 W ceiling
-        (0, 40 / 50),  # unknown band: the lowest declared ceiling
-    ],
-)
-async def test_power_level_observation_scales_watts_by_band_ceiling(
-    freq_hz, expected_fraction
-):
-    profile = replace(
-        get_radio_profile("FTX-1"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
+    state = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=radio, receiver_count=2
     )
-    store, _radio = await _polled_power_level(
-        profile, _state_double(main_hz=freq_hz), 40
-    )
-
-    assert store.snapshot().field(
-        "global.operator_controls.power_level"
-    ).value == pytest.approx(expected_fraction)
-
-
-@pytest.mark.asyncio
-async def test_over_ceiling_readback_saturates_through_the_public_projection():
-    """A readback above the resolved ceiling stays a valid 0.0-1.0 fraction.
-
-    Pre-review round 1: with the band unobserved the conservative 50 W
-    ceiling applies while the radio still reports a legal-on-2m 60 W
-    setpoint; ``60 / 50 = 1.2`` used to leave the normalized domain and
-    the public projection divided by the scale a second time (2.4 %).
-    The observation saturates at 1.0 and the projection keeps it there.
-    """
-    profile = replace(
-        get_radio_profile("FTX-1"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
-    )
-    store, radio = await _polled_power_level(profile, _state_double(main_hz=0), 60)
-
-    assert store.snapshot().field(
-        "global.operator_controls.power_level"
-    ).value == pytest.approx(1.0)
-    payload = build_public_state_payload_from_snapshot(
-        store.snapshot(),
-        radio=radio,
-        receiver_count=2,
-    )
-    assert payload["powerLevel"] == pytest.approx(1.0)
-
-
-def _snapshot_observation(
-    path: FieldPath, value: Any, *, provider: str = "yaesu_cat"
-) -> Observation:
-    return Observation(
-        path=path,
-        value=value,
-        source=SourceMetadata("poll_response", provider, "fake", "test"),
-        timestamp_monotonic=10.0,
-    )
-
-
-@pytest.mark.parametrize(
-    ("freq_hz", "raw_watts", "expected"),
-    [
-        (145_000_000, 50, 50 / 75),  # 2 m scale
-        (435_000_000, 50, 50 / 50),  # 70 cm scale: full scale
-        (None, 50, 50 / 50),  # unknown band: lowest declared ceiling
-    ],
-)
-def test_public_power_level_projection_divides_by_band_ceiling(
-    freq_hz, raw_watts, expected
-):
-    profile = replace(
-        get_radio_profile("FTX-1"),
-        power_ceilings_w={"2m": 75, "70cm": 50},
-    )
-
-    store = StateStore()
-    store.apply(
-        _snapshot_observation(
-            FieldPath.global_("operator_controls", "power_level"), raw_watts
-        )
-    )
-    if freq_hz is not None:
-        store.apply(
-            _snapshot_observation(
-                FieldPath.active("0", "freq_mode", "freq_hz"),
-                freq_hz,
-                provider="test",
-            )
-        )
-
-    payload = build_public_state_payload_from_snapshot(
-        store.snapshot(),
-        radio=SimpleNamespace(profile=profile),
-        receiver_count=1,
-    )
-
-    assert payload["powerLevel"] == pytest.approx(expected)
+    assert state["powerLevel"] == pytest.approx(0.5)

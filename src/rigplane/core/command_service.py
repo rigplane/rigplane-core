@@ -985,18 +985,22 @@ def resolve_power_level_target(
     power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
     power_min_watts: int | float | None = None,
+    power_ceiling_watts: int | float | None = None,
 ) -> tuple[int, float]:
     """Resolve the native power integer and its exact normalized readback.
 
     On a watts-native radio with a valid max, the native value is clamped
-    to ``[min, max]`` — normalized floats and bare ints alike (MOR-2998: a
+    to ``[min, max]`` -- normalized floats and bare ints alike (MOR-2998: a
     profile floor such as the FTX-1's 5 W lifts the bottom of the range
-    off the refused 0 W write; MOR-3634: the max — the flat
-    ``[power].max_watts`` or the caller-resolved per-band/per-source
-    rated ceiling — caps a bare int from above with or without a floor,
-    which is the rated-power clamp). A radio without ``min_watts`` keeps
-    the zero bottom of the range. Raw-255 radios are unchanged: a bare
-    int stays the wire value and floats scale onto 0-255.
+    off the refused 0 W write; MOR-3634: the max caps a bare int from above
+    with or without a floor). ``power_max_watts`` is also the normalized
+    scale: the readback is always a fraction of it, on every band.
+    ``power_ceiling_watts`` is the optional per-band/per-source rated
+    ceiling (``profiles/power_ceilings.py``); it caps the native value
+    below ``max`` -- and below the floor -- without changing the scale. A
+    radio without ``min_watts`` keeps the zero bottom of the range.
+    Raw-255 radios are unchanged: a bare int stays the wire value and
+    floats scale onto 0-255, and a ceiling is ignored.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"level {value!r} must be an int or a normalized float")
@@ -1028,6 +1032,14 @@ def resolve_power_level_target(
         native = max(lower, min(upper, value))
     else:
         native = value
+    if (
+        watts_native
+        and valid_max
+        and isinstance(power_ceiling_watts, (int, float))
+        and not isinstance(power_ceiling_watts, bool)
+        and power_ceiling_watts > 0
+    ):
+        native = min(native, int(power_ceiling_watts))
     return native, native / scale
 
 
@@ -1262,6 +1274,7 @@ def command_intent_from_request(
     power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
     power_min_watts: int | float | None = None,
+    power_ceiling_watts: int | float | None = None,
 ) -> CommandIntent:
     """Normalize a production command request into a backend-neutral intent."""
 
@@ -1335,6 +1348,7 @@ def command_intent_from_request(
             power_native_unit=power_native_unit,
             power_max_watts=power_max_watts,
             power_min_watts=power_min_watts,
+            power_ceiling_watts=power_ceiling_watts,
         )
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))

@@ -29,10 +29,6 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
 from rigplane.core.types import ctcss_booleans_for_tone_squelch_type
-from rigplane.profiles.power_ceilings import (
-    effective_power_max_watts,
-    observed_band_freq_hz,
-)
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
@@ -752,17 +748,7 @@ class YaesuObservationAdapter:
 
     def _normalize_power_level(self, watts: object) -> float | None:
         profile = getattr(self.radio, "profile", None)
-        # MOR-3634: the watt scale is the per-band/per-source rated
-        # ceiling when the profile declares one, the flat max_watts
-        # otherwise — the same scale the write path clamps against, so a
-        # full-scale reading reconciles with a full-scale write on every
-        # band. A reading above the resolved ceiling (e.g. a conservative
-        # unknown-band ceiling) saturates at 1.0 rather than leaving the
-        # normalized 0.0-1.0 domain, which the public projection would
-        # otherwise divide by the scale a second time.
-        max_watts = effective_power_max_watts(
-            profile, freq_hz=observed_band_freq_hz(self.radio)
-        )
+        max_watts = getattr(profile, "max_watts", None)
         if isinstance(max_watts, bool) or not isinstance(max_watts, (int, float)):
             self._log_field_skip(
                 "power_level",
@@ -784,7 +770,7 @@ class YaesuObservationAdapter:
                 ValueError(f"watts must be numeric, got {watts!r}"),
             )
             return None
-        return min(1.0, float(watts) / float(max_watts))
+        return float(watts) / float(max_watts)
 
     async def poll_tx_meters(self) -> tuple[Observation, ...]:
         adapter = self._adapter()

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
@@ -20,7 +19,6 @@ from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
-from ...core.state_pipeline_contracts import FieldPath, Observation, SourceMetadata
 from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry
 from ...exceptions import (
@@ -38,7 +36,7 @@ from ...profiles.control_domain import (
     validate_control_raw_value,
 )
 from ...profiles.power_ceilings import (
-    observed_band_freq_hz,
+    has_power_ceilings,
     resolve_power_ceiling_watts,
 )
 from ...radio_state import RadioState
@@ -67,6 +65,7 @@ if TYPE_CHECKING:
     from ...audio.session import AudioSession
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
+    from ...core.state_pipeline_contracts import FieldPath, Observation
     from ...profiles import RadioProfile
     from ...profiles.rig_loader import RigConfig
     from ...types import BandStackRegister, MemoryChannel
@@ -1390,83 +1389,11 @@ class YaesuCatRadio:
         """
         async with self._mode_lock:
             cmd = "set_freq" if receiver == 0 else "set_freq_sub"
-            store = getattr(self, "_state_store", None)
-            generation = getattr(store, "provider_generation", None)
             await self._write(cmd, freq=freq)
             if receiver == 0:
                 self._state.main.freq = freq
             else:
                 self._state.sub.freq = freq
-            self._echo_band_context_freq(
-                receiver, freq, generation=generation, store=store
-            )
-
-    def _band_context_max_age(self, receiver: int) -> float:
-        """Freshness TTL for a band-context echo (profile-derived).
-
-        Mirrors :func:`rigplane.runtime._state_queries.tx_target_max_age` and
-        its pattern: the profile's declared TTL for the receiver's frequency
-        field, with the same 3.0 s stand-in when the profile declares no
-        acquisition policy or TTL for it. Without a ``max_age`` the echo
-        would replace the polled entry's TTL and stay FRESH forever once
-        polling stops answering.
-        """
-        acquisition = self._config.state_acquisition
-        if acquisition is not None:
-            receiver_id = "sub" if receiver == 1 else "main"
-            ttl = acquisition.policy_for(
-                FieldPath.active(receiver_id, "freq_mode", "freq_hz")
-            ).freshness_ttl_seconds
-            if ttl is not None:
-                return float(ttl)
-        return 3.0
-
-    def _echo_band_context_freq(
-        self,
-        receiver: int,
-        freq: int,
-        *,
-        generation: int | None,
-        store: Any = None,
-    ) -> None:
-        """Echo our own frequency write into the canonical store (MOR-3634).
-
-        The rated-power ceiling resolves the band from the attached
-        StateStore when one exists (production observation polling feeds
-        only the store). Without this echo, a direct-backend ``set_freq``
-        leaves the store on the previous band until the next poll cycle,
-        and a following ``set_power`` would resolve the old — possibly
-        higher — ceiling. Same unconfirmed ``local_reconcile`` echo class
-        the web command ingress uses; a radio-answered value still
-        overwrites it on the next poll. The echo is bound to the provider
-        generation captured before the write — a ``begin_provider_generation``
-        reset that landed while the write was suspended discards it rather
-        than installing the previous generation's request as fresh proof —
-        and carries the profile-derived TTL so an unanswered poll lets it
-        expire like any observed frequency.
-        """
-        if store is None:
-            store = getattr(self, "_state_store", None)
-        apply_current = getattr(store, "apply_current", None)
-        if not callable(apply_current):
-            return
-        if isinstance(generation, int):
-            current = getattr(store, "provider_generation", None)
-            if isinstance(current, int) and current != generation:
-                return
-        receiver_id = "sub" if receiver == 1 else "main"
-        apply_current(
-            Observation(
-                path=FieldPath.active(receiver_id, "freq_mode", "freq_hz"),
-                value=freq,
-                source=SourceMetadata(
-                    source="local_reconcile",
-                    provider=str(getattr(self, "backend_id", "yaesu_cat")),
-                ),
-                timestamp_monotonic=time.monotonic(),
-                max_age=self._band_context_max_age(receiver),
-            )
-        )
 
     # -- Mode ---------------------------------------------------------------
 
@@ -2697,9 +2624,9 @@ class YaesuCatRadio:
     async def set_tx_func(self, vfo: int) -> None:
         """Set TX function (0 = MAIN, 1 = SUB).
 
-        Serialized under ``_mode_lock`` (MOR-3634) so a concurrent power
-        write cannot resolve its band ceiling between this TX-route
-        change and the next bracketed-FT observation.
+        Serialized under ``_mode_lock`` (MOR-3634) with ``set_power``, which
+        re-reads the transmit band under the same lock: a power write never
+        resolves its rated ceiling across a TX-route change.
         """
         async with self._mode_lock:
             await self._write("set_tx_func", vfo=str(vfo))
@@ -2793,8 +2720,13 @@ class YaesuCatRadio:
         return await self.read_split()
 
     async def set_split(self, state: bool) -> None:
-        """Set split operation state."""
-        await self._write("set_split", state="1" if state else "0")
+        """Set split operation state.
+
+        Serialized under ``_mode_lock`` (MOR-3634): split moves the transmit
+        VFO, which ``set_power`` re-reads under the same lock.
+        """
+        async with self._mode_lock:
+            await self._write("set_split", state="1" if state else "0")
 
     async def read_vfo_select(self) -> int:
         """Read VFO/receiver selection without mutating legacy state.
@@ -3022,16 +2954,12 @@ class YaesuCatRadio:
 
         MOR-3634: a profile-declared per-band / per-source rated ceiling
         (``[power.ceilings_w]`` / ``[power.sources]``) caps the request
-        down to the band (or source) ceiling after the floor lift — the
-        same clamp admission applies, kept here for paths that bypass it
-        (rigctld ``\\set_level RFPOWER`` routing, the CLI ``power``
-        command). A profile without the tables is unchanged; the ceiling
-        wins over the floor when both apply. Resolution and the write run
-        under ``_mode_lock`` so a concurrent frequency change cannot slip
-        a higher-ceiling resolution between the band change and this
-        write (``set_freq`` updates the band under the same lock).
-        Frequency facts come from the canonical store when attached, the
-        compatibility mirror otherwise.
+        down to the ceiling after the floor lift -- the wire authority for
+        every path (web admission only estimates it; rigctld ``RFPOWER``
+        and the CLI ``power`` command bypass admission). The band comes
+        from the radio itself, read under ``_mode_lock`` (see
+        :meth:`_read_transmit_band_freqs_hz`). A profile without the tables
+        is unchanged and reads nothing.
 
         Args:
             watts: Power in watts.
@@ -3040,12 +2968,41 @@ class YaesuCatRadio:
         async with self._mode_lock:
             if self._config.min_watts is not None:
                 watts = max(self._config.min_watts, watts)
-            ceiling = resolve_power_ceiling_watts(
-                self.profile, freq_hz=observed_band_freq_hz(self)
-            )
-            if ceiling is not None:
-                watts = min(ceiling, watts)
+            if has_power_ceilings(self.profile):
+                ceiling = resolve_power_ceiling_watts(
+                    self.profile, freqs_hz=await self._read_transmit_band_freqs_hz()
+                )
+                if ceiling is not None:
+                    watts = min(ceiling, watts)
             await self._write("set_power", head=str(head), watts=watts)
+
+    async def _read_transmit_band_freqs_hz(self) -> tuple[int | None, ...]:
+        """Ask the radio which band it would transmit on, right now (MOR-3634).
+
+        The authority behind the rated-power ceiling: the frequency of the
+        transmitting receiver (``FT;`` names it on a dual-receiver radio, then
+        that receiver's frequency is read), taken from the radio under
+        ``_mode_lock`` immediately before the ``PC`` write -- not from a poll
+        that may predate a band change, a cancelled partial write or a
+        TX-route change. Every band, TX-route and split mutation holds the
+        same lock, so none can interleave between this read and the write.
+        A read the radio does not answer is an unknown candidate (``None``):
+        the lowest declared ceiling applies, never the widest. When the
+        TX route cannot be read, every receiver is a candidate.
+        """
+        receivers: tuple[int, ...] = (0,)
+        if self.receiver_count > 1:
+            try:
+                receivers = (await self.get_tx_func(),)
+            except Exception:
+                receivers = (0, 1)
+        freqs: list[int | None] = []
+        for receiver in receivers:
+            try:
+                freqs.append(await self.read_freq(receiver))
+            except Exception:
+                freqs.append(None)
+        return tuple(freqs)
 
     async def set_rf_power(self, level: int) -> None:
         """Set TX power level — :class:`PowerControlCapable` interface.
@@ -3724,15 +3681,20 @@ class YaesuCatRadio:
         11=70M/GEN, 12=AIR, 13=144M, 14=430M.
         """
         cmd = "set_band" if receiver == 0 else "set_band_sub"
-        await self._write(cmd, band=band)
+        # A band change is serialized under ``_mode_lock`` with ``set_power``
+        # (MOR-3634), like ``band_up``/``band_down`` below.
+        async with self._mode_lock:
+            await self._write(cmd, band=band)
 
     async def band_up(self, receiver: int = 0) -> None:
         """Step up one band (BU0)."""
-        await self._write("band_up")
+        async with self._mode_lock:
+            await self._write("band_up")
 
     async def band_down(self, receiver: int = 0) -> None:
         """Step down one band (BD0)."""
-        await self._write("band_down")
+        async with self._mode_lock:
+            await self._write("band_down")
 
     # -- AGC ----------------------------------------------------------------
 
