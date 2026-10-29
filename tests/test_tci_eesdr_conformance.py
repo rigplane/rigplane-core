@@ -238,6 +238,7 @@ async def test_command_round_trip(tcp_available: None) -> None:
             await wait_until(
                 lambda: ("vfo", ("0", "0", "14074001")) in handler.commands
             )
+            assert ("vfo", ("0", "0", "14074001")) in handler.commands
         finally:
             await close_listener(listener)
     finally:
