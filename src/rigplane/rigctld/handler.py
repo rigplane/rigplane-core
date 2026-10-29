@@ -507,6 +507,34 @@ class _RigctldCommandExecutor:
             raise _RigctldCommandFailure(HamlibError.EIO) from exc
         return CommandExecutionResult()
 
+    async def _execute_managed_tuner(
+        self, intent: CommandIntent
+    ) -> CommandExecutionResult:
+        """Normalize the one in-scope rigctld function into the shared leaf."""
+        queue = self.handler._command_queue
+        assert queue is not None
+        raw_session = intent.params.get("session_id")
+        session_id = None if raw_session is None else str(raw_session)
+        loop = asyncio.get_running_loop()
+        timeout = intent.timeout or self.handler._config.command_timeout
+        try:
+            await execute_managed_tuner(
+                radio=self.handler._radio,
+                queue=queue,
+                source="rigctld",
+                session_id=session_id,
+                command_id=intent.id,
+                on=bool(intent.params["on"]),
+                expires_at_monotonic=loop.time() + timeout,
+                connection_generation=queue.capture_connection_generation(),
+                provider_generation=self.handler._provider_generation_capture(),
+            )
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            raise _RigctldCommandFailure(HamlibError.ETIMEOUT) from exc
+        except CommandError as exc:
+            raise _RigctldCommandFailure(HamlibError.ERJCTED) from exc
+        return CommandExecutionResult()
+
     async def _execute_managed_descriptor_write(
         self,
         intent: CommandIntent,
@@ -534,18 +562,22 @@ class _RigctldCommandExecutor:
         except CommandUnsupportedError as exc:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL) from exc
         loop = asyncio.get_running_loop()
+        completion: asyncio.Future[None] = loop.create_future()
         timeout = intent.timeout or self.handler._config.command_timeout
+        expires_at = loop.time() + timeout
+        queue.put_ordered(
+            normalized,
+            future=completion,
+            command_id=normalized.id,
+            source=normalized.source,
+            session_id=session_id,
+            expires_at_monotonic=expires_at,
+            provider_generation=self.handler._provider_generation_capture(),
+            connection_generation=queue.capture_connection_generation(),
+        )
         try:
-            await execute_managed_tuner(
-                radio=self.handler._radio,
-                queue=queue,
-                source="rigctld",
-                session_id=session_id,
-                command_id=intent.id,
-                on=bool(intent.params["on"]),
-                expires_at_monotonic=loop.time() + timeout,
-                connection_generation=queue.capture_connection_generation(),
-                provider_generation=self.handler._provider_generation_capture(),
+            await asyncio.wait_for(
+                completion, timeout=max(0.0, expires_at - loop.time())
             )
         except (TimeoutError, asyncio.TimeoutError) as exc:
             raise _RigctldCommandFailure(HamlibError.ETIMEOUT) from exc
@@ -623,11 +655,7 @@ class _RigctldCommandExecutor:
             and intent.name == "set_func"
             and str(intent.params["func"]).upper() == "TUNER"
         ):
-            return await self._execute_managed_descriptor_write(
-                intent,
-                "set_tuner_status",
-                {"value": 1 if bool(intent.params["on"]) else 0},
-            )
+            return await self._execute_managed_tuner(intent)
         repeater_write = (
             _FUNC_SET.get(str(intent.params["func"]).upper())
             if managed and intent.name == "set_func"
