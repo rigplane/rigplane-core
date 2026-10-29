@@ -75,13 +75,15 @@ and the changelog table inside the PDF itself:
   [PDF](https://raw.githubusercontent.com/ExpertSDR3/TCI/main/TCI%20Protocol%202.1.pdf),
   [license](https://github.com/ExpertSDR3/TCI/blob/main/LICENSE).
 
-Open item: one third-party repository states that the reference ExpertSDR3
-accepts `audio_start` with two arguments while other implementations take
-one; the 2.1 text describes `AUDIO_START:arg1;` with a single receiver
-number. Which side is right for a given ExpertSDR3 version is not confirmed.
-The report also notes the default port is not stated in the specification
-text it parsed; third-party sources give 40001 for ExpertSDR and 50001 for
-Thetis, AetherSDR and wfview.
+Settled against the specification texts 1.7-2.1: `audio_start` takes one
+argument (a single receiver number, `AUDIO_START:arg1;`). An earlier draft of
+this note repeated a third-party repository's claim of a two-argument form;
+that claim is refuted against the PDFs and is kept here only as a record of
+the correction. The leaf grammar still parses the two-argument shape, as a
+tolerance pin only, not as a claim about any client.
+Open item: the report notes the default port is not stated in the
+specification text it parsed; third-party sources give 40001 for ExpertSDR
+and 50001 for Thetis, AetherSDR and wfview.
 
 ## 3. Client programs
 
@@ -318,5 +320,6 @@ audio and spots; the dates of the Apache Labs forum messages.
    `HW_SENSORS*`, `CW_MON`) and the renamed `CHANNELS_COUNT` must parse as
    ordinary names in the leaf grammar, with no special casing (the adapter
    ignores what it does not implement).
-3. Client quirks to pin by tests: the default port, the `audio_start` arity
-   and the mode names.
+3. Client quirks to pin by tests: the default port and the mode names. The
+   `audio_start` arity is settled (one argument, section 2); the leaf keeps
+   the two-argument shape only as a tolerance pin.

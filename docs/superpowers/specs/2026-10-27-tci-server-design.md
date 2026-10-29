@@ -302,8 +302,21 @@ Reported client constraints that shape the design:
    `drive:<trx>` is a read; only `drive:<trx>,<power>` writes.
 4. The `protocol` line may switch client behaviour ([AS], "ESDR3-mode"). Which
    `protocol:` and `device:` strings to announce is **open** (decision Q4).
+   Clients read these strings and do not negotiate versions (second-hand);
+   the announced values stay honest, and real-client transcripts are pinned
+   in tests (C0).
 5. JTDX "can crash with some TCI servers" ([AS] user doc). Any deviation in the
    init burst is a risk; capture C0 must include JTDX.
+6. `audio_start` takes one argument (the receiver) in the 1.7-2.1 PDFs; a
+   third-party note claiming two arguments is refuted against the spec text.
+   The leaf grammar still parses the two-argument shape, as a tolerance pin
+   only (`tests/test_tci_protocol.py`), not as a claim about any client.
+7. A third-party analysis of real WSJT-X traffic (WSJT-X issue 105,
+   second-hand) reports TX audio as 48 kHz float32 stereo. The audio phase is
+   sized from a C0 capture with a real WSJT-X before it lands, not from this
+   report.
+8. PTT ownership is not in the spec; `ManagedTxAuthority` stays the single
+   owner.
 
 ### 5.3 Receiver and channel model
 
