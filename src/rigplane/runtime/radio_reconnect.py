@@ -65,11 +65,25 @@ async def watchdog_loop(radio: IcomRadio) -> None:
     last_health_log = time.monotonic()
     last_rx_count = radio._ctrl_transport.rx_packet_count
     last_civ_count = radio._civ_transport.rx_packet_count if radio._civ_transport else 0
+    last_check = time.monotonic()
     try:
         while radio._connected:
             await asyncio.sleep(radio.WATCHDOG_CHECK_INTERVAL)
             if not radio._connected:
                 break
+
+            # MOR-3868: a sleep that overran its interval means THIS event
+            # loop (or the whole process) did not run — a CPU-starved CI
+            # runner, a suspended host. Nothing was received because nothing
+            # ran, not because the link went quiet, and a peer that shares
+            # the loop (the simulator) cannot have pinged either. The
+            # overrun is no evidence against the link: shift the activity
+            # mark by it, so the idle window restarts from when the loop
+            # could first have heard the radio again.
+            now = time.monotonic()
+            overrun = max(0.0, now - last_check - radio.WATCHDOG_CHECK_INTERVAL)
+            last_check = now
+            last_activity = min(now, last_activity + overrun)
 
             # Check if any transport has received new packets since last check
             ctrl_count = radio._ctrl_transport.rx_packet_count
