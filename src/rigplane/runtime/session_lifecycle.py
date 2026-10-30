@@ -1269,6 +1269,18 @@ class CoreRadioSessionLifecycle:
         )
 
     async def soft_reconnect(self) -> None:
+        """Recover while reusing the session; concurrent callers share one run.
+
+        Concurrent callers coalesce onto the in-flight ``_run_recover`` task
+        instead of starting a second ladder.  When a preempting replacement
+        (or a teardown) cancels that shared task, a coalesced caller that was
+        NOT itself cancelled sees a *foreign* ``CancelledError`` — it must not
+        masquerade as the caller's own cancellation (background pollers treat
+        that as shutdown and exit).  The superseded caller instead gets
+        ``RigplaneConnectionError("session recovery was superseded")`` so it
+        can rejoin the replacement recovery.  A caller that IS being cancelled
+        keeps ``CancelledError``.
+        """
         # Coalesce concurrent recovery onto the in-flight one.
         recovery = self._recover_task
         if recovery is None or recovery.done():
@@ -1279,6 +1291,16 @@ class CoreRadioSessionLifecycle:
             self._recovery_waiters[caller] = recovery
         try:
             await recovery
+        except asyncio.CancelledError:
+            if (
+                recovery.cancelled()
+                and caller is not None
+                and caller.cancelling() == 0
+            ):
+                raise RigplaneConnectionError(
+                    "session recovery was superseded"
+                ) from None
+            raise
         finally:
             if caller is not None and self._recovery_waiters.get(caller) is recovery:
                 del self._recovery_waiters[caller]

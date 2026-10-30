@@ -1105,7 +1105,14 @@ class CivRuntime:
             try:
                 await task
             except asyncio.CancelledError:
-                pass
+                # MOR-3350: the join also swallows THIS task's own
+                # cancellation (this is how preempt.cancel() lands when the
+                # predecessor's tail is inside this join).  Propagate it
+                # after the handle bookkeeping, like stop_pump.
+                me = asyncio.current_task()
+                if me is not None and me.cancelling():
+                    self._host._civ_data_watchdog_task = None
+                    raise asyncio.CancelledError
         self._host._civ_data_watchdog_task = None
 
         rc_task = self._reconnect_task
@@ -1142,7 +1149,14 @@ class CivRuntime:
             try:
                 await rc_task
             except asyncio.CancelledError:
-                pass
+                # MOR-3350: same swallow as above — a cancel of the stopping
+                # task itself landing in this join must propagate after the
+                # handle bookkeeping, not be mistaken for the joined task.
+                if current is not None and current.cancelling():
+                    self._reconnect_task = None
+                    if is_pending_replacement:
+                        self._pending_replacement = None
+                    raise asyncio.CancelledError
             if (
                 predecessor is not None
                 and predecessor is not current
@@ -1152,7 +1166,13 @@ class CivRuntime:
                 try:
                     await predecessor
                 except asyncio.CancelledError:
-                    pass
+                    # MOR-3350: same swallow as above — propagate the
+                    # stopping task's own cancellation after bookkeeping.
+                    if current is not None and current.cancelling():
+                        self._reconnect_task = None
+                        if is_pending_replacement:
+                            self._pending_replacement = None
+                        raise asyncio.CancelledError
             self._reconnect_task = None
             if is_pending_replacement:
                 # The replacement never started, so its ``finally``

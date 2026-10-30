@@ -598,6 +598,62 @@ async def test_recovery_exhaustion_closes_and_releases() -> None:
 
 
 # ---------------------------------------------------------------------------
+# MOR-3350 P1 — a preempted recovery tail must not cancel unrelated waiters
+# ---------------------------------------------------------------------------
+
+
+async def test_coalesced_waiters_survive_foreign_cancel_of_recovery() -> None:
+    """MOR-3350 P1: cancelling the shared recovery reads as one failed attempt.
+
+    Two callers coalesce onto one ``_run_recover`` run; the shared task is
+    then cancelled from outside (a preempting replacement / teardown), not
+    via either caller.  The caller whose own cancellation was NOT requested
+    must get ``RigplaneConnectionError("session recovery was superseded")``
+    — never a foreign ``CancelledError`` masquerading as its own
+    cancellation — while a caller that IS being cancelled keeps
+    ``CancelledError``.
+    """
+    lc, mech, _events = make_lifecycle()
+    mech.queue_ok()
+    await lc.connect()
+
+    release = asyncio.Event()
+
+    async def parked_once() -> None:
+        await release.wait()
+
+    mech.soft_reconnect_once = parked_once  # type: ignore[method-assign]
+    first = asyncio.ensure_future(lc.soft_reconnect())
+    second = asyncio.ensure_future(lc.soft_reconnect())
+    try:
+        # Both callers coalesced onto the same in-flight recovery.
+        for _ in range(100):
+            if lc._recover_task is not None and len(lc._recovery_waiters) == 2:
+                break
+            await asyncio.sleep(0)
+        assert lc._recover_task is not None
+        assert len(lc._recovery_waiters) == 2
+
+        # A caller that cancels ITSELF still gets CancelledError ...
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+
+        # ... while the shared task cancelled from outside (not via the
+        # remaining caller) surfaces as a superseded attempt, not as the
+        # remaining caller's own cancellation.
+        shared = lc._recover_task
+        assert shared is not None
+        shared.cancel()
+        with pytest.raises(ConnectionError, match="superseded"):
+            await first
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+        await lc.disconnect()
+
+
+# ---------------------------------------------------------------------------
 # D1 — event listener add/remove + exceptions swallowed
 # ---------------------------------------------------------------------------
 

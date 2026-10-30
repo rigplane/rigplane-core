@@ -1344,6 +1344,308 @@ async def test_external_teardown_still_cancels_the_pending_replacement(
         )
 
 
+async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
+    radio: IcomRadio,
+    transport: MockTransport,
+) -> None:
+    """MOR-3350 P1: a waiter on a preempted tail is not cancelled with it.
+
+    Real lifecycle with a stubbed ``soft_reconnect_once`` mechanism: the
+    first recovery parks in its tail, a waiter joins it through
+    ``_wait_for_civ_transport_recovery`` (the path ``RadioPoller._run``
+    reaches for a background poll), and a second notice preempts the tail.
+    The shared recovery is then cancelled from outside (the teardown side
+    of the handoff — the preempt itself only cancels the predecessor
+    waiter).  The waiter must not read that foreign cancellation as its
+    own: it keeps waiting and returns normally once the replacement
+    recovery completes (the stub restores ``_civ_transport``/CONNECTED).
+    """
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._civ_recovering = False
+    radio._civ_runtime._reconnect_task = None
+    radio._civ_runtime._recovery_cleaned_task = None
+    radio._civ_runtime._pending_replacement = None
+    ctrl = MagicMock()
+    ctrl._udp_transport = object()
+    radio._ctrl_transport = ctrl
+    entered = asyncio.Event()
+    entered_second = asyncio.Event()
+    never = asyncio.Event()
+    second_go = asyncio.Event()
+    cleanup_calls = 0
+    calls = 0
+
+    async def record_force_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls > 1:
+            # Freeze the replacement before it coalesces: the test cancels
+            # the shared tail first, then lets the replacement proceed to
+            # a fresh recovery.
+            await second_go.wait()
+
+    async def record_release() -> None:
+        return None
+
+    radio._force_cleanup_civ = record_force_cleanup
+    radio._control_phase.release = record_release
+
+    async def parked_tail_attempt() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Tail: session re-established, CI-V path still down.
+            radio._conn_state = RadioConnectionState.CONNECTED
+            radio._civ_transport = None
+            radio._connected = False
+            entered.set()
+            await never.wait()
+            return
+        # Replacement's fresh recovery restores the CI-V path.
+        radio._civ_transport = transport
+        radio._connected = True
+        entered_second.set()
+
+    mech = radio._session_lifecycle._mech
+    mech.soft_reconnect_once = parked_tail_attempt  # type: ignore[method-assign]
+
+    first: asyncio.Task[None] | None = None
+    second: asyncio.Task[None] | None = None
+    waiter: asyncio.Task[None] | None = None
+    try:
+        with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+            radio._civ_runtime.request_recovery_now("busy=0 (first)")
+            first = radio._civ_runtime._reconnect_task
+            assert first is not None
+            try:
+                await asyncio.wait_for(entered.wait(), 10.0)
+            except asyncio.TimeoutError:
+                pytest.fail("the first recovery never reached its tail")
+            waiter = asyncio.create_task(
+                radio._civ_runtime._wait_for_civ_transport_recovery(timeout=5.0)
+            )
+            # The waiter kicked its fast soft_reconnect and coalesced onto
+            # the first recovery's tail.
+            for _ in range(1000):
+                if waiter in radio._session_lifecycle._recovery_waiters:
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("the waiter never joined the recovery tail")
+            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            second = radio._civ_runtime._reconnect_task
+            assert second is not None and second is not first
+            # Let the replacement reach its frozen pre-coalesce point, then
+            # cancel the shared tail from outside (the teardown side of the
+            # handoff — not via the waiter).
+            for _ in range(100):
+                if cleanup_calls == 2:
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("the replacement never left its preempt handoff")
+            shared = radio._session_lifecycle._recover_task
+            assert shared is not None
+            shared.cancel()
+            for _ in range(1000):
+                if shared.done():
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("the cancelled tail never finished")
+            second_go.set()
+            # The waiter keeps waiting (no CancelledError) while the
+            # replacement runs its fresh recovery.
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert not waiter.done(), (
+                "preempting a recovery tail cancelled an unrelated waiter"
+            )
+            await asyncio.wait_for(waiter, 5.0)
+            assert not waiter.cancelled()
+            await asyncio.wait_for(second, 10.0)
+            assert entered_second.is_set(), (
+                "the replacement recovery never completed"
+            )
+            assert calls == 2
+    finally:
+        never.set()
+        second_go.set()
+        await _cancel_recovery_tasks(
+            first, second, waiter, radio._session_lifecycle._recover_task
+        )
+
+
+async def test_stop_data_watchdog_propagates_own_cancellation_during_join(
+    radio: IcomRadio,
+) -> None:
+    """MOR-3350 P2: a stop cancelled in the watchdog join stays cancelled.
+
+    A real watchdog task that delays its exit after being cancelled keeps
+    ``stop_data_watchdog`` parked in the join; cancelling the stop task
+    there must end the stop cancelled (``CancelledError``), not return
+    normally.  The old ``except CancelledError: pass`` consumed the
+    stopping task's own cancellation.
+    """
+    release = asyncio.Event()
+
+    async def delayed_watchdog() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+            return
+
+    radio._civ_data_watchdog_task = asyncio.create_task(delayed_watchdog())
+    radio._civ_runtime._reconnect_task = None
+    radio._civ_runtime._pending_replacement = None
+    stop_task: asyncio.Task[None] = asyncio.create_task(
+        radio._civ_runtime.stop_data_watchdog()
+    )
+    try:
+        for _ in range(1000):
+            watchdog = radio._civ_data_watchdog_task
+            if watchdog is not None and watchdog.cancelling() > 0:
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("stop never reached the watchdog join")
+        stop_task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stop_task
+        assert stop_task.cancelled()
+    finally:
+        release.set()
+        await _cancel_recovery_tasks(
+            stop_task, radio._civ_data_watchdog_task
+        )
+
+
+async def test_preempt_enters_replacement_before_stuck_tail_timeout(
+    radio: IcomRadio,
+) -> None:
+    """MOR-3350 P2: the replacement outruns a tail stuck in watchdog join.
+
+    The predecessor tail calls the real ``stop_data_watchdog`` and blocks
+    joining a slow watchdog; a second notice preempts it.  Cancelling the
+    shared tail from outside (where ``preempt.cancel()`` must land) has to
+    unwind the join instead of being swallowed, so the replacement runs
+    its fresh recovery well before the old tail's long timeout (< 2 s).
+    The replacement is frozen before coalescing so the cancel cannot race
+    it (a coalesced replacement would read the cancel as superseded and
+    take the exhaustion path instead of a fresh attempt).
+    """
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._civ_recovering = False
+    radio._civ_runtime._reconnect_task = None
+    radio._civ_runtime._recovery_cleaned_task = None
+    radio._civ_runtime._pending_replacement = None
+    entered = asyncio.Event()
+    go = asyncio.Event()
+    never = asyncio.Event()
+    entered_second = asyncio.Event()
+    second_go = asyncio.Event()
+    cleanup_calls = 0
+    release_watchdog = asyncio.Event()
+
+    async def delayed_watchdog() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release_watchdog.wait()
+            return
+
+    async def record_force_cleanup() -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls > 1:
+            # Freeze the replacement before it coalesces: the test cancels
+            # the shared tail first, then lets the replacement proceed to
+            # a fresh recovery.
+            await second_go.wait()
+
+    async def record_release() -> None:
+        return None
+
+    radio._force_cleanup_civ = record_force_cleanup
+    radio._control_phase.release = record_release
+
+    async def parked_tail_attempt() -> None:
+        if not entered.is_set():
+            radio._conn_state = RadioConnectionState.CONNECTED
+            entered.set()
+            await asyncio.wait_for(go.wait(), 10.0)
+            # The tail teardown the identity revalidation runs: joining a
+            # slow watchdog here is where the preempt must land.
+            await radio._civ_runtime.stop_data_watchdog()
+            await never.wait()
+            return
+        entered_second.set()
+
+    mech = radio._session_lifecycle._mech
+    mech.soft_reconnect_once = parked_tail_attempt  # type: ignore[method-assign]
+
+    radio._civ_data_watchdog_task = asyncio.create_task(delayed_watchdog())
+    first: asyncio.Task[None] | None = None
+    second: asyncio.Task[None] | None = None
+    try:
+        with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+            radio._civ_runtime.request_recovery_now("busy=0 (first)")
+            first = radio._civ_runtime._reconnect_task
+            assert first is not None
+            try:
+                await asyncio.wait_for(entered.wait(), 10.0)
+            except asyncio.TimeoutError:
+                pytest.fail("the first recovery never reached its tail")
+            go.set()
+            # Let the tail reach the watchdog join (its stop cancels the
+            # slow watchdog first, then blocks joining it).
+            for _ in range(1000):
+                watchdog = radio._civ_data_watchdog_task
+                if watchdog is not None and watchdog.cancelling() > 0:
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("the tail never reached the watchdog join")
+            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            second = radio._civ_runtime._reconnect_task
+            assert second is not None and second is not first
+            shared = radio._session_lifecycle._recover_task
+            assert shared is not None
+            shared.cancel()
+            for _ in range(100):
+                if cleanup_calls == 2:
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("the replacement never left its preempt handoff")
+            # On the fixed code the tail is already done here, so the
+            # released replacement always builds a fresh recovery; on the
+            # old code it is still stuck in the swallowed join.
+            for _ in range(100):
+                if shared.done():
+                    break
+                await asyncio.sleep(0)
+            second_go.set()
+            try:
+                await asyncio.wait_for(entered_second.wait(), 2.0)
+            except asyncio.TimeoutError:
+                pytest.fail(
+                    "the replacement never ran its fresh recovery: the "
+                    "preempted tail is still holding the shared recovery"
+                )
+    finally:
+        go.set()
+        never.set()
+        second_go.set()
+        release_watchdog.set()
+        await _cancel_recovery_tasks(
+            first, second, radio._session_lifecycle._recover_task
+        )
+        await _cancel_recovery_tasks(radio._civ_data_watchdog_task)
+
+
 async def test_watchdog_handoff_does_not_replace_a_live_reconnect_task(
     radio: IcomRadio,
 ) -> None:
