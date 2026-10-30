@@ -46,13 +46,13 @@ Routing defaults, subject to observed quality and current availability:
 |---|---|
 | One command, narrow lookup, deterministic extraction | Root tool call; no worker |
 | CI fact collection, bounded repetitive check, small mechanical edit | Ordinary tool first; if a worker is justified, first consider Spark/Low when available through an authorized mechanism, otherwise Luna/Low or Terra with a brief fit/availability reason |
-| Localized implementation or test correction | Terra/Medium; Sol/Medium when ambiguity is material |
-| Subsystem implementation or substantive review | Sol/Medium; higher effort for demonstrated risk |
-| Difficult architectural, protocol, concurrency, or lifecycle analysis | Sol/Medium; Sol/High only for a contested decision, only for that bounded problem. Never Astra |
+| Localized implementation or test correction | Terra/Medium; 6.1 Sol/Medium when ambiguity is material |
+| Subsystem implementation or substantive review | 6.1 Sol/Medium; higher effort for demonstrated risk |
+| Difficult architectural, protocol, concurrency, or lifecycle analysis | 6.1 Sol/Medium; 6.1 Sol/High only for a contested decision, only for that bounded problem. Never Astra |
 
 Verify available models and their allowance buckets on the actual host; Spark may have a separate allowance. Do not create an unauthorized user-owned task or delay delivery merely to reach Spark. Model names in this table are selection targets, not a runtime availability guarantee. Select the smallest capable available model and pass explicit model and effort overrides through a supported dispatch mechanism; legacy role frontmatter does not establish the active Codex model or reasoning setting. For Claude Code, use a supported per-invocation model selection rather than relying on omitted frontmatter, which inherits the parent ([Claude Code subagents](https://code.claude.com/docs/en/sub-agents)). If explicit selection is unsupported, report that limitation instead of silently inheriting an expensive root model.
 
-Do not assume Luna/Terra/Sol have independent allowances or calculate plan savings from API prices. Use ordinary speed by default where configurable; faster execution requires a reason and awareness of its actual usage cost.
+Do not assume Luna/Terra/6.1 Sol have independent allowances or calculate plan savings from API prices. Use ordinary speed by default where configurable; faster execution requires a reason and awareness of its actual usage cost.
 
 Usually use one builder followed by one independent verifier. Parallelize review with CI against a frozen candidate, not an actively changing implementation. Use multiple builders only for material independent scopes with disjoint file ownership. Do not add a scout for a lookup the coordinator can finish in one small tool call. Workers may not recursively delegate by default.
 
