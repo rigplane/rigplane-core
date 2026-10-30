@@ -1,15 +1,16 @@
 ---
-description: Configure WSJT-X, JTDX, and OpsLog against RigPlane's TCI endpoint for FT8 and FT4 (control phase; audio over TCI is a later phase).
+description: Configure WSJT-X, JTDX, and OpsLog against RigPlane's TCI endpoint for FT8 and FT4 (control plus audio over one socket).
 ---
 
-# TCI Setup Guide (Control Phase)
+# TCI Setup Guide (Control and Audio)
 
 This guide covers configuring data-mode clients against RigPlane's
-client-facing TCI endpoint (phase "control": frequency, mode, split and
-PTT). It is separate from the `rigctld`-compatible endpoint covered in
-the [WSJT-X / JTDX / JS8Call guide](wsjtx-setup.md). Audio over TCI
-ships in a later phase; until then WSJT-X audio still flows through the
-audio bridge while CAT and PTT go over TCI.
+client-facing TCI endpoint (frequency, mode, split, PTT and RX/TX
+audio). It is separate from the `rigctld`-compatible endpoint covered
+in the [WSJT-X / JTDX / JS8Call guide](wsjtx-setup.md). Audio over TCI
+needs no virtual audio cable: RX audio arrives as mono frames on the
+same socket after `audio_start:0`, and TX audio goes out after
+`trx:0,true,tci`.
 
 Client behaviour in this page is reported, not captured: no
 client-recording session has been done yet, so the steps below follow
@@ -52,16 +53,21 @@ On connect the client waits for the init burst up to `ready;` and seeds
 its state from it; every write the client sends is answered, and a
 refused PTT arrives as `trx:0,false;`.
 
-## 3. Known limits of this phase
+## 3. Known limits
 
 - `tune` is answered `tune:0,false;` and does nothing; `tune_drive`
   follows `drive`.
-- Keying with an explicit audio source (`trx:0,true,<source>`) is
-  refused; a bare `trx:0,true` keys the radio's current input.
+- `trx:0,true,tci` keys with TX audio only when the radio has a
+  `PCM_1CH_16BIT` TX route; any other explicit audio source
+  (`trx:0,true,<source>`) is refused. A bare `trx:0,true` keys the
+  radio's current input.
 - Without the managed TX composition the server announces
   `receive_only:true` and refuses every key.
 - A TX over driven by a TCI client leaves the TX input where it is;
   the server does not restore it afterwards.
-- If the client expects RX/TX audio frames on this socket, that is the
-  audio phase: not offered yet, and binary frames are ignored until it
-  ships.
+- RX is served as real mono in every mode; a client's request for two
+  channels is answered with the value in force (`1`).
+- Real-client TX behaviour is not captured yet (no C0-TX session has
+  run against this socket): keying a transmitter from a client is
+  bench-only until that evidence lands, and this phase stays HOLD for
+  merge meanwhile.
