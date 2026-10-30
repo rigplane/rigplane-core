@@ -784,6 +784,58 @@ async def test_serial_partial_lifecycle_retires_liveness_before_wait(
         await radio.disconnect()
 
 
+async def test_identity_only_liveness_refresh_reaches_existing_websocket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+    from rigplane.web import runtime_helpers
+    from test_web_server import _close_ws, _ws_connect, _ws_recv_frame
+
+    radio = IcomRadio("127.0.0.1", model="IC-7610")
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    radio.set_state_change_callback(server._on_radio_state_change)
+    listener = await asyncio.start_server(server._handle_connection, "127.0.0.1", 0)
+    async with listener:
+        port = listener.sockets[0].getsockname()[1]
+        reader, writer, _ = await _ws_connect("127.0.0.1", port, "/api/v1/ws")
+
+        async def receive_state() -> dict[str, Any]:
+            async with asyncio.timeout(5):
+                while True:
+                    _, payload = await _ws_recv_frame(reader)
+                    event = json.loads(payload)
+                    if event["type"] == "state_update":
+                        return event["data"]
+
+        try:
+            baseline = await receive_state()
+            assert baseline["data"]["connection"]["liveness"]["lastFrameAgeMs"] is None
+            before = radio._state_store.snapshot()
+            for _ in range(2):
+                frame = parse_civ_frame(
+                    build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x19, sub=0, data=b"\x01")
+                )
+                await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+                update = await receive_state()
+                body = update.get("changed", update.get("data"))
+                assert body["connection"]["liveness"]["lastFrameAgeMs"] is not None
+                assert update["transportSeq"] > baseline["transportSeq"]
+                key = server._public_state_delivery_key(before, health_revision=0)
+                with monkeypatch.context() as clock:
+                    clock.setattr(
+                        runtime_helpers, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + 1)
+                    )
+                    assert server._public_state_delivery_key(before, health_revision=0) == key
+                baseline = update
+            after = radio._state_store.snapshot()
+            assert after.state_revision == before.state_revision
+            assert after.freshness_revision == before.freshness_revision
+            assert after.observation_seq == before.observation_seq
+        finally:
+            await _close_ws(writer)
+            radio.set_state_change_callback(None)
+
+
 async def test_api_info_liveness_stays_null_until_a_real_read() -> None:
     """The daemon-only phase (connected, VFO probe refused, no rig read yet)
     must show daemon reachability as ``null`` age, never as radio liveness."""
