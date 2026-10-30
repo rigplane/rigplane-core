@@ -15,6 +15,11 @@ from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
 from mock_server import MockIcomRadio
 from rigplane import IC_7610_ADDR
 from rigplane.backends.rigctld_client import RigctldClientRadio, RigctldTransport
+from rigplane.backends.ic705 import Ic705SerialRadio
+from rigplane.backends.ic7300 import Ic7300SerialRadio
+from rigplane.backends.ic9700 import Ic9700SerialRadio
+from rigplane.backends.icom7610 import Icom7610SerialRadio
+from dataclasses import replace
 from rigplane.backends.rigctld_client.observations import (
     build_external_rigctld_acquisition_profile,
     resolve_external_rigctld_poll_intervals,
@@ -38,6 +43,7 @@ from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.state_schema import ServerStatePublic
 from test_radio import MockTransport
 from test_yaesu_cat_transport import FakeStreamReader, FakeStreamWriter
+from test_icom7610_serial_radio import _FakeSerialCivLink
 
 
 def _liveness(radio: Any, *, now: float | None = None) -> dict[str, Any] | None:
@@ -717,6 +723,65 @@ async def _serve_info(radio: Any) -> dict[str, Any]:
     text = bytes(writer.buffer).decode("ascii", errors="replace")
     body = text.split("\r\n\r\n", 1)[1]
     return json.loads(body or "{}")
+
+
+@pytest.mark.parametrize(
+    "radio_cls", [Ic705SerialRadio, Ic7300SerialRadio, Icom7610SerialRadio, Ic9700SerialRadio]
+)
+@pytest.mark.parametrize("action", ["disconnect", "failed_reopen"])
+async def test_serial_partial_lifecycle_retires_liveness_before_wait(
+    radio_cls: Any, action: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rigplane import RadioConnectionState
+    from rigplane.exceptions import ConnectionError as RadioConnectionError
+
+    link = _FakeSerialCivLink(model_id=0x01)
+    radio = radio_cls(
+        device="/dev/test", civ_link=link, _enumerate_serial_ports_fn=lambda: []
+    )
+    radio._profile = replace(radio._profile, expected_identity_ids=("FF",))
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.05
+    await radio.connect()
+    assert radio.conn_state is RadioConnectionState.CONNECTING
+    assert radio.last_valid_frame_monotonic is not None
+    assert (await _serve_info(radio))["connection"]["liveness"]["lastFrameAgeMs"] is not None
+    retired = radio._civ_epoch
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def pending() -> None:
+        entered.set()
+        await release.wait()
+        if action == "failed_reopen":
+            raise OSError("reopen failed")
+
+    if action == "disconnect":
+        monkeypatch.setattr(radio, "_stop_civ_data_watchdog", pending)
+        task = asyncio.create_task(radio.disconnect())
+    else:
+        link.connected = link.ready = link.healthy = False
+        monkeypatch.setattr(radio._serial_session, "connect", pending)
+        task = asyncio.create_task(radio.connect())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert (await _serve_info(radio))["connection"]["liveness"]["lastFrameAgeMs"] is None
+        frame = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0x19, sub=0, data=b"\x01")
+        )
+        await radio._civ_runtime._route_civ_frame(frame, generation=retired)
+        assert radio.last_valid_frame_monotonic is None
+        release.set()
+        if action == "failed_reopen":
+            with pytest.raises(RadioConnectionError, match="reopen failed"):
+                await task
+        else:
+            await task
+        assert (await _serve_info(radio))["connection"]["liveness"]["lastFrameAgeMs"] is None
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        monkeypatch.undo()
+        await radio.disconnect()
 
 
 async def test_api_info_liveness_stays_null_until_a_real_read() -> None:
