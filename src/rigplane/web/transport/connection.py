@@ -6,7 +6,7 @@ depend on. It is intentionally minimal: it declares *only* the methods the
 handlers actually call, so any concrete transport that implements these
 satisfies it with no edits.
 
-``WebSocketConnection`` (``rigplane.web.websocket``) already exposes exactly
+``WebSocketConnection`` (``rigplane.ws``) already exposes exactly
 this surface and therefore satisfies ``Connection`` structurally, without any
 explicit subclassing or registration. This is a pure typing seam — there is
 no behaviour here.

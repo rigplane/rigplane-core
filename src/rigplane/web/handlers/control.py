@@ -188,7 +188,7 @@ from ..runtime_helpers import (  # noqa: TID251
     runtime_capabilities,
 )
 from ..transport import Connection  # noqa: TID251
-from ..websocket import WS_OP_TEXT  # noqa: TID251
+from ...ws import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio

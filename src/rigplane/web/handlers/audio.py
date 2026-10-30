@@ -45,7 +45,7 @@ from ..protocol import (  # noqa: TID251
 )
 from ..runtime_helpers import runtime_capabilities  # noqa: TID251
 from ..transport import Connection  # noqa: TID251
-from ..websocket import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
+from ...ws import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...audio.session import TxLease
