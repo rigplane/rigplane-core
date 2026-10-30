@@ -533,7 +533,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_rtt_estimate: float = 0.009
         self._commander: IcomCommander | None = None
         self._filter_width: int | None = None
-        self._attenuator_db: int | None = None
+        self._attenuator_db: dict[int, int] = {}
         self._preamp_level: int | None = None
         self._last_freq_hz: int | None = None
         self._last_mode: Mode | None = None
@@ -5140,13 +5140,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if resp.data:
                 raw = resp.data[0]
                 val = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
-                self._attenuator_db = val
+                self._attenuator_db[receiver] = val
                 return val
             if strict:
                 raise CommandError("Radio returned empty attenuator response")
 
-        if self._attenuator_db is not None:
-            return self._attenuator_db
+        if receiver in self._attenuator_db:
+            return self._attenuator_db[receiver]
         raise CommandError("Radio returned empty attenuator response")
 
     async def get_attenuator(self, receiver: int = 0, *, strict: bool = False) -> bool:
@@ -5199,7 +5199,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             db, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
         await self._send_civ_raw(civ, wait_response=False)
-        self._attenuator_db = db
+        self._attenuator_db[receiver] = db
         logger.debug("set_attenuator(%d dB) sent (fire-and-forget)", db)
 
     async def set_attenuator(self, on: bool, receiver: int = RECEIVER_MAIN) -> None:

@@ -4014,7 +4014,11 @@ async def _cmd_att(radio: Radio, args: argparse.Namespace) -> int:
                     )
                     return 1
                 await radio.set_attenuator_level(db)
-                print(f"Attenuator: ON ({db} dB)")
+                att_labels = getattr(profile, "att_labels", None) or {}
+                if str(db) in att_labels:
+                    print("Attenuator: ON")
+                else:
+                    print(f"Attenuator: ON ({db} dB)")
         elif val == "off":
             await radio.set_attenuator_level(0)
             print("Attenuator: OFF (0 dB)")
@@ -4023,12 +4027,19 @@ async def _cmd_att(radio: Radio, args: argparse.Namespace) -> int:
                 db = int(val)
             except ValueError:
                 profile = getattr(radio, "profile", None)
+                att_labels = (
+                    getattr(profile, "att_labels", None)
+                    if profile is not None
+                    else None
+                )
                 att_values = (
                     getattr(profile, "att_values", None)
                     if profile is not None
                     else None
                 )
-                if isinstance(att_values, (tuple, list)) and att_values:
+                if att_labels:
+                    hint = "Use 'on' or 'off'."
+                elif isinstance(att_values, (tuple, list)) and att_values:
                     declared = ", ".join(str(step) for step in att_values)
                     hint = f"Use 'on', 'off', or a declared dB value: {declared}."
                 else:

@@ -34,6 +34,7 @@ from rigplane.cli import (
     _validate_audio_format_args,
     main,
 )
+from rigplane.core.capabilities import CAP_ATTENUATOR
 from rigplane.discovery import RadioDiscoveryResult
 from rigplane.profiles import get_radio_profile
 from rigplane.radio_protocol import (
@@ -672,14 +673,17 @@ async def test_cmd_att_on_uses_profile_single_step(
 
 
 @pytest.mark.asyncio
-async def test_cmd_att_on_ftx1_uses_1db(capsys: pytest.CaptureFixture[str]) -> None:
-    """MOR-2100: ``att on`` on the FTX-1 resolves to its single 1 dB step."""
+@pytest.mark.parametrize("key", ["FTX-1", "TX-500"])
+async def test_cmd_att_on_selector_profile_omits_db(
+    key: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """MOR-2100: ``att on`` on a selector profile prints no dB number."""
     radio = AsyncMock()
-    radio.profile = get_radio_profile("FTX-1")
+    radio.profile = get_radio_profile(key)
     assert await _cmd_att(radio, argparse.Namespace(value="on", json=False)) == 0
     radio.set_attenuator_level.assert_awaited_once_with(1)
     radio.set_attenuator.assert_not_awaited()
-    assert capsys.readouterr().out == "Attenuator: ON (1 dB)\n"
+    assert capsys.readouterr().out == "Attenuator: ON\n"
 
 
 @pytest.mark.asyncio
@@ -714,15 +718,18 @@ async def test_cmd_att_on_without_profile_omits_db(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key,expected_hint", [("IC-7300", "0, 20"), ("FTX-1", "Use 'on' or 'off'.")]
+)
 async def test_cmd_att_invalid_hint_lists_profile_values(
-    capsys: pytest.CaptureFixture[str],
+    key: str, expected_hint: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """MOR-2100: the invalid-value hint lists the profile's declared steps."""
     radio = AsyncMock()
-    radio.profile = get_radio_profile("IC-7300")
+    radio.profile = get_radio_profile(key)
     assert await _cmd_att(radio, argparse.Namespace(value="bogus", json=False)) == 1
     err = capsys.readouterr().err
-    assert "0, 20" in err
+    assert expected_hint in err
     assert "(e.g. 0, 6, 12, 18)" not in err
     radio.set_attenuator_level.assert_not_awaited()
 
@@ -738,6 +745,71 @@ async def test_cmd_att_invalid_hint_without_profile(
     err = capsys.readouterr().err
     assert "Use 'on', 'off', or a dB value" in err
     assert "(e.g. 0, 6, 12, 18)" not in err
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key,keep_cap,rc,expected_out,expected_err,expected_db",
+    [
+        ("IC-7300", True, 0, "Attenuator: ON (20 dB)\n", None, 20),
+        ("IC-705", True, 0, "Attenuator: ON (20 dB)\n", None, 20),
+        ("FTX-1", True, 0, "Attenuator: ON\n", None, 1),
+        (
+            "IC-7610",
+            True,
+            1,
+            "",
+            "declared values: 0, 3, 6, 9, 12, 15, 18, 21, "
+            "24, 27, 30, 33, 36, 39, 42, 45",
+            None,
+        ),
+        (
+            "IC-7300",
+            False,
+            1,
+            "",
+            "does not support attenuator control",
+            None,
+        ),
+    ],
+)
+async def test_run_att_dispatch_uses_profile(
+    key: str,
+    keep_cap: bool,
+    rc: int,
+    expected_out: str,
+    expected_err: str | None,
+    expected_db: int | None,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """MOR-2100 round 2: ``att on`` through the real ``_run`` dispatch."""
+    _, radio = _mock_radio_ctx()
+    radio.profile = get_radio_profile(key)
+    if keep_cap:
+        assert CAP_ATTENUATOR in radio.capabilities
+    else:
+        radio.capabilities.discard(CAP_ATTENUATOR)
+    args = _run_args(command="att")
+    args.value = "on"
+    args.json = False
+    with (
+        patch("rigplane.cli.create_radio", return_value=radio),
+        patch("rigplane.cli.check_ports_available"),
+    ):
+        actual_rc = await _run(args)
+    assert actual_rc == rc
+    captured = capsys.readouterr()
+    assert captured.out == expected_out
+    if expected_db is not None:
+        radio.set_attenuator_level.assert_awaited_once_with(expected_db)
+    else:
+        radio.set_attenuator_level.assert_not_awaited()
+        radio.set_attenuator.assert_not_awaited()
+    if expected_err is None:
+        assert captured.err == ""
+    else:
+        assert "Error:" in captured.err
+        assert expected_err in captured.err
 
 
 @pytest.mark.asyncio

@@ -309,14 +309,14 @@ class TestAttenuator:
         hardcode 18 here)."""
         with pytest.raises(CommandError, match="set_attenuator_level"):
             await radio.set_attenuator(True)
-        assert radio._attenuator_db is None
+        assert radio._attenuator_db == {}
 
     @pytest.mark.asyncio
     async def test_att_off(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         await radio.set_attenuator(False)
-        assert radio._attenuator_db == 0
+        assert radio._attenuator_db == {0: 0}
 
     @pytest.mark.asyncio
     async def test_att_off_no_response_needed(
