@@ -340,12 +340,13 @@ def _check_golden_delta(
 
 @pytest.mark.parametrize("model", _MODELS)
 def test_a_delta_equal_to_the_golden_passes_the_delta_contract(model: str) -> None:
-    _check_golden_delta(
-        model,
-        "polledDcdDeltaOpen",
-        "polledDcdOpen",
-        _live_like_delta(model, "polledDcdDeltaOpen"),
-    )
+    envelope = _live_like_delta(model, "polledDcdDeltaOpen")
+    _check_golden_delta(model, "polledDcdDeltaOpen", "polledDcdOpen", envelope)
+    # The accepted frame really is the squelch-open change: the value and its
+    # observed status row both ride the delta.
+    assert envelope["type"] == "delta"
+    assert envelope["changed"]["main"]["dcd"] is True
+    assert envelope["changed"]["fieldStatus"]["main.dcd"]["observed"] is True
 
 
 def _drop_status_row(envelope: dict[str, Any]) -> None:
