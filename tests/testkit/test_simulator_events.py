@@ -100,7 +100,14 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
             old_token = radio._token
             assert old_token == sim.token
 
-            sim.reboot(at=0.1, down_for=3.0, busy_for=0.5)
+            # MOR-3920 repro: a 25 s busy window forces the post-dark
+            # reconnect attempt into the status-stage busy reject on the
+            # profile-selected stereo codec, which parks the attempt in the
+            # 30 s _STATUS_REJECT_COOLDOWN and blows the 20 s sampling
+            # deadline below deterministically. The committed 0.5 s window
+            # loses this lottery only sometimes (CI runs 41008174982,
+            # 41039389222, 41058873610).
+            sim.reboot(at=0.1, down_for=3.0, busy_for=25.0)
 
             def reconnected(seen: list[RadioConnectionState]) -> bool:
                 # The RECONNECTING window can be shorter than the 20 ms

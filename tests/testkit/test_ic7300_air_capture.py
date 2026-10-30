@@ -125,7 +125,12 @@ async def test_clip_on_the_fake_tunes_records_and_restores(tmp_path) -> None:
 async def test_start_at_overrides_the_slot_wait_and_is_recorded(tmp_path) -> None:
     """``--start-at`` must set the audio start, not the next 15 s slot boundary."""
     fake = CivSerialFake(echo=False, frequency_hz=7_100_000, mode=0x00)
-    target = datetime.now(timezone.utc) + timedelta(seconds=2.5)
+    # MOR-3920 repro: run_clip sleeps a fixed 0.5 s + 1.0 s while tuning
+    # before it reaches _wait_until, so a 0.5 s budget is already in the
+    # past by then and the ValueError below fires deterministically. The
+    # committed 2.5 s budget loses this race only sometimes (CI runs
+    # 41008174982, 41039389222, 41058873610).
+    target = datetime.now(timezone.utc) + timedelta(seconds=0.5)
     args = argparse.Namespace(
         clip="ft8",
         device="fake-tty",
