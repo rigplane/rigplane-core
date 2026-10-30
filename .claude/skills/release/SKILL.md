@@ -109,10 +109,14 @@ Then confirm that run's commit still covers HEAD by asking the same classifier
 about the paths that differ; do not keep a second path list here:
 
 ```bash
-python3 .github/scripts/classify-quick-paths.py --repo . --base <run-sha> --head HEAD
+RUN_SHA=<run-sha>   # the full 40-character headSha printed above
+git diff --quiet "$RUN_SHA" HEAD || \
+  python3 .github/scripts/classify-quick-paths.py --repo . \
+    --base "$RUN_SHA" --head "$(git rev-parse HEAD)"
 ```
 
-The printed JSON must show `"core": false`.
+No output means HEAD has the same tree as the run's commit, so the run is the
+record. Otherwise the printed JSON must show `"core": false`.
 
 `core` true → that run is not the record for HEAD. Stop and get a run at
 HEAD.
