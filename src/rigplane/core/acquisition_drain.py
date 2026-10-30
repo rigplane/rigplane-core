@@ -255,6 +255,16 @@ class AcquisitionDrain:
         # above: a request the seat declines to send is still pending, and its
         # ledger entry must survive the pass.
         for request in self._dispatchable(pending):
+            # MOR-3630: ``pending`` was gated once, at the top of the pass, but
+            # an earlier send in this loop awaits the radio, and its answer can
+            # change the mode that a later read's ``available_when`` reads. Ask
+            # again right before each send; a request withheld here stays
+            # pending (and keeps its ledger entry) for the first pass that sees
+            # its clauses hold.
+            if store is not None:
+                scheduler.note_availability(store.snapshot())
+                if not scheduler.is_dispatchable(request):
+                    continue
             provider_generation = 0 if store is None else store.provider_generation
             if not scheduler.try_claim(
                 request,

@@ -6,6 +6,7 @@ optional cmd29 receiver route distinct.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 
 from rigplane.commands._frame import decode_wire_tuple, parse_civ_frame
@@ -294,15 +295,51 @@ def build_state_queries(
     if acquisition is None:
         return []
 
-    resolve = acquisition_query_resolver_for_profile(profile)
     availability = (
         {} if snapshot is None else resolve_available_when(acquisition, snapshot)
     )
+    return _civ_queries(
+        profile,
+        (
+            path
+            for path in acquisition.pollable_paths()
+            if availability.get(path) is not False
+        ),
+    )
+
+
+def availability_source_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
+    """Build the reads of the fields that ``available_when`` clauses read.
+
+    MOR-3630: :func:`build_state_queries` filters on the caller's snapshot, so
+    a caller that is about to filter on possibly stale state (the initial or
+    reconciliation sweep) reads these first and filters on what they return.
+    Same resolver and cmd29 handling as the sweep itself; empty for a profile
+    with no conditional path.
+    """
+
+    acquisition = profile.state_acquisition
+    if acquisition is None:
+        return []
+    return _civ_queries(
+        profile,
+        dict.fromkeys(
+            clause.field
+            for policy in acquisition.field_policies.values()
+            for clause in policy.available_when
+        ),
+    )
+
+
+def _civ_queries(
+    profile: RadioProfile, paths: Iterable[FieldPath]
+) -> list[AcquisitionQuery]:
+    """Resolve ``paths`` to wire queries: de-duplicated, cmd29-checked, ordered."""
+
+    resolve = acquisition_query_resolver_for_profile(profile)
     queries: list[AcquisitionQuery] = []
     seen: set[AcquisitionQuery] = set()
-    for path in acquisition.pollable_paths():
-        if availability.get(path) is False:
-            continue
+    for path in paths:
         query = resolve(path)
         if query is None:
             continue

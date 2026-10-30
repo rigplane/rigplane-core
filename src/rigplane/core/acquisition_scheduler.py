@@ -1074,12 +1074,7 @@ class AcquisitionScheduler:
         eligible = (
             request
             for request in self._requests_by_key.values()
-            if (
-                self._tx_active
-                or request.priority is not AcquisitionPriority.RECONCILIATION
-                or not request.policy.tx_only
-            )
-            and not self._contradicted_automatic_request(request)
+            if self.is_dispatchable(request)
         )
         return tuple(
             sorted(
@@ -1096,6 +1091,22 @@ class AcquisitionScheduler:
                 ),
             )
         )
+
+    def is_dispatchable(self, request: AcquisitionRequest) -> bool:
+        """Return whether ``request`` passes the dispatch gates right now.
+
+        The per-request form of :meth:`dispatchable_requests`' filter (the
+        ``tx_only`` and conditional-availability gates), for a drain that
+        awaits between sends: the tuple it took at the start of the pass can
+        go stale while an earlier read is in flight, so it asks again, after
+        :meth:`note_availability`, before each send (MOR-3630).
+        """
+
+        return (
+            self._tx_active
+            or request.priority is not AcquisitionPriority.RECONCILIATION
+            or not request.policy.tx_only
+        ) and not self._contradicted_automatic_request(request)
 
     def note_tx_active(self, tx_active: bool) -> None:
         """Update the cached ``tx_active`` gate without driving cadence polling.

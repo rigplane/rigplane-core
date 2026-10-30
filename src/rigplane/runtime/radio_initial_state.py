@@ -20,6 +20,8 @@ import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from rigplane.core.acquisition_scheduler import AcquisitionQuery
+
     # Internal implementation module for IcomRadio — the TID251 ban targets
     # external consumers (web/, rigctld/), not radio.py's own helpers.
     from rigplane.radio import IcomRadio  # type: ignore[attr-defined]  # noqa: TID251
@@ -36,7 +38,7 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
 
     This is non-fatal: failures are logged but do not raise.
     """
-    from ._state_queries import build_state_queries, wire_parts_for_query
+    from ._state_queries import availability_source_queries, build_state_queries
 
     try:
         is_serial = not radio._profile.has_lan
@@ -46,12 +48,24 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
             else radio._INITIAL_STATE_GAP_LAN
         )
         # MOR-3630: the sweep also runs after an external CAT owner hands the
-        # radio back, when the store still holds the mode the radio was left
-        # in; a read the declared ``available_when`` contradicts there is
-        # not sent (the radio would NAK it).
-        queries = build_state_queries(
-            radio._profile, snapshot=radio._state_store.snapshot()
-        )
+        # radio back, when the store still holds what the radio was left in
+        # before that owner changed it. A read the declared ``available_when``
+        # contradicts is not sent (the radio would NAK it), so the fields those
+        # clauses read (the mode, PTT) are read first, and awaited -- the
+        # answer is in the store when ``send_civ`` returns -- and the sweep
+        # filters on that, not on the stale snapshot. A source that does not
+        # answer keeps its stored value.
+        refreshed = availability_source_queries(radio._profile)
+        for query in refreshed:
+            await _send_query(radio, query, wait_response=True)
+            await asyncio.sleep(gap)
+        queries = [
+            query
+            for query in build_state_queries(
+                radio._profile, snapshot=radio._state_store.snapshot()
+            )
+            if query not in refreshed
+        ]
         if not queries:
             radio._initial_state_fetched = True
             return
@@ -63,26 +77,8 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
         )
         sent = 0
         for query in queries:
-            try:
-                command, sub, data = wire_parts_for_query(
-                    query, radio.radio_state.scope_controls.receiver
-                )
-                await radio.send_civ(
-                    command,
-                    sub=sub,
-                    data=data,
-                    wait_response=False,
-                )
+            if await _send_query(radio, query, wait_response=False):
                 sent += 1
-            except Exception as exc:
-                # non-fatal; regular polling will retry
-                logger.debug(
-                    "initial state query failed: command=0x%02X sub=%s data=%s (%s)",
-                    query.command,
-                    "None" if query.sub is None else f"0x{query.sub:02X}",
-                    query.data.hex(),
-                    type(exc).__name__,
-                )
             await asyncio.sleep(gap)
 
         logger.info(
@@ -97,3 +93,32 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
         )
     finally:
         radio._initial_state_fetched = True
+
+
+async def _send_query(
+    radio: IcomRadio, query: AcquisitionQuery, *, wait_response: bool
+) -> bool:
+    """Send one sweep read; a failure is logged and reported as not sent."""
+    from ._state_queries import wire_parts_for_query
+
+    try:
+        command, sub, data = wire_parts_for_query(
+            query, radio.radio_state.scope_controls.receiver
+        )
+        await radio.send_civ(
+            command,
+            sub=sub,
+            data=data,
+            wait_response=wait_response,
+        )
+    except Exception as exc:
+        # non-fatal; regular polling will retry
+        logger.debug(
+            "initial state query failed: command=0x%02X sub=%s data=%s (%s)",
+            query.command,
+            "None" if query.sub is None else f"0x{query.sub:02X}",
+            query.data.hex(),
+            type(exc).__name__,
+        )
+        return False
+    return True

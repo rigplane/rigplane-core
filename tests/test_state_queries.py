@@ -33,6 +33,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime import _state_queries as state_queries_module
+from rigplane.runtime._state_queries import availability_source_queries
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 from rigplane.runtime._state_queries import wire_parts_for_query
@@ -290,8 +291,11 @@ async def _send_through_initial(
     radio.radio_state = SimpleNamespace(
         scope_controls=SimpleNamespace(receiver=scope_receiver),
     )
-    with patch.object(
-        state_queries_module, "build_state_queries", return_value=[query]
+    with (
+        patch.object(state_queries_module, "build_state_queries", return_value=[query]),
+        patch.object(
+            state_queries_module, "availability_source_queries", return_value=[]
+        ),
     ):
         await fetch_initial_state(radio)  # type: ignore[arg-type]
     assert radio.options == [(False, None, True)]
@@ -308,26 +312,79 @@ _IC705_FM_NAKED_READS = {
 }
 
 
-async def _ic705_initial_fetch_wire(main_mode: str | None) -> set[_FrameParts]:
-    """The frames an IC-705 initial fetch sends while the store holds ``main_mode``."""
+class _AnsweringCivRadio(_RecordingCivRadio):
+    """Answers an awaited mode read with ``radio_mode``, as the CI-V pump does."""
+
+    def __init__(self, store: StateStore, *, radio_mode: str | None) -> None:
+        super().__init__()
+        self._store = store
+        self._radio_mode = radio_mode
+        self._mode_wire = wire_parts_for_query(
+            acquisition_query_resolver_for_profile(
+                resolve_radio_profile(model="IC-705")
+            )(_MAIN_MODE),
+            0,
+        )
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+        priority: object = None,
+        wait_dispatch: bool = True,
+    ) -> None:
+        await super().send_civ(
+            command,
+            sub,
+            data,
+            wait_response=wait_response,
+            priority=priority,
+            wait_dispatch=wait_dispatch,
+        )
+        if (
+            wait_response
+            and self._radio_mode is not None
+            and (command, sub, b"" if data is None else data) == self._mode_wire
+        ):
+            _observe_main_mode(self._store, self._radio_mode)
+
+
+_MAIN_MODE = FieldPath.active("main", "freq_mode", "mode")
+
+
+def _observe_main_mode(store: StateStore, mode: str) -> None:
+    store.apply(
+        Observation(
+            path=_MAIN_MODE,
+            value=mode,
+            source=SourceMetadata(source="test", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+
+
+async def _ic705_initial_fetch_wire(
+    main_mode: str | None, *, radio_mode: str | None = None
+) -> set[_FrameParts]:
+    """The frames an IC-705 initial fetch sends.
+
+    The store holds ``main_mode`` when the fetch starts; the radio answers the
+    mode read with ``radio_mode`` (it never answers when ``None``).
+    """
     profile = resolve_radio_profile(model="IC-705")
-    radio = _RecordingCivRadio()
+    store = StateStore()
+    if main_mode is not None:
+        _observe_main_mode(store, main_mode)
+    radio = _AnsweringCivRadio(store, radio_mode=radio_mode)
     radio._profile = profile
     radio.capabilities = set()
     radio._INITIAL_STATE_GAP_SERIAL = 0.0
     radio._INITIAL_STATE_GAP_LAN = 0.0
     radio._initial_state_fetched = False
     radio.radio_state = SimpleNamespace(scope_controls=SimpleNamespace(receiver=0))
-    store = StateStore()
-    if main_mode is not None:
-        store.apply(
-            Observation(
-                path=FieldPath.active("main", "freq_mode", "mode"),
-                value=main_mode,
-                source=SourceMetadata(source="test", provider="test"),
-                timestamp_monotonic=time.monotonic(),
-            )
-        )
     radio._state_store = store
     await fetch_initial_state(radio)  # type: ignore[arg-type]
     assert radio._initial_state_fetched is True
@@ -337,16 +394,33 @@ async def _ic705_initial_fetch_wire(main_mode: str | None) -> set[_FrameParts]:
 async def test_initial_fetch_skips_reads_the_current_mode_contradicts() -> None:
     """MOR-3630 round 3 finding 1: the initial sweep honours ``available_when``.
 
-    The sweep also runs after an external CAT owner hands the radio back,
-    when the store still holds the mode the radio was left in. With MAIN in
-    FM the PBT and notch-width reads would be NAKed, so they are not sent;
-    with MAIN in USB (and with the mode not yet observed) they are.
+    With MAIN in FM the PBT and notch-width reads would be NAKed, so they are
+    not sent; with MAIN in USB (and with the mode not yet observed) they are.
     """
 
     contradicted = _IC705_FM_NAKED_READS
-    assert contradicted.isdisjoint(await _ic705_initial_fetch_wire("FM"))
-    assert contradicted <= await _ic705_initial_fetch_wire("USB")
+    assert contradicted.isdisjoint(
+        await _ic705_initial_fetch_wire("FM", radio_mode="FM")
+    )
+    assert contradicted <= await _ic705_initial_fetch_wire("USB", radio_mode="USB")
     assert contradicted <= await _ic705_initial_fetch_wire(None)
+
+
+async def test_initial_fetch_filters_on_the_mode_read_not_the_stale_store() -> None:
+    """MOR-3630 round 4: the sweep refreshes the mode before it filters.
+
+    An external CAT owner changed the mode while it held the radio, so the
+    store holds the old one. The sweep reads the mode first (awaiting the
+    answer) and filters on it, in both directions.
+    """
+
+    contradicted = _IC705_FM_NAKED_READS
+    # Store says FM, radio is in USB: the reads the stale FM would drop go out.
+    assert contradicted <= await _ic705_initial_fetch_wire("FM", radio_mode="USB")
+    # Store says USB, radio is in FM: the reads the stale USB would send do not.
+    assert contradicted.isdisjoint(
+        await _ic705_initial_fetch_wire("USB", radio_mode="FM")
+    )
 
 
 async def _send_through_web(
@@ -1015,12 +1089,20 @@ class TestFetchInitialState:
     @pytest.mark.parametrize("model", _shipped_civ_models())
     async def test_dispatches_all_queries(self, radio, model: str) -> None:
         radio._profile = resolve_radio_profile(model=model)
-        queries = build_state_queries(radio._profile)
+        refreshed = availability_source_queries(radio._profile)
+        queries = [
+            query
+            for query in build_state_queries(radio._profile)
+            if query not in refreshed
+        ]
         assert queries, f"{model}: initial acquisition must not be empty"
 
         await radio._fetch_initial_state()
         expected_calls = []
-        for query in queries:
+        # MOR-3630: the fields the conditional reads depend on come first, and
+        # are awaited; the sweep then skips them.
+        for query in [*refreshed, *queries]:
+            wait_response = query in refreshed
             if query.receiver is not None:
                 inner = bytes([query.receiver, query.command])
                 if query.sub is not None:
@@ -1030,7 +1112,7 @@ class TestFetchInitialState:
                         0x29,
                         sub=None,
                         data=inner + query.data,
-                        wait_response=False,
+                        wait_response=wait_response,
                     )
                 )
             else:
@@ -1039,7 +1121,7 @@ class TestFetchInitialState:
                         query.command,
                         sub=query.sub,
                         data=query.data,
-                        wait_response=False,
+                        wait_response=wait_response,
                     )
                 )
         assert radio.send_civ.await_args_list == expected_calls
@@ -1141,7 +1223,12 @@ class TestFetchInitialState:
         """MOR-2224: send_civ is called with wait_response=False, so the sweep
         never learns whether the radio replied — the summary must say what
         was measured (queries sent), not the unchecked word "ok"."""
-        queries = build_state_queries(radio._profile)
+        refreshed = availability_source_queries(radio._profile)
+        queries = [
+            query
+            for query in build_state_queries(radio._profile)
+            if query not in refreshed
+        ]
         with patch(
             "rigplane.runtime.radio_initial_state.asyncio.sleep", new=AsyncMock()
         ):
@@ -1167,7 +1254,11 @@ class TestFetchInitialState:
         self, radio, caplog
     ) -> None:
         radio._profile = resolve_radio_profile(model="IC-7300")
-        queries = build_state_queries(radio._profile)
+        refreshed = availability_source_queries(radio._profile)
+        queries = [
+            *refreshed,
+            *(q for q in build_state_queries(radio._profile) if q not in refreshed),
+        ]
         failing = queries[0]
 
         call_count = 0
