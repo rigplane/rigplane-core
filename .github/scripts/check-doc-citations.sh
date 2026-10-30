@@ -276,11 +276,10 @@
 # exists to prevent, so symbol verification is a separate, still-open half
 # of MOR-2065, not attempted here.
 #
-# WHEN THIS RUNS: doc-citation-gate.yml path-filters on **/*.md, docs/**,
-# and this gate's own files -- a PR that only touches src/** or frontend/**
-# does not trigger the workflow at all. The rot is invisible at the moment
-# it is created and surfaces later, on whatever next PR happens to touch a
-# doc file and trips the workflow's path filter.
+# WHEN THIS RUNS: doc-citation-gate.yml triggers only when this script or
+# the workflow file itself changes -- it is NOT run for ordinary doc edits.
+# Rot introduced by a doc PR is invisible until someone touches the gate
+# files and the workflow runs.
 #
 # RESOLUTION RULE (see parse_citation, find_candidates, classify_citation
 # below): split a citation's path from its cited line number(s) -- the same
