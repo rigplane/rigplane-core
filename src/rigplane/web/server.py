@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import contextlib
 import ctypes
 import ctypes.util
 import functools
@@ -39,7 +38,6 @@ import threading
 import time
 import urllib.parse
 from collections.abc import (
-    AsyncIterator,
     Awaitable,
     Callable,
     Collection,
@@ -5553,38 +5551,6 @@ class WebServer:
         if authority is not None:
             await authority.owner_disconnect(owner)
 
-    @contextlib.asynccontextmanager
-    async def _controller_outside_tx_admission(
-        self, ticket: ControllerTicket
-    ) -> AsyncIterator[bool]:
-        """Outside-only (``0x12``) TX audio admission for one ticket (MOR-3764).
-
-        Yields False when there is no managed TX authority, the ticket is
-        remote, the ticket no longer validates, or the controller is in
-        remote mode (``controller.mode == "remote"``, same rule as
-        ``_bridge_tx_gate_open``). Otherwise the controller checks run
-        INSIDE ``ManagedTxAuthority.outside_tx_submission`` — after its lock
-        is held — and its verdict is yielded. Yields exactly once on every
-        path.
-        """
-        authority = self._managed_tx_authority()
-        if not isinstance(authority, ManagedTxAuthority) or ticket.remote:
-            yield False
-            return
-        async with authority.outside_tx_submission() as admitted:
-            if not admitted:
-                yield False
-                return
-            try:
-                self._controller.validate(ticket)
-            except ControllerError:
-                yield False
-                return
-            if self._controller.mode == "remote":
-                yield False
-                return
-            yield True
-
     async def _controller_audio_gate(
         self, ticket: ControllerTicket, source: object
     ) -> bool:
@@ -8024,9 +7990,6 @@ class WebServer:
                 self._radio,
                 self._audio_broadcaster,
                 tx_gate=lambda: self._controller_audio_gate(ticket, audio_source),
-                outside_tx_admission=lambda: self._controller_outside_tx_admission(
-                    ticket
-                ),
                 controller=self._controller,
                 controller_ticket=ticket,
                 controller_audio_source=audio_source,

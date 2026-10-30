@@ -1,26 +1,18 @@
-"""MOR-3764: outside-only TX audio (``0x12``) through the real audio WebSocket.
+"""MOR-3921: TX audio follows the radio, whoever keyed it, through the real audio WebSocket.
 
-The in-process pins (``tests/test_managed_tx_outside_tx_authorization.py``)
-build ``AudioHandler`` directly; this file drives the same rule end to end:
-a WebSocket client on the real ``/api/v1/audio`` upgrade of a ``WebServer``
-bound to 127.0.0.1:0, over the MOR-3538 arena
+Owner decision 2026-10-30: client TX audio goes on air whenever the radio
+reports transmit — keyed by RigPlane, a footswitch, the hand mic or another
+program. There is no own-versus-foreign classification and no second frame
+type: the retired ``0x12`` ("TX outside-only") frame is dropped fail-closed.
+RigPlane itself still refuses to key while the radio already transmits.
+
+Drives a WebSocket client on the real ``/api/v1/audio`` upgrade of a
+``WebServer`` bound to 127.0.0.1:0, over the MOR-3538 arena
 (``test_multi_session_tx_lanes._Arena`` / ``_open_mic`` →
 ``test_tx_under_fault_matrix._stand_up_stack``: the real ``WebServer`` +
 ``RigctldServer`` + managed TX authority + ``IcomRadio`` over the
 ``MockIcomRadio`` LAN simulator). The radio's recorded pushes are read at
 the simulator's TX sink (``sim.audio_tx_frames``).
-
-Pinned: a ``0x12`` frame from a local controller ticket reaches the radio
-only while the radio is observed keyed OUTSIDE Core (FOREIGN TX, intent
-``rx``); from the moment a direct rigctld client keys (owner
-``rigctld-client-N``) a ``0x12`` frame is dropped, while a ``0x11`` frame
-still flows — the default lane is unchanged.
-
-Not pinned here: a keying started while an admitted ``0x12`` push is in
-flight waits for the push. The simulator's audio sink acknowledges every
-push immediately and offers no fault hook that holds one open, so the
-interleaving cannot be produced through the socket; the in-process
-atomicity tests pin that guarantee.
 
 FAKE RADIO ONLY — the simulator; nothing here can key a real radio.
 """
@@ -40,10 +32,9 @@ from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
     MSG_TYPE_AUDIO_TX,
-    MSG_TYPE_AUDIO_TX_OUTSIDE,
 )
 
-from test_multi_session_tx_lanes import _Arena, _open_mic  # noqa: E402
+from test_multi_session_tx_lanes import _CAT_REFUSED, _Arena, _open_mic  # noqa: E402
 from test_tx_under_fault_matrix import (  # noqa: E402
     _GATE_TIMEOUT_S,
     _KEY_DEADLINE_S,
@@ -54,9 +45,14 @@ from test_tx_under_fault_matrix import (  # noqa: E402
     _WsKeyClient,
 )
 
+# The retired "TX outside-only" frame type. Kept here only to prove an old
+# client's frame is dropped; Core no longer defines it.
+_RETIRED_TX_OUTSIDE = 0x12
+
 # Distinct frame sizes tell the simulator's TX sink whose audio it received.
-_OUTSIDE_SAMPLES = 300  # a 0x12 frame lands as a 600-byte payload
-_DEFAULT_SAMPLES = 480  # a 0x11 frame lands as a 960-byte payload
+_RETIRED_SAMPLES = 300  # a 0x12 frame would land as a 600-byte payload
+_PRO_SAMPLES = 400  # Pro's 0x11 frame lands as an 800-byte payload
+_DEFAULT_SAMPLES = 480  # a sessionless 0x11 frame lands as a 960-byte payload
 
 
 def _pcm_tx_frame(msg_type: int, samples: int) -> bytes:
@@ -87,49 +83,59 @@ async def _flush_mic(mic: _WsKeyClient) -> None:
     The audio handler answers a control message only after every earlier
     frame on the connection was fully handled, so once the reply lands a
     binary frame sent before the flush has reached its verdict (pushed or
-    dropped) — the negative pin below needs no settle sleep.
+    dropped) — the negative pins below need no settle sleep.
     """
     await mic.send({"type": "audio_start", "direction": "tx"})
     await mic._until(lambda message: message.get("type") == "audio_tx_format")  # noqa: SLF001
 
 
-async def test_outside_only_tx_audio_flows_only_while_keyed_outside_core(
-    tmp_path: Path,
-) -> None:
+async def test_tx_audio_follows_the_radio_whoever_keyed_it(tmp_path: Path) -> None:
     async with _Arena(tmp_path, enable_audio=True) as arena:
         session = await arena.session()
         pro = await _open_mic(arena, session.key)  # a local controller ticket
         sessionless = await _open_mic(arena, None)
         sim = arena.sim
 
-        # The operator keys the radio itself (no Core client, no wire write):
-        # a FOREIGN TX with intent rx. The outside-only frame is admitted.
+        # Nothing transmits: client audio is held.
+        mark = len(sim.audio_tx_frames)
+        await pro.send_binary(_pcm_tx_frame(MSG_TYPE_AUDIO_TX, _PRO_SAMPLES))
+        await _flush_mic(pro)
+        assert _air_sizes(arena, mark) == set()
+
+        # The operator keys the radio itself (footswitch, hand mic, another
+        # program: no Core client, no wire write). The radio reports TX, so
+        # plain 0x11 client audio goes on air.
         sim._set_simulated_ptt(True, wire_set=False)  # noqa: SLF001
         await _wait_rf(arena.web, RfState.TX, _GATE_TIMEOUT_S)
-        await pro.send_binary(
-            _pcm_tx_frame(MSG_TYPE_AUDIO_TX_OUTSIDE, _OUTSIDE_SAMPLES)
-        )
-        await _wait_air_sizes(arena, {_OUTSIDE_SAMPLES * 2})
+        mark = len(sim.audio_tx_frames)
+        await pro.send_binary(_pcm_tx_frame(MSG_TYPE_AUDIO_TX, _PRO_SAMPLES))
+        await _wait_air_sizes(arena, {_PRO_SAMPLES * 2}, mark)
+
+        # The retired 0x12 frame is dropped fail-closed, even now.
+        mark = len(sim.audio_tx_frames)
+        await pro.send_binary(_pcm_tx_frame(_RETIRED_TX_OUTSIDE, _RETIRED_SAMPLES))
+        await _flush_mic(pro)
+        assert _air_sizes(arena, mark) == set()
+
+        # RigPlane refuses to key while the radio already transmits.
+        rig = await arena.tcp()
+        writes = len(sim.ptt_set_writes)
+        assert await arena.tcp_line(rig, "T 1") == _CAT_REFUSED
+        assert sim.ptt_set_writes[writes:] == [] and arena.holder() is None
 
         # The operator lets go; a direct rigctld client keys, Core-managed.
         sim._set_simulated_ptt(False, wire_set=False)  # noqa: SLF001
         await _wait_rf(arena.web, RfState.RX, _GATE_TIMEOUT_S)
-        rig = await arena.tcp()
         assert await rig.key()
         await _wait_ptt(sim, True, _KEY_DEADLINE_S)
         holder = arena.holder()
         assert holder is not None and holder.startswith("rigctld-client-"), holder
 
-        # From the moment the Core client keys, a 0x12 frame is refused...
+        # Keyed by RigPlane: 0x11 audio flows; 0x12 stays dropped.
         mark = len(sim.audio_tx_frames)
-        await pro.send_binary(
-            _pcm_tx_frame(MSG_TYPE_AUDIO_TX_OUTSIDE, _OUTSIDE_SAMPLES)
+        await sessionless.send_binary(
+            _pcm_tx_frame(_RETIRED_TX_OUTSIDE, _RETIRED_SAMPLES)
         )
-        await _flush_mic(pro)  # the refused frame reached its verdict
-        assert _OUTSIDE_SAMPLES * 2 not in _air_sizes(arena, mark), _air_sizes(
-            arena, mark
-        )
-        # ...while a 0x11 frame on the default lane is unchanged and flows.
         await sessionless.send_binary(
             _pcm_tx_frame(MSG_TYPE_AUDIO_TX, _DEFAULT_SAMPLES)
         )
