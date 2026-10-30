@@ -73,6 +73,7 @@ async def test_two_clients_frequency_readback_latency(silent: bool) -> None:
     samples = []
     transcript = []
     stop = asyncio.Event()
+    poll_cycles = 0
 
     async def exchange(client, reader, writer, command):
         start = time.monotonic()
@@ -98,16 +99,25 @@ async def test_two_clients_frequency_readback_latency(silent: bool) -> None:
         return lines
 
     async def poll(reader, writer):
+        nonlocal poll_cycles
         while not stop.is_set():
             started = time.monotonic()
             for cmd in ("f", "m", "t", "s", "\\get_powerstat"):
                 await exchange(1, reader, writer, cmd)
+            poll_cycles += 1
             try:
                 await asyncio.wait_for(
                     stop.wait(), max(0.001, 1 - (time.monotonic() - started))
                 )
             except TimeoutError:
                 pass
+
+    def _raise_if_poll_client_lost():
+        for task in tasks:
+            if task.done():
+                # An unexpected polling-client failure (timeout, disconnect)
+                # must fail the measurement, not be discarded by cleanup.
+                task.result()
 
     try:
         await asyncio.wait_for(radio.connect(), 30)
@@ -118,6 +128,7 @@ async def test_two_clients_frequency_readback_latency(silent: bool) -> None:
         writers.extend((writer1, writer2))
         tasks.append(asyncio.create_task(poll(reader1, writer1)))
         for index in range(20):
+            _raise_if_poll_client_lost()
             await exchange(2, reader2, writer2, "f")
             await exchange(2, reader2, writer2, "m")
             if silent and index % 5 == 0:
@@ -139,6 +150,8 @@ async def test_two_clients_frequency_readback_latency(silent: bool) -> None:
             assert fake.frequency_hz == frequency
             await asyncio.sleep(max(0, 1.25 - duration))
         assert not fake.ptt
+        _raise_if_poll_client_lost()
+        assert poll_cycles > 0, "client 1 produced no polling samples"
         values = sorted(sample["readback"] for sample in samples)
         assert values[math.ceil(0.95 * len(values)) - 1] <= 2
         assert max(values) <= 5
@@ -150,7 +163,14 @@ async def test_two_clients_frequency_readback_latency(silent: bool) -> None:
         stop.set()
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            # Suppress only the cancellation requested above; a polling
+            # client that died during measurement must fail the test.
+            if isinstance(result, asyncio.CancelledError):
+                continue
+            if isinstance(result, BaseException):
+                raise result
         for writer in writers:
             writer.close()
             await writer.wait_closed()
