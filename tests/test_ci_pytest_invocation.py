@@ -301,7 +301,9 @@ def test_full_declares_a_boolean_rc_input_defaulting_to_false() -> None:
 
 def test_full_runs_on_schedule_dispatch_and_rc_tags_not_on_a_push_to_main() -> None:
     on_sec = _on_section("full.yml")
-    assert re.search(r"^  schedule:\n", on_sec, re.MULTILINE), "full.yml lost its schedule"
+    assert re.search(r"^  schedule:\n", on_sec, re.MULTILINE), (
+        "full.yml lost its schedule"
+    )
     assert re.search(r"^  workflow_dispatch:\n", on_sec, re.MULTILINE)
     # The merge queue already tested the tree that lands on main, so a push to
     # main would test it a second time (MOR-3878): only candidate tags push.
