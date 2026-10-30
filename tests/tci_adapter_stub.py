@@ -306,11 +306,19 @@ class RecordedIntent:
 
 
 class StubCommandQueue:
-    """An ordering stub: records entries, completes turns immediately."""
+    """An ordering stub: records entries, completes turns immediately.
+
+    ``hold_ready`` defers the queue turn (the ``positive_tx_ready``
+    signal) so a managed key pends at admission: the cancellation race
+    needs a deterministic in-flight point. :meth:`release_ready`
+    completes every held turn.
+    """
 
     def __init__(self, execute: Callable[[Any], None] | None = None) -> None:
         self.entries: list[Any] = []
         self.sessions: set[str] = set()
+        self.hold_ready: bool = False
+        self._held_ready: list[Any] = []
         self._generations = itertools.count(1)
         self._execute = execute
 
@@ -330,15 +338,28 @@ class StubCommandQueue:
         if self._execute is not None and intent is not None:
             self._execute(intent)
         if ready is not None and not ready.done():
-            try:
-                ready.set_result(None)
-            except Exception:
-                pass
+            if self.hold_ready:
+                self._held_ready.append(ready)
+            else:
+                try:
+                    ready.set_result(None)
+                except Exception:
+                    pass
         if future is not None and not future.done():
             try:
                 future.set_result(None)
             except Exception:
                 pass
+
+    def release_ready(self) -> None:
+        """Complete every held queue turn (test teardown)."""
+        held, self._held_ready = self._held_ready, []
+        for ready in held:
+            if not ready.done():
+                try:
+                    ready.set_result(None)
+                except Exception:
+                    pass
 
 
 class StubCommandService:
@@ -412,6 +433,7 @@ def make_handler(
     authority: Any = None,
     queue: StubCommandQueue | None = None,
     service: StubCommandService | None = None,
+    controller_authority: Any = None,
 ) -> Any:
     """Build the adapter handler over fakes (signature mirrors the factory)."""
     from rigplane.tci_adapter.handler import TciAdapterHandler
@@ -423,6 +445,7 @@ def make_handler(
         managed_tx_authority=authority,
         command_queue=queue,
         command_service=service,
+        controller_authority=controller_authority,
     )
 
 

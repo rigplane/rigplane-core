@@ -36,7 +36,13 @@ from ..core.radio_protocol import (
 from ..core.state_store import StateStore
 from ..runtime.controller_authority import ControllerError
 from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
-from ..runtime.managed_tx_submission import release_managed_session_tx
+from ..runtime.managed_tx_submission import (
+    ManagedKeyRefused,
+    ManagedKeySetupError,
+    ManagedPttTracker,
+    execute_managed_ptt,
+    release_managed_session_tx,
+)
 from ..tci.handler import CommandOutcome
 from ..tci.protocol import parse_bool, parse_int
 from .commands import (
@@ -114,6 +120,7 @@ class TciAdapterHandler:
         managed_tx_authority: Any = None,
         command_queue: Any = None,
         command_service: Any = None,
+        controller_authority: Any = None,
         state_model_service: Any = None,
         config: TciAdapterConfig | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -135,7 +142,13 @@ class TciAdapterHandler:
         self._authority = managed_tx_authority
         self._queue = command_queue
         self._service = command_service
+        self._controller_authority = controller_authority
         self._state_model_service = state_model_service
+        self._tracker = ManagedPttTracker()
+        # Last adapter-programmed TX tuple (TCI name, numeric DATA, MOD
+        # input): the key-down check (spec 5.7) requires the readback to
+        # match it. Set on every modulation write and split enable.
+        self._tx_required: tuple[str, int, int | None] | None = None
         self._config = config or TciAdapterConfig()
         self._clock = clock
         self._notifier = TciNotifier(
@@ -228,9 +241,8 @@ class TciAdapterHandler:
                 return await self._write_split(args)
             return await self._read_split()
         if name == "trx":
-            # Keying lands in C3; a C2 set degrades to the current state.
             if len(args) >= 2:
-                return await self._sender_current(self._read_trx())
+                return await self._write_trx(args)
             return await self._read_trx()
         if name in ("drive", "tune_drive"):
             if name == "drive" and len(args) >= 2:
@@ -415,6 +427,165 @@ class TciAdapterHandler:
         outcome = await read
         return CommandOutcome(to_sender=outcome.to_sender)
 
+    def _refuse_key(self) -> CommandOutcome:
+        """Refuse a key: ``trx:0,false;`` to the requester only (spec 5.5).
+
+        A refused PTT is never broadcast: other clients keep their own
+        state, and the notifier (not the refusal) reports real changes.
+        """
+        return CommandOutcome(to_sender=("trx:0,false;",))
+
+    async def _write_trx(self, args: tuple[str, ...]) -> CommandOutcome:
+        """Key or unkey through the shared managed ingress (spec 7.3)."""
+        want = parse_bool(args[1])
+        if want is None:
+            # Unparsable set degrades to a read (spec 6.1 rule 2).
+            return await self._sender_current(self._read_trx())
+        if not want:
+            return await self._unkey()
+        return await self._key(args[2] if len(args) >= 3 else None)
+
+    async def _key(self, source: str | None) -> CommandOutcome:
+        """Key the current input via the managed authority (spec 7.3)."""
+        if source is not None:
+            # Audio phase absent: any explicit source (incl. ``tci``) is
+            # refused. Accepting it would key whatever input the data
+            # route selected, which is not what the client asked for.
+            logger.info(
+                "tci %s: refusing key with explicit source %s",
+                self._owner,
+                source,
+            )
+            return self._refuse_key()
+        if (
+            self._authority is None
+            or self._queue is None
+            or self._service is None
+        ):
+            # No managed composition: legacy ``set_ptt`` fallback does
+            # not exist for TCI (spec 7.2).
+            return self._refuse_key()
+        controller = self._controller_authority
+        if controller is not None and getattr(controller, "mode", "local") == "remote":
+            return self._refuse_key()
+        try:
+            if self._authority.held_by_other(self._owner):
+                return self._refuse_key()
+            if self._authority.radio_tx_refusal_nowait() is not None:
+                return self._refuse_key()
+        except Exception:
+            logger.debug(
+                "tci %s: TX admission probe failed", self._owner, exc_info=True
+            )
+            return self._refuse_key()
+        try:
+            if not await self._check_tx_tuple():
+                return self._refuse_key()
+        except Exception:
+            logger.debug(
+                "tci %s: TX tuple check failed", self._owner, exc_info=True
+            )
+            return self._refuse_key()
+        loop = asyncio.get_running_loop()
+        try:
+            submission, ready = self._tracker.begin_key(
+                self._authority,
+                owner=self._owner,
+                on=True,
+                expires_at_monotonic=loop.time() + self._config.command_timeout,
+                connection_generation=self._queue.capture_connection_generation(),
+            )
+            await execute_managed_ptt(
+                authority=self._authority,
+                queue=self._queue,
+                owner=self._owner,
+                on=True,
+                submission=submission,
+                ready=ready,
+                source="tci",
+                provider_generation=self._store.provider_generation,
+            )
+        except Exception:
+            # Rejected, failed setup, radio refusal, timeout: all are
+            # ``trx:0,false;`` to the requester (spec 7.3 step 3). Only an
+            # external cancellation propagates (never swallowed: it is a
+            # ``BaseException``, and the disconnect path releases the
+            # lease explicitly).
+            logger.debug("tci %s: managed key failed", self._owner, exc_info=True)
+            return self._refuse_key()
+        return self._reply("trx:0,true;")
+
+    async def _unkey(self) -> CommandOutcome:
+        """Release our lease, if any; always answered (spec 7.3)."""
+        if self._authority is None or self._queue is None:
+            return await self._sender_current(self._read_trx())
+        loop = asyncio.get_running_loop()
+        try:
+            # Only a key-down captures the connection generation: an
+            # unkey never touches the queue's ordering gate, so teardown
+            # keeps working after the consumer unbinds (MOR-3821).
+            submission, ready = self._tracker.begin_key(
+                self._authority,
+                owner=self._owner,
+                on=False,
+                expires_at_monotonic=loop.time() + self._config.command_timeout,
+                connection_generation=None,
+            )
+            await execute_managed_ptt(
+                authority=self._authority,
+                queue=self._queue,
+                owner=self._owner,
+                on=False,
+                submission=submission,
+                ready=ready,
+                source="tci",
+                provider_generation=self._store.provider_generation,
+            )
+        except Exception:
+            logger.debug("tci %s: managed unkey failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_trx())
+        return self._reply("trx:0,false;")
+
+    async def _check_tx_tuple(self) -> bool:
+        """Pre-key check (spec 5.7): observed TX tuple matches programming.
+
+        The last adapter-programmed tuple (TCI name, numeric DATA
+        sub-mode, MOD input) is read back from the observed store state
+        (channel B while split is on, else A) and, for an explicit
+        numeric sub-mode, from the radio's ``get_data<N>_mod_input``.
+        Anything else -- never programmed, mode or sub-mode moved, input
+        moved, readback failed -- refuses the key before any PTT write.
+        """
+        required = self._tx_required
+        if required is None:
+            return False
+        name, data, mod_input = required
+        state = await self._state()
+        if state.split:
+            actual_name, actual_data = state.modulation_b, state.data_b
+        else:
+            actual_name, actual_data = state.modulation, state.data_a
+        if actual_name != name or _data_num(actual_data) != _data_num(data):
+            return False
+        if (
+            isinstance(data, int)
+            and not isinstance(data, bool)
+            and data > 0
+            and mod_input is not None
+        ):
+            getter = getattr(self._radio, f"get_data{int(data)}_mod_input", None)
+            if callable(getter):
+                try:
+                    actual_input = await getter()
+                except Exception:
+                    return False
+                try:
+                    if int(actual_input) != int(mod_input):
+                        return False
+                except (TypeError, ValueError):
+                    return False
+        return True
+
     def _intent(self, name: str, params: Mapping[str, Any], **kwargs: Any) -> Any:
         """Build the ``source="tci"`` intent (validation + normalization)."""
         return command_intent_from_request(
@@ -505,6 +676,8 @@ class TciAdapterHandler:
                 if mode.name in ("USB", "LSB"):
                     await self._write_data_off()
             await self._sync_split_mode(int(mode.value), data_value)
+            _, policy_input = rigctld_wsjtx_policy(resolve_audio_route(self._radio))
+            self._tx_required = (name, data_value, policy_input)
         except Exception:
             logger.debug("tci %s: set_mode failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_modulation())
@@ -567,6 +740,15 @@ class TciAdapterHandler:
             await self._radio.set_split(on)
             if on:
                 await self._sync_split_on()
+                split_state = await self._state()
+                _, split_input = rigctld_wsjtx_policy(
+                    resolve_audio_route(self._radio)
+                )
+                self._tx_required = (
+                    split_state.modulation,
+                    split_state.data_a,
+                    split_input,
+                )
         except Exception:
             logger.debug("tci %s: set_split failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_split())
@@ -675,3 +857,11 @@ class TciAdapterHandler:
 
 def _tf(value: bool) -> str:
     return "true" if value else "false"
+
+
+def _data_num(value: Any) -> int:
+    """Normalize a DATA sub-mode to an int (plain on/off count as 1/0)."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0

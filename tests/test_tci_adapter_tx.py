@@ -11,6 +11,7 @@ import pytest
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
 from rigplane.runtime.managed_tx_fence import TxAbortFence
+from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from test_managed_tx_authority import FakeConfigStore, FakeLane
 
 from tci_adapter_stub import (
@@ -85,7 +86,10 @@ async def test_key_accepted_end_to_end() -> None:
     assert outcome.to_others == ("trx:0,true;",)
     assert [e.operation.name for e in lane.effects] == ["PTT_ON"]
     snapshot = await authority.snapshot()
-    assert snapshot.state.intent is not None
+    assert snapshot.state.intent.kind is ManagedTxIntentKind.PTT
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
     await authority.close()
 
 
@@ -99,7 +103,7 @@ async def test_unkey_releases() -> None:
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ("trx:0,false;",)
     snapshot = await authority.snapshot()
-    assert snapshot.state.intent is None
+    assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
     await authority.close()
 
 
@@ -142,6 +146,9 @@ async def test_key_competing_lease_refused() -> None:
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ()
     assert len(lane.effects) == 1
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
     await authority.close()
 
 
@@ -259,43 +266,64 @@ async def test_disconnect_while_keyed_releases() -> None:
         if not key_task.done():
             key_task.cancel()
     snapshot = await authority.snapshot()
-    assert snapshot.state.intent is None
+    assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
     await authority.close()
 
 
-async def test_tot_expiry_refuses_key() -> None:
+async def test_tot_expiry_bounds_keyed_over() -> None:
     lane = FakeLane()
-    gate = lane.block_next()
     handler, authority, _lane, _queue = _seam(lane=lane, tot_seconds=0.05)
     await _program_digu(handler)
     async with asyncio.timeout(5.0):
         outcome = await handler.on_command("trx", ("0", "true"))
-    gate.set()
-    assert outcome.to_sender == ("trx:0,false;",)
-    assert outcome.to_others == ()
+    assert outcome.to_sender == ("trx:0,true;",)
+    assert outcome.to_others == ("trx:0,true;",)
+    async with asyncio.timeout(5.0):
+        while not any(
+            effect.operation.name == "FORCE_RECEIVE" for effect in lane.effects
+        ):
+            await asyncio.sleep(0.01)
     snapshot = await authority.snapshot()
-    assert snapshot.state.intent is None
+    assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
+    assert snapshot.configured_tot_seconds == 0.05
+    await authority.close()
+
+
+async def test_tot_disabled_holds_over_until_unkey() -> None:
+    handler, authority, _lane, _queue = _seam(tot_seconds=None)
+    await _program_digu(handler)
+    async with asyncio.timeout(5.0):
+        outcome = await handler.on_command("trx", ("0", "true"))
+    assert outcome.to_sender == ("trx:0,true;",)
+    snapshot = await authority.snapshot()
+    assert snapshot.state.intent.kind is ManagedTxIntentKind.PTT
+    assert snapshot.configured_tot_seconds is None
+    assert snapshot.remaining_tot_seconds is None
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
     await authority.close()
 
 
 async def test_cancellation_loses_key_race() -> None:
-    lane = FakeLane()
-    gate = lane.block_next()
-    handler, authority, _lane, _queue = _seam(lane=lane)
+    handler, authority, lane, queue = _seam()
+    queue.hold_ready = True
     await _program_digu(handler)
     key_task = asyncio.ensure_future(handler.on_command("trx", ("0", "true")))
     try:
         async with asyncio.timeout(5.0):
-            while not lane.effects:
+            while not queue.entries:
                 await asyncio.sleep(0.01)
+        assert not key_task.done()
         key_task.cancel()
         with pytest.raises(asyncio.CancelledError):
             async with asyncio.timeout(5.0):
                 await key_task
     finally:
-        gate.set()
+        queue.release_ready()
     snapshot = await authority.snapshot()
-    assert snapshot.state.intent is None
+    assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
+    assert lane.effects == []
     await authority.close()
 
 
