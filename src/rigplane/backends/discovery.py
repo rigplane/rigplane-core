@@ -60,6 +60,26 @@ _VIRTUAL_KEYWORDS = ("debug", "wlan", "spi")
 _BLUETOOTH_KEYWORDS = ("bluetooth",)
 
 
+async def _finish_close(close: Awaitable[Any]) -> None:
+    """Await a port-close step to completion even when this task is cancelled meanwhile.
+
+    A cancelled scan (or a sibling probe failing) must not abandon a half-closed serial
+    port: the close runs to its end, then the cancellation is re-raised.
+    """
+    closing = asyncio.ensure_future(close)
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(closing)
+            break
+        except asyncio.CancelledError:
+            if closing.cancelled():
+                raise
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 @dataclass
 class SerialPortCandidate:
     """A USB serial port that may be connected to an Icom radio.
@@ -366,7 +386,7 @@ async def _try_baud(
         logger.debug("probe_serial_civ: closing %s", port)
         try:
             writer.close()
-            await writer.wait_closed()
+            await _finish_close(writer.wait_closed())
         except BaseException:
             if diagnostics is not None:
                 diagnostics.status = "probe_error"
@@ -502,7 +522,7 @@ async def probe_xiegu_model_id(
     finally:
         logger.debug("probe_xiegu_model_id: closing %s", port)
         writer.close()
-        await writer.wait_closed()
+        await _finish_close(writer.wait_closed())
         logger.debug("probe_xiegu_model_id: closed %s", port)
 
 
@@ -629,7 +649,7 @@ async def _try_yaesu_baud(
     finally:
         logger.debug("probe_serial_yaesu_cat: closing %s", port)
         try:
-            await transport.close()
+            await _finish_close(transport.close())
         except Exception:
             pass
         logger.debug("probe_serial_yaesu_cat: closed %s", port)
@@ -1146,7 +1166,10 @@ async def discover_serial_radios(
     except BaseException:
         # A failed or cancelled scan must not leave sibling probes holding serial ports.
         for task in tasks:
-            task.cancel()
+            # A task already cancelling (scan cancellation reached it through gather) is
+            # finishing its port close; a second cancel would interrupt that.
+            if not task.done() and not task.cancelling():
+                task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
     return [result for result in probed if result is not None]

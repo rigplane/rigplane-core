@@ -1625,6 +1625,12 @@ class TestDiscoverSerialRadios:
         assert protocols == {"civ", "yaesu_cat"}
 
 
+def _per_port_timeout_probe(port: str, **kwargs: object):
+    """CI-V probe whose first port times out fast (then closes) and whose second waits."""
+    timeout = 0.01 if port.endswith("0") else 30.0
+    return probe_serial_civ(port, baud_rates=[19200], timeout=timeout, **kwargs)  # type: ignore[arg-type]
+
+
 class TestDiscoverSerialRadiosConcurrent:
     """MOR-3682: candidate ports are probed concurrently, not one after another."""
 
@@ -1754,6 +1760,187 @@ class TestDiscoverSerialRadiosConcurrent:
             await discover_serial_radios()
 
         assert sibling_cancelled
+
+    @staticmethod
+    def _slow_close_ports() -> tuple[
+        list[SimpleNamespace],
+        asyncio.Event,
+        asyncio.Event,
+        asyncio.Event,
+        dict[str, bool],
+    ]:
+        ports = [
+            _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
+            for i in range(2)
+        ]
+        return (
+            ports,
+            asyncio.Event(),  # port 0 started closing
+            asyncio.Event(),  # lets port 0's close finish
+            {"closed": False},
+        )
+
+    def _slow_close_opener(
+        self,
+        closing: asyncio.Event,
+        release: asyncio.Event,
+        state: dict[str, bool],
+        *,
+        fail_sibling: bool,
+    ):
+        class _Reader:
+            def __init__(self, fail: bool) -> None:
+                self._fail = fail
+
+            async def read(self, _n: int) -> bytes:
+                if self._fail:
+                    await closing.wait()  # fail while the other port is mid-close
+                    raise OSError("device unplugged")
+                await (
+                    asyncio.Event().wait()
+                )  # silent port: the probe times out, then closes
+                return b""
+
+        class _Writer:
+            def __init__(self, slow: bool) -> None:
+                self._slow = slow
+
+            def write(self, _data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+            async def wait_closed(self) -> None:
+                if self._slow:
+                    closing.set()
+                    await release.wait()
+                    state["closed"] = True
+
+        async def _open(*, url: str, baudrate: int, **_kw: object):
+            first = url == "/dev/ttyUSB0"
+            return _Reader(fail=fail_sibling and not first), _Writer(slow=first)
+
+        return _open
+
+    @pytest.mark.asyncio
+    async def test_sibling_failure_waits_for_the_other_port_to_finish_closing(
+        self,
+    ) -> None:
+        ports, closing, release, state = self._slow_close_ports()
+        opener = self._slow_close_opener(closing, release, state, fail_sibling=True)
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports),
+            patch(
+                "rigplane.discovery.probe_serial_civ",
+                _per_port_timeout_probe,
+            ),
+        ):
+            scan = asyncio.ensure_future(discover_serial_radios(_open_serial=opener))
+            await asyncio.wait_for(closing.wait(), 5)
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not scan.done(), "discovery exited while a port was still closing"
+            release.set()
+            with pytest.raises(OSError, match="device unplugged"):
+                await asyncio.wait_for(scan, 5)
+        assert state["closed"]
+
+    @pytest.mark.asyncio
+    async def test_scan_cancellation_waits_for_ports_to_finish_closing(self) -> None:
+        ports, closing, release, state = self._slow_close_ports()
+        opener = self._slow_close_opener(closing, release, state, fail_sibling=False)
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports[:1]),
+            patch(
+                "rigplane.discovery.probe_serial_civ",
+                partial(probe_serial_civ, baud_rates=[19200], timeout=0.01),
+            ),
+        ):
+            scan = asyncio.ensure_future(discover_serial_radios(_open_serial=opener))
+            await asyncio.wait_for(closing.wait(), 5)
+            scan.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not scan.done(), "discovery exited while a port was still closing"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(scan, 5)
+        assert state["closed"]
+
+    @pytest.mark.asyncio
+    async def test_yaesu_transport_close_finishes_when_the_scan_is_cancelled(
+        self,
+    ) -> None:
+        ports, closing, release, state = self._slow_close_ports()
+
+        class _Transport:
+            async def connect(self) -> None:
+                pass
+
+            async def query(
+                self, _command: str, *, timeout: float | None = None
+            ) -> str:
+                raise TimeoutError("no answer")
+
+            async def close(self) -> None:
+                closing.set()
+                await release.wait()
+                state["closed"] = True
+
+        async def _silent_open(*, url: str, baudrate: int, **_kw: object):
+            raise OSError("not a CI-V radio")
+
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports[:1]),
+            patch(
+                "rigplane.discovery.probe_serial_civ",
+                partial(probe_serial_civ, baud_rates=[19200], timeout=0.01),
+            ),
+        ):
+            scan = asyncio.ensure_future(
+                discover_serial_radios(
+                    _open_serial=_silent_open,
+                    _yaesu_transport_factory=lambda **_kw: _Transport(),
+                )
+            )
+            await asyncio.wait_for(closing.wait(), 5)
+            scan.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not scan.done(), (
+                "discovery exited while a transport was still closing"
+            )
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(scan, 5)
+        assert state["closed"]
+
+    @pytest.mark.asyncio
+    async def test_finish_close_completes_the_close_then_reraises_cancellation(
+        self,
+    ) -> None:
+        from rigplane.backends.discovery import _finish_close
+
+        release = asyncio.Event()
+        done: list[bool] = []
+
+        async def _close() -> None:
+            await release.wait()
+            done.append(True)
+
+        task = asyncio.ensure_future(_finish_close(_close()))
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert done == [True]
 
     def test_recorded_macos_fixture_offers_both_ic705_ports(self) -> None:
         """Recorded bench entries: both IC-705 usbmodem ports are candidates."""
