@@ -21,6 +21,7 @@
     presentation: 'grouped' | 'independent';
     scalarPresentation?: Readonly<TxAuxScalarPresentation>;
     levelFeedback?: TxAuxLevelFeedback;
+    rfPowerMax?: number;
     finiteAppearance?: FiniteControlAppearance;
     rendererContext?: FiniteRendererContext | null;
     onToggle?: (field: TxAuxToggleField) => void;
@@ -29,12 +30,13 @@
   }
 
   let {
-    view, tx, presentation, scalarPresentation, levelFeedback, finiteAppearance, rendererContext,
+    view, tx, presentation, scalarPresentation, levelFeedback, rfPowerMax, finiteAppearance,
+    rendererContext,
     onToggle, onLevelChange, onAtuTune,
   }: Props = $props();
 </script>
 
-<TxAuxScalarHost {view} {levelFeedback} {onLevelChange}>
+<TxAuxScalarHost {view} {levelFeedback} {rfPowerMax} {onLevelChange}>
   {#snippet children(scalars: TxAuxScalarHandles)}
     {#snippet finiteComposition(finite: TxAuxFiniteHandles)}
       {#key presentation}

@@ -538,6 +538,7 @@ Array of tables, each defining a frequency coverage range.
 | `default_hz` | int    | yes      | Default tuning frequency in Hz (within band)|
 | `bsr_code`   | int    | no       | Band Stack Register code for CI-V 0x1A 0x01 |
 | `rx_only`    | bool   | no       | This band row is receive-only (MOR-3632): tunable in the band selector but excluded from the capabilities `txBands` payload, so it never grants transmit permission. Optional, default `false`; a non-boolean value is a load error naming the band. |
+| `max_power_w` | int  | no       | Rated maximum TX power of this band in watts (MOR-3634), from the manuals (IC-9700: 2 m 100, 70 cm 75, 23 cm 10; tier B-, not hardware-verified). Published as `txBands[].maxPowerW`; the power slider scales to the maximum of the band the radio is on, as a fraction of the flat `[power].max_watts`. Data for the slider's scale only: nothing clamps, rescales or refuses a power value that is written. Optional; a band without it uses the flat `max_watts`. A positive integer no larger than `[power].max_watts`, which must be declared; otherwise a load error naming the band. |
 
 ## `[cmd29]` — Command 29 Routes
 

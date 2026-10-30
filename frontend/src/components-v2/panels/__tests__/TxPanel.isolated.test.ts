@@ -49,6 +49,7 @@ const mockProps = {
   txActive: false,
   txActiveAvailable: true,
   rfPower: 0.5,
+  rfPowerMax: 1,
   micGain: 128,
   atuActive: false,
   atuTuning: false,
@@ -167,7 +168,8 @@ beforeEach(() => {
   tx = new ManagedAppTxHarness();
   txHost.current = tx.controller;
   Object.assign(mockProps, {
-    txActive: false, txActiveAvailable: true, rfPower: 0.5, micGain: 128, atuActive: false,
+    txActive: false, txActiveAvailable: true, rfPower: 0.5, rfPowerMax: 1, micGain: 128,
+    atuActive: false,
     atuTuning: false, voxActive: false, compActive: false, compLevel: 64,
     monActive: false, monLevel: 64, driveGain: 128,
     hasTx: true, hasTuner: true, hasMonitor: true,
@@ -245,6 +247,16 @@ describe('panel structure', () => {
     const t = mountPanel({ rfPower: 0.5 });
     openTxSettings(t);
     expect(rfPowerValue(t)).toBe('50%');
+  });
+
+  it('scales the RF Power slider to the band maximum the projection gives (MOR-3634)', () => {
+    const slider = (t: HTMLElement) => t.querySelector<HTMLElement>('[role="slider"][aria-label="RF Power"]');
+    const full = mountPanel({ rfPower: 0.5 });
+    openTxSettings(full);
+    expect(slider(full)?.getAttribute('aria-valuemax')).toBe('1');
+    const narrowed = mountPanel({ rfPower: 0.5, rfPowerMax: 0.75 });
+    openTxSettings(narrowed);
+    expect(slider(narrowed)?.getAttribute('aria-valuemax')).toBe('0.75');
   });
 
   it('renders a non-finite RF Power as an empty slot, never NaN', () => {

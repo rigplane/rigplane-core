@@ -197,6 +197,12 @@ class BandInfo:
     #: permission, so the capabilities ``txBands`` payload omits it. Data
     #: only — no band name or frequency lives in code.
     rx_only: bool = False
+    #: Rated maximum TX power of this band in watts (MOR-3634), from the
+    #: manuals; ``None`` means the band has no row of its own and the flat
+    #: ``RadioProfile.max_watts`` applies. Data only: the capabilities
+    #: ``txBands`` payload publishes it and the power slider scales to it;
+    #: it never changes a power value that is written.
+    max_power_w: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

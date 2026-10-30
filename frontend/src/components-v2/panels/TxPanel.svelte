@@ -137,7 +137,7 @@
   const rfPowerBinding = createContinuousScalar(
     () => ({
       evidence: 'command-feedback', feedback: rfPowerFeedback, command: 'set_rf_power',
-      domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
+      domain: { min: 0, max: p.rfPowerMax ?? 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
       enabled: rfPowerAvailable, request: onRfPowerChange,
     }),
     rfPowerPolicy(),

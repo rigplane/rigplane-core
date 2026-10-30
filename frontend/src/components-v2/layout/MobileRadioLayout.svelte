@@ -1073,7 +1073,7 @@
             label="RF Power"
             value={tx.rfPower}
             min={0}
-            max={1}
+            max={tx.rfPowerMax ?? 1}
             step={0.01}
             renderer="hbar"
             displayFn={formatRfPowerDisplay}

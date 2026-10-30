@@ -84,6 +84,7 @@ type Props = {
   presentation: 'grouped' | 'independent';
   scalarPresentation?: Readonly<TxAuxScalarPresentation>;
   levelFeedback?: TxAuxLevelFeedback;
+  rfPowerMax?: number;
   onLevelChange?: (field: TxAuxLevelField, value: number) => void;
 };
 
@@ -151,6 +152,33 @@ describe('TxAuxScalarHost independent composition', () => {
     expect(r.scalar('micGain')?.dataset.compact).toBe('true');
     expect(scalarCapture.bindings).toHaveLength(8);
     r.dispose();
+  });
+
+  it('scales the RF power slider to the band maximum it is given and no other level (MOR-3634)', () => {
+    const domainMax = (r: ReturnType<typeof render>, field: TxAuxLevelField) =>
+      r.scalar(field)!.rendererLease.view.domain.max;
+    const r = render();
+    expect(domainMax(r, 'rfPower')).toBe(1);
+    expect(r.row('rfPower').dataset.max).toBe('1');
+
+    r.props.rfPowerMax = 0.75;
+    flushSync();
+    expect(domainMax(r, 'rfPower')).toBe(0.75);
+    expect(r.row('rfPower').dataset.max).toBe('0.75');
+    expect(domainMax(r, 'micGain')).toBe(255);
+
+    r.props.rfPowerMax = 0.1;
+    flushSync();
+    expect(domainMax(r, 'rfPower')).toBe(0.1);
+    r.dispose();
+  });
+
+  it('keeps the full RF power scale when the surface gives no maximum or a malformed one', () => {
+    for (const rfPowerMax of [undefined, 0, -1, Number.NaN, 1.5]) {
+      const r = render({ rfPowerMax });
+      expect(r.scalar('rfPower')!.rendererLease.view.domain.max, String(rfPowerMax)).toBe(1);
+      r.dispose();
+    }
   });
 
   it('keeps the same host bindings across keyed grouped/independent composition swaps', () => {

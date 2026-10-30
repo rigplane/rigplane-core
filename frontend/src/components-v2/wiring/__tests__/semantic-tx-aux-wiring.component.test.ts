@@ -1380,6 +1380,48 @@ describe('the rfPower scalar consumes the admitted-target lane (MOR-1687 F2)', (
   });
 });
 
+describe('the rfPower scalar scales to the band the radio is on (MOR-3634)', () => {
+  const slider = () => q<HTMLElement>('[data-testid="tx-aux-rfPower"] [role="slider"]')!;
+  // IC-9700 manuals: 2 m 100 W, 70 cm 75 W, 23 cm 10 W; flat maximum 100 W.
+  const ic9700Caps = (): Capabilities => ({
+    ...liveCaps(true),
+    maxPowerW: 100,
+    txBands: [
+      { name: '2m', start: 144_000_000, end: 148_000_000, maxPowerW: 100 },
+      { name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: 75 },
+      { name: '23cm', start: 1_240_000_000, end: 1_300_000_000, maxPowerW: 10 },
+    ],
+  } as Capabilities);
+  const onFrequency = (freqHz: number): ServerState => {
+    const state = liveState(true);
+    return { ...state, main: { ...state.main, freqHz } } as ServerState;
+  };
+
+  it.each([
+    [145_000_000, '1'], [435_000_000, '0.75'], [1_296_000_000, '0.1'],
+  ])('tops the slider out for a radio on %i Hz at %s', (freqHz, max) => {
+    h.caps = ic9700Caps();
+    h.state = onFrequency(freqHz);
+    render();
+    expect(slider().getAttribute('aria-valuemax')).toBe(max);
+  });
+
+  it('leaves the other levels on their own scale', () => {
+    h.caps = ic9700Caps();
+    h.state = onFrequency(435_000_000);
+    render();
+    expect(slider().getAttribute('aria-valuemax')).toBe('0.75');
+    const mic = q<HTMLElement>('[data-testid="tx-aux-micGain"] [role="slider"]')!;
+    expect(mic.getAttribute('aria-valuemax')).toBe('255');
+  });
+
+  it('keeps the full scale for a radio with a flat maximum and no per-band data', () => {
+    h.caps = { ...liveCaps(true), maxPowerW: 100 } as Capabilities;
+    render();
+    expect(slider().getAttribute('aria-valuemax')).toBe('1');
+  });
+});
+
 // ── MOR-1082: the workspace's per-zone visibility/order, consulted HERE ─────
 //
 // The plans below are built by the real `resolveSurfacePlan` from a real,

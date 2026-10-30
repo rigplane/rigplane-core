@@ -742,6 +742,33 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expectIntentTransport();
   });
 
+  it('sends the RF power the user set unchanged on every band, whatever the slider scale (MOR-3634)', () => {
+    // IC-9700 band rows: 2 m 100 W, 70 cm 75 W, 23 cm 10 W, flat maximum 100 W.
+    // The slider scale follows the band, but nothing between the slider and the
+    // wire may change the value the user set: no clamp, no rescale.
+    const current = state();
+    for (const freqHz of [145_000_000, 435_000_000, 1_296_000_000, 14_074_000]) {
+      h.sendCommand.mockClear();
+      h.state = { ...current, main: { ...current.main, freqHz } } as ServerState;
+      h.caps = {
+        ...h.caps,
+        maxPowerW: 100,
+        txBands: [
+          { name: '2m', start: 144_000_000, end: 148_000_000, maxPowerW: 100 },
+          { name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: 75 },
+          { name: '23cm', start: 1_240_000_000, end: 1_300_000_000, maxPowerW: 10 },
+        ],
+      };
+      const tx = makeTxHandlers();
+      tx.onRfPowerChange(0.9);
+      tx.onRfPowerChange(1);
+      expect(exactCalls(), String(freqHz)).toEqual([
+        ['set_rf_power', { level: 0.9, level_unit: 'normalized' }],
+        ['set_rf_power', { level: 1, level_unit: 'normalized' }],
+      ]);
+    }
+  });
+
   it('preserves exact antenna and scan command names and params without Store truth', () => {
     const antenna = makeAntennaHandlers();
     antenna.onSelectAnt1();

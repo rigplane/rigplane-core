@@ -33,6 +33,10 @@
     view: RadioViewModel | null;
     levelFeedback?: TxAuxLevelFeedback;
     rfPowerFeedback?: Readonly<CommandScalarFeedback>;
+    /** MOR-3634: upper end of the RF power slider on its normalized scale
+     *  (`rfPowerScaleMax`, the band's rated maximum over the flat maximum).
+     *  The slider's scale only; the value requested is sent as chosen. */
+    rfPowerMax?: number;
     onLevelChange?: (field: TxAuxLevelField, value: number) => void;
     scalarAppearance?: ScalarAppearance;
     presentationIsCurrent?: () => boolean;
@@ -40,8 +44,8 @@
   }
 
   let {
-    view, levelFeedback, rfPowerFeedback, onLevelChange, scalarAppearance, presentationIsCurrent,
-    children,
+    view, levelFeedback, rfPowerFeedback, rfPowerMax, onLevelChange, scalarAppearance,
+    presentationIsCurrent, children,
   }: Props = $props();
   let txAux = $derived(view?.txAux);
 
@@ -69,6 +73,16 @@
     );
   };
 
+  // MOR-3634: the RF power slider tops out at the band's rated maximum; a
+  // missing or out-of-range scale leaves the row's full-scale maximum.
+  function levelMax(field: TxAuxLevelField): number {
+    const [, , , max] = row(field);
+    return field === 'rfPower' && rfPowerMax !== undefined
+      && Number.isFinite(rfPowerMax) && rfPowerMax > 0 && rfPowerMax <= max
+      ? rfPowerMax
+      : max;
+  }
+
   function request(field: TxAuxLevelField, value: number): void {
     const current = txAux?.[field];
     if (current !== undefined && usable(current)) onLevelChange?.(field, value);
@@ -76,9 +90,9 @@
 
   function input(field: TxAuxLevelField): Readonly<ContinuousScalarInput> {
     const current = txAux?.[field];
-    const [, , min, max, step] = row(field);
+    const [, , min, , step] = row(field);
     const common = {
-      domain: { min, max, step, defaultValue: null, fineStepDivisor: 1 },
+      domain: { min, max: levelMax(field), step, defaultValue: null, fineStepDivisor: 1 },
       enabled: current !== undefined && usable(current),
       request: (value: number) => request(field, value),
     } as const;
@@ -206,7 +220,8 @@
   {#if current?.availability.structural}
     {@const explicitPresentation = presentation !== undefined}
     {@const form = presentation?.form ?? 'hbar'}
-    {@const [, label, min, max, step] = row(field)}
+    {@const [, label, min, , step] = row(field)}
+    {@const max = levelMax(field)}
     {@const currentStatus = status(field)}
     {@const currentFeedback = feedbackOf(field)}
     {@const disabledReason = reason(field)}

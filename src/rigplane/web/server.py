@@ -812,6 +812,39 @@ def _serialize_choices(
     return [{"value": value, "label": labels[str(value)]} for value in values]
 
 
+def _serialize_tx_bands(profile: "RadioProfile") -> list[dict[str, object]] | None:
+    """Publish the profile's transmit-permitted bands as ``txBands``.
+
+    MOR-3632: receive-only band rows (``rx_only``) never grant transmit
+    permission, so they stay out. MOR-3634: a band row that declares a rated
+    maximum carries it as ``maxPowerW`` (watts); the power slider scales to
+    it. A row without one carries no key, and the flat top-level
+    ``maxPowerW`` applies. ``None`` when no band qualifies.
+    """
+    return [
+        {
+            "name": b.name,
+            "start": b.start,
+            "end": b.end,
+            **({"maxPowerW": b.max_power_w} if b.max_power_w is not None else {}),
+        }
+        for fr in profile.freq_ranges
+        for b in fr.bands
+        if not b.rx_only
+    ] or None
+
+
+def _serialize_max_power(profile: "RadioProfile") -> dict[str, object]:
+    """Publish the flat rated maximum as ``maxPowerW`` (MOR-3634).
+
+    The base the per-band ``txBands[].maxPowerW`` rows are compared with.
+    Absent when the profile declares no ``[power].max_watts``.
+    """
+    if profile.max_watts is None:
+        return {}
+    return {"maxPowerW": profile.max_watts}
+
+
 def _startup_busy_session_payload(
     busy: bool, retry_in_seconds: float | None
 ) -> dict[str, object]:
@@ -4257,15 +4290,8 @@ class WebServer:
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
-                    # MOR-3632: receive-only band rows (``rx_only``) never
-                    # grant transmit permission, so they stay out of txBands.
-                    "txBands": [
-                        {"name": b.name, "start": b.start, "end": b.end}
-                        for fr in profile.freq_ranges
-                        for b in fr.bands
-                        if not b.rx_only
-                    ]
-                    or None,
+                    "txBands": _serialize_tx_bands(profile),
+                    **_serialize_max_power(profile),
                 }
             )
         body = json.dumps(
@@ -4978,14 +5004,8 @@ class WebServer:
             )
             if profile.controls:
                 payload["controls"] = profile.controls
-            # MOR-3632: receive-only band rows (``rx_only``) never grant
-            # transmit permission, so they stay out of txBands.
-            payload["txBands"] = [
-                {"name": b.name, "start": b.start, "end": b.end}
-                for fr in profile.freq_ranges
-                for b in fr.bands
-                if not b.rx_only
-            ] or None
+            payload["txBands"] = _serialize_tx_bands(profile)
+            payload.update(_serialize_max_power(profile))
         payload["webrtc"] = {
             "available": webrtc_available(),
             "enabled": self._config.webrtc_enabled,

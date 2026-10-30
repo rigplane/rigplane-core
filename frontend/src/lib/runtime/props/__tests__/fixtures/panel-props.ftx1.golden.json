@@ -215,6 +215,7 @@
   },
   "toTxProps": {
     "rfPower": 0.15,
+    "rfPowerMax": 1,
     "atuActive": true,
     "atuTuning": false,
     "voxActive": false,

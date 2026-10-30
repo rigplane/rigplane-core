@@ -903,6 +903,11 @@ export function toDspProps(
 
 export interface TxProps {
   rfPower: number;
+  /** Upper end of the RF power slider on the normalized `powerLevel` scale,
+   *  in `(0, 1]` (MOR-3634): the rated maximum of the band the active
+   *  receiver is on, as a fraction of the flat maximum. `1` when no band
+   *  declares one or the frequency is unknown. */
+  rfPowerMax: number;
   atuActive: boolean;
   atuTuning: boolean;
   voxActive: boolean;
@@ -929,6 +934,36 @@ export interface TxProps {
   driveGainAvailable: boolean;
 }
 
+const isPositiveNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+/**
+ * Upper end of the RF power slider (MOR-3634), on the normalized `powerLevel`
+ * scale. The profile's rated maximum for the band the active receiver is on
+ * (`caps.txBands[].maxPowerW`) over the flat rated maximum (`caps.maxPowerW`),
+ * so a radio that is limited to 75 W on 70 cm tops the slider out at 0.75.
+ * `1` (the unchanged full scale) when no band declares a maximum, the flat
+ * maximum is unknown, or the active receiver's frequency is unobserved or
+ * outside every band.
+ *
+ * This is the slider's scale only. The value the user sets is sent as chosen
+ * (`makeTxHandlers().onRfPowerChange`): nothing here clamps or rescales it.
+ */
+export function rfPowerScaleMax(
+  state: ServerState | null,
+  caps: Capabilities | null,
+): number {
+  const flat = caps?.maxPowerW;
+  if (!state || !isPositiveNumber(flat) || !caps?.txBands) return 1;
+  if (!activeFieldAvailable(state, 'freqHz')) return 1;
+  const freqHz = activeRx(state)?.freqHz;
+  if (typeof freqHz !== 'number' || !Number.isFinite(freqHz)) return 1;
+  const band = caps.txBands.find(({ start, end }) => freqHz >= start && freqHz <= end);
+  const bandMax = band?.maxPowerW;
+  if (!isPositiveNumber(bandMax)) return 1;
+  return Math.min(1, bandMax / flat);
+}
+
 export function toTxProps(
   state: ServerState | null,
   caps: Capabilities | null,
@@ -950,6 +985,7 @@ export function toTxProps(
     // level is `NaN` (this file's non-fabricating sentinel), never the
     // plausible-looking 0.5 the TxPanel/mobile consumers printed as 50%.
     rfPower: state?.powerLevel ?? Number.NaN,
+    rfPowerMax: rfPowerScaleMax(state, caps),
     atuActive: (state?.tunerStatus ?? 0) > 0,
     atuTuning: (state?.tunerStatus ?? 0) === 2,
     voxActive: state?.voxOn ?? false,

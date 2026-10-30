@@ -185,6 +185,10 @@ export interface TxBand {
   name: string;
   start: number;
   end: number;
+  /** Rated maximum TX power of this band in watts (MOR-3634), from the
+   *  profile's band row. Absent when the band declares none; the flat
+   *  `Capabilities.maxPowerW` applies. Scales the RF power slider only. */
+  maxPowerW?: number;
 }
 
 export interface DataModeInput {
@@ -275,6 +279,10 @@ export interface Capabilities {
   webrtc: WebRtcCapabilities;
   controls?: Readonly<Record<string, ControlRange | ControlDomain>>;
   txBands: TxBand[] | null;
+  /** The profile's flat rated maximum TX power in watts (MOR-3634), the base
+   *  `TxBand.maxPowerW` is compared with. Absent when the profile declares
+   *  none, and on older servers. */
+  maxPowerW?: number;
   meterCalibrations?: Record<string, MeterCalPoint[]>;
   meterRedlines?: Record<string, number>;
 }
@@ -751,8 +759,12 @@ export function validateCapabilities(value: unknown): Capabilities {
       requireString(band.name, `$.txBands[${index}].name`);
       requireInteger(band.start, `$.txBands[${index}].start`);
       requireInteger(band.end, `$.txBands[${index}].end`);
+      if ('maxPowerW' in band) {
+        requireInteger(band.maxPowerW, `$.txBands[${index}].maxPowerW`, true);
+      }
     });
   }
+  if ('maxPowerW' in raw) requireInteger(raw.maxPowerW, '$.maxPowerW', true);
 
   if ('controls' in raw) {
     const controls = normalizeControls(raw.controls);

@@ -16,6 +16,7 @@ import {
   toRitXitProps,
   toRxAudioProps,
   toScanProps,
+  rfPowerScaleMax,
   toTxProps,
   toVfoControlProps,
   toVfoProps,
@@ -1415,6 +1416,73 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       });
       const caps = { capabilities: [], receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected' } as any;
       expect(toMemoryPanelProps(state, caps).vfoIdentityKnown).toBe(true);
+    });
+  });
+
+  describe('RF power slider scale follows the band (MOR-3634)', () => {
+    // IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W; flat maximum 100 W.
+    const IC9700_CAPS = {
+      tx: true,
+      capabilities: [],
+      maxPowerW: 100,
+      txBands: [
+        { name: '2m', start: 144_000_000, end: 148_000_000, maxPowerW: 100 },
+        { name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: 75 },
+        { name: '23cm', start: 1_240_000_000, end: 1_300_000_000, maxPowerW: 10 },
+      ],
+    } as any;
+    // IC-7300: a flat maximum and band rows without a per-band maximum.
+    const IC7300_CAPS = {
+      tx: true,
+      capabilities: [],
+      maxPowerW: 100,
+      txBands: [{ name: '20m', start: 14_000_000, end: 14_350_000 }],
+    } as any;
+    const onFreq = (freqHz: number, extra: Record<string, unknown> = {}) =>
+      makeState({ main: { ...makeState().main, freqHz }, ...extra });
+
+    it.each([
+      [145_000_000, 1],
+      [435_000_000, 0.75],
+      [1_296_000_000, 0.1],
+    ])('IC-9700 at %i Hz scales the slider to %f of the flat maximum', (freqHz, scale) => {
+      expect(rfPowerScaleMax(onFreq(freqHz), IC9700_CAPS)).toBe(scale);
+      expect(toTxProps(onFreq(freqHz), IC9700_CAPS).rfPowerMax).toBe(scale);
+    });
+
+    it('keeps the full scale when the frequency is unknown or outside every band', () => {
+      expect(rfPowerScaleMax(null, IC9700_CAPS)).toBe(1);
+      expect(rfPowerScaleMax(onFreq(100_000_000), IC9700_CAPS)).toBe(1);
+      expect(rfPowerScaleMax(onFreq(435_000_000, {
+        fieldStatus: { 'main.freqHz': fieldStatus('missing', false) },
+      }), IC9700_CAPS)).toBe(1);
+    });
+
+    it('follows the active receiver on a dual-receiver radio', () => {
+      const dual = makeState({
+        active: 'SUB',
+        main: { ...makeState().main, freqHz: 145_000_000 },
+        sub: { ...makeState().sub, freqHz: 435_000_000 },
+      });
+      expect(rfPowerScaleMax(dual, IC9700_CAPS)).toBe(0.75);
+    });
+
+    it('keeps the full scale for a flat-maximum radio, with or without band rows', () => {
+      expect(rfPowerScaleMax(onFreq(14_074_000), IC7300_CAPS)).toBe(1);
+      expect(rfPowerScaleMax(onFreq(14_074_000), { tx: true, capabilities: [] } as any)).toBe(1);
+      expect(rfPowerScaleMax(onFreq(14_074_000), null)).toBe(1);
+    });
+
+    it('ignores a malformed per-band maximum instead of shrinking the scale', () => {
+      for (const bad of [0, -5, Number.NaN, '75', null]) {
+        const caps = {
+          ...IC9700_CAPS,
+          txBands: [{ name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: bad }],
+        };
+        expect(rfPowerScaleMax(onFreq(435_000_000), caps)).toBe(1);
+      }
+      expect(rfPowerScaleMax(onFreq(435_000_000), { ...IC9700_CAPS, maxPowerW: undefined })).toBe(1);
+      expect(rfPowerScaleMax(onFreq(435_000_000), { ...IC9700_CAPS, maxPowerW: 50 })).toBe(1);
     });
   });
 

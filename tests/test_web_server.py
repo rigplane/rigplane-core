@@ -4757,3 +4757,53 @@ async def test_ic705_rx_only_bands_neither_endpoint_tx_band_over_http() -> None:
         assert _IC705_RX_ONLY_BANDS <= range_band_names
     finally:
         await srv.stop()
+
+
+# MOR-3634: per-band rated maximum power (``max_power_w`` on a band row) is
+# published as ``txBands[].maxPowerW`` next to the flat ``maxPowerW``; the
+# power slider scales to it. Same shipped-profile -> loader -> WebServer ->
+# real socket seam, for a radio with per-band rows and one with a flat maximum.
+_RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+async def _capabilities_by_endpoint(rig_file: str) -> dict[str, dict[str, Any]]:
+    profile = load_rig(_RIGS_DIR / rig_file).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+    )
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        out: dict[str, dict[str, Any]] = {}
+        for path in ("/api/v1/capabilities", "/api/v1/info"):
+            status, _, body = await _http_get(host, port, path)
+            assert status == 200, path
+            payload = json.loads(body)
+            out[path] = payload["capabilities"] if path == "/api/v1/info" else payload
+        return out
+    finally:
+        await srv.stop()
+
+
+async def test_ic9700_publishes_per_band_max_power_over_http() -> None:
+    """IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W, on both endpoints."""
+    for path, capabilities in (await _capabilities_by_endpoint("ic9700.toml")).items():
+        assert capabilities["maxPowerW"] == 100, path
+        per_band = {b["name"]: b.get("maxPowerW") for b in capabilities["txBands"]}
+        assert per_band == {"2m": 100, "70cm": 75, "23cm": 10}, path
+
+
+async def test_flat_maximum_radio_publishes_no_per_band_max_power_over_http() -> None:
+    """The IC-7300 declares only the flat maximum: no band row carries maxPowerW."""
+    for path, capabilities in (await _capabilities_by_endpoint("ic7300.toml")).items():
+        assert capabilities["maxPowerW"] == 100, path
+        assert capabilities["txBands"], path
+        assert all("maxPowerW" not in band for band in capabilities["txBands"]), path
