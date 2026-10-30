@@ -1,6 +1,6 @@
 # Coordinator operating policy
 
-Adopted operating rules for coordinators, workers, and verifiers. A new coordinator must read this policy through the startup requirement in `AGENTS.md`. Assigned workers and verifiers apply its operating rules while retaining their dispatched roles; reading it does not appoint another coordinator or transfer ownership. The initial coordinator target is Astra/Low, requested through a supported runtime setting. Policy adoption does not install or activate an automatic lifecycle handler.
+Adopted operating rules for coordinators, workers, and verifiers. A new coordinator must read this policy through the startup requirement in `AGENTS.md`. Assigned workers and verifiers apply its operating rules while retaining their dispatched roles; reading it does not appoint another coordinator or transfer ownership. The coordinator target is GPT-6.1 Sol/Medium (`gpt-6.1-sol`), requested through a supported runtime setting; Astra (`gpt-6-astra`) is prohibited (owner decision 2026-10-30). Policy adoption does not install or activate an automatic lifecycle handler.
 
 ## Objective and authority
 
@@ -12,15 +12,15 @@ Respect platform/system and developer requirements first. Within those limits, c
 
 ## Model and delegation defaults
 
-Keep Astra as the root coordinator initially; treat its advantage as a working choice to evaluate, not a universal requirement. Request Low for routine orchestration through an actual supported setting. A sentence in a prompt does not confirm the active reasoning setting changed. Do not claim an unverified setting change or manipulate the current running turn through an unsupported mechanism.
+Use GPT-6.1 Sol (`gpt-6.1-sol`) as the root coordinator with Medium effort; use High only for a contested decision. Do not use Astra (`gpt-6-astra`) or GPT-6 Sol anywhere, including coordinators, workers and reviewers (owner decision 2026-10-30: Astra costs about five times as much as GPT-6.1 Sol per Codex credit). Request the effort through an actual supported setting. A sentence in a prompt does not confirm the active reasoning setting changed. Do not claim an unverified setting change or manipulate the current running turn through an unsupported mechanism.
 
 For an authorized new Codex coordinator task, the task-creation request must
-explicitly select `model: "gpt-6-astra"` and `thinking: "low"` when the current
+explicitly select `model: "gpt-6.1-sol"` and `thinking: "medium"` when the current
 host advertises that combination. A CLI launch can use a one-run override:
 
 ```sh
-codex -C /path/to/assigned/worktree --model gpt-6-astra \
-  --config 'model_reasoning_effort="low"'
+codex -C /path/to/assigned/worktree --model gpt-6.1-sol \
+  --config 'model_reasoning_effort="medium"'
 ```
 
 These are launch settings, not a role-selective global or project default.
@@ -28,7 +28,9 @@ Verify the selected model/effort in the created task or UI before claiming it
 is active. Do not change user/project defaults or worker defaults to enforce
 this coordinator target. Automatic enforcement still needs the authorized
 creator to supply and verify the launch arguments; this policy does not supply
-that creator or activate succession. CLI override precedence and explicit
+that creator or activate succession. `codex review` ignores `--model`/`-m`; select its model with
+`--config 'review_model="gpt-6.1-sol"'` (or `review_model` in the config).
+CLI override precedence and explicit
 subagent selection are documented in [Codex configuration
 precedence](https://learn.chatgpt.com/docs/config-file/config-basic#configuration-precedence)
 and [Codex subagent model selection](https://learn.chatgpt.com/docs/agent-configuration/subagents).
@@ -46,7 +48,7 @@ Routing defaults, subject to observed quality and current availability:
 | CI fact collection, bounded repetitive check, small mechanical edit | Ordinary tool first; if a worker is justified, first consider Spark/Low when available through an authorized mechanism, otherwise Luna/Low or Terra with a brief fit/availability reason |
 | Localized implementation or test correction | Terra/Medium; Sol/Medium when ambiguity is material |
 | Subsystem implementation or substantive review | Sol/Medium; higher effort for demonstrated risk |
-| Difficult architectural, protocol, concurrency, or lifecycle analysis | Astra/Medium or High, only for that bounded problem |
+| Difficult architectural, protocol, concurrency, or lifecycle analysis | Sol/Medium; Sol/High only for a contested decision, only for that bounded problem. Never Astra |
 
 Verify available models and their allowance buckets on the actual host; Spark may have a separate allowance. Do not create an unauthorized user-owned task or delay delivery merely to reach Spark. Model names in this table are selection targets, not a runtime availability guarantee. Select the smallest capable available model and pass explicit model and effort overrides through a supported dispatch mechanism; legacy role frontmatter does not establish the active Codex model or reasoning setting. For Claude Code, use a supported per-invocation model selection rather than relying on omitted frontmatter, which inherits the parent ([Claude Code subagents](https://code.claude.com/docs/en/sub-agents)). If explicit selection is unsupported, report that limitation instead of silently inheriting an expensive root model.
 
