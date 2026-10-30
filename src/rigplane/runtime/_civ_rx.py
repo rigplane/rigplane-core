@@ -1084,6 +1084,26 @@ class CivRuntime:
         )
         logger.info("civ-data-watchdog: started")
 
+    @staticmethod
+    async def _join_cancelled(task: "asyncio.Task[None]") -> None:
+        """Await a task this call has just cancelled (MOR-3350).
+
+        The joined task's own ``CancelledError`` is expected and swallowed.
+        A cancel requested on THE CALLING task while it waits here must not be
+        consumed with it: it is re-raised once the join ends, whether the
+        joined task ended cancelled or returned normally after swallowing the
+        cancel that was forwarded to it. Counted against ``cancelling()`` at
+        entry so a caller that handled an earlier cancel keeps working.
+        """
+        me = asyncio.current_task()
+        before = me.cancelling() if me is not None else 0
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        if me is not None and me.cancelling() > before:
+            raise asyncio.CancelledError
+
     async def stop_data_watchdog(self) -> None:
         """Stop CI-V data watchdog and any in-flight detached reconnect task.
 
@@ -4199,20 +4219,16 @@ class CivRuntime:
         if self._host._session_lifecycle.is_current_recovery_awaited_by(task):
             return
         task.cancel()
+        # A cancel already requested on THIS task (cleanup running after a
+        # cancelled ``async with radio``) must not abort the teardown; only
+        # a NEW cancel during the join propagates, like at any later await.
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            await self._join_cancelled(task)
         except Exception:
             logger.debug(
                 "Fast CI-V soft_reconnect teardown failed",
                 exc_info=True,
             )
-        # The join above swallows CancelledError: keep the caller's own
-        # cancellation (a cancelled ``disconnect()``) alive.
-        caller = asyncio.current_task()
-        if caller is not None and caller.cancelling():
-            raise asyncio.CancelledError
 
     async def _await_fast_soft_reconnect(
         self, deadline: float, owner_stop_epoch: int
@@ -4265,6 +4281,45 @@ class CivRuntime:
                 exc_info=True,
             )
 
+    @staticmethod
+    async def _acquire_recovery_lock(lock: asyncio.Lock, deadline: float) -> None:
+        """Acquire ``lock`` by ``deadline`` without losing a cancellation (MOR-2083).
+
+        ``wait_for(lock.acquire(), t)`` can swallow a cancel that arrives just
+        as the acquire completes (python 3.11) and leave the lock held for a
+        command that was cancelled. The acquisition therefore runs as its own
+        task that is waited on with ``asyncio.wait``: on a cancel of the
+        waiter, or on timeout, a completed acquisition is released at once and
+        a pending one is cancelled, and the cancel is re-raised. Nothing but
+        the acquisition is abandoned — the shared recovery keeps running.
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("CI-V transport recovery timed out")
+        acquire = asyncio.ensure_future(lock.acquire())
+        abandoned = False
+
+        def _release_if_abandoned(done: "asyncio.Future[Any]") -> None:
+            if abandoned and not done.cancelled() and done.exception() is None:
+                lock.release()
+
+        acquire.add_done_callback(_release_if_abandoned)
+        try:
+            finished, _ = await asyncio.wait({acquire}, timeout=remaining)
+        except BaseException:
+            if acquire.done() and not acquire.cancelled():
+                if acquire.exception() is None:
+                    lock.release()
+            else:
+                abandoned = True
+                acquire.cancel()
+            raise
+        if not finished:
+            abandoned = True
+            acquire.cancel()
+            raise TimeoutError("CI-V transport recovery timed out")
+        acquire.result()
+
     async def _wait_for_civ_transport_recovery(
         self, timeout: "float | None" = None
     ) -> None:
@@ -4316,15 +4371,7 @@ class CivRuntime:
                     # stuck first waiter past its own timeout. Only the
                     # lock acquisition is abandoned — the shared recovery
                     # keeps running.
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError("CI-V transport recovery timed out")
-                    try:
-                        await asyncio.wait_for(lock.acquire(), max(remaining, 0))
-                    except asyncio.TimeoutError:
-                        raise TimeoutError(
-                            "CI-V transport recovery timed out"
-                        ) from None
+                    await self._acquire_recovery_lock(lock, deadline)
                     try:
                         # Re-validate after acquiring (MOR-2083): this
                         # waiter may have queued behind the lock while the

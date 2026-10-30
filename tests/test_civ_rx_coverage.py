@@ -31,6 +31,7 @@ Covers missing lines:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import struct
 import time
@@ -1882,6 +1883,131 @@ async def test_disconnect_retires_blocked_fast_reconnect_kick(
                 await waiter
             except (asyncio.CancelledError, ConnectionError):
                 pass
+
+
+async def test_disconnect_in_a_cancelled_tasks_cleanup_completes_the_teardown(
+    radio: IcomRadio,
+) -> None:
+    """MOR-2083: ``async with radio`` after a cancel still tears down fully.
+
+    The task is already cancelled when its cleanup calls ``disconnect()``
+    (``cancelling()`` stays 1). Retiring the fast kick must not re-raise that
+    old cancel and abort the rest of the teardown: the lifecycle release and
+    the control-loop shutdown still run, and the cancel is re-raised by the
+    task itself afterwards.
+    """
+    transport = radio._ctrl_transport
+    transport._udp_transport = object()
+    radio._civ_transport = None
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    async def parked_soft_reconnect() -> None:
+        entered.set()
+        await release.wait()
+
+    radio.soft_reconnect = parked_soft_reconnect
+    lifecycle_disconnects: list[bool] = []
+    real_lifecycle_disconnect = radio._session_lifecycle.disconnect
+
+    async def spy_lifecycle_disconnect() -> None:
+        lifecycle_disconnects.append(True)
+        await real_lifecycle_disconnect()
+
+    radio._session_lifecycle.disconnect = spy_lifecycle_disconnect  # type: ignore[method-assign]
+    stops: list[bool] = []
+    real_stop_reconnect = radio._control_phase._stop_reconnect
+    radio._control_phase._stop_reconnect = lambda: (  # type: ignore[method-assign]
+        stops.append(True),
+        real_stop_reconnect(),
+    )[1]
+
+    waiter = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+    )
+    gate = asyncio.Event()
+
+    async def command_with_async_with_cleanup() -> None:
+        try:
+            await gate.wait()
+        except asyncio.CancelledError:
+            await radio.disconnect()  # what ``__aexit__`` does
+            raise
+
+    command = asyncio.ensure_future(command_with_async_with_cleanup())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        kick = radio._civ_runtime._fast_reconnect_task
+        assert kick is not None and not kick.done()
+        waiter.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await waiter
+        await asyncio.sleep(0)
+        command.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(command, timeout=10.0)
+        assert kick.done() and kick.cancelled()
+        assert lifecycle_disconnects == [True], "teardown was aborted"
+        assert stops == [True], "control-loop shutdown was skipped"
+    finally:
+        release.set()
+        for task in (waiter, command):
+            if not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+
+
+@pytest.mark.parametrize("acquire_ran_first", [False, True])
+async def test_cancel_arriving_as_the_lock_acquire_completes_releases_the_lock(
+    radio: IcomRadio,
+    acquire_ran_first: bool,
+) -> None:
+    """MOR-2083: a cancel that lands as the lock is handed over loses nothing.
+
+    The waiter queues behind a held lock; the holder releases (waking the
+    waiter's acquisition) and the waiter is cancelled in the same loop turn,
+    before the acquisition task has run. The command must end cancelled, the
+    lock must not stay held, and no recovery kick may run for it.
+    """
+    transport = radio._ctrl_transport
+    transport._udp_transport = object()
+    radio._civ_transport = None
+    soft_calls: list[bool] = []
+
+    async def counting_soft_reconnect() -> None:
+        soft_calls.append(True)
+
+    radio.soft_reconnect = counting_soft_reconnect
+    lock = radio._civ_recovery_lock
+    await lock.acquire()
+    waiter = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+    )
+    try:
+        for _ in range(100):
+            if getattr(lock, "_waiters", None):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("the waiter never queued behind the lock")
+        lock.release()  # hands the lock to the queued acquisition ...
+        if acquire_ran_first:
+            await asyncio.sleep(0)  # ... which completes before the waiter wakes
+        waiter.cancel()  # ... and the waiter is cancelled in the same turn
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert not lock.locked(), "the cancelled command leaked the lock"
+        assert soft_calls == [], "a cancelled command must not kick recovery"
+    finally:
+        if lock.locked():
+            lock.release()
+        if not waiter.done():
+            waiter.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await waiter
 
 
 async def test_lock_acquisition_is_bounded_by_the_wait_deadline(

@@ -782,6 +782,74 @@ async def test_serial_disconnect_retires_kick_blocked_in_reconnect_open() -> Non
                 await waiter
 
 
+@pytest.mark.asyncio
+async def test_serial_disconnect_in_a_cancelled_tasks_cleanup_completes() -> None:
+    """MOR-2083: serial ``async with radio`` cleanup after a cancel tears down.
+
+    The cleaning-up task already carries a cancel (``cancelling()`` is 1).
+    Retiring the fast kick must not re-raise it and skip the watchdog, audio
+    and session cleanup of ``disconnect()``.
+    """
+    open_gate = asyncio.Event()
+    entered_open = asyncio.Event()
+
+    class _BlockedOpenLink(_FakeSerialCivLink):
+        async def connect(self) -> None:
+            self.connect_calls += 1
+            if self.connect_calls == 1:
+                self.connected = True
+                self.ready = True
+                self.healthy = True
+                return
+            entered_open.set()
+            await open_gate.wait()
+            self.connected = True
+            self.ready = True
+            self.healthy = True
+
+    link = _BlockedOpenLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    await radio.connect()
+    await radio._stop_civ_data_watchdog()
+    radio._civ_transport = None
+    waiter = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+    )
+    gate = asyncio.Event()
+
+    async def command_with_async_with_cleanup() -> None:
+        try:
+            await gate.wait()
+        except asyncio.CancelledError:
+            await radio.disconnect()  # what ``__aexit__`` does
+            raise
+
+    command = asyncio.ensure_future(command_with_async_with_cleanup())
+    try:
+        await asyncio.wait_for(entered_open.wait(), timeout=10.0)
+        kick = radio._civ_runtime._fast_reconnect_task
+        assert kick is not None and not kick.done()
+        waiter.cancel()
+        with suppress(asyncio.CancelledError):
+            await waiter
+        await asyncio.sleep(0)
+        command.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(command, timeout=15.0)
+        assert kick.done()
+        assert radio._conn_state is RadioConnectionState.DISCONNECTED
+        assert link.connected is False
+        assert radio._civ_transport is None
+        assert radio._civ_rx_task is None
+    finally:
+        open_gate.set()
+        for task in (waiter, command):
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError, Exception):
+                    await task
+
+
 class _FakeManagedTxRuntime:
     """Minimal stand-in for the managed-TX supervisor (real async signature)."""
 
