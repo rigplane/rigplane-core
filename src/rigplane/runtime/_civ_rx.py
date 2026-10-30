@@ -1117,18 +1117,15 @@ class CivRuntime:
         # self-cancel guard).
         current = asyncio.current_task()
         pending = self._pending_replacement
-        owned_recovery = (
-            rc_task is not None
-            and (
-                self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
-                or (
-                    pending is not None
-                    and rc_task is pending[0]
-                    and (
-                        current is pending[1]
-                        or self._host._session_lifecycle.is_current_recovery_awaited_by(
-                            pending[1]
-                        )
+        owned_recovery = rc_task is not None and (
+            self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+            or (
+                pending is not None
+                and rc_task is pending[0]
+                and (
+                    current is pending[1]
+                    or self._host._session_lifecycle.is_current_recovery_awaited_by(
+                        pending[1]
                     )
                 )
             )
