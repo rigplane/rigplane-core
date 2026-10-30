@@ -1090,3 +1090,106 @@ class TestWebSocketRefusalEndToEnd:
         # frequency write and no receiver selection.
         sent = _civ_frames(transport.sent_packets)
         assert not [f for f in sent if f[:1] in (b"\x05", b"\x07")]
+
+
+class TestSuccessfulSubWritesThroughPublicApi:
+    """P1: ordinary ``set_freq``/``set_mode`` with ``receiver=1`` cross the
+    real HTTP/WS API through the successful IC-7610 selector-01 path.
+
+    The refusal tests above prove the selection is never switched behind the
+    caller's back; these prove the success path needs no selection at all:
+    the reply is ok, a wire readback shows the new SUB value, every frame is
+    a selector-01 access, DATA/filter survive, MAIN is untouched, and no
+    ``0x07 0xD0/0xD1`` frame is ever sent. Reuses the ``_web_peer`` fake
+    link and the ``_request`` HTTP/WS sender from
+    ``test_web_split_writes``; no new helper.
+    """
+
+    _NEW_FREQ = 14_250_000
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", ["http", "ws"])
+    async def test_set_freq_sub_through_api(self, protocol: str) -> None:
+        from test_web_split_writes import _request, _web_peer
+
+        async with _web_peer("IC-7610") as (web, peer, entries, executed, rigctld):
+            radio = rigctld[0]
+            main_before = peer.slots["A"]
+            sub_before = peer.slots["B"]
+            status, result = await _request(
+                web,
+                protocol,
+                "set_freq",
+                {"freq": self._NEW_FREQ, "receiver": 1},
+            )
+            assert status == (200 if protocol == "http" else None)
+            assert result["ok"] is True
+            await asyncio.wait_for(executed.wait(), 2)
+            assert len(entries) == 1
+            # Final outcome on the fake radio: SUB moved, MAIN untouched.
+            assert peer.slots["A"] == main_before
+            freq, mode, filt, data_mode = peer.slots["B"]
+            assert freq == self._NEW_FREQ
+            assert (mode.name, filt, data_mode) == (
+                sub_before[1].name,
+                sub_before[2],
+                sub_before[3],
+            )
+            assert peer.selected == "A"
+            # Every frame is a selector-01 access: the SET, then its readback.
+            assert peer.requests
+            assert all(
+                command == 0x25 and data[:1] == b"\x01"
+                for command, _sub, data in peer.requests
+            )
+            assert (0x25, None, b"\x01" + bcd_encode(self._NEW_FREQ)) in peer.requests
+            assert (0x25, None, b"\x01") in peer.requests
+            assert not [r for r in peer.requests if r[0] == 0x07]
+            # Public readback over the wire shows the new SUB value.
+            assert await radio.get_freq(receiver=1) == self._NEW_FREQ
+            assert not [r for r in peer.requests if r[0] == 0x07]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("protocol", ["http", "ws"])
+    async def test_set_mode_sub_through_api(self, protocol: str) -> None:
+        from test_web_split_writes import _request, _web_peer
+        from rigplane.types import Mode
+
+        async with _web_peer("IC-7610") as (web, peer, entries, executed, rigctld):
+            radio = rigctld[0]
+            main_before = peer.slots["A"]
+            freq_before, _mode_before, filt_before, data_before = peer.slots["B"]
+            status, result = await _request(
+                web,
+                protocol,
+                "set_mode",
+                {"mode": "USB", "receiver": 1},
+            )
+            assert status == (200 if protocol == "http" else None)
+            assert result["ok"] is True
+            await asyncio.wait_for(executed.wait(), 2)
+            assert len(entries) == 1
+            # Final outcome: SUB mode changed, freq/DATA/filter preserved,
+            # MAIN untouched, selection never moved.
+            assert peer.slots["A"] == main_before
+            freq, mode, filt, data_mode = peer.slots["B"]
+            assert freq == freq_before
+            assert mode.name == "USB"
+            assert (filt, data_mode) == (filt_before, data_before)
+            assert peer.selected == "A"
+            # Preservation read, selector-01 SET, readback; never a select.
+            assert peer.requests
+            assert all(
+                command in (0x25, 0x26) and data[:1] == b"\x01"
+                for command, _sub, data in peer.requests
+            )
+            assert (
+                0x26,
+                None,
+                bytes([0x01, int(Mode.USB), data_before, filt_before]),
+            ) in peer.requests
+            assert not [r for r in peer.requests if r[0] == 0x07]
+            # Public readback over the wire shows the new SUB mode/filter.
+            read_mode, read_filt = await radio.get_mode_info(receiver=1)
+            assert (read_mode.name, read_filt) == ("USB", filt_before)
+            assert not [r for r in peer.requests if r[0] == 0x07]
