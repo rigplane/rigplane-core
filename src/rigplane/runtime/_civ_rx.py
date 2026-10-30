@@ -1136,12 +1136,30 @@ class CivRuntime:
             and not owned_recovery
             and not rc_task.done()
         ):
+            is_pending_replacement = (
+                pending is not None and rc_task is pending[0]
+            )
+            predecessor = pending[1] if is_pending_replacement else None
             rc_task.cancel()
             try:
                 await rc_task
             except asyncio.CancelledError:
                 pass
+            if (
+                predecessor is not None
+                and predecessor is not current
+                and not predecessor.done()
+            ):
+                predecessor.cancel()
+                try:
+                    await predecessor
+                except asyncio.CancelledError:
+                    pass
             self._reconnect_task = None
+            if is_pending_replacement:
+                # The replacement never started, so its ``finally``
+                # never ran: drop the handoff pair explicitly.
+                self._pending_replacement = None
         elif rc_task is not current and not owned_recovery:
             self._reconnect_task = None
 

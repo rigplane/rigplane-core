@@ -1330,6 +1330,10 @@ async def test_external_teardown_still_cancels_the_pending_replacement(
             # predecessor nor its lifecycle waiter.
             await radio._civ_runtime.stop_data_watchdog()
             assert second.cancelled()
+            assert first is not None and first.cancelled()
+            assert radio._civ_runtime._pending_replacement is None
+            recover_task = radio._session_lifecycle._recover_task
+            assert recover_task is None or recover_task.done()
             assert radio._civ_runtime._reconnect_task is None
             assert arm.calls == ["soft_reconnect_once"]
     finally:
