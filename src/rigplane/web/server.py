@@ -122,7 +122,6 @@ from ..env_config import (
     get_audio_rx_jitter_ceiling_ms,
     get_audio_rx_jitter_floor_ms,
 )
-from ..startup_checks import assert_radio_startup_ready
 from ._delta_encoder import DeltaEncoder  # noqa: TID251
 from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
@@ -1281,9 +1280,9 @@ class WebServer:
         self._audio_analyzer: AudioAnalyzer | None = None
         if radio is not None and _has_audio:
             self._audio_analyzer = AudioAnalyzer()
-            self._audio_analyzer_tap = self._audio_broadcaster.taps(
-                STAGE_RX_POST_DSP
-            ).register("audio-analyzer", self._audio_analyzer.feed_audio)
+            self._audio_broadcaster.taps(STAGE_RX_POST_DSP).register(
+                "audio-analyzer", self._audio_analyzer.feed_audio
+            )
         self._command_queue: CommandQueue = CommandQueue()
         self._controller = ControllerAuthority(
             ready=self._controller_ready,
@@ -1673,11 +1672,6 @@ class WebServer:
             "answeredId": identity.answered_id,
         }
 
-    async def ensure_startup_ready(self, timeout: float = 5.0) -> None:
-        """Assert that the attached radio is ready before exposing the server."""
-        _ = timeout
-        assert_radio_startup_ready(self._radio, component="web startup")
-
     def _set_scope_data_callback(self, callback: Any) -> None:
         """Set the scope data callback on the radio if it supports it."""
         if self._radio is not None and self._hardware_scope_available:
@@ -1802,18 +1796,6 @@ class WebServer:
                 self._scope_enabled = False
                 self._scope_enable_failed = False
                 logger.info("scope: pre-session state restored (no active handlers)")
-
-    async def restore_scope_before_shutdown(self) -> None:
-        """Restore confirmed scope ownership before the poller is stopped."""
-        async with self._scope_enable_lock:
-            if not self._scope_enabled and not self._scope_enable_failed:
-                return
-            self._scope_demand_generation += 1
-            if await self._execute_scope_command(
-                DisableScope(generation=self._scope_demand_generation)
-            ):
-                self._scope_enabled = False
-                self._scope_enable_failed = False
 
     def _dispatch_audio_fft_frame(self, frame: Any) -> None:
         """Fan out an audio FFT frame to the relevant scope channels.
@@ -4270,10 +4252,13 @@ class WebServer:
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
+                    # MOR-3632: receive-only band rows (``rx_only``) never
+                    # grant transmit permission, so they stay out of txBands.
                     "txBands": [
                         {"name": b.name, "start": b.start, "end": b.end}
                         for fr in profile.freq_ranges
                         for b in fr.bands
+                        if not b.rx_only
                     ]
                     or None,
                 }
@@ -4988,10 +4973,13 @@ class WebServer:
             )
             if profile.controls:
                 payload["controls"] = profile.controls
+            # MOR-3632: receive-only band rows (``rx_only``) never grant
+            # transmit permission, so they stay out of txBands.
             payload["txBands"] = [
                 {"name": b.name, "start": b.start, "end": b.end}
                 for fr in profile.freq_ranges
                 for b in fr.bands
+                if not b.rx_only
             ] or None
         payload["webrtc"] = {
             "available": webrtc_available(),

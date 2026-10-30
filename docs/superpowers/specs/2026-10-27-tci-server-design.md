@@ -787,9 +787,8 @@ throughput.
    match, the key is refused with no PTT write. Restoring the previous input
    after the over is **not done in release 1** (decided, Q11; a documented known
    limitation, section 9): the web
-   path has no restore to reuse, because `ControlHandler`'s teardown hook only
-   clears its bookkeeping (`_clear_mod_input_restore_on_teardown`, pinned by
-   `tests/test_web_mod_input_restore.py`).
+   path has no restore to reuse: `ControlHandler` teardown does not enqueue a
+   MOD SET (`tests/test_web_mod_input_restore.py`).
 2. `lease = await radio.audio_session.acquire_tx("tci-<N>")` at the moment the
    key is accepted; release at unkey/disconnect.
 3. Convert client frames to s16le mono at the radio TX rate: de-interleave

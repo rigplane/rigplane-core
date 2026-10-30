@@ -37,7 +37,7 @@ required run for the final Ready candidate. Run `visual` for affected paths;
 reserve `full` for releases or an explicitly recorded cross-cutting risk.
 Documentation-only work uses readback/diff proof and independent review, without
 citation, link, Markdown, product, visual, or full automation. The server-side
-classifier and required skipped/neutral context are described in `AGENTS.md`.
+classifier and the docs-only `quick` status are described in `AGENTS.md`.
 
 Review and CI proceed in parallel against the frozen head. One observer owns
 each run and reports meaningful changes; builder, verifier, and coordinator
