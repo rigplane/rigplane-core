@@ -4828,3 +4828,51 @@ async def test_flat_maximum_radio_publishes_no_per_band_max_power_over_http() ->
         assert capabilities["powerUnit"] == "raw_255", path
         assert capabilities["txBands"], path
         assert all("maxPowerW" not in band for band in capabilities["txBands"]), path
+
+
+# MOR-3634 seam twin (frontend:
+# frontend/src/components-v2/wiring/__tests__/power-slider-scale.seam.isolated.test.ts).
+# The shared IC-9700 document below is what the frontend replays through its
+# real client and stores into the rendered power slider; this test serves that
+# same document from the real WebServer and pins the capability payload the
+# slider scale reads (per-band max power, powerUnit). Only the seam is
+# asserted: the fixture carries the validator's structural minimum around it,
+# never a byte copy of the served payload.
+_POWER_SLIDER_SEAM_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "frontend"
+    / "src"
+    / "components-v2"
+    / "wiring"
+    / "__tests__"
+    / "fixtures"
+    / "power-slider-scale.ic9700.seam.json"
+)
+_POWER_SLIDER_SEAM: dict[str, Any] = json.loads(
+    _POWER_SLIDER_SEAM_PATH.read_text(encoding="utf-8")
+)
+
+
+async def test_ic9700_power_slider_seam_document_matches_served_capabilities() -> None:
+    """The shared seam document's capability payload is what the server serves.
+
+    IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W; the level is
+    a percentage of the current band's maximum (``raw_255``).
+    """
+    seam_caps = _POWER_SLIDER_SEAM["capabilities"]
+    assert [band["name"] for band in seam_caps["txBands"]] == ["2m", "70cm", "23cm"]
+    for band, tx_band in zip(_POWER_SLIDER_SEAM["bands"], seam_caps["txBands"]):
+        assert tx_band["start"] <= band["freqHz"] <= tx_band["end"], band["name"]
+        assert band["powerLevel"] == 0.8, band["name"]
+    served = await _capabilities_by_endpoint("ic9700.toml", seam_caps["powerUnit"])
+    for path, capabilities in served.items():
+        assert capabilities["maxPowerW"] == seam_caps["maxPowerW"] == 100, path
+        assert capabilities["powerUnit"] == seam_caps["powerUnit"] == "raw_255", path
+        assert capabilities["txBands"] == seam_caps["txBands"], path
+    info_caps = served["/api/v1/capabilities"]
+    assert info_caps["model"] == seam_caps["model"] == "IC-9700"
+    assert info_caps["tx"] is True
+    assert info_caps["scope"] is False
+    assert info_caps["audio"] is False
+    assert info_caps["scopeSource"] is None
+    assert set(seam_caps["capabilities"]) <= set(info_caps["capabilities"])
