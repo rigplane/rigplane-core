@@ -618,6 +618,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # Always stop watchdog first to avoid orphan retry loops on failed reconnects.
         self._cancel_serial_identity_reread()
         self._connection_identity = None
+        self._serial_identity_gate_running = False
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
         self._serial_deferred_audio = None

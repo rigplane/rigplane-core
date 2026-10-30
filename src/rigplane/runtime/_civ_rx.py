@@ -1971,7 +1971,7 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
-                self._stamp_liveness()
+                self._stamp_liveness(notify=True)
                 self._publish_scope_mode_observation(
                     scope_frame, receiver=receiver, frame=frame
                 )
@@ -2280,7 +2280,7 @@ class CivRuntime:
                 and store_provider_generation
                 == self._host._state_store.provider_generation
             ):
-                self._stamp_liveness()
+                self._stamp_liveness(notify=True)
             return
         try:
             observations = self._observations_from_frame(frame)
@@ -3942,9 +3942,10 @@ class CivRuntime:
         0x27: _handle_27,
     }
 
-    def _stamp_liveness(self) -> None:
+    def _stamp_liveness(self, *, notify: bool = False) -> None:
         self._host.last_valid_frame_monotonic = time.monotonic()
-        self._notify_change("liveness", {})
+        if notify:
+            self._notify_change("liveness", {})
 
     def _notify_change(self, event_name: str, data: dict[str, Any]) -> None:
         """Notify server of state change (best-effort)."""
