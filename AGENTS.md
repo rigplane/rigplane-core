@@ -198,9 +198,13 @@ never because `visual.yml` itself changed.
 
 When every changed path is documentation or documentation metadata — including
 `docs/**` except data files, Markdown/RST anywhere in the tree, `.claude/**`, and
-the doc-citation baseline files — only the GitHub-hosted classifier runs. The
-required `quick` job reports a server-side skipped/neutral context and never
-allocates the Mac mini. Do not run citation, link, Markdown, product, visual,
+the doc-citation baseline files — no test job runs. `docs-only-quick.yml`
+(`pull_request_target`, `ubuntu-latest`) publishes the required `quick` status
+as success without a checkout; `quick.yml`'s `paths-ignore` skips such a head,
+and for a docs-only head that still reaches it, the `classify` job
+(`ubuntu-latest`) sets `docs=true` and the `quick` job is skipped by its `if:`
+(`needs.classify.outputs.docs != 'true'`). No self-hosted runner is allocated.
+Do not run citation, link, Markdown, product, visual,
 or full automation; the exact-head independent review is the substantive gate.
 Documentation mixed with code follows the normal checks selected by the code
 paths. Data files under `docs/` (`*.json`, `*.toml`, `*.yaml`, `*.yml`) and the
@@ -297,16 +301,16 @@ implementation agent may not be the review agent.
   checks are actually green at the exact head is a separate step the
   coordinator takes immediately before merging — both conditions still gate
   the merge, just held by two roles instead of one.
-- That split exists because CI is a shared, limited resource: `quick.yml`,
-  `full.yml`, and `visual.yml` all set `runs-on: [self-hosted, linux, build]`,
-  while everything else under `.github/workflows/` runs on `ubuntu-latest`.
-  `gh api repos/rigplane/rigplane-core/actions/runners` currently lists
-  exactly one registered runner carrying those labels, scoped to this
-  repository alone — `rigplane-pro`'s runners are separate registrations
-  and cannot pick up this repository's jobs. The contention is narrower
-  than a shared queue: this repository's three self-hosted workflows
-  serialize behind a single runner of its own, and a review session that
-  waits on that queue can still lose an hour or more for nothing.
+- That split exists because CI is a shared, limited resource: the
+  self-hosted workflows queue behind a small shared pool of this
+  repository's own `[self-hosted, linux, build]` runners — see the runner
+  labels in `.github/workflows/` and
+  [`docs/development/release-gates.md`](docs/development/release-gates.md);
+  the labels, not a count, are the contract, and the pool changes over
+  time. The macOS bench/platform workflows use their own labels.
+  `rigplane-pro`'s runners are separate registrations and cannot pick up
+  this repository's jobs. A review session that waits on that queue can
+  still lose an hour or more for nothing.
 - Do not rerun an entire suite merely to classify a failure. Diagnose it from
   the existing artifact and a focused reproduction on the Mac mini. A repaired
   final head receives its natural required workflow run; a full-suite rerun is
