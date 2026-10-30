@@ -37,6 +37,10 @@ class _FakeCivHost:
         self._civ_epoch = self._civ_request_tracker.generation
         self._civ_transport = object()
         self._state_store = StateStore()
+        self.selection_forgotten = 0
+
+    def _forget_selection(self) -> None:
+        self.selection_forgotten += 1
 
 
 class TestCivRuntimeHost:
@@ -52,6 +56,7 @@ class TestCivRuntimeHost:
 
         assert host._civ_epoch == 1
         assert host._state_store.provider_generation == 1
+        assert host.selection_forgotten == 1  # MOR-3591: selection unknown again
         assert tracker.last_error is not None
         assert "unit-test" in str(tracker.last_error)
 

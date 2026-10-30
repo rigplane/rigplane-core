@@ -117,6 +117,8 @@ _CMD_SCOPE = 0x27  # scope: 00 wave packet, 10 panel on/off, 11 wave output on/o
 _SUB_SCOPE_WAVE = 0x00
 _SUB_SCOPE_PANEL = 0x10
 _SUB_SCOPE_OUTPUT = 0x11
+_CMD_VFO = 0x07  # VFO / receiver select; 07 D2 reads the selected receiver
+_SUB_SELECTED_RECEIVER = 0xD2
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 
@@ -258,6 +260,14 @@ class CivSerialFake:
         profile = resolve_radio_profile(model=model)
         self._model = profile.model
         self._civ_addr = civ_addr if civ_addr is not None else profile.civ_addr
+        # A dual-receiver profile's radio reports its selection (07 D2);
+        # nothing here selects SUB, so it answers MAIN (MOR-3591).
+        command_map = profile.command_map
+        self._answers_selected_receiver = (
+            profile.receiver_count > 1
+            and command_map is not None
+            and command_map.has("get_main_sub_band")
+        )
         if model_id is None:
             if not profile.expected_identity_ids:
                 raise ValueError(
@@ -696,6 +706,17 @@ class CivSerialFake:
                 _CMD_TRANSCEIVER_ID,
                 sub=_SUB_TRANSCEIVER_ID,
                 data=self.model_id,
+            )
+        if (
+            cmd == _CMD_VFO
+            and parsed.data == bytes([_SUB_SELECTED_RECEIVER])
+            and self._answers_selected_receiver
+        ):
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_VFO,
+                data=bytes([_SUB_SELECTED_RECEIVER, 0x00]),
             )
         if cmd == _CMD_FREQ_GET and not parsed.data:
             return build_civ_frame(
