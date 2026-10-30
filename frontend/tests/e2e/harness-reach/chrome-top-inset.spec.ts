@@ -55,7 +55,9 @@ for (const inset of [0, 48]) {
     { name: 'timeout', path: 'components-v2/controls/ManagedTotStatusControl', props: {}, trigger: 'TOT OFF', selectors: ['.managed-tot-popover-backdrop', '.managed-tot-popover'] },
     { name: 'scope settings', path: 'components/spectrum/ScopeSettingsPopover', props: {}, selectors: ['.popover-backdrop', '.scope-settings-popover'] },
     { name: 'TX levels', path: 'components-v2/panels/TxPanel', props: {}, trigger: '⚙ LEVELS', selectors: ['.modal-backdrop', '.tx-modal'] },
-    { name: 'band details', path: 'components/spectrum/BandPlanOverlay', props: { startFreq: 14000000, endFreq: 14350000 }, click: '.band-segment', selectors: ['.popup-backdrop', '.segment-popup'] },
+    { name: 'band details', path: 'components/spectrum/BandPlanOverlay', props: { startFreq: 14000000, endFreq: 14350000 }, click: '.band-segment', selectors: ['.popup-backdrop', '.segment-popup', '.popup-close'] },
+    { name: 'band details (Enter)', path: 'components/spectrum/BandPlanOverlay', props: { startFreq: 14000000, endFreq: 14350000 }, press: ['.band-segment', 'Enter'], selectors: ['.popup-backdrop', '.segment-popup', '.popup-close'] },
+    { name: 'band details (Space)', path: 'components/spectrum/BandPlanOverlay', props: { startFreq: 14000000, endFreq: 14350000 }, press: ['.band-segment', 'Space'], selectors: ['.popup-backdrop', '.segment-popup', '.popup-close'] },
   ]) {
     test(`${surface.name} surfaces fit both edges with ${inset}px chrome`, async ({ page }) => {
       await open(page, '/fixtures/skin-witness.html?skin=desktop-v2', inset);
@@ -74,6 +76,11 @@ for (const inset of [0, 48]) {
       }, surface);
       if (surface.trigger) await page.getByRole('button', { name: surface.trigger, exact: true }).last().click();
       if (surface.click) await page.locator(surface.click).first().click();
+      if (surface.press) {
+        const [target, key] = surface.press;
+        await page.locator(target).first().focus();
+        await page.keyboard.press(key);
+      }
       for (const selector of surface.selectors) {
         const node = page.locator(selector).last();
         await expect(node).toBeVisible();
