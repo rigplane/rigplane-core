@@ -13,20 +13,31 @@ from __future__ import annotations
 import array
 import asyncio
 import logging
+import math
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from ..audio.pcm import PcmFrame, packet_to_pcm
 from ..audio.resample import PcmResampler
-from ..audio.route import RxAudioSource, resolve_audio_route
+from ..audio.route import (
+    RxAudioSource,
+    TxAudioSource,
+    resolve_audio_route,
+    rigctld_wsjtx_policy,
+    tx_audio_facts,
+)
 from ..tci.frames import (
+    HEADER_SIZE,
+    PacketCounter,
     SampleType,
     StreamHeader,
     StreamType,
     convert_samples,
     pack_header,
+    unpack_header,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,9 +45,14 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BEHIND_CLOSE_S",
     "RX_PUMP_QUEUE_DEPTH",
+    "TX_FRAME_MS",
     "TciAudioSettings",
     "TciRxPump",
+    "TciTxSession",
+    "chrono_interval",
+    "convert_tx_frame",
     "rx_audio_available",
+    "tx_route_ready",
 ]
 
 #: Sample rates a TCI client may request (spec 3.4).
@@ -391,3 +407,342 @@ class TciRxPump:
         )
         self._counter += 1
         return pack_header(header) + body
+
+
+#: One radio TX frame the playout task pushes per tick (spec 8.3 item 4).
+TX_FRAME_MS = 20
+
+#: Playout depth past the target that still stays buffered before the
+#: oldest is dropped and counted (spec 8.3 item 4).
+TX_OVERRUN_SLACK_MS = 500
+
+#: Client TX frame channels the server accepts (spec 8.1/8.3 step 3).
+TX_CLIENT_CHANNELS = (1, 2)
+
+
+def tx_route_ready(radio: Any) -> Any:
+    """PCM TX route facts for a ``source=tci`` key, else ``None`` (8.3).
+
+    The shared :func:`tx_audio_facts` plus the TCI-only rules: release 1
+    serves radios whose ``audio_tx_codec`` is ``PCM_1CH_16BIT`` with an
+    accepted route and a usable TX lease surface
+    (``audio_session.acquire_tx``). The web seat's full neutral
+    lifecycle probe is not required here: the lease is the only TX
+    audio path TCI uses. Anything else refuses the key with no PTT
+    write.
+    """
+    from ..types import AudioCodec
+
+    has_routing = any(
+        callable(getattr(radio, f"set_data{n}_mod_input", None)) for n in (1, 2, 3)
+    )
+    facts = tx_audio_facts(radio, has_mod_input_routing=has_routing)
+    if facts.codec is not AudioCodec.PCM_1CH_16BIT or not facts.route_accepted:
+        return None
+    session = getattr(radio, "audio_session", None)
+    acquire = getattr(session, "acquire_tx", None)
+    if not callable(acquire) or not asyncio.iscoroutinefunction(acquire):
+        return None
+    return facts
+
+
+def chrono_interval(samples: int, channels: int, sample_rate: int) -> float:
+    """``TX_CHRONO`` cadence for one client frame (spec 8.3).
+
+    ``samples`` counts interleaved scalars (the header ``length``),
+    ``frames`` is the per-channel count (``samples // channels``); the
+    interval is ``samples / (channels * sample_rate)``.
+    """
+    frames = samples // channels
+    if frames <= 0 or sample_rate <= 0 or channels <= 0:
+        raise ValueError("TX_CHRONO needs positive samples, channels and rate")
+    return frames / sample_rate
+
+
+def convert_tx_frame(
+    data: bytes,
+    *,
+    channels: int,
+    sample_type: SampleType | int,
+    iq: bool,
+    from_rate: int,
+    to_rate: int,
+) -> bytes:
+    """Convert one client TX frame to s16le mono at the radio rate (8.3.3).
+
+    Two client channels in DIGU/DIGL are I/Q: channel 0 is used;
+    otherwise the pair is averaged. Float is resampled in the float
+    domain, then clamped to [-1, 1] with NaN/Inf replaced by 0, then
+    scaled to int16 — so a NaN/Inf frame yields silence, not noise.
+    """
+    if channels not in TX_CLIENT_CHANNELS:
+        raise ValueError(f"client TX channels must be 1 or 2, got {channels}")
+    if from_rate <= 0 or to_rate <= 0:
+        raise ValueError("client and radio TX rates must be positive")
+    if not data:
+        return b""
+    floats = array.array("f", convert_samples(bytes(data), sample_type, SampleType.FLOAT32))
+    usable = len(floats) - (len(floats) % channels)
+    del floats[usable:]
+    if channels == 2:
+        if iq:
+            mono = floats[::2]
+        else:
+            mono = array.array("f", ((a + b) / 2 for a, b in zip(floats[::2], floats[1::2])))
+    else:
+        mono = floats
+    resampled = _resample_mono_float(list(mono), from_rate, to_rate)
+    out = array.array("h", (0 for _ in resampled))
+    for index, value in enumerate(resampled):
+        if not math.isfinite(value):
+            out[index] = 0
+        elif value >= 1.0:
+            out[index] = 32767
+        elif value <= -1.0:
+            out[index] = -32768
+        else:
+            out[index] = int(round(value * 32767))
+    return out.tobytes()
+
+
+def _resample_mono_float(values: list[float], from_rate: int, to_rate: int) -> list[float]:
+    """Linear-interpolate one mono float channel between rates."""
+    if to_rate == from_rate or len(values) < 2:
+        return list(values)
+    import numpy as np
+
+    source = np.asarray(values, dtype=np.float64)
+    count = max(1, round(len(source) * to_rate / from_rate))
+    positions = np.linspace(0.0, float(len(source) - 1), count)
+    return [float(v) for v in np.interp(positions, np.arange(len(source)), source)]
+
+
+class TciTxSession:
+    """One keyed client's TX path: chrono, conversion, playout (spec 8.3).
+
+    Created after ``trx:0,true,tci`` is accepted, holding the TX lease
+    from ``radio.audio_session.acquire_tx``. Client frames arrive
+    through :meth:`feed_client_frame`; the playout task pushes one
+    :data:`TX_FRAME_MS` radio frame per tick, but only while the
+    authority still holds ``PTT(owner)`` — every push runs inside
+    ``authority.owned_tx_submission(owner)``, so a frame for A never
+    reaches B's over. ``tick`` is the single playout step, used by the
+    task loop and directly by tests.
+    """
+
+    def __init__(
+        self,
+        radio: Any,
+        owner: str,
+        authority: Any,
+        lease: Any,
+        *,
+        settings: TciAudioSettings,
+        iq: bool,
+        emit: Callable[[bytes], None],
+        clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
+        self._radio = radio
+        self._owner = owner
+        self._authority = authority
+        self._lease = lease
+        self._settings = settings
+        self._iq = iq
+        self._emit = emit
+        self._clock = clock or time.monotonic
+        self._sleep = sleep or asyncio.sleep
+        self._tx_rate = int(getattr(radio, "audio_sample_rate", 48000) or 48000)
+        self._buffer = bytearray()
+        self._chrono_task: asyncio.Task[None] | None = None
+        self._playout_task: asyncio.Task[None] | None = None
+        self._chrono_counter = PacketCounter()
+        self.chrono_times: list[float] = []
+        self.buffering_ms_override: int | None = None
+        self.pushed = 0
+        self.underruns = 0
+        self.overruns = 0
+        self.dropped_no_owner = 0
+        self.dropped_not_owner = 0
+        self.dropped_malformed = 0
+        self._warn_counts: dict[str, int] = {}
+
+    @property
+    def lease(self) -> Any:
+        """The TX lease this session pushes through."""
+        return self._lease
+
+    @property
+    def running(self) -> bool:
+        """Whether the chrono/playout tasks are up."""
+        tasks = (self._chrono_task, self._playout_task)
+        return any(task is not None and not task.done() for task in tasks)
+
+    def _target_bytes(self) -> int:
+        millis = (
+            self.buffering_ms_override
+            if self.buffering_ms_override is not None
+            else self._settings.buffering_ms
+        )
+        return self._tx_rate * millis // 1000 * 2
+
+    def _max_bytes(self) -> int:
+        return self._target_bytes() + self._tx_rate * TX_OVERRUN_SLACK_MS // 1000 * 2
+
+    def _frame_bytes(self) -> int:
+        return self._tx_rate * TX_FRAME_MS // 1000 * 2
+
+    async def start(self) -> None:
+        """Launch the chrono and playout tasks."""
+        self._chrono_task = asyncio.create_task(self._chrono_loop())
+        self._playout_task = asyncio.create_task(self._playout_loop())
+
+    async def stop(self) -> None:
+        """Cancel both tasks and flush the buffer (unkey/disconnect, 8.3.4)."""
+        for task in (self._chrono_task, self._playout_task):
+            if task is not None and not task.done():
+                task.cancel()
+        for task in (self._chrono_task, self._playout_task):
+            if task is not None:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    logger.debug("tci tx stop failed", exc_info=True)
+        self._chrono_task = self._playout_task = None
+        self.flush()
+
+    def flush(self) -> None:
+        """Drop all buffered TX audio (unkey, disconnect, gate close)."""
+        self._buffer.clear()
+
+    def feed_pcm(self, pcm: bytes) -> None:
+        """Buffer s16le mono at the radio rate (conversion already done)."""
+        self._buffer.extend(pcm)
+        if len(self._buffer) > self._max_bytes():
+            del self._buffer[: len(self._buffer) - self._max_bytes()]
+            self.overruns += 1
+
+    def feed_client_frame(
+        self, data: bytes, *, channels: int, sample_rate: int, sample_type: SampleType | int
+    ) -> None:
+        """Convert one client TX frame and buffer it for playout."""
+        try:
+            pcm = convert_tx_frame(
+                bytes(data),
+                channels=channels,
+                sample_type=sample_type,
+                iq=self._iq,
+                from_rate=sample_rate,
+                to_rate=self._tx_rate,
+            )
+        except ValueError:
+            self.dropped_malformed += 1
+            logger.debug("tci tx malformed client frame", exc_info=True)
+            return
+        if pcm:
+            self.feed_pcm(pcm)
+
+    async def emit_chrono(self) -> None:
+        """Emit one ``TX_CHRONO`` marker at the client frame cadence."""
+        header = StreamHeader(
+            receiver=0,
+            sample_rate=self._settings.samplerate,
+            sample_type=_sample_type_of(self._settings.sample_type),
+            codec=0,
+            crc=0,
+            length=self._settings.samples,
+            stream_type=StreamType.TX_CHRONO,
+            channels=1,
+            count=self._chrono_counter.next(),
+        )
+        self.chrono_times.append(self._clock())
+        self._emit(pack_header(header))
+
+    async def _chrono_loop(self) -> None:
+        interval = chrono_interval(
+            self._settings.samples, 1, self._settings.samplerate
+        )
+        try:
+            while True:
+                await self.emit_chrono()
+                await self._sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("tci tx chrono failed", exc_info=True)
+
+    async def _playout_loop(self) -> None:
+        step = TX_FRAME_MS / 1000
+        try:
+            while len(self._buffer) < self._target_bytes():
+                await self._sleep(step)
+            while True:
+                await self._sleep(step)
+                await self.tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("tci tx playout failed", exc_info=True)
+
+    def _owner_keyed(self) -> bool:
+        """Whether the authority still holds ``PTT(owner)`` for this session."""
+        if self._authority is None or self._lease is None:
+            return False
+        try:
+            return self._authority.tx_holder_nowait() == self._owner
+        except Exception:
+            logger.debug("tci tx holder probe failed", exc_info=True)
+            return False
+
+    async def tick(self) -> None:
+        """Push one radio frame, silence on underrun, drop when not ours."""
+        if self._lease is None:
+            self.dropped_no_owner += 1
+            return
+        if not self._owner_keyed():
+            self.dropped_not_owner += 1
+            self._warn_tx_throttled(
+                "not-owner",
+                "tci tx: dropping frame with no keyed owner",
+            )
+            self.flush()
+            return
+        need = self._frame_bytes()
+        if len(self._buffer) >= need:
+            frame = bytes(self._buffer[:need])
+            del self._buffer[:need]
+        else:
+            self.underruns += 1
+            frame = b"\x00" * need
+            self._buffer.clear()
+        admission = self._authority.owned_tx_submission
+        owner = self._owner
+        try:
+            await self._lease.push(
+                frame, admission=lambda: admission(owner)
+            )
+        except Exception:
+            logger.debug("tci tx push failed", exc_info=True)
+            return
+        self.pushed += 1
+
+    def _warn_tx_throttled(self, key: str, message: str, *args: Any) -> None:
+        """Once-per-frame TX warnings, throttled like the web audio seat.
+
+        Same policy :meth:`AudioHandler._warn_tx_throttled` uses: the
+        first three occurrences log in full, then every hundredth with
+        the suppressed count, so a hot TX path never buries diagnostics.
+        """
+        count = self._warn_counts.get(key, 0) + 1
+        self._warn_counts[key] = count
+        if count <= 3:
+            logger.warning("%s (#%d)", message % args if args else message, count)
+        elif count % 100 == 0:
+            logger.warning(
+                "%s (#%d, suppressed %d)",
+                message % args if args else message,
+                count,
+                count - (3 if count == 100 else count - 100) - 1,
+            )
