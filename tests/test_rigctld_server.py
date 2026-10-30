@@ -23,6 +23,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from serial_stub import SerialMockRadio
+from rigplane.commands.commander import Priority
 from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionPriority,
@@ -190,6 +191,7 @@ class _CivProfiledStandaloneRadio(_ProfiledStandaloneRadio):
         data: bytes | None = None,
         *,
         wait_response: bool = True,
+        priority: Any = None,
     ) -> None:
         self.send_civ_calls.append(
             {
@@ -197,6 +199,7 @@ class _CivProfiledStandaloneRadio(_ProfiledStandaloneRadio):
                 "sub": sub,
                 "data": data,
                 "wait_response": wait_response,
+                "priority": priority,
             }
         )
 
@@ -1584,6 +1587,7 @@ class TestLifecycle:
                         "sub": None,
                         "data": b"\x00",
                         "wait_response": False,
+                        "priority": Priority.NORMAL,
                     }
                 ]
 
