@@ -29,7 +29,7 @@ function topologyErrors({quick, review, migration}) {
   const pins = quick.match(/actions\/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd/gu) ?? [];
   if (statusWrites.length !== 1 || pins.length !== 2) errors.push('publisher permission or action pin count changed');
   for (const forbidden of [
-    'self-hosted', 'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
+    'self-hosted, linux, build', 'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
     '/logs', '/artifacts', '/caches', 'secrets.', 'github.workflow_sha',
   ]) {
     if (quick.includes(forbidden)) errors.push(`quick observer contains forbidden surface: ${forbidden}`);
@@ -79,7 +79,7 @@ test('trusted route policy rejects incomplete and injected path metadata', () =>
   assert.throws(() => routePolicy.classifyPullFiles([{filename: 'docs/a.md'}], 3000));
 });
 
-test('quick v2 topology is hosted, metadata-only, and separately published', () => {
+test('quick v2 topology is light-runner, metadata-only, and separately published', () => {
   assert.deepEqual(topologyErrors(sources()), []);
   assert.equal(observer.LEGACY_WORKFLOW.id, 270532868);
   assert.equal(observer.LEGACY_WORKFLOW.path, '.github/workflows/quick.yml');
@@ -90,7 +90,7 @@ test('workflow-run observation admits feature heads targeting main', () => asser
 test('topology contract catches permission, execution, event, and pin regressions', () => {
   const original = sources();
   const mutations = [
-    ['runs-on: ubuntu-latest', 'runs-on: [self-hosted, linux, build]'],
+    ['runs-on: [self-hosted, linux, light]', 'runs-on: [self-hosted, linux, build]'],
     ['permissions: {}', 'permissions:\n  statuses: write'],
     ['actions: read', 'actions: read\n      statuses: write'],
     ['with:\n          script:', 'uses: actions/upload-artifact@v4\n        with:\n          script:'],
@@ -198,7 +198,7 @@ test('final publication snapshot rejects changed attempt and job topology', () =
   assert.throws(() => observer.assertJobTopologyUnchanged([{...jobs[0], conclusion: 'failure'}], topology, head), /job topology changed/u);
 });
 
-test('final publication rebind turns head or base movement into failure', async () => {
+test('final publication rebind turns head movement into failure and base movement into a successful skip', async () => {
   const base = 'b'.repeat(40); const head = 'a'.repeat(40);
   const result = {kind: 'lifecycle', code: 'admitted', state: 'pending', publish: true, targetSha: head, pullNumber: 41, baseSha: base, headSha: head, runId: null, runAttempt: null, jobTopology: null, metrics: {false_success_publications: 0}};
   const githubFor = (pull, liveMain) => ({request: async (route) => {
@@ -209,7 +209,31 @@ test('final publication rebind turns head or base movement into failure', async 
   const movedHead = await observer.rebindForPublication({github: githubFor(canonicalPull(41, 'd'.repeat(40), base), base), result});
   assert.deepEqual([movedHead.code, movedHead.state, movedHead.targetSha], ['stale_head', 'failure', head]);
   const movedBase = await observer.rebindForPublication({github: githubFor(canonicalPull(41, head, 'c'.repeat(40)), 'c'.repeat(40)), result});
-  assert.deepEqual([movedBase.code, movedBase.state, movedBase.targetSha], ['stale_base', 'failure', head]);
+  assert.deepEqual([movedBase.code, movedBase.state, movedBase.targetSha, movedBase.publish], ['stale_base', 'success', head, false]);
+});
+
+test('stale base ends the lifecycle observation as a successful skip', async () => {
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40); const live = 'c'.repeat(40);
+  const pull = canonicalPull(41, head, base);
+  const github = {request: async (route) => {
+    if (route.includes('/pulls/')) return {data: pull};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'pull_request_target', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {action: 'synchronize', repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, pull_request: {number: 41}}};
+  const result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['lifecycle', 'stale_base', 'success', false, head]);
+});
+
+test('stale base ends the workflow-run observation as a successful skip', async () => {
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40); const live = 'c'.repeat(40);
+  const run = {...runPull(41, head, base), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  const github = {request: async (route) => {
+    if (route.includes('/actions/runs/')) return {data: run};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  const result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish], ['workflow_run', 'stale_base', 'success', false]);
 });
 
 function treeGithub(finalEntry, options = {}) {

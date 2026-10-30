@@ -13,10 +13,10 @@ permissions:
 jobs:
   publish-docs-only-quick-status:
     # Keep the protected `quick` context green for an exact docs-only review
-    # head without allocating the self-hosted test runner or checking out code.
+    # head without allocating a build runner or checking out code.
     # pull_request_target keeps the workflow and token policy base-controlled;
     # this job uses API metadata only and never executes pull-request contents.
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 2
     steps:
       - name: Publish docs-only quick status

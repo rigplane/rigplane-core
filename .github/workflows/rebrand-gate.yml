@@ -54,10 +54,10 @@ concurrency:
 
 jobs:
   grep-gate:
-    # Sub-second git-grep + bash filter, no toolchain needed. Keep this on a
-    # GitHub-hosted runner so protected-branch merges are not blocked when
-    # self-hosted runners are offline or occupied.
-    runs-on: ubuntu-latest
+    # Sub-second git-grep + bash filter, no toolchain needed. It runs on the
+    # light runners, off the build pool, so protected-branch merges are not
+    # blocked when the self-hosted build runners are offline or occupied.
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 2
 
     steps:

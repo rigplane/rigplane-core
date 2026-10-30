@@ -19,7 +19,7 @@ permissions:
 jobs:
   freeze-gate:
     name: Evaluate stabilization-freeze PR contract
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 3
 
     steps:
@@ -27,6 +27,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
 
       - name: Run freeze-gate unit tests
         run: node --test .github/scripts/freeze-gate.test.js

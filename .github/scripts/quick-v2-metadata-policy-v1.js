@@ -149,8 +149,8 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
   return jobs;
 }
 // MOR-3875: legacy quick runs classify, two parallel build-tier halves, and the
-// `quick` aggregator on the light pool. classify may sit on the hosted image or
-// on the light pool while its own move is in flight. The base classifier's
+// `quick` aggregator on the light pool. classify sits on the light pool.
+// The base classifier's
 // frontend and ci routes are subsets of the workflow's, so those routes pin a
 // half; its core route also covers unknown roots the workflow selects nothing
 // for, so it does not.
@@ -195,7 +195,9 @@ async function assessLifecycle({github, context, liveBaseSha}) { if (!relevantLi
     const routes = await classifyPull( github, REPOSITORY.owner, REPOSITORY.repo, binding.baseSha, pull, );
     const code = pull.draft ? 'draft' : 'admitted';
     return assessment({ kind: 'lifecycle', code, state: 'pending', publish: true, targetSha: binding.headSha, pullNumber: pull.number, baseSha: binding.baseSha, headSha: binding.headSha, routes, });
-  } catch (error) { if (error instanceof ObservationError) { return assessment({ kind: 'lifecycle', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: pull.number, baseSha: binding?.baseSha ?? pull.base?.sha ?? null, headSha: binding?.headSha ?? pull.head?.sha ?? null, });
+  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base') { return assessment({ kind: 'lifecycle', code: 'stale_base', state: 'success', publish: false, targetSha: error.targetSha, pullNumber: pull.number, baseSha: binding?.baseSha ?? pull.base?.sha ?? null, headSha: binding?.headSha ?? pull.head?.sha ?? null, });
+      }
+      return assessment({ kind: 'lifecycle', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: pull.number, baseSha: binding?.baseSha ?? pull.base?.sha ?? null, headSha: binding?.headSha ?? pull.head?.sha ?? null, });
     }
     throw error;
   }
@@ -241,7 +243,8 @@ async function assessWorkflowRun({github, context, liveBaseSha}) { const payload
     const jobs = await listAttemptJobs( github, REPOSITORY.owner, REPOSITORY.repo, run.id, run.run_attempt, );
     const result = evaluateJobTopology(run, jobs, routes, pull.draft);
     return assessment({ kind: 'workflow_run', code: result.code, state: result.ok ? 'success' : 'failure', publish: true, targetSha: headSha, pullNumber: runBinding.pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, routes, jobTopology: jobTopologySnapshot(jobs), metrics: { route_job_concordance: result.routeConcordance, terminal_binding_coverage: true, v2_self_hosted_minutes: 0, false_success_publications: result.ok ? 0 : 0, stale_head_publications: 0, }, });
-  } catch (error) { if (error instanceof ObservationError) { return assessment({ kind: 'workflow_run', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
+  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base') { return assessment({ kind: 'workflow_run', code: 'stale_base', state: 'success', publish: false, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
+      return assessment({ kind: 'workflow_run', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
     throw error;
   }
 }
@@ -257,7 +260,8 @@ async function rebindForPublication({github, result}) { if (!result.publish) { r
     const [branchResponse, pullResponse] = await Promise.all([ github.request('GET /repos/{owner}/{repo}/branches/{branch}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, branch: 'main'}), github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, pull_number: result.pullNumber}), ]);
     const liveBaseSha = assertSha(branchResponse.data.commit?.sha, 'final live main'); if (liveBaseSha !== result.baseSha) { throw new ObservationError('stale_base', 'live main moved before publication', {publish: true, targetSha: headSha}); } bindPullToRun(pullResponse.data, liveBaseSha, runBinding);
     return result;
-  } catch (error) { if (error instanceof ObservationError) { return publicationFailure(result, error.code, true); }
+  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base') { return { ...result, code: 'stale_base', state: 'success', publish: false, description: statusDescription('stale_base'), metrics: {...result.metrics, false_success_publications: 0}, }; }
+      return publicationFailure(result, error.code, true); }
     return publicationFailure(result, 'invalid_binding', true);
   }
 }
