@@ -153,7 +153,12 @@ jobs:
     # job avoids the ubuntu-latest pickup + apt install passes. Operator
     # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 25
+    # 40, not 25: a PR that sets both `core` and `frontend` runs the whole
+    # frontend chain (~17-19 min on a busy build runner) and then the full
+    # pytest suite (~10 min) in series, ~28-30 min. At 25 min every such run
+    # was cancelled in `Run tests` on every build pool (gtr7, mini-server,
+    # nsu), which kept merge-queue entries failing.
+    timeout-minutes: 40
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
     # loop test. Nothing in this repo reads them.
