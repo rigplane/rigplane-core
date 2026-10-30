@@ -90,6 +90,7 @@ async def _wait_usable(radio: IcomRadio, deadline_s: float) -> None:
 
 async def test_reboot_mid_session_client_reconnects_with_new_token(
     sim: MockIcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     radio = _client(sim)
     statuses: list[dict] = []
@@ -100,14 +101,22 @@ async def test_reboot_mid_session_client_reconnects_with_new_token(
             old_token = radio._token
             assert old_token == sim.token
 
-            # MOR-3920 repro: a 25 s busy window forces the post-dark
-            # reconnect attempt into the status-stage busy reject on the
-            # profile-selected stereo codec, which parks the attempt in the
-            # 30 s _STATUS_REJECT_COOLDOWN and blows the 20 s sampling
-            # deadline below deterministically. The committed 0.5 s window
-            # loses this lottery only sometimes (CI runs 41008174982,
-            # 41039389222, 41058873610).
-            sim.reboot(at=0.1, down_for=3.0, busy_for=25.0)
+            # MOR-3920: a post-dark login that lands inside the busy
+            # window enters _connect_once's within-attempt reject pause
+            # (ControlPhaseRuntime._STATUS_REJECT_COOLDOWN, 30 s), which no
+            # 20 s sampling deadline can cover — the committed 0.5 s window
+            # lost this lottery on some CI runs. Like
+            # test_power_off_with_notice_recovers_with_one_login, this test
+            # pins the recovery, not the pause: pausing exactly busy_for
+            # lands the retry at or after the window ends, wherever inside
+            # it the login landed.
+            busy_for = 0.5
+            monkeypatch.setattr(
+                "rigplane.runtime._control_phase.ControlPhaseRuntime"
+                "._STATUS_REJECT_COOLDOWN",
+                busy_for,
+            )
+            sim.reboot(at=0.1, down_for=3.0, busy_for=busy_for)
 
             def reconnected(seen: list[RadioConnectionState]) -> bool:
                 # The RECONNECTING window can be shorter than the 20 ms

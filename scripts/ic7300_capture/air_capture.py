@@ -38,7 +38,7 @@ import wave
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -374,6 +374,11 @@ async def run_clip(
     *,
     opener: Any = None,
     audio_factory: Callable[[Path], AudioRecorder] | None = None,
+    # Settle-phase sleeps (tuning and restore pauses). The slot/start-at
+    # boundary wait and the recording loop always use the real clock; tests
+    # pass an instant sleep so a tight --start-at budget stays in the future
+    # (same seam as run_audio_probe's sleep in rigplane/audio/probe_runner.py).
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -438,7 +443,7 @@ async def run_clip(
             if not args.no_data_mode:
                 await radio.set_data_mode(args.data)
             await radio.set_freq(args.freq_hz)
-            await asyncio.sleep(0.5)
+            await sleep(0.5)
             # The preamp is stored per band: change it only after tuning, and
             # put it back while still on the target band, before restoring.
             if args.preamp is not None:
@@ -449,7 +454,7 @@ async def run_clip(
                 if args.scope_span:
                     await radio.set_scope_span(args.scope_span)
                 await radio.enable_scope(timeout=15.0)
-            await asyncio.sleep(1.0)  # let filters and the scope settle
+            await sleep(1.0)  # let filters and the scope settle
             manifest["state_tuned"] = await _snapshot(
                 radio, with_scope=not args.no_scope
             )
@@ -494,7 +499,7 @@ async def run_clip(
             if restore_errors:
                 exit_code = 4
                 print(json.dumps({"restore_errors": restore_errors}), flush=True)
-        await asyncio.sleep(0.5)
+        await sleep(0.5)
         after = await _snapshot(radio, with_scope=not args.no_scope)
         manifest["state_after"] = after
         manifest["restored_identical"] = after == before
