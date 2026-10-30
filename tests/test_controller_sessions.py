@@ -863,6 +863,31 @@ async def test_an_rx_reading_after_the_key_proves_a_release_only_after_a_tx_read
         await composition.shutdown(asyncio.Event())
 
 
+async def test_core_tx_the_radio_kept_stays_core_s_when_the_key_history_is_trimmed(
+    tmp_path: Path,
+) -> None:
+    """A store that cannot replay the history since the key withholds the
+    release proof: the TX the radio keeps is refused as Core's own, not
+    admitted as an operator's (outside-only audio goes only to the latter)."""
+    actuator, radio = RecordingActuator(), LegacyRadio()
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore(max_history_count=0)  # every change trims the history
+    store.begin_provider_generation()
+    await composition.transport_ready(radio)
+    await composition.bind_state_store(store)
+    authority = composition.authority
+    try:
+        _radio_reports(store, False)
+        assert await authority.ptt_down("websocket-1") is ACCEPTED
+        _radio_reports(store, True)  # a change: the key's history is trimmed
+        assert await authority.ptt_up("websocket-1") is ACCEPTED
+        _radio_reports(store, True)  # still TX after the acknowledged unkey
+        assert authority.radio_tx_refusal_nowait() == "radio_tx_unreleased"
+    finally:
+        await composition.shutdown(asyncio.Event())
+
+
 # MOR-3557: per-IP cap on live controller sessions.
 
 

@@ -191,12 +191,16 @@ class ManagedTxComposition:
     def radio_released(self) -> None:
         """Remember the readback as Core's own TX ends (MOR-3537).
 
-        ``saw_tx``: the radio was read as TX between the key and now. Only
-        then is an RX reading after the key proof that the radio let go. A
-        poll answer is stamped when it is processed, and one asked before the
-        key can be processed after it: it reads RX although the radio had not
-        yet keyed. Such a stale answer comes before the first TX reading, so
-        with none seen the RX reading proves nothing.
+        ``saw_tx``: the store changed to TX between the key and now. Only then
+        is an RX reading after the key proof that the radio let go. A poll
+        answer is stamped when it is processed, and one asked before the key
+        can be processed after it: it reads RX although the radio had not yet
+        keyed. Such a stale answer comes before the first TX reading, so with
+        none seen the RX reading proves nothing. Without proof, the TX the
+        radio keeps stays Core's own (refused, and no outside-only audio):
+        that is also the answer when the store can no longer replay the
+        history since the key, and when the key started with the previous
+        over's TX still in the store, where no change to TX can show.
         """
         store, keyed, self._keyed = self._state_store, self._keyed, None
         self._released = None
@@ -204,9 +208,7 @@ class ManagedTxComposition:
             return
         keyed_snapshot, keyed_at = keyed
         since_key = store.delta_since(keyed_snapshot)
-        if since_key.requires_full_snapshot:
-            return  # history trimmed: reads as foreign, like no history at all
-        saw_tx = any(
+        saw_tx = not since_key.requires_full_snapshot and any(
             change.path == _PTT_PATH and change.current is True
             for change in since_key.changes
         )
