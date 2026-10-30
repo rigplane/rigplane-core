@@ -22,22 +22,14 @@ from typing import Any
 
 from ..audio.pcm import PcmFrame, packet_to_pcm
 from ..audio.resample import PcmResampler
-from ..audio.route import (
-    RxAudioSource,
-    TxAudioSource,
-    resolve_audio_route,
-    rigctld_wsjtx_policy,
-    tx_audio_facts,
-)
+from ..audio.route import RxAudioSource, resolve_audio_route, tx_audio_facts
 from ..tci.frames import (
-    HEADER_SIZE,
     PacketCounter,
     SampleType,
     StreamHeader,
     StreamType,
     convert_samples,
     pack_header,
-    unpack_header,
 )
 
 logger = logging.getLogger(__name__)
@@ -339,7 +331,8 @@ class TciRxPump:
                 return None
             self._opus_decoder = decoder
         try:
-            return decoder[1].decode(data, rate // 50)
+            decoded: bytes | None = decoder[1].decode(data, rate // 50)
+            return decoded
         except Exception:
             logger.debug("tci rx opus decode failed", exc_info=True)
             return None
@@ -481,14 +474,18 @@ def convert_tx_frame(
         raise ValueError("client and radio TX rates must be positive")
     if not data:
         return b""
-    floats = array.array("f", convert_samples(bytes(data), sample_type, SampleType.FLOAT32))
+    floats = array.array(
+        "f", convert_samples(bytes(data), sample_type, SampleType.FLOAT32)
+    )
     usable = len(floats) - (len(floats) % channels)
     del floats[usable:]
     if channels == 2:
         if iq:
             mono = floats[::2]
         else:
-            mono = array.array("f", ((a + b) / 2 for a, b in zip(floats[::2], floats[1::2])))
+            mono = array.array(
+                "f", ((a + b) / 2 for a, b in zip(floats[::2], floats[1::2]))
+            )
     else:
         mono = floats
     resampled = _resample_mono_float(list(mono), from_rate, to_rate)
@@ -505,7 +502,9 @@ def convert_tx_frame(
     return out.tobytes()
 
 
-def _resample_mono_float(values: list[float], from_rate: int, to_rate: int) -> list[float]:
+def _resample_mono_float(
+    values: list[float], from_rate: int, to_rate: int
+) -> list[float]:
     """Linear-interpolate one mono float channel between rates."""
     if to_rate == from_rate or len(values) < 2:
         return list(values)
@@ -625,7 +624,12 @@ class TciTxSession:
             self.overruns += 1
 
     def feed_client_frame(
-        self, data: bytes, *, channels: int, sample_rate: int, sample_type: SampleType | int
+        self,
+        data: bytes,
+        *,
+        channels: int,
+        sample_rate: int,
+        sample_type: SampleType | int,
     ) -> None:
         """Convert one client TX frame and buffer it for playout."""
         try:
@@ -661,9 +665,7 @@ class TciTxSession:
         self._emit(pack_header(header))
 
     async def _chrono_loop(self) -> None:
-        interval = chrono_interval(
-            self._settings.samples, 1, self._settings.samplerate
-        )
+        interval = chrono_interval(self._settings.samples, 1, self._settings.samplerate)
         try:
             while True:
                 await self.emit_chrono()
@@ -691,7 +693,7 @@ class TciTxSession:
         if self._authority is None or self._lease is None:
             return False
         try:
-            return self._authority.tx_holder_nowait() == self._owner
+            return bool(self._authority.tx_holder_nowait() == self._owner)
         except Exception:
             logger.debug("tci tx holder probe failed", exc_info=True)
             return False
@@ -720,9 +722,7 @@ class TciTxSession:
         admission = self._authority.owned_tx_submission
         owner = self._owner
         try:
-            await self._lease.push(
-                frame, admission=lambda: admission(owner)
-            )
+            await self._lease.push(frame, admission=lambda: admission(owner))
         except Exception:
             logger.debug("tci tx push failed", exc_info=True)
             return

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from rigplane.types import AudioCodec
 
@@ -39,7 +39,7 @@ _CHANNELS_BY_CODEC: dict[AudioCodec, int] = {
 
 
 def packet_to_pcm(
-    packet: Any,
+    packet: AudioPacket,
     *,
     codec: AudioCodec,
     sample_rate: int,

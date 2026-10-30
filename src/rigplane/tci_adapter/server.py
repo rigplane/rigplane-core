@@ -28,7 +28,6 @@ from ..core.state_store import StateStore
 from ..tci.handler import TciHandler
 from ..tci.server import TciServer
 from ..ws import WS_OP_BINARY, AllowHeaders, UpgradeDecline, make_frame
-from .audio import BEHIND_CLOSE_S
 from .commands import TCI_DEFAULT_HOST, TCI_DEFAULT_PORT
 from .handler import TciAdapterConfig, TciAdapterHandler
 from .notifier import TciNotifier

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - TCI listener (phase control): `rigplane web --tci` and `rigplane station --tci` serve frequency, mode, split and PTT over TCI (default port `50001`, loopback bind) with `--tci-port` and the shared `--ingress-host` setting also read by the `rigctld` listener; off by default, no `serve` support. See the TCI API page and the TCI setup guide.
+- TCI audio (HOLD for merge until the C0-TX capture lands): RX audio as real mono frames on the same socket (`audio_start:0`, per-client rate/type/samples settings), TX audio after `trx:0,true,tci` on radios with a `PCM_1CH_16BIT` route (input established and verified inside the admitted key, chrono-gated playout with owner admission, no input restore). See the TCI API page.
 - Added `rigplane models`: list supported radio profiles with the exact `--model` value for each, as a plain table or `rigplane models --json`.
 - `rigplane discover` prints a ready-to-copy `rigplane --model ... status` command after each radio connection line (a `<MODEL>` placeholder with a pointer to `rigplane models` when LAN discovery cannot tell the model).
 

@@ -46,7 +46,8 @@ def _tx_radio(**kwargs):  # type: ignore[no-untyped-def]
     from rigplane.core.types import AudioCodec
 
     kwargs.setdefault(
-        "profile", StubProfile(modes=("AM", "LSB", "USB", "CW", "FM"), data_mode_count=3)
+        "profile",
+        StubProfile(modes=("AM", "LSB", "USB", "CW", "FM"), data_mode_count=3),
     )
     radio = StubIcomRadio(**kwargs)
     radio.audio_codec = AudioCodec.PCM_1CH_16BIT
@@ -268,7 +269,9 @@ class TestConvertTxFrame:
 
         left = [1000, 2000, 3000, 4000]
         right = [-1000, -2000, -3000, -4000]
-        interleaved = struct.pack("<8h", *[v for pair in zip(left, right) for v in pair])
+        interleaved = struct.pack(
+            "<8h", *[v for pair in zip(left, right) for v in pair]
+        )
         out = convert_tx_frame(
             interleaved,
             channels=2,
@@ -484,7 +487,9 @@ class TestBinaryTxFrames:
             await handler.on_binary(header + payload)
         await asyncio.sleep(0.5)
         assert handler._radio.pushed_tx  # noqa: SLF001
-        assert all(len(frame) == 48000 * 20 // 1000 * 2 for frame in handler._radio.pushed_tx)  # noqa: SLF001
+        assert all(
+            len(frame) == 48000 * 20 // 1000 * 2 for frame in handler._radio.pushed_tx
+        )  # noqa: SLF001
         await handler.on_command("trx", ("0", "false"))
         await authority.close()
 

@@ -10,7 +10,7 @@ import pytest
 from rigplane.audio.lan_stream import AudioPacket
 from rigplane.core.state_pipeline_contracts import FieldPath
 
-from tci_adapter_stub import StubIcomRadio, StubProfile, build_store, make_handler
+from tci_adapter_stub import StubIcomRadio, build_store, make_handler
 
 
 def _loaded_store():  # type: ignore[no-untyped-def]
@@ -275,9 +275,7 @@ class TestRxPump:
         server = build_tci_server(radio=radio, state_store=_loaded_store(), port=0)
         await server.start()
         try:
-            listener = listener_mod.Listener(
-                f"ws://127.0.0.1:{server.bound_port}"
-            )
+            listener = listener_mod.Listener(f"ws://127.0.0.1:{server.bound_port}")
             packets: list[object] = []
 
             async def _on_data(packet: object) -> None:
@@ -293,7 +291,9 @@ class TestRxPump:
                         await asyncio.sleep(0.02)
                 payload = struct.pack("<256h", *([700] * 256))
                 for seq in range(4):
-                    radio.rx_callback(LanPacket(ident=0x9781, send_seq=seq, data=payload))  # type: ignore[attr-defined]
+                    radio.rx_callback(
+                        LanPacket(ident=0x9781, send_seq=seq, data=payload)
+                    )  # type: ignore[attr-defined]
                     await asyncio.sleep(0.05)
                 async with asyncio.timeout(10.0):
                     while not packets:
