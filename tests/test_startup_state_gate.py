@@ -71,6 +71,7 @@ from rigplane.web.web_startup import (
     _await_initial_state_acquisition,
     _observed_paths,
 )
+from _timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 
 FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -1204,7 +1205,13 @@ async def test_rigctld_connection_drop_never_builds_a_declared_defect() -> None:
     )
     try:
         await poller.start()
-        await asyncio.sleep(0.5)
+        # Several failing cycles, each reconnecting: wait for the event (three
+        # connections reached the dropping server), not for a stretch of time.
+        await await_until(
+            lambda: fake.connections >= 3,
+            timeout=30.0,
+            description="the poller's failing cycles to reconnect three times",
+        )
     finally:
         await poller.stop()
         await radio.disconnect()
@@ -1242,21 +1249,42 @@ async def test_rigctld_operator_disconnect_is_not_undone_by_the_poller() -> None
         medium_interval=0.05,
         slow_interval=1.0,
     )
+    cycles = 0
+    real_poll_medium = poller._poll_medium
+
+    async def counted_poll_medium() -> None:
+        nonlocal cycles
+        try:
+            await real_poll_medium()
+        finally:
+            cycles += 1
+
+    poller._poll_medium = counted_poll_medium  # type: ignore[method-assign]
+
+    async def cycles_after(count: int, seen: int, what: str) -> None:
+        await await_until(
+            lambda: cycles >= seen + count, timeout=30.0, description=what
+        )
+
     try:
         await poller.start()
-        await asyncio.sleep(0.2)
+        await await_until(
+            lambda: fake.connections >= 1 and cycles >= 1,
+            timeout=30.0,
+            description="the poller's first cycle",
+        )
         connections_before_disconnect = fake.connections
-        assert fake.connections >= 1
 
         await radio.disconnect()
-        # More than two medium intervals: enough for a failed cycle and
-        # a reconnect attempt the old head performed.
-        await asyncio.sleep(0.5)
+        # Four more medium cycles: each starts only after the previous cycle's
+        # failed poll and reconnect attempt (the old head's reopen) finished,
+        # so at least three reconnect attempts have had their chance.
+        await cycles_after(4, cycles, "four medium cycles after the disconnect")
         assert radio.connected is False
         assert fake.connections == connections_before_disconnect
 
         await radio.connect()
-        await asyncio.sleep(0.2)
+        await cycles_after(2, cycles, "polling to resume after connect()")
         assert radio.connected is True
         assert fake.connections > connections_before_disconnect
     finally:
