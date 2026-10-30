@@ -1726,6 +1726,46 @@ async def test_wait_for_recovery_cancelled_recovery_aborts_the_command(
     )
 
 
+async def test_wait_for_recovery_owner_stop_is_terminal_for_the_original_waiter(
+    radio: IcomRadio,
+) -> None:
+    """An owner stop during the recovery wait is terminal (MOR-2083).
+
+    The waiter queues a fast kick; ``disconnect()`` then advances
+    ``_owner_stop_epoch`` and a fast owner reconnect restores a
+    replacement session before the next poll. The ORIGINAL waiter must
+    raise ``ConnectionError`` instead of accepting the new session for
+    its pre-disconnect command.
+    """
+    _arm_recovery_wait_scenario(radio)
+    kick_ran = asyncio.Event()
+
+    async def returning_soft_reconnect() -> None:
+        kick_ran.set()
+
+    radio.soft_reconnect = returning_soft_reconnect
+
+    waiter = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=3.0)
+    )
+    try:
+        await asyncio.wait_for(kick_ran.wait(), timeout=5.0)
+        # What disconnect() does, then a fast owner reconnect landing
+        # before the waiter's next poll.
+        radio._owner_stop_epoch += 1
+        radio._civ_transport = MagicMock()
+        radio._conn_state = RadioConnectionState.CONNECTED
+        with pytest.raises(ConnectionError, match="Not connected to radio"):
+            await asyncio.wait_for(waiter, timeout=10.0)
+    finally:
+        if not waiter.done():
+            waiter.cancel()
+            try:
+                await waiter
+            except (asyncio.CancelledError, ConnectionError):
+                pass
+
+
 async def test_watchdog_recover_rearms_after_successful_recovery(
     radio: IcomRadio,
 ) -> None:

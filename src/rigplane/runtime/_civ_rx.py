@@ -4230,8 +4230,17 @@ class CivRuntime:
         )
         deadline = time.monotonic() + max(0.5, float(wait_timeout))
         fast_attempted = False
+        # The owner-stop epoch at entry (MOR-2083): ``disconnect()``
+        # advances ``host._owner_stop_epoch`` and a fast owner reconnect
+        # may restore a replacement session before the next poll. Any
+        # movement is terminal for THIS waiter — it must not accept the
+        # new session for its pre-disconnect command.
+        owner_stop_epoch = self._host._owner_stop_epoch
 
         while time.monotonic() < deadline:
+            if self._host._owner_stop_epoch != owner_stop_epoch:
+                raise ConnectionError("Not connected to radio")
+
             ctrl = getattr(self._host, "_ctrl_transport", None)
             ctrl_alive = bool(
                 ctrl and getattr(ctrl, "_udp_transport", None) is not None
@@ -4263,10 +4272,16 @@ class CivRuntime:
                         )
                         if (civ_t2 is None or still_stalled) and ctrl_alive:
                             await self._await_fast_soft_reconnect(deadline)
+                            if self._host._owner_stop_epoch != owner_stop_epoch:
+                                raise ConnectionError("Not connected to radio")
                 else:
                     await self._await_fast_soft_reconnect(deadline)
+                    if self._host._owner_stop_epoch != owner_stop_epoch:
+                        raise ConnectionError("Not connected to radio")
 
             await asyncio.sleep(0.2)
+            if self._host._owner_stop_epoch != owner_stop_epoch:
+                raise ConnectionError("Not connected to radio")
 
         raise TimeoutError("CI-V transport recovery timed out")
 
