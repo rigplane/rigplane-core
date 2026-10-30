@@ -1939,10 +1939,12 @@ class CivRuntime:
         store_provider_generation: int | None = None,
     ) -> None:
         """Route one parsed CI-V frame into command/scope event paths."""
+        if is_directed_ptt_reply(frame, self._host._radio_addr):
+            # Owed-reply accounting is generation-independent (a stale-generation
+            # answer still settles its debt); liveness below is not.
+            self._ptt_reply_ledger.note_reply(frame)
         if generation != self._host._civ_epoch:
             return
-        if is_directed_ptt_reply(frame, self._host._radio_addr):
-            self._ptt_reply_ledger.note_reply(frame)
         if frame.from_addr != self._host._radio_addr:
             return
         if frame.to_addr not in (CONTROLLER_ADDR, 0x00):
