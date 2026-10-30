@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Without `--backend`, `--host` or `--serial-port`, a CI-V radio whose profile has no LAN interface (IC-7300, X6200) now scans USB for the radio instead of the network; LAN-capable profiles (IC-7610, IC-705) still use LAN, and an explicit `--host` still means LAN.
 - Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
 - **Core 3.0 is marked stable.** The package declares
   `Development Status :: 5 - Production/Stable`. The README, installation

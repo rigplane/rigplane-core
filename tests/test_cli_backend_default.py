@@ -9,11 +9,15 @@ model name.
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
+from cli_main_harness import FREQ_HZ, run_main
 
 from rigplane import cli
 from rigplane.backends.config import LanBackendConfig, SerialBackendConfig
 from rigplane.cli import _build_backend_config, _build_parser
+from rigplane.discovery import RadioDiscoveryResult
 from rigplane.rig_loader import discover_available_rigs
 
 
@@ -116,3 +120,65 @@ async def test_serial_radio_with_no_port_found_gives_a_clear_error(
     err = capsys.readouterr().err
     assert "no radios found on serial ports" in err
     assert "--serial-port" in err
+
+
+# ---------------------------------------------------------------------------
+# Through main(): `rigplane --model <model> status` with no host, no port
+# ---------------------------------------------------------------------------
+
+
+def _usb_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    found: list[RadioDiscoveryResult],
+) -> None:
+    async def _no_lan(*_a: object, **_k: object) -> list[object]:
+        pytest.fail("a profile without LAN must not scan the network")
+
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_serial_radios", AsyncMock(return_value=found)
+    )
+    monkeypatch.setattr("rigplane.discovery.discover_lan_radios", _no_lan)
+
+
+@pytest.mark.parametrize(
+    ("model", "protocol", "address"),
+    [("IC-7300", "civ", 0x94), ("X6200", "civ", 0xA4)],
+)
+def test_main_status_without_host_or_port_uses_the_usb_scan(
+    model: str,
+    protocol: str,
+    address: int,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _usb_scan(
+        monkeypatch,
+        [
+            RadioDiscoveryResult(
+                port="/dev/ttyUSB7",
+                protocol=protocol,
+                model=model,
+                profile_id="x",
+                baudrate=115200,
+                address=address,
+                description=model,
+            )
+        ],
+    )
+    run = run_main(["--model", model, "status"], monkeypatch, capsys)
+    assert run.exit_code == 0, run.stderr
+    (config,) = run.configs
+    assert isinstance(config, SerialBackendConfig)
+    assert config.device == "/dev/ttyUSB7"
+    assert f"{FREQ_HZ:,} Hz" in run.stdout
+
+
+def test_main_status_without_host_or_port_and_no_radio_exits_with_a_clear_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _usb_scan(monkeypatch, [])
+    run = run_main(["--model", "IC-7300", "status"], monkeypatch, capsys)
+    assert run.exit_code == 1
+    assert run.configs == []
+    assert "no radios found on serial ports" in run.stderr
+    assert "--serial-port" in run.stderr

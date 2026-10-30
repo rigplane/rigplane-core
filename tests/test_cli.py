@@ -1139,6 +1139,7 @@ class TestBackendInferenceFromModel:
             civ_addr=0x01,
             default_baud=9600,
             protocol_type=None,
+            has_lan=False,
         )
         monkeypatch.setattr(
             "rigplane.profiles.rig_loader.discover_available_rigs",

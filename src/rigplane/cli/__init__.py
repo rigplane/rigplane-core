@@ -798,7 +798,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Backend type: lan, serial, yaesu-cat, or rigctld. "
             "Inferred from the model when omitted "
-            "(civ: serial with --serial-port else lan; "
+            "(civ: serial with --serial-port, lan with --host or when the "
+            "profile has a LAN interface, else serial; "
             "yaesu_cat: yaesu-cat); without --model, "
             "inferred from --serial-port."
         ),
