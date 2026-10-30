@@ -27,7 +27,7 @@ from ..core.host_guard import (
 from ..core.state_store import StateStore
 from ..tci.handler import TciHandler
 from ..tci.server import TciServer
-from ..ws import WS_OP_BINARY, AllowHeaders, UpgradeDecline, make_frame
+from ..ws import AllowHeaders, UpgradeDecline
 from .commands import TCI_DEFAULT_HOST, TCI_DEFAULT_PORT
 from .handler import TciAdapterConfig, TciAdapterHandler
 from .notifier import TciNotifier
@@ -219,27 +219,26 @@ class TciAdapterServer:
     def _drain_audio(self) -> None:
         """Deliver each handler's queued RX frames to its own session (8.2).
 
-        The leaf owns the sockets and offers no per-session binary sink,
-        so the adapter matches handlers to sessions by identity and
-        enqueues with the session's non-blocking offer: a stalled peer
+        The leaf owns the sockets: the adapter matches handlers to
+        sessions through the public ``session.handler`` and enqueues with
+        the public non-blocking ``session.offer_binary`` — a stalled peer
         aborts itself in the leaf, a behind client (no drain for
-        :data:`BEHIND_CLOSE_S`) is closed, and neither ever stalls the
-        radio-side loop or another client. Leaf-private access is marked
-        where it happens; the leaf itself is untouched.
+        :data:`BEHIND_CLOSE_S`) is aborted, and neither ever stalls the
+        radio-side loop or another client.
         """
         now = self._clock()
         for session in self._server.sessions:
-            handler = session._handler  # noqa: SLF001 - no per-session sink in the leaf
+            handler = session.handler
             drain = getattr(handler, "drain_audio", None)
             if drain is not None:
                 for frame in drain():
-                    if not session._offer(make_frame(WS_OP_BINARY, frame)):  # noqa: SLF001
+                    if not session.offer_binary(frame):
                         break
             pump = getattr(handler, "audio_pump", None)
             behind = getattr(pump, "stale_behind", None) if pump is not None else None
             if callable(behind) and behind(now):
                 logger.warning("tci: closing audio-behind client")
-                session._overflow()  # noqa: SLF001 - abort plus normal teardown
+                session.abort_stalled()
 
 
 def build_tci_server(
