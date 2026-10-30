@@ -1692,7 +1692,9 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
             pass
 
 
-async def test_second_command_never_dispatched_when_first_raises_after_teardown() -> None:
+async def test_second_command_never_dispatched_when_first_raises_after_teardown() -> (
+    None
+):
     """A raising first command must not leak the second one past teardown.
 
     Same shape as the repeat-cancel join test, but the gated cleanup
