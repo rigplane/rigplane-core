@@ -890,9 +890,13 @@ async def test_relative_vfo_bootstrap_liveness_reaches_existing_websocket(
                 if command == 0x25:
                     data = b"\x00" + data
                 frame = parse_civ_frame(
-                    build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, command, data=data)
+                    build_civ_frame(
+                        CONTROLLER_ADDR, radio._radio_addr, command, data=data
+                    )
                 )
-                await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+                await radio._civ_runtime._route_civ_frame(
+                    frame, generation=radio._civ_epoch
+                )
                 assert radio.last_valid_frame_monotonic is not None
                 update = await receive_state()
                 body = update.get("changed", update.get("data"))

@@ -2309,7 +2309,7 @@ class CivRuntime:
             and frame.sub == 0x00
             and frame.data not in (b"\x00", b"\x01")
         )
-        if (
+        qualifies_liveness = (
             not malformed_ptt
             and any(
                 observation.value is not None
@@ -2318,7 +2318,8 @@ class CivRuntime:
                 for observation in observations
             )
             and store_provider_generation == self._host._state_store.provider_generation
-        ):
+        )
+        if qualifies_liveness:
             self._stamp_liveness()
         observations = tuple(
             _replace_dataclass(
@@ -2338,7 +2339,9 @@ class CivRuntime:
                 generation=store_provider_generation,
             )
             self._record_scheduler_results_for_changeset(changeset)
-            self._notify_state_store_changed(changeset)
+            notified = self._notify_state_store_changed(changeset)
+            if qualifies_liveness and not notified:
+                self._notify_change("liveness", {})
             return
 
         if frame.command == 0x18 and len(frame.data) == 1:
@@ -2560,12 +2563,12 @@ class CivRuntime:
             )
             self._record_scheduler_result_for_observation(observation, changeset)
 
-    def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
+    def _notify_state_store_changed(self, changeset: ChangeSet) -> bool:
         paths = {change.path for change in changeset.changes}
         paths.update(changeset.freshness_paths)
         paths.update(changeset.observed_paths)
         if not paths:
-            return
+            return False
         self._notify_change(
             "state_store_changed",
             {
@@ -2573,6 +2576,7 @@ class CivRuntime:
                 "paths": sorted(str(path) for path in paths),
             },
         )
+        return True
 
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""
