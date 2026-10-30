@@ -219,6 +219,50 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
+    def test_runner_labels_keep_privileged_jobs_off_the_build_pool(self) -> None:
+        # MOR-3875: the build pool is persistent and also runs pull_request jobs
+        # (fork code can leave hooks or other state behind). Jobs that hold a
+        # write token or a secret keep their isolated runner; only unprivileged
+        # jobs run on the build pool. The exact label set is pinned per job, so a
+        # privileged job landing on the build pool fails here.
+        isolated = "ubuntu-latest"
+        build_pool = "[self-hosted, linux, build]"
+        expected = {
+            "agent-review-gate.yml": {"agent-review": isolated},
+            "agent-review-gate-v2.yml": {"publish": isolated},
+            "quick-v2.yml": {"observe": isolated, "publish": isolated},
+            "docs-only-quick.yml": {"publish-docs-only-quick-status": isolated},
+            "merge-queue-gates.yml": {
+                "agent-review-gate": isolated,
+                "freeze-gate": isolated,
+            },
+            "dispatch-downstream.yml": {"bump-downstream": isolated},
+            "docs.yml": {"build": isolated, "deploy": isolated, "indexnow": isolated},
+            "artifact-cleanup.yml": {"cleanup": isolated},
+            "freeze-gate.yml": {"freeze-gate": build_pool},
+            "rebrand-gate.yml": {"grep-gate": build_pool},
+            "doc-citation-gate.yml": {"citation-gate": build_pool},
+            "state-types-gate.yml": {"state-types-gate": build_pool},
+            "consumer-contracts-gate.yml": {"consumer-contracts-gate": build_pool},
+            "certification-status.yml": {"status": build_pool},
+            "quick.yml": {"classify": build_pool, "quick": build_pool},
+            "visual.yml": {"changes": build_pool, "visual": build_pool},
+        }
+        for name, jobs in expected.items():
+            lines = (ROOT / ".github" / "workflows" / name).read_text().splitlines()
+            start = lines.index("jobs:")
+            actual: dict[str, str] = {}
+            job = ""
+            for line in lines[start + 1 :]:
+                header = re.match(r"^  ([\w-]+):\s*$", line)
+                if header:
+                    job = header.group(1)
+                runner = re.match(r"^    runs-on: (.+?)\s*$", line)
+                if runner and job:
+                    actual[job] = runner.group(1)
+            with self.subTest(workflow=name):
+                self.assertEqual(actual, jobs)
+
     def test_release_gate_changes_select_the_route_that_runs_receipt_tests(
         self,
     ) -> None:

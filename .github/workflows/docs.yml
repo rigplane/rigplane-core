@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    runs-on: [self-hosted, linux, build]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
 
@@ -69,7 +69,7 @@ jobs:
     # inspection, and publishes nothing.
     if: github.ref == 'refs/heads/main'
     needs: build
-    runs-on: [self-hosted, linux, build]
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -80,7 +80,7 @@ jobs:
 
   indexnow:
     needs: deploy
-    runs-on: [self-hosted, linux, build]
+    runs-on: ubuntu-latest
     steps:
       - name: Wait for Pages CDN to settle
         run: sleep 30

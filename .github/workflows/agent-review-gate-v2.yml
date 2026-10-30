@@ -30,7 +30,7 @@ jobs:
     # agent-review-gate.yml; pull_request_target 'edited' is skipped unless
     # the base changed, the only edit that can move the observation domain.
     if: github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))
-    runs-on: [self-hosted, linux, build]
+    runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
       contents: read

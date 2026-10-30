@@ -42,7 +42,7 @@ permissions:
 jobs:
   bump-downstream:
     name: Open downstream bump PRs
-    runs-on: [self-hosted, linux, build]
+    runs-on: ubuntu-latest
     # Skip pre-releases (alpha, beta, rc). Only stable releases trigger bumps.
     # Also skip if the release body contains the opt-out marker [no-downstream-bump].
     if: |

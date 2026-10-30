@@ -19,7 +19,7 @@ concurrency:
 jobs:
   observe:
     name: Read-only legacy quick metadata observer
-    runs-on: [self-hosted, linux, build]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
@@ -86,7 +86,7 @@ jobs:
     name: Exact-head metadata observation publisher
     needs: observe
     if: always()
-    runs-on: [self-hosted, linux, build]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read

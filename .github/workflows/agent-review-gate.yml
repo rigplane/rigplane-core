@@ -67,9 +67,9 @@ jobs:
     # author instead; its reviews arrive as pull_request_review events.
     if: github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_dispatch' || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:'))) || (github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]')
     # API-only workflow via actions/github-script -- no compile/test toolchain
-    # needed. Self-hosted like every other job (MOR-3875: no GitHub-hosted
-    # runner in any repository).
-    runs-on: [self-hosted, linux, build]
+    # needed. Keep this on GitHub-hosted runners so PR merges are not blocked
+    # when self-hosted build runners are offline or occupied.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:

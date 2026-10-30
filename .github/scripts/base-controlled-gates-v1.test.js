@@ -25,12 +25,11 @@ function topologyErrors({quick, review, migration}) {
   ]) {
     if (!quick.includes(required)) errors.push(`quick observer is missing ${required}`);
   }
-  if ((quick.match(/runs-on: \[self-hosted, linux, build\]/gu) ?? []).length !== 2) errors.push('quick observer jobs must run on the self-hosted build runners');
   const statusWrites = quick.match(/statuses: write/gu) ?? [];
   const pins = quick.match(/actions\/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd/gu) ?? [];
   if (statusWrites.length !== 1 || pins.length !== 2) errors.push('publisher permission or action pin count changed');
   for (const forbidden of [
-    'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
+    'self-hosted', 'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
     '/logs', '/artifacts', '/caches', 'secrets.', 'github.workflow_sha',
   ]) {
     if (quick.includes(forbidden)) errors.push(`quick observer contains forbidden surface: ${forbidden}`);
@@ -39,7 +38,7 @@ function topologyErrors({quick, review, migration}) {
     errors.push('review observation contract changed unexpectedly');
   }
   for (const required of [
-    'must never be configured as required checks', 'metadata-only', 'zero GitHub-hosted',
+    'must never be configured as required checks', 'metadata-only', 'zero self-hosted',
     'route_job_concordance', 'terminal_binding_coverage',
     'status POST are not atomic',
     'distinct from GitHub Actions app ID `15368`', '"strict": true',
@@ -80,7 +79,7 @@ test('trusted route policy rejects incomplete and injected path metadata', () =>
   assert.throws(() => routePolicy.classifyPullFiles([{filename: 'docs/a.md'}], 3000));
 });
 
-test('quick v2 topology is self-hosted, metadata-only, and separately published', () => {
+test('quick v2 topology is hosted, metadata-only, and separately published', () => {
   assert.deepEqual(topologyErrors(sources()), []);
   assert.equal(observer.LEGACY_WORKFLOW.id, 270532868);
   assert.equal(observer.LEGACY_WORKFLOW.path, '.github/workflows/quick.yml');
@@ -91,7 +90,7 @@ test('workflow-run observation admits feature heads targeting main', () => asser
 test('topology contract catches permission, execution, event, and pin regressions', () => {
   const original = sources();
   const mutations = [
-    ['runs-on: [self-hosted, linux, build]', 'runs-on: ubuntu-latest'],
+    ['runs-on: ubuntu-latest', 'runs-on: [self-hosted, linux, build]'],
     ['permissions: {}', 'permissions:\n  statuses: write'],
     ['actions: read', 'actions: read\n      statuses: write'],
     ['with:\n          script:', 'uses: actions/upload-artifact@v4\n        with:\n          script:'],
