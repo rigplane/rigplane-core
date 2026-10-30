@@ -1,28 +1,58 @@
-"""TCI adapter handler: the Core side of the leaf ``TciHandler`` (MOR-3821 C1).
+"""TCI adapter handler: the Core side of the leaf ``TciHandler`` (MOR-3821).
 
 One instance per accepted socket; the owner id (``tci-client-N``) is minted
-once by the server factory, as ``rigctld-client-N`` is. C1 implements the
-init burst, the read-only commands and the teardown release; sets of Tier
-A/B commands degrade to reads here and become real writes in C2.
+once by the server factory, as ``rigctld-client-N`` is. Reads project the
+shared store; writes build a ``CommandIntent`` (``source="tci"``) and take
+the same queue and executor arms as a ``rigctld`` write. A write is always
+answered: success echoes to every session, a no-op or failure answers the
+actual state to the requester only.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from ..audio.route import (
+    apply_wsjtx_data_mod_input,
+    profile_data_mode_count,
+    resolve_audio_route,
+    rigctld_wsjtx_policy,
+)
+from ..core.command_service import (
+    command_intent_from_request,
+    resolve_power_level_target,
+)
+from ..core.exceptions import CommandError, CommandRejectedError
+from ..core.radio_protocol import (
+    RelativeVfoFrequencyWritable,
+    RelativeVfoModeWritable,
+    RitXitCapable,
+    SplitCapable,
+)
 from ..core.state_store import StateStore
+from ..runtime.controller_authority import ControllerError
 from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
 from ..runtime.managed_tx_submission import release_managed_session_tx
 from ..tci.handler import CommandOutcome
+from ..tci.protocol import parse_bool, parse_int
 from .commands import (
     SPOT_COMMANDS,
     START_STOP_COMMANDS,
+    TCI_TO_CORE_MODE,
     TIER_AB_COMMANDS,
 )
-from .notifier import TciNotifier, drive_percent, project_state, tx_frequency
+from .notifier import (
+    TciNotifier,
+    announced_modulations,
+    drive_percent,
+    project_state,
+    supports_data_mode,
+    tx_frequency,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +98,12 @@ class TciAdapterConfig:
         self.cache_ttl = cache_ttl
 
 
+class _TciWriteError(Exception):
+    """A write that reached no radio effect (no-op or refused input)."""
+
+
 class TciAdapterHandler:
-    """Per-connection TCI command handler (C1: reads, burst, teardown)."""
+    """Per-connection TCI command handler (reads, writes, teardown)."""
 
     def __init__(
         self,
@@ -181,30 +215,55 @@ class TciAdapterHandler:
             return CommandOutcome()
         if name == "ready":
             return CommandOutcome()
-        if name in ("vfo",):
+        if name == "vfo":
+            if len(args) >= 3:
+                return await self._write_vfo(args)
             return await self._read_vfo(args)
         if name == "modulation":
+            if len(args) >= 2:
+                return await self._write_modulation(args)
             return await self._read_modulation()
         if name == "split_enable":
+            if len(args) >= 2:
+                return await self._write_split(args)
             return await self._read_split()
         if name == "trx":
+            # Keying lands in C3; a C2 set degrades to the current state.
+            if len(args) >= 2:
+                return await self._sender_current(self._read_trx())
             return await self._read_trx()
         if name in ("drive", "tune_drive"):
+            if name == "drive" and len(args) >= 2:
+                return await self._write_drive(args)
+            if len(args) >= 2:
+                # ``tune_drive`` sets are ignored (spec 6.4).
+                return await self._sender_current(self._read_drive(name))
             return await self._read_drive(name)
         if name == "tune":
-            line = "tune:0,false;"
-            return CommandOutcome(to_sender=(line,), to_others=(line,))
+            # Not honoured (spec 6.4): always "not tuning", to the requester.
+            return CommandOutcome(to_sender=("tune:0,false;",))
         if name in ("rit_enable", "xit_enable"):
+            if len(args) >= 2:
+                return await self._write_rit_enable(name, args)
             return await self._read_rit_enable(name)
         if name in ("rit_offset", "xit_offset"):
+            if len(args) >= 2:
+                return await self._write_rit_offset(name, args)
             return await self._read_rit_offset(name)
         if name == "tx_enable":
+            # Server only (spec 5.5): a client set is answered with current.
+            if len(args) >= 2:
+                return await self._sender_current(self._read_tx_enable())
             return await self._read_tx_enable()
         if name == "tx_frequency":
+            if len(args) >= 2:
+                return await self._sender_current(self._read_tx_frequency())
             return await self._read_tx_frequency()
         if name in ("dds", "if"):
             return await self._read_dds_if()
         if name in ("cw_keyer_speed", "cw_macros_speed"):
+            if len(args) >= 1:
+                return await self._write_key_speed(name, args)
             return await self._read_key_speed(name)
         if name in (
             "vfo_limits",
@@ -216,9 +275,7 @@ class TciAdapterHandler:
             "receive_only",
         ):
             return await self._read_identity(name)
-        # Known Tier A/B write-only set (C2 writes): degrade to the current
-        # state here so a write is still answered (spec 5.2).
-        return await self._read_current(name)
+        return CommandOutcome()
 
     @staticmethod
     def _trx_ok(args: tuple[str, ...]) -> bool:
@@ -351,26 +408,269 @@ class TciAdapterHandler:
             return CommandOutcome()
         return CommandOutcome(to_sender=picked, to_others=picked)
 
-    async def _read_current(self, name: str) -> CommandOutcome:
-        """Degrade a C1 set to the current state (real writes land in C2)."""
-        readers: Mapping[str, Callable[[], Awaitable[CommandOutcome]]] = {
-            "vfo": lambda: self._read_vfo(("0", "0")),
-            "modulation": self._read_modulation,
-            "split_enable": self._read_split,
-            "trx": self._read_trx,
-            "drive": lambda: self._read_drive("drive"),
-            "tune_drive": lambda: self._read_drive("tune_drive"),
-            "rit_enable": lambda: self._read_rit_enable("rit_enable"),
-            "xit_enable": lambda: self._read_rit_enable("xit_enable"),
-            "rit_offset": lambda: self._read_rit_offset("rit_offset"),
-            "xit_offset": lambda: self._read_rit_offset("xit_offset"),
-            "cw_keyer_speed": lambda: self._read_key_speed("cw_keyer_speed"),
-            "cw_macros_speed": lambda: self._read_key_speed("cw_macros_speed"),
-        }
-        reader = readers.get(name)
-        if reader is None:
-            return CommandOutcome()
-        return await reader()
+    # -- writes ----------------------------------------------------------
+
+    async def _sender_current(self, read: Any) -> CommandOutcome:
+        """Answer the actual state to the requester only (no-op/failure)."""
+        outcome = await read
+        return CommandOutcome(to_sender=outcome.to_sender)
+
+    def _intent(self, name: str, params: Mapping[str, Any], **kwargs: Any) -> Any:
+        """Build the ``source="tci"`` intent (validation + normalization)."""
+        return command_intent_from_request(
+            name,
+            dict(params),
+            source="tci",
+            command_id=f"tci-{name}-{time.monotonic_ns()}",
+            session_id=self._owner,
+            timeout=self._config.command_timeout,
+            **kwargs,
+        )
+
+    async def _write_vfo(self, args: tuple[str, ...]) -> CommandOutcome:
+        try:
+            channel = int(args[1])
+        except ValueError:
+            return await self._sender_current(self._read_vfo(args))
+        hz = parse_int(args[2])
+        if channel not in (0, 1) or hz is None or hz <= 0:
+            return await self._sender_current(self._read_vfo(args[:2]))
+        if channel == 0:
+            try:
+                intent = self._intent("set_freq", {"freq": hz, "receiver": 0})
+                await self._radio.set_freq(int(intent.params["freq_hz"]), receiver=0)
+            except Exception:
+                logger.debug("tci %s: set_freq failed", self._owner, exc_info=True)
+                return await self._sender_current(self._read_vfo(args[:2]))
+            return self._reply(f"vfo:0,0,{hz};")
+        try:
+            intent = self._intent("set_split_freq", {"freq_hz": hz})
+            await self._write_split_freq(intent)
+        except Exception:
+            logger.debug("tci %s: set_split_freq failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_vfo(args[:2]))
+        return self._reply(f"vfo:0,1,{hz};")
+
+    async def _write_split_freq(self, intent: Any) -> None:
+        """Channel-1 write: queued when managed, direct otherwise (rigctld)."""
+        if self._authority is not None and self._queue is not None:
+            loop = asyncio.get_running_loop()
+            completion: asyncio.Future[None] = loop.create_future()
+            timeout = self._config.command_timeout
+            try:
+                self._queue.put_ordered(
+                    intent,
+                    future=completion,
+                    command_id=intent.id,
+                    source=intent.source,
+                    session_id=self._owner,
+                    expires_at_monotonic=loop.time() + timeout,
+                    provider_generation=self._store.provider_generation,
+                    connection_generation=(self._queue.capture_connection_generation()),
+                )
+                await asyncio.wait_for(completion, timeout=timeout)
+            except (TimeoutError, asyncio.TimeoutError) as exc:
+                raise _TciWriteError("split write timed out") from exc
+            except (CommandRejectedError, ControllerError, CommandError) as exc:
+                raise _TciWriteError(f"split write refused: {exc}") from exc
+            finally:
+                if not completion.done():
+                    completion.cancel()
+                await asyncio.gather(completion, return_exceptions=True)
+            return
+        if not isinstance(self._radio, RelativeVfoFrequencyWritable):
+            raise _TciWriteError("no relative-VFO surface")
+        try:
+            await self._radio.write_relative_vfo_frequency(
+                int(intent.params["freq_hz"]), selected=False
+            )
+        except (CommandRejectedError, ControllerError, CommandError) as exc:
+            raise _TciWriteError(f"split write refused: {exc}") from exc
+
+    async def _write_modulation(self, args: tuple[str, ...]) -> CommandOutcome:
+        name = args[1].strip().upper()
+        # Outside the announced list: ignored per 6.1 (never half-applied).
+        if name not in announced_modulations(self._radio):
+            return await self._sender_current(self._read_modulation())
+        mode, data_on = TCI_TO_CORE_MODE[name]
+        try:
+            intent = self._intent("set_mode", {"mode": mode.name, "receiver": 0})
+            await self._radio.set_mode(
+                str(intent.params["mode"]), filter_width=None, receiver=0
+            )
+            if data_on:
+                data_value = await self._write_data_on()
+            else:
+                data_value = False
+                if mode.name in ("USB", "LSB"):
+                    await self._write_data_off()
+            await self._sync_split_mode(int(mode.value), data_value)
+        except Exception:
+            logger.debug("tci %s: set_mode failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_modulation())
+        return self._reply(f"modulation:0,{name};")
+
+    async def _write_data_on(self) -> int | bool:
+        """Apply the WSJT-X DATA route shared with the rigctld seat (P0d)."""
+        route = resolve_audio_route(self._radio)
+        data_mode, mod_input = rigctld_wsjtx_policy(route)
+        count = int(profile_data_mode_count(self._radio))
+        if (
+            isinstance(data_mode, int)
+            and not isinstance(data_mode, bool)
+            and data_mode <= count
+        ):
+            value: int | bool = data_mode
+        else:
+            value = True
+        if not supports_data_mode(self._radio):
+            raise _TciWriteError("no DATA-mode command")
+        await apply_wsjtx_data_mod_input(self._radio, data_mode=value, source=mod_input)
+        setter = getattr(self._radio, "set_data_mode", None)
+        if not callable(setter):
+            raise _TciWriteError("no DATA-mode command")
+        await setter(value)
+        return value
+
+    async def _write_data_off(self) -> None:
+        """Clear DATA for a plain USB/LSB set, verified like rigctld's."""
+        if not supports_data_mode(self._radio):
+            return
+        setter = getattr(self._radio, "set_data_mode", None)
+        if not callable(setter):
+            return
+        await setter(False)
+        reader = getattr(self._radio, "get_data_mode", None)
+        if callable(reader) and await reader():
+            raise _TciWriteError("DATA still on after clear")
+
+    async def _sync_split_mode(self, mode_civ: int, data: int | bool) -> None:
+        """Keep B's mode tuple equal to A's (spec 5.7).
+
+        Direct radio call, never queued: the ``set_split_mode`` intent
+        binding rejects numeric DATA (``ValueError: data must be a boolean
+        or None``), so the queued intent cannot carry the sub-mode P0e
+        added. The method itself is that widened surface.
+        """
+        if not isinstance(self._radio, RelativeVfoModeWritable):
+            return
+        await self._radio.write_relative_vfo_mode(mode_civ, selected=False, data=data)
+
+    async def _write_split(self, args: tuple[str, ...]) -> CommandOutcome:
+        on = parse_bool(args[1])
+        if on is None:
+            return await self._sender_current(self._read_split())
+        if not isinstance(self._radio, SplitCapable):
+            return await self._sender_current(self._read_split())
+        try:
+            self._intent("set_split", {"on": on})
+            await self._radio.set_split(on)
+            if on:
+                await self._sync_split_on()
+        except Exception:
+            logger.debug("tci %s: set_split failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_split())
+        return self._reply(f"split_enable:0,{_tf(on)};")
+
+    async def _sync_split_on(self) -> None:
+        """On ``split_enable:0,true``, program B with A's tuple (spec 5.7)."""
+        state = await self._state()
+        entry = TCI_TO_CORE_MODE.get(state.modulation)
+        if entry is None:
+            return
+        mode, data_on = entry
+        await self._sync_split_mode(int(mode.value), state.data_a if data_on else False)
+
+    async def _write_rit_enable(
+        self, name: str, args: tuple[str, ...]
+    ) -> CommandOutcome:
+        on = parse_bool(args[1])
+        if on is None:
+            return await self._sender_current(self._read_rit_enable(name))
+        key = "rit_enable" if name == "rit_enable" else "xit_enable"
+        if not isinstance(self._radio, RitXitCapable):
+            return await self._sender_current(self._read_rit_enable(name))
+        try:
+            if name == "rit_enable":
+                self._intent("set_rit_status", {"on": on})
+                await self._radio.set_rit_status(on)
+            else:
+                self._intent("set_rit_tx_status", {"on": on})
+                await self._radio.set_rit_tx_status(on)
+        except Exception:
+            logger.debug("tci %s: rit status failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_rit_enable(name))
+        return self._reply(f"{key}:0,{_tf(on)};")
+
+    async def _write_rit_offset(
+        self, name: str, args: tuple[str, ...]
+    ) -> CommandOutcome:
+        hz = parse_int(args[1])
+        if hz is None:
+            return await self._sender_current(self._read_rit_offset(name))
+        key = "rit_offset" if name == "rit_offset" else "xit_offset"
+        if not isinstance(self._radio, RitXitCapable):
+            return await self._sender_current(self._read_rit_offset(name))
+        try:
+            if name == "rit_offset":
+                intent = self._intent("set_rit", {"hz": hz})
+                await self._radio.set_rit_frequency(int(intent.params["hz"]))
+                await self._radio.set_rit_status(int(intent.params["hz"]) != 0)
+            else:
+                intent = self._intent("set_xit", {"hz": hz})
+                await self._radio.set_rit_frequency(int(intent.params["hz"]))
+                await self._radio.set_rit_tx_status(int(intent.params["hz"]) != 0)
+        except Exception:
+            logger.debug("tci %s: rit offset failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_rit_offset(name))
+        return self._reply(f"{key}:0,{hz};")
+
+    async def _write_drive(self, args: tuple[str, ...]) -> CommandOutcome:
+        pct = parse_int(args[1])
+        if pct is None or not 0 <= pct <= 100:
+            # Out-of-domain input degrades to a read (spec 6.1 rule 2).
+            return await self._sender_current(self._read_drive("drive"))
+        setter = getattr(self._radio, "set_rf_power", None)
+        if not callable(setter):
+            return await self._sender_current(self._read_drive("drive"))
+        try:
+            radio_profile = getattr(self._radio, "profile", None)
+            native, _normalized = resolve_power_level_target(
+                pct / 100.0,
+                power_native_unit=getattr(self._radio, "native_power_unit", "raw_255"),
+                power_max_watts=getattr(radio_profile, "max_watts", None),
+                power_min_watts=getattr(radio_profile, "min_watts", None),
+            )
+            self._intent(
+                "set_rf_power",
+                {"value": pct / 100.0},
+                power_native_unit=getattr(self._radio, "native_power_unit", "raw_255"),
+                power_max_watts=getattr(radio_profile, "max_watts", None),
+                power_min_watts=getattr(radio_profile, "min_watts", None),
+            )
+            await setter(int(native))
+        except Exception:
+            logger.debug("tci %s: set_rf_power failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_drive("drive"))
+        actual = drive_percent(int(native), self._radio)
+        return self._reply(f"drive:0,{actual};")
+
+    async def _write_key_speed(
+        self, name: str, args: tuple[str, ...]
+    ) -> CommandOutcome:
+        speed = parse_int(args[0])
+        if speed is None or speed <= 0:
+            return await self._sender_current(self._read_key_speed(name))
+        setter = getattr(self._radio, "set_key_speed", None)
+        if not callable(setter):
+            return await self._sender_current(self._read_key_speed(name))
+        try:
+            self._intent("set_key_speed", {"speed": speed})
+            await setter(speed)
+        except Exception:
+            logger.debug("tci %s: set_key_speed failed", self._owner, exc_info=True)
+            return await self._sender_current(self._read_key_speed(name))
+        return self._reply(f"{name}:{speed};")
 
 
 def _tf(value: bool) -> str:

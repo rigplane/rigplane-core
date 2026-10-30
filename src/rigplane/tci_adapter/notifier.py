@@ -30,8 +30,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "AdapterState",
     "TciNotifier",
+    "announced_modulations",
     "drive_percent",
     "project_state",
+    "supports_data_mode",
 ]
 
 #: Store paths the burst and notifications project (mirrors the rigctld
@@ -57,6 +59,9 @@ class AdapterState:
     freq_a: int
     freq_b: int
     modulation: str
+    data_a: int
+    modulation_b: str
+    data_b: int
     split: bool
     rit_freq: int
     rit_on: bool
@@ -83,7 +88,7 @@ def _mode_name(value: Any) -> str:
     return "USB"
 
 
-def _supports_data_mode(radio: Any) -> bool:
+def supports_data_mode(radio: Any) -> bool:
     """Whether the radio implements the DATA-mode command.
 
     Same probe ``rigctld`` uses (``RigctldHandler._supports_data_mode``),
@@ -153,6 +158,25 @@ def _freq_ranges(radio: Any) -> tuple[tuple[int, int], ...]:
     return tuple(parsed)
 
 
+def _project_data(store: StateStore, *, channel_b: bool = False) -> int:
+    """Numeric DATA sub-mode of a channel (0 when unpublished)."""
+    data_path = _DATA_B_PATH if channel_b else _DATA_A_PATH
+    data_value = _store_value(store, data_path)
+    if data_value is None:
+        return 0
+    try:
+        return max(0, int(data_value))
+    except (TypeError, ValueError):
+        return 0
+
+
+def announced_modulations(radio: Any) -> tuple[str, ...]:
+    """The TCI names this radio supports (profile modes plus DATA surface)."""
+    return modulations_list(
+        _profile_modes(radio), data_capable=supports_data_mode(radio)
+    )
+
+
 def _project_modulation(
     store: StateStore, fallback: str, *, channel_b: bool = False
 ) -> str:
@@ -160,15 +184,10 @@ def _project_modulation(
     from .commands import TCI_TO_CORE_MODE
 
     mode_path = _MODE_B_PATH if channel_b else _MODE_A_PATH
-    data_path = _DATA_B_PATH if channel_b else _DATA_A_PATH
     mode_value = _store_value(store, mode_path)
     if mode_value is None:
         return fallback
-    data_value = _store_value(store, data_path)
-    try:
-        data_on = bool(int(data_value)) if data_value is not None else False
-    except (TypeError, ValueError):
-        data_on = False
+    data_on = bool(_project_data(store, channel_b=channel_b))
     name = _mode_name(mode_value)
     if data_on and name == "LSB":
         return "DIGL"
@@ -221,6 +240,9 @@ async def project_state(
         freq_b = freq_a
 
     modulation = _project_modulation(store, fallback_modulation)
+    data_a = _project_data(store)
+    modulation_b = _project_modulation(store, modulation, channel_b=True)
+    data_b = _project_data(store, channel_b=True)
 
     split = _store_value(store, _SPLIT_PATH)
     if split is None:
@@ -297,6 +319,9 @@ async def project_state(
         freq_a=freq_a,
         freq_b=freq_b,
         modulation=modulation,
+        data_a=data_a,
+        modulation_b=modulation_b,
+        data_b=data_b,
         split=bool(split),
         rit_freq=rit_freq,
         rit_on=bool(rit_on),
@@ -355,9 +380,7 @@ class TciNotifier:
             lo = min(start for start, _end in ranges)
             hi = max(end for _start, end in ranges)
             lines.append(f"vfo_limits:{lo},{hi};")
-        names = modulations_list(
-            _profile_modes(self._radio), data_capable=_supports_data_mode(self._radio)
-        )
+        names = announced_modulations(self._radio)
         lines.append(f"modulations_list:{','.join(names)};")
         return lines
 

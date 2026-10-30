@@ -120,9 +120,7 @@ class StubIcomRadio:
     async def set_freq(self, freq_hz: int, receiver: int = 0) -> None:
         self._fail("set_freq")
         self.freq_a = int(freq_hz)
-        self._applied(
-            FieldPath.active("main", "freq_mode", "freq_hz"), self.freq_a
-        )
+        self._applied(FieldPath.active("main", "freq_mode", "freq_hz"), self.freq_a)
 
     async def set_mode(
         self, mode: str, filter_width: int | None = None, receiver: int = 0
@@ -134,9 +132,7 @@ class StubIcomRadio:
     async def set_data_mode(self, data: int | bool, receiver: int = 0) -> None:
         self._fail("set_data_mode")
         self.data_a = int(bool(data)) if isinstance(data, bool) else int(data)
-        self._applied(
-            FieldPath.active("main", "freq_mode", "data_mode"), self.data_a
-        )
+        self._applied(FieldPath.active("main", "freq_mode", "data_mode"), self.data_a)
 
     async def get_data_mode(self, receiver: int = 0) -> int:
         return self.data_a
@@ -155,9 +151,7 @@ class StubIcomRadio:
     async def set_rit_frequency(self, freq_hz: int) -> None:
         self._fail("set_rit_frequency")
         self.rit_freq = int(freq_hz)
-        self._applied(
-            FieldPath.global_("operator_controls", "rit_freq"), self.rit_freq
-        )
+        self._applied(FieldPath.global_("operator_controls", "rit_freq"), self.rit_freq)
 
     async def get_rit_status(self) -> bool:
         return self.rit_on
@@ -231,7 +225,8 @@ class StubIcomRadio:
         except ValueError:
             self.mode_b = str(mode)
         self.data_b = (
-            int(data) if isinstance(data, int) and not isinstance(data, bool)
+            int(data)
+            if isinstance(data, int) and not isinstance(data, bool)
             else (1 if data else 0)
         )
         return RelativeVfoState(
@@ -256,6 +251,7 @@ class StubIcomRadio:
         return name == "set_data_mode"
 
 
+@dataclass
 class StubWattsRadio(StubIcomRadio):
     """Watts-native serial-like fake (Yaesu CAT shape, bool DATA fallback)."""
 

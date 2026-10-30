@@ -36,6 +36,19 @@ def _loaded_store():  # type: ignore[no-untyped-def]
     )
 
 
+@pytest.fixture()
+def tcp_available() -> None:
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("127.0.0.1", 0))
+    except OSError as exc:
+        pytest.skip(f"loopback bind unavailable: {exc}")
+    finally:
+        probe.close()
+
+
 def _pump(radio, store):  # type: ignore[no-untyped-def]
     """Simulate the command pump: apply queued split writes to radio+store."""
 
@@ -100,9 +113,7 @@ async def test_modulation_set_usb_clears_data() -> None:
 
 
 async def test_modulation_set_digu_applies_policy_numeric() -> None:
-    profile = StubProfile(
-        modes=("AM", "LSB", "USB", "CW", "FM"), data_mode_count=3
-    )
+    profile = StubProfile(modes=("AM", "LSB", "USB", "CW", "FM"), data_mode_count=3)
     radio = StubIcomRadio(profile=profile)
     radio.mod_inputs = {2: 0}
     handler = make_handler(radio=radio, store=_loaded_store())
@@ -247,13 +258,17 @@ async def test_tx_enable_set_answers_current() -> None:
     handler = make_handler(radio=StubIcomRadio(), store=_loaded_store())
     outcome = await handler.on_command("tx_enable", ("0", "true"))
     assert outcome.to_sender == ("tx_enable:0,false;",)
-    assert outcome.to_others == ("tx_enable:0,false;",)
+    assert outcome.to_others == ()
 
 
 async def test_start_stop_echo_and_spots_dropped() -> None:
     handler = make_handler(radio=StubIcomRadio(), store=_loaded_store())
-    assert (await handler.on_command("start", ())).to_sender == ("start;",)
-    assert (await handler.on_command("stop", ())).to_sender == ("stop;",)
+    start_outcome = await handler.on_command("start", ())
+    assert start_outcome.to_sender == ("start;",)
+    assert start_outcome.to_others == ("start;",)
+    stop_outcome = await handler.on_command("stop", ())
+    assert stop_outcome.to_sender == ("stop;",)
+    assert stop_outcome.to_others == ("stop;",)
     assert await handler.on_command("spot", ("W1AW", "CW", "14074000", "1", "x")) == (
         CommandOutcome()
     )
@@ -285,10 +300,8 @@ async def test_conformance_write_round_trip(tcp_available: None) -> None:
 
     pytest.importorskip("eesdr_tci")
     import importlib
-    import time
 
-    from rigplane.tci.server import TciServer
-    from rigplane.tci_adapter.server import TciAdapterServer, tci_allow_predicate
+    from rigplane.tci_adapter.server import TciAdapterServer
 
     listener_mod = importlib.import_module("eesdr_tci.listener")
 
@@ -335,7 +348,9 @@ async def test_conformance_write_round_trip(tcp_available: None) -> None:
             pass
         await asyncio.sleep(0)
         current = asyncio.current_task()
-        for task in [t for t in asyncio.all_tasks() if t is not current and not t.done()]:
+        for task in [
+            t for t in asyncio.all_tasks() if t is not current and not t.done()
+        ]:
             task.cancel()
         await asyncio.gather(
             *[t for t in asyncio.all_tasks() if t is not current],
