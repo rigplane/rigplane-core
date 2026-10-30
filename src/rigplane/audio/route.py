@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 from dataclasses import dataclass
 from enum import StrEnum
@@ -20,6 +22,7 @@ __all__ = [
     "DataModePolicy",
     "RadioTransport",
     "RxAudioSource",
+    "TxAudioFacts",
     "TxAudioSource",
     "audio_stream_contract_from_request",
     "resolve_lan_audio_stream_request",
@@ -27,6 +30,9 @@ __all__ = [
     "rigctld_wsjtx_policy",
     "apply_wsjtx_data_mod_input",
     "profile_data_mode_count",
+    "tx_audio_facts",
+    "tx_codec_for_radio",
+    "tx_path_for_codec",
 ]
 
 logger = logging.getLogger(__name__)
@@ -352,3 +358,164 @@ def rigctld_wsjtx_policy(route: AudioRoute) -> tuple[int | None, int | None]:
     if route.data_mode_policy == DataModePolicy.DATA1_LAN:
         return 1, 5
     return None, None
+
+
+#: TX route (source, policy) pairs a PCM TX frame can actually exit through
+#: (MOR-3821 A2): the radio-side allowlist shared by the web voice-TX seat
+#: and the TCI adapter, so there is one copy of it.
+TX_ROUTE_ALLOWLIST: frozenset[tuple[TxAudioSource, DataModePolicy]] = frozenset(
+    {
+        (TxAudioSource.LAN, DataModePolicy.DATA2_LAN),
+        (TxAudioSource.LAN, DataModePolicy.DATA1_LAN),
+        (TxAudioSource.LAN, DataModePolicy.LEGACY),
+        (TxAudioSource.USB, DataModePolicy.DATA1_USB),
+        (TxAudioSource.ACC, DataModePolicy.LEGACY),
+    }
+)
+
+
+def tx_codec_for_radio(radio: object) -> AudioCodec | None:
+    """Radio wire TX codec for PCM/Opus voice paths, or ``None``.
+
+    Moved from ``web/handlers/audio.py`` (MOR-3821 A2): the radio-only
+    lookup the web seat and the TCI adapter share.
+    """
+    codec = getattr(radio, "audio_tx_codec", None)
+    if codec is None:
+        codec = getattr(getattr(radio, "audio_stream_contract", None), "tx_codec", None)
+    if codec is None:
+        codec = getattr(radio, "audio_codec", None)
+    supported = (AudioCodec.PCM_1CH_16BIT, AudioCodec.OPUS_1CH)
+    return codec if isinstance(codec, AudioCodec) and codec in supported else None
+
+
+def _concrete_async_method(owner: object, name: str, method: object) -> Any | None:
+    """A bound coroutine with the exact seam arity, else ``None``.
+
+    Moved from ``web/handlers/audio.py`` (MOR-3821 A2): rejects stubs,
+    unbound functions, sync callables and wrong-arity doubles without
+    calling anything.
+    """
+    if not callable(method) or not asyncio.iscoroutinefunction(method):
+        return None
+    if name in getattr(owner, "__dict__", {}):
+        return None
+    base = next((cls for cls in type(owner).__mro__ if name in cls.__dict__), None)
+    if (
+        base is None
+        or getattr(base, "_is_protocol", False)
+        or getattr(base.__dict__[name], "__isabstractmethod", False)
+    ):
+        return None
+    if getattr(method, "__self__", None) is not owner:
+        return None
+    args = (b"",) if "push" in name else ("web",) if name == "acquire_tx" else ()
+    kwargs = {"sample_rate": 48_000} if name == "start_audio_tx_pcm" else {}
+    try:
+        inspect.signature(method).bind(*args, **kwargs)
+    except (TypeError, ValueError):
+        return None
+    return method
+
+
+def _lifecycle(
+    owner: object, names: tuple[str, ...]
+) -> tuple[tuple[Any, ...] | None, bool]:
+    raw = tuple(getattr(owner, name, None) for name in names)
+    methods = tuple(
+        _concrete_async_method(owner, name, method)
+        for name, method in zip(names, raw, strict=True)
+    )
+    return (methods if all(methods) else None), any(item is not None for item in raw)
+
+
+def tx_path_for_codec(radio: object, codec: AudioCodec) -> tuple[str, tuple[Any, ...]] | None:
+    """How TX audio reaches this radio, or ``None`` when it cannot.
+
+    Moved from ``web/handlers/audio.py`` (MOR-3821 A2): prefers the
+    session lease (``acquire_tx``), then the neutral transport surface,
+    then the legacy codec shims. The ``("session", ...)`` first element
+    carries ``acquire_tx`` followed by the neutral tail; the legacy
+    kinds carry the full start/push/stop triple.
+    """
+    neutral, has_neutral = _lifecycle(radio, ("start_tx", "push_tx", "stop_tx"))
+    session = getattr(radio, "audio_session", None)
+    if session is not None:
+        acquire_raw = getattr(session, "acquire_tx", None)
+        acquire = _concrete_async_method(session, "acquire_tx", acquire_raw)
+        return ("session", (acquire, *neutral[1:])) if acquire and neutral else None
+    if has_neutral:
+        return ("neutral", neutral) if neutral is not None else None
+    suffix = "pcm" if codec == AudioCodec.PCM_1CH_16BIT else "opus"
+    lifecycle, _ = _lifecycle(
+        radio, tuple(f"{op}_audio_tx_{suffix}" for op in ("start", "push", "stop"))
+    )
+    return (suffix, lifecycle) if lifecycle is not None else None
+
+
+@dataclass(frozen=True, slots=True)
+class TxAudioFacts:
+    """Radio-only PCM TX route facts (MOR-3821 A2).
+
+    ``codec``/``path``/``lifecycle`` mirror the web seat's probe;
+    ``route`` is the resolved route (``None`` when unresolvable) and
+    ``required_mod_input`` the WSJT-X MOD input for the route (``None``
+    when the caller reports no MOD-input routing). ``route_accepted``
+    folds the route allowlist and the required-input sanity into one
+    fail-closed bit; ``codec``/``path`` stay populated for diagnosis.
+    """
+
+    codec: AudioCodec | None
+    path: str | None
+    lifecycle: tuple[Any, ...] | None
+    route: AudioRoute | None
+    required_mod_input: int | None
+    route_accepted: bool
+
+
+def tx_audio_facts(radio: object, *, has_mod_input_routing: bool) -> TxAudioFacts:
+    """Resolve the radio-only TX audio facts both voice seats share.
+
+    Never raises: every probe degrades to a field of ``None``/``False``,
+    so callers fail closed on radios with a partial audio surface.
+    """
+    try:
+        codec = tx_codec_for_radio(radio)
+    except Exception:
+        codec = None
+    path: str | None = None
+    lifecycle: tuple[Any, ...] | None = None
+    if codec is not None:
+        try:
+            probed = tx_path_for_codec(radio, codec)
+        except Exception:
+            probed = None
+        if probed is not None:
+            path, lifecycle = probed
+    route: AudioRoute | None = None
+    required: int | None = None
+    try:
+        route = resolve_audio_route(radio)
+        policy_required = rigctld_wsjtx_policy(route)[1]
+        required = policy_required if has_mod_input_routing else None
+    except Exception:
+        route = None
+        required = None
+    accepted = False
+    if route is not None:
+        accepted = (route.tx_audio_source, route.data_mode_policy) in TX_ROUTE_ALLOWLIST
+        if accepted and required is not None and (
+            route.tx_audio_source is not TxAudioSource.LAN
+            or not isinstance(required, int)
+            or isinstance(required, bool)
+            or not 0 <= required <= 9_007_199_254_740_991
+        ):
+            accepted = False
+    return TxAudioFacts(
+        codec=codec,
+        path=path,
+        lifecycle=lifecycle,
+        route=route,
+        required_mod_input=required,
+        route_accepted=accepted,
+    )

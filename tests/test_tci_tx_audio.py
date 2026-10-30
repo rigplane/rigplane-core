@@ -14,13 +14,12 @@ from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from test_managed_tx_authority import FakeConfigStore, FakeLane
 
 from tci_adapter_stub import (
-    StubIcomRadio,
-    build_store,
-    make_handler,
-)
-from tci_adapter_stub import (
     StubCommandQueue,
     StubCommandService,
+    StubIcomRadio,
+    StubProfile,
+    build_store,
+    make_handler,
 )
 
 
@@ -46,6 +45,9 @@ def _tx_radio(**kwargs):  # type: ignore[no-untyped-def]
 
     from rigplane.core.types import AudioCodec
 
+    kwargs.setdefault(
+        "profile", StubProfile(modes=("AM", "LSB", "USB", "CW", "FM"), data_mode_count=3)
+    )
     radio = StubIcomRadio(**kwargs)
     radio.audio_codec = AudioCodec.PCM_1CH_16BIT
     radio.audio_tx_codec = AudioCodec.PCM_1CH_16BIT
@@ -119,6 +121,7 @@ class TestTxRouteFacts:
 
     def test_opus_tx_codec_not_pcm(self) -> None:
         from rigplane.audio.route import tx_audio_facts
+        from rigplane.tci_adapter.audio import tx_route_ready
 
         from rigplane.core.types import AudioCodec
 
@@ -126,7 +129,7 @@ class TestTxRouteFacts:
         radio.audio_tx_codec = AudioCodec.OPUS_1CH
         facts = tx_audio_facts(radio, has_mod_input_routing=True)
         assert facts.codec is AudioCodec.OPUS_1CH
-        assert facts.route_accepted is False
+        assert tx_route_ready(radio) is None
 
     def test_no_route_not_accepted(self) -> None:
         from rigplane.audio.route import tx_audio_facts
@@ -173,21 +176,23 @@ class TestTrxTciKey:
         await authority.close()
 
     async def test_key_tci_refused_in_cw(self) -> None:
-        handler, authority, _lane, _queue = _seam()
+        handler, authority, _lane, _queue = _seam(retry_delay_seconds=0.05)
         handler._radio.observe_store = handler._store  # noqa: SLF001
         outcome = await handler.on_command("modulation", ("0", "CW"))
         assert outcome.to_sender == ("modulation:0,CW;",)
         refused = await handler.on_command("trx", ("0", "true", "tci"))
         assert refused.to_sender == ("trx:0,false;",)
+        await asyncio.sleep(0.5)
         await authority.close()
 
     async def test_key_tci_before_on_failure_no_ptt(self) -> None:
-        handler, authority, lane, _queue = _seam()
+        handler, authority, lane, _queue = _seam(retry_delay_seconds=0.05)
         await _program_digu(handler)
         handler._radio.fail_on.add("set_data2_mod_input")  # noqa: SLF001
         outcome = await handler.on_command("trx", ("0", "true", "tci"))
         assert outcome.to_sender == ("trx:0,false;",)
         assert [e.operation.name for e in lane.effects] == []
+        await asyncio.sleep(0.5)
         await authority.close()
 
     async def test_key_other_source_still_refused(self) -> None:
@@ -343,6 +348,9 @@ class TestPlayout:
             def __init__(self) -> None:
                 self.holder: str | None = "tci-client-1"
 
+            def tx_holder_nowait(self) -> str | None:
+                return self.holder
+
             def owned_tx_submission(self, owner: str):  # type: ignore[no-untyped-def]
                 holder = self.holder
 
@@ -366,13 +374,14 @@ class TestPlayout:
             emit=lambda frame: None,
         )
         session.buffering_ms_override = 50
-        session.feed_pcm(struct.pack("<800h", *([1000] * 800)))
+        session.feed_pcm(struct.pack("<960h", *([1000] * 960)))
         await session.tick()
         assert len(pushed) == 1
-        assert len(pushed[0]) == 8000 * 20 // 1000 * 2
+        assert len(pushed[0]) == 48000 * 20 // 1000 * 2
+        assert pushed[0] == struct.pack("<960h", *([1000] * 960))
         await session.tick()
         assert session.underruns >= 1
-        assert pushed[-1] == b"\x00" * (8000 * 20 // 1000 * 2)
+        assert pushed[-1] == b"\x00" * (48000 * 20 // 1000 * 2)
         await session.stop()
 
     async def test_overrun_drops_oldest(self) -> None:
@@ -388,7 +397,7 @@ class TestPlayout:
             emit=lambda frame: None,
         )
         session.buffering_ms_override = 50
-        session.feed_pcm(b"\x01\x00" * 8000 * 2)
+        session.feed_pcm(b"\x01\x00" * 30000)
         assert session.overruns > 0
         await session.stop()
 
@@ -408,6 +417,9 @@ class TestPlayout:
         class _Authority:
             def __init__(self) -> None:
                 self.holder: str | None = "tci-client-1"
+
+            def tx_holder_nowait(self) -> str | None:
+                return self.holder
 
             def owned_tx_submission(self, owner: str):  # type: ignore[no-untyped-def]
                 holder = self.holder
@@ -451,8 +463,10 @@ class TestBinaryTxFrames:
 
         handler, authority, _lane, _queue = _seam()
         await _program_digu(handler)
-        await handler.on_command("trx", ("0", "true", "tci"))
-        payload = struct.pack("<4h", 1000, -1000, 500, -500)
+        assert (await handler.on_command("trx", ("0", "true", "tci"))).to_sender == (
+            "trx:0,true;",
+        )
+        payload = struct.pack("<2048h", *([1000] * 2048))
         header = pack_header(
             StreamHeader(
                 receiver=0,
@@ -460,15 +474,17 @@ class TestBinaryTxFrames:
                 sample_type=SampleType.INT16,
                 codec=0,
                 crc=0,
-                length=4,
+                length=2048,
                 stream_type=StreamType.TX_AUDIO,
                 channels=1,
                 count=1,
             )
         )
-        await handler.on_binary(header + payload)
-        await asyncio.sleep(0.3)
+        for _ in range(3):
+            await handler.on_binary(header + payload)
+        await asyncio.sleep(0.5)
         assert handler._radio.pushed_tx  # noqa: SLF001
+        assert all(len(frame) == 48000 * 20 // 1000 * 2 for frame in handler._radio.pushed_tx)  # noqa: SLF001
         await handler.on_command("trx", ("0", "false"))
         await authority.close()
 

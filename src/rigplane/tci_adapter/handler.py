@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import struct
 import time
+from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -43,9 +45,16 @@ from ..runtime.managed_tx_submission import (
     execute_managed_ptt,
     release_managed_session_tx,
 )
+from ..tci.frames import HEADER_SIZE, StreamType, unpack_header
 from ..tci.handler import CommandOutcome
 from ..tci.protocol import parse_bool, parse_int
-from .audio import TciAudioSettings, TciRxPump, rx_audio_available
+from .audio import (
+    TciAudioSettings,
+    TciRxPump,
+    TciTxSession,
+    rx_audio_available,
+    tx_route_ready,
+)
 from .commands import (
     SPOT_COMMANDS,
     START_STOP_COMMANDS,
@@ -245,6 +254,10 @@ class TciAdapterHandler:
         self._state_model_service_checked = False
         self._audio_settings: TciAudioSettings | None = None
         self._rx_pump: TciRxPump | None = None
+        self._tx_session: TciTxSession | None = None
+        self._tx_iq = False
+        self._tx_outbound: deque[bytes] = deque(maxlen=8)
+        self.dropped_tx = 0
 
     @property
     def owner(self) -> str:
@@ -261,11 +274,24 @@ class TciAdapterHandler:
         """The live RX pump, if this client started one."""
         return self._rx_pump
 
+    @property
+    def tx_session(self) -> TciTxSession | None:
+        """The live TX session, if this client holds a ``source=tci`` over."""
+        return self._tx_session
+
     def drain_audio(self) -> list[bytes]:
-        """Take every queued RX frame for the server delivery pump."""
-        if self._rx_pump is None:
-            return []
-        return self._rx_pump.drain()
+        """Take every queued RX frame and TX_CHRONO for server delivery."""
+        frames: list[bytes] = []
+        if self._rx_pump is not None:
+            frames.extend(self._rx_pump.drain())
+        if self._tx_outbound:
+            frames.extend(self._tx_outbound)
+            self._tx_outbound.clear()
+        return frames
+
+    def _emit_tx_chrono(self, frame: bytes) -> None:
+        """Queue one TX_CHRONO marker for the server delivery pump."""
+        self._tx_outbound.append(bytes(frame))
 
     @property
     def notifier(self) -> TciNotifier:
@@ -310,7 +336,37 @@ class TciAdapterHandler:
         return self._audio_settings
 
     async def on_binary(self, payload: bytes) -> None:
-        """Binary frames are phase audio: ignored until it ships (spec 6.2)."""
+        """One client TX frame: convert, buffer, play out (spec 8.3).
+
+        With no keyed TX session the frame is dropped and counted: a
+        frame never keys the radio.
+        """
+        session = self._tx_session
+        if session is None:
+            self.dropped_tx += 1
+            return
+        if len(payload) < HEADER_SIZE:
+            session.dropped_malformed += 1
+            return
+        try:
+            header = unpack_header(bytes(payload[:HEADER_SIZE]))
+        except (ValueError, struct.error):
+            session.dropped_malformed += 1
+            return
+        if header.stream_type is not StreamType.TX_AUDIO:
+            return
+        if header.channels not in (1, 2):
+            session.dropped_malformed += 1
+            return
+        body = bytes(payload[HEADER_SIZE:])
+        if not body:
+            return
+        session.feed_client_frame(
+            body,
+            channels=header.channels,
+            sample_rate=header.sample_rate,
+            sample_type=header.sample_type,
+        )
 
     async def on_disconnect(self) -> None:
         """Unregister the session, then release its managed TX lease (7.4).
@@ -335,6 +391,25 @@ class TciAdapterHandler:
         pump, self._rx_pump = self._rx_pump, None
         if pump is not None:
             await pump.stop()
+        await self._stop_tx_session()
+
+    async def _stop_tx_session(self) -> None:
+        """Stop the TX session and release its lease (unkey/disconnect, 8.3)."""
+        session, self._tx_session = self._tx_session, None
+        if session is None:
+            return
+        try:
+            await session.stop()
+        except Exception:
+            logger.debug("tci %s: tx session stop failed", self._owner, exc_info=True)
+        lease = session.lease
+        if lease is not None:
+            try:
+                await lease.release()
+            except Exception:
+                logger.debug(
+                    "tci %s: tx lease release failed", self._owner, exc_info=True
+                )
 
     async def release_session_tx(self, session_id: str) -> None:
         """Hand back any managed TX lease ``session_id`` still holds."""
@@ -751,10 +826,12 @@ class TciAdapterHandler:
 
     async def _key(self, source: str | None) -> CommandOutcome:
         """Key the current input via the managed authority (spec 7.3)."""
+        if source == "tci":
+            return await self._key_tci()
         if source is not None:
-            # Audio phase absent: any explicit source (incl. ``tci``) is
-            # refused. Accepting it would key whatever input the data
-            # route selected, which is not what the client asked for.
+            # Any other explicit source is refused. Accepting it would
+            # key whatever input the data route selected, which is not
+            # what the client asked for.
             logger.info(
                 "tci %s: refusing key with explicit source %s",
                 self._owner,
@@ -813,6 +890,165 @@ class TciAdapterHandler:
             return self._refuse_key()
         return self._reply("trx:0,true;")
 
+    async def _key_tci(self) -> CommandOutcome:
+        """Key with TX audio over TCI (spec 7.3/8.3, fail-closed).
+
+        The key is accepted only with a PCM TX route; the TX input is
+        established and verified inside the authority's admitted key
+        (``before_on``), never before it. After the key is accepted the
+        TX lease is acquired and the chrono/playout session starts; it
+        is released at unkey/disconnect.
+        """
+        if tx_route_ready(self._radio) is None:
+            logger.info(
+                "tci %s: refusing tci key with no PCM TX route", self._owner
+            )
+            return self._refuse_key()
+        if self._authority is None or self._queue is None or self._service is None:
+            return self._refuse_key()
+        controller = self._controller_authority
+        if controller is not None and getattr(controller, "mode", "local") == "remote":
+            return self._refuse_key()
+        try:
+            if self._authority.held_by_other(self._owner):
+                return self._refuse_key()
+            if self._authority.radio_tx_refusal_nowait() is not None:
+                return self._refuse_key()
+        except Exception:
+            logger.debug(
+                "tci %s: TX admission probe failed", self._owner, exc_info=True
+            )
+            return self._refuse_key()
+        loop = asyncio.get_running_loop()
+        try:
+            submission, ready = self._tracker.begin_key(
+                self._authority,
+                owner=self._owner,
+                on=True,
+                expires_at_monotonic=loop.time() + self._config.command_timeout,
+                connection_generation=self._queue.capture_connection_generation(),
+                before_on=self._run_before_on,
+            )
+            await execute_managed_ptt(
+                authority=self._authority,
+                queue=self._queue,
+                owner=self._owner,
+                on=True,
+                submission=submission,
+                ready=ready,
+                source="tci",
+                provider_generation=self._store.provider_generation,
+            )
+        except Exception:
+            logger.debug("tci %s: managed tci key failed", self._owner, exc_info=True)
+            return self._refuse_key()
+        try:
+            lease = await self._radio.audio_session.acquire_tx(self._owner)
+        except Exception:
+            logger.debug("tci %s: tx lease acquire failed", self._owner, exc_info=True)
+            await self._best_effort_unkey()
+            return self._refuse_key()
+        session = TciTxSession(
+            self._radio,
+            self._owner,
+            self._authority,
+            lease,
+            settings=self._audio_settings_or_seed(),
+            iq=self._tx_iq,
+            emit=self._emit_tx_chrono,
+        )
+        try:
+            await session.start()
+        except Exception:
+            logger.debug("tci %s: tx session start failed", self._owner, exc_info=True)
+            try:
+                await lease.release()
+            except Exception:
+                logger.debug(
+                    "tci %s: tx lease release failed", self._owner, exc_info=True
+                )
+            await self._best_effort_unkey()
+            return self._refuse_key()
+        self._tx_session = session
+        return self._reply("trx:0,true;")
+
+    async def _best_effort_unkey(self) -> None:
+        """Release our key when TX setup failed after the PTT went out."""
+        try:
+            await self._authority.submit_ptt(False, self._owner)
+        except Exception:
+            logger.debug(
+                "tci %s: best-effort unkey failed", self._owner, exc_info=True
+            )
+
+    async def _run_before_on(self) -> bool:
+        """Authority ``before_on`` hook: route prep inside the admitted key."""
+        try:
+            return await self._prepare_tci_route()
+        except Exception:
+            logger.debug(
+                "tci %s: tx route preparation failed", self._owner, exc_info=True
+            )
+            return False
+
+    async def _prepare_tci_route(self) -> bool:
+        """Establish and verify the TX data route (spec 8.3 step 1/7.3a).
+
+        Applies the WSJT-X data policy for the current mode (required
+        DATA state and MOD input source) and reads both back; the key is
+        refused when the mode has no data route, the radio cannot take
+        DATA, or the readback differs. Direct radio calls, like the
+        modulation path they share the glue with.
+        """
+        state = await self._state()
+        if state.modulation not in ("USB", "LSB", "AM", "FM", "DIGU", "DIGL"):
+            return False
+        if not supports_data_mode(self._radio):
+            return False
+        route = resolve_audio_route(self._radio)
+        data_mode, mod_input = rigctld_wsjtx_policy(route)
+        count = int(profile_data_mode_count(self._radio))
+        if (
+            isinstance(data_mode, int)
+            and not isinstance(data_mode, bool)
+            and data_mode <= count
+        ):
+            value: int | bool = data_mode
+        else:
+            value = True
+        await apply_wsjtx_data_mod_input(self._radio, data_mode=value, source=mod_input)
+        setter = getattr(self._radio, "set_data_mode", None)
+        if not callable(setter):
+            return False
+        await setter(value)
+        reader = getattr(self._radio, "get_data_mode", None)
+        if not callable(reader):
+            return False
+        try:
+            if int(await reader()) != int(value):
+                return False
+        except (TypeError, ValueError):
+            return False
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and value > 0
+            and mod_input is not None
+        ):
+            getter = getattr(self._radio, f"get_data{int(value)}_mod_input", None)
+            if callable(getter):
+                try:
+                    actual_input = await getter()
+                except Exception:
+                    return False
+                try:
+                    if int(actual_input) != int(mod_input):
+                        return False
+                except (TypeError, ValueError):
+                    return False
+        self._tx_iq = True
+        return True
+
     async def _unkey(self) -> CommandOutcome:
         """Release our lease, if any; always answered (spec 7.3)."""
         if self._authority is None or self._queue is None:
@@ -842,6 +1078,7 @@ class TciAdapterHandler:
         except Exception:
             logger.debug("tci %s: managed unkey failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_trx())
+        await self._stop_tx_session()
         return self._reply("trx:0,false;")
 
     async def _check_tx_tuple(self) -> bool:
