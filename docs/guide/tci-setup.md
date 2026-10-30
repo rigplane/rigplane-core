@@ -9,8 +9,7 @@ client-facing TCI endpoint (phase "control": frequency, mode, split and
 PTT). It is separate from the `rigctld`-compatible endpoint covered in
 the [WSJT-X / JTDX / JS8Call guide](wsjtx-setup.md). Audio over TCI
 ships in a later phase; until then WSJT-X audio still flows through the
-[rigctld endpoint](wsjtx-setup.md) or the audio bridge while CAT and
-PTT go over TCI.
+audio bridge while CAT and PTT go over TCI.
 
 Client behaviour in this page is reported, not captured: no
 client-recording session has been done yet, so the steps below follow
