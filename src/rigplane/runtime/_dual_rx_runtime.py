@@ -58,6 +58,8 @@ from rigplane.runtime.callable_support import (
 
 # CI-V command byte for VFO select / equal / swap (0x07).
 _CMD_VFO = 0x07
+# Bound on the connect-time / on-demand 0x07 0xD2 selection read (MOR-3591).
+_SELECTION_READ_TIMEOUT_S = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +265,39 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         self._last_vfo = name
         if self._selection_known_since is None:
             self._selection_known_since = time.monotonic()
+
+    async def _establish_receiver_selection(self) -> int | None:
+        """Read the selected receiver (0x07 0xD2) when it is not known.
+
+        Bounded and non-fatal: a dual-receiver profile that declares the
+        read asks the radio once (at most ``_SELECTION_READ_TIMEOUT_S``) and
+        records the answer; on silence or any failure the selection stays
+        unknown and receiver-scoped plain commands keep failing closed
+        (MOR-3591). Never selects anything.
+        """
+        selected = self._selected_receiver()
+        cmd_map = self._profile.command_map
+        if (
+            selected is not None
+            or cmd_map is None
+            or not cmd_map.has("get_main_sub_band")
+        ):
+            return selected
+        civ = self._commands.get_main_sub_band(to_addr=self._radio_addr)
+        try:
+            resp = await self._send_civ_expect(
+                civ,
+                label="get_main_sub_band",
+                timeout=_SELECTION_READ_TIMEOUT_S,
+            )
+        except Exception:
+            logger.debug("receiver selection read failed", exc_info=True)
+            return self._selected_receiver()
+        data = resp.data if resp.sub is None else bytes([resp.sub]) + resp.data
+        if resp.command == _CMD_VFO and len(data) >= 2 and data[0] == 0xD2:
+            if data[1] in (0, 1):
+                self._record_selection("SUB" if data[1] else "MAIN")
+        return self._selected_receiver()
 
     def _forget_selection(self) -> None:
         """A new CI-V generation: selection and its ownership window reset."""

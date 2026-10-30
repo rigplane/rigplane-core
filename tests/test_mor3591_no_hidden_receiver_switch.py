@@ -17,6 +17,7 @@ SUB; IC-705: single receiver), asserting on the captured CI-V frames that no
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -69,14 +70,26 @@ class Wire:
     def __init__(self, radio: IcomRadio) -> None:
         self.radio = radio
         self.frames: list[bytes] = []
+        # 0x07 0xD2 selection reads are kept apart: they read, never select.
+        self.selection_reads: list[bytes] = []
+        # The 0x07 0xD2 answer (None: the radio does not answer it).
+        self.d2_answer: int | None = None
         self.fail_select = False
         # Runs when a 0x07 D0/D1 select is sent, before it is answered.
         self.on_select: Callable[[], Awaitable[None]] | None = None
 
     async def send(self, civ_frame: bytes, **kwargs: Any) -> CivFrame | None:
         frame = bytes(civ_frame)
-        self.frames.append(frame)
         wrapped, receiver, inner = _inner(frame)
+        if inner == b"\x07\xd2":
+            self.selection_reads.append(frame)
+            if self.d2_answer is None:
+                raise TimeoutError("no 07 D2 answer")
+            return parse_civ_frame(
+                bytes([0xFE, 0xFE, CONTROLLER_ADDR, frame[2], 0x07, 0xD2])
+                + bytes([self.d2_answer, 0xFD])
+            )
+        self.frames.append(frame)
         if inner[0] == 0x07 and inner[1:2] and inner[1] in _SELECT_CODES:
             if self.on_select is not None:
                 await self.on_select()
@@ -874,3 +887,56 @@ class TestHttpConflict:
         assert status == 409
         assert body["error"] == "receiver_not_selected"
         assert transport.sent_packets == []
+
+
+class TestSelectionEstablishedByReading:
+    """The connect flow and reads establish the selection with a bounded
+    0x07 0xD2 read; nothing ever selects."""
+
+    @pytest.mark.asyncio
+    async def test_main_read_establishes_selection_on_demand(self) -> None:
+        radio, wire = _radio("IC-9700")
+        wire.d2_answer = 0
+        assert await radio.get_freq() == _FREQ
+        assert len(wire.selection_reads) == 1
+        assert [_inner(f)[2] for f in wire.frames] == [b"\x03"]
+        assert radio._selected_receiver() == 0
+        assert wire.selection_frames() == []
+
+    @pytest.mark.asyncio
+    async def test_unanswered_read_stays_fail_closed(self) -> None:
+        radio, wire = _radio("IC-9700")
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.get_freq()
+        assert len(wire.selection_reads) == 1
+        assert wire.frames == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-9700"])
+    async def test_connect_state_fetch_queries_the_selection(self, model: str) -> None:
+        radio, _wire = _radio(model)
+        radio.send_civ = AsyncMock()  # type: ignore[method-assign]
+        radio._INITIAL_STATE_GAP_LAN = 0.0  # type: ignore[misc]
+        radio._INITIAL_STATE_GAP_SERIAL = 0.0  # type: ignore[misc]
+        await radio._fetch_initial_state()
+        sent = [
+            (c.args[0], c.kwargs.get("data")) for c in radio.send_civ.await_args_list
+        ]
+        assert (0x07, b"\xd2") in sent
+        # Its answer, through the real RX path, establishes the selection.
+        _observe_selection(radio, 1)
+        assert radio._selected_receiver() == 1
+
+    @pytest.mark.asyncio
+    async def test_write_establishes_selection_on_demand(self) -> None:
+        radio, wire = _radio("IC-9700")
+        wire.d2_answer = 0
+        await radio.set_freq(_FREQ)
+        assert len(wire.selection_reads) == 1
+        assert [_inner(f)[2][:1] for f in wire.frames] == [b"\x05"]
+
+    @pytest.mark.asyncio
+    async def test_single_receiver_reads_no_selection(self) -> None:
+        radio, wire = _radio("IC-705")
+        await radio.get_freq()
+        assert wire.selection_reads == []

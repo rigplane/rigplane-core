@@ -200,6 +200,7 @@ class _FakeSerialCivLink:
         self.answer_identity = answer_identity
         self.model_id = model_id
         self.identity_queries = 0
+        self.selection_reads: list[bytes] = []
 
     def set_device(self, device: str) -> None:
         self.device_history.append(device)
@@ -230,6 +231,15 @@ class _FakeSerialCivLink:
         payload = bytes(frame)
         if self.lifecycle_events is not None:
             self.lifecycle_events.append(("send", payload))
+        if payload[4:-1] == b"\x07\xd2":
+            # MOR-3591: the connect-time selection read. Answered MAIN and
+            # kept out of ``sent_frames`` so numbered sends keep counting
+            # the commands under test.
+            self.selection_reads.append(payload)
+            self._responses.put_nowait(
+                bytes((0xFE, 0xFE, payload[3], payload[2], 0x07, 0xD2, 0x00, 0xFD))
+            )
+            return
         self.sent_frames.append(payload)
         send_no = len(self.sent_frames)
         for response in self._responses_by_send.pop(send_no, []):

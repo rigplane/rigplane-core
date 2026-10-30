@@ -2875,7 +2875,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_receiver(receiver, operation="get_freq")
         if self._sub_direct_route(receiver, "get_unselected_freq"):
             return await self._get_unselected_freq()
-        if self._selected_receiver() == receiver:
+        if await self._establish_receiver_selection() == receiver:
             if receiver == RECEIVER_MAIN:
                 return await self._get_frequency_main(bypass_cache=bypass_cache)
             civ = self._commands.get_freq(to_addr=self._radio_addr)
@@ -2928,6 +2928,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_freq")
+        await self._establish_receiver_selection()
         if self._sub_direct_route(
             receiver, "set_unselected_freq", "get_unselected_freq"
         ):
@@ -2990,7 +2991,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_receiver(receiver, operation="get_mode_info")
         if self._sub_direct_route(receiver, "get_unselected_mode"):
             return await self._get_unselected_mode()
-        if self._selected_receiver() == receiver:
+        if await self._establish_receiver_selection() == receiver:
             if receiver == RECEIVER_MAIN:
                 return await self._get_mode_info_main(update_cache=True)
             civ = self._commands.get_mode(to_addr=self._radio_addr)
@@ -3158,6 +3159,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="set_mode")
         parsed_mode = self._coerce_mode(mode)
+        await self._establish_receiver_selection()
 
         if self._sub_direct_route(
             receiver,
