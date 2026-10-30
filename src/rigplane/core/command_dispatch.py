@@ -26,6 +26,7 @@ from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
 )
+from rigplane.core.tx_interlock_contract import TxInterlockCommandFamily
 
 __all__ = [
     "CommandDescriptor",
@@ -116,6 +117,11 @@ class CommandDescriptor:
     receiver_aware: bool = False
     required_capability: str | None = None
     project_expectation: ExpectationProjector | None = None
+    # The TX-interlock family of the write, where the field it writes cannot
+    # name it (``target`` is None because the receiver depends on the
+    # profile). ``core.tx_target_inputs`` reads it against the one table of
+    # writes that move the TX target (MOR-3632).
+    tx_family: TxInterlockCommandFamily | None = None
 
     def resolve_method_name(self, params: Mapping[str, Any]) -> str:
         method_name = (
@@ -541,6 +547,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             argument_names=("freq_hz", "selected"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_split_freq",),
+            tx_family=TxInterlockCommandFamily.FREQUENCY,
         ),
         "set_split_mode": CommandDescriptor(
             name="set_split_mode",
@@ -550,6 +557,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             argument_names=("mode", "selected", "data", "filter_width"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_split_mode",),
+            tx_family=TxInterlockCommandFamily.MODE,
         ),
         "set_tuner_status": CommandDescriptor(
             name="set_tuner_status",

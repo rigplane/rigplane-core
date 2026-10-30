@@ -6073,12 +6073,19 @@ def _apply_tx_target_input(
     max_age: float | None = None,
     now: float | None = None,
 ) -> None:
+    """Apply one derivation input as the answer to a read sent at ``now``.
+
+    The read is stamped for the TX-target fence exactly as the acquisition
+    drain stamps a production send (``StateStore.note_tx_target_reads``).
+    """
+    observed_at = time.monotonic() if now is None else now
+    store.note_tx_target_reads((path,), sent_at=observed_at)
     store.apply(
         Observation(
             path=path,
             value=value,
             source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=time.monotonic() if now is None else now,
+            timestamp_monotonic=observed_at,
             max_age=max_age,
             provider_generation=generation,
         )

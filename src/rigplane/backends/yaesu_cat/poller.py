@@ -24,7 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Iterable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
@@ -144,6 +144,11 @@ class YaesuCatPoller:
         self._tx_target_known_generation: tuple[str | None, int] | None = None
         self._capture_provider_generation: Callable[[], int] | None = None
         self._advance_provider_generation: Callable[[], int] | None = None
+        # MOR-3632: stamps this poller's reads with the moment they were sent
+        # for the store's TX-target fence (``StateStore.note_tx_target_reads``).
+        self._note_tx_target_reads: (
+            Callable[[Iterable[FieldPath], float], None] | None
+        ) = None
         self._pending_receiver_select: CommandQueueEntry | None = None
         self._pending_readbacks: dict[FieldPath, tuple[Any, ...]] = {}
         self._deferred_tx_lane = DeferredTxCommandLane()
@@ -163,6 +168,18 @@ class YaesuCatPoller:
         self._capture_provider_generation = capture
         self._radio._bind_tuner_provider_generation(capture)
         self._advance_provider_generation = advance
+
+    def bind_tx_target_reads(
+        self, note: Callable[[Iterable[FieldPath], float], None]
+    ) -> None:
+        """Bind the store's read stamp for the TX-target fence (MOR-3632).
+
+        Every read here is a request answered on the serial line before the
+        next one is sent, so the medium lane can stamp the fields it read with
+        the moment before its first request: whatever a write of ours moved
+        before that moment, these answers were read after it.
+        """
+        self._note_tx_target_reads = note
 
     def bind_managed_tx_authority(self, authority: ManagedWriteAdmission) -> None:
         """Bind the composition-owned admission object before polling starts."""
@@ -402,6 +419,7 @@ class YaesuCatPoller:
                     self._stamp_provider_generation((observation,), provider_generation)
                 )
 
+        sent_at = time.monotonic()
         try:
             observations = await YaesuObservationAdapter.from_radio(
                 self._radio
@@ -442,6 +460,10 @@ class YaesuCatPoller:
         else:
             self._ptt_observation = ptt_observation
             self._ptt_connection_generation = generation
+        if self._note_tx_target_reads is not None:
+            self._note_tx_target_reads(
+                (observation.path for observation in observations), sent_at
+            )
         self._observation_callback(self._annotate_yaesu_readbacks(observations))
         return True
 

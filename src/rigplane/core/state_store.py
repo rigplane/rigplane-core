@@ -6,9 +6,10 @@ import copy
 import logging
 import time
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any
 
 from rigplane.core.state_pipeline_contracts import (
@@ -32,6 +33,7 @@ __all__ = [
     "SnapshotDelta",
     "StateSnapshot",
     "StateStore",
+    "TxTargetFence",
 ]
 
 
@@ -211,6 +213,43 @@ class _RelativeVfoRetention:
     expires_at: float | None = None
 
 
+def _tx_target_read_key(path: FieldPath) -> FieldPath:
+    """One spelling per receiver for the read stamps of :class:`TxTargetFence`.
+
+    A read is sent under the profile's receiver names (``main``/``sub``) and
+    the store and the derivation spell the same field by index (``0``/``1``).
+    """
+
+    receiver = {"main": "0", "sub": "1"}.get(path.receiver_id or "")
+    return path if receiver is None else replace(path, receiver_id=receiver)
+
+
+@dataclass(frozen=True, slots=True)
+class TxTargetFence:
+    """The TX-target fence as one moment sees it (MOR-3632).
+
+    ``fenced_at`` is when our last acknowledged write moved the TX target;
+    ``reads`` holds, per field, when the first read of it sent at or after
+    that moment went out (:meth:`StateStore.note_tx_target_reads`).
+    """
+
+    fenced_at: float
+    reads: Mapping[FieldPath, float]
+
+    def admits(self, path: FieldPath, observed_at: float) -> bool:
+        """Whether an observation of ``path`` at ``observed_at`` is post-write.
+
+        It is when a read of ``path`` was sent after the fence and the
+        observation landed at or after that send -- the rule the acquisition
+        scheduler applies to credit an answer to its own request. A reply
+        decoded after the write's acknowledgement to a query sent before it
+        never passes: no post-fence read had been sent when it landed.
+        """
+
+        sent_at = self.reads.get(_tx_target_read_key(path))
+        return sent_at is not None and observed_at >= sent_at
+
+
 class FreshnessClock:
     """Monotonic clock used by freshness expiration."""
 
@@ -268,6 +307,7 @@ class StateStore:
         "_relative_vfo_retention",
         "_state_revision",
         "_tx_target_fence",
+        "_tx_target_reads",
     )
 
     def __init__(
@@ -293,8 +333,10 @@ class StateStore:
         self._entries: dict[FieldPath, _FieldEntry] = {}
         # When one of our own acknowledged writes last moved the TX target
         # (see :meth:`fence_tx_target`); None while no such write happened in
-        # this provider generation.
+        # this provider generation. ``_tx_target_reads`` holds, per field, when
+        # the first read of it sent at or after that fence went out.
         self._tx_target_fence: float | None = None
+        self._tx_target_reads: dict[FieldPath, float] = {}
         self._history: list[SnapshotDelta] = []
         self._history_floor_state_revision = 0
         self._history_floor_freshness_revision = 0
@@ -321,6 +363,7 @@ class StateStore:
         )
         self._entries.clear()
         self._tx_target_fence = None
+        self._tx_target_reads = {}
         if removed:
             self._state_revision += 1
             self._append_history(
@@ -774,19 +817,26 @@ class StateStore:
 
         A write does not make the stored observations of what it changed
         stale, it makes them wrong: they keep the pre-write values, FRESH,
-        until the next read lands. One rule follows (MOR-3632): after such a
-        write the TX target is UNKNOWN until a post-write observation
-        re-derives it. Consumers compare an observation's timestamp with
-        :attr:`tx_target_fence` -- the TX-target evaluation
-        (``runtime.tx_interlock.resolve_tx_target``) and the poller's
-        derivation inputs -- and treat anything stamped before it as stale.
+        until a read of the radio after the write lands. One rule follows
+        (MOR-3632): after such a write the TX target is UNKNOWN until it is
+        re-derived from reads SENT after the write. An observation's own
+        timestamp cannot prove that -- a CI-V reply is stamped when it is
+        decoded, so the answer to a query sent before the write can land after
+        its acknowledgement -- so every read seat stamps its reads when it
+        sends them (:meth:`note_tx_target_reads`) and the consumers ask
+        :attr:`tx_target_fence` whether a field's current observation answers
+        a read sent after the fence (:meth:`TxTargetFence.admits`): the
+        TX-target evaluation (``runtime.tx_interlock.resolve_tx_target``) and
+        the poller's derivation inputs.
 
-        ``written_by`` is the earliest moment known to follow the write: the
-        timestamp of the write's own readback when the executor returned one
-        (it was read after the write), else now, when the write was
-        acknowledged. Never the moment the command was queued or sent: a
-        cadence read landing while the write still waits for the wire must not
-        count as confirming it. The fence only moves forward and a new
+        Called when the write is acknowledged, or when it failed after it may
+        have reached the radio (a readback that fails after the ACK leaves the
+        radio retuned). ``written_by`` is the arrival of the write's own
+        readback when the executor returned one -- read after the ACK, so it
+        is later than the write -- else now. Never the moment the command was
+        queued or sent: a cadence read sent while the write still waits for
+        the wire must not count as confirming it. The fence only moves
+        forward; moving it forgets the reads sent before it, and a new
         provider generation clears it with the entries it fenced. Not an
         observation and not part of any snapshot.
         """
@@ -795,12 +845,41 @@ class StateStore:
         fence = now if written_by is None else min(now, written_by)
         if self._tx_target_fence is None or fence > self._tx_target_fence:
             self._tx_target_fence = fence
+            self._tx_target_reads = {
+                path: sent_at
+                for path, sent_at in self._tx_target_reads.items()
+                if sent_at >= fence
+            }
+
+    def note_tx_target_reads(
+        self, paths: Iterable[FieldPath], *, sent_at: float
+    ) -> None:
+        """Stamp reads of ``paths`` sent at ``sent_at`` (MOR-3632).
+
+        Every seat that sends a read of radio state calls this with the moment
+        the read went out (or a moment before it). Only a read sent at or after
+        the current :meth:`fence_tx_target` is kept, and per field only the
+        first such send: an observation landing at or after it answers a read
+        of the radio after the write. Without a fence there is nothing to
+        prove and nothing is kept.
+        """
+
+        fence = self._tx_target_fence
+        if fence is None or sent_at < fence:
+            return
+        for path in paths:
+            self._tx_target_reads.setdefault(_tx_target_read_key(path), sent_at)
 
     @property
-    def tx_target_fence(self) -> float | None:
-        """When our last acknowledged write moved the TX target, else None."""
+    def tx_target_fence(self) -> TxTargetFence | None:
+        """Our last TX-target-moving write and the reads sent since, else None."""
 
-        return self._tx_target_fence
+        if self._tx_target_fence is None:
+            return None
+        return TxTargetFence(
+            fenced_at=self._tx_target_fence,
+            reads=MappingProxyType(dict(self._tx_target_reads)),
+        )
 
     def discard(self, paths: Iterable[FieldPath | str]) -> ChangeSet:
         """Remove session-scoped facts so a new provider epoch starts unknown.

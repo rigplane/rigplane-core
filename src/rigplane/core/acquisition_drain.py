@@ -374,6 +374,11 @@ class AcquisitionDrain:
                 # being sent again; crediting a returning answer against
                 # this send needs the same fact on the scheduler.
                 scheduler.record_dispatch(request.id, paths=newly_sent, now=now)
+                # MOR-3632: the same send stamp proves to the TX-target fence
+                # that an answer landing from now on was read after our last
+                # target-moving write (the pass clock is read before the send).
+                if store is not None:
+                    store.note_tx_target_reads(newly_sent, sent_at=now)
                 self._report_sent(
                     request,
                     paths=newly_sent,

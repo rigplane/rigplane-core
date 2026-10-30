@@ -40,9 +40,17 @@ def seed_tx_target_value(
 
     ``apply_current`` stamps the store's present provider generation: a plain
     ``apply`` stamps generation 0, which a started server's rolled store
-    silently drops.
+    silently drops. The seed stands for the answer to a read sent at
+    ``timestamp_monotonic``, so it stamps that read for the store's TX-target
+    fence exactly as a production read seat does
+    (``StateStore.note_tx_target_reads``); a test that wants an answer to a
+    read sent BEFORE a fence applies the observation without the stamp.
     """
 
+    observed_at = (
+        time.monotonic() if timestamp_monotonic is None else timestamp_monotonic
+    )
+    store.note_tx_target_reads((TX_TARGET_PATH,), sent_at=observed_at)
     store.apply_current(
         Observation(
             path=TX_TARGET_PATH,
@@ -52,9 +60,7 @@ def seed_tx_target_value(
                 provider="tests",
                 native_id="tx_target_derivation",
             ),
-            timestamp_monotonic=(
-                time.monotonic() if timestamp_monotonic is None else timestamp_monotonic
-            ),
+            timestamp_monotonic=observed_at,
             max_age=max_age,
         )
     )

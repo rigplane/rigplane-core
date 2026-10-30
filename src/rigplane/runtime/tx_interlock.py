@@ -14,14 +14,18 @@ from math import isfinite
 
 from rigplane.commands._frame import build_civ_frame
 from rigplane.core.exceptions import CommandError
-from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.state_store import FreshnessState, StateSnapshot
+from rigplane.core.state_pipeline_contracts import CommandIntent, FieldPath
+from rigplane.core.state_store import FreshnessState, StateSnapshot, TxTargetFence
 from rigplane.core.tx_target import (
     KnownTxTarget,
     TxReceiver,
     TxTarget,
     TxTargetUnknownReason,
     UnknownTxTarget,
+)
+from rigplane.core.tx_target_inputs import (
+    TX_TARGET_MOVING_FAMILIES,
+    intent_moves_tx_target,
 )
 from rigplane.core.tx_interlock_contract import (
     TX_INTERLOCK_COMMAND_FAMILY_METADATA,
@@ -328,7 +332,7 @@ PTT_TX_FREQUENCY_UNKNOWN = "ptt_tx_frequency_unknown"
 
 
 def resolve_tx_target(
-    snapshot: StateSnapshot, *, fence: float | None = None
+    snapshot: StateSnapshot, *, fence: TxTargetFence | None = None
 ) -> TxTarget:
     """The one evaluation of the published ``tx_state.tx_target`` (MOR-3632/3633).
 
@@ -344,10 +348,11 @@ def resolve_tx_target(
     * malformed metadata (no positive finite ``max_age``, a non-integer
       generation, a non-finite or future timestamp) or a value outside the
       ``core.tx_target`` vocabulary -> ``contradiction``;
-    * an observation stamped before ``fence`` -> ``stale``: ``fence`` is
-      :attr:`StateStore.tx_target_fence`, the moment one of our own
-      acknowledged writes moved what the radio transmits on, so a target read
-      or derived before it still describes the radio before that write.
+    * an observation that does not answer a read sent after ``fence`` ->
+      ``stale``: ``fence`` is :attr:`StateStore.tx_target_fence`, our own
+      last acknowledged write that moved what the radio transmits on, so a
+      target read or derived before it -- or delivered after it by a query
+      sent before it -- still describes the radio before that write.
     """
 
     try:
@@ -381,7 +386,7 @@ def resolve_tx_target(
         return UnknownTxTarget(reason="stale")
     if generated_at - last_observed >= max_age:
         return UnknownTxTarget(reason="stale")
-    if fence is not None and last_observed < fence:
+    if fence is not None and not fence.admits(_TX_TARGET_PATH, last_observed):
         return UnknownTxTarget(reason="stale")
     value = field.value
     if isinstance(value, (KnownTxTarget, UnknownTxTarget)):
@@ -431,7 +436,7 @@ def ptt_on_tx_target_refusal(
     snapshot: StateSnapshot,
     *,
     tx_target_supported: bool,
-    fence: float | None = None,
+    fence: TxTargetFence | None = None,
 ) -> TxInterlockRefusal | None:
     """Refuse a positive TX while the TX side's frequency is unknown (MOR-3633).
 
@@ -548,27 +553,19 @@ def get_tx_interlock_command_family_metadata(
     return _METADATA_BY_FAMILY[family]
 
 
-# The interlock families whose writes move what the radio transmits on: a
-# frequency, a band jump, a VFO selection, exchange or copy, split/dual-watch
-# topology, a memory recall. One table, read by every seat that has to know
-# whether its own write made the published TX target wrong (MOR-3632).
-_TX_TARGET_MOVING_FAMILIES = frozenset(
-    {
-        TxInterlockCommandFamily.FREQUENCY,
-        TxInterlockCommandFamily.BAND,
-        TxInterlockCommandFamily.VFO_SELECT,
-        TxInterlockCommandFamily.VFO_CONTENTS,
-        TxInterlockCommandFamily.VFO_TOPOLOGY,
-        TxInterlockCommandFamily.MEMORY,
-    }
-)
+def moves_tx_target(write: object) -> bool:
+    """Whether a write moves the radio's TX frequency (MOR-3632).
 
+    One table answers for every spelling of a write
+    (``core.tx_target_inputs.TX_TARGET_MOVING_FAMILIES``): a typed command by
+    its interlock family, an intent by its descriptor's family or the fields
+    it writes.
+    """
 
-def moves_tx_target(command: object) -> bool:
-    """Whether a typed command moves the radio's TX frequency (MOR-3632)."""
-
-    metadata = get_tx_interlock_command_family_metadata(command)
-    return metadata is not None and metadata.family in _TX_TARGET_MOVING_FAMILIES
+    if isinstance(write, CommandIntent):
+        return intent_moves_tx_target(write)
+    metadata = get_tx_interlock_command_family_metadata(write)
+    return metadata is not None and metadata.family in TX_TARGET_MOVING_FAMILIES
 
 
 def classify_tx_interlock(command: object) -> TxInterlockDisposition:

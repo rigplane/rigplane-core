@@ -31,7 +31,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from support.tx_target import seed_tx_target
@@ -41,7 +42,13 @@ from test_radio_poller_coverage import (
     _seed_tx_target_ready,
 )
 
-from rigplane.core.command_service import CommandExecutionResult, CommandService
+from rigplane.core.command_service import (
+    CommandExecutionResult,
+    CommandService,
+    command_intent_from_request,
+)
+from rigplane.core.exceptions import CommandError
+from rigplane.core.radio_protocol import RelativeVfoState
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
@@ -55,15 +62,23 @@ from rigplane.core.tx_target import (
     UnknownTxTarget,
     evaluate_tx_frequency_permit,
 )
-from rigplane.core.tx_target_inputs import writes_tx_target_input
+from rigplane.core.tx_target_inputs import (
+    intent_moves_tx_target,
+    writes_tx_target_input,
+)
 from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.runtime._poller_types import (
     MemoryToVfo,
+    PttOn,
+    QuickSplitTrigger,
     SelectVfo,
     SetBand,
+    SetDualWatch,
     SetFreq,
     SetMemoryMode,
     SetMode,
+    SetRitFrequency,
+    SetSplit,
     VfoEqualize,
     VfoSwap,
 )
@@ -79,6 +94,7 @@ from rigplane.runtime.managed_tx_state import (
 )
 from rigplane.runtime.tx_interlock import (
     PTT_TX_FREQUENCY_UNKNOWN,
+    moves_tx_target,
     ptt_on_tx_target_refusal,
     resolve_tx_target,
     tx_frequency_unknown_refusal,
@@ -116,6 +132,12 @@ def _bands(profile: RadioProfile) -> tuple[Any, ...]:
 
 def _target(frequency_hz: int | None, *, slot: TxSlot | None = "A") -> KnownTxTarget:
     return KnownTxTarget(receiver="MAIN", slot=slot, frequency_hz=frequency_hz)
+
+
+def _fenced_at(store: StateStore) -> float:
+    fence = store.tx_target_fence
+    assert fence is not None
+    return fence.fenced_at
 
 
 # ---------------------------------------------------------------------------
@@ -358,11 +380,11 @@ def test_the_fence_only_moves_forward_and_a_new_generation_clears_it() -> None:
     store.begin_provider_generation()
     assert store.tx_target_fence is None
     store.fence_tx_target(written_by=9.5)
-    assert store.tx_target_fence == 9.5
+    assert _fenced_at(store) == 9.5
     store.fence_tx_target(written_by=9.0)  # an older readback never rewinds it
-    assert store.tx_target_fence == 9.5
+    assert _fenced_at(store) == 9.5
     store.fence_tx_target(written_by=99.0)  # never later than now
-    assert store.tx_target_fence == 10.0
+    assert _fenced_at(store) == 10.0
     store.begin_provider_generation()
     assert store.tx_target_fence is None
 
@@ -407,7 +429,7 @@ async def test_a_read_landing_while_the_write_waits_does_not_confirm_it() -> Non
     clock.advance(0.5)
     executor.release.set()
     await task
-    assert store.tx_target_fence == 11.0
+    assert _fenced_at(store) == 11.0
     assert resolve_tx_target(store.snapshot(), fence=store.tx_target_fence) == (
         UnknownTxTarget("stale")
     )
@@ -431,23 +453,15 @@ async def test_the_writes_own_readback_is_post_write_evidence() -> None:
     clock.advance(1.0)
     executor.release.set()
     await task
-    assert store.tx_target_fence == 10.4
+    assert _fenced_at(store) == 10.4
     assert resolve_tx_target(store.snapshot(), fence=store.tx_target_fence) == (
         _target(_TWO_METRES)
     )
 
 
-async def test_failed_and_non_moving_writes_do_not_fence() -> None:
-    class _Failing:
-        async def execute(self, intent: CommandIntent) -> Any:
-            raise RuntimeError("radio did not acknowledge")
-
+async def test_a_non_moving_write_does_not_fence() -> None:
     store = StateStore()
     store.begin_provider_generation()
-    with pytest.raises(RuntimeError):
-        await CommandService(executor=_Failing(), state_store=store).execute(
-            _set_freq_intent()
-        )
     gated = _GatedExecutor()
     gated.release.set()
     await CommandService(executor=gated, state_store=store).execute(
@@ -511,7 +525,7 @@ async def test_retune_withdraws_the_derived_target_until_the_read_back() -> None
     poller._request_post_write_readback(  # noqa: SLF001
         SetFreq(freq=_TWENTY_METRES, receiver=0)
     )
-    assert store.tx_target_fence == 10.25
+    assert _fenced_at(store) == 10.25
     # A poll tick before the read lands must not republish the old frequency.
     poller._publish_tx_target()  # noqa: SLF001
     assert _published(store) == UnknownTxTarget("stale")
@@ -569,7 +583,7 @@ async def test_retuning_commands_without_field_metadata_fence_the_target(
     poller._publish_tx_target()  # noqa: SLF001
     clock.advance(0.25)
     poller._request_post_write_readback(command)  # noqa: SLF001
-    assert store.tx_target_fence == 10.25
+    assert _fenced_at(store) == 10.25
     poller._publish_tx_target()  # noqa: SLF001
     assert _published(store) == UnknownTxTarget("stale")
     clock.advance(0.25)
@@ -845,3 +859,401 @@ async def test_a_retune_applied_while_the_key_waits_at_the_barrier_refuses_it(
         assert authority.tx_holder_nowait() is None
     finally:
         await _unkey(composition)
+
+
+# ---------------------------------------------------------------------------
+# One table of target-moving writes; fenced whatever the readback did; only a
+# read SENT after the fence confirms it; no expired input feeds a derivation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("write", "moves"),
+    (
+        # Typed commands, by their interlock family.
+        (SetFreq(freq=_TWENTY_METRES, receiver=1), True),
+        (SetBand(band=5), True),
+        (SelectVfo("B"), True),
+        (VfoSwap(), True),
+        (VfoEqualize(), True),
+        (SetSplit(on=True), True),
+        (SetDualWatch(on=True), True),
+        (QuickSplitTrigger(), True),
+        (MemoryToVfo(channel=1), True),
+        (SetMemoryMode(channel=1), True),
+        (SetMode(mode="USB"), False),
+        (SetRitFrequency(freq=500), False),
+        (PttOn(), False),
+        # Descriptor-backed intents, by the family their descriptor declares:
+        # the split TX VFO frequency has no profile-independent field.
+        (
+            CommandIntent(
+                id="i", name="set_split_freq", params={"freq_hz": 1}, source="rigctld"
+            ),
+            True,
+        ),
+        (
+            CommandIntent(
+                id="m", name="set_split_mode", params={"mode": 1}, source="rigctld"
+            ),
+            False,
+        ),
+        # Every other intent, by the field it writes (rigctld F / V / S / U).
+        (command_intent_from_request("set_freq", {"freq": 1}, source="rigctld"), True),
+        (
+            command_intent_from_request(
+                "set_vfo", {"vfo": "VFOB", "receiver_count": 1}, source="rigctld"
+            ),
+            True,
+        ),
+        (
+            command_intent_from_request(
+                "set_split_vfo", {"on": True, "tx_vfo": "VFOB"}, source="rigctld"
+            ),
+            True,
+        ),
+        (
+            command_intent_from_request(
+                "set_func", {"func": "SPLIT", "on": True}, source="rigctld"
+            ),
+            True,
+        ),
+        (
+            command_intent_from_request(
+                "set_func", {"func": "NB", "on": True}, source="rigctld"
+            ),
+            False,
+        ),
+        (
+            command_intent_from_request("set_mode", {"mode": "USB"}, source="rigctld"),
+            False,
+        ),
+    ),
+)
+def test_one_table_decides_which_writes_move_the_tx_target(
+    write: object, moves: bool
+) -> None:
+    assert moves_tx_target(write) is moves
+    if isinstance(write, CommandIntent):
+        assert intent_moves_tx_target(write) is moves
+
+
+class _AckedThenFailed:
+    """A write the radio acknowledged whose readback then failed."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    async def execute(self, intent: CommandIntent) -> CommandExecutionResult:
+        raise self.error
+
+
+@pytest.mark.parametrize("model", (_IC705, _IC7300, _IC7610, _FTX1))
+@pytest.mark.parametrize(
+    "error",
+    (
+        CommandError("direct VFO frequency readback unavailable"),
+        TimeoutError("readback timed out"),
+        asyncio.CancelledError(),
+    ),
+    ids=("readback_rejected", "readback_timeout", "cancelled_behind_ack"),
+)
+async def test_a_write_whose_readback_fails_after_the_ack_still_fences(
+    tmp_path: Path, model: str, error: BaseException
+) -> None:
+    # P1 (a): the radio retuned, the readback failed; the fence must not wait
+    # for a success the executor never returns.
+    composition, store, actuator = await _composition(tmp_path, model)
+    authority = composition.authority
+    seed_tx_target(store, _TWENTY_METRES)
+    service = CommandService(executor=_AckedThenFailed(error), state_store=store)
+    try:
+        with pytest.raises(type(error)):
+            await service.execute(_set_freq_intent())
+        with pytest.raises(ControllerError) as excinfo:
+            await authority.ptt_down("owner")
+        assert excinfo.value.code == PTT_TX_FREQUENCY_UNKNOWN
+        assert excinfo.value.details == {"txTargetReason": "stale"}
+        assert actuator.keyed == []
+        # A read sent after the write re-acquires the target; only then keys.
+        seed_tx_target(store, _TWENTY_METRES + 1_000)
+        await authority.ptt_down("owner")
+        assert actuator.keyed
+    finally:
+        await _unkey(composition)
+
+
+async def test_the_poller_fences_a_target_moving_write_that_raises() -> None:
+    clock = FreshnessClock(start=10.0)
+    poller, store, generation = _derived_poller(clock)
+    _seed_tx_target_ready(
+        store, generation=generation, active_freq=_TWENTY_METRES, now=10.0
+    )
+    poller._publish_tx_target()  # noqa: SLF001
+    poller._radio.set_freq.side_effect = TimeoutError("no answer")  # noqa: SLF001
+    clock.advance(0.25)
+    with pytest.raises(TimeoutError):
+        await poller._execute(SetFreq(freq=_WFM, receiver=0))  # noqa: SLF001
+    assert _fenced_at(store) == 10.25
+    poller._publish_tx_target()  # noqa: SLF001
+    assert _published(store) == UnknownTxTarget("stale")
+
+
+async def test_a_confirmed_selection_fences_at_its_ack_even_if_the_readback_fails() -> (
+    None
+):
+    clock = FreshnessClock(start=10.0)
+    poller, store, generation = _derived_poller(clock)
+    _seed_tx_target_ready(
+        store, generation=generation, active_freq=_TWENTY_METRES, now=10.0
+    )
+    poller._publish_tx_target()  # noqa: SLF001
+    radio = poller._radio  # noqa: SLF001
+    radio._set_vfo_slot_confirmed = AsyncMock()  # noqa: SLF001
+    radio.read_relative_vfo = AsyncMock(side_effect=CommandError("no readback"))
+    clock.advance(0.25)
+    with pytest.raises(CommandError):
+        await poller._select_and_bind_vfo_slot(  # noqa: SLF001
+            "B",
+            receiver=0,
+            active_name="MAIN",
+            command_id=None,
+            source="websocket",
+            session_id=None,
+            command_service=None,
+            provider_generation=generation,
+        )
+    assert _fenced_at(store) == 10.25
+    poller._publish_tx_target()  # noqa: SLF001
+    assert _published(store) == UnknownTxTarget("stale")
+
+
+async def test_a_confirmed_selection_counts_its_own_post_ack_reads() -> None:
+    clock = FreshnessClock(start=10.0)
+    poller, store, generation = _derived_poller(clock)
+    _seed_tx_target_ready(
+        store, generation=generation, active_freq=_TWENTY_METRES, now=10.0
+    )
+    radio = poller._radio  # noqa: SLF001
+    radio._set_vfo_slot_confirmed = AsyncMock()  # noqa: SLF001
+    radio.read_relative_vfo = AsyncMock(
+        side_effect=(
+            RelativeVfoState(freq_hz=_TWO_METRES, mode="USB", filter_num=1),
+            RelativeVfoState(freq_hz=_TWENTY_METRES, mode="USB", filter_num=1),
+        )
+    )
+    clock.advance(0.25)
+    await poller._select_and_bind_vfo_slot(  # noqa: SLF001
+        "B",
+        receiver=0,
+        active_name="MAIN",
+        command_id=None,
+        source="websocket",
+        session_id=None,
+        command_service=None,
+        provider_generation=generation,
+    )
+    # The frequencies were read after the selection; the split flag was not.
+    poller._publish_tx_target()  # noqa: SLF001
+    assert _published(store) == UnknownTxTarget("stale")
+    clock.advance(0.25)
+    _apply_tx_target_input(store, _SPLIT, False, generation=generation, now=10.5)
+    poller._publish_tx_target()  # noqa: SLF001
+    assert _published(store) == _target(_TWO_METRES, slot="B")
+
+
+def test_a_reply_decoded_after_the_fence_to_a_query_sent_before_it_is_stale() -> None:
+    # P1 (b): a CI-V reply is stamped when decoded. The answer to a 1C 03 sent
+    # before the write lands after the ACK and still names the old frequency.
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    generation = store.begin_provider_generation()
+    seed_tx_target(store, _TWENTY_METRES, timestamp_monotonic=10.0, max_age=60.0)
+    clock.advance(0.5)
+    store.fence_tx_target()  # the retune to 2 m is acknowledged at 10.5
+
+    def reply(frequency_hz: int, at: float) -> None:
+        if at > clock.now():
+            clock.advance(at - clock.now())
+        store.apply(
+            Observation(
+                path=_TX_TARGET_PATH,
+                value=_target(frequency_hz),
+                source=SourceMetadata(source="poll_response", provider="tests"),
+                timestamp_monotonic=at,
+                max_age=60.0,
+                provider_generation=generation,
+            )
+        )
+
+    reply(_TWENTY_METRES, 10.6)  # pre-write query, decoded after the ACK
+    assert resolve_tx_target(store.snapshot(), fence=store.tx_target_fence) == (
+        UnknownTxTarget("stale")
+    )
+    store.note_tx_target_reads((_TX_TARGET_PATH,), sent_at=10.7)
+    reply(_TWENTY_METRES, 10.65)  # still landed before the post-write send
+    assert resolve_tx_target(store.snapshot(), fence=store.tx_target_fence) == (
+        UnknownTxTarget("stale")
+    )
+    reply(_TWO_METRES, 10.8)  # answers the read sent after the write
+    assert resolve_tx_target(store.snapshot(), fence=store.tx_target_fence) == (
+        _target(_TWO_METRES)
+    )
+
+
+def test_a_read_sent_before_a_newer_fence_no_longer_counts() -> None:
+    clock = FreshnessClock(start=10.0)
+    store = StateStore(freshness_clock=clock)
+    store.begin_provider_generation()
+    store.fence_tx_target()
+    store.note_tx_target_reads((_TX_TARGET_PATH,), sent_at=10.0)
+    store.note_tx_target_reads((_TX_TARGET_PATH,), sent_at=9.0)  # before: ignored
+    fence = store.tx_target_fence
+    assert fence is not None and fence.reads == {_TX_TARGET_PATH: 10.0}
+    clock.advance(1.0)
+    store.fence_tx_target()
+    fence = store.tx_target_fence
+    assert fence is not None and fence.reads == {}
+    # A read is stamped under one receiver spelling whichever the seat used.
+    store.note_tx_target_reads(
+        (FieldPath.active("main", "freq_mode", "freq_hz"),), sent_at=11.0
+    )
+    fence = store.tx_target_fence
+    assert fence is not None and fence.admits(_ACTIVE_FREQ, 11.0)
+
+
+async def test_the_poller_derivation_ignores_inputs_decoded_after_the_fence() -> None:
+    clock = FreshnessClock(start=10.0)
+    poller, store, generation = _derived_poller(clock)
+    _seed_tx_target_ready(store, generation=generation, active_freq=_WFM, now=10.0)
+    clock.advance(0.25)
+    poller._request_post_write_readback(  # noqa: SLF001
+        SetFreq(freq=_TWENTY_METRES, receiver=0)
+    )
+    clock.advance(0.25)
+    # Every input lands again after the fence -- the old frequency included --
+    # but answers queries sent before it: no post-write read went out.
+    for path, value in (
+        (_ACTIVE_FREQ, _WFM),
+        (FieldPath.active("0", "freq_mode", "mode"), "USB"),
+        (_UNSELECTED_FREQ, 7_150_000),
+        (FieldPath.unselected("0", "freq_mode", "mode"), "USB"),
+        (_SPLIT, False),
+    ):
+        store.apply(
+            Observation(
+                path=path,
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="tests"),
+                timestamp_monotonic=10.5,
+                provider_generation=generation,
+            )
+        )
+    assert store.snapshot().field(_ACTIVE_FREQ).last_observed_monotonic == 10.5
+    poller._publish_tx_target()  # noqa: SLF001
+    assert _published(store) == UnknownTxTarget("stale")
+
+
+async def test_the_acquisition_drain_stamps_its_sends_for_the_fence() -> None:
+    from test_acquisition_drain import (
+        _never_expired,
+        _Reports,
+        _request,
+        _StubExecutor,
+        _StubScheduler,
+    )
+
+    from rigplane.core.acquisition_drain import AcquisitionDrain
+    from rigplane.core.acquisition_scheduler import AcquisitionExecutionResult
+
+    store = StateStore()
+    store.begin_provider_generation()
+    store.fence_tx_target()
+    request = _request(paths=(_TX_TARGET_PATH,))
+    scheduler = _StubScheduler((request,))
+    reports = _Reports()
+    drain = AcquisitionDrain(
+        scheduler=lambda: cast(Any, scheduler),
+        executor=lambda: cast(
+            Any,
+            _StubExecutor(
+                result=AcquisitionExecutionResult(sent_paths=(_TX_TARGET_PATH,))
+            ),
+        ),
+        store=lambda: store,
+        in_flight={},
+        expired=_never_expired,
+        dispatchable=lambda pending: pending,
+        report_failure=reports.failure,
+        report_executor_missing=reports.missing,
+        report_executor_error=reports.error,
+        report_sent=reports.sent_report,
+    )
+    before = time.monotonic()
+    await drain.run_once()
+    fence = store.tx_target_fence
+    assert fence is not None
+    sent_at = fence.reads[_TX_TARGET_PATH]
+    assert sent_at == scheduler.dispatches[0][2]
+    assert not fence.admits(_TX_TARGET_PATH, before)
+    assert fence.admits(_TX_TARGET_PATH, sent_at)
+
+
+async def test_the_yaesu_medium_read_stamps_its_send_for_the_fence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+    from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
+    from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+
+    radio = YaesuCatRadio("/dev/null", profile="ftx1", audio_driver=MagicMock())
+    store = StateStore()
+    store.begin_provider_generation()
+    store.fence_tx_target()
+    observed_at: list[float] = []
+
+    async def poll_medium(self: Any, **_kwargs: Any) -> tuple[Observation, ...]:
+        observed_at.append(time.monotonic())
+        return (
+            Observation(
+                path=_TX_TARGET_PATH,
+                value=_target(_TWENTY_METRES),
+                source=SourceMetadata(source="yaesu_poll_response", provider="t"),
+                timestamp_monotonic=observed_at[-1],
+                max_age=60.0,
+            ),
+        )
+
+    monkeypatch.setattr(YaesuObservationAdapter, "poll_medium", poll_medium)
+    poller = YaesuCatPoller(radio, observation_callback=lambda _: None)
+    poller.bind_tx_target_reads(
+        lambda paths, sent_at: store.note_tx_target_reads(paths, sent_at=sent_at)
+    )
+    await poller._emit_medium_observations()  # noqa: SLF001
+    fence = store.tx_target_fence
+    assert fence is not None
+    assert fence.reads[_TX_TARGET_PATH] <= observed_at[0]
+    assert fence.admits(_TX_TARGET_PATH, observed_at[0])
+
+
+async def test_an_input_past_its_lifetime_never_feeds_a_derivation() -> None:
+    # P2 (d): the FRESH flag lags expiry until the next freshness tick; the
+    # pre-key re-derivation must not stamp an expired split as a target now.
+    clock = FreshnessClock(start=10.0)
+    poller, store, generation = _derived_poller(clock)
+    _seed_tx_target_ready(
+        store, generation=generation, active_freq=_TWENTY_METRES, now=10.0
+    )
+    _apply_tx_target_input(
+        store, _SPLIT, False, generation=generation, now=10.0, max_age=0.5
+    )
+    poller._publish_tx_target()  # noqa: SLF001
+    assert _published(store) == _target(_TWENTY_METRES)
+    clock.advance(1.0)  # past the split's max_age; mark_stale_due never ran
+    entry = SimpleNamespace(expires_at_monotonic=clock.now() + 5.0)
+    await poller._settle_tx_target(entry)  # type: ignore[arg-type]  # noqa: SLF001
+    assert _published(store) == UnknownTxTarget("stale")
+    refusal = ptt_on_tx_target_refusal(
+        store.snapshot(), tx_target_supported=True, fence=store.tx_target_fence
+    )
+    assert refusal is not None and refusal.reason_code == PTT_TX_FREQUENCY_UNKNOWN

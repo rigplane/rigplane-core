@@ -36,7 +36,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
-from rigplane.core.tx_target_inputs import writes_tx_target_input
+from rigplane.core.tx_target_inputs import intent_moves_tx_target
 
 if TYPE_CHECKING:
     from rigplane.core.radio_protocol import StateModelService
@@ -210,10 +210,24 @@ class CommandService:
         sent_event = self.emit_lifecycle(intent, "sent")
         key = (intent.source, _session_id(intent), intent.id)
         provider_generation = self._state_store.provider_generation
+        # MOR-3632: one table decides whether this write moves what the radio
+        # transmits on (``core.tx_target_inputs``).
+        moves_tx_target = intent_moves_tx_target(intent)
 
         try:
             selected_executor = self._executor if executor is None else executor
-            executor_result = await selected_executor.execute(intent)
+            try:
+                executor_result = await selected_executor.execute(intent)
+            except BaseException:
+                # The executor may have failed after the radio acknowledged
+                # the write -- a readback that fails or times out, a
+                # cancellation behind the ACK -- so the radio may be retuned
+                # with nothing to confirm it. Fence now, after the ACK
+                # whenever there was one; a write that never reached the radio
+                # costs only a read before the next key.
+                if moves_tx_target:
+                    self._state_store.fence_tx_target()
+                raise
         except asyncio.CancelledError:
             if self._active_commands.get(key) is sent_event:
                 self.expire_command(
@@ -241,6 +255,21 @@ class CommandService:
                 )
                 self.emit_lifecycle(intent, "failed", message=str(exc) or None)
             raise
+
+        # MOR-3632: a write that moved the TX target made the stored target
+        # wrong, not stale; it stays unknown until re-derived from reads sent
+        # after the write. Fenced at the acknowledgement (never at the send: a
+        # read sent while the write still waits is pre-write) -- also when the
+        # command was invalidated in flight, since the radio still executed
+        # it -- or at the arrival of the write's own readback when the
+        # executor returned one.
+        readbacks = tuple(
+            observation.timestamp_monotonic
+            for observation in executor_result.observations
+        )
+        written_by = min(readbacks, default=None)
+        if moves_tx_target:
+            self._state_store.fence_tx_target(written_by=written_by)
 
         if self._active_commands.get(key) is not sent_event:
             message = (
@@ -273,20 +302,12 @@ class CommandService:
                 )
             )
 
-        # MOR-3632: a write that moved the TX target made the stored target
-        # wrong, not stale; it stays unknown until a post-write observation
-        # re-derives it. Fenced at the acknowledgement (never at the send: a
-        # read landing while the write still waits is pre-write), or at the
-        # write's own readback when the executor returned one.
-        if writes_tx_target_input(_observable_paths_for_intent(intent)):
-            self._state_store.fence_tx_target(
-                written_by=min(
-                    (
-                        observation.timestamp_monotonic
-                        for observation in executor_result.observations
-                    ),
-                    default=None,
-                )
+        if moves_tx_target and written_by is not None:
+            # The write's own readback was sent after its ACK: it is a read
+            # of the radio after the write, stamped no later than it landed.
+            self._state_store.note_tx_target_reads(
+                (observation.path for observation in executor_result.observations),
+                sent_at=written_by,
             )
         self._request_write_confirmation(intent, executor_result)
 
@@ -1625,6 +1646,10 @@ def _command_target(name: str, params: Mapping[str, Any]) -> FieldPath | None:
         # TONE/TSQL project from the radio-concept fields the state
         # pipeline publishes; the pending value must land there too.
         func_name = str(params["func"]).upper()
+        if func_name == "SPLIT":
+            # rigctld ``U SPLIT`` writes the radio's split flag, exactly as
+            # ``S`` (``set_split_vfo``) does; no receiver toggle exists.
+            return FieldPath.global_("tx_state", "split")
         toggle = _SET_FUNC_TOGGLE_FIELDS.get(func_name, func_name.lower())
         return FieldPath.receiver(
             receiver,

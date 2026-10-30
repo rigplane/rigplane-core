@@ -443,6 +443,36 @@ async def test_split_receive_retune_keeps_the_out_of_band_tx_vfo_refused(
             await rig.close()
 
 
+async def test_rigctld_split_frequency_then_key_is_judged_on_the_new_tx_vfo(
+    tmp_path: Path,
+) -> None:
+    """``I`` moves the split TX VFO; an immediate ``T 1`` is judged on it.
+
+    The split-frequency write is descriptor-backed and names no field (its
+    receiver depends on the profile): its declared frequency family is what
+    makes it a target-moving write (round 4 P1).
+    """
+    async with _stack(tmp_path, _CASES["in_band"]) as stack:
+        sim = stack.sim
+        sim.set_unselected_frequency(_TWENTY_METRES)
+        sim.set_split(True)
+        await _wait_ptt_observed(stack.web, _GATE_TIMEOUT_S)
+        await _wait_target(stack, _known_at(_TWENTY_METRES), _TARGET_DEADLINE_S)
+        rig = await _rigctld(stack)
+        writes = len(sim.ptt_set_writes)
+        try:
+            assert await rig.line(f"I {_TWO_METRES}") == b"RPRT 0\n"
+            assert await rig.key() == _Verdict(False)
+            assert sim.ptt_set_writes[writes:] == []
+            assert await rig.line(f"I {_TWENTY_METRES + 1_000}") == b"RPRT 0\n"
+            assert await rig.key() == _Verdict(True)
+            await _wait_ptt(sim, True, _KEY_DEADLINE_S)
+            await rig.release()
+            await _wait_ptt(sim, False, _LEASE_BUDGET_S)
+        finally:
+            await rig.close()
+
+
 async def test_a_refused_key_leaves_the_seat_clean_for_the_next_one(
     tmp_path: Path,
 ) -> None:

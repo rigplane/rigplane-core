@@ -121,7 +121,6 @@ from ..runtime._state_queries import (
     tx_target_max_age,
     wire_parts_for_query,
 )
-from ..core.tx_target_inputs import writes_tx_target_input
 from ..runtime.managed_tx_ingress import bind_managed_tx
 from ..runtime.managed_tx_state import submission_refused_for_release_debt
 from ..types import AudioCodec
@@ -1382,13 +1381,13 @@ class RadioPoller:
                 }
                 params.setdefault("receiver", 0)
                 expected = expected_observations_for_command(name, params)
-        # MOR-3632: a write that moved what the radio transmits on (by its
-        # interlock family or by the fields it names) leaves the published TX
-        # target unknown until a post-write read re-derives it. The confirmed
-        # A/B selection is exempt: its own transaction read back both slots.
-        moved = not confirmed_selection and (
-            moves_tx_target(cmd) or writes_tx_target_input(expected)
-        )
+        # MOR-3632: a write that moved what the radio transmits on (the one
+        # table, ``core.tx_target_inputs``) leaves the published TX target
+        # unknown until reads sent after it re-derive it. The confirmed A/B
+        # selection is handled by its own transaction: it fenced at its ACK
+        # and read both slots back after it (``_select_and_bind_vfo_slot``);
+        # the pre-key settle reads whatever else is still unconfirmed.
+        moved = not confirmed_selection and moves_tx_target(cmd)
         if moved:
             self._state_store.fence_tx_target()
         scheduler = self._acquisition_scheduler
@@ -2066,29 +2065,30 @@ class RadioPoller:
             source=source,
             session_id=session_id,
         )
-        if isinstance(cmd, CommandIntent):
-            await execute_command_intent(
-                self._radio,
-                cmd,
-                managed_tx_authority=self._managed_tx_authority,
-                validate_currency=validate_currency,
-            )
-            self._request_post_write_readback(cmd)
-            return None
-        # Includes internal connect selection, which bypasses the normal queue.
-        if isinstance(cmd, (SetVfoFreq, SelectVfo, VfoSwap, VfoEqualize, SendCiv)):
-            async with self._vfo_command_lock:
-                if validate_currency is not None:
-                    validate_currency()
-                return await self._execute_unlocked(
+        try:
+            if isinstance(cmd, CommandIntent):
+                await execute_command_intent(
+                    self._radio,
                     cmd,
-                    command_id=command_id,
-                    source=source,
-                    session_id=session_id,
-                    command_service=command_service,
+                    managed_tx_authority=self._managed_tx_authority,
                     validate_currency=validate_currency,
                 )
-        else:
+                self._request_post_write_readback(cmd)
+                return None
+            # Includes internal connect selection, which bypasses the normal
+            # queue.
+            if isinstance(cmd, (SetVfoFreq, SelectVfo, VfoSwap, VfoEqualize, SendCiv)):
+                async with self._vfo_command_lock:
+                    if validate_currency is not None:
+                        validate_currency()
+                    return await self._execute_unlocked(
+                        cmd,
+                        command_id=command_id,
+                        source=source,
+                        session_id=session_id,
+                        command_service=command_service,
+                        validate_currency=validate_currency,
+                    )
             return await self._execute_unlocked(
                 cmd,
                 command_id=command_id,
@@ -2097,6 +2097,15 @@ class RadioPoller:
                 command_service=command_service,
                 validate_currency=validate_currency,
             )
+        except BaseException:
+            # MOR-3632: a target-moving write that failed may still have been
+            # acknowledged -- its readback failing or timing out after the
+            # ACK, a cancellation behind it -- leaving the radio retuned with
+            # nothing to confirm it. Fence now; a write that never reached
+            # the radio costs only a read before the next key.
+            if moves_tx_target(cmd):
+                self._state_store.fence_tx_target()
+            raise
 
     async def _execute_unlocked(
         self,
@@ -3841,24 +3850,40 @@ class RadioPoller:
         """Look up one derivation input: ``(value, None)`` if FRESH, else
         ``(None, UnknownTxTarget(...))`` explaining why it cannot be used.
 
-        A ``fenced`` input (a frequency or the split flag) observed before the
-        TX-target fence (MOR-3632, ``StateStore.fence_tx_target``) counts as
-        stale: our own acknowledged write moved what the radio transmits on
-        since, and the store still holds the pre-write value as FRESH. The
-        VFO identity is not fenced: it only labels the slot, and a
-        selected/unselected radio cannot read it passively.
+        A ``fenced`` input (a frequency or the split flag) that does not
+        answer a read sent after the TX-target fence (MOR-3632,
+        ``StateStore.fence_tx_target``) counts as stale: our own acknowledged
+        write moved what the radio transmits on since, and the store still
+        holds the pre-write value as FRESH. The VFO identity is not fenced: it
+        only labels the slot, and a selected/unselected radio cannot read it
+        passively. Every input is also aged against its own ``max_age``: the
+        FRESH flag lags expiry by up to one freshness tick, and a target
+        derived in that gap would be stamped as observed now.
         """
         try:
             field = snapshot.field(path)
         except KeyError:
             return None, UnknownTxTarget(reason="not-observed")
         fence = self._state_store.tx_target_fence
-        if fenced and fence is not None and field.last_observed_monotonic < fence:
+        if (
+            fenced
+            and fence is not None
+            and not fence.admits(path, field.last_observed_monotonic)
+        ):
             return None, UnknownTxTarget(reason="stale")
         if field.freshness is FreshnessState.STALE:
             return None, UnknownTxTarget(reason="stale")
         if field.freshness is not FreshnessState.FRESH:
             return None, UnknownTxTarget(reason="not-observed")
+        if (
+            field.max_age is not None
+            and snapshot.generated_at_monotonic - field.last_observed_monotonic
+            >= field.max_age
+        ):
+            # Past its own lifetime but not yet flagged: the freshness tick
+            # has not run since. Deriving from it would stamp an expired
+            # input as a target observed now.
+            return None, UnknownTxTarget(reason="stale")
         return field.value, None
 
     def _compute_tx_target(self) -> TxTarget:
@@ -4075,10 +4100,14 @@ class RadioPoller:
             and current.freshness is FreshnessState.FRESH
             and current.value == target
             and now - current.last_observed_monotonic < max_age * 0.5
-            and (fence is None or current.last_observed_monotonic >= fence)
+            and (fence is None or fence.admits(path, current.last_observed_monotonic))
         ):
             return
 
+        # MOR-3632: the derivation read only inputs that answer reads sent
+        # after the fence (``_tx_target_input``), so it is itself a read of
+        # the target after our last target-moving write.
+        self._state_store.note_tx_target_reads((path,), sent_at=now)
         observation = Observation(
             path=path,
             value=target,
@@ -4140,6 +4169,9 @@ class RadioPoller:
                     "selected/unselected provider lacks confirmed VFO selection"
                 )
             await confirmed_select(slot, receiver=receiver)
+            # MOR-3632: the acknowledged selection moved the TX VFO; the
+            # transaction's own reads below are sent after this fence.
+            self._state_store.fence_tx_target()
             if (
                 generation != self._vfo_binding_generation
                 or provider_generation != self._provider_generation()
@@ -4154,6 +4186,7 @@ class RadioPoller:
 
             if not isinstance(self._radio, RelativeVfoReadbackCapable):
                 raise CommandError("provider lacks relative VFO readback")
+            reads_sent_at = self._clock()
             selected = await self._radio.read_relative_vfo(selected=True)
             if (
                 generation != self._vfo_binding_generation
@@ -4177,6 +4210,9 @@ class RadioPoller:
                         FieldPath.active(receiver_id, "freq_mode", name)
                         if relative_slot == "selected"
                         else FieldPath.unselected(receiver_id, "freq_mode", name)
+                    )
+                    self._state_store.note_tx_target_reads(
+                        (relative_path,), sent_at=reads_sent_at
                     )
                     apply(relative_path, value)
             self._request_post_write_readback(

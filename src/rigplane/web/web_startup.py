@@ -777,6 +777,16 @@ async def _start_web_server(
                         else None
                     ),
                 )
+            # MOR-3632: a request/response poller stamps its reads at send for
+            # the store's TX-target fence (``StateStore.note_tx_target_reads``).
+            bind_reads = getattr(server._state_poller, "bind_tx_target_reads", None)
+            if callable(bind_reads):
+                store = server.command_state_store
+                bind_reads(
+                    lambda paths, sent_at: store.note_tx_target_reads(
+                        paths, sent_at=sent_at
+                    )
+                )
             setattr(
                 server._state_poller,
                 "_uses_fallback_provider_generation",
