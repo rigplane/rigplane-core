@@ -1,4 +1,4 @@
-import { acknowledgeCommand, applyCommandLifecycleProjection, beginCommand, cancelPendingCommands, failCommand, markCommandDispatched, type CommandLifecycle } from '$lib/stores/commands.svelte';
+import { acknowledgeCommand, applyCommandLifecycleProjection, beginCommand, cancelPendingCommands, failCommand, markCommandDispatched, reviseAdmittedTarget, type CommandLifecycle } from '$lib/stores/commands.svelte';
 import { makeCommandId } from '$lib/types/protocol';
 import * as controlTransport from '$lib/transport/ws-client';
 import { getControlSession, onCommandDelivery, onControlSessionTransition, sendCommand } from '$lib/transport/ws-client';
@@ -132,6 +132,15 @@ onCommandDelivery((event) => {
 });
 if (Object.prototype.hasOwnProperty.call(controlTransport, 'onCommandLifecycleDelivery')) {
   controlTransport.onCommandLifecycleDelivery((event) => applyCommandLifecycleProjection(event, getControlSession().epoch));
+}
+// MOR-3634: the backend's locked clamp can differ from the admission-time estimate;
+// the written level rides on the command's `reconciled` event.
+if (Object.prototype.hasOwnProperty.call(controlTransport, 'onCommandReconciliationDelivery')) {
+  controlTransport.onCommandReconciliationDelivery((event) => {
+    if (event.writtenLevel !== undefined && event.eventEpoch === getControlSession().epoch) {
+      reviseAdmittedTarget(event.commandId, event.originalEpoch, event.eventEpoch, event.writtenLevel);
+    }
+  });
 }
 onControlSessionTransition((transition) => {
   if (transition.state === 'disconnected') cancelPendingCommands(transition.epoch);

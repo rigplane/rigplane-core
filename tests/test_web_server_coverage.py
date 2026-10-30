@@ -4329,6 +4329,16 @@ async def test_physical_reconciled_lifecycle_is_issuer_only_and_strict() -> None
             "observationSeq": 1,
             "private": "drop",
         },
+        # MOR-3634: the optional written level is a finite float in 0..1.
+        *[
+            {
+                "session_id": "session-issuer",
+                "revision": 1,
+                "observationSeq": 1,
+                "writtenLevel": level,
+            }
+            for level in (1, True, "0.5", float("nan"), float("inf"), 1.5, -0.1, None)
+        ],
     ],
 )
 @pytest.mark.asyncio
@@ -4345,6 +4355,35 @@ async def test_malformed_reconciled_evidence_is_not_delivered(
     )
     srv.command_service._events.append(event)  # noqa: SLF001
     srv._on_command_lifecycle_event(event)  # noqa: SLF001
+    assert issuer_q.empty() and bystander_q.empty()
+
+
+@pytest.mark.asyncio
+async def test_reconciled_evidence_delivers_the_written_level_to_the_issuer() -> None:
+    """MOR-3634: when the backend revised the admission-time estimate, the
+    level it wrote rides on the issuer's reconciled frame (rebuilt, validated
+    float), and only there."""
+    srv = WebServer(None, WebConfig(radio_model="IC-7610"))
+    issuer_q, bystander_q = _register_two_sessions(srv)
+    await _ack_held(srv)
+    event = _life(
+        state="reconciled",
+        message="confirmed by matching observation",
+        details={
+            "session_id": "session-issuer",
+            "revision": 3,
+            "observationSeq": 4,
+            "writtenLevel": 0.75,
+        },
+    )
+    srv.command_service._events.append(event)  # noqa: SLF001
+    srv._on_command_lifecycle_event(event)  # noqa: SLF001
+    payload = issuer_q.get_nowait()
+    assert payload["details"] == {
+        "revision": 3,
+        "observationSeq": 4,
+        "writtenLevel": 0.75,
+    }
     assert issuer_q.empty() and bystander_q.empty()
 
 

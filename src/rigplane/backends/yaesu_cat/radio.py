@@ -37,6 +37,7 @@ from ...profiles.control_domain import (
     validate_control_raw_value,
 )
 from ...profiles.power_ceilings import (
+    has_band_ceilings,
     has_power_ceilings,
     resolve_power_ceiling_watts,
 )
@@ -2964,7 +2965,8 @@ class YaesuCatRadio:
         (:meth:`YaesuObservationAdapter.read_tx_target`): a malformed or
         changing route, a reconnect during the read or an unanswered read
         proves no band, and the lowest declared ceiling applies. A profile
-        without the tables is unchanged and reads nothing.
+        without the tables is unchanged and reads nothing; a source-only
+        table is resolved from its source row alone and reads no band.
 
         Args:
             watts: Power in watts.
@@ -2978,9 +2980,14 @@ class YaesuCatRadio:
             if self._config.min_watts is not None:
                 watts = max(self._config.min_watts, watts)
             if has_power_ceilings(self.profile):
-                ceiling = resolve_power_ceiling_watts(
-                    self.profile, freqs_hz=await self._read_transmit_band_freqs_hz()
+                # Only a band table needs the transmit band; a source-only
+                # table clamps on the source row alone and reads nothing.
+                freqs_hz = (
+                    await self._read_transmit_band_freqs_hz()
+                    if has_band_ceilings(self.profile)
+                    else ()
                 )
+                ceiling = resolve_power_ceiling_watts(self.profile, freqs_hz=freqs_hz)
                 if ceiling is not None:
                     watts = min(ceiling, watts)
             await self._write("set_power", head=str(head), watts=watts)
@@ -3003,6 +3010,11 @@ class YaesuCatRadio:
         """
         from .observations import YaesuObservationAdapter
 
+        if self.profile.state_acquisition is None:
+            # No observation metadata, so the shared reader cannot run: the
+            # band is unproven and the lowest declared ceiling applies. Optional
+            # polling metadata is never a prerequisite of a power write.
+            return (None,)
         try:
             target = await YaesuObservationAdapter.from_radio(self).read_tx_target()
         except (CatTimeoutError, CatGarbledFrameError):

@@ -730,6 +730,26 @@ export const acknowledgeCommand = (
   }
   transition(id, epoch, 'acknowledged', eventEpoch);
 };
+/**
+ * Replace the admission-time `admitted_level` estimate with the level the
+ * backend actually wrote (MOR-3634: the rated-power clamp is applied at the
+ * wire, after a queued band change may have moved the ceiling). The server
+ * delivers it on the command's `reconciled` event; the readback of that very
+ * write may already have been seen, so the state-backed check runs again now.
+ * Only a command that already carries an admitted target adopts one.
+ */
+export function reviseAdmittedTarget(
+  id: string, epoch: number, eventEpoch: number, writtenLevel: number,
+): void {
+  const level = normalizedLevel(writtenLevel);
+  const command = getCommandLifecycle(id, epoch);
+  if (level === null || !command || command.admittedTarget === undefined
+    || (command.status !== 'pending' && command.status !== 'acknowledged')
+    || (command.eventEpoch !== undefined && command.eventEpoch !== eventEpoch)) return;
+  command.admittedTarget = level;
+  command.updatedAt = Date.now();
+  if (command.status === 'acknowledged') reconcileStateBackedCommands(getRadioState());
+}
 export const failCommand = (id: string, epoch: number, eventEpoch: number, error = 'Command failed'): void =>
   transition(id, epoch, 'failed', eventEpoch, error);
 /** Downstream observation adapters may call this only after qualifying radio truth. */

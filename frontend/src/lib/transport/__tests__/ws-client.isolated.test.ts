@@ -801,6 +801,36 @@ describe('WsChannel', () => {
     expect(setRadioState).toHaveBeenCalledTimes(writesBefore);
   });
 
+  it('delivers a validated written level with the reconciliation evidence (MOR-3634)', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+    const events: CommandReconciliationDeliveryEvent[] = [];
+    ch.onCommandReconciliationDelivery((event) => events.push(event));
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    const frame = (commandId: string, details: unknown) => JSON.stringify({
+      type: 'command_lifecycle', commandId, state: 'reconciled',
+      source: 'websocket', target: 'global.operator_controls.power_level',
+      timestampMonotonic: 12.5, message: 'confirmed by matching observation', details,
+    });
+    ch.send({ type: 'cmd', name: 'set_rf_power', id: 'written', params: { level: 0.9 } });
+    instances[0].simulateMessage(frame('written', { revision: 5, observationSeq: 9, writtenLevel: 0.75 }));
+    expect(events).toEqual([{
+      commandId: 'written', kind: 'reconciled', originalEpoch: 1, eventEpoch: 1,
+      revision: 5, observationSeq: 9, writtenLevel: 0.75,
+    }]);
+
+    // A malformed level voids the whole evidence: the correlation stays unconsumed.
+    const bad = [1.5, -0.1, Number.NaN, '0.5', true, null];
+    for (const [index, writtenLevel] of bad.entries()) {
+      const id = `bad-${index}`;
+      ch.send({ type: 'cmd', name: 'set_rf_power', id, params: { level: 0.9 } });
+      instances[0].simulateMessage(frame(id, { revision: 5, observationSeq: 9, writtenLevel }));
+    }
+    instances[0].simulateMessage(frame('bad-0', { revision: 5, observationSeq: 9, writtenLevel: 0.5, extra: 1 }));
+    expect(events).toHaveLength(1);
+  });
+
   it('rejects malformed, cancelled, and stale-socket reconciliation evidence', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();

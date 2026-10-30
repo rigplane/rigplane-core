@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
+import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, CommandReconciliationDeliveryEvent, ControlSessionTransition } from '$lib/transport/ws-client';
 import type { RadioIntent } from '../radio-intents';
 
 const harness = vi.hoisted(() => ({
   delivery: undefined as ((event: CommandDeliveryEvent) => void) | undefined,
   lifecycle: undefined as ((event: CommandLifecycleDeliveryEvent) => void) | undefined,
+  reconciliation: undefined as ((event: CommandReconciliationDeliveryEvent) => void) | undefined,
   transition: undefined as ((event: ControlSessionTransition) => void) | undefined,
   session: { state: 'connected' as const, epoch: 7 },
   sendCommand: vi.fn((..._args: unknown[]) => true),
@@ -23,6 +24,10 @@ vi.mock('$lib/transport/ws-client', () => ({
   onCommandLifecycleDelivery: vi.fn((handler: (event: CommandLifecycleDeliveryEvent) => void) => {
     harness.lifecycle = handler;
     return () => { if (harness.lifecycle === handler) harness.lifecycle = undefined; };
+  }),
+  onCommandReconciliationDelivery: vi.fn((handler: (event: CommandReconciliationDeliveryEvent) => void) => {
+    harness.reconciliation = handler;
+    return () => { if (harness.reconciliation === handler) harness.reconciliation = undefined; };
   }),
   onControlSessionTransition: vi.fn((handler: (event: ControlSessionTransition) => void) => {
     harness.transition = handler;
@@ -42,6 +47,7 @@ describe('typed non-PTT radio intents', () => {
     vi.resetModules();
     harness.delivery = undefined;
     harness.lifecycle = undefined;
+    harness.reconciliation = undefined;
     harness.transition = undefined;
     harness.session = { state: 'connected', epoch: 7 };
     harness.sendCommand.mockReset().mockReturnValue(true);
@@ -211,6 +217,26 @@ describe('typed non-PTT radio intents', () => {
     });
     expect(lifecycle.getCommandLifecycle('af-ack-first', 7)).toMatchObject({
       status: 'acknowledged', admittedTarget: 128 / 255,
+    });
+  });
+
+  it('adopts the level the backend wrote from the reconciled event (MOR-3634)', () => {
+    intents.dispatchRadioIntent({ id: 'rf-written', name: 'set_rf_power', params: { level: 0.9 } });
+    harness.delivery?.({
+      commandId: 'rf-written', kind: 'response-ok', originalEpoch: 7, eventEpoch: 7, admittedLevel: 0.5,
+    });
+    const reconciled = {
+      commandId: 'rf-written', kind: 'reconciled' as const, originalEpoch: 7, eventEpoch: 7,
+      revision: 5, observationSeq: 9,
+    };
+    // Evidence without a written level, or from another control session, changes nothing.
+    harness.reconciliation?.(reconciled);
+    harness.reconciliation?.({ ...reconciled, eventEpoch: 6, writtenLevel: 0.75 });
+    expect(lifecycle.getCommandLifecycle('rf-written', 7)?.admittedTarget).toBe(0.5);
+
+    harness.reconciliation?.({ ...reconciled, writtenLevel: 0.75 });
+    expect(lifecycle.getCommandLifecycle('rf-written', 7)).toMatchObject({
+      status: 'acknowledged', admittedTarget: 0.75,
     });
   });
 

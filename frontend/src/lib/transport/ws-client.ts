@@ -45,6 +45,9 @@ export interface CommandReconciliationDeliveryEvent {
   eventEpoch: number;
   revision: number;
   observationSeq: number;
+  /** Sanitized finite 0..1 `details.writtenLevel`: the level the backend actually wrote when it
+   *  revised the admission-time `admitted_level` estimate (MOR-3634); absent otherwise. */
+  writtenLevel?: number;
 }
 type MessageHandler = (msg: WsIncoming) => void;
 type BinaryHandler = (data: ArrayBuffer) => void;
@@ -105,16 +108,24 @@ const LIFECYCLE_TARGET = new RegExp(
   `^(?:receiver\\.${FIELD_TOKEN}\\.(?:(?:slot\\.[AB]|active|unselected)\\.freq_mode\\.${FIELD_TOKEN}|${FIELD_FAMILY}\\.${FIELD_TOKEN})|(?:global|connection|health)\\.${FIELD_FAMILY}\\.${FIELD_TOKEN}|scope_controls\\.(?:receiver\\.${FIELD_TOKEN}|global)\\.display\\.${FIELD_TOKEN})$`,
 );
 
-function reconciliationEvidence(value: unknown): { revision: number; observationSeq: number } | null {
+function reconciliationEvidence(
+  value: unknown,
+): { revision: number; observationSeq: number; writtenLevel?: number } | null {
   if (!isPlainRecord(value)) return null;
   const keys = Reflect.ownKeys(value);
-  if (keys.length !== 2 || !keys.includes('revision') || !keys.includes('observationSeq')) return null;
+  const withLevel = keys.includes('writtenLevel');
+  if (keys.length !== (withLevel ? 3 : 2) || !keys.includes('revision') || !keys.includes('observationSeq')) return null;
   const revision = Object.getOwnPropertyDescriptor(value, 'revision');
   const observationSeq = Object.getOwnPropertyDescriptor(value, 'observationSeq');
   if (!revision || !('value' in revision) || !observationSeq || !('value' in observationSeq)) return null;
   if (!Number.isSafeInteger(revision.value) || revision.value < 0) return null;
   if (!Number.isSafeInteger(observationSeq.value) || observationSeq.value < 0) return null;
-  return { revision: revision.value as number, observationSeq: observationSeq.value as number };
+  const evidence = { revision: revision.value as number, observationSeq: observationSeq.value as number };
+  if (!withLevel) return evidence;
+  const written = Object.getOwnPropertyDescriptor(value, 'writtenLevel');
+  if (!written || !('value' in written) || typeof written.value !== 'number'
+    || !Number.isFinite(written.value) || written.value < 0 || written.value > 1) return null;
+  return { ...evidence, writtenLevel: written.value };
 }
 
 /** Only a finite 0..1 `result.admitted_level` on an ok response frame is evidence. */

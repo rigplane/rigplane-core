@@ -63,6 +63,7 @@ from ..core.state_store import FreshnessState
 
 __all__ = [
     "band_frequencies_hz_from_snapshot",
+    "has_band_ceilings",
     "has_power_ceilings",
     "observed_band_freqs_hz",
     "resolve_power_ceiling_watts",
@@ -78,6 +79,15 @@ def _watts_table(profile: Any, attr: str) -> dict[str, int] | None:
         for name, watts in table.items()
         if isinstance(watts, int) and not isinstance(watts, bool) and watts > 0
     }
+
+
+def has_band_ceilings(profile: Any) -> bool:
+    """True when the profile declares a per-band ceiling table.
+
+    Only a band table needs the transmit band: a source-only profile
+    resolves its ceiling from the source row alone.
+    """
+    return _watts_table(profile, "power_ceilings_w") is not None
 
 
 def has_power_ceilings(profile: Any) -> bool:

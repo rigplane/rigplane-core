@@ -1390,6 +1390,16 @@ radio NAKs the write — delivered to clients subscribed to the `events` (or
 {"type":"command_lifecycle","commandId":"42","state":"failed","message":"..."}
 ```
 
+A `reconciled` frame (`details.revision`, `details.observationSeq`) confirms
+that an accepted observation matched the command's expectation. For
+`set_rf_power`/`set_power` the response's `admitted_level` is an
+admission-time estimate: the backend applies the rated-power ceiling of the
+band it reads from the radio when the write runs, which a queued band change
+can move. When the written level differs from the estimate, the `reconciled`
+frame also carries `details.writtenLevel` (normalized 0.0-1.0, the level that
+was written and that the readback reports); a client that confirms by
+equality adopts it.
+
 ### State update stream (`/api/v1/ws`)
 
 Server publishes `state_update` messages in two shapes:

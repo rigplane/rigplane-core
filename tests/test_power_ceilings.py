@@ -682,6 +682,8 @@ class _FakeYaesuWire:
 def _yaesu(
     *,
     ceilings: dict[str, int] | None = None,
+    sources: dict[str, int] | None = None,
+    acquisition: bool = True,
     min_watts: int | None = 5,
     main_hz: int = 145_000_000,
     sub_hz: int = 435_000_000,
@@ -690,13 +692,18 @@ def _yaesu(
     """A YaesuCatRadio on the ftx1 profile plus per-band ceiling rows.
 
     The shipped 5 W floor stays unless *min_watts* is ``None``; ``ceilings={}``
-    declares no rows (the flat ``max_watts`` range alone).
+    declares no rows (the flat ``max_watts`` range alone). *sources* adds a
+    per-power-source table; ``acquisition=False`` drops the optional
+    ``state_acquisition`` polling metadata.
     """
     config = replace(
         load_rig(_RIGS_DIR / "ftx1.toml"),
         power_ceilings_w=_FTX1_ROWS if ceilings is None else ceilings,
+        power_sources_w=sources,
         min_watts=min_watts,
     )
+    if not acquisition:
+        config = replace(config, state_acquisition=None)
     radio = YaesuCatRadio("/dev/null", profile=config)
     wire = _FakeYaesuWire(main_hz=main_hz, sub_hz=sub_hz, tx=tx)
     radio._transport._connected = True
@@ -764,6 +771,34 @@ async def test_backend_without_tables_reads_nothing_and_keeps_todays_wire():
     radio._transport.write = fake.write
     await radio.set_power(90)
     assert fake.power_writes == ["PC2090;"]
+    assert fake.queries == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("acquisition", [True, False])
+async def test_backend_source_only_ceiling_clamps_on_the_source_row_alone(acquisition):
+    """Review round 4: a source-only table needs no band, so it needs no
+    observation metadata either -- the write goes out clamped to the lowest
+    source row (no source is observed), nothing is read from the radio."""
+    radio, fake = _yaesu(
+        ceilings={}, sources={"dc": 100, "battery": 50}, acquisition=acquisition
+    )
+    assert (radio.profile.state_acquisition is None) is (not acquisition)
+    assert await radio.set_power(90) == 50
+    assert fake.power_writes == ["PC2050;"]
+    assert fake.queries == [], "a source-only table reads no band"
+    assert await radio.set_power(30) == 30
+    assert fake.power_writes == ["PC2050;", "PC2030;"]
+
+
+@pytest.mark.asyncio
+async def test_backend_band_table_without_observation_metadata_takes_the_lowest_row():
+    """A band table cannot read the band without ``state_acquisition``: the
+    write still goes out, at the lowest declared ceiling, never the widest
+    and never a refusal."""
+    radio, fake = _yaesu(acquisition=False, main_hz=145_000_000)
+    assert await radio.set_power(90) == 50
+    assert fake.power_writes == ["PC2050;"]
     assert fake.queries == []
 
 
@@ -1185,6 +1220,43 @@ async def _http_post(web: WebServer, payload: dict[str, Any]) -> tuple[int, Any]
         await writer.wait_closed()
 
 
+@contextlib.asynccontextmanager
+async def _ws_session(web: WebServer, *, streams: tuple[str, ...] = ()):
+    """A control WebSocket past its handshake (hello + first state frame),
+    subscribed to *streams* (the app subscribes to ``events``, which is what
+    carries the issuer's ``command_lifecycle`` frames)."""
+    reader, writer, _ = await _ws_connect("127.0.0.1", web.port, "/api/v1/ws")
+    try:
+        for expected in ("hello", "state_update"):
+            _, frame = await _ws_recv_frame(reader, timeout=5.0)
+            assert json.loads(frame)["type"] == expected
+        if streams:
+            await _ws_send_text(
+                writer, json.dumps({"type": "subscribe", "streams": list(streams)})
+            )
+        yield reader, writer
+    finally:
+        writer.close()
+        await writer.wait_closed()
+
+
+async def _ws_send_commands(
+    reader: Any, writer: Any, commands: list[dict[str, Any]]
+) -> list[Any]:
+    """Send *commands* and collect their responses."""
+    for command in commands:
+        await _ws_send_text(writer, json.dumps({"type": "cmd", **command}))
+    pending = {command["id"] for command in commands}
+    results = []
+    while pending:
+        _, frame = await _ws_recv_frame(reader, timeout=5.0)
+        message = json.loads(frame)
+        if message.get("type") == "response" and message.get("id") in pending:
+            pending.discard(message["id"])
+            results.append(message)
+    return results
+
+
 async def _ws_commands(
     web: WebServer,
     commands: list[dict[str, Any]],
@@ -1193,27 +1265,11 @@ async def _ws_commands(
 ) -> list[Any]:
     """Send *commands*, collect their responses, run *then* with the socket
     still open (a queued command dies with its control session)."""
-    reader, writer, _ = await _ws_connect("127.0.0.1", web.port, "/api/v1/ws")
-    try:
-        for expected in ("hello", "state_update"):
-            _, frame = await _ws_recv_frame(reader, timeout=5.0)
-            assert json.loads(frame)["type"] == expected
-        for command in commands:
-            await _ws_send_text(writer, json.dumps({"type": "cmd", **command}))
-        pending = {command["id"] for command in commands}
-        results = []
-        while pending:
-            _, frame = await _ws_recv_frame(reader, timeout=5.0)
-            message = json.loads(frame)
-            if message.get("type") == "response" and message.get("id") in pending:
-                pending.discard(message["id"])
-                results.append(message)
+    async with _ws_session(web) as (reader, writer):
+        results = await _ws_send_commands(reader, writer, commands)
         if then is not None:
             await then()
         return results
-    finally:
-        writer.close()
-        await writer.wait_closed()
 
 
 @pytest.mark.asyncio
@@ -1291,28 +1347,35 @@ def _power_lifecycle_states(web: WebServer) -> list[str]:
     ]
 
 
+# (radio_hz, estimate_hz, queued_hz, wire): the band the radio is on, the band
+# admission estimated from (0: nothing observed), a band change queued ahead
+# of the power write, and the PC frame that must go out.
+_ADMISSION_VS_WIRE_CASES = [
+    # Startup: nothing observed yet (the estimate is the lowest row, 50 W)
+    # while the radio really is on 2 m (75 W row).
+    (145_000_000, 0, None, "PC2075;"),
+    # A band change queued ahead of the power write, upward: the estimate
+    # was made on 70 cm (50 W) and the write lands on 2 m (75 W).
+    (435_000_000, 435_000_000, 145_000_000, "PC2075;"),
+    # ...and downward: estimated on 2 m (75 W), written on 70 cm (50 W).
+    (145_000_000, 145_000_000, 435_000_000, "PC2050;"),
+    # Control: the estimate holds, so the harness itself confirms.
+    (145_000_000, 145_000_000, None, "PC2075;"),
+]
+_ADMISSION_VS_WIRE_IDS = [
+    "startup-unknown-band",
+    "queued-to-wider-band",
+    "queued-to-narrower-band",
+    "estimate-holds",
+]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["http", "ws"])
 @pytest.mark.parametrize(
     ("radio_hz", "estimate_hz", "queued_hz", "wire"),
-    [
-        # Startup: nothing observed yet (the estimate is the lowest row, 50 W)
-        # while the radio really is on 2 m (75 W row).
-        (145_000_000, 0, None, "PC2075;"),
-        # A band change queued ahead of the power write, upward: the estimate
-        # was made on 70 cm (50 W) and the write lands on 2 m (75 W).
-        (435_000_000, 435_000_000, 145_000_000, "PC2075;"),
-        # ...and downward: estimated on 2 m (75 W), written on 70 cm (50 W).
-        (145_000_000, 145_000_000, 435_000_000, "PC2050;"),
-        # Control: the estimate holds, so the harness itself confirms.
-        (145_000_000, 145_000_000, None, "PC2075;"),
-    ],
-    ids=[
-        "startup-unknown-band",
-        "queued-to-wider-band",
-        "queued-to-narrower-band",
-        "estimate-holds",
-    ],
+    _ADMISSION_VS_WIRE_CASES,
+    ids=_ADMISSION_VS_WIRE_IDS,
 )
 async def test_api_power_command_is_confirmed_by_what_the_backend_wrote(
     yaesu_web, protocol, radio_hz, estimate_hz, queued_hz, wire
@@ -1377,6 +1440,82 @@ async def test_api_power_command_is_confirmed_by_what_the_backend_wrote(
 
     await _publish_poll(web, radio, poller)
     assert "reconciled" in _power_lifecycle_states(web)
+
+
+async def _ws_lifecycle_frame(reader: Any, command_id: str, state: str) -> Any:
+    """The ``command_lifecycle`` frame of *command_id* in *state*, off the
+    still-open socket."""
+    async with asyncio.timeout(5.0):
+        while True:
+            _, frame = await _ws_recv_frame(reader, timeout=5.0)
+            message = json.loads(frame)
+            if (
+                message.get("type") == "command_lifecycle"
+                and message.get("commandId") == command_id
+                and message.get("state") == state
+            ):
+                return message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("radio_hz", "estimate_hz", "queued_hz", "wire"),
+    _ADMISSION_VS_WIRE_CASES,
+    ids=_ADMISSION_VS_WIRE_IDS,
+)
+async def test_ws_client_is_told_the_level_the_backend_wrote(
+    yaesu_web, radio_hz, estimate_hz, queued_hz, wire
+):
+    """Pre-review round 4: the ``admitted_level`` in the response is an
+    admission-time estimate; the client must end up with the level that was
+    written, or its RF-power target (an equality check) never confirms.
+
+    The socket stays open from admission through the queued band change, the
+    write and the radio's readback. When the estimate and the wire differ
+    (both directions) the response still carries the estimate, and the
+    command's ``reconciled`` frame carries the written level -- the very
+    value the public state then reports.
+    """
+    web, radio, fake, poller = yaesu_web
+    fake.main_hz = radio_hz
+    if estimate_hz:
+        now = time.monotonic()
+        for path in (_MAIN_FREQ, _SUB_FREQ):
+            _observe(web.command_state_store, path, estimate_hz, at=now, max_age=60.0)
+    commands = []
+    if queued_hz is not None:
+        commands.append(
+            {"id": "band", "name": "set_freq", "params": {"freq": queued_hz}}
+        )
+    commands.append({"id": "power", "name": "set_power", "params": {"level": 90}})
+    written = int(wire[3:6]) / 100
+    estimate_holds = estimate_hz == radio_hz and queued_hz is None
+
+    await radio._mode_lock.acquire()
+    try:
+        async with _ws_session(web, streams=("events",)) as (reader, writer):
+            responses = await _ws_send_commands(reader, writer, commands)
+            [power] = [r for r in responses if r["id"] == "power"]
+            assert power["ok"], power
+            admitted = power["result"]["admitted_level"]
+            assert (admitted == written) is estimate_holds, (admitted, written)
+
+            radio._mode_lock.release()
+            await _until(lambda: fake.power_writes)
+            assert fake.power_writes == [wire]
+            await _publish_poll(web, radio, poller)
+
+            frame = await _ws_lifecycle_frame(reader, "power", "reconciled")
+    finally:
+        if radio._mode_lock.locked():
+            radio._mode_lock.release()
+
+    assert set(frame["details"]) == {"revision", "observationSeq", "writtenLevel"}
+    assert frame["details"]["writtenLevel"] == written
+    state = build_public_state_payload_from_snapshot(
+        web.command_state_store.snapshot(), radio=radio, receiver_count=2
+    )
+    assert state["powerLevel"] == frame["details"]["writtenLevel"]
 
 
 @pytest.mark.asyncio

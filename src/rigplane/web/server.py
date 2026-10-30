@@ -3069,8 +3069,24 @@ class WebServer:
         elif event.state == "reconciled":
             revision = details.get("revision")
             observation_seq = details.get("observationSeq")
+            # MOR-3634: the level the backend actually wrote, present only when
+            # it revised the admission-time estimate. Rebuilt from a validated
+            # float, never passed through.
+            written = details.get("writtenLevel")
+            has_written = "writtenLevel" in details
+            expected_keys = {"session_id", "revision", "observationSeq"}
+            if has_written:
+                expected_keys.add("writtenLevel")
             if (
-                set(details) != {"session_id", "revision", "observationSeq"}
+                set(details) != expected_keys
+                or (
+                    has_written
+                    and (
+                        type(written) is not float
+                        or not math.isfinite(written)
+                        or not 0.0 <= written <= 1.0
+                    )
+                )
                 or type(revision) is not int
                 or revision < 0
                 or type(observation_seq) is not int
@@ -3086,6 +3102,8 @@ class WebServer:
                 "revision": revision,
                 "observationSeq": observation_seq,
             }
+            if has_written:
+                public_details["writtenLevel"] = written
         elif event.state == "failed" and set(details) == {
             "session_id",
             "blockedBy",

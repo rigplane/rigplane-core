@@ -1150,6 +1150,60 @@ describe('command lifecycle store', () => {
       expect(statusOf(command.id)).toBe('confirmed');
     });
 
+    // MOR-3634: the response's admitted_level is an admission-time estimate; the
+    // backend clamps at the wire (a queued band change may move the ceiling) and
+    // the server delivers the written level on the command's reconciled event.
+    it.each([
+      ['wider band (estimate 0.5, written 0.75)', 0.5, 0.75],
+      ['narrower band (estimate 0.75, written 0.5)', 0.75, 0.5],
+    ])('RF power adopts the written level when the readback came first — %s', (_name, estimate, written) => {
+      emitState(powerSnapshot(0.1, 4));
+      const command = begin('rf-written-after', 'set_rf_power', { level: 0.9 });
+      store.acknowledgeCommand(command.id, 7, 7, estimate);
+      emitState(powerSnapshot(written, 5));
+      expect(statusOf(command.id)).toBe('acknowledged');
+
+      store.reviseAdmittedTarget(command.id, 7, 7, written);
+      expect(statusOf(command.id)).toBe('confirmed');
+    });
+
+    it('RF power adopts the written level when it arrives before the readback', () => {
+      emitState(powerSnapshot(0.1, 4));
+      const command = begin('rf-written-before', 'set_rf_power', { level: 0.9 });
+      store.acknowledgeCommand(command.id, 7, 7, 0.5);
+      store.reviseAdmittedTarget(command.id, 7, 7, 0.75);
+      expect(statusOf(command.id)).toBe('acknowledged');
+      emitState(powerSnapshot(0.5, 5));
+      expect(statusOf(command.id)).toBe('acknowledged');
+      emitState(powerSnapshot(0.75, 6));
+      expect(statusOf(command.id)).toBe('confirmed');
+    });
+
+    it('a written level never creates, widens or outlives a command\'s admitted lane', () => {
+      emitState(powerSnapshot(0.1, 4));
+      // No admitted target (old server): the written level cannot start the lane.
+      const bare = begin('rf-bare', 'set_rf_power', { level: 0.9 });
+      store.acknowledgeCommand(bare.id, 7, 7);
+      store.reviseAdmittedTarget(bare.id, 7, 7, 0.75);
+      emitState(powerSnapshot(0.75, 5));
+      expect(statusOf(bare.id)).toBe('acknowledged');
+      expect(store.getCommandLifecycle(bare.id, 7)?.admittedTarget).toBeUndefined();
+
+      // Out-of-domain, another epoch and another event epoch change nothing.
+      const command = begin('rf-guarded', 'set_rf_power', { level: 0.9 });
+      store.acknowledgeCommand(command.id, 7, 7, 0.5);
+      for (const [epoch, eventEpoch, level] of [[7, 7, 1.5], [7, 7, Number.NaN], [8, 7, 0.75], [7, 8, 0.75]]) {
+        store.reviseAdmittedTarget(command.id, epoch, eventEpoch, level);
+      }
+      expect(store.getCommandLifecycle(command.id, 7)?.admittedTarget).toBe(0.5);
+
+      // A settled command keeps the target it was confirmed against.
+      emitState(powerSnapshot(0.5, 6));
+      expect(statusOf(command.id)).toBe('confirmed');
+      store.reviseAdmittedTarget(command.id, 7, 7, 0.75);
+      expect(store.getCommandLifecycle(command.id, 7)?.admittedTarget).toBe(0.5);
+    });
+
     it('ignores the other receiver\'s fresh readback for the AF lane', () => {
       emitState(afSnapshot(128 / 255, 4));
       const command = begin('af-main', 'set_af_level', afLevel);

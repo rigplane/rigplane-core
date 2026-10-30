@@ -140,6 +140,10 @@ class PendingOverlay:
     value: Any
     expires_at_monotonic: float
     matches_any_value: bool = False
+    # Set by :meth:`CommandService.revise_expected_value`: *value* is then
+    # what the backend actually wrote, not the admission-time estimate, and
+    # the ``reconciled`` event delivers it to the issuer.
+    revised: bool = False
 
     def is_expired(self, now: float) -> bool:
         return now >= self.expires_at_monotonic
@@ -678,8 +682,11 @@ class CommandService:
         rated-power clamp it applies under its own lock): the admission-time
         estimate is replaced, in the pending overlay and in the readback
         expectation alike, by what was actually written, so the readback of
-        that very write closes the command. Returns whether an expectation
-        of the command was revised.
+        that very write closes the command. The revised value also rides on
+        the command's ``reconciled`` event (``writtenLevel``, see
+        :func:`_reconciled_details`), so the issuing client confirms against
+        the level that was written rather than the estimate it was told at
+        admission. Returns whether an expectation of the command was revised.
         """
         self._purge_expired()
         revised = False
@@ -695,7 +702,7 @@ class CommandService:
                     and item.path == path
                     and not item.matches_any_value
                 ):
-                    item = replace(item, value=value)
+                    item = replace(item, value=value, revised=True)
                     revised = True
                 result.append(item)
             return result
@@ -851,10 +858,7 @@ class CommandService:
                 ),
                 "reconciled",
                 message="confirmed by matching observation",
-                details={
-                    "revision": changeset.revision,
-                    "observationSeq": changeset.observation_seq,
-                },
+                details=_reconciled_details(changeset, overlay),
             )
         if not reconciled:
             self._reconcile_readback_expectation(observation, changeset)
@@ -910,10 +914,7 @@ class CommandService:
             ),
             "reconciled",
             message="confirmed by matching observation",
-            details={
-                "revision": changeset.revision,
-                "observationSeq": changeset.observation_seq,
-            },
+            details=_reconciled_details(changeset, expectation),
         )
 
     def _remove_readback_expectation(self, overlay: PendingOverlay) -> None:
@@ -1166,6 +1167,27 @@ def _overlay_matches(
         and (source is None or overlay.source == source)
         and (session_id is _UNSET or overlay.session_id == session_id)
     )
+
+
+def _reconciled_details(
+    changeset: ChangeSet, matched: PendingOverlay
+) -> dict[str, Any]:
+    """The evidence a ``reconciled`` event carries to the issuing client.
+
+    ``revision`` / ``observationSeq`` name the accepted observation. When the
+    backend revised the command's expectation (MOR-3634: the rated-power clamp
+    it applies under its own lock), the matched value is the level that was
+    actually written and goes along as ``writtenLevel``: the issuer's earlier
+    ``admitted_level`` was an admission-time estimate, and a client that
+    confirms against equality must adopt the written one.
+    """
+    details: dict[str, Any] = {
+        "revision": changeset.revision,
+        "observationSeq": changeset.observation_seq,
+    }
+    if matched.revised:
+        details["writtenLevel"] = matched.value
+    return details
 
 
 def _observation_reconciles_overlay(
