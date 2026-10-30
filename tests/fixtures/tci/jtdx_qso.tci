@@ -1,0 +1,4 @@
+split_enable:0,true;
+vfo:0,1,14075000;
+trx:0,true;
+trx:0,false;

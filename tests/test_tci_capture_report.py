@@ -14,20 +14,21 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = (
-    Path(__file__).resolve().parent.parent
-    / "scripts"
-    / "tci_capture"
-    / "proxy.py"
-)
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "tci_capture" / "proxy.py"
 
 
 def load_proxy():  # type: ignore[no-untyped-def]
     """Load the proxy script as a module (fails until the script exists)."""
+    import sys
+
     spec = importlib.util.spec_from_file_location("tci_capture_proxy", SCRIPT)
     if spec is None or spec.loader is None:
         raise FileNotFoundError(f"proxy script missing: {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
+    # Visible under its own name: dataclasses under
+    # ``from __future__ import annotations`` resolve string field types
+    # through ``sys.modules``.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -37,9 +38,7 @@ def proxy_module():  # type: ignore[no-untyped-def]
     return load_proxy()
 
 
-def trec(
-    direction: str, text: str, tick: float
-) -> dict[str, object]:
+def trec(direction: str, text: str, tick: float) -> dict[str, object]:
     return {
         "t_mono": tick,
         "t_wall": "2026-10-30T00:00:00+00:00",
@@ -184,9 +183,7 @@ def test_extract_fixtures_round_trips_through_capture_file(
     proxy_module: object, tmp_path: Path
 ) -> None:
     capture = tmp_path / "s.jsonl"
-    capture.write_text(
-        "\n".join(json.dumps(r) for r in full_session()) + "\n"
-    )
+    capture.write_text("\n".join(json.dumps(r) for r in full_session()) + "\n")
     records = proxy_module.load_capture(capture)  # type: ignore[attr-defined]
     dest = tmp_path / "out.tci"
     count = proxy_module.extract_fixtures(records, dest)  # type: ignore[attr-defined]

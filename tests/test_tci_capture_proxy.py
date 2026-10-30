@@ -23,7 +23,6 @@ from rigplane.tci.frames import (
     StreamHeader,
     StreamType,
     pack_header,
-    unpack_header,
 )
 from rigplane.tci.handler import CommandOutcome
 from rigplane.tci.server import TciServer
@@ -36,20 +35,21 @@ listener_mod = importlib.import_module("eesdr_tci.listener")
 
 Listener = listener_mod.Listener
 
-SCRIPT = (
-    Path(__file__).resolve().parent.parent
-    / "scripts"
-    / "tci_capture"
-    / "proxy.py"
-)
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "tci_capture" / "proxy.py"
 
 
 def load_proxy():  # type: ignore[no-untyped-def]
     """Load the proxy script as a module (fails until the script exists)."""
+    import sys
+
     spec = importlib.util.spec_from_file_location("tci_capture_proxy", SCRIPT)
     if spec is None or spec.loader is None:
         raise FileNotFoundError(f"proxy script missing: {SCRIPT}")
     module = importlib.util.module_from_spec(spec)
+    # Visible under its own name: dataclasses under
+    # ``from __future__ import annotations`` resolve string field types
+    # through ``sys.modules``.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -95,9 +95,7 @@ class FakeUpstream:
     async def on_connect(self) -> list[str]:
         return list(BURST)
 
-    async def on_command(
-        self, name: str, args: tuple[str, ...]
-    ) -> CommandOutcome:
+    async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
         self.commands.append((name, args))
         if name == "vfo":
             line = f"vfo:{','.join(args)};"
@@ -191,9 +189,7 @@ async def test_text_relayed_both_ways_and_recorded(
         try:
             await wait_until(lambda: len(observed.params) >= len(BURST))
             await listener.send("vfo:0,0,14074001;")  # type: ignore[attr-defined]
-            await wait_until(
-                lambda: ("VFO", 0, 0, 14074001) in observed.params
-            )
+            await wait_until(lambda: ("VFO", 0, 0, 14074001) in observed.params)
             await wait_until(
                 lambda: ("vfo", ("0", "0", "14074001")) in handler.commands
             )
@@ -206,21 +202,11 @@ async def test_text_relayed_both_ways_and_recorded(
     import json
 
     capture = only_capture(tmp_path)
-    records = [
-        json.loads(line) for line in capture.read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in capture.read_text().splitlines()]
     assert records[0]["event"] == "session_start"
     assert records[-1]["event"] == "session_end"
-    c2s = [
-        r
-        for r in records
-        if r.get("dir") == "c2s" and r.get("opcode") == 1
-    ]
-    s2c = [
-        r
-        for r in records
-        if r.get("dir") == "s2c" and r.get("opcode") == 1
-    ]
+    c2s = [r for r in records if r.get("dir") == "c2s" and r.get("opcode") == 1]
+    s2c = [r for r in records if r.get("dir") == "s2c" and r.get("opcode") == 1]
     assert "vfo:0,0,14074001;" in [r["text"] for r in c2s]
     assert "vfo:0,0,14074001;" in [r["text"] for r in s2c]
     for record in records:
@@ -298,9 +284,7 @@ async def test_binary_recorded_as_header_only(
     by_dir = {(r["dir"], r["bin"]["type"]) for r in binaries}
     assert ("s2c", 1) in by_dir
     assert ("c2s", 2) in by_dir
-    rx = next(
-        r for r in binaries if r["dir"] == "s2c" and r["bin"]["type"] == 1
-    )
+    rx = next(r for r in binaries if r["dir"] == "s2c" and r["bin"]["type"] == 1)
     assert rx["bin"]["receiver"] == 0
     assert rx["bin"]["sample_rate"] == 48000
     assert rx["bin"]["format"] == 0
@@ -333,9 +317,7 @@ async def test_size_cap_stops_recording_not_relay(
         try:
             await wait_until(lambda: len(observed.params) >= len(BURST))
             await listener.send("vfo:0,0,14074001;")  # type: ignore[attr-defined]
-            await wait_until(
-                lambda: ("VFO", 0, 0, 14074001) in observed.params
-            )
+            await wait_until(lambda: ("VFO", 0, 0, 14074001) in observed.params)
         finally:
             await close_listener(listener)
     finally:
@@ -345,17 +327,13 @@ async def test_size_cap_stops_recording_not_relay(
     import json
 
     capture = only_capture(tmp_path)
-    records = [
-        json.loads(line) for line in capture.read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in capture.read_text().splitlines()]
     trailer = records[-1]
     assert trailer["event"] == "session_end"
     assert trailer["truncated"] is True
 
 
-def test_out_dir_inside_repo_refused(
-    proxy_module: object, tmp_path: Path
-) -> None:
+def test_out_dir_inside_repo_refused(proxy_module: object, tmp_path: Path) -> None:
     outside = proxy_module.check_out_dir(tmp_path / "x")  # type: ignore[attr-defined]
     assert Path(outside).name == "x"
     repo_dir = Path(__file__).resolve().parent
@@ -407,18 +385,14 @@ async def test_clean_shutdown_writes_session_end(
         listener = await connect_listener(port, observed)
         await wait_until(lambda: len(observed.params) >= len(BURST))
         await close_listener(listener)
-        await wait_until(
-            lambda: len(list(tmp_path.glob("*.jsonl"))) == 1
-        )
+        await wait_until(lambda: len(list(tmp_path.glob("*.jsonl"))) == 1)
     finally:
         async with asyncio.timeout(10.0):
             await proxy.stop()
         await upstream.stop()
 
     capture = only_capture(tmp_path)
-    records = [
-        json.loads(line) for line in capture.read_text().splitlines()
-    ]
+    records = [json.loads(line) for line in capture.read_text().splitlines()]
     assert records[0]["event"] == "session_start"
     assert records[-1]["event"] == "session_end"
     assert records[-1]["truncated"] is False
