@@ -345,27 +345,37 @@ async def _restore(radio: Any, before: dict, tuned_preamp: int | None) -> list[s
     return errors
 
 
-async def _wait_for_slot(slot_s: int) -> float:
+async def _wait_for_slot(
+    slot_s: int,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = _now,
+) -> float:
     """Sleep to the next UTC multiple of *slot_s* seconds; return that wall time."""
-    now = _now()
+    now = clock()
     target = (int(now // slot_s) + 1) * slot_s
-    await asyncio.sleep(max(0.0, target - now - 0.05))
-    while _now() < target:
-        await asyncio.sleep(0.001)
+    await sleep(max(0.0, target - now - 0.05))
+    while clock() < target:
+        await sleep(0.001)
     return target
 
 
-async def _wait_until(start_at: str) -> float:
+async def _wait_until(
+    start_at: str,
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = _now,
+) -> float:
     """Sleep to the given UTC instant (ISO 8601); refuse one already past."""
     target = datetime.fromisoformat(start_at).astimezone(timezone.utc).timestamp()
-    now = _now()
+    now = clock()
     if target < now:
         raise ValueError(
             f"--start-at {start_at} is already {now - target:.1f} s in the past"
         )
-    await asyncio.sleep(max(0.0, target - now - 0.05))
-    while _now() < target:
-        await asyncio.sleep(0.001)
+    await sleep(max(0.0, target - now - 0.05))
+    while clock() < target:
+        await sleep(0.001)
     return target
 
 
@@ -375,10 +385,11 @@ async def run_clip(
     opener: Any = None,
     audio_factory: Callable[[Path], AudioRecorder] | None = None,
     # Settle-phase sleeps (tuning and restore pauses). The slot/start-at
-    # boundary wait and the recording loop always use the real clock; tests
-    # pass an instant sleep so a tight --start-at budget stays in the future
-    # (same seam as run_audio_probe's sleep in rigplane/audio/probe_runner.py).
+    # boundary wait takes the same `sleep` plus a `clock` seam, so tests can
+    # drive time themselves instead of racing the wall clock (same `sleep`
+    # shape as run_audio_probe in rigplane/audio/probe_runner.py).
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    clock: Callable[[], float] = _now,
 ) -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -461,10 +472,12 @@ async def run_clip(
             if audio is not None and hasattr(audio, "prepare"):
                 audio.prepare()  # the slow part happens before the boundary
             if args.start_at:
-                manifest["slot_start_wall_utc"] = _iso(await _wait_until(args.start_at))
+                manifest["slot_start_wall_utc"] = _iso(
+                    await _wait_until(args.start_at, sleep=sleep, clock=clock)
+                )
             elif args.slot_s:
                 manifest["slot_start_wall_utc"] = _iso(
-                    await _wait_for_slot(args.slot_s)
+                    await _wait_for_slot(args.slot_s, sleep=sleep, clock=clock)
                 )
             if audio is not None:
                 audio.start()
