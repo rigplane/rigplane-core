@@ -224,10 +224,12 @@ class ManagedTxComposition:
         TX is Core's own, unreleased, unless an RX was observed since Core's
         own TX last ended: an RX reading at that moment taken after Core
         keyed and after the radio was read as TX (see ``radio_released``), or
-        a change to RX in the store's history after it. Before
-        Core's first TX, or when the store cannot replay that history (trimmed,
-        or a new provider generation), it reads as foreign. Either origin
-        refuses every TX start; neither gates force_off.
+        a change to RX in the store's history after it. Before Core's first
+        TX it reads as foreign. When the store cannot replay the history
+        after the release (trimmed, or a new provider generation) the release
+        is unproven and it reads as unreleased: foreign admits outside-only
+        TX audio, so it needs positive proof. Either origin refuses every TX
+        start; neither gates force_off.
         """
         store = self._state_store
         if store is None:
@@ -252,7 +254,11 @@ class ManagedTxComposition:
             ):
                 return RadioTxOrigin.FOREIGN
         delta = store.delta_since(released)
-        if delta.requires_full_snapshot or any(
+        if delta.requires_full_snapshot:
+            # No history after the release (trimmed, or a new provider
+            # generation): the release cannot be proven, so the TX stays Core's.
+            return RadioTxOrigin.UNRELEASED
+        if any(
             change.path == _PTT_PATH and change.current is False
             for change in delta.changes
         ):

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -886,6 +887,60 @@ async def test_core_tx_the_radio_kept_stays_core_s_when_the_key_history_is_trimm
         assert authority.radio_tx_refusal_nowait() == "radio_tx_unreleased"
     finally:
         await composition.shutdown(asyncio.Event())
+
+
+async def _unproven_release_stays_core_s(
+    tmp_path: Path, store: StateStore, churn: Callable[[], None]
+) -> None:
+    """Core keys, a delayed poll reports RX, Core's unkey settles, then the
+    radio reports TX and ``churn`` evicts the history after the release: with
+    no proof of the release the TX is Core's own, never the operator's."""
+    actuator, radio = RecordingActuator(), LegacyRadio()
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    install_managed_tx_composition(radio, composition)
+    store.begin_provider_generation()
+    await composition.transport_ready(radio)
+    await composition.bind_state_store(store)
+    authority = composition.authority
+    try:
+        _radio_reports(store, False)
+        assert await authority.ptt_down("websocket-1") is ACCEPTED
+        _radio_reports(store, False)  # a poll asked before the key, now processed
+        assert await authority.ptt_up("websocket-1") is ACCEPTED
+        _radio_reports(store, True)  # the radio keeps the TX
+        churn()
+        assert authority.radio_tx_refusal_nowait() == "radio_tx_unreleased"
+    finally:
+        await composition.shutdown(asyncio.Event())
+
+
+async def test_unproven_release_stays_core_s_when_the_history_is_trimmed_at_once(
+    tmp_path: Path,
+) -> None:
+    # Every change trims: the first TX report evicts the history after the release.
+    await _unproven_release_stays_core_s(
+        tmp_path, StateStore(max_history_count=0), lambda: None
+    )
+
+
+async def test_unproven_release_stays_core_s_after_field_churn_at_default_retention(
+    tmp_path: Path,
+) -> None:
+    store = StateStore()
+
+    def churn() -> None:
+        for value in range(5000):  # more changes than the default history keeps
+            store.apply_current(
+                Observation(
+                    path=FieldPath.global_("tx_state", "churn"),
+                    value=value,
+                    source=SourceMetadata(source="poll_response", provider="test"),
+                    timestamp_monotonic=time.monotonic(),
+                    max_age=60.0,
+                )
+            )
+
+    await _unproven_release_stays_core_s(tmp_path, store, churn)
 
 
 # MOR-3557: per-IP cap on live controller sessions.
