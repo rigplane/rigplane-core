@@ -776,6 +776,7 @@ class RigConfig:
                         end=b["end_hz"],
                         default=b["default_hz"],
                         bsr_code=b.get("bsr_code"),
+                        rx_only=b.get("rx_only", False),
                     )
                     for b in r.get("bands", ())
                 ),
@@ -2897,15 +2898,28 @@ def load_rig(path: Path) -> RigConfig:
     # MOR-2111: the optional per-range ``repeater`` flag marks a VHF/UHF
     # repeater band. It is data only — no band name or frequency lives in
     # code. Omitted defaults to false; any non-boolean value is a load error.
+    # MOR-3632: the optional per-band ``rx_only`` flag marks a receive-only
+    # band row (tunable, never TX-permitted). Same rule as ``repeater``:
+    # omitted defaults to false; any non-boolean value is a load error
+    # naming the band.
     for index, rng in enumerate(freq_ranges_data):
-        if (
-            isinstance(rng, dict)
-            and "repeater" in rng
-            and not isinstance(rng["repeater"], bool)
-        ):
+        if not isinstance(rng, dict):
+            continue
+        if "repeater" in rng and not isinstance(rng["repeater"], bool):
             raise RigLoadError(
                 f"{filename}: freq_ranges.ranges[{index}].repeater must be a boolean"
             )
+        for band_index, band in enumerate(rng.get("bands", ())):
+            if (
+                isinstance(band, dict)
+                and "rx_only" in band
+                and not isinstance(band["rx_only"], bool)
+            ):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{index}].bands[{band_index}]"
+                    f".rx_only must be a boolean"
+                    f" (band {band.get('name', band_index)!r})"
+                )
 
     # Parse VFO bytes — explicit split (issue #710)
     vfo_main = tuple(vfo["main_select"]) if "main_select" in vfo else None

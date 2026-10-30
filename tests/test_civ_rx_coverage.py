@@ -4107,20 +4107,6 @@ def test_update_state_cache_applies_state_store_before_legacy_cache_mirror(
     assert all(value == initial_value for value in seen_legacy_values)
 
 
-def test_update_state_cache_uses_slot_specific_observation_path_when_override_active(
-    radio: IcomRadio,
-) -> None:
-    radio._vfo_slot_override = {"MAIN": "B"}  # noqa: SLF001
-    radio._civ_runtime._update_state_cache_from_frame(
-        _make_frame(cmd=0x03, data=bcd_encode(14_250_000))
-    )
-
-    assert (
-        radio._state_store.snapshot().field("receiver.0.slot.B.freq_mode.freq_hz").value
-        == 14_250_000
-    )
-
-
 def test_update_state_cache_applies_command_response_observation_once(
     radio: IcomRadio,
 ) -> None:

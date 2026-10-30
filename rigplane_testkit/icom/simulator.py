@@ -433,12 +433,12 @@ class MockIcomRadio(AudioPortMixin):
             :meth:`_civ_gap_loop`). Default ``time.monotonic``; tests pass
             a hand-advanced clock to pin the round rate without wall time.
         dual_receiver: opt-in native MAIN/SUB receiver select (default
-            False keeps the previous behaviour: ``07 D0``/``D1``/``D2``
-            fall through to ``recorded_answers`` or the final NAK and no
-            selection state is kept). When True, ``07 D0``/``D1`` swap
-            the selected and unselected receiver fields (frequency, mode,
-            DATA-mode flag, filter) and ``07 D2`` reads the selection
-            (recorded IC-7610 ``vfo_select`` window).
+            False: ``07 D0``/``D1`` fall through to ``recorded_answers`` or
+            the final NAK and no selection state is kept; ``07 D2`` still
+            reads MAIN). When True, ``07 D0``/``D1`` swap the selected and
+            unselected receiver fields (frequency, mode, DATA-mode flag,
+            filter) and ``07 D2`` reads the selection (recorded IC-7610
+            ``vfo_select`` window).
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
@@ -2459,13 +2459,17 @@ class MockIcomRadio(AudioPortMixin):
                     )
                     self._selected_receiver = target
                 return self._civ_ack(to, frm)
-            if len(payload) == 1 and payload[0] == 0xD2:
-                return self._civ_frame(
-                    to,
-                    frm,
-                    _CMD_VFO_SELECT,
-                    data=bytes((0xD2, self._selected_receiver)),
-                )
+        # The bare D2 read is answered with or without ``dual_receiver``: a
+        # dual-receiver radio always reports its selection, and Core refuses
+        # receiver-scoped plain commands until it has (MOR-3591). Without
+        # ``dual_receiver`` nothing ever selects SUB, so it reads MAIN (00).
+        if cmd == _CMD_VFO_SELECT and payload == b"\xd2":
+            return self._civ_frame(
+                to,
+                frm,
+                _CMD_VFO_SELECT,
+                data=bytes((0xD2, self._selected_receiver)),
+            )
 
         # --- 0x1A 05 menu items (the startup MOD-input and NB reads) ---
         if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x05":

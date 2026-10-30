@@ -1117,11 +1117,6 @@ class YaesuCatRadio:
 
     # -- Runtime profile introspection -------------------------------------
 
-    def _has_command(self, name: str) -> bool:
-        """Check if a command is defined in the rig profile."""
-        spec = self._config.commands.get(name)
-        return spec is not None and isinstance(spec, CatCommandSpec)
-
     def _has_write_command(self, name: str) -> bool:
         """Check if a write command is defined in the rig profile."""
         spec = self._config.commands.get(name)
@@ -1546,7 +1541,7 @@ class YaesuCatRadio:
         mode: int,
         *,
         selected: bool,
-        data: bool | None = None,
+        data: bool | int | None = None,
         filter_width: int | None = None,
         before_set: Callable[[], None] | None = None,
     ) -> RelativeVfoState:
@@ -1565,7 +1560,14 @@ class YaesuCatRadio:
         }.get(base, base)
         if native not in self._mode_to_code:
             raise CommandError(f"relative mode {base!r} is absent from this profile")
-        if data is not None and type(data) is not bool:
+        if data is None:
+            pass
+        elif isinstance(data, bool):
+            pass
+        else:
+            # Yaesu exposes DATA as a mode pair, not a numbered sub-mode
+            # (MOR-3821 P0e): the widened numeric surface does not apply,
+            # so only a boolean selects the DATA partner.
             raise CommandError("relative DATA must be a boolean")
         if filter_width is not None:
             raise CommandError(

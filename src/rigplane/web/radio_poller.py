@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
-from ..core.exceptions import BackgroundSendDropped
+from ..core.exceptions import BackgroundSendDropped, ReceiverNotSelectedError
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AGC,
@@ -81,7 +81,11 @@ from ..core.command_service import (
     observable_field_path,
 )
 from ..core.acquisition_drain import AcquisitionDrain
-from ..core.command_dispatch import ManagedWriteAdmission, execute_command_intent
+from ..core.command_dispatch import (
+    CommandUnsupportedError,
+    ManagedWriteAdmission,
+    execute_command_intent,
+)
 from ..core.acquisition_scheduler import (
     AcquisitionExecutor,
     AcquisitionPriority,
@@ -600,10 +604,8 @@ class RadioPoller:
         self._fast_interval: float = (
             _FAST_INTERVAL_SERIAL if self._is_serial else _FAST_INTERVAL
         )
-        self._relative_vfo_retention_max_age: float | None = None
         if self._profile.vfo_readback == "selected_unselected":
             retention_age, coherence_window = self._relative_vfo_retention_policy()
-            self._relative_vfo_retention_max_age = retention_age
             self._state_store.configure_relative_vfo_retention(
                 generation=self._provider_generation(),
                 max_age=retention_age,
@@ -876,7 +878,7 @@ class RadioPoller:
         self,
         *,
         freq: int,
-        mode: str,
+        mode: str | None,
         command_id: str | None,
         source: CommandSource,
         session_id: str | None,
@@ -891,7 +893,7 @@ class RadioPoller:
             command_source=source,
             session_id=session_id,
         )
-        observations = (
+        observations = [
             Observation(
                 path=FieldPath.active("0", "freq_mode", "freq_hz"),
                 value=freq,
@@ -900,15 +902,20 @@ class RadioPoller:
                 correlation_id=f"{command_id}:freq" if command_id else None,
                 provider_generation=provider_generation,
             ),
-            Observation(
-                path=FieldPath.active("0", "freq_mode", "mode"),
-                value=mode,
-                source=metadata,
-                timestamp_monotonic=observed_at,
-                correlation_id=f"{command_id}:mode" if command_id else None,
-                provider_generation=provider_generation,
-            ),
-        )
+        ]
+        if mode is not None:
+            # No mode observation when the recalled mode was refused: the
+            # radio is still in the mode it had.
+            observations.append(
+                Observation(
+                    path=FieldPath.active("0", "freq_mode", "mode"),
+                    value=mode,
+                    source=metadata,
+                    timestamp_monotonic=observed_at,
+                    correlation_id=f"{command_id}:mode" if command_id else None,
+                    provider_generation=provider_generation,
+                )
+            )
         for observation in observations:
             if command_service is not None:
                 command_service.apply_observation(observation)
@@ -953,6 +960,10 @@ class RadioPoller:
                 "blockedBy": "tx_interlock",
                 "reason": exc.reason_code,
             }
+        elif isinstance(exc, ReceiverNotSelectedError):
+            # MOR-3591: a queued write for a receiver that is not selected
+            # reaches its issuer with the stable refusal code.
+            params["details"] = {"reason": exc.reason_code}
         entry.command_service.fail_command(
             entry.command_id,
             **params,
@@ -2185,49 +2196,14 @@ class RadioPoller:
                 return observation
             case SetFreq(freq=freq, receiver=rx):
                 self._refuse_unsupported_receiver(rx, operation="set_freq")
-                current = self._current_active()
+                # The backend owns receiver addressing. A receiver it cannot
+                # address directly is written only while it is selected and
+                # refused otherwise; the selection is never switched to
+                # reach it (MOR-3591).
                 if rx != 0:
-                    # CoreRadio.set_freq already owns the cmd29-vs-VFO-switch
-                    # decision for a non-MAIN receiver (runtime/radio.py,
-                    # runtime/_dual_rx_runtime.py:
-                    # _run_with_receiver_vfo_fallback) — no need to
-                    # reimplement the switch dance here.
                     await radio.set_freq(freq, receiver=rx)
                 else:
-                    # No lower-layer equivalent for a VFO-aware MAIN write:
-                    # CoreRadio.set_freq(freq, receiver=0) sends a
-                    # VFO-unaware 0x05 regardless of which VFO is selected.
-                    # When SUB is active the poller must still switch to
-                    # MAIN, write, and switch back — routed through the
-                    # public select_receiver API instead of a hand-built
-                    # 0x07 CI-V frame.
-                    select_receiver = getattr(radio, "select_receiver", None)
-                    if current != "MAIN" and self._profile.vfo_main_code is not None:
-                        if select_receiver is not None:
-                            await select_receiver(0)
-                        else:
-                            logger.warning(
-                                "radio-poller: set_freq receiver=0 — backend "
-                                "lacks select_receiver; skipping "
-                                "restore-to-MAIN switch",
-                            )
-                    # The write waits for the radio's answer, so it can
-                    # raise (a NAK maps to CommandRejectedError, silence to
-                    # TimeoutError); the restore of the SUB selection must
-                    # run on every exit, with the write's own error
-                    # propagating.
-                    try:
-                        await radio.set_freq(freq)
-                    finally:
-                        if current != "MAIN" and self._profile.vfo_sub_code is not None:
-                            if select_receiver is not None:
-                                await select_receiver(1)
-                            else:
-                                logger.warning(
-                                    "radio-poller: set_freq receiver=0 — backend "
-                                    "lacks select_receiver; skipping "
-                                    "restore-to-SUB switch",
-                                )
+                    await radio.set_freq(freq)
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
@@ -2243,35 +2219,11 @@ class RadioPoller:
                     self._state_store.discard(
                         (FieldPath.active(str(rx), "freq_mode", "filter_width"),)
                     )
-                current = self._current_active()
+                # Receiver addressing as for SetFreq above (MOR-3591).
                 if rx != 0:
-                    # See SetFreq above: CoreRadio.set_mode owns the same
-                    # cmd29-vs-VFO-switch decision for a non-MAIN receiver.
                     await radio.set_mode(mode, fw, receiver=rx)
                 else:
-                    # See SetFreq above: no lower-layer VFO-aware MAIN write
-                    # exists, so the poller still owns the switch-and-restore
-                    # dance here, routed through select_receiver.
-                    select_receiver = getattr(radio, "select_receiver", None)
-                    if current != "MAIN" and self._profile.vfo_main_code is not None:
-                        if select_receiver is not None:
-                            await select_receiver(0)
-                        else:
-                            logger.warning(
-                                "radio-poller: set_mode receiver=0 — backend "
-                                "lacks select_receiver; skipping "
-                                "restore-to-MAIN switch",
-                            )
                     await radio.set_mode(mode, fw)
-                    if current != "MAIN" and self._profile.vfo_sub_code is not None:
-                        if select_receiver is not None:
-                            await select_receiver(1)
-                        else:
-                            logger.warning(
-                                "radio-poller: set_mode receiver=0 — backend "
-                                "lacks select_receiver; skipping "
-                                "restore-to-SUB switch",
-                            )
                 # Compatibility mirror until web state delivery reads StateStore.
                 if self._radio_state:
                     target = (
@@ -2617,6 +2569,11 @@ class RadioPoller:
                 from ..types import Mode as CivMode
 
                 bsr_ok = False
+                # Set once the recalled frequency is on the radio: from then
+                # on nothing may roll it back or replace it with the band
+                # default (MOR-3623).
+                freq_applied = False
+                mode_refusal: CommandUnsupportedError | None = None
                 try:
                     resp = await self._civ(
                         0x1A,
@@ -2647,11 +2604,25 @@ class RadioPoller:
                             filter_num,
                         )
                         await radio.set_freq(freq)
+                        freq_applied = True
                         await asyncio.sleep(self._gap)
-                        await radio.set_mode(mode_name, filter_num)
+                        try:
+                            await radio.set_mode(mode_name, filter_num)
+                        except CommandUnsupportedError as exc:
+                            # The profile does not run this mode on the band
+                            # just tuned to (DD outside 23 cm on the IC-9700):
+                            # refuse only the mode; the frequency stands.
+                            mode_refusal = exc
+                            logger.info(
+                                "BSR recall: band=%d mode %s refused: %s",
+                                band,
+                                mode_name,
+                                exc,
+                            )
+                        applied_mode = None if mode_refusal else mode_name
                         self._apply_bsr_readback_observations(
                             freq=freq,
-                            mode=mode_name,
+                            mode=applied_mode,
                             command_id=command_id,
                             source=source,
                             session_id=session_id,
@@ -2662,17 +2633,28 @@ class RadioPoller:
                             target = self._radio_state.main
                             if target:
                                 target.freq = freq
-                                target.mode = mode_name
+                                if applied_mode is not None:
+                                    target.mode = applied_mode
                         if self._on_state_event:
                             self._on_state_event(
                                 "freq_changed", {"freq": freq, "receiver": 0}
                             )
-                            self._on_state_event(
-                                "mode_changed", {"mode": mode_name, "receiver": 0}
-                            )
+                            if applied_mode is not None:
+                                self._on_state_event(
+                                    "mode_changed",
+                                    {"mode": applied_mode, "receiver": 0},
+                                )
                         bsr_ok = True
                 except Exception:
                     logger.debug("BSR recall failed", exc_info=True)
+                    if freq_applied:
+                        # The recalled frequency is on the radio; a failure
+                        # after it is reported, never answered by tuning to
+                        # the band default.
+                        raise
+
+                if mode_refusal is not None:
+                    raise mode_refusal
 
                 if not bsr_ok:
                     # Fallback: set default freq from rig profile

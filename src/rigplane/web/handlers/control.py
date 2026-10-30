@@ -28,7 +28,11 @@ from ...core.command_dispatch import (
     enqueue_command_intent,
     prepare_command_intent,
 )
-from ...core.exceptions import CommandError, CommandRejectedError
+from ...core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ReceiverNotSelectedError,
+)
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.types import MemoryProfile
@@ -286,16 +290,6 @@ def _queue_refused_for_release_debt(
         and pending.exception() is None
         and submission_refused_for_release_debt(pending.result())
     )
-
-
-# MOR-624: maps the per-DATA-group MOD-input SET command name (as sent by the
-# frontend auto-restore) to its allowed teardown arm name (MOR-993).
-_MOD_INPUT_RESTORE_ACTIONS: dict[str, Any] = {
-    "set_data_off_mod_input": SetDataOffModInput,
-    "set_data1_mod_input": SetData1ModInput,
-    "set_data2_mod_input": SetData2ModInput,
-    "set_data3_mod_input": SetData3ModInput,
-}
 
 
 @dataclass(slots=True)
@@ -977,10 +971,6 @@ class ControlHandler:
         self._last_ptt_on = False
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
-        # MOR-624: (command_name, previous_source) armed by the frontend auto-LAN
-        # feature at TX start. MOR-993 forbids replaying it on teardown; MOR-1013
-        # moved the teardown PTT OFF off this state entirely.
-        self._mod_input_restore: tuple[str, int] | None = None
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
         )
@@ -1097,7 +1087,6 @@ class ControlHandler:
                         exc_info=True,
                     )
             self._publish_session_liveness(live=False)
-            self._clear_mod_input_restore_on_teardown()
             self._cancel_pending_command_flushes()
             event_task.cancel()
             teardown_error: Exception | None = None
@@ -1382,18 +1371,6 @@ class ControlHandler:
             )
             return
 
-        # MOR-624: session-local arm/disarm of the teardown MOD-input restore.
-        # Bookkeeping only (never a radio command) — intercepted before the
-        # _COMMANDS gate so the command catalog stays untouched.
-        if name in ("arm_mod_input_restore", "disarm_mod_input_restore"):
-            result = self._apply_mod_input_restore_cmd(name, params)
-            await self._ws.send_text(
-                encode_json(
-                    {"type": "response", "id": cmd_id, "ok": True, "result": result}
-                )
-            )
-            return
-
         if (
             isinstance(name, str)
             and name in self._COMMANDS
@@ -1665,8 +1642,8 @@ class ControlHandler:
         if isinstance(exc, CwTextSendCancelledError):
             # MOR-3700: a CW stop or a transmit abort ended the send.
             error = "command_cancelled"
-        elif isinstance(exc, MemoryWriteUnverifiedError):
-            # MOR-3644: stable refusal code, not English prose matching.
+        elif isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
+            # MOR-3644 / MOR-3591: stable refusal code, not prose matching.
             error = exc.reason_code
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
@@ -1693,35 +1670,6 @@ class ControlHandler:
                 }
             )
         )
-
-    def _apply_mod_input_restore_cmd(
-        self, name: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Arm/disarm the transitional session teardown intent (MOR-624/MOR-993).
-
-        Writable-session ``arm`` keeps the legacy payload for wire compatibility,
-        but the arm authorizes nothing: it never authorizes a MOD SET (MOR-993),
-        and since MOR-1013 the teardown PTT OFF no longer depends on it either.
-        ``disarm`` clears the intent idempotently.
-        """
-        if name == "disarm_mod_input_restore":
-            self._mod_input_restore = None
-            return {}
-        self._mod_input_restore = None
-        if self._read_only:
-            return {"armed": False}
-        command = str(params.get("command", ""))
-        if command not in _MOD_INPUT_RESTORE_ACTIONS:
-            return {"armed": False}
-        source = params.get("source")
-        if (
-            isinstance(source, bool)
-            or not isinstance(source, int)
-            or not 0 <= source <= 5
-        ):
-            return {"armed": False}
-        self._mod_input_restore = (command, source)
-        return {"armed": True}
 
     def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:
         authority = self._managed_tx_authority
@@ -1755,22 +1703,6 @@ class ControlHandler:
             queue.register_session(self._session_id)
         else:
             queue.unregister_session(self._session_id)
-
-    def _clear_mod_input_restore_on_teardown(self) -> None:
-        """Consume the legacy MOD-input arm without acting on it (MOR-993).
-
-        Queue order, ACK, timeout, and cached state do not prove RF de-key. Until
-        MOR-986 supplies fresh authoritative PTT confirmation, teardown must
-        never enqueue the remembered MOD SET. Bookkeeping only — this method
-        never touches the command queue.
-        """
-        self._mod_input_restore = None
-
-    def _controller_remote(self) -> bool:
-        controller = getattr(self._radio, "_controller_authority", None)
-        return (
-            isinstance(controller, ControllerAuthority) and controller.mode == "remote"
-        )
 
     def _validate_controller_command(
         self,

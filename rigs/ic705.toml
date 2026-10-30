@@ -711,6 +711,16 @@ equal_ab = [0xA0]
 # 12 = Air, 13 = 144, 14 = 430, 15 = GENE ("other than above"), written
 # as its number (6m = 0x0A = 10). 2200m, 630m and 60m have no code of their
 # own, so they carry none and their band button tunes default_hz directly.
+#
+# rx_only (MOR-3632): band rows the IC-705 tunes but must never count as
+# TX-permitted; the capabilities txBands payload omits them. Per the IC-705
+# Basic Manual (ENG_Basic_9), section 11 Specifications / General, printed
+# p.11-1: USA/EUR/UK transmitter ranges all start at 1.8 MHz, so 2200m
+# (135-138 kHz) and 630m (472-479 kHz) sit below every transmitter range;
+# WFM 74.8-108 MHz is broadcast receive-only; Air 108-137 MHz is outside
+# the transmitter ranges; the general-coverage receiver interval (Gen)
+# must not grant continuous TX — overlapping amateur rows above keep
+# their own TX permission.
 
 [[freq_ranges.ranges]]
 label = "HF"
@@ -722,12 +732,14 @@ name = "2200m"
 start_hz = 135_000
 end_hz = 138_000
 default_hz = 136_000
+rx_only = true
 
 [[freq_ranges.ranges.bands]]
 name = "630m"
 start_hz = 472_000
 end_hz = 479_000
 default_hz = 475_000
+rx_only = true
 
 [[freq_ranges.ranges.bands]]
 name = "160m"
@@ -821,6 +833,7 @@ start_hz = 74_800_000
 end_hz = 108_000_000
 default_hz = 100_000_000
 bsr_code = 0x0B
+rx_only = true
 
 [[freq_ranges.ranges]]
 label = "Air RX"
@@ -833,6 +846,7 @@ start_hz = 108_000_000
 end_hz = 137_000_000
 default_hz = 121_500_000
 bsr_code = 0x0C
+rx_only = true
 
 [[freq_ranges.ranges]]
 label = "2m"
@@ -877,6 +891,7 @@ start_hz = 30_000
 end_hz = 199_999_999
 default_hz = 14_200_000
 bsr_code = 0x0F
+rx_only = true
 
 # MOR-3782: the published UHF receive segment (400.000000 ~ 470.000000*,
 # same manual section) as its own range. Not hardware-verified. The UHF RX

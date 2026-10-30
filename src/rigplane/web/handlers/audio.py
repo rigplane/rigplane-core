@@ -1544,8 +1544,8 @@ class AudioHandler:
         broadcaster: Optional RX audio broadcaster.
         tx_gate: Optional async predicate — ``True`` means a browser TX
             frame may reach the radio. The server passes its managed TX
-            predicate (``WebServer._bridge_tx_gate_open``, MOR-2863), so
-            mic audio flows only while RigPlane holds the key: managed
+            predicate (``rigplane.runtime.tx_gate.tx_gate_open``, MOR-2863),
+            so mic audio flows only while RigPlane holds the key: managed
             intent keyed or a fresh ``ObservedPtt.ON`` (MOR-2870). ``None``
             leaves the handler ungated (direct-construction test doubles).
         outside_tx_admission: Optional async-context-manager factory —
@@ -1596,10 +1596,6 @@ class AudioHandler:
         self._tx_warn_counts: dict[str, int] = {}
         self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
-        # Latest client-reported link-quality snapshot from the periodic
-        # ``audio_stats`` uplink (MOR-585) — mirrored per client on the
-        # broadcaster while RX is subscribed.
-        self._link_quality: dict[str, Any] = {}
         self._last_logged_capture_category: str | None = None
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._done = asyncio.Event()
@@ -1799,7 +1795,6 @@ class AudioHandler:
         by ``_bounded_audio_stats`` before retention.
         """
         stats = _bounded_audio_stats(msg)
-        self._link_quality = stats
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)
             category = stats.get("microphoneCaptureError")

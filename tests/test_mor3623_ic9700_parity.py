@@ -51,7 +51,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.types import Mode, RepeaterShiftDirection, bcd_decode, bcd_encode
-from rigplane.exceptions import CommandError, TimeoutError
+from rigplane.core.exceptions import ReceiverNotSelectedError
 from rigplane.profiles import admit_mode, resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
@@ -60,7 +60,7 @@ from rigplane.types import CivFrame
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebConfig, WebServer
-from _helpers import report_receiver_selection
+from _helpers import observe_selected_receiver
 from test_icom_memory_entry import _block, _ic9700_reply
 from test_radio import MockTransport, _wrap_civ_in_udp
 from test_web_server import (
@@ -203,214 +203,115 @@ async def test_set_sends_the_guide_code_on_every_band(
     assert band_info.bsr_code == band_code
 
     radio = _radio(transport)
+    observe_selected_receiver(radio, 0)
     transport.queue_response_on_send(1, _reply(0xFB))  # set_freq ACK
-    # The routed MAIN write first reads the selection the radio has not
-    # reported yet (MOR-3623): MAIN, so no switch is needed.
-    transport.queue_response_on_send(2, _reply(0x07, b"\xd2\x00"))
-    transport.queue_response_on_send(3, _reply(0xFB))  # shift ACK
+    transport.queue_response_on_send(2, _reply(0xFB))  # shift ACK
     await radio.set_freq(freq)
     await radio.set_repeater_shift(RepeaterShiftDirection.MINUS)
-    sent = _sent_frames(transport)
-    assert (sent[-1].command, sent[-1].data) == (0x0F, b"\x11")
+    assert [(f.command, f.data) for f in _sent_frames(transport)][-1] == (
+        0x0F,
+        b"\x11",
+    )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("byte", "direction"), _READBACKS)
 async def test_get_decodes_the_readback(transport, byte, direction) -> None:
     radio = _radio(transport)
-    transport.queue_response_on_send(1, _reply(0x07, b"\xd2\x00"))  # MAIN
-    transport.queue_response_on_send(2, _reply(0x0F, bytes([byte])))
+    observe_selected_receiver(radio, 0)
+    transport.queue_response_on_send(1, _reply(0x0F, bytes([byte])))
     assert await radio.get_repeater_shift() is direction
-    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
-        (0x07, b"\xd2"),
-        (0x0F, b""),
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [(0x0F, b"")]
+
+
+# The owner ruling (2026-10-29): what fits the front panel fits us. 0F has
+# no receiver byte, so it reaches the SELECTED receiver only; a request for
+# the other receiver is refused with ``receiver_not_selected`` and nothing
+# goes on the wire (no 0F, and no 07 D0/D1 selection either). The guard is
+# the shared ``_require_cmd29_route``; the wire-level backbone over every
+# operation lives in ``test_mor3591_no_hidden_receiver_switch.py``.
+_SELECTION_FRAMES = (0xD0, 0xD1)
+
+
+def _selection_sent(transport: MockTransport) -> list[CivFrame]:
+    return [
+        f
+        for f in _sent_frames(transport)
+        if f.command == 0x07 and f.data[:1] and f.data[0] in _SELECTION_FRAMES
     ]
 
 
 @pytest.mark.asyncio
-async def test_main_shift_with_sub_selected_and_the_selection_answer_lost(
-    transport,
-) -> None:
-    """Pre-review P1 (MOR-3623): SUB is physically selected and the initial
-    ``07 D2`` answer was lost, so the mirror holds its default MAIN. A MAIN
-    shift must not trust it: the selection is read back, MAIN is selected
-    for the write, and SUB is restored — the bare 0F never reaches SUB."""
+@pytest.mark.parametrize("receiver", [0, 1], ids=["main", "sub"])
+async def test_set_goes_to_the_selected_receiver(transport, receiver) -> None:
     radio = _radio(transport)
-    assert radio._radio_state.active == "MAIN"  # the default, never reported
-    transport.queue_response_on_send(1, _reply(0x07, b"\xd2\x01"))  # SUB
-    for n in (2, 3, 4):
-        transport.queue_response_on_send(n, _reply(0xFB))
-    await radio.set_repeater_shift(RepeaterShiftDirection.PLUS, receiver=0)
-    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
-        (0x07, b"\xd2"),  # read the selection
-        (0x07, b"\xd0"),  # select MAIN
-        (0x0F, b"\x12"),  # DUP+ on MAIN
-        (0x07, b"\xd1"),  # restore SUB
-    ]
-    assert radio._radio_state.active == "SUB"
-
-
-@pytest.mark.asyncio
-async def test_set_on_the_sub_receiver_switches_and_restores(transport) -> None:
-    """0F carries no receiver byte: a dual-receiver radio is addressed
-    through the shared MAIN/SUB switch-and-restore (the same routing
-    ``set_mode`` uses), and the selection is restored after the write
-    (pre-review P1, MOR-3623)."""
-    radio = _radio(transport)
-    report_receiver_selection(radio, 0)
-    for n in (1, 2, 3):
-        transport.queue_response_on_send(n, _reply(0xFB))
-    await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
-    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
-        (0x07, b"\xd1"),  # select SUB
-        (0x0F, b"\x11"),  # DUP− on SUB
-        (0x07, b"\xd0"),  # restore MAIN
-    ]
-    assert radio._radio_state.active == "MAIN"
-
-
-@pytest.mark.asyncio
-async def test_get_on_the_sub_receiver_switches_and_restores(transport) -> None:
-    radio = _radio(transport)
-    report_receiver_selection(radio, 0)
+    observe_selected_receiver(radio, receiver)
     transport.queue_response_on_send(1, _reply(0xFB))
-    transport.queue_response_on_send(2, _reply(0x0F, bytes([0x11])))
-    transport.queue_response_on_send(3, _reply(0xFB))
-    assert await radio.get_repeater_shift(receiver=1) is RepeaterShiftDirection.MINUS
-    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
-        (0x07, b"\xd1"),
-        (0x0F, b""),
-        (0x07, b"\xd0"),
-    ]
-    assert radio._radio_state.active == "MAIN"
+    await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=receiver)
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [(0x0F, b"\x11")]
 
 
 @pytest.mark.asyncio
-async def test_set_on_main_with_sub_selected_switches_and_restores(
-    transport,
+@pytest.mark.parametrize("receiver", [0, 1], ids=["main", "sub"])
+async def test_get_reads_the_selected_receiver(transport, receiver) -> None:
+    radio = _radio(transport)
+    observe_selected_receiver(radio, receiver)
+    transport.queue_response_on_send(1, _reply(0x0F, b"\x11"))
+    shift = await radio.get_repeater_shift(receiver=receiver)
+    assert shift is RepeaterShiftDirection.MINUS
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [(0x0F, b"")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("selected", "receiver"),
+    [
+        pytest.param(0, 1, id="main-selected-sub-asked"),
+        pytest.param(1, 0, id="sub-selected-main-asked"),
+        pytest.param(None, 0, id="selection-unknown-main-asked"),
+        pytest.param(None, 1, id="selection-unknown-sub-asked"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["set", "get"])
+async def test_the_other_receiver_is_refused_and_nothing_is_sent(
+    transport, selected, receiver, operation
 ) -> None:
-    """The routing is symmetric (pre-review round 2): a MAIN request while
-    SUB is selected must switch to MAIN first, or the bare 0F would write
-    SUB by accident — the dispatch path has no poller-side dance."""
     radio = _radio(transport)
-    report_receiver_selection(radio, 1)
-    for n in (1, 2, 3):
-        transport.queue_response_on_send(n, _reply(0xFB))
-    await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=0)
-    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
-        (0x07, b"\xd0"),  # select MAIN
-        (0x0F, b"\x11"),  # DUP− on MAIN
-        (0x07, b"\xd1"),  # restore SUB
-    ]
-    assert radio._radio_state.active == "SUB"
+    if selected is not None:
+        observe_selected_receiver(radio, selected)
+    with pytest.raises(ReceiverNotSelectedError) as refused:
+        if operation == "set":
+            await radio.set_repeater_shift(
+                RepeaterShiftDirection.MINUS, receiver=receiver
+            )
+        else:
+            await radio.get_repeater_shift(receiver=receiver)
+    assert refused.value.reason_code == "receiver_not_selected"
+    assert _sent_frames(transport) == []
 
 
 @pytest.mark.asyncio
-async def test_a_lost_ack_on_the_initial_switch_still_restores(transport) -> None:
-    """Pre-review round 2: the switch may reach the radio while its ACK is
-    lost — one best-effort restoration runs before the error propagates.
-    The restoration's ACK is bound to the SECOND send: the first (the
-    lost switch) stays unanswered."""
+async def test_an_invalid_direction_sends_nothing(transport) -> None:
+    """The direction is validated before the receiver guard: an invalid
+    value raises ValueError with zero wire traffic."""
     radio = _radio(transport)
-    report_receiver_selection(radio, 0)
-    transport.queue_response_on_send(2, _reply(0xFB))
-    with pytest.raises((TimeoutError, CommandError)):
-        await radio.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=1)
-    assert [(f.command, f.data) for f in _sent_frames(transport)] == [
-        (0x07, b"\xd1"),  # the switch whose ACK was lost
-        (0x07, b"\xd0"),  # the best-effort restoration
-    ]
-    assert radio._radio_state.active == "MAIN"
-
-
-@pytest.mark.asyncio
-async def test_an_invalid_direction_changes_nothing_not_even_the_selection(
-    transport,
-) -> None:
-    """Pre-review round 3: the direction is validated before any receiver
-    routing — an invalid value raises ValueError with zero wire traffic,
-    even when the requested receiver is not the selected one."""
-    radio = _radio(transport)
-    report_receiver_selection(radio, 0)
+    observe_selected_receiver(radio, 0)
     with pytest.raises(ValueError):
         await radio.set_repeater_shift(RepeaterShiftDirection.ARS, receiver=1)
     assert _sent_frames(transport) == []
-    assert radio._radio_state.active == "MAIN"
 
 
 @pytest.mark.asyncio
-async def test_a_foreign_selection_during_the_action_skips_the_restore(
-    transport,
-) -> None:
-    """Pre-review round 2: when another caller moved the selection while our
-    action ran, our restoration is skipped — a blind restore would overwrite
-    their selection. Their selection owns the radio."""
-    radio = _radio(transport)
-    report_receiver_selection(radio, 0)
-    calls: list[str] = []
-
-    async def fake_set_vfo_wire(vfo: str) -> None:
-        calls.append(vfo)
-
-    radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
-
-    async def action(is_current):
-        # The radio reports another selection while our write is on it.
-        radio._radio_state.active = "MAIN"
-        return "written"
-
-    result = await radio._run_receiver_routed_once(
-        1, operation="set_repeater_shift", action=action
+async def test_single_receiver_ic705_needs_no_selection(transport) -> None:
+    """The IC-705 has one receiver: the bare 0F is always sent, without any
+    selection readback (the unchanged direct path)."""
+    radio = _radio(transport, model="IC-705")
+    transport.queue_response_on_send(
+        1, _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA4, 0xFB))
     )
-    assert result == "written"
-    # The SUB switch ran; the MAIN restoration was skipped.
-    assert calls == ["SUB"]
-
-
-@pytest.mark.asyncio
-async def test_cancellation_during_the_restore_waits_for_it(transport) -> None:
-    """Pre-review P1 (MOR-3623): cancelling the caller while the restoration
-    is on the wire must not strand the radio on the temporary receiver, and
-    the caller does not finish before the restoration did — then the
-    cancellation propagates (simulated; fake wire only)."""
-    radio = _radio(transport)
-    report_receiver_selection(radio, 0)
-    restore_started = asyncio.Event()
-    restore_gate = asyncio.Event()
-    calls: list[str] = []
-
-    async def fake_set_vfo_wire(vfo: str) -> None:
-        calls.append(vfo)
-        if vfo == "MAIN":
-            restore_started.set()
-            await restore_gate.wait()
-
-    radio._set_vfo_wire = fake_set_vfo_wire  # type: ignore[method-assign]
-
-    async def action(is_current):
-        return "written"
-
-    task = asyncio.create_task(
-        radio._run_receiver_routed_once(
-            1, operation="set_repeater_shift", action=action
-        )
-    )
-    try:
-        await asyncio.wait_for(restore_started.wait(), 5.0)
-        task.cancel()
-        for _ in range(20):
-            await asyncio.sleep(0)
-        assert not task.done()  # joined: waits for the restoration
-        restore_gate.set()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 5.0)
-    finally:
-        restore_gate.set()
-        if not task.done():
-            task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-    assert calls == ["SUB", "MAIN"]
-    assert radio._radio_state.active == "MAIN"
+    await radio.set_repeater_shift(RepeaterShiftDirection.PLUS)
+    assert [(f.command, f.data) for f in _sent_frames(transport)] == [(0x0F, b"\x12")]
+    assert _selection_sent(transport) == []
 
 
 @pytest.mark.asyncio
@@ -680,6 +581,7 @@ async def test_runtime_set_mode_admits_dd_by_band(transport, freq, admitted) -> 
     """An SDK or rigctld caller passes the same admission: outside 23 cm
     nothing is sent and the refusal reaches the caller."""
     radio = _radio(transport)
+    observe_selected_receiver(radio, 0)
     _observe_freq(radio, freq)
     if admitted:
         await radio.set_mode("DD")
@@ -698,12 +600,47 @@ async def test_a_retune_makes_the_old_band_evidence_stale(transport) -> None:
     readback has arrived yet: the 23 cm reading is not band evidence any
     more, so DD is refused and nothing is sent."""
     radio = _radio(transport)
+    observe_selected_receiver(radio, 0)
     _observe_freq(radio, 1_295_000_000)
     transport.queue_response_on_send(1, _reply(0xFB))  # the retune's ACK
     await radio.set_freq(145_000_000)
     with pytest.raises(CommandUnsupportedError):
         await radio.set_mode("DD")
     assert [f.command for f in _sent_frames(transport)] == [0x05]
+
+
+@pytest.mark.asyncio
+async def test_a_retune_to_23cm_admits_dd_before_any_readback(transport) -> None:
+    """The mirror case, the band-stack recall order (frequency, then mode):
+    2 m was observed, the receiver is retuned to 23 cm and the mode is set
+    right after, with no readback in between. The acknowledged write is the
+    band evidence, so DD is admitted for the band just tuned to."""
+    radio = _radio(transport)
+    observe_selected_receiver(radio, 0)
+    _observe_freq(radio, 145_000_000)
+    transport.queue_response_on_send(1, _reply(0xFB))  # the retune's ACK
+    transport.queue_response_on_send(2, _reply(0xFB))  # the mode's ACK
+    await radio.set_freq(1_295_000_000)
+    await radio.set_mode("DD")
+    assert [(f.command, f.data) for f in _sent_frames(transport)][-1] == (
+        0x06,
+        b"\x22",
+    )
+    assert _selection_sent(transport) == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_dd_leaves_the_selection_and_the_wire_alone(
+    transport,
+) -> None:
+    """DD on 2 m is refused before anything is sent, with SUB selected too:
+    no mode frame and no 07 D0/D1 selection frame."""
+    radio = _radio(transport)
+    observe_selected_receiver(radio, 1)
+    _observe_freq(radio, 145_000_000)
+    with pytest.raises(CommandUnsupportedError):
+        await radio.set_mode("DD", receiver=1)
+    assert _sent_frames(transport) == []
 
 
 # ── Band defaults ─────────────────────────────────────────────────────
@@ -779,7 +716,7 @@ class _FakeIc9700(MockTransport):
 
     Simulated, not a bench capture: per-receiver frequency, mode, shift and
     tone selector, with the selected receiver deciding where a bare frame
-    lands — the behaviour the routed switch-and-restore exists for. Reads
+    lands — a bare frame reaches the selected receiver only. Reads
     it does not model are refused (``FA``), as a radio refuses an
     unsupported read. Mode-set refuses DD outside the 1.2 GHz band, the
     radio's own rule (IC-9700 CI-V Reference Guide p.13).
@@ -872,13 +809,21 @@ async def ic9700_web(request):
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     entries = []
 
-    async def consume(count: int) -> None:
+    async def consume(count: int, refused: type[Exception] | None = None) -> None:
+        """Run ``count`` queued entries. A ``refused`` error is the expected
+        refusal: it is marked failed the way the production loop does (so
+        the issuer sees its lifecycle event); anything else propagates."""
         while len(entries) < count:
             await web.command_queue.wait(2)
             entry = web.command_queue.take_entry()
             assert entry is not None
             entries.append(entry)
-            await poller._execute_queued_entry(entry)
+            try:
+                await poller._execute_queued_entry(entry)
+            except Exception as exc:
+                if refused is None or not isinstance(exc, refused):
+                    raise
+                poller._mark_queued_command_failed(entry, exc)
 
     try:
         yield web, radio, transport, entries, consume
@@ -985,17 +930,23 @@ def _mode_sets(transport: MockTransport) -> list[bytes]:
     return [f.data for f in _sent_frames(transport) if f.command == 0x06]
 
 
+def _wire_selects(transport: MockTransport) -> list[CivFrame]:
+    """Every 07 D0/D1 receiver-selection frame that went out."""
+    return _selection_sent(transport)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("protocol", ["http", "ws"])
 async def test_ic9700_controls_through_the_real_endpoint(
     ic9700_web, protocol: str
 ) -> None:
-    """Shift on each receiver, a tone change and DV/DD mode selection,
-    from the real HTTP/WS endpoint through the actual IC-9700 runtime to a
-    fake radio, and back through production acquisition to the public
-    state (pre-review P2, MOR-3623). Nothing is injected into the state:
-    every public value is the fake radio's answer to a production query.
-    Simulated; fake wire only."""
+    """Shift, tone and DV/DD mode selection for the SELECTED receiver, from
+    the real HTTP/WS endpoint through the actual IC-9700 runtime to a fake
+    radio, and back through production acquisition to the public state
+    (MOR-3623). Nothing is injected into the state: every public value is
+    the fake radio's answer to a production query. The receiver selection
+    is never changed on the way (no 07 D0/D1 frame). Simulated; fake wire
+    only."""
     web, radio, transport, entries, consume = ic9700_web
     await _acquire(
         web,
@@ -1005,32 +956,27 @@ async def test_ic9700_controls_through_the_real_endpoint(
     commands = [
         (
             "set_repeater_shift",
-            {"direction": int(RepeaterShiftDirection.MINUS), "receiver": 1},
-        ),
-        (
-            "set_repeater_shift",
             {"direction": int(RepeaterShiftDirection.PLUS), "receiver": 0},
         ),
         ("set_repeater_tone", {"on": True, "receiver": 0}),
         ("set_mode", {"mode": "DV", "receiver": 0}),
         ("set_mode", {"mode": "DD", "receiver": 0}),  # 2 m: refused
     ]
-    consumer = asyncio.create_task(consume(4))
+    consumer = asyncio.create_task(consume(3))
     try:
         answers = await _send_commands(web, protocol, commands)
     finally:
         await asyncio.wait_for(consumer, 10)
-    assert [a["ok"] for a in answers] == [True, True, True, True, False]
+    assert [a["ok"] for a in answers] == [True, True, True, False]
     assert answers[-1]["error"] == "unsupported_command"
-    assert len(entries) == 4  # the refused DD never reached the queue
+    assert len(entries) == 3  # the refused DD never reached the queue
 
-    # The commanded receiver at the radio: DUP− on SUB, DUP+ on MAIN, the
-    # tone and DV on MAIN, and MAIN selected again afterwards.
-    assert transport.receivers[1]["shift"] == 0x11
     assert transport.receivers[0]["shift"] == 0x12
     assert transport.receivers[0]["tone"] == 0x01
+    assert transport.receivers[1]["shift"] == 0x00
     assert transport.receivers[1]["tone"] == 0x00
     assert transport.selected == 0
+    assert _wire_selects(transport) == []
     assert _mode_sets(transport) == [b"\x17"]  # no DD byte ever sent
 
     state = await _acquire(
@@ -1045,6 +991,56 @@ async def test_ic9700_controls_through_the_real_endpoint(
     assert state["active"] == "MAIN"
     assert state["main"]["repeaterTone"] is True
     assert state["main"]["repeaterTsql"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protocol", ["http", "ws"])
+async def test_a_write_for_the_other_receiver_is_refused_on_the_wire(
+    ic9700_web, protocol: str
+) -> None:
+    """Owner ruling 2026-10-29: the front panel has one selected receiver,
+    and so do we. Shift and tone writes for SUB while MAIN is selected are
+    refused with ``receiver_not_selected`` -- and NOTHING goes on the wire:
+    no 0F write, no 16 42 write, no 07 D0/D1 selection (a hidden
+    switch-write-restore is what this rules out). The radio keeps both
+    receivers and its selection exactly as they were. Simulated; fake wire
+    only."""
+    web, radio, transport, entries, consume = ic9700_web
+    await _acquire(
+        web,
+        radio,
+        lambda s: s["active"] == "MAIN" and s["main"]["freqHz"] == 145_000_000,
+    )
+    sent_before = len(_sent_frames(transport))
+    commands = [
+        (
+            "set_repeater_shift",
+            {"direction": int(RepeaterShiftDirection.MINUS), "receiver": 1},
+        ),
+        ("set_repeater_tone", {"on": True, "receiver": 1}),
+    ]
+    consumer = asyncio.create_task(consume(2, ReceiverNotSelectedError))
+    try:
+        await _send_commands(web, protocol, commands)
+    finally:
+        await asyncio.wait_for(consumer, 10)
+
+    failures = [
+        event
+        for event in web.command_service.lifecycle_events()
+        if event.state == "failed"
+    ]
+    assert [(e.details or {}).get("reason") for e in failures] == [
+        "receiver_not_selected",
+        "receiver_not_selected",
+    ]
+    sent = _sent_frames(transport)[sent_before:]
+    assert [f for f in sent if f.command in (0x0F, 0x07, 0x16)] == []
+    assert _wire_selects(transport) == []
+    assert transport.selected == 0
+    assert transport.receivers[0]["shift"] == 0x00
+    assert transport.receivers[1]["shift"] == 0x00
+    assert transport.receivers[1]["tone"] == 0x00
 
 
 @pytest.mark.asyncio

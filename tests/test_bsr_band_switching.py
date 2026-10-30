@@ -17,7 +17,17 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.commands import (
+    CONTROLLER_ADDR,
+    bcd_decode,
+    build_civ_frame,
+    parse_civ_frame,
+)
+from rigplane.core.command_dispatch import CommandUnsupportedError
+from rigplane.exceptions import TimeoutError
 from rigplane.profiles import resolve_radio_profile
+from rigplane.radio import IcomRadio
+from rigplane.types import bcd_encode
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -30,6 +40,9 @@ from rigplane.web.radio_poller import (
     RadioPoller,
     SetBand,
 )
+
+from _helpers import observe_selected_receiver
+from test_radio import MockTransport, _wrap_civ_in_udp
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -385,6 +398,110 @@ class TestSetBandFallback:
 
         # No frequency set (unknown band, no fallback)
         radio.set_freq.assert_not_awaited()
+
+
+class TestSetBandModeRefusal:
+    """A recalled mode the radio cannot apply must not undo the recall.
+
+    MOR-3623: a band-stack record may hold a mode the profile admits only on
+    some bands (IC-9700 DD, 1.2 GHz only). The poller sets the frequency and
+    then the mode; a refused mode is refused alone -- the frequency change
+    stands and no band-default fallback is invented. Real IC-9700 runtime
+    over a fake wire; nothing is hardware-verified.
+    """
+
+    @staticmethod
+    def _wire(
+        band: int, freq_hz: int, mode_code: int
+    ) -> tuple[RadioPoller, MockTransport]:
+        radio = IcomRadio("192.168.1.100", timeout=2.0, model="IC-9700")
+        transport = MockTransport()
+        radio._civ_transport = transport  # noqa: SLF001
+        radio._ctrl_transport = transport  # noqa: SLF001
+        radio._connected = True  # noqa: SLF001
+        observe_selected_receiver(radio, 0)
+        record = bytes([0x01, band, 0x01]) + bcd_encode(freq_hz) + bytes([mode_code, 1])
+        replies = (record, b"", b"")  # BSR read, set_freq ACK, set_mode ACK
+        for n, data in enumerate(replies, start=1):
+            command = 0x1A if n == 1 else 0xFB
+            transport.queue_response_on_send(
+                n,
+                _wrap_civ_in_udp(
+                    build_civ_frame(
+                        CONTROLLER_ADDR,
+                        radio.profile.civ_addr,
+                        command,
+                        data=data if n == 1 else b"",
+                    )
+                ),
+            )
+        poller = RadioPoller(
+            radio, StateCache(), CommandQueue(), radio_state=RadioState()
+        )
+        return poller, transport
+
+    @staticmethod
+    def _frames(transport: MockTransport) -> list[tuple[int, bytes]]:
+        frames = []
+        for packet in transport.sent_packets:
+            frame = parse_civ_frame(packet[packet.index(b"\xfe\xfe") :])
+            frames.append((frame.command, bytes(frame.data)))
+        return frames
+
+    @pytest.mark.asyncio
+    async def test_dd_record_on_23cm_is_applied_without_any_fallback(self) -> None:
+        poller, transport = self._wire(3, 1_295_000_000, 0x22)
+
+        await poller._execute(SetBand(band=3))  # noqa: SLF001
+
+        frames = self._frames(transport)
+        assert [command for command, _ in frames] == [0x1A, 0x05, 0x06]
+        assert frames[2][1][:1] == b"\x22"  # DD; the filter byte may follow
+        assert not [f for f in frames if f[0] == 0x07]  # no 07 D0/D1 selection
+        assert poller._radio_state.main.freq == 1_295_000_000  # noqa: SLF001
+        assert poller._radio_state.main.mode == "DD"  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_dd_record_on_2m_refuses_only_the_mode(self) -> None:
+        poller, transport = self._wire(1, 145_000_000, 0x22)
+        events: list[tuple[str, dict]] = []
+        poller._on_state_event = lambda name, data: events.append((name, data))  # noqa: SLF001
+
+        with pytest.raises(CommandUnsupportedError):
+            await poller._execute(SetBand(band=1))  # noqa: SLF001
+
+        frames = self._frames(transport)
+        # Read, set_freq -- and nothing after: no mode frame, no second
+        # frequency write (the band default, 144.000 MHz), and no 07 D0/D1.
+        assert [command for command, _ in frames] == [0x1A, 0x05]
+        assert bcd_decode(frames[1][1]) == 145_000_000
+        # The recalled frequency is reported; the refused mode is not.
+        snapshot = poller._state_store.snapshot()  # noqa: SLF001
+        assert (
+            snapshot.field("receiver.0.active.freq_mode.freq_hz").value == 145_000_000
+        )
+        assert not any(
+            str(field.path) == "receiver.0.active.freq_mode.mode"
+            for field in snapshot.fields
+        )
+        assert poller._radio_state.main.freq == 145_000_000  # noqa: SLF001
+        assert poller._radio_state.main.mode != "DD"  # noqa: SLF001
+        assert [name for name, _ in events] == ["freq_changed"]
+
+    @pytest.mark.asyncio
+    async def test_a_mode_failure_after_the_frequency_never_retunes(self) -> None:
+        radio = _make_radio(model="IC-9700")
+        freq_bcd = bcd_encode(145_500_000)
+        radio.send_civ = AsyncMock(
+            return_value=_bsr_response_frame(0x01, 0x01, freq_bcd, 0x05, 0x01)
+        )
+        radio.set_mode = AsyncMock(side_effect=TimeoutError("mode timed out"))
+        poller = _make_poller(radio, model="IC-9700")
+
+        with pytest.raises(TimeoutError):
+            await poller._execute(SetBand(band=1))  # noqa: SLF001
+
+        radio.set_freq.assert_awaited_once_with(145_500_000)
 
 
 # ---------------------------------------------------------------------------

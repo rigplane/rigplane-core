@@ -21,6 +21,7 @@ from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import parse_line
 from rigplane.types import Mode
 
+from _helpers import observe_selected_receiver
 from _perf_helpers import fast_connect
 from mock_server import MockIcomRadio
 
@@ -319,6 +320,8 @@ class TestRefusedReadsDoNotBlockTheQueue:
             with fast_connect():
                 await radio.connect()
             assert radio.connected
+            # fast_connect skips the 0x07 0xD2 query: MAIN is selected.
+            observe_selected_receiver(radio, 0)
             frames = [
                 build_civ_frame(
                     IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x05, data=b"\x99\x99"

@@ -219,6 +219,10 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/playwright-browser-env.test.py
 
+      - name: Doc link gate contract tests
+        if: needs.classify.outputs.ci == 'true'
+        run: python3 .github/scripts/check-doc-citations.test.py
+
       - name: Compile Python workflow controls
         if: needs.classify.outputs.ci == 'true'
         run: python3 -m py_compile .github/scripts/*.py

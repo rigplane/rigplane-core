@@ -54,7 +54,6 @@ test_web_audio_streaming_profile.py
 test_web_command_batch_http.py
 test_web_cw_http_control.py
 test_web_managed_tx_ingress.py
-test_web_mod_input_restore.py
 test_web_ptt_readonly.py
 test_web_runtime_helpers.py
 test_web_server.py

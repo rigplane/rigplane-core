@@ -10,6 +10,7 @@ __all__ = [
     "BackgroundSendDropped",
     "CommandRejectedError",
     "ModeReadbackError",
+    "ReceiverNotSelectedError",
     "TimeoutError",
     "DiscoveryTimeout",
     "AudioError",
@@ -89,6 +90,22 @@ class ModeReadbackError(CommandError):
         )
         self.requested_mode = requested_mode
         self.observed_mode = observed_mode
+
+
+class ReceiverNotSelectedError(CommandError):
+    """A receiver-scoped command was refused: its receiver is not selected.
+
+    On a dual-receiver radio a command without a per-receiver address
+    (no cmd29 route, no profile-declared direct selector) reaches only the
+    receiver the operator has selected. Core never switches the selection
+    behind the operator's back, so a command for the other receiver --
+    or for either receiver while the selection is not yet known -- is
+    refused (MOR-3591). ``reason_code`` is the stable machine-readable
+    refusal reason carried by the WebSocket ``error`` field and the HTTP
+    error envelope.
+    """
+
+    reason_code = "receiver_not_selected"
 
 
 class TimeoutError(RigplaneError):

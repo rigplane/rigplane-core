@@ -13,9 +13,8 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import ANY, AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
-from _helpers import report_receiver_selection
 import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
@@ -25,7 +24,7 @@ from rigplane.commands._codec import (
     hz_to_table_index,
     table_index_to_hz,
 )
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CommandError, ReceiverNotSelectedError
 from rigplane.profiles import (
     FilterWidthRule,
     FilterWidthSegment,
@@ -36,6 +35,8 @@ from rigplane.radio import IcomRadio
 from rigplane.radio_protocol import DspControlCapable
 from rigplane.rig_loader import load_rig
 from rigplane.types import CivFrame
+
+from _helpers import observe_selected_receiver
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 
@@ -308,8 +309,8 @@ def _connected_icom(*, model: str | None = "IC-7610") -> IcomRadio:
     # Bypass _check_connected without touching transport internals.
     radio._civ_runtime._check_connected = lambda: None  # type: ignore[method-assign]
     radio._civ_runtime._connected = True  # type: ignore[attr-defined]
-    if radio.profile.receiver_count > 1:
-        report_receiver_selection(radio, 0)  # MAIN, as the radio reported it
+    # The connect flow's 0x07 0xD2 answer: MAIN is selected (MOR-3591).
+    observe_selected_receiver(radio, 0)
     return radio
 
 
@@ -511,26 +512,15 @@ class TestIcomGetFilterWidthRouting:
         assert hz == 6000
 
     @pytest.mark.asyncio
-    async def test_ic9700_sub_receiver_uses_vfo_select_fallback(self) -> None:
-        """MOR-1538: IC-9700 SUB (receiver=1) reaches SUB via VFO-select.
-
-        IC-9700 is dual-RX (receiver_count=2) with no cmd29 routes but does
-        declare ``vfo.main_select``/``sub_select`` (0x07 0xD0/0xD1).
-        ``get_filter_width(receiver=1)`` now temporarily selects SUB, sends
-        the plain (non-cmd29) 0x1A 0x03 GET, then restores MAIN — mirroring
-        :meth:`set_freq`'s fallback — instead of raising ``CommandError``.
-        """
+    async def test_ic9700_sub_receiver_read_only_while_sub_selected(self) -> None:
+        """MOR-3591: IC-9700 (no cmd29 route) reads SUB with the plain GET
+        only while SUB is selected; otherwise it refuses, never selecting."""
         radio = _connected_icom(model="IC-9700")
         radio._radio_state.sub.mode = "USB"
         frames: list[bytes] = []
 
         async def fake_expect(civ: bytes, **_: object) -> CivFrame:
             frames.append(civ)
-            if civ[4] == 0x07:
-                # VFO select/restore ACK.
-                return CivFrame(
-                    to_addr=0xE0, from_addr=0xA2, command=0xFB, sub=None, data=b""
-                )
             # 1-byte BCD 0x20 = decimal 20 = USB segment index 20 → 1600 Hz.
             return CivFrame(
                 to_addr=0xE0, from_addr=0xA2, command=0x1A, sub=0x03, data=b"\x20"
@@ -538,12 +528,14 @@ class TestIcomGetFilterWidthRouting:
 
         radio._send_civ_expect = fake_expect  # type: ignore[method-assign]
 
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.get_filter_width(receiver=1)
+        assert frames == []
+
+        observe_selected_receiver(radio, 1)
         hz = await radio.get_filter_width(receiver=1)
 
-        assert frames[0].hex() == "fefea2e007d1fd"  # select SUB
-        get_idx = next(i for i, f in enumerate(frames) if f[4] == 0x1A)
-        assert frames[get_idx].hex() == "fefea2e01a03fd"  # plain GET, no cmd29
-        assert frames[-1].hex() == "fefea2e007d0fd"  # restore MAIN
+        assert [f.hex() for f in frames] == ["fefea2e01a03fd"]  # plain GET only
         assert hz == 1600
 
     @pytest.mark.asyncio
@@ -616,37 +608,25 @@ class TestIcomSetFilterWidthRouting:
         )
 
     @pytest.mark.asyncio
-    async def test_ic9700_sub_receiver_uses_vfo_select_fallback(self) -> None:
-        """MOR-1538: IC-9700 SUB (receiver=1) reaches SUB via VFO-select.
-
-        IC-9700 is dual-RX (receiver_count=2) with no cmd29 routes but does
-        declare ``vfo.main_select``/``sub_select`` (0x07 0xD0/0xD1).
-        ``set_filter_width(receiver=1)`` now temporarily selects SUB, sends
-        the plain (non-cmd29) 0x1A 0x03 SET, then restores MAIN — mirroring
-        :meth:`set_freq`'s fallback — instead of raising ``CommandError``.
-        """
+    async def test_ic9700_sub_receiver_write_only_while_sub_selected(self) -> None:
+        """MOR-3591: IC-9700 (no cmd29 route) writes SUB with the plain SET
+        only while SUB is selected; otherwise it refuses, never selecting."""
         radio = _connected_icom(model="IC-9700")
         radio._radio_state.sub.mode = "USB"
-        select_frames: list[bytes] = []
-
-        async def fake_expect(civ: bytes, **_: object) -> CivFrame:
-            select_frames.append(civ)
-            return CivFrame(
-                to_addr=0xE0, from_addr=0xA2, command=0xFB, sub=None, data=b""
-            )
-
-        radio._send_civ_expect = fake_expect  # type: ignore[method-assign]
+        radio._send_civ_expect = AsyncMock()  # type: ignore[method-assign]
         radio.send_civ = AsyncMock()  # type: ignore[method-assign]
 
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.set_filter_width(2400, receiver=1)
+        radio.send_civ.assert_not_awaited()
+
+        observe_selected_receiver(radio, 1)
         await radio.set_filter_width(2400, receiver=1)
 
-        assert select_frames[0].hex() == "fefea2e007d1fd"  # select SUB
-        assert select_frames[-1].hex() == "fefea2e007d0fd"  # restore MAIN
+        radio._send_civ_expect.assert_not_awaited()  # no selection frames
         radio.send_civ.assert_awaited_once_with(
-            0x1A, sub=0x03, data=b"\x28", wait_response=False, is_current=ANY
+            0x1A, sub=0x03, data=b"\x28", wait_response=False
         )
-        # MOR-3623: the routed frame carries the selection currency check.
-        assert callable(radio.send_civ.await_args.kwargs["is_current"])
 
     @pytest.mark.asyncio
     async def test_ic7610_sub_receiver_still_cmd29_wrapped(self) -> None:

@@ -46,20 +46,22 @@ uv run pytest tests/test_commands.py::test_get_frequency_builds_correct_frame -q
 
 ### Continuous Integration
 
-The repository has three Actions workflows, tiered to keep billable minutes low:
+`docs/development/release-gates.md` is the
+single source for the workflow list — triggers, runner labels, and what each
+workflow runs. What a contributor needs to know:
 
-| Workflow | When it runs | What it does |
-|---|---|---|
-| **Tests (quick)** | push/PR to `main` **only** when one of these paths changes: `src/**`, `tests/**`, `frontend/**`, `pyproject.toml`, `uv.lock`, `.importlinter`, `.github/workflows/**` | Single Python 3.11 job: `ruff`, `import-linter`, `pytest` (includes `tests/integration`; hardware-gated tests skip automatically without hardware env vars). The frontend block (`npm ci`, type-check, vitest, build, mypy on `src/rigplane/web`) only runs when files under `frontend/**` or `src/rigplane/web/**` actually changed. ~2–5 min. Doc-only edits and CLAUDE.md changes don't trigger CI at all — use `gh workflow run "Tests (quick)"` if you need a manual run. |
-| **Tests (full matrix)** | cron Mon/Wed/Fri 03:00 UTC, manual `workflow_dispatch`, **or** any push whose commit message contains `[full-ci]` | Full 3.11/3.12/3.13 matrix with frontend, mypy, import-linter and the whole pytest suite. |
-| **Publish to PyPI** | on a published GitHub Release | Runs the full validation matrix first; the build/publish jobs only start if validation is green. |
-
-To force a full matrix run on demand:
+- Every pull request to `main` gets the required `quick` status: the
+  `quick.yml` `classify` job selects which checks run from the changed
+  paths, and the self-hosted `quick` job runs them (hardware-gated tests
+  skip automatically without hardware env vars).
+- Documentation-only pull requests run no tests: `docs-only-quick.yml`
+  publishes the required `quick` status as success for such a head.
+- To force a full matrix run on demand:
 
 ```bash
-git commit -m "chore: rebuild CI cache [full-ci]"
-# or
-gh workflow run "Tests (full matrix)"
+gh workflow run "Tests (full matrix)" --ref main
+# Release-candidate run, including the slow-marked tests:
+gh workflow run "Tests (full matrix)" --ref main -f rc=true
 ```
 
 ### Test Structure

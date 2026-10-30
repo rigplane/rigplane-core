@@ -28,8 +28,6 @@ class _FakeCivHost:
         self._on_state_change = self._on_notify
         self._notifications: list[tuple[str, dict[str, Any]]] = []
         self._state_diagnostics = diagnostics
-        self._last_freq_hz = None
-        self._last_mode = None
         self._last_vfo = None
         self._filter_width = None
 

@@ -31,7 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only when the receiver's observed frequency lies in that band
   (`profiles.admit_mode`, shared by the web control handler and the
   Icom runtime), so HTTP and WebSocket callers get `unsupported_command`
-  on 2 m and 70 cm instead of a silent radio refusal. The band
+  on 2 m and 70 cm instead of a silent radio refusal. A band-stack recall
+  whose stored mode is DD on a band that cannot run it keeps the recalled
+  frequency and refuses only the mode (it no longer falls back to the band
+  default). Like every receiver-scoped command on this radio, the shift
+  and tone writes go only to the receiver you have selected; the other
+  receiver is refused with `receiver_not_selected` (MOR-3591), never
+  reached by switching. The band
   `default_hz` values stay the band start edges and the `repeater` range
   flags stay. Not hardware-verified (tier B-): no IC-9700 has been on the
   bench, and the older MOR-2015 0x16-family sub-list cited in the profile
@@ -41,6 +47,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dual-receiver radios: no hidden receiver switching (MOR-3591).** A
+  receiver-scoped command for a receiver the radio cannot address directly
+  (no cmd29 route, no profile-declared selector) now goes only to the
+  receiver you have selected. A command for the other receiver -- or for
+  either receiver before the radio has reported which one is selected -- is
+  refused with the stable reason code `receiver_not_selected` ("select that
+  receiver first"; HTTP 409, rigctld `RPRT -9`) instead of RigPlane briefly
+  selecting the other receiver, writing, and selecting back. Select the
+  receiver first, then change its settings. On the IC-9700 this covers SUB
+  frequency, mode, DATA, filter width, tone/TSQL and VFO A/B, and MAIN
+  writes while SUB is selected; on the IC-7610 the SUB frequency and mode
+  are written directly through CI-V 0x25/0x26 selector 01. A frequency or
+  mode read of a receiver that is not selected (MAIN or SUB) returns the
+  value last observed while it was selected (refused if never observed)
+  instead of reading the other receiver.
 - Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
 - **Core 3.0 is marked stable.** The package declares
   `Development Status :: 5 - Production/Stable`. The README, installation
@@ -49,21 +70,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer lists which radios were tested; the docs site opens on 3.0 by
   default; and the beta report form is now the 3.0 radio report form. The
   PyPI project page shows the new README and classifier from the next upload.
-
-### Fixed
-
-- **The shared MAIN/SUB switch-and-restore is one critical section
-  (MOR-3623).** Dual-receiver radios that address a receiver by
-  selecting it (IC-9700 per-receiver commands, IC-7610 VFO-slot
-  selection) now route every such operation — the IC-9700 repeater
-  shift included, on MAIN as well as SUB — through one guarded sequence:
-  an active receiver the radio has not reported is read back (`07 D2`)
-  before a switch is skipped; the operation is refused while another
-  selection change is in flight; its frame is refused at the wire when a
-  later selection moved the radio, and that later selection is never
-  overwritten by the restore; a cancelled caller waits for the
-  restoration, including its timeout retry, before the cancellation
-  propagates.
 
 ## [3.0.1] — 2026-10-28
 

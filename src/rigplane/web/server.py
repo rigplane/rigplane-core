@@ -74,7 +74,11 @@ from ..core.command_dispatch import (
     command_descriptor,
     prepare_command_intent,
 )
-from ..core.exceptions import CommandError, CommandRejectedError
+from ..core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ReceiverNotSelectedError,
+)
 from ..core.exceptions import ConnectionError as RadioConnectionError
 from ..profiles import MemoryWriteUnverifiedError
 from ..core.state_pipeline_contracts import (
@@ -98,6 +102,7 @@ from ..runtime.controller_authority import (
 )
 from ..runtime.managed_tx_authority import ManagedTxAuthority
 from ..runtime.managed_tx_state import ManagedTxIntentKind
+from ..runtime.tx_gate import tx_gate_open
 from ..runtime.tx_interlock import (
     RfState,
     TxInterlockRefusal,
@@ -121,7 +126,6 @@ from ..env_config import (
     get_audio_rx_jitter_ceiling_ms,
     get_audio_rx_jitter_floor_ms,
 )
-from ..startup_checks import assert_radio_startup_ready
 from ._delta_encoder import DeltaEncoder  # noqa: TID251
 from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
@@ -488,8 +492,8 @@ class _HttpCommandCollector:
 
 
 def _command_error_code(exc: BaseException) -> str:
-    if isinstance(exc, MemoryWriteUnverifiedError):
-        # MOR-3644: stable refusal code carried on the exception.
+    if isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
+        # MOR-3644 / MOR-3591: stable refusal code carried on the exception.
         return str(exc.reason_code)
     if isinstance(exc, CommandUnsupportedError):
         return "unsupported_command"
@@ -1285,9 +1289,9 @@ class WebServer:
         self._audio_analyzer: AudioAnalyzer | None = None
         if radio is not None and _has_audio:
             self._audio_analyzer = AudioAnalyzer()
-            self._audio_analyzer_tap = self._audio_broadcaster.taps(
-                STAGE_RX_POST_DSP
-            ).register("audio-analyzer", self._audio_analyzer.feed_audio)
+            self._audio_broadcaster.taps(STAGE_RX_POST_DSP).register(
+                "audio-analyzer", self._audio_analyzer.feed_audio
+            )
         self._command_queue: CommandQueue = CommandQueue()
         self._controller = ControllerAuthority(
             ready=self._controller_ready,
@@ -1677,11 +1681,6 @@ class WebServer:
             "answeredId": identity.answered_id,
         }
 
-    async def ensure_startup_ready(self, timeout: float = 5.0) -> None:
-        """Assert that the attached radio is ready before exposing the server."""
-        _ = timeout
-        assert_radio_startup_ready(self._radio, component="web startup")
-
     def _set_scope_data_callback(self, callback: Any) -> None:
         """Set the scope data callback on the radio if it supports it."""
         if self._radio is not None and self._hardware_scope_available:
@@ -1806,18 +1805,6 @@ class WebServer:
                 self._scope_enabled = False
                 self._scope_enable_failed = False
                 logger.info("scope: pre-session state restored (no active handlers)")
-
-    async def restore_scope_before_shutdown(self) -> None:
-        """Restore confirmed scope ownership before the poller is stopped."""
-        async with self._scope_enable_lock:
-            if not self._scope_enabled and not self._scope_enable_failed:
-                return
-            self._scope_demand_generation += 1
-            if await self._execute_scope_command(
-                DisableScope(generation=self._scope_demand_generation)
-            ):
-                self._scope_enabled = False
-                self._scope_enable_failed = False
 
     def _dispatch_audio_fft_frame(self, frame: Any) -> None:
         """Fan out an audio FFT frame to the relevant scope channels.
@@ -3130,6 +3117,12 @@ class WebServer:
                 }
             else:
                 return False
+        elif event.state == "failed" and set(details) == {"session_id", "reason"}:
+            # MOR-3591: a queued command refused because its receiver is not
+            # the selected one. Rebuilt from the literal, never passed through.
+            if details.get("reason") != "receiver_not_selected":
+                return False
+            public_details = {"reason": "receiver_not_selected"}
         elif event.state == "failed" and set(details) == {
             "session_id",
             "outcome",
@@ -3748,25 +3741,21 @@ class WebServer:
     async def _bridge_tx_gate_open(self) -> bool:
         """Whether the bridge may push captured audio to the radio.
 
-        Fail-closed (MOR-2863). Open only when the managed TX intent is
-        keyed — RigPlane itself keyed the rig — or a fresh observed PTT
-        is exactly ON. Everything else closes the gate: unknown or stale
-        observation, no authority, or a snapshot that cannot be read.
+        Thin delegate to :func:`rigplane.runtime.tx_gate.tx_gate_open`
+        (MOR-3821 P0b): the fail-closed rule lives there, shared by the
+        bridge, the web TX handler, the WebRTC audio channel and the
+        controller audio gate below. Kept so existing references
+        (``AudioBridge(tx_gate=...)``, the WebRTC session) keep working.
         """
-        controller = getattr(self, "_controller", None)
-        if isinstance(controller, ControllerAuthority) and controller.mode == "remote":
-            return False
-        authority = self._managed_tx_authority()
-        if authority is None:
-            return False
-        try:
-            projection = await authority.snapshot()
-            observed = project_observed_ptt(self.command_state_store.snapshot())
-        except Exception:
-            logger.debug("audio-bridge: TX gate failed closed", exc_info=True)
-            return False
-        keyed = projection.state.intent.kind is not ManagedTxIntentKind.RX
-        return keyed or observed is ObservedPtt.ON
+        # Annotated local: under the web-scoped mypy run the runtime import
+        # resolves to Any (follow_imports = "skip"), and a bare return would
+        # trip no-any-return while the value is a real bool.
+        gate_open: bool = await tx_gate_open(
+            self._managed_tx_authority(),
+            self.command_state_store,
+            getattr(self, "_controller", None),
+        )
+        return gate_open
 
     async def start_audio_bridge(
         self,
@@ -4278,10 +4267,13 @@ class WebServer:
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
+                    # MOR-3632: receive-only band rows (``rx_only``) never
+                    # grant transmit permission, so they stay out of txBands.
                     "txBands": [
                         {"name": b.name, "start": b.start, "end": b.end}
                         for fr in profile.freq_ranges
                         for b in fr.bands
+                        if not b.rx_only
                     ]
                     or None,
                 }
@@ -4996,10 +4988,13 @@ class WebServer:
             )
             if profile.controls:
                 payload["controls"] = profile.controls
+            # MOR-3632: receive-only band rows (``rx_only``) never grant
+            # transmit permission, so they stay out of txBands.
             payload["txBands"] = [
                 {"name": b.name, "start": b.start, "end": b.end}
                 for fr in profile.freq_ranges
                 for b in fr.bands
+                if not b.rx_only
             ] or None
         payload["webrtc"] = {
             "available": webrtc_available(),
@@ -5616,7 +5611,15 @@ class WebServer:
                     else self._controller.is_session_owner(held.tx_holder_nowait())
                 ):
                     return False
-                return await self._bridge_tx_gate_open()
+                # Annotated local: under the web-scoped mypy run the runtime
+                # import resolves to Any (follow_imports = "skip"), and a bare
+                # return would trip no-any-return while the value is a real bool.
+                gate_open: bool = await tx_gate_open(
+                    self._managed_tx_authority(),
+                    self.command_state_store,
+                    self._controller,
+                )
+                return gate_open
             authority = self._managed_tx_authority()
             if authority is None:
                 return False
@@ -6238,6 +6241,7 @@ class WebServer:
                 "unsupported_command",
                 "radio_nak",
                 "memory_write_unverified",
+                "receiver_not_selected",
             }:
                 status, reason = 409, "Conflict"
             else:

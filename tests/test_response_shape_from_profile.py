@@ -42,6 +42,7 @@ from rigplane.core.exceptions import CommandError
 from rigplane.core.types import CivFrame, bcd_encode
 from rigplane.runtime.radio import CoreRadio
 
+from _helpers import observe_selected_receiver
 from test_profile_command_binding import _civ_rig_configs
 
 
@@ -224,6 +225,8 @@ async def test_reply_shape_matches_request_shape(
     # not connection state, for every entry regardless of that difference.
     monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
     radio = CoreRadio("198.51.100.1", profile=profile)
+    # MAIN is selected (the radio answered 0x07 0xD2, MOR-3591).
+    observe_selected_receiver(radio, 0)
     try:
         await getattr(radio, spec.method)()
     except ValueError:

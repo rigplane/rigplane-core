@@ -31,6 +31,7 @@ from rigplane.types import CivFrame
 # profiles, don't restate them" requirement -- same civ-only filter
 # test_profile_command_coverage.py's own _civ_rigs() applies.
 from test_profile_command_binding import _civ_rig_configs
+from _helpers import observe_selected_receiver
 
 X6200_PROFILE_ID = "xiegu_x6200"
 IC7610_PROFILE_ID = "icom_ic7610"
@@ -123,6 +124,7 @@ def _make_radio(profile_id: str) -> tuple[IcomRadio, list[bytes]]:
     """Build a connected radio with real profile; capture emitted CI-V bytes."""
     radio = IcomRadio("192.168.0.1", profile=profile_id, timeout=0.05)
     radio._connected = True
+    observe_selected_receiver(radio, 0)
     # _check_connected delegates to the CI-V runtime, which requires a live
     # _civ_transport; a sentinel suffices because we stub the send methods.
     radio._civ_transport = object()  # type: ignore[assignment]

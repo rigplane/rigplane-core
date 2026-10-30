@@ -1,46 +1,5 @@
 [
   {
-    "name": "cmd03_freq_main_with_slot_override_B",
-    "comment": "0x03 freq response routed to vfo_b when host._vfo_slot_override[MAIN]='B'",
-    "host_setup": {"vfo_slot_override": {"MAIN": "B"}},
-    "frame": {"command": 3, "sub": null, "data": "0004581400"},
-    "expected_state": {
-      "main.vfo_b.freq_hz": 14580400,
-      "main.vfo_a.freq_hz": 0
-    }
-  },
-  {
-    "name": "cmd03_freq_main_with_slot_override_A",
-    "comment": "0x03 freq response routed to vfo_a explicitly when override='A'",
-    "host_setup": {"vfo_slot_override": {"MAIN": "A"}},
-    "frame": {"command": 3, "sub": null, "data": "0000952100"},
-    "expected_state": {
-      "main.vfo_a.freq_hz": 21950000,
-      "main.vfo_b.freq_hz": 0
-    }
-  },
-  {
-    "name": "cmd04_mode_with_slot_override_B_full",
-    "comment": "0x04 mode+filter routed to vfo_b under slot override; covers filter branch (line 800)",
-    "host_setup": {"vfo_slot_override": {"MAIN": "B"}},
-    "frame": {"command": 4, "sub": null, "data": "0302"},
-    "expected_state": {
-      "main.vfo_b.mode": "CW",
-      "main.vfo_b.filter_num": 2,
-      "main.vfo_a.mode": "USB"
-    }
-  },
-  {
-    "name": "cmd04_mode_with_slot_override_A_no_filter",
-    "comment": "0x04 mode-only (1-byte data) routed to vfo_a under override; filt is None",
-    "host_setup": {"vfo_slot_override": {"MAIN": "A"}},
-    "frame": {"command": 4, "sub": null, "data": "05"},
-    "expected_state": {
-      "main.vfo_a.mode": "FM",
-      "main.vfo_a.filter_num": null
-    }
-  },
-  {
     "name": "cmd04_invalid_mode_byte_swallowed",
     "comment": "0x04 with invalid Mode byte raises ValueError inside dispatch — caught by inner except (line 1143)",
     "frame": {"command": 4, "sub": null, "data": "ff"},
@@ -373,16 +332,6 @@
     "frame": {"command": 30, "sub": 1, "data": "0000001400"},
     "expected_state": {
       "tx_band_edges": []
-    }
-  },
-  {
-    "name": "cmd03_freq_invalid_slot_override_value",
-    "comment": "host._vfo_slot_override with a value other than 'A'/'B' is ignored — covers branch 773→776.",
-    "host_setup": {"vfo_slot_override": {"MAIN": "X"}},
-    "frame": {"command": 3, "sub": null, "data": "0040071400"},
-    "expected_state": {
-      "main.freq": 14074000,
-      "main.vfo_b.freq_hz": 0
     }
   },
   {

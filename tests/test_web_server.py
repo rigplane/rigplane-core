@@ -4697,3 +4697,63 @@ async def test_ftx1_mode_families_reach_both_capability_endpoints_over_http() ->
             assert capabilities["modeFamilies"] == {"cw": ["CW-U", "CW-L"]}, path
     finally:
         await srv.stop()
+
+
+# MOR-3632: same shipped-profile -> loader -> WebServer -> real socket seam,
+# for the receive-only band rows the txBands builders must filter out.
+_IC705_RIG = Path(__file__).resolve().parents[1] / "rigs" / "ic705.toml"
+_IC705_RX_ONLY_BANDS = frozenset({"2200m", "630m", "WFM", "Air", "Gen"})
+
+
+async def test_ic705_rx_only_bands_neither_endpoint_tx_band_over_http() -> None:
+    """The IC-705's receive-only band rows never reach txBands on a live listener.
+
+    Before the per-band ``rx_only`` flag the rows counted as TX-allowed,
+    granting transmit permission on broadcast (WFM), airband (Air),
+    general-coverage (Gen) and the two LF/MF rows below every published
+    transmitter range. Both capability endpoints are checked over a real
+    TCP connection, so removing either filter — or breaking the route that
+    serves it — fails here. The rows stay tunable: ``freqRanges`` on the
+    capabilities endpoint still lists them as band-selector entries.
+    """
+    profile = load_rig(_IC705_RIG).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+    )
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        capabilities_payload = None
+        for path in ("/api/v1/capabilities", "/api/v1/info"):
+            status, _, body = await _http_get(host, port, path)
+            assert status == 200, path
+            payload = json.loads(body)
+            capabilities = (
+                payload["capabilities"] if path == "/api/v1/info" else payload
+            )
+            if path == "/api/v1/capabilities":
+                capabilities_payload = capabilities
+            tx_names = {band["name"] for band in capabilities["txBands"]}
+            assert not (_IC705_RX_ONLY_BANDS & tx_names), path
+            # Amateur rows keep their TX classification on both endpoints.
+            assert {"20m", "2m", "70cm"} <= tx_names, path
+        # The receive-only rows remain tunable band-selector entries: the
+        # capabilities freqRanges (the info payload carries no freqRanges)
+        # still lists every one of them.
+        assert capabilities_payload is not None
+        range_band_names = {
+            band["name"]
+            for freq_range in capabilities_payload["freqRanges"]
+            for band in freq_range["bands"]
+        }
+        assert _IC705_RX_ONLY_BANDS <= range_band_names
+    finally:
+        await srv.stop()

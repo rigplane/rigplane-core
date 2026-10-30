@@ -37,6 +37,7 @@ from ..core.acquisition_scheduler import (
     civ_transport_budget_hz,
     provider_uses_civ_acquisition,
 )
+from ..audio.route import apply_wsjtx_data_mod_input, profile_data_mode_count
 from ..profiles import RadioProfile
 from ..core.state_diagnostics import StateDiagnosticsRecorder
 from ..core.state_pipeline_contracts import FieldPath
@@ -54,6 +55,10 @@ from ..runtime._state_queries import (
 )
 from ..runtime._poller_types import CommandQueue
 from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
+from ..runtime.managed_tx_submission import (
+    ManagedPttTracker,
+    release_managed_session_tx,
+)
 from ..startup_checks import _radio_details, assert_radio_startup_ready
 from . import audit as _audit  # noqa: TID251
 from .circuit_breaker import CircuitBreaker, CircuitState  # noqa: TID251
@@ -102,80 +107,14 @@ LISTENER_CLOSE_TIMEOUT_S: float = 2.0
 STOP_TIMEOUT_S: float = 2 * SESSION_TX_HANDBACK_TIMEOUT_S + LISTENER_CLOSE_TIMEOUT_S
 
 
-class _ManagedPttReady(asyncio.Future[None]):
-    def __init__(
-        self,
-        revocation: asyncio.Event,
-        *,
-        expires_at_monotonic: float,
-        connection_generation: object,
-    ) -> None:
-        super().__init__()
-        self._revocation = revocation
-        self.expires_at_monotonic = expires_at_monotonic
-        self.connection_generation = connection_generation
-        self.validation_committed = False
-        self.queue_released = False
-
-    @property
-    def superseded(self) -> bool:
-        return self._revocation.is_set() and not self.validation_committed
-
-    def set_result(self, result: None) -> None:
-        if self.superseded:
-            return
-        self.validation_committed = True
-        self._resolve_if_ready()
-
-    def release_queue(self) -> None:
-        """Release the shared ordering gate without bypassing validation."""
-        self.queue_released = True
-        self._resolve_if_ready()
-
-    def _resolve_if_ready(self) -> None:
-        if self.validation_committed and self.queue_released and not self.done():
-            super().set_result(None)
-
-    def commit_failure(self) -> bool:
-        if self.superseded:
-            return False
-        self.validation_committed = True
-        return True
-
-
 class _AcquisitionExecutorUnavailable(RuntimeError):
     """Raised when a configured acquisition executor cannot run on this radio."""
-
-
-def _profile_data_mode_count(radio: "Radio") -> int:
-    profile = getattr(radio, "profile", None)
-    count = getattr(profile, "data_mode_count", 1)
-    return count if isinstance(count, int) and count > 0 else 1
 
 
 def _wsjtx_data_mode_value(radio: "Radio", config: RigctldConfig) -> int | bool:
     if config.wsjtx_data_mode is not None:
         return int(config.wsjtx_data_mode)
     return True
-
-
-async def _apply_wsjtx_data_mod_input(
-    radio: "Radio",
-    *,
-    data_mode: int | bool,
-    source: int | None,
-) -> None:
-    if source is None or type(data_mode) is not int:
-        return
-    setter_name = f"set_data{data_mode}_mod_input"
-    setter = getattr(radio, setter_name, None)
-    if setter is None:
-        logger.debug(
-            "WSJT-X compat: radio has no %s, skipping DATA mod input",
-            setter_name,
-        )
-        return
-    await setter(source)
 
 
 def _mode_to_name(mode: object) -> str:
@@ -376,56 +315,17 @@ class RigctldServer:
         abandoned, not the handback, and the unconfirmed unkey is logged at
         ERROR.
         """
-        release = getattr(self._rig_handler, "release_session_tx", None)
-        if release is None:
-            return
-        try:
-            result = release(session_id)
-            if not inspect.isawaitable(result):
-                return
-            handback = asyncio.ensure_future(result)
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(handback), timeout=SESSION_TX_HANDBACK_TIMEOUT_S
-                )
-            except asyncio.CancelledError:
-                # Shutdown reached this session mid-handback. Every other step
-                # of a teardown can be abandoned; this one cannot, and nothing
-                # downstream would clean up after it. An abandoned handback
-                # leaves the lease held with its release obligation unsettled
-                # (``RELEASE_REQUIRED``, an unfinished WRITE_OFF) and no
-                # watchdog behind it: ``_begin_release`` clears
-                # ``watchdog_deadline``, and ``tick`` arms the max key-down
-                # branch only while no release is pending. That state does not
-                # time itself out — it is for the uncertain-shutdown
-                # diagnostics to surface (MOR-1015). The release is in flight
-                # anyway, so it gets a second wait with the same bound; a
-                # second cancellation ends it. Swallowed rather than
-                # re-raised so the socket close below still runs (MOR-1014).
-                try:
-                    await asyncio.wait_for(
-                        asyncio.shield(handback),
-                        timeout=SESSION_TX_HANDBACK_TIMEOUT_S,
-                    )
-                except asyncio.CancelledError:
-                    logger.error(
-                        "session %s: managed TX handback cancelled a second time "
-                        "before it settled; unkey not confirmed",
-                        session_id,
-                    )
-                    handback.cancel()
-                    raise
-        except TimeoutError:
-            logger.error(
-                "session %s: managed TX handback did not settle within %.1fs; "
-                "unkey not confirmed",
-                session_id,
-                SESSION_TX_HANDBACK_TIMEOUT_S,
-            )
-        except Exception:
-            logger.warning(
-                "session %s: managed TX release failed", session_id, exc_info=True
-            )
+        # Shared with a future TCI adapter (MOR-3821 P0c): the probe of the
+        # injected handler stays here so a handler predating the release
+        # hook keeps working; the shield / cancel-twice / fail-soft
+        # choreography lives in ``runtime.managed_tx_submission``.
+        # ``SESSION_TX_HANDBACK_TIMEOUT_S`` is read at call time so tests
+        # pinning the bound keep patching this module.
+        await release_managed_session_tx(
+            getattr(self._rig_handler, "release_session_tx", None),
+            session_id,
+            handback_timeout_s=SESSION_TX_HANDBACK_TIMEOUT_S,
+        )
 
     def __del__(self) -> None:
         """Emit WARN if instance is collected while TCP server/poller is still active."""
@@ -1178,11 +1078,11 @@ class RigctldServer:
                 explicit_data_mode or not data_on
             ):
                 data_mode = _wsjtx_data_mode_value(self._radio, self._config)
-                if type(data_mode) is int and data_mode > _profile_data_mode_count(
+                if type(data_mode) is int and data_mode > profile_data_mode_count(
                     self._radio
                 ):
                     data_mode = True
-                await _apply_wsjtx_data_mod_input(
+                await apply_wsjtx_data_mod_input(
                     self._radio,
                     data_mode=data_mode,
                     source=self._config.wsjtx_data_mod_input,
@@ -1233,7 +1133,7 @@ class RigctldServer:
         previous_retirement.set_result(None)
         response_tasks: set[asyncio.Task[None]] = set()
         ptt_submissions: set[asyncio.Task[Any]] = set()
-        ptt_revocation = asyncio.Event()
+        ptt_tracker = ManagedPttTracker()
         graceful_quit = False
         # MOR-3562: a channel keys as its controller session, which outlives
         # it; its close releases the session's TX only when its last ``T`` was
@@ -1402,30 +1302,23 @@ class RigctldServer:
                     except ValueError:
                         pass
                     else:
-                        if not ptt_on:
-                            ptt_revocation.set()
-                            ptt_revocation = asyncio.Event()
-                        if ptt_on:
-                            assert self._command_queue is not None
-                            ptt_ready = _ManagedPttReady(
-                                ptt_revocation,
-                                expires_at_monotonic=(
-                                    loop.time() + self._config.command_timeout
-                                ),
-                                connection_generation=self._command_queue.capture_connection_generation(),
-                            )
+                        assert self._command_queue is not None
                         assert self._managed_tx_authority is not None
-                        ptt_submission = (
-                            self._managed_tx_authority.start_ptt_submission(
-                                ptt_on,
-                                session_id,
-                                ready=ptt_ready,
-                                expires_at_monotonic=(
-                                    None
-                                    if ptt_ready is None
-                                    else ptt_ready.expires_at_monotonic
-                                ),
-                            )
+                        # Only a key-down captures the connection generation:
+                        # an unkey never touches the queue, so it must keep
+                        # working after the consumer unbinds (MOR-3821).
+                        ptt_submission, ptt_ready = ptt_tracker.begin_key(
+                            self._managed_tx_authority,
+                            owner=session_id,
+                            on=ptt_on,
+                            expires_at_monotonic=(
+                                loop.time() + self._config.command_timeout
+                            ),
+                            connection_generation=(
+                                self._command_queue.capture_connection_generation()
+                                if ptt_on
+                                else None
+                            ),
                         )
 
                 schedule_response(

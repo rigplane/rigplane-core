@@ -2930,20 +2930,60 @@ async def test_stop_waits_for_a_listener_that_never_closes_only_for_its_bound(
 
 def test_stop_timeout_is_the_sum_of_its_timed_waits() -> None:
     """``STOP_TIMEOUT_S`` sums the ``timeout=`` of every wait in
-    ``_release_session_tx`` and ``stop()``."""
+    ``_release_session_tx`` and ``stop()``.
+
+    MOR-3821 P0c moved the two handback waits into shared
+    ``release_managed_session_tx``: each still waits ``handback_timeout_s``,
+    which the delegate binds to ``SESSION_TX_HANDBACK_TIMEOUT_S``.
+    """
     import ast
     import inspect
     import textwrap
 
+    from rigplane.runtime.managed_tx_submission import release_managed_session_tx
+
     timeouts = [
         keyword.value
-        for method in (RigctldServer._release_session_tx, RigctldServer.stop)
+        for method in (
+            RigctldServer._release_session_tx,
+            RigctldServer.stop,
+            release_managed_session_tx,
+        )
         for node in ast.walk(ast.parse(textwrap.dedent(inspect.getsource(method))))
         if isinstance(node, ast.Call)
         for keyword in node.keywords
         if keyword.arg == "timeout"
     ]
     assert timeouts and all(isinstance(value, ast.Name) for value in timeouts)
-    assert rigctld_server.STOP_TIMEOUT_S == sum(
-        getattr(rigctld_server, cast(ast.Name, value).id) for value in timeouts
+    delegate_binding = [
+        keyword.value
+        for node in ast.walk(
+            ast.parse(
+                textwrap.dedent(inspect.getsource(RigctldServer._release_session_tx))
+            )
+        )
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "handback_timeout_s"
+    ]
+    assert (
+        len(delegate_binding) == 1
+        and isinstance(delegate_binding[0], ast.Name)
+        and delegate_binding[0].id == "SESSION_TX_HANDBACK_TIMEOUT_S"
     )
+    shared_waits = [
+        value
+        for value in timeouts
+        if isinstance(value, ast.Name) and value.id == "handback_timeout_s"
+    ]
+    assert len(shared_waits) == 2
+    bound = {"handback_timeout_s": rigctld_server.SESSION_TX_HANDBACK_TIMEOUT_S}
+    resolved = [
+        (
+            bound[cast(ast.Name, value).id]
+            if cast(ast.Name, value).id in bound
+            else getattr(rigctld_server, cast(ast.Name, value).id)
+        )
+        for value in timeouts
+    ]
+    assert rigctld_server.STOP_TIMEOUT_S == sum(resolved)

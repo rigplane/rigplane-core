@@ -82,12 +82,6 @@ class _PreviewSession:
         return now - self.created_at_unix > PREVIEW_TTL_SECONDS
 
 
-def _coerce_str_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [v for v in value if isinstance(v, str)]
-
-
 def _bundle_filename(now_unix: int) -> str:
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now_unix))
     return f"rigplane-report-{ts}.zip"
@@ -178,8 +172,7 @@ class DiagnosticsHandler:
         """Build a bundle and create a preview session.
 
         ``body`` accepts: ``description`` (str), ``issue_ref`` (str),
-        ``email`` (str), ``callsign`` (str), ``includes`` (list[str]),
-        ``excludes`` (list[str]). Unknown keys are ignored.
+        ``email`` (str), ``callsign`` (str). Unknown keys are ignored.
         """
         await self.start()
 
@@ -187,8 +180,6 @@ class DiagnosticsHandler:
         issue_ref = body.get("issue_ref")
         email = body.get("email")
         callsign = body.get("callsign")
-        includes = _coerce_str_list(body.get("includes"))
-        excludes = _coerce_str_list(body.get("excludes"))
 
         submission_id = str(uuid.uuid4())
         now_unix = int(time.time())
@@ -210,13 +201,6 @@ class DiagnosticsHandler:
         staging_dir = Path(tempfile.mkdtemp(prefix="rigplane-report-"))
         filename = _bundle_filename(now_unix)
         bundle_path = staging_dir / filename
-
-        # build_bundle does not currently accept includes/excludes; the
-        # contract is forward-compatible: client sends them, server
-        # silently honours when discovery layer adds support. For now we
-        # record them on the session for future filtering.
-        _ = includes
-        _ = excludes
 
         try:
             await asyncio.to_thread(build_bundle, ctx, bundle_path)

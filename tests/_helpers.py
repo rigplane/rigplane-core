@@ -6,6 +6,7 @@ Consolidates helpers that were duplicated across multiple test files.
 from __future__ import annotations
 
 import struct
+from typing import Any
 
 from rigplane import IC_7610_ADDR
 from rigplane.commands import (
@@ -14,8 +15,9 @@ from rigplane.commands import (
     _CMD_FREQ_GET,
     _CMD_MODE_GET,
     build_civ_frame,
+    parse_civ_frame,
 )
-from rigplane.types import CivFrame, Mode, PacketType, bcd_encode
+from rigplane.types import Mode, PacketType, bcd_encode
 
 CIV_HEADER_SIZE = 0x15
 
@@ -64,19 +66,22 @@ def ack_response() -> bytes:
     return wrap_civ_in_udp(civ)
 
 
-def report_receiver_selection(radio, receiver: int) -> None:
-    """The radio reports its MAIN/SUB selection (``07 D2 00``/``01``).
+def observe_selected_receiver(radio: Any, receiver: int = 0) -> None:
+    """Deliver the radio's 0x07 0xD2 answer (which receiver is selected).
 
-    Fed through the RX path like a real answer, so ``RadioState.active``
-    is a reading the routed MAIN/SUB operations may trust (MOR-3623),
-    not the dataclass default.
+    On a dual-receiver profile a receiver-scoped command without a cmd29
+    route is admitted only for the selected receiver, and the selection is
+    unknown until the radio reports it (MOR-3591). The connect flow's state
+    queries ask for it; tests that bypass connect deliver the answer here,
+    through the real CI-V RX path.
     """
-    radio._civ_runtime._update_state_cache_from_frame(
-        CivFrame(
-            to_addr=CONTROLLER_ADDR,
-            from_addr=radio.profile.civ_addr,
-            command=0x07,
-            sub=None,
-            data=bytes([0xD2, receiver]),
+    radio._update_state_cache_from_frame(
+        parse_civ_frame(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                radio._radio_addr,
+                0x07,
+                data=bytes([0xD2, receiver]),
+            )
         )
     )

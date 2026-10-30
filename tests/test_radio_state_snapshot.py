@@ -21,18 +21,16 @@ from test_radio import MockTransport
 class _SnapshotFakeRadio:
     """Minimal fake exposing the getters/setters snapshot/restore use.
 
-    ``fail`` names getters that raise instead of answering. The ``_last_*``
-    / ``_attenuator_state`` / ``_preamp_level`` / ``_filter_width`` mirrors
-    hold decoy values: snapshot must never record them.
+    ``fail`` names getters that raise instead of answering. The ``_last_split``
+    / ``_last_vfo`` / ``_attenuator_state`` / ``_preamp_level`` /
+    ``_filter_width`` mirrors hold decoy values: snapshot must never record
+    them.
     """
 
     def __init__(self, *, fail: tuple[str, ...] = ()) -> None:
         self.fail = set(fail)
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.strict_seen: dict[str, bool] = {}
-        self._last_freq_hz: int | None = 7_074_000
-        self._last_mode: Mode | None = Mode.LSB
-        self._last_power: int | None = 100
         self._filter_width: int | None = 1
         self._last_split: bool | None = True
         self._last_vfo: str | None = "VFOB"
@@ -244,13 +242,13 @@ async def test_restore_skips_absent_keys_and_restores_present_ones() -> None:
     assert not full.called("_set_vfo_wire")
 
 
-async def test_restore_applies_vfo_key_from_older_snapshot() -> None:
-    """Restore keeps its ``vfo`` branch for snapshots that carry the key."""
+async def test_restore_never_changes_the_selection() -> None:
+    """A hand-built ``vfo`` key is ignored: restore never selects (MOR-3591)."""
     radio = _SnapshotFakeRadio()
 
     await restore_state(radio, {"vfo": "B"})  # type: ignore[arg-type]
 
-    assert ("_set_vfo_wire", ("B",)) in radio.calls
+    assert not any(name == "_set_vfo_wire" for name, _ in radio.calls)
 
 
 async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_preamp_and_vfo() -> (

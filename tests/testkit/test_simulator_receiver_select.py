@@ -159,6 +159,16 @@ def test_receiver_select_off_by_default() -> None:
     assert sim._dispatch_civ(0x03, b"", _FROM_CONTROLLER) == before  # noqa: SLF001
 
 
+def test_selection_read_answers_main_by_default() -> None:
+    """Without the keyword the bare 07 D2 read still answers MAIN (00): the
+    IC-7610 always reports its selection, and Core refuses receiver-scoped
+    plain commands until it has (MOR-3591)."""
+    sim = MockIcomRadio(recorded_answers=None)
+    assert sim._dispatch_civ(0x07, b"\xd2", _FROM_CONTROLLER) == bytes.fromhex(  # noqa: SLF001
+        "fefee09807d200fd"
+    )
+
+
 def test_data_mode_flag_follows_receiver_select() -> None:
     """07 D1 swaps the DATA-mode flag: 26 01 reports MAIN's flag, 26 00 SUB's."""
     sim = MockIcomRadio(dual_receiver=True, recorded_answers=None)

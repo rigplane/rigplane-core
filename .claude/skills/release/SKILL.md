@@ -33,8 +33,11 @@ User-facing prompts in Russian. Commits / CHANGELOG / tags / release notes in En
 
 Pre-flight covers every gate in `publish.yml`'s `validate` job except the
 radio-smoke receipt gate (receipts are produced against the tag in Step 8 —
-there is nothing to pre-flight here): frontend (2g), ruff (2d), mypy (2f),
-import-linter (2e), pytest (2h). Run sequentially. STOP on first failure.
+there is nothing to pre-flight here) and the slow-marked tests: 2h below
+reads a `quick` run, which deselects the slow tests that `validate` runs —
+the `full.yml` dispatch with `rc=true` at the end of 2h is what covers
+them. Otherwise: frontend (2g), ruff (2d), mypy (2f), import-linter (2e),
+pytest (2h). Run sequentially. STOP on first failure.
 
 ```bash
 # 2a. Clean tree
@@ -98,23 +101,30 @@ gh run view <id> --json jobs \
 ```
 
 The second command must print `success`. `quick.yml` gates `Run tests` on
-`steps.filter.outputs.core`, so on a run whose `core` filter did not match it
-prints `skipped` while the run's own conclusion is still `success` — the run's
-conclusion is not the suite's. Then confirm that run's commit still covers HEAD
-— the `core` filter's own paths:
+`needs.classify.outputs.core == 'true'` (the `classify` job runs
+`.github/scripts/classify-quick-paths.py`), so on a run whose changed paths did
+not select `core`, the step prints `skipped` while the run's
+own conclusion is still `success` — the run's conclusion is not the suite's.
+Then confirm that run's commit still covers HEAD by asking the same classifier
+about the paths that differ; do not keep a second path list here:
 
 ```bash
-git diff --name-only <run-sha>..HEAD -- src tests frontend rigs contracts \
-  pyproject.toml uv.lock .importlinter .github/scripts .github/workflows
+RUN_SHA=<run-sha>   # the full 40-character headSha printed above
+git diff --quiet "$RUN_SHA" HEAD || \
+  python3 .github/scripts/classify-quick-paths.py --repo . \
+    --base "$RUN_SHA" --head "$(git rev-parse HEAD)"
 ```
 
-Non-empty output → that run is not the record for HEAD. Stop and get a run at
+No output means HEAD has the same tree as the run's commit, so the run is the
+record. Otherwise the printed JSON must show `"core": false`.
+
+`core` true → that run is not the record for HEAD. Stop and get a run at
 HEAD.
 
 The check is against HEAD, not against the commit that gets tagged: Step 6
 commits the Step 5 edits on top of HEAD, so the released commit is HEAD plus a
 `pyproject.toml` version line and a `docs/CHANGELOG.md` entry. `pyproject.toml`
-is in the pathspec above, so that commit is a different head, with its own
+is a `core` path, so that commit is a different head, with its own
 `quick` run when it lands.
 
 **Interpreter matrix before the tag.** `quick.yml` pins `UV_PYTHON: "3.11"`.
@@ -127,10 +137,13 @@ dispatching `full.yml`'s 3.11/3.12/3.13 matrix before tagging is a safety net,
 not redundant coverage — it moves a 3.12/3.13 failure to before the tag exists:
 
 ```bash
-gh workflow run "Tests (full matrix)" --ref main
+gh workflow run "Tests (full matrix)" --ref main -f rc=true
 gh run list --workflow "Tests (full matrix)" --limit 3   # find the dispatched run
 gh run watch <id>
 ```
+
+Without `rc=true` the dispatched run deselects the slow-marked tests, so it
+would not cover what `publish.yml`'s `validate` runs.
 
 ```bash
 # 2i. Build smoke

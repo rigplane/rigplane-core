@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -16,6 +17,7 @@ from rigplane.commands import (
     _SUB_RF_POWER,
     build_civ_frame,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.radio import IcomRadio
 from rigplane.types import Mode
 
@@ -23,6 +25,7 @@ from _helpers import ack_response as _ack_response
 from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
+from _helpers import observe_selected_receiver
 
 
 def _power_response(level: int) -> bytes:
@@ -65,7 +68,13 @@ class _MockLanTransport:
     def start_retransmit_loop(self) -> None:
         return None
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        # Same contract as core.transport.IcomTransport.send_tracked: a
+        # false currency guard refuses the write before it is sent.
+        if is_current is not None and not is_current():
+            raise CommandError("Tracked write is no longer current")
         self.sent_packets.append(data)
         self.send_seq += 1
         for pkt in self._responses_by_send.pop(self.send_seq, []):
@@ -130,6 +139,7 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
         radio._civ_transport = transport
         radio._ctrl_transport = transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio._civ_stream_ready = True
         radio._last_civ_data_received = 1e9
 

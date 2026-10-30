@@ -223,6 +223,18 @@
 # segments (normalize_relative_path, below); no filesystem access, so it
 # cannot be fooled by a symlink, and behaves the same on every OS.
 #
+# SYMLINKED DOCUMENTS (MOR-3429): the root CHANGELOG.md and CONTRIBUTING.md
+# are git symlinks (mode 120000) to files under docs/. Their links are
+# written relative to the TARGET's directory, so scanning the symlink path
+# as if it were a regular file resolves every link from the wrong place (the
+# repo root) and reports good links as broken. A tracked *.md symlink whose
+# target is itself a tracked *.md is therefore skipped: the target is
+# scanned anyway, from its own directory, so each real file is scanned once
+# and a genuinely broken link is reported once, under the target's path. A
+# symlink to anything else stays in the scan, because no other scan would
+# read its content. The symlink target is read from the git blob (mode
+# 120000 stores the link text), not from the filesystem.
+#
 # BASELINE: same (docfile, target-as-written) pair format as the citation
 # baseline, in the sibling file doc-link-baseline.txt, generated and
 # checked through the same --regenerate / --check-growth flags (prefixed
@@ -276,11 +288,10 @@
 # exists to prevent, so symbol verification is a separate, still-open half
 # of MOR-2065, not attempted here.
 #
-# WHEN THIS RUNS: doc-citation-gate.yml path-filters on **/*.md, docs/**,
-# and this gate's own files -- a PR that only touches src/** or frontend/**
-# does not trigger the workflow at all. The rot is invisible at the moment
-# it is created and surfaces later, on whatever next PR happens to touch a
-# doc file and trips the workflow's path filter.
+# WHEN THIS RUNS: doc-citation-gate.yml triggers only when this script or
+# the workflow file itself changes -- it is NOT run for ordinary doc edits.
+# Rot introduced by a doc PR is invisible until someone touches the gate
+# files and the workflow runs.
 #
 # RESOLUTION RULE (see parse_citation, find_candidates, classify_citation
 # below): split a citation's path from its cited line number(s) -- the same
@@ -487,18 +498,35 @@ strip_code_context() {
 scan_broken_link_occurrences() {
     local link_re='!?\[[^]]*\]\([^)]+\)'
 
-    declare -A tracked_md=()
-    local f
-    while IFS= read -r f; do
+    declare -A tracked_md=() symlink_target=()
+    local meta f mode hash
+    while IFS=$'\t' read -r meta f; do
         [ -z "$f" ] && continue
         tracked_md["$f"]=1
-    done < <(git ls-files '*.md')
+        mode="${meta%% *}"
+        if [ "$mode" = "120000" ]; then
+            hash="${meta#* }"
+            hash="${hash%% *}"
+            symlink_target["$f"]="$(git cat-file blob "$hash")"
+        fi
+    done < <(git ls-files -s '*.md')
 
-    local docfile base_dir lineno match target path_part resolved
+    local docfile base_dir lineno match target path_part resolved link_dest
     while IFS= read -r docfile; do
         [ -z "$docfile" ] && continue
         base_dir="$(dirname "$docfile")"
         [ "$base_dir" = "." ] && base_dir=""
+        # A symlinked document whose target is itself a tracked *.md is
+        # skipped: the target is scanned in its own right, from its own
+        # directory, and the symlink's relative links were written for that
+        # directory, not for the symlink's. Scanning the symlink path would
+        # resolve them from the wrong place and double-count the real ones.
+        # A symlink to anything else (not tracked, not markdown) has no real
+        # file that scans its content, so it stays in the scan.
+        if [ -n "${symlink_target[$docfile]+x}" ]; then
+            link_dest="$(normalize_relative_path "$base_dir" "${symlink_target[$docfile]}")"
+            [ -n "${tracked_md[$link_dest]+x}" ] && continue
+        fi
         while IFS=: read -r lineno match; do
             [ -z "${match:-}" ] && continue
             case "$match" in

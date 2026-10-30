@@ -32,6 +32,7 @@ from test_rigctld_wsjtx_split_mk2 import (
     _peer,
     _rf_state,
 )
+from _helpers import observe_selected_receiver
 
 
 def _data_frames(requests, n_before, first_byte: bytes):
@@ -77,6 +78,7 @@ async def _peer_with_config(model: str, config: RigctldConfig, *, selected: str 
     radio._civ_transport = transport
     radio._ctrl_transport = transport
     radio._connected = True
+    observe_selected_receiver(radio, 0)
     radio._civ_min_interval = 0
     server = RigctldServer(radio, config, allow_not_ready=True)
     server._state_store = radio.state_store

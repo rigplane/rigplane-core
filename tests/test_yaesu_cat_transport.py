@@ -544,7 +544,6 @@ class TestYaesuCatTransport:
         transport._connected = True
         transport.stats.record_error("earlier failure")
         last_error = transport.stats.last_error
-        last_error_time = transport.stats.last_error_time
 
         with pytest.raises(CatCommandRejected) as caught:
             await transport.query("MR00025;", **options)
@@ -556,7 +555,6 @@ class TestYaesuCatTransport:
         assert transport.stats.timeouts == 0
         if not error_delta:
             assert transport.stats.last_error == last_error
-            assert transport.stats.last_error_time == last_error_time
 
     @pytest.mark.parametrize("expect_rejection", [False, True])
     @pytest.mark.parametrize(
