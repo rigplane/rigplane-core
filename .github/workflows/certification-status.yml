@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   status:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6

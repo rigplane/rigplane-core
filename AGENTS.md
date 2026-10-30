@@ -298,15 +298,15 @@ implementation agent may not be the review agent.
   coordinator takes immediately before merging — both conditions still gate
   the merge, just held by two roles instead of one.
 - That split exists because CI is a shared, limited resource: `quick.yml`,
-  `full.yml`, and `visual.yml` all set `runs-on: [self-hosted, linux, build]`,
-  while everything else under `.github/workflows/` runs on `ubuntu-latest`.
-  `gh api repos/rigplane/rigplane-core/actions/runners` currently lists
-  exactly one registered runner carrying those labels, scoped to this
-  repository alone — `rigplane-pro`'s runners are separate registrations
-  and cannot pick up this repository's jobs. The contention is narrower
-  than a shared queue: this repository's three self-hosted workflows
-  serialize behind a single runner of its own, and a review session that
-  waits on that queue can still lose an hour or more for nothing.
+  `full.yml`, and `visual.yml` set `runs-on: [self-hosted, linux, build]`,
+  and since MOR-3875 so does every other job under `.github/workflows/`: no
+  job runs on a GitHub-hosted runner
+  (`.github/scripts/self-hosted-only.test.py`, run by `quick`, fails on one).
+  `gh api repos/rigplane/rigplane-core/actions/runners` lists the registered
+  runners carrying those labels, scoped to this repository alone —
+  `rigplane-pro`'s runners are separate registrations and cannot pick up this
+  repository's jobs. A review session that waits on that queue can still
+  lose an hour or more for nothing.
 - Do not rerun an entire suite merely to classify a failure. Diagnose it from
   the existing artifact and a focused reproduction on the Mac mini. A repaired
   final head receives its natural required workflow run; a full-suite rerun is

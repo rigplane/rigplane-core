@@ -19,7 +19,7 @@ permissions:
 jobs:
   freeze-gate:
     name: Evaluate stabilization-freeze PR contract
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     timeout-minutes: 3
 
     steps:

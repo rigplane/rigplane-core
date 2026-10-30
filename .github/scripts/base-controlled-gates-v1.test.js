@@ -25,11 +25,12 @@ function topologyErrors({quick, review, migration}) {
   ]) {
     if (!quick.includes(required)) errors.push(`quick observer is missing ${required}`);
   }
+  if ((quick.match(/runs-on: \[self-hosted, linux, build\]/gu) ?? []).length !== 2) errors.push('quick observer jobs must run on the self-hosted build runners');
   const statusWrites = quick.match(/statuses: write/gu) ?? [];
   const pins = quick.match(/actions\/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd/gu) ?? [];
   if (statusWrites.length !== 1 || pins.length !== 2) errors.push('publisher permission or action pin count changed');
   for (const forbidden of [
-    'self-hosted', 'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
+    'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
     '/logs', '/artifacts', '/caches', 'secrets.', 'github.workflow_sha',
   ]) {
     if (quick.includes(forbidden)) errors.push(`quick observer contains forbidden surface: ${forbidden}`);
@@ -38,7 +39,7 @@ function topologyErrors({quick, review, migration}) {
     errors.push('review observation contract changed unexpectedly');
   }
   for (const required of [
-    'must never be configured as required checks', 'metadata-only', 'zero self-hosted',
+    'must never be configured as required checks', 'metadata-only', 'zero GitHub-hosted',
     'route_job_concordance', 'terminal_binding_coverage',
     'status POST are not atomic',
     'distinct from GitHub Actions app ID `15368`', '"strict": true',
@@ -79,7 +80,7 @@ test('trusted route policy rejects incomplete and injected path metadata', () =>
   assert.throws(() => routePolicy.classifyPullFiles([{filename: 'docs/a.md'}], 3000));
 });
 
-test('quick v2 topology is hosted, metadata-only, and separately published', () => {
+test('quick v2 topology is self-hosted, metadata-only, and separately published', () => {
   assert.deepEqual(topologyErrors(sources()), []);
   assert.equal(observer.LEGACY_WORKFLOW.id, 270532868);
   assert.equal(observer.LEGACY_WORKFLOW.path, '.github/workflows/quick.yml');
@@ -90,7 +91,7 @@ test('workflow-run observation admits feature heads targeting main', () => asser
 test('topology contract catches permission, execution, event, and pin regressions', () => {
   const original = sources();
   const mutations = [
-    ['runs-on: ubuntu-latest', 'runs-on: [self-hosted, linux, build]'],
+    ['runs-on: [self-hosted, linux, build]', 'runs-on: ubuntu-latest'],
     ['permissions: {}', 'permissions:\n  statuses: write'],
     ['actions: read', 'actions: read\n      statuses: write'],
     ['with:\n          script:', 'uses: actions/upload-artifact@v4\n        with:\n          script:'],
@@ -111,7 +112,7 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   const run = {conclusion: 'success', run_attempt: 2};
   const routes = {core: true, frontend: false, ci: false, docs: false};
   const valid = [
-    {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'GitHub Actions 1', labels: ['ubuntu-latest']},
+    {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-build-core-2', labels: ['self-hosted', 'linux', 'build']},
     {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-build-core-1', labels: ['self-hosted', 'linux', 'build']},
   ];
   assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), {ok: true, code: 'terminal_match', routeConcordance: true});
@@ -123,7 +124,7 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
 });
 
 test('legacy attempt jobs consume the normalized pagination shape', async () => {
-  const classify = {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'GitHub Actions 1', labels: ['ubuntu-latest']};
+  const classify = {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-build-core-2', labels: ['self-hosted', 'linux', 'build']};
   const quick = {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-build-core-1', labels: ['self-hosted', 'linux', 'build']};
   // Pinned actions/github-script paginate.iterator normalizes the list-jobs
   // response: the page data is the jobs array itself, not an object with a

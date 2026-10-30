@@ -22,7 +22,8 @@ GitHub Actions app ID `15368`. A candidate-controlled workflow can publish eithe
 identity. Context plus app ID does not prove which workflow made the decision. The `*-observe` names make their
 non-authoritative role explicit; no protection-switch command targets them.
 
-The quick v2 workflow is metadata-only and schedules zero self-hosted jobs. It never checks out or executes pull-request
+The quick v2 workflow is metadata-only: its two jobs run on the self-hosted build runners (MOR-3875: no
+GitHub-hosted runner anywhere) but use the API only. It never checks out or executes pull-request
 or fork code and never reads a candidate artifact, log, or cache. Its `pull_request_target` path initializes opened,
 reopened, synchronized, ready, draft, and base-edited pull requests; title- and body-only edits are no-ops. Its
 `workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes.
@@ -64,7 +65,7 @@ The observation logs these metrics from the independently bound assessment:
 
 - `route_job_concordance`: trusted route versus the complete observed job topology;
 - `terminal_binding_coverage`: terminal run ID and attempt bound to exact pull/head/base;
-- zero self-hosted v2 minutes (`v2_self_hosted_minutes: 0`);
+- zero GitHub-hosted v2 minutes (`v2_hosted_minutes: 0`);
 - zero false-success and stale-head publication (`false_success_publications: 0`, `stale_head_publications: 0`).
 
 ## Unique authority required before promotion

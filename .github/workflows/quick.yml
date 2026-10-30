@@ -111,7 +111,7 @@ concurrency:
 
 jobs:
   classify:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     outputs:
       core: ${{ steps.paths.outputs.core }}
       frontend: ${{ steps.paths.outputs.frontend }}
@@ -222,6 +222,10 @@ jobs:
       - name: Compile Python workflow controls
         if: needs.classify.outputs.ci == 'true'
         run: python3 -m py_compile .github/scripts/*.py
+
+      - name: Self-hosted runner contract test
+        if: needs.classify.outputs.ci == 'true'
+        run: python3 .github/scripts/self-hosted-only.test.py
 
       - name: Ruff (lint + format check)
         if: needs.classify.outputs.core == 'true'

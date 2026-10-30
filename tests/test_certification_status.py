@@ -446,7 +446,7 @@ def test_workflow_is_a_read_only_manual_dispatch() -> None:
     assert "on:\n  workflow_dispatch:\n    inputs:\n      radios:" in WORKFLOW
     assert "schedule:" not in WORKFLOW
     assert "permissions:\n  actions: read\n  contents: read\n" in WORKFLOW
-    assert "runs-on: ubuntu-latest" in WORKFLOW
+    assert "runs-on: [self-hosted, linux, build]" in WORKFLOW
     command = 'certification_status.py --radios "$RADIOS" --nights "$NIGHTS"'
     assert f'{command} --no-verdict "$NO_VERDICT"' in WORKFLOW
 

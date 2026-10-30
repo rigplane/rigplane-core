@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   cleanup:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6

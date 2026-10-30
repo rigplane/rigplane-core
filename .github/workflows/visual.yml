@@ -92,7 +92,7 @@ permissions:
 
 jobs:
   changes:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, build]
     outputs:
       frontend: ${{ steps.filter.outputs.frontend || steps.manual.outputs.frontend || steps.push.outputs.frontend }}
     steps:
