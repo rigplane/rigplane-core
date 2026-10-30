@@ -70,6 +70,22 @@ class TestWatchdog:
     # a loaded runner cannot change the outcome (MOR-3419: the former
     # wall-clock window, and its "activity" that the watchdog never read).
 
+    @pytest.fixture(params=["IC-7610", "IC-705"])
+    def wd_radio(self, request: pytest.FixtureRequest) -> IcomRadio:
+        """The watchdog is one shared mechanism: every case runs on two models."""
+        r = IcomRadio(
+            "192.168.1.100",
+            auto_reconnect=True,
+            reconnect_delay=0.1,
+            reconnect_max_delay=0.5,
+            watchdog_timeout=1.5,
+            model=request.param,
+        )
+        r._ctrl_transport = MockTransport()
+        r._connected = True
+        r._token = 0x1234
+        return r
+
     @staticmethod
     def _fake_clock(
         radio: IcomRadio, monkeypatch: pytest.MonkeyPatch, *, link_alive: bool
@@ -77,8 +93,7 @@ class TestWatchdog:
         from rigplane.runtime import radio_reconnect
 
         clock = SimpleNamespace(now=1000.0, stall=0.0, sleeps=0)
-        # The timeout the sim-backed integration stack uses: 3 check intervals.
-        radio._watchdog_timeout = 1.5
+        # The timeout is 3 check intervals, as in the sim-backed integration stack.
 
         async def fake_sleep(delay: float) -> None:
             clock.sleeps += 1
@@ -124,42 +139,42 @@ class TestWatchdog:
 
     @pytest.mark.asyncio
     async def test_watchdog_does_not_trigger_with_activity(
-        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+        self, wd_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A packet per interval keeps the watchdog quiet far past its timeout."""
-        clock = self._fake_clock(radio, monkeypatch, link_alive=True)
-        radio._control_phase._start_watchdog()
+        clock = self._fake_clock(wd_radio, monkeypatch, link_alive=True)
+        wd_radio._control_phase._start_watchdog()
         await self._spin(clock, 40)  # 20 s of fake time >> the 1.5 s timeout
-        radio._control_phase._stop_watchdog()
+        wd_radio._control_phase._stop_watchdog()
         assert clock.sleeps >= 40
-        assert radio._reconnect_task is None
+        assert wd_radio._reconnect_task is None
 
     @pytest.mark.asyncio
     async def test_watchdog_triggers_on_real_silence(
-        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+        self, wd_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """No packets for longer than the timeout still starts a reconnect."""
-        clock = self._fake_clock(radio, monkeypatch, link_alive=False)
-        radio._control_phase._start_watchdog()
+        clock = self._fake_clock(wd_radio, monkeypatch, link_alive=False)
+        wd_radio._control_phase._start_watchdog()
         await self._spin(clock, 40)
-        radio._control_phase._stop_watchdog()
-        assert radio._reconnect_task is not None
+        wd_radio._control_phase._stop_watchdog()
+        assert wd_radio._reconnect_task is not None
 
     @pytest.mark.asyncio
     async def test_watchdog_ignores_an_event_loop_stall(
-        self, radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+        self, wd_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """MOR-3868: a stall of the loop itself (CPU-starved runner) longer
         than the timeout, on a healthy link, is not a dead link."""
-        clock = self._fake_clock(radio, monkeypatch, link_alive=True)
-        radio._control_phase._start_watchdog()
+        clock = self._fake_clock(wd_radio, monkeypatch, link_alive=True)
+        wd_radio._control_phase._start_watchdog()
         await self._spin(clock, 4)
         clock.stall = 1.7  # the CI signature: "no activity for 1.7s"
         stall_at = clock.sleeps
         await self._spin(clock, stall_at + 40)
-        radio._control_phase._stop_watchdog()
+        wd_radio._control_phase._stop_watchdog()
         assert clock.sleeps >= stall_at + 40  # the watchdog kept watching
-        assert radio._reconnect_task is None
+        assert wd_radio._reconnect_task is None
 
 
 class TestReconnect:
