@@ -23,6 +23,7 @@ from _helpers import ack_response as _ack_response
 from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
+from _helpers import observe_selected_receiver
 
 
 def _power_response(level: int) -> bytes:
@@ -130,6 +131,7 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
         radio._civ_transport = transport
         radio._ctrl_transport = transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio._civ_stream_ready = True
         radio._last_civ_data_received = 1e9
 

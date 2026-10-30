@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 from rigplane.audio.route import profile_data_mode_count
 
 if TYPE_CHECKING:
-    from typing import Any, Awaitable, Callable, Iterator
+    from typing import Any, Callable, Iterator
 
     from rigplane.commands.command_map import CommandMap
     from rigplane.commands.commander import InterferenceScope
@@ -42,12 +42,16 @@ from rigplane.core.exceptions import (
     CommandError,
     CommandRejectedError,
     ConnectionError,
+    ReceiverNotSelectedError,
     StaleBeforeWireError,
     TimeoutError,
 )
 from rigplane.core.types import Mode, bcd_encode
 from rigplane.profiles import RadioProfile
-from rigplane.runtime.callable_support import split_tx_routes_unselected_selector
+from rigplane.runtime.callable_support import (
+    split_tx_routes_unselected_selector,
+    unselected_selector_is_sub,
+)
 
 # CI-V command byte for VFO select / equal / swap (0x07).
 _CMD_VFO = 0x07
@@ -85,6 +89,10 @@ def _relative_vfo_routing_available(
         and profile.vfo_scheme == "ab"
         and profile.vfo_readback == "selected_unselected"
     )
+
+
+def _receiver_name(receiver: int) -> str:
+    return "MAIN" if receiver == RECEIVER_MAIN else "SUB"
 
 
 def require_receiver_for_profile(
@@ -149,73 +157,63 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         receiver: int,
         operation: str,
     ) -> None:
-        """Require Command29 support for per-receiver command routing."""
-        if receiver == RECEIVER_MAIN:
-            return
+        """Admit a receiver-scoped command for ``receiver`` (MOR-3591).
+
+        The single receiver-addressing guard of the command layer, driven by
+        profile data: a declared cmd29 route addresses either receiver
+        explicitly; without one the plain command reaches only the receiver
+        the operator has selected, so it is admitted only for that receiver.
+        Core never switches the selection to reach the other one: a command
+        for a receiver that is not selected -- or for either receiver while
+        the selection is unknown -- raises :class:`ReceiverNotSelectedError`.
+        """
         if self._profile.supports_cmd29(command, sub):
             return
-        raise CommandError(
-            f"{operation} receiver={receiver} is unsupported for profile "
+        if self._selected_receiver() == receiver:
+            return
+        raise ReceiverNotSelectedError(
+            f"{operation} receiver={receiver} refused for profile "
             f"{self._profile.model}: command 0x{command:02X}"
             + (f"/0x{sub:02X}" if sub is not None else "")
-            + " has no cmd29 route"
+            + " has no cmd29 route and "
+            + _receiver_name(receiver)
+            + " is not the selected receiver; select that receiver first"
         )
 
-    def _active_receiver_name(self) -> str:
-        """Best-effort active receiver name for VFO-routing fallbacks."""
-        active = getattr(self._radio_state, "active", None)
-        if active in {"MAIN", "SUB"}:
-            return str(active)
-        if self._last_vfo in {"SUB", "B"}:
-            return "SUB"
-        return "MAIN"
+    def _selected_receiver(self) -> int | None:
+        """Index of the receiver the radio has selected, or ``None`` if unknown.
 
-    async def _run_with_receiver_vfo_fallback(
-        self,
-        *,
-        receiver: int,
-        operation: str,
-        action: Callable[[], Awaitable[Any]],
-    ) -> Any:
-        """Run an operation for a receiver using temporary MAIN/SUB VFO switching."""
-        target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
-        current = self._active_receiver_name()
-        switched = False
+        A single-receiver profile always has receiver 0 selected. On a
+        dual-receiver profile the selection is known only from the radio's
+        own 0x07 0xD2 answer or from an acknowledged select this runtime
+        sent (both recorded in ``_last_vfo``); never from a defaulted cache.
+        It is unknown before either happens, after a new CI-V generation,
+        and while a selection change is in flight: fail closed.
+        """
+        if self._profile.receiver_count <= 1:
+            return RECEIVER_MAIN
+        if self._vfo_selection_epoch % 2 == 0:
+            return None
+        if self._last_vfo == "MAIN":
+            return RECEIVER_MAIN
+        if self._last_vfo == "SUB":
+            return 1
+        return None
 
-        if current != target:
-            if target == "SUB" and self._profile.vfo_sub_code is None:
-                raise CommandError(
-                    f"{operation} receiver={receiver} is unsupported for profile "
-                    f"{self._profile.model}: no SUB VFO select code"
-                )
-            if target == "MAIN" and self._profile.vfo_main_code is None:
-                raise CommandError(
-                    f"{operation} receiver={receiver} is unsupported for profile "
-                    f"{self._profile.model}: no MAIN VFO select code"
-                )
-            await self._set_vfo_wire(target)
-            self._radio_state.active = target
-            switched = True
+    def _sub_direct_route(self, receiver: int, *command_names: str) -> bool:
+        """Whether profile data address SUB directly via the 0x25/0x26 selector.
 
-        try:
-            return await action()
-        finally:
-            if switched:
-                try:
-                    await self._set_vfo_wire(current)
-                    self._radio_state.active = current
-                except TimeoutError:
-                    # Do not swallow — radio would silently remain on the
-                    # temporary receiver. Retry once (the first attempt may
-                    # fail because a prior fire-and-forget ACK sink consumed
-                    # the timeout budget), then propagate on a second failure.
-                    logger.warning(
-                        "%s: timeout restoring VFO receiver to %s, retrying once",
-                        operation,
-                        current,
-                    )
-                    await self._set_vfo_wire(current)
-                    self._radio_state.active = current
+        True only for ``receiver`` 1 on a profile whose selector 01 is the
+        physical SUB receiver (:func:`unselected_selector_is_sub`) and that
+        declares every named command.
+        """
+        cmd_map = self._profile.command_map
+        return (
+            receiver != RECEIVER_MAIN
+            and unselected_selector_is_sub(self._profile)
+            and cmd_map is not None
+            and all(cmd_map.has(name) for name in command_names)
+        )
 
     async def _get_frequency_main(
         self, *, bypass_cache: bool = False, update_cache: bool = True
@@ -326,10 +324,16 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         return freq
 
     async def _get_unselected_freq(self) -> int:
-        """Read the unselected (inactive) receiver frequency via CI-V 0x25 0x01."""
+        """Read the selector-01 frequency via CI-V 0x25 0x01.
+
+        The reply must echo selector 01; any other selector is refused
+        instead of being reported as this value (MOR-3591).
+        """
         civ = self._commands.get_unselected_freq(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_unselected_freq")
-        _rcvr, freq = _parse_selected_freq_response(resp)
+        rcvr, freq = _parse_selected_freq_response(resp)
+        if rcvr != 1:
+            raise CommandError("unselected frequency readback selector mismatch")
         return freq
 
     async def _get_selected_mode(self) -> tuple[Mode, int | None]:
@@ -340,10 +344,16 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         return mode, filt
 
     async def _get_unselected_mode(self) -> tuple[Mode, int | None]:
-        """Read the unselected (inactive) receiver mode via CI-V 0x26 0x01."""
+        """Read the selector-01 mode via CI-V 0x26 0x01.
+
+        The reply must echo selector 01; any other selector is refused
+        instead of being reported as this value (MOR-3591).
+        """
         civ = self._commands.get_unselected_mode(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_unselected_mode")
-        _rcvr, mode, _data_mode, filt = _parse_selected_mode_response(resp)
+        rcvr, mode, _data_mode, filt = _parse_selected_mode_response(resp)
+        if rcvr != 1:
+            raise CommandError("unselected mode readback selector mismatch")
         return mode, filt
 
     async def read_relative_vfo(self, *, selected: bool) -> RelativeVfoState:
@@ -736,9 +746,9 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def swap_vfo_ab(self, receiver: int = 0) -> None:
         """Swap VFO A and VFO B within ``receiver``.
 
-        On dual-RX profiles the target receiver (MAIN/SUB) is selected
-        first so the swap opcode affects the intended receiver.  On
-        single-RX profiles the swap is issued directly.
+        The opcode acts on the selected receiver, so on a dual-RX profile
+        ``receiver`` must be the selected one; otherwise the call raises
+        :class:`ReceiverNotSelectedError` and nothing is sent.
 
         Raises ``CommandError`` when the profile does not declare a
         dedicated ``swap_ab_code``.  We do NOT silently fall back to
@@ -756,13 +766,15 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 "profile declares no swap_ab_code. "
                 "For MAIN↔SUB exchange use swap_main_sub()."
             )
+        # The A/B opcode acts on the selected receiver: admitted only for it,
+        # never by selecting ``receiver`` first (MOR-3591).
+        self._require_cmd29_route(
+            _CMD_VFO, None, receiver=receiver, operation="swap_vfo_ab"
+        )
+        civ = build_civ_frame(
+            self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
+        )
         with self._vfo_selection_change():
-            if self._profile.receiver_count > 1:
-                target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
-                await self._set_vfo_wire(target)
-            civ = build_civ_frame(
-                self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
-            )
             await self._send_civ_raw(civ, wait_response=False)
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
@@ -782,13 +794,15 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 "profile declares no equal_ab_code. "
                 "For MAIN→SUB copy use equalize_main_sub()."
             )
+        # The A/B opcode acts on the selected receiver: admitted only for it,
+        # never by selecting ``receiver`` first (MOR-3591).
+        self._require_cmd29_route(
+            _CMD_VFO, None, receiver=receiver, operation="equalize_vfo_ab"
+        )
+        civ = build_civ_frame(
+            self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
+        )
         with self._vfo_selection_change():
-            if self._profile.receiver_count > 1:
-                target = "MAIN" if receiver == RECEIVER_MAIN else "SUB"
-                await self._set_vfo_wire(target)
-            civ = build_civ_frame(
-                self._radio_addr, CONTROLLER_ADDR, _CMD_VFO, data=bytes([code])
-            )
             await self._send_civ_raw(civ, wait_response=False)
 
     # ------------------------------------------------------------------
@@ -916,12 +930,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     async def set_vfo_slot(self, slot: str, receiver: int = 0) -> None:
         """Make ``slot`` (``"A"`` or ``"B"``) the active VFO on ``receiver``.
 
-        Wire bytes: CI-V ``0x07 0x00`` (A) or ``0x07 0x01`` (B).  On
-        dual-RX rigs (IC-7610 / IC-9700) the target receiver is selected
-        first via the VFO-switch pattern (``0x07 0xD0`` / ``0xD1``) so the
-        slot-select opcode affects the intended receiver, then the
-        previous receiver is restored.  Single-RX rigs send the opcode
-        directly.
+        Wire bytes: CI-V ``0x07 0x00`` (A) or ``0x07 0x01`` (B).  The
+        opcode acts on the selected receiver: on dual-RX rigs ``receiver``
+        must be the selected one, otherwise
+        :class:`ReceiverNotSelectedError` is raised and nothing is sent
+        (the selection is never switched to reach it, MOR-3591).
 
         Raises :class:`ValueError` for an invalid slot or out-of-range
         receiver index.
@@ -963,12 +976,8 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             )
             rx_state.active_slot = norm_slot
 
+        self._require_cmd29_route(
+            _CMD_VFO, None, receiver=receiver, operation=operation
+        )
         with self._vfo_selection_change():
-            if self.receiver_count > 1:
-                await self._run_with_receiver_vfo_fallback(
-                    receiver=receiver,
-                    operation=operation,
-                    action=emit,
-                )
-            else:
-                await emit()
+            await emit()

@@ -10,6 +10,7 @@ from rigplane.core.exceptions import CommandError, CommandRejectedError, Timeout
 from rigplane.core.radio_protocol import RelativeVfoModeWritable, RelativeVfoState
 from rigplane.runtime.radio import IcomRadio
 
+from _helpers import observe_selected_receiver
 from test_runtime_relative_vfo_frequency import FakeCivTransport, response
 
 
@@ -202,6 +203,9 @@ async def test_selection_methods_mark_epoch_until_completion(
     monkeypatch, model, method, args, kwargs, ending
 ):
     radio = IcomRadio("127.0.0.1", model=model)
+    if "receiver" in kwargs:
+        # A slot select reaches only the selected receiver (MOR-3591).
+        observe_selected_receiver(radio, kwargs["receiver"])
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def send(frame, **_kwargs):

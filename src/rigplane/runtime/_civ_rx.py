@@ -1127,6 +1127,9 @@ class CivRuntime:
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
         self._host._state_store.begin_provider_generation()
+        # A new generation may face a different selection: unknown until
+        # the radio answers 0x07 0xD2 again (MOR-3591, fail closed).
+        self._host._last_vfo = None
         for token in self._managed_tx_ports.values():
             if token.civ_source_generation == source_generation:
                 self._poison_managed_tx_port(token)
