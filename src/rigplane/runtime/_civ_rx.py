@@ -1697,9 +1697,7 @@ class CivRuntime:
                     "restarting the recovery",
                     reason,
                 )
-                self._spawn_recovery_task(
-                    full_reconnect_reason=reason, preempt=live
-                )
+                self._spawn_recovery_task(full_reconnect_reason=reason, preempt=live)
                 return
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "

@@ -370,9 +370,7 @@ async def test_two_session_drops_with_notices_recover_with_two_logins(
             sim.drop_session(at=drop2_at, notice=True)
 
             token1 = await wait_usable(old_token, 0.1, "first")
-            assert entries, (
-                "the first recovery never parked its tail: " + report()
-            )
+            assert entries, "the first recovery never parked its tail: " + report()
             assert entries[0] - t0 < drop2_at, (
                 "the first recovery parked its tail only after the second "
                 "drop: " + report()
@@ -384,13 +382,10 @@ async def test_two_session_drops_with_notices_recover_with_two_logins(
             while len(entries) < 2:
                 if time.monotonic() >= end:
                     pytest.fail(
-                        "the second recovery never reached its tail: "
-                        + report()
+                        "the second recovery never reached its tail: " + report()
                     )
                 await asyncio.sleep(0.02)
-            assert cancels, (
-                "the first recovery tail was never cancelled: " + report()
-            )
+            assert cancels, "the first recovery tail was never cancelled: " + report()
             assert cancels[0] - t0 > drop2_at, (
                 "the first recovery tail was cancelled before the second "
                 "drop: " + report()

@@ -1107,15 +1107,16 @@ async def test_request_recovery_now_preempts_a_recovery_tail(
             tail_release.set()
             await asyncio.wait_for(second, 10.0)
 
-        assert order == ["force_cleanup", "release", "soft_reconnect", "remote_id=0"] * 2
+        assert (
+            order == ["force_cleanup", "release", "soft_reconnect", "remote_id=0"] * 2
+        )
         assert any(
-            "restarting the recovery" in r.message
-            and "busy=0 (second)" in r.message
+            "restarting the recovery" in r.message and "busy=0 (second)" in r.message
             for r in caplog.records
         ), [r.getMessage() for r in caplog.records]
-        assert not any(
-            "notice ignored" in r.message for r in caplog.records
-        ), [r.getMessage() for r in caplog.records]
+        assert not any("notice ignored" in r.message for r in caplog.records), [
+            r.getMessage() for r in caplog.records
+        ]
     finally:
         tail_release.set()
         for task in (first, second):
