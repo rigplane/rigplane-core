@@ -1941,11 +1941,12 @@ def _rigs_dir() -> Path:
 
 def _resolve_model(
     args: argparse.Namespace,
-) -> tuple[int | None, str | None, int | None, str | None]:
+) -> tuple[int | None, str | None, int | None, str | None, bool]:
     """Resolve radio_addr and model name from --model / --radio-addr flags.
 
     Returns:
-        (radio_addr, model_name, default_baud, protocol_type) — each may be None.
+        (radio_addr, model_name, default_baud, protocol_type, has_lan) — all
+        but ``has_lan`` may be None; ``has_lan`` is False without a model.
     """
     from rigplane.rig_loader import discover_available_rigs
 
@@ -1953,7 +1954,7 @@ def _resolve_model(
     radio_addr: int | None = getattr(args, "radio_addr", None)
 
     if model_name is None:
-        return radio_addr, None, None, None
+        return radio_addr, None, None, None, False
 
     rigs = discover_available_rigs(_rigs_dir())
 
@@ -1975,6 +1976,7 @@ def _resolve_model(
         matched.model,
         matched.default_baud,
         getattr(matched, "protocol_type", None),
+        matched.has_lan,
     )
 
 
@@ -2046,7 +2048,9 @@ async def _build_backend_config(
     Runs auto-discovery when host / serial-port is not provided.
     Infers backend type from the model's protocol when --backend is not set.
     """
-    radio_addr, model_name, model_default_baud, protocol_type = _resolve_model(args)
+    radio_addr, model_name, model_default_baud, protocol_type, has_lan = _resolve_model(
+        args
+    )
 
     # Infer backend from context when not explicitly set.
     backend = getattr(args, "backend", None)
@@ -2055,8 +2059,12 @@ async def _build_backend_config(
         if model_name is None:
             backend = "serial" if serial_port else "lan"
         else:
+            given_host = getattr(args, "host", _HOST_NOT_SET)
             inferred = _backend_for_protocol(
-                protocol_type, serial_port=bool(serial_port)
+                protocol_type,
+                serial_port=bool(serial_port),
+                host=bool(given_host) and given_host != _HOST_NOT_SET,
+                has_lan=has_lan,
             )
             if inferred is None:
                 raise ValueError(
