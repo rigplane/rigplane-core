@@ -38,7 +38,7 @@ def _loaded_store() -> StateStore:
             FieldPath.global_("operator_controls", "rit_freq"): 0,
             FieldPath.global_("tx_state", "rit_on"): False,
             FieldPath.global_("tx_state", "rit_tx"): False,
-            FieldPath.global_("operator_controls", "power_level"): 128,
+            FieldPath.global_("operator_controls", "power_level"): 0.5,
         }
     )
 
@@ -125,7 +125,7 @@ async def test_init_burst_reflects_split_and_data_and_managed() -> None:
             FieldPath.global_("operator_controls", "rit_freq"): 100,
             FieldPath.global_("tx_state", "rit_on"): True,
             FieldPath.global_("tx_state", "rit_tx"): True,
-            FieldPath.global_("operator_controls", "power_level"): 255,
+            FieldPath.global_("operator_controls", "power_level"): 1.0,
         }
     )
     handler = make_handler(

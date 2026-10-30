@@ -13,7 +13,6 @@ from types import SimpleNamespace
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
 from rigplane.runtime.managed_tx_fence import TxAbortFence
-from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from test_managed_tx_authority import FakeConfigStore, FakeLane
 
 from tci_adapter_stub import (
@@ -30,8 +29,6 @@ from tci_adapter_stub import (
 def _seam(radio=None, store=None, **kwargs):  # type: ignore[no-untyped-def]
     radio = radio if radio is not None else _data2_radio()
     if store is None:
-        from rigplane.core.state_store import StateStore
-
         store = build_store(
             {
                 FieldPath.active("main", "freq_mode", "freq_hz"): 14_074_000,
@@ -99,9 +96,7 @@ async def test_session_registered_on_connect_and_removed_on_disconnect() -> None
 async def test_controller_remote_refuses_frequency_write() -> None:
     """Bot handler:617 — remote controller mode refuses a frequency write."""
     radio = StubIcomRadio()
-    store = build_store(
-        {FieldPath.active("main", "freq_mode", "freq_hz"): 14_074_000}
-    )
+    store = build_store({FieldPath.active("main", "freq_mode", "freq_hz"): 14_074_000})
     handler = make_handler(
         radio=radio,
         store=store,
@@ -116,9 +111,7 @@ async def test_controller_remote_refuses_frequency_write() -> None:
 async def test_power_normalized_half_is_drive_50() -> None:
     """Gate notifier:315 — the store power is normalized 0..1, not native."""
     radio = StubIcomRadio()
-    store = build_store(
-        {FieldPath.global_("operator_controls", "power_level"): 0.5}
-    )
+    store = build_store({FieldPath.global_("operator_controls", "power_level"): 0.5})
     handler = make_handler(radio=radio, store=store)
     outcome = await handler.on_command("drive", ("0",))
     assert outcome.to_sender == ("drive:0,50;",)
@@ -168,7 +161,9 @@ async def test_notification_cache_reemits_return_to_false() -> None:
             path=path,
             value=value,
             source=SourceMetadata(
-                source="poll_response", provider="test", transport="fake",
+                source="poll_response",
+                provider="test",
+                transport="fake",
                 native_id="tci",
             ),
             timestamp_monotonic=time.monotonic(),
@@ -231,7 +226,6 @@ async def test_managed_idle_reports_trx_false_with_unknown_ptt() -> None:
     """Gate handler:353 (P2) / bot handler:353 — RX intent kind reads false."""
     from rigplane.core.state_store import StateStore
 
-    authority = StubAuthority()
     # StubAuthority with owner None: snapshot intent is None (falsy) today, but
     # the real authority always carries an RX intent object (truthy). Pin the
     # real shape: an RX-kind intent must read false.
@@ -275,7 +269,16 @@ async def test_rtty_raw_refused_at_key() -> None:
     outcome = await handler.on_command("trx", ("0", "true"))
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ()
-    assert lane.effects == []
+    assert [
+        e.operation.name for e in lane.effects if e.operation.name == "PTT_ON"
+    ] == []
+    # A refused admission leaves the documented release debt (RX intent,
+    # release owed; cf. the authority's own before_on tests): the explicit
+    # unkey still answers, then force_off settles the debt before close.
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
+    await authority.force_off()
     await authority.close()
 
 
@@ -306,5 +309,14 @@ async def test_queued_tuple_change_refused_without_ptt() -> None:
         queue.release_ready()
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ()
-    assert lane.effects == []
+    assert [
+        e.operation.name for e in lane.effects if e.operation.name == "PTT_ON"
+    ] == []
+    # A refused admission leaves the documented release debt (RX intent,
+    # release owed; cf. the authority's own before_on tests): the explicit
+    # unkey still answers, then force_off settles the debt before close.
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
+    await authority.force_off()
     await authority.close()

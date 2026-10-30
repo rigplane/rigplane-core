@@ -47,7 +47,7 @@ def _loaded_store() -> StateStore:
             FieldPath.global_("operator_controls", "rit_freq"): 0,
             FieldPath.global_("tx_state", "rit_on"): False,
             FieldPath.global_("tx_state", "rit_tx"): False,
-            FieldPath.global_("operator_controls", "power_level"): 128,
+            FieldPath.global_("operator_controls", "power_level"): 0.5,
         }
     )
 
@@ -210,8 +210,19 @@ async def _drive_session(e2e: _E2E) -> None:
 
         assert snapshot.state.intent.kind is ManagedTxIntentKind.PTT
 
+        # The unkey seam: wait for a NEW false response after the request
+        # (the init burst already contains a false), then assert authority
+        # RX plus the release effect BEFORE closing the connection — the
+        # disconnect handler must not be what releases the lease. Deleting
+        # the unkey send below leaves the authority keyed and fails here.
         await listener.send("trx:0,false;")
-        await _wait_until(lambda: ("TRX", 0, None, False) in observed)
+        mark = len(observed)
+        await _wait_until(lambda: ("TRX", 0, None, False) in observed[mark:])
+        snapshot = await e2e.authority.snapshot()
+        from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+
+        assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
+        assert e2e.authority.tx_holder_nowait() is None
     finally:
         listener.shutdown()
         try:
@@ -296,3 +307,102 @@ async def test_tci_busy_port_aborts_startup(tcp_available: None) -> None:
         with pytest.raises(OSError) as exc_info:
             await _cmd_web(_data2_radio(store), args)
     assert exc_info.value.errno == errno.EADDRINUSE
+
+
+async def test_busy_tci_port_with_rigctld_stops_rigctld(
+    tcp_available: None,
+) -> None:
+    """P2 cli: a TCI bind failure after rigctld started still stops rigctld."""
+    from rigplane.cli import _build_parser, _cmd_web
+
+    stopped: list[str] = []
+
+    class RecordingRigctldServer:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            stopped.append("rigctld")
+
+    class BusyTciServer:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise OSError(errno.EADDRINUSE, "Address already in use")
+
+        async def stop(self) -> None:  # pragma: no cover - never started
+            pass
+
+    class FakeWebServer:
+        def __init__(self, _radio: Any, _cfg: Any) -> None:
+            self.command_state_store = object()
+
+        async def serve_forever(self, *, on_started=None):  # type: ignore[no-untyped-def]
+            raise AssertionError("web must not start when TCI fails hard")
+
+    store = _loaded_store()
+    args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--tci"])
+    args.web_bridge = None
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("rigplane.rigctld.server.RigctldServer", RecordingRigctldServer),
+        patch("rigplane.tci_adapter.server.TciAdapterServer", BusyTciServer),
+        patch("rigplane.cli._detect_loopback_hint", return_value=None),
+    ):
+        with pytest.raises(OSError) as exc_info:
+            await _cmd_web(_data2_radio(store), args)
+    assert exc_info.value.errno == errno.EADDRINUSE
+    assert stopped == ["rigctld"]
+
+
+async def test_failing_rigctld_stop_still_stops_tci(tcp_available: None) -> None:
+    """P2 cli: a failing rigctld stop must not skip the TCI shutdown."""
+    from rigplane.cli import _build_parser, _cmd_web
+
+    tci_stopped: list[str] = []
+
+    class FailingRigctldServer:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            raise RuntimeError("rigctld stop boom")
+
+    class RecordingTciServer:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            tci_stopped.append("tci")
+
+    class FakeWebServer:
+        def __init__(self, _radio: Any, _cfg: Any) -> None:
+            self.command_state_store = object()
+
+        async def serve_forever(self, *, on_started=None):  # type: ignore[no-untyped-def]
+            if on_started is not None:
+                on_started()
+            return None
+
+    store = _loaded_store()
+    args = _build_parser().parse_args(["--host", "1.2.3.4", "web", "--tci"])
+    args.web_bridge = None
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("rigplane.rigctld.server.RigctldServer", FailingRigctldServer),
+        patch("rigplane.tci_adapter.server.TciAdapterServer", RecordingTciServer),
+        patch("rigplane.cli._detect_loopback_hint", return_value=None),
+    ):
+        with pytest.raises(RuntimeError, match="rigctld stop boom"):
+            await _cmd_web(_data2_radio(store), args)
+    assert tci_stopped == ["tci"]

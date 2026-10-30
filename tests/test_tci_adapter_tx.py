@@ -34,7 +34,7 @@ def _loaded_store():  # type: ignore[no-untyped-def]
             FieldPath.global_("operator_controls", "rit_freq"): 0,
             FieldPath.global_("tx_state", "rit_on"): False,
             FieldPath.global_("tx_state", "rit_tx"): False,
-            FieldPath.global_("operator_controls", "power_level"): 128,
+            FieldPath.global_("operator_controls", "power_level"): 0.5,
         }
     )
 
@@ -174,27 +174,36 @@ async def test_key_remote_controller_refused() -> None:
     radio = _data2_radio()
     store = _loaded_store()
     authority = StubAuthority()
+    controller = SimpleNamespace(mode="local")
     handler = make_handler(
         radio=radio,
         store=store,
         authority=authority,
         queue=StubCommandQueue(),
         service=StubCommandService(),
-        controller_authority=SimpleNamespace(mode="remote"),
+        controller_authority=controller,
     )
     await _program_digu(handler)
+    controller.mode = "remote"
     outcome = await handler.on_command("trx", ("0", "true"))
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ()
     assert authority.submit_calls == []
 
 
-async def test_key_without_prior_modulation_refused() -> None:
-    handler, _authority, lane, _queue = _seam()
+async def test_key_without_prior_modulation_keys_current_input() -> None:
+    """Gate handler:565 — no per-socket programming prerequisite: a bare
+    ``trx:0,true`` on a fresh connection keys the current input when the
+    radio is correctly configured and the authority admits it."""
+    handler, authority, lane, _queue = _seam()
     outcome = await handler.on_command("trx", ("0", "true"))
-    assert outcome.to_sender == ("trx:0,false;",)
-    assert outcome.to_others == ()
-    assert lane.effects == []
+    assert outcome.to_sender == ("trx:0,true;",)
+    assert outcome.to_others == ("trx:0,true;",)
+    assert [e.operation.name for e in lane.effects] == ["PTT_ON"]
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
+    await authority.close()
 
 
 async def test_key_split_mismatch_refused() -> None:
@@ -215,7 +224,16 @@ async def test_key_split_mismatch_refused() -> None:
     outcome = await handler.on_command("trx", ("0", "true"))
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ()
-    assert lane.effects == []
+    assert [
+        e.operation.name for e in lane.effects if e.operation.name == "PTT_ON"
+    ] == []
+    # A refused admission leaves the documented release debt (RX intent,
+    # release owed; cf. the authority's own before_on tests): the explicit
+    # unkey still answers, then force_off settles the debt before close.
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
+    await authority.force_off()
     await authority.close()
 
 
@@ -226,7 +244,16 @@ async def test_key_mod_input_mismatch_refused() -> None:
     outcome = await handler.on_command("trx", ("0", "true"))
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ()
-    assert lane.effects == []
+    assert [
+        e.operation.name for e in lane.effects if e.operation.name == "PTT_ON"
+    ] == []
+    # A refused admission leaves the documented release debt (RX intent,
+    # release owed; cf. the authority's own before_on tests): the explicit
+    # unkey still answers, then force_off settles the debt before close.
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
+    await authority.force_off()
     await authority.close()
 
 
@@ -246,7 +273,16 @@ async def test_key_truncated_tuple_refused() -> None:
     outcome = await handler.on_command("trx", ("0", "true"))
     assert outcome.to_sender == ("trx:0,false;",)
     assert outcome.to_others == ()
-    assert lane.effects == []
+    assert [
+        e.operation.name for e in lane.effects if e.operation.name == "PTT_ON"
+    ] == []
+    # A refused admission leaves the documented release debt (RX intent,
+    # release owed; cf. the authority's own before_on tests): the explicit
+    # unkey still answers, then force_off settles the debt before close.
+    assert (await handler.on_command("trx", ("0", "false"))).to_sender == (
+        "trx:0,false;",
+    )
+    await authority.force_off()
     await authority.close()
 
 

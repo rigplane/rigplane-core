@@ -172,11 +172,25 @@ class StubIcomRadio:
     async def get_rf_power(self) -> int:
         return self.rf_power
 
+    def _normalized_power(self) -> float:
+        """Mirror the store contract: ``power_level`` is normalized 0..1."""
+        native = float(self.rf_power)
+        max_watts = getattr(self.profile, "max_watts", None)
+        if (
+            self.native_power_unit == "watts"
+            and isinstance(max_watts, (int, float))
+            and not isinstance(max_watts, bool)
+            and max_watts > 0
+        ):
+            return max(0.0, min(1.0, native / float(max_watts)))
+        return max(0.0, min(1.0, native / 255.0))
+
     async def set_rf_power(self, level: int) -> None:
         self._fail("set_rf_power")
         self.rf_power = int(level)
         self._applied(
-            FieldPath.global_("operator_controls", "power_level"), self.rf_power
+            FieldPath.global_("operator_controls", "power_level"),
+            self._normalized_power(),
         )
 
     async def get_key_speed(self) -> int:
