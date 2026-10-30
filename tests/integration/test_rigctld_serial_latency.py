@@ -23,6 +23,29 @@ from testkit.ic7300_fakes import ic7300_profile_fake
 pytestmark = pytest.mark.mock_integration
 
 
+async def _finish_poll_tasks(tasks, cleanups):
+    """Cancel polling tasks, run every cleanup, then re-raise a poll failure.
+
+    A polling client that died during measurement must fail the test, but
+    only after each cleanup has run so no server, radio, or PTY resource
+    is left active after the error.
+    """
+    for task in tasks:
+        task.cancel()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    failure = None
+    for result in results:
+        # Suppress only the cancellation requested above.
+        if isinstance(result, asyncio.CancelledError):
+            continue
+        if isinstance(result, BaseException) and failure is None:
+            failure = result
+    for cleanup in cleanups:
+        await cleanup()
+    if failure is not None:
+        raise failure
+
+
 @pytest.mark.skipif(not pty_supported(), reason="requires a PTY")
 async def test_acquisition_polls_yield_to_writes(monkeypatch) -> None:
     """MOR-3888: rigctld-seat background polls share no lane with writes.
@@ -161,19 +184,40 @@ async def test_two_clients_frequency_readback_latency(silent: bool) -> None:
             json.dumps(dict(silent=silent, samples=samples, transcript=transcript)),
         )
         stop.set()
-        for task in tasks:
-            task.cancel()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for result in results:
-            # Suppress only the cancellation requested above; a polling
-            # client that died during measurement must fail the test.
-            if isinstance(result, asyncio.CancelledError):
-                continue
-            if isinstance(result, BaseException):
-                raise result
-        for writer in writers:
-            writer.close()
-            await writer.wait_closed()
-        await server.stop()
-        await radio.disconnect()
-        await endpoint.stop()
+
+        async def _close_writers():
+            for writer in writers:
+                writer.close()
+                await writer.wait_closed()
+
+        await _finish_poll_tasks(
+            tasks,
+            [_close_writers, server.stop, radio.disconnect, endpoint.stop],
+        )
+
+
+async def test_failing_poll_still_runs_cleanup() -> None:
+    """MOR-3888 round 2: a polling failure must fail and still clean up."""
+
+    async def _boom():
+        raise RuntimeError("poll boom")
+
+    task = asyncio.create_task(_boom())
+    await asyncio.sleep(0)  # let the poll fail before cleanup cancels it
+    assert task.done()
+    calls: list[str] = []
+
+    async def _cleaner(name: str):
+        calls.append(name)
+
+    with pytest.raises(RuntimeError, match="poll boom"):
+        await _finish_poll_tasks(
+            [task],
+            [
+                lambda: _cleaner("writers"),
+                lambda: _cleaner("server"),
+                lambda: _cleaner("radio"),
+                lambda: _cleaner("endpoint"),
+            ],
+        )
+    assert calls == ["writers", "server", "radio", "endpoint"]
