@@ -163,7 +163,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 | `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction |
-| `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans (only when running from a source checkout: the wheel does not include `band-plans/`) |
+| `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans. The plans ship in the wheel (`rigplane/band-plans`); the chosen region is written to `_config.toml` inside that directory, so the installation must be writable (a source checkout or a user-owned virtualenv) for the choice to persist |
 | `POST` | `/api/v1/eibi/fetch` | Fetch/refresh EiBi dataset |
 
 ### WebSocket Routes

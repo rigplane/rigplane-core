@@ -75,9 +75,27 @@ MODE_COLORS: dict[str, str] = {
 DEFAULT_OPACITY = 0.20
 
 
-# Repository ``band-plans/`` directory, the default source of plan data and of
-# the persisted ``_config.toml`` (a WebConfig can inject another directory).
-DEFAULT_BAND_PLANS_DIR = Path(__file__).resolve().parents[3] / "band-plans"
+def bundled_band_plans_dir(module_file: str | Path = __file__) -> Path:
+    """Return the ``band-plans/`` directory that ships with this installation.
+
+    Same lookup as the radio profiles (``cli._rigs_dir``): the installed layout
+    ``rigplane/band-plans`` (the wheel force-includes the repository's
+    ``band-plans/`` there, see ``pyproject.toml``; frozen builds must bundle it
+    at the same place) wins; a source checkout or editable install falls back
+    to ``band-plans/`` at the repository root.
+    """
+    here = Path(module_file).resolve()
+    packaged = (
+        here.parent.parent / "band-plans"
+    )  # rigplane/web/band_plan.py -> rigplane/
+    if packaged.is_dir():
+        return packaged
+    return here.parents[3] / "band-plans"
+
+
+# Default source of plan data and of the persisted ``_config.toml`` (a WebConfig
+# can inject another directory).
+DEFAULT_BAND_PLANS_DIR = bundled_band_plans_dir()
 
 # Region → ham band plan file mapping
 _REGION_HAM_FILE: dict[str, str] = {

@@ -111,6 +111,9 @@ exclude = ["src/rigplane/web/static"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "rigs" = "rigplane/rigs"
+# Band-plan data (rigplane.web.band_plan.bundled_band_plans_dir) is shipped the
+# same way as the profiles; without it an installed server has no band plan.
+"band-plans" = "rigplane/band-plans"
 
 # Builds the Svelte web UI during packaging (if not prebuilt) and force-includes
 # the result at src/rigplane/web/static for BOTH wheel and sdist targets, so

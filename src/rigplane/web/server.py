@@ -939,7 +939,7 @@ class WebConfig:
     sdr_config: SdrConfig | None = None
     sdr_source_factory: Callable[[SdrConfig], IqSource] | None = None
     # Band plan data directory (also holds the persisted ``_config.toml``);
-    # None = the repository ``band-plans/``. Tests inject a temporary copy.
+    # None = the bundled ``band-plans/`` (``bundled_band_plans_dir``). Tests inject a copy.
     band_plans_dir: pathlib.Path | None = None
 
     def __post_init__(self) -> None:
