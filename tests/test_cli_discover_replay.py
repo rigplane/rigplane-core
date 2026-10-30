@@ -1,30 +1,24 @@
-"""MOR-3859: ``discover`` -> run the printed command through ``main()``.
+"""MOR-3859: ``discover`` -> run the printed command, both through ``main()``.
 
-Every test discovers a radio, takes the copy-paste line ``discover`` printed
-and runs exactly that line through ``main()`` with the hardware factory
-replaced by a recorder, so the backend config the line really produces is
-asserted, not a hand-built imitation of it. Environment variables that would
-redirect a connection (``ICOM_PORT``, ``ICOM_SERIAL_*``) are set on purpose:
-a printed line must win over them.
+Each test runs ``rigplane discover`` through ``main()``, takes the copy-paste
+line it printed and runs exactly that line through ``main()`` again. Only
+the hardware boundary is faked (discovery results, ``create_radio``); the
+real ``status`` command prints the outcome, so config, dispatch and output
+are all asserted. Environment variables that would redirect a connection
+(``ICOM_PORT``, ``ICOM_SERIAL_*``) are set on purpose: a printed line must
+win over them.
 """
 
 from __future__ import annotations
 
-import asyncio
 import shlex
-import signal
-import sys
-from collections.abc import Callable, Iterator
-from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
+from cli_main_harness import FREQ_HZ, MODE, MainRun, run_main
 
-from rigplane import cli
 from rigplane.backends.config import (
-    BackendConfig,
     LanBackendConfig,
     SerialBackendConfig,
     YaesuCatBackendConfig,
@@ -32,98 +26,51 @@ from rigplane.backends.config import (
 from rigplane.discovery import RadioDiscoveryResult
 
 
-class _Radio:
-    """Smallest radio the one-shot ``status`` path can hold."""
-
-    capabilities: frozenset[str] = frozenset()
-
-    async def __aenter__(self) -> _Radio:
-        return self
-
-    async def __aexit__(self, *exc: object) -> None:
-        return None
-
-
-@dataclass
-class _Run:
-    exit_code: int
-    config: BackendConfig | None
-    stderr: str
-
-
-def _discover_lines(
+def _discover_line(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     *,
     lan: list[dict[str, Any]] | None = None,
     serial: list[RadioDiscoveryResult] | None = None,
-) -> list[str]:
-    """Run ``discover`` and return the printed ``rigplane ...`` lines."""
-    args = SimpleNamespace(serial_only=False, lan_only=False, timeout=0.1, json=False)
-    with (
-        patch(
-            "rigplane.discovery.discover_lan_radios",
-            AsyncMock(return_value=lan or []),
-        ),
-        patch(
-            "rigplane.discovery.discover_serial_radios",
-            AsyncMock(return_value=serial or []),
-        ),
-    ):
-        assert asyncio.run(cli._cmd_discover(None, args)) == 0
-    out = capsys.readouterr().out
-    return [line.strip() for line in out.splitlines() if "rigplane --model" in line]
+) -> str:
+    """Run ``rigplane discover`` through ``main()``; return its one command."""
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_lan_radios", AsyncMock(return_value=lan or [])
+    )
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_serial_radios",
+        AsyncMock(return_value=serial or []),
+    )
+    run = run_main(["discover", "--timeout", "0.1"], monkeypatch, capsys)
+    assert run.exit_code == 0
+    lines = [ln.strip() for ln in run.stdout.splitlines() if "rigplane --model" in ln]
+    assert len(lines) == 1, run.stdout
+    return lines[0]
 
 
-@pytest.fixture()
-def run_printed(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> Iterator[Callable[[str], _Run]]:
-    """Return a runner that feeds one printed line to ``main()``."""
-    monkeypatch.setenv("ICOM_LOG_FILE", "off")
-    monkeypatch.setenv("ICOM_PID_FILE", "")
-    # main() installs signal handlers; restore them so the suite keeps its own.
-    prev = (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGINT))
+def _replay(
+    line: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> MainRun:
+    tokens = shlex.split(line)
+    assert tokens[0] == "rigplane"
+    return run_main(tokens[1:], monkeypatch, capsys)
 
-    def _run(line: str) -> _Run:
-        tokens = shlex.split(line)
-        assert tokens[0] == "rigplane"
-        seen: list[BackendConfig] = []
 
-        def _create(config: BackendConfig) -> _Radio:
-            seen.append(config)
-            return _Radio()
-
-        def _exit(code: int) -> None:
-            raise SystemExit(code)
-
-        with (
-            patch.object(sys, "argv", tokens),
-            patch("rigplane.cli.create_radio", _create),
-            patch("rigplane.cli.acquire_resident_lock"),
-            patch("rigplane.cli._cmd_status", AsyncMock(return_value=0)),
-            patch("rigplane.cli.os._exit", _exit),
-        ):
-            with pytest.raises(SystemExit) as excinfo:
-                cli.main()
-        return _Run(
-            exit_code=int(excinfo.value.code or 0),
-            config=seen[0] if seen else None,
-            stderr=capsys.readouterr().err,
-        )
-
-    yield _run
-    signal.signal(signal.SIGTERM, prev[0])
-    signal.signal(signal.SIGINT, prev[1])
+def _assert_status_printed(run: MainRun) -> None:
+    assert run.exit_code == 0, run.stderr
+    assert f"{FREQ_HZ:,} Hz" in run.stdout
+    assert MODE in run.stdout
 
 
 def test_ftx1_yaesu_printed_command_runs_through_main(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    run_printed: Callable[[str], _Run],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("ICOM_SERIAL_BAUDRATE", "38400")
     monkeypatch.setenv("ICOM_SERIAL_DEVICE", "/dev/ttyENV")
-    lines = _discover_lines(
+    line = _discover_line(
+        monkeypatch,
         capsys,
         serial=[
             RadioDiscoveryResult(
@@ -137,24 +84,24 @@ def test_ftx1_yaesu_printed_command_runs_through_main(
             )
         ],
     )
-    assert lines == [
+    assert line == (
         "rigplane --model FTX-1 --serial-port /dev/ttyUSB1 --serial-baud 9600 status"
-    ]
-    result = run_printed(lines[0])
-    assert result.exit_code == 0
-    assert isinstance(result.config, YaesuCatBackendConfig)
-    assert result.config.model == "FTX-1"
-    assert result.config.device == "/dev/ttyUSB1"
-    assert result.config.baudrate == 9600
+    )
+    run = _replay(line, monkeypatch, capsys)
+    _assert_status_printed(run)
+    (config,) = run.configs
+    assert isinstance(config, YaesuCatBackendConfig)
+    assert config.model == "FTX-1"
+    assert config.device == "/dev/ttyUSB1"
+    assert config.baudrate == 9600
 
 
 def test_unknown_address_serial_printed_command_runs_once_model_is_chosen(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    run_printed: Callable[[str], _Run],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("ICOM_SERIAL_BAUDRATE", "9600")
-    lines = _discover_lines(
+    line = _discover_line(
+        monkeypatch,
         capsys,
         serial=[
             RadioDiscoveryResult(
@@ -168,33 +115,33 @@ def test_unknown_address_serial_printed_command_runs_once_model_is_chosen(
             )
         ],
     )
-    assert lines == [
+    assert line == (
         "rigplane --model <MODEL> --serial-port /dev/ttyUSB2"
         " --serial-baud 115200 --radio-addr 0x95 status"
-    ]
-    # As printed the placeholder is refused, pointing at `rigplane models`.
-    refused = run_printed(lines[0])
+    )
+    # As printed, the placeholder is refused and points at `rigplane models`.
+    refused = _replay(line, monkeypatch, capsys)
     assert refused.exit_code == 1
-    assert refused.config is None
+    assert refused.configs == []
     assert "Unknown model '<MODEL>'" in refused.stderr
     assert "rigplane models" in refused.stderr
-    # The owner picks a model from `rigplane models`; the discovered port,
-    # baud rate and CI-V address are kept.
-    result = run_printed(lines[0].replace("<MODEL>", "IC-7300"))
-    assert result.exit_code == 0
-    assert isinstance(result.config, SerialBackendConfig)
-    assert result.config.device == "/dev/ttyUSB2"
-    assert result.config.baudrate == 115200
-    assert result.config.radio_addr == 0x95
+    # With a model chosen from `rigplane models`, the discovered port, baud
+    # rate and CI-V address are kept.
+    run = _replay(line.replace("<MODEL>", "IC-7300"), monkeypatch, capsys)
+    _assert_status_printed(run)
+    (config,) = run.configs
+    assert isinstance(config, SerialBackendConfig)
+    assert config.device == "/dev/ttyUSB2"
+    assert config.baudrate == 115200
+    assert config.radio_addr == 0x95
 
 
 def test_lan_printed_command_wins_over_conflicting_icom_port(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    run_printed: Callable[[str], _Run],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("ICOM_PORT", "50099")
-    lines = _discover_lines(
+    line = _discover_line(
+        monkeypatch,
         capsys,
         lan=[
             {
@@ -205,22 +152,23 @@ def test_lan_printed_command_wins_over_conflicting_icom_port(
             }
         ],
     )
-    assert lines == [
+    assert line == (
         "rigplane --model IC-7610 --backend lan --host 192.168.1.50"
         " --control-port 50001 status"
-    ]
-    result = run_printed(lines[0])
-    assert result.exit_code == 0
-    assert isinstance(result.config, LanBackendConfig)
-    assert result.config.host == "192.168.1.50"
-    assert result.config.port == 50001
+    )
+    run = _replay(line, monkeypatch, capsys)
+    _assert_status_printed(run)
+    (config,) = run.configs
+    assert isinstance(config, LanBackendConfig)
+    assert config.host == "192.168.1.50"
+    assert config.port == 50001
 
 
 def test_ic7300_printed_command_runs_through_main(
-    capsys: pytest.CaptureFixture[str],
-    run_printed: Callable[[str], _Run],
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    lines = _discover_lines(
+    line = _discover_line(
+        monkeypatch,
         capsys,
         serial=[
             RadioDiscoveryResult(
@@ -234,9 +182,10 @@ def test_ic7300_printed_command_runs_through_main(
             )
         ],
     )
-    result = run_printed(lines[0])
-    assert result.exit_code == 0
-    assert isinstance(result.config, SerialBackendConfig)
-    assert result.config.model == "IC-7300"
-    assert result.config.baudrate == 115200
-    assert result.config.radio_addr == 0x94
+    run = _replay(line, monkeypatch, capsys)
+    _assert_status_printed(run)
+    (config,) = run.configs
+    assert isinstance(config, SerialBackendConfig)
+    assert config.model == "IC-7300"
+    assert config.baudrate == 115200
+    assert config.radio_addr == 0x94
