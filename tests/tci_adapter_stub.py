@@ -76,73 +76,128 @@ def _hf_range() -> Any:
 
 @dataclass
 class StubIcomRadio:
-    """Full-capability Icom-like fake (IC-7610 shape, LAN DATA2 route)."""
+    """Full-capability Icom-like fake (IC-7610 shape, LAN DATA2 route).
+
+    Set ``observe_store`` to mirror every write into a real store (the
+    acquisition the conformance tests stand in for); unit tests leave it
+    ``None`` and assert on the recorded calls instead.
+    """
 
     model: str = "IC-7610"
     profile: StubProfile = field(default_factory=StubProfile)
     native_power_unit: str = "raw_255"
     freq_a: int = 14_074_000
+    freq_b: int = 14_074_000
     mode_a: str = "USB"
+    mode_b: str = "USB"
     data_a: int = 0
+    data_b: int = 0
+    split: bool = False
+    rit_freq: int = 0
+    rit_on: bool = False
+    rit_tx: bool = False
+    rf_power: int = 128
+    key_speed: int = 20
     backend_id: str = "rigplane"
+    observe_store: StateStore | None = None
+    fail_on: set[str] = field(default_factory=set)
+    b_mode_writes: list[dict[str, Any]] = field(default_factory=list)
+    mod_inputs: dict[int, int] = field(default_factory=dict)
+
+    def _fail(self, name: str) -> None:
+        if name in self.fail_on:
+            from rigplane.core.exceptions import CommandError
+
+            raise CommandError(f"stub refuses {name}")
+
+    def _applied(self, path: FieldPath, value: Any) -> None:
+        if self.observe_store is not None:
+            observe(self.observe_store, path, value)
 
     async def get_freq(self, receiver: int = 0) -> int:
         return self.freq_a
 
     async def set_freq(self, freq_hz: int, receiver: int = 0) -> None:
+        self._fail("set_freq")
         self.freq_a = int(freq_hz)
+        self._applied(
+            FieldPath.active("main", "freq_mode", "freq_hz"), self.freq_a
+        )
 
     async def set_mode(
         self, mode: str, filter_width: int | None = None, receiver: int = 0
     ) -> None:
+        self._fail("set_mode")
         self.mode_a = str(mode)
+        self._applied(FieldPath.active("main", "freq_mode", "mode"), self.mode_a)
 
     async def set_data_mode(self, data: int | bool, receiver: int = 0) -> None:
+        self._fail("set_data_mode")
         self.data_a = int(bool(data)) if isinstance(data, bool) else int(data)
+        self._applied(
+            FieldPath.active("main", "freq_mode", "data_mode"), self.data_a
+        )
 
     async def get_data_mode(self, receiver: int = 0) -> int:
         return self.data_a
 
     async def get_split(self) -> bool:
-        return False
+        return self.split
 
     async def set_split(self, on: bool) -> None:
-        pass
+        self._fail("set_split")
+        self.split = bool(on)
+        self._applied(FieldPath.global_("tx_state", "split"), self.split)
 
     async def get_rit_frequency(self) -> int:
-        return 0
+        return self.rit_freq
 
     async def set_rit_frequency(self, freq_hz: int) -> None:
-        pass
+        self._fail("set_rit_frequency")
+        self.rit_freq = int(freq_hz)
+        self._applied(
+            FieldPath.global_("operator_controls", "rit_freq"), self.rit_freq
+        )
 
     async def get_rit_status(self) -> bool:
-        return False
+        return self.rit_on
 
     async def set_rit_status(self, on: bool) -> None:
-        pass
+        self._fail("set_rit_status")
+        self.rit_on = bool(on)
+        self._applied(FieldPath.global_("tx_state", "rit_on"), self.rit_on)
 
     async def get_rit_tx_status(self) -> bool:
-        return False
+        return self.rit_tx
 
     async def set_rit_tx_status(self, on: bool) -> None:
-        pass
+        self._fail("set_rit_tx_status")
+        self.rit_tx = bool(on)
+        self._applied(FieldPath.global_("tx_state", "rit_tx"), self.rit_tx)
 
     async def get_rf_power(self) -> int:
-        return 128
+        return self.rf_power
 
     async def set_rf_power(self, level: int) -> None:
-        pass
+        self._fail("set_rf_power")
+        self.rf_power = int(level)
+        self._applied(
+            FieldPath.global_("operator_controls", "power_level"), self.rf_power
+        )
 
     async def get_key_speed(self) -> int:
-        return 20
+        return self.key_speed
 
     async def set_key_speed(self, speed: int) -> None:
-        pass
+        self._fail("set_key_speed")
+        self.key_speed = int(speed)
 
     async def read_relative_vfo(self, *, selected: bool) -> Any:
         from rigplane.core.radio_protocol import RelativeVfoState
 
-        return RelativeVfoState(freq_hz=self.freq_a, mode=self.mode_a, data_mode=0)
+        return RelativeVfoState(
+            freq_hz=self.freq_b, mode=self.mode_b, data_mode=self.data_b
+        )
 
     async def write_relative_vfo_frequency(
         self,
@@ -153,7 +208,9 @@ class StubIcomRadio:
         after_ack: Callable[[], None] | None = None,
         after_readback: Callable[[], None] | None = None,
     ) -> int:
-        return int(freq_hz)
+        self._fail("write_relative_vfo_frequency")
+        self.freq_b = int(freq_hz)
+        return self.freq_b
 
     async def write_relative_vfo_mode(
         self,
@@ -165,23 +222,53 @@ class StubIcomRadio:
         before_set: Callable[[], None] | None = None,
     ) -> Any:
         from rigplane.core.radio_protocol import RelativeVfoState
+        from rigplane.core.types import Mode
 
-        return RelativeVfoState(freq_hz=self.freq_a, mode=self.mode_a, data_mode=0)
+        self._fail("write_relative_vfo_mode")
+        self.b_mode_writes.append({"mode": mode, "data": data, "selected": selected})
+        try:
+            self.mode_b = Mode(int(mode)).name
+        except ValueError:
+            self.mode_b = str(mode)
+        self.data_b = (
+            int(data) if isinstance(data, int) and not isinstance(data, bool)
+            else (1 if data else 0)
+        )
+        return RelativeVfoState(
+            freq_hz=self.freq_b, mode=self.mode_b, data_mode=self.data_b
+        )
 
     async def get_data1_mod_input(self) -> int:
-        return 0
+        return self.mod_inputs.get(1, 0)
 
     async def set_data1_mod_input(self, source: int) -> None:
-        pass
+        self._fail("set_data1_mod_input")
+        self.mod_inputs[1] = int(source)
 
     async def get_data2_mod_input(self) -> int:
-        return 5
+        return self.mod_inputs.get(2, 5)
 
     async def set_data2_mod_input(self, source: int) -> None:
-        pass
+        self._fail("set_data2_mod_input")
+        self.mod_inputs[2] = int(source)
 
     def supports_command(self, name: str) -> bool:
         return name == "set_data_mode"
+
+
+class StubWattsRadio(StubIcomRadio):
+    """Watts-native serial-like fake (Yaesu CAT shape, bool DATA fallback)."""
+
+    model: str = "FT-710"
+    native_power_unit: str = "watts"
+    backend_id: str = "icom_serial"
+    profile: StubProfile = field(
+        default_factory=lambda: StubProfile(
+            modes=("AM", "LSB", "USB", "CW", "FM"),
+            max_watts=100,
+            min_watts=0,
+        )
+    )
 
 
 class StubMinimalRadio:
