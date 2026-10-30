@@ -351,6 +351,15 @@ jobs:
         working-directory: frontend
         run: npm run test:e2e:placeholder-guard
 
+      # MOR-3845 — the --rp-chrome-top geometry spec (top AND bottom bounds of
+      # every fixed surface with inset 0 and nonzero). Same fixtures server and
+      # already-provisioned Chromium as the placeholder-guard scan above; the
+      # unrelated harness-reach matrix in the same directory stays unwired.
+      - name: Frontend page-chrome inset geometry (MOR-3845)
+        if: needs.classify.outputs.frontend == 'true'
+        working-directory: frontend
+        run: npm run test:e2e:chrome-top-inset
+
       # MOR-3275 — the FTX-1 RIT click -> wire -> fake server -> DOM scenario
       # (MOR-1732) against tests/e2e/ftx1_rit_web_server.py, which the
       # Playwright config starts through `uv run`. Serves the frontend/dist
