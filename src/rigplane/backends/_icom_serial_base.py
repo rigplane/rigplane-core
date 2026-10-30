@@ -613,12 +613,6 @@ class _IcomSerialRadioBase(CoreRadio):
         # (which increments it itself), and the connect/soft_reconnect
         # audio tails read it to skip recovery against a torn-down radio.
         self._owner_stop_epoch += 1
-        # Retire the poller's detached fast-reconnect kick (MOR-2083): the
-        # serial soft_reconnect reopens the port directly, so a kick
-        # blocked in it would survive disconnect() and reopen the port.
-        # Up here so every teardown branch below is covered (the final
-        # branch reaches CoreRadio.disconnect, whose own call is a no-op).
-        await self._civ_runtime.cancel_fast_reconnect()
         self.serial_baud_notice = None
         # Always stop watchdog first to avoid orphan retry loops on failed reconnects.
         self._cancel_serial_identity_reread()

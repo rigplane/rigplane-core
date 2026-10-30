@@ -1084,26 +1084,6 @@ class CivRuntime:
         )
         logger.info("civ-data-watchdog: started")
 
-    @staticmethod
-    async def _join_cancelled(task: "asyncio.Task[None]") -> None:
-        """Await a task this call has just cancelled (MOR-3350).
-
-        The joined task's own ``CancelledError`` is expected and swallowed.
-        A cancel requested on THE CALLING task while it waits here must not be
-        consumed with it: it is re-raised once the join ends, whether the
-        joined task ended cancelled or returned normally after swallowing the
-        cancel that was forwarded to it. Counted against ``cancelling()`` at
-        entry so a caller that handled an earlier cancel keeps working.
-        """
-        me = asyncio.current_task()
-        before = me.cancelling() if me is not None else 0
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        if me is not None and me.cancelling() > before:
-            raise asyncio.CancelledError
-
     async def stop_data_watchdog(self) -> None:
         """Stop CI-V data watchdog and any in-flight detached reconnect task.
 
@@ -4167,72 +4147,16 @@ class CivRuntime:
         if not task.cancelled():
             task.exception()
 
-    def _get_or_start_fast_reconnect_task(
-        self, owner_stop_epoch: int
-    ) -> asyncio.Task[None]:
-        """Return the one in-flight fast-reconnect task, starting it if needed.
-
-        The kick is fenced against an owner stop (MOR-2083):
-        ``ensure_future`` starts the coroutine one loop turn later, and
-        ``disconnect()`` (which advances ``host._owner_stop_epoch``) may
-        run in between. The WAITER's epoch (captured at the waiter's entry
-        to ``_wait_for_civ_transport_recovery``) is the authority — it is
-        re-checked when the kick runs; a moved epoch raises instead of
-        starting a recovery or a full connect after the owner stopped the
-        radio. A second waiter reuses the in-flight task as-is and never
-        re-captures: its own waiter epoch is enforced by its own checks.
-        """
+    def _get_or_start_fast_reconnect_task(self) -> asyncio.Task[None]:
+        """Return the one in-flight fast-reconnect task, starting it if needed."""
         task = self._fast_reconnect_task
         if task is None or task.done():
-
-            async def _guarded_fast_reconnect() -> None:
-                if self._host._owner_stop_epoch != owner_stop_epoch:
-                    raise ConnectionError("Not connected to radio")
-                await self._host.soft_reconnect()
-
-            task = asyncio.ensure_future(_guarded_fast_reconnect())
+            task = asyncio.ensure_future(self._host.soft_reconnect())
             task.add_done_callback(self._retrieve_fast_reconnect_exception)
             self._fast_reconnect_task = task
         return task
 
-    async def cancel_fast_reconnect(self) -> None:
-        """Retire the poller's in-flight fast-reconnect kick (MOR-2083).
-
-        Called from the owner-stop paths (``CoreRadio.disconnect`` and
-        ``_IcomSerialRadioBase.disconnect``) right after
-        ``_owner_stop_epoch`` advances. Takes the task, clears the
-        reference, and — unless it is already done, is the current task,
-        or is awaited by the lifecycle's own recovery run (the self-cancel
-        guard, mirroring ``stop_data_watchdog``) — cancels it and awaits
-        it, suppressing its outcome. The serial ``soft_reconnect`` path
-        reconnects the session directly instead of awaiting the lifecycle's
-        shared recovery, so without this a kick blocked in a cancelled
-        command's ``soft_reconnect`` would survive ``disconnect()`` and
-        reopen the port afterwards.
-        """
-        task = self._fast_reconnect_task
-        self._fast_reconnect_task = None
-        if task is None or task.done():
-            return
-        if task is asyncio.current_task():
-            return
-        if self._host._session_lifecycle.is_current_recovery_awaited_by(task):
-            return
-        task.cancel()
-        # A cancel already requested on THIS task (cleanup running after a
-        # cancelled ``async with radio``) must not abort the teardown; only
-        # a NEW cancel during the join propagates, like at any later await.
-        try:
-            await self._join_cancelled(task)
-        except Exception:
-            logger.debug(
-                "Fast CI-V soft_reconnect teardown failed",
-                exc_info=True,
-            )
-
-    async def _await_fast_soft_reconnect(
-        self, deadline: float, owner_stop_epoch: int
-    ) -> None:
+    async def _await_fast_soft_reconnect(self, deadline: float) -> None:
         """Run one fast soft_reconnect bounded by ``deadline`` (MOR-2083).
 
         The poller's own wait must never cancel the recovery:
@@ -4244,17 +4168,14 @@ class CivRuntime:
         never cancels the waited task. On expiry this raises the same
         ``TimeoutError("CI-V transport recovery timed out")`` the caller
         raises at the deadline, so a lock held by the caller is released
-        promptly. Outcome handling: ``ConnectionError``/``TimeoutError``/
-        ``OSError`` -> debug, anything else -> warning. A cancelled fast
-        task (the lifecycle's own disconnect killed the shared recovery)
-        raises ``ConnectionError`` terminally so the waiting command
-        aborts instead of resuming on a later session. The caller's own
-        ``CancelledError`` propagates from the wait.
+        promptly. Outcome handling is unchanged: ``ConnectionError``/
+        ``TimeoutError``/``OSError`` -> debug, anything else -> warning.
+        The caller's own ``CancelledError`` propagates from the wait.
         """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError("CI-V transport recovery timed out")
-        task = self._get_or_start_fast_reconnect_task(owner_stop_epoch)
+        task = self._get_or_start_fast_reconnect_task()
         done, _ = await asyncio.wait({task}, timeout=remaining)
         if not done:
             raise TimeoutError("CI-V transport recovery timed out")
@@ -4267,58 +4188,14 @@ class CivRuntime:
             )
         except asyncio.CancelledError:
             # The task itself was cancelled (e.g. the lifecycle's own
-            # disconnect cancelled the shared recovery). The command that
-            # triggered this wait must not resume on a later session, so
-            # fail it terminally instead of polling on. The caller's own
-            # cancellation already propagated via the wait above; this
-            # branch only sees the task's own cancellation. Raised out
-            # of the guarded section, the caller's ``finally`` releases
-            # the lock.
-            raise ConnectionError("CI-V transport recovery was cancelled")
+            # disconnect cancelled the shared recovery); the caller's own
+            # cancellation already propagated via the wait.
+            logger.debug("Fast CI-V soft_reconnect attempt was cancelled")
         except Exception:
             logger.warning(
                 "Fast CI-V soft_reconnect: unexpected error",
                 exc_info=True,
             )
-
-    @staticmethod
-    async def _acquire_recovery_lock(lock: asyncio.Lock, deadline: float) -> None:
-        """Acquire ``lock`` by ``deadline`` without losing a cancellation (MOR-2083).
-
-        ``wait_for(lock.acquire(), t)`` can swallow a cancel that arrives just
-        as the acquire completes (python 3.11) and leave the lock held for a
-        command that was cancelled. The acquisition therefore runs as its own
-        task that is waited on with ``asyncio.wait``: on a cancel of the
-        waiter, or on timeout, a completed acquisition is released at once and
-        a pending one is cancelled, and the cancel is re-raised. Nothing but
-        the acquisition is abandoned — the shared recovery keeps running.
-        """
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError("CI-V transport recovery timed out")
-        acquire = asyncio.ensure_future(lock.acquire())
-        abandoned = False
-
-        def _release_if_abandoned(done: "asyncio.Future[Any]") -> None:
-            if abandoned and not done.cancelled() and done.exception() is None:
-                lock.release()
-
-        acquire.add_done_callback(_release_if_abandoned)
-        try:
-            finished, _ = await asyncio.wait({acquire}, timeout=remaining)
-        except BaseException:
-            if acquire.done() and not acquire.cancelled():
-                if acquire.exception() is None:
-                    lock.release()
-            else:
-                abandoned = True
-                acquire.cancel()
-            raise
-        if not finished:
-            abandoned = True
-            acquire.cancel()
-            raise TimeoutError("CI-V transport recovery timed out")
-        acquire.result()
 
     async def _wait_for_civ_transport_recovery(
         self, timeout: "float | None" = None
@@ -4331,17 +4208,8 @@ class CivRuntime:
         )
         deadline = time.monotonic() + max(0.5, float(wait_timeout))
         fast_attempted = False
-        # The owner-stop epoch at entry (MOR-2083): ``disconnect()``
-        # advances ``host._owner_stop_epoch`` and a fast owner reconnect
-        # may restore a replacement session before the next poll. Any
-        # movement is terminal for THIS waiter — it must not accept the
-        # new session for its pre-disconnect command.
-        owner_stop_epoch = self._host._owner_stop_epoch
 
         while time.monotonic() < deadline:
-            if self._host._owner_stop_epoch != owner_stop_epoch:
-                raise ConnectionError("Not connected to radio")
-
             ctrl = getattr(self._host, "_ctrl_transport", None)
             ctrl_alive = bool(
                 ctrl and getattr(ctrl, "_udp_transport", None) is not None
@@ -4366,44 +4234,17 @@ class CivRuntime:
                 fast_attempted = True
                 lock = getattr(self._host, "_civ_recovery_lock", None)
                 if isinstance(lock, asyncio.Lock):
-                    # Bound the acquisition by the waiter's own deadline
-                    # (MOR-2083): a second waiter must not block behind a
-                    # stuck first waiter past its own timeout. Only the
-                    # lock acquisition is abandoned — the shared recovery
-                    # keeps running.
-                    await self._acquire_recovery_lock(lock, deadline)
-                    try:
-                        # Re-validate after acquiring (MOR-2083): this
-                        # waiter may have queued behind the lock while the
-                        # owner stopped the radio. The waiter-entry epoch
-                        # is the authority — never a fresh read — and the
-                        # control liveness is recomputed, never reused.
-                        if self._host._owner_stop_epoch != owner_stop_epoch:
-                            raise ConnectionError("Not connected to radio")
-                        ctrl_now = getattr(self._host, "_ctrl_transport", None)
-                        ctrl_udp = getattr(ctrl_now, "_udp_transport", None)
-                        if ctrl_now is None or ctrl_udp is None:
-                            raise ConnectionError("Not connected to radio")
+                    async with lock:
                         civ_t2 = getattr(self._host, "_civ_transport", None)
                         still_stalled = civ_t2 is not None and not getattr(
                             self._host, "_connected", False
                         )
-                        if civ_t2 is None or still_stalled:
-                            await self._await_fast_soft_reconnect(
-                                deadline, owner_stop_epoch
-                            )
-                            if self._host._owner_stop_epoch != owner_stop_epoch:
-                                raise ConnectionError("Not connected to radio")
-                    finally:
-                        lock.release()
+                        if (civ_t2 is None or still_stalled) and ctrl_alive:
+                            await self._await_fast_soft_reconnect(deadline)
                 else:
-                    await self._await_fast_soft_reconnect(deadline, owner_stop_epoch)
-                    if self._host._owner_stop_epoch != owner_stop_epoch:
-                        raise ConnectionError("Not connected to radio")
+                    await self._await_fast_soft_reconnect(deadline)
 
             await asyncio.sleep(0.2)
-            if self._host._owner_stop_epoch != owner_stop_epoch:
-                raise ConnectionError("Not connected to radio")
 
         raise TimeoutError("CI-V transport recovery timed out")
 
