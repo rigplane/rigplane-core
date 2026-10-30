@@ -34,6 +34,7 @@ from rigplane.web.radio_poller import (
     SetVfoFreq,
 )
 from rigplane.web.server import WebConfig, WebServer
+from _helpers import observe_selected_receiver
 
 
 class _FakeWriter:
@@ -209,6 +210,7 @@ async def test_http_attenuator_command_reaches_wire_and_public_readback(
     radio._civ_transport = transport
     radio._ctrl_transport = transport
     radio._connected = True
+    observe_selected_receiver(radio, 0)
     srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     poller = RadioPoller(radio, srv.command_queue, state_store=srv.command_state_store)
 
