@@ -1372,7 +1372,7 @@
     border-color: var(--v2-border-darker);
   }
 
-  .spectrum-frame :global(.spectrum-panel) {
+  .spectrum-frame :global(.spectrum-panel:not(.fullscreen)) {
     height: 100%;
     border: none;
     border-radius: 0;
