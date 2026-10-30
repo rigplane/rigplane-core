@@ -370,15 +370,6 @@ def _apply_store_value(
     )
 
 
-async def _wait_for(predicate: object, *, timeout: float = 1.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if cast(Any, predicate)():
-            return
-        await asyncio.sleep(0.01)
-    assert cast(Any, predicate)()
-
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1193,7 +1184,7 @@ class TestLifecycle:
                 resp = await srv._rig_handler.execute(_FREQ_CMD)
 
                 assert resp.values == ["14090000"]
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 assert executor.calls
@@ -1404,7 +1395,7 @@ class TestLifecycle:
 
                 await srv._rig_handler.execute(_FREQ_CMD)
 
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
@@ -1459,7 +1450,7 @@ class TestLifecycle:
 
                 await srv._rig_handler.execute(_FREQ_CMD)
 
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 assert executor.calls
@@ -1521,7 +1512,7 @@ class TestLifecycle:
 
                 await srv._rig_handler.execute(_FREQ_CMD)
 
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
@@ -1578,7 +1569,7 @@ class TestLifecycle:
                 resp = await srv._rig_handler.execute(_FREQ_CMD)
 
                 assert resp.values == ["14090000"]
-                await _wait_for(lambda: bool(radio.send_civ_calls))
+                await await_until(lambda: bool(radio.send_civ_calls))
                 assert radio.send_civ_calls == [
                     {
                         "command": 0x25,
