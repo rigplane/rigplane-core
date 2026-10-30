@@ -771,9 +771,9 @@ throughput.
    count than at 50 ms, with fixed added latency equal to the setting.
 5. **Owner-specific admission, not the global gate.** The playout task pushes
    with `lease.push(pcm, admission=...)`, where the admission is a new
-   `ManagedTxAuthority.owned_tx_submission(owner)` async context manager, modelled
-   on `outside_tx_submission` (MOR-3764): it takes the authority's
-   `_outside_tx_lock`, which every positive keying transition also takes before
+   `ManagedTxAuthority.owned_tx_submission(owner)` async context manager: it
+   takes the authority's `_tx_admission_lock` (named `_outside_tx_lock` until
+   MOR-3921), which every positive keying transition also takes before
    `_lock`, and yields True only while the held intent is `PTT(owner)` and the
    authority is open and unfaulted; the push runs inside it under the same
    budget. Consequence: a frame admitted for owner A completes before owner B's
