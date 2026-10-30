@@ -1648,6 +1648,84 @@ async def test_wait_for_recovery_teardown_inside_the_recovery_does_not_self_canc
     assert state["teardown_ran"], "the mechanism stub must run to completion"
 
 
+async def test_wait_for_recovery_kick_queued_before_owner_stop_never_starts(
+    radio: IcomRadio,
+) -> None:
+    """A kick queued before an owner stop must never start (MOR-2083).
+
+    ``_get_or_start_fast_reconnect_task`` schedules the kick one loop
+    turn later; ``CoreRadio.disconnect`` advancing ``_owner_stop_epoch``
+    (and tearing down the control session) in between must fence it. The
+    stub below must never run even though the kick was queued while the
+    radio still looked alive.
+    """
+    _arm_recovery_wait_scenario(radio)
+    soft_calls: list[bool] = []
+
+    async def record_soft_reconnect() -> None:
+        soft_calls.append(True)
+
+    radio.soft_reconnect = record_soft_reconnect
+
+    kick = radio._civ_runtime._get_or_start_fast_reconnect_task()
+    # What CoreRadio.disconnect does: advance the epoch and tear down the
+    # control session before the queued kick gets its first loop turn.
+    radio._owner_stop_epoch += 1
+    radio._ctrl_transport._udp_transport = None
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    assert soft_calls == [], (
+        "a kick queued before the owner stop must never start recovery"
+    )
+    with pytest.raises(ConnectionError, match="Not connected to radio"):
+        await asyncio.wait_for(
+            radio._civ_runtime._wait_for_civ_transport_recovery(timeout=3.0),
+            timeout=10.0,
+        )
+    assert not radio._civ_recovery_lock.locked()
+    if not kick.done():
+        kick.cancel()
+        try:
+            await kick
+        except (asyncio.CancelledError, ConnectionError):
+            pass
+
+
+async def test_wait_for_recovery_cancelled_recovery_aborts_the_command(
+    radio: IcomRadio,
+) -> None:
+    """A cancelled shared recovery must abort the command (MOR-2083).
+
+    The fast-reconnect task awaits the lifecycle's shared recovery; when
+    the lifecycle's own disconnect cancels it, the wait must fail
+    terminally with ``ConnectionError``. Previously the cancellation was
+    only logged and the poller kept polling, so a reconnect landing
+    before the next poll let the pre-disconnect command (e.g.
+    set_rf_power) dispatch on the NEW session.
+    """
+    _arm_recovery_wait_scenario(radio)
+
+    async def cancelled_shared_recovery() -> None:
+        # What the lifecycle's own disconnect does to the shared
+        # recovery after the new session already landed: the transport
+        # is back and the state reads CONNECTED.
+        radio._civ_transport = MagicMock()
+        radio._conn_state = RadioConnectionState.CONNECTED
+        raise asyncio.CancelledError
+
+    radio.soft_reconnect = cancelled_shared_recovery
+
+    with pytest.raises(ConnectionError, match="cancelled"):
+        await asyncio.wait_for(
+            radio._civ_runtime._wait_for_civ_transport_recovery(timeout=3.0),
+            timeout=10.0,
+        )
+    assert not radio._civ_recovery_lock.locked(), (
+        "the terminal abort must release the recovery lock"
+    )
+
+
 async def test_watchdog_recover_rearms_after_successful_recovery(
     radio: IcomRadio,
 ) -> None:

@@ -4148,10 +4148,25 @@ class CivRuntime:
             task.exception()
 
     def _get_or_start_fast_reconnect_task(self) -> asyncio.Task[None]:
-        """Return the one in-flight fast-reconnect task, starting it if needed."""
+        """Return the one in-flight fast-reconnect task, starting it if needed.
+
+        The kick is fenced against an owner stop (MOR-2083):
+        ``ensure_future`` starts the coroutine one loop turn later, and
+        ``disconnect()`` (which advances ``host._owner_stop_epoch``) may
+        run in between. The captured epoch is re-checked when the kick
+        runs; a moved epoch raises instead of starting a recovery or a
+        full connect after the owner stopped the radio.
+        """
         task = self._fast_reconnect_task
         if task is None or task.done():
-            task = asyncio.ensure_future(self._host.soft_reconnect())
+            owner_stop_epoch = self._host._owner_stop_epoch
+
+            async def _guarded_fast_reconnect() -> None:
+                if self._host._owner_stop_epoch != owner_stop_epoch:
+                    raise ConnectionError("Not connected to radio")
+                await self._host.soft_reconnect()
+
+            task = asyncio.ensure_future(_guarded_fast_reconnect())
             task.add_done_callback(self._retrieve_fast_reconnect_exception)
             self._fast_reconnect_task = task
         return task
@@ -4168,9 +4183,12 @@ class CivRuntime:
         never cancels the waited task. On expiry this raises the same
         ``TimeoutError("CI-V transport recovery timed out")`` the caller
         raises at the deadline, so a lock held by the caller is released
-        promptly. Outcome handling is unchanged: ``ConnectionError``/
-        ``TimeoutError``/``OSError`` -> debug, anything else -> warning.
-        The caller's own ``CancelledError`` propagates from the wait.
+        promptly. Outcome handling: ``ConnectionError``/``TimeoutError``/
+        ``OSError`` -> debug, anything else -> warning. A cancelled fast
+        task (the lifecycle's own disconnect killed the shared recovery)
+        raises ``ConnectionError`` terminally so the waiting command
+        aborts instead of resuming on a later session. The caller's own
+        ``CancelledError`` propagates from the wait.
         """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -4188,9 +4206,13 @@ class CivRuntime:
             )
         except asyncio.CancelledError:
             # The task itself was cancelled (e.g. the lifecycle's own
-            # disconnect cancelled the shared recovery); the caller's own
-            # cancellation already propagated via the wait.
-            logger.debug("Fast CI-V soft_reconnect attempt was cancelled")
+            # disconnect cancelled the shared recovery). The command that
+            # triggered this wait must not resume on a later session, so
+            # fail it terminally instead of polling on. The caller's own
+            # cancellation already propagated via the wait above; this
+            # branch only sees the task's own cancellation. Raised out
+            # of ``async with`` by the caller, the lock is released.
+            raise ConnectionError("CI-V transport recovery was cancelled")
         except Exception:
             logger.warning(
                 "Fast CI-V soft_reconnect: unexpected error",
