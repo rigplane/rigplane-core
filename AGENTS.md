@@ -307,9 +307,8 @@ implementation agent may not be the review agent.
   labels in `.github/workflows/` and
   [`docs/development/release-gates.md`](docs/development/release-gates.md);
   the labels, not a count, are the contract, and the pool changes over
-  time. The macOS bench/platform workflows use their own labels. Since
-  MOR-3875 no job runs on a GitHub-hosted runner
-  (`.github/scripts/self-hosted-only.test.py`, run by `quick`, fails on one).
+  time. The macOS bench/platform workflows use their own labels.
+  Since MOR-3875 no job runs on a GitHub-hosted runner.
   `rigplane-pro`'s runners are separate registrations and cannot pick up
   this repository's jobs. A review session that waits on that queue can
   still lose an hour or more for nothing.

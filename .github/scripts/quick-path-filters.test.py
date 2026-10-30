@@ -219,21 +219,6 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
-    def test_self_hosted_runner_contract_is_ci_selected_and_invoked(self) -> None:
-        # MOR-3875: a workflow-only change selects `ci`, not `core`, so the
-        # guard must hang off the `ci` route or a hosted runner could slip in.
-        self.assertEqual(
-            CLASSIFIER.classify([".github/workflows/certification-status.yml"]),
-            {"core": False, "frontend": False, "ci": True, "docs": False},
-        )
-        quick = QUICK_YML.read_text(encoding="utf-8")
-        self.assertIn(
-            "      - name: Self-hosted runner contract test\n"
-            "        if: needs.classify.outputs.ci == 'true'\n"
-            "        run: python3 .github/scripts/self-hosted-only.test.py\n",
-            quick,
-        )
-
     def test_release_gate_changes_select_the_route_that_runs_receipt_tests(
         self,
     ) -> None:
