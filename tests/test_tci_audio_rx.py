@@ -155,9 +155,33 @@ class TestAudioSettings:
         assert settings.set_buffering(900) == 500
 
 
+def _audio_radio(rate: int = 48000):  # type: ignore[no-untyped-def]
+    """StubIcomRadio with a servable RX audio surface (AudioSession + bus)."""
+    from rigplane.audio.bus import AudioBus
+    from rigplane.audio.session import AudioSession
+
+    from rigplane.core.types import AudioCodec
+
+    radio = StubIcomRadio()
+    radio.audio_codec = AudioCodec.PCM_1CH_16BIT
+    radio.audio_sample_rate = rate
+    bus = AudioBus(radio)
+
+    async def _start_rx(callback, jitter_depth=5):  # type: ignore[no-untyped-def]
+        radio.rx_callback = callback  # type: ignore[attr-defined]
+
+    async def _stop_rx() -> None:
+        radio.rx_callback = None  # type: ignore[attr-defined]
+
+    radio.start_rx = _start_rx  # type: ignore[attr-defined]
+    radio.stop_rx = _stop_rx  # type: ignore[attr-defined]
+    radio.audio_session = AudioSession(radio, bus=bus)
+    return radio
+
+
 class TestHandlerAudioCommands:
     async def test_burst_has_stream_settings(self) -> None:
-        handler = make_handler(radio=StubIcomRadio(), store=_loaded_store())
+        handler = make_handler(radio=_audio_radio(), store=_loaded_store())
         burst = await handler.on_connect()
         text = "\n".join(burst)
         assert "audio_samplerate:48000;" in text
@@ -167,27 +191,7 @@ class TestHandlerAudioCommands:
         assert burst[-1] == "ready;"
 
     async def test_audio_start_stop_roundtrip(self) -> None:
-        from rigplane.audio.bus import AudioBus
-        from rigplane.audio.session import AudioSession
-
-        radio = StubIcomRadio()
-        radio.audio_codec = __import__(
-            "rigplane.core.types", fromlist=["AudioCodec"]
-        ).AudioCodec.PCM_1CH_16BIT
-        radio.audio_sample_rate = 48000
-        radio.audio_backend_id = "stub"
-        bus = AudioBus(radio)
-        radio.audio_session = AudioSession(radio, bus=bus)
-
-        async def _start_rx(callback, jitter_depth=5):  # type: ignore[no-untyped-def]
-            radio.rx_callback = callback  # type: ignore[attr-defined]
-
-        async def _stop_rx() -> None:
-            radio.rx_callback = None  # type: ignore[attr-defined]
-
-        radio.start_rx = _start_rx  # type: ignore[attr-defined]
-        radio.stop_rx = _stop_rx  # type: ignore[attr-defined]
-
+        radio = _audio_radio()
         handler = make_handler(radio=radio, store=_loaded_store())
         outcome = await handler.on_command("audio_start", ("0",))
         assert outcome.to_sender == ("audio_start:0;",)
@@ -208,73 +212,47 @@ class TestHandlerAudioCommands:
 
 class TestRxPump:
     async def test_pump_delivers_resampled_reblocked_frames(self) -> None:
-        from rigplane.audio.bus import AudioBus
         from rigplane.audio.lan_stream import AudioPacket
-        from rigplane.audio.session import AudioSession
-        from rigplane.tci_adapter.audio import TciRxPump
+        from rigplane.tci_adapter.audio import TciAudioSettings, TciRxPump
 
-        from rigplane.core.types import AudioCodec
-
-        radio = StubIcomRadio()
-        radio.audio_codec = AudioCodec.PCM_1CH_16BIT
-        radio.audio_sample_rate = 48000
-        bus = AudioBus(radio)
-
-        async def _start_rx(callback, jitter_depth=5):  # type: ignore[no-untyped-def]
-            radio.rx_callback = callback  # type: ignore[attr-defined]
-
-        async def _stop_rx() -> None:
-            radio.rx_callback = None  # type: ignore[attr-defined]
-
-        radio.start_rx = _start_rx  # type: ignore[attr-defined]
-        radio.stop_rx = _stop_rx  # type: ignore[attr-defined]
-        radio.audio_session = AudioSession(radio, bus=bus)
-
+        radio = _audio_radio()
         pump = TciRxPump(
-            radio=radio, owner="tci-1", samplerate=8000, samples=256
+            radio=radio,
+            owner="tci-1",
+            settings=TciAudioSettings(samplerate=8000, samples=256),
         )
         await pump.start()
         try:
             payload = struct.pack("<960h", *([1000] * 960))
-            radio.rx_callback(AudioPacket(ident=0x9781, send_seq=1, data=payload))  # type: ignore[attr-defined]
+            for seq in range(2):
+                radio.rx_callback(AudioPacket(ident=0x9781, send_seq=seq, data=payload))  # type: ignore[attr-defined]
             frame = await asyncio.wait_for(pump.get_frame(), timeout=5.0)
             assert frame is not None
             assert len(frame) > 64
         finally:
             await pump.stop()
-        assert bus.subscriber_count == 0
+        assert radio.audio_session._bus.subscriber_count == 0  # noqa: SLF001
 
     async def test_slow_client_does_not_stall_other(self) -> None:
-        from rigplane.audio.bus import AudioBus
         from rigplane.audio.lan_stream import AudioPacket
-        from rigplane.audio.session import AudioSession
-        from rigplane.tci_adapter.audio import TciRxPump
+        from rigplane.tci_adapter.audio import TciAudioSettings, TciRxPump
 
-        from rigplane.core.types import AudioCodec
-
-        radio = StubIcomRadio()
-        radio.audio_codec = AudioCodec.PCM_1CH_16BIT
-        radio.audio_sample_rate == 48000
-        radio.audio_sample_rate = 8000
-        bus = AudioBus(radio)
-
-        async def _start_rx(callback, jitter_depth=5):  # type: ignore[no-untyped-def]
-            radio.rx_callback = callback  # type: ignore[attr-defined]
-
-        async def _stop_rx() -> None:
-            radio.rx_callback = None  # type: ignore[attr-defined]
-
-        radio.start_rx = _start_rx  # type: ignore[attr-defined]
-        radio.stop_rx = _stop_rx  # type: ignore[attr-defined]
-        radio.audio_session = AudioSession(radio, bus=bus)
-
-        slow = TciRxPump(radio=radio, owner="tci-slow", samplerate=8000, samples=256)
-        fast = TciRxPump(radio=radio, owner="tci-fast", samplerate=8000, samples=256)
+        radio = _audio_radio(rate=8000)
+        slow = TciRxPump(
+            radio=radio,
+            owner="tci-slow",
+            settings=TciAudioSettings(samplerate=8000, samples=256),
+        )
+        fast = TciRxPump(
+            radio=radio,
+            owner="tci-fast",
+            settings=TciAudioSettings(samplerate=8000, samples=256),
+        )
         await slow.start()
         await fast.start()
         try:
             payload = struct.pack("<256h", *([500] * 256))
-            for seq in range(10):
+            for seq in range(40):
                 radio.rx_callback(AudioPacket(ident=0x9781, send_seq=seq, data=payload))  # type: ignore[attr-defined]
             await asyncio.sleep(0.2)
             got = await asyncio.wait_for(fast.get_frame(), timeout=5.0)
@@ -288,28 +266,11 @@ class TestRxPump:
         pytest.importorskip("eesdr_tci", reason="mini-only dev dependency")
         import importlib
 
-        from rigplane.audio.bus import AudioBus
         from rigplane.audio.lan_stream import AudioPacket as LanPacket
-        from rigplane.audio.session import AudioSession
         from rigplane.tci_adapter.server import build_tci_server
 
-        from rigplane.core.types import AudioCodec
-
         listener_mod = importlib.import_module("eesdr_tci.listener")
-        radio = StubIcomRadio(profile=StubProfile(modes=("AM", "USB")))
-        radio.audio_codec = AudioCodec.PCM_1CH_16BIT
-        radio.audio_sample_rate = 8000
-        bus = AudioBus(radio)
-
-        async def _start_rx(callback, jitter_depth=5):  # type: ignore[no-untyped-def]
-            radio.rx_callback = callback  # type: ignore[attr-defined]
-
-        async def _stop_rx() -> None:
-            radio.rx_callback = None  # type: ignore[attr-defined]
-
-        radio.start_rx = _start_rx  # type: ignore[attr-defined]
-        radio.stop_rx = _stop_rx  # type: ignore[attr-defined]
-        radio.audio_session = AudioSession(radio, bus=bus)
+        radio = _audio_radio(rate=8000)
 
         server = build_tci_server(radio=radio, state_store=_loaded_store(), port=0)
         await server.start()
@@ -327,10 +288,13 @@ class TestRxPump:
             try:
                 await listener.ready()
                 await listener.send("audio_start:0;")
+                async with asyncio.timeout(10.0):
+                    while getattr(radio, "rx_callback", None) is None:
+                        await asyncio.sleep(0.02)
                 payload = struct.pack("<256h", *([700] * 256))
                 for seq in range(4):
                     radio.rx_callback(LanPacket(ident=0x9781, send_seq=seq, data=payload))  # type: ignore[attr-defined]
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.05)
                 async with asyncio.timeout(10.0):
                     while not packets:
                         await asyncio.sleep(0.02)

@@ -45,6 +45,7 @@ from ..runtime.managed_tx_submission import (
 )
 from ..tci.handler import CommandOutcome
 from ..tci.protocol import parse_bool, parse_int
+from .audio import TciAudioSettings, TciRxPump, rx_audio_available
 from .commands import (
     SPOT_COMMANDS,
     START_STOP_COMMANDS,
@@ -95,6 +96,13 @@ _TRX_SCOPED = frozenset(
         "if",
         "tx_enable",
         "tx_frequency",
+        "audio_samplerate",
+        "audio_stream_sample_type",
+        "audio_stream_channels",
+        "audio_stream_samples",
+        "audio_start",
+        "audio_stop",
+        "tx_stream_audio_buffering",
     }
 )
 
@@ -235,11 +243,29 @@ class TciAdapterHandler:
         self._executor = _TciCommandExecutor(self)
         self._ignored_logged: set[str] = set()
         self._state_model_service_checked = False
+        self._audio_settings: TciAudioSettings | None = None
+        self._rx_pump: TciRxPump | None = None
 
     @property
     def owner(self) -> str:
         """The lease-bearing owner id minted for this socket."""
         return self._owner
+
+    @property
+    def audio_active(self) -> bool:
+        """Whether this client's RX pump is serving audio."""
+        return self._rx_pump is not None and self._rx_pump.running
+
+    @property
+    def audio_pump(self) -> TciRxPump | None:
+        """The live RX pump, if this client started one."""
+        return self._rx_pump
+
+    def drain_audio(self) -> list[bytes]:
+        """Take every queued RX frame for the server delivery pump."""
+        if self._rx_pump is None:
+            return []
+        return self._rx_pump.drain()
 
     @property
     def notifier(self) -> TciNotifier:
@@ -249,10 +275,39 @@ class TciAdapterHandler:
     # -- leaf contract ---------------------------------------------------
 
     async def on_connect(self) -> Sequence[str]:
-        """Register the session, then return the init burst (spec 5.4)."""
+        """Register the session, then return the init burst (spec 5.4).
+
+        Step 6 appends the audio stream settings when this client can
+        serve audio (spec 8.1).
+        """
         if self._queue is not None:
             self._queue.register_session(self._owner)
-        return await self._notifier.init_burst()
+        burst = list(await self._notifier.init_burst())
+        lines = self._audio_burst_lines()
+        if lines:
+            ready = burst.pop()
+            assert ready == "ready;"
+            burst.extend(lines)
+            burst.append(ready)
+        return burst
+
+    def _audio_burst_lines(self) -> list[str]:
+        """Init-burst step 6: stream settings, only with an audio route (8.1)."""
+        if not rx_audio_available(self._radio):
+            return []
+        settings = self._audio_settings_or_seed()
+        return [
+            f"audio_samplerate:{settings.samplerate};",
+            f"audio_stream_sample_type:{settings.sample_type};",
+            f"audio_stream_channels:{settings.channels};",
+            f"audio_stream_samples:{settings.samples};",
+        ]
+
+    def _audio_settings_or_seed(self) -> TciAudioSettings:
+        """Per-client settings, seeded from the radio rate on first use."""
+        if self._audio_settings is None:
+            self._audio_settings = TciAudioSettings.from_radio(self._radio)
+        return self._audio_settings
 
     async def on_binary(self, payload: bytes) -> None:
         """Binary frames are phase audio: ignored until it ships (spec 6.2)."""
@@ -262,17 +317,24 @@ class TciAdapterHandler:
 
         Unregistration runs before the awaited disconnect cleanup so no
         queued key can outlive the socket; the managed release is preserved
-        on every path.
+        on every path. The RX pump stops here too (spec 8.2).
         """
         try:
             if self._queue is not None:
                 self._queue.unregister_session(self._owner)
         finally:
+            await self._stop_audio()
             await release_managed_session_tx(
                 self.release_session_tx if self._authority is not None else None,
                 self._owner,
                 handback_timeout_s=SESSION_TX_HANDBACK_TIMEOUT_S,
             )
+
+    async def _stop_audio(self) -> None:
+        """Close the RX pump and forget it (stop/disconnect, spec 8.2)."""
+        pump, self._rx_pump = self._rx_pump, None
+        if pump is not None:
+            await pump.stop()
 
     async def release_session_tx(self, session_id: str) -> None:
         """Hand back any managed TX lease ``session_id`` still holds."""
@@ -342,6 +404,20 @@ class TciAdapterHandler:
         if name == "tune":
             # Not honoured (spec 6.4): always "not tuning", to the requester.
             return CommandOutcome(to_sender=("tune:0,false;",))
+        if name == "audio_samplerate":
+            return await self._audio_samplerate(args)
+        if name == "audio_stream_sample_type":
+            return await self._audio_sample_type(args)
+        if name == "audio_stream_channels":
+            return await self._audio_channels(args)
+        if name == "audio_stream_samples":
+            return await self._audio_samples(args)
+        if name == "tx_stream_audio_buffering":
+            return await self._audio_buffering(args)
+        if name == "audio_start":
+            return await self._audio_start()
+        if name == "audio_stop":
+            return await self._audio_stop()
         if name in ("rit_enable", "xit_enable"):
             if len(args) >= 2:
                 return await self._write_rit_enable(name, args)
@@ -557,6 +633,103 @@ class TciAdapterHandler:
         """Answer the actual state to the requester only (no-op/failure)."""
         outcome = await read
         return CommandOutcome(to_sender=outcome.to_sender)
+
+    # -- audio phase (spec 8.1/8.2) --------------------------------------
+
+    def _audio_ignored(self) -> CommandOutcome | None:
+        """``None`` when audio serves, else the ignored no-reply outcome."""
+        if rx_audio_available(self._radio):
+            return None
+        return CommandOutcome()
+
+    @staticmethod
+    def _sender_only(line: str) -> CommandOutcome:
+        """Audio settings are per-client: answered to the requester only."""
+        return CommandOutcome(to_sender=(line,))
+
+    async def _audio_samplerate(self, args: tuple[str, ...]) -> CommandOutcome:
+        if self._audio_ignored() is not None:
+            return CommandOutcome()
+        settings = self._audio_settings_or_seed()
+        if len(args) >= 2:
+            rate = parse_int(args[1])
+            if rate is None:
+                return self._sender_only(f"audio_samplerate:{settings.samplerate};")
+            settings.set_samplerate(rate)
+            self._apply_audio_settings()
+        return self._sender_only(f"audio_samplerate:{settings.samplerate};")
+
+    async def _audio_sample_type(self, args: tuple[str, ...]) -> CommandOutcome:
+        if self._audio_ignored() is not None:
+            return CommandOutcome()
+        settings = self._audio_settings_or_seed()
+        if len(args) >= 2:
+            settings.set_sample_type(args[1])
+            self._apply_audio_settings()
+        return self._sender_only(f"audio_stream_sample_type:{settings.sample_type};")
+
+    async def _audio_channels(self, args: tuple[str, ...]) -> CommandOutcome:
+        if self._audio_ignored() is not None:
+            return CommandOutcome()
+        settings = self._audio_settings_or_seed()
+        if len(args) >= 2:
+            try:
+                settings.set_channels(int(args[1]))
+            except ValueError:
+                pass
+            self._apply_audio_settings()
+        return self._sender_only(f"audio_stream_channels:{settings.channels};")
+
+    async def _audio_samples(self, args: tuple[str, ...]) -> CommandOutcome:
+        if self._audio_ignored() is not None:
+            return CommandOutcome()
+        settings = self._audio_settings_or_seed()
+        if len(args) >= 2:
+            count = parse_int(args[1])
+            if count is None:
+                return self._sender_only(
+                    f"audio_stream_samples:{settings.samples};"
+                )
+            settings.set_samples(count)
+            self._apply_audio_settings()
+        return self._sender_only(f"audio_stream_samples:{settings.samples};")
+
+    async def _audio_buffering(self, args: tuple[str, ...]) -> CommandOutcome:
+        if self._audio_ignored() is not None:
+            return CommandOutcome()
+        settings = self._audio_settings_or_seed()
+        if len(args) >= 2:
+            millis = parse_int(args[1])
+            if millis is not None:
+                settings.set_buffering(millis)
+        return self._sender_only(f"tx_stream_audio_buffering:{settings.buffering_ms};")
+
+    async def _audio_start(self) -> CommandOutcome:
+        if self._audio_ignored() is not None:
+            return CommandOutcome()
+        settings = self._audio_settings_or_seed()
+        if self._rx_pump is None:
+            pump = TciRxPump(self._radio, self._owner, settings=settings)
+            try:
+                await pump.start()
+            except Exception:
+                logger.debug(
+                    "tci %s: audio start failed", self._owner, exc_info=True
+                )
+                return CommandOutcome()
+            self._rx_pump = pump
+        return self._sender_only("audio_start:0;")
+
+    async def _audio_stop(self) -> CommandOutcome:
+        if self._audio_ignored() is not None:
+            return CommandOutcome()
+        await self._stop_audio()
+        return self._sender_only("audio_stop:0;")
+
+    def _apply_audio_settings(self) -> None:
+        """Push changed settings into the live pump, if one serves."""
+        if self._rx_pump is not None:
+            self._rx_pump.reconfigure(self._audio_settings_or_seed())
 
     def _refuse_key(self) -> CommandOutcome:
         """Refuse a key: ``trx:0,false;`` to the requester only (spec 5.5).
