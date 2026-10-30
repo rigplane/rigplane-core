@@ -673,7 +673,7 @@ async def test_cmd_att_on_uses_profile_single_step(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("key", ["FTX-1", "TX-500"])
+@pytest.mark.parametrize("key", ["FTX-1", "TX-500", "X6100", "X6200"])
 async def test_cmd_att_on_selector_profile_omits_db(
     key: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -719,7 +719,13 @@ async def test_cmd_att_on_without_profile_omits_db(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "key,expected_hint", [("IC-7300", "0, 20"), ("FTX-1", "Use 'on' or 'off'.")]
+    "key,expected_hint",
+    [
+        ("IC-7300", "0, 20"),
+        ("FTX-1", "Use 'on' or 'off'."),
+        ("X6100", "Use 'on' or 'off'."),
+        ("X6200", "Use 'on' or 'off'."),
+    ],
 )
 async def test_cmd_att_invalid_hint_lists_profile_values(
     key: str, expected_hint: str, capsys: pytest.CaptureFixture[str]
@@ -754,6 +760,8 @@ async def test_cmd_att_invalid_hint_without_profile(
         ("IC-7300", True, 0, "Attenuator: ON (20 dB)\n", None, 20),
         ("IC-705", True, 0, "Attenuator: ON (20 dB)\n", None, 20),
         ("FTX-1", True, 0, "Attenuator: ON\n", None, 1),
+        ("X6100", True, 0, "Attenuator: ON\n", None, 1),
+        ("X6200", True, 0, "Attenuator: ON\n", None, 1),
         (
             "IC-7610",
             True,
