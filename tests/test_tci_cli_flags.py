@@ -91,3 +91,57 @@ async def test_pin_rigctld_host_rule_without_ingress_flag() -> None:
     await run(["--host", "1.2.3.4", "web", "--managed", "--no-tci"])
     await run(["--host", "1.2.3.4", "web", "--no-tci"])
     assert captured == ["127.0.0.1", "0.0.0.0"]
+
+
+async def test_tci_upgrade_predicate_receives_allowed_hosts() -> None:
+    """P2 follow-up: ``--allowed-host`` must reach the TCI upgrade predicate."""
+    import asyncio
+    from typing import Any
+    from unittest.mock import AsyncMock, patch
+
+    from rigplane.cli import _cmd_web
+    from rigplane.core.state_store import StateStore
+
+    captured: dict[str, Any] = {}
+
+    class FakeTciServer:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        async def start(self) -> None:
+            pass
+
+        async def stop(self) -> None:
+            pass
+
+    class FakeWebServer:
+        def __init__(self, _radio: Any, _cfg: Any) -> None:
+            self.command_state_store = StateStore()
+
+        async def serve_forever(self, *, on_started=None):  # type: ignore[no-untyped-def]
+            raise asyncio.CancelledError
+
+    args = _build_parser().parse_args(
+        [
+            "--host",
+            "1.2.3.4",
+            "web",
+            "--no-rigctld",
+            "--tci",
+            "--allowed-host",
+            "radio.example",
+        ]
+    )
+    args.web_bridge = None
+    with (
+        patch("rigplane.web.server.WebServer", FakeWebServer),
+        patch("rigplane.tci_adapter.server.TciAdapterServer", FakeTciServer),
+        patch("rigplane.cli._detect_loopback_hint", return_value=None),
+    ):
+        assert await _cmd_web(AsyncMock(), args) == 0
+    assert "allow" in captured, "TCI wiring must forward allowed_hosts"
+    allow = captured["allow"]
+    assert callable(allow)
+    assert allow({"host": "radio.example"}) is None
+    refused = allow({"host": "other.example"})
+    assert refused is not None and refused.status == 421
