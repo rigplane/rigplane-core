@@ -57,7 +57,7 @@ on A2.
 `src/rigplane/runtime/_civ_rx.py`, `src/rigplane/runtime/_control_phase.py`.
 **Depends on:** nothing. **Parallel with:** A2, A2-api.
 
-Extend (do not replace) `MockIcomRadio` (`tests/mock_server.py:143-786`,
+Extend (do not replace) `MockIcomRadio` (`tests/mock_server.py`,
 `_MockProtocol:110`). Reuse handshake parsing/builders, control+CIV sockets,
 CI-V dispatcher, `auth_fail`/`response_delay`, fixtures `mock_radio:150` /
 `connected_radio:159`. Add as **opt-in flags/methods** so the existing 60+

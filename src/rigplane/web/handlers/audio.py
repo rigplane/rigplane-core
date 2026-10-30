@@ -1596,10 +1596,6 @@ class AudioHandler:
         self._tx_warn_counts: dict[str, int] = {}
         self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
-        # Latest client-reported link-quality snapshot from the periodic
-        # ``audio_stats`` uplink (MOR-585) — mirrored per client on the
-        # broadcaster while RX is subscribed.
-        self._link_quality: dict[str, Any] = {}
         self._last_logged_capture_category: str | None = None
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue()
         self._done = asyncio.Event()
@@ -1799,7 +1795,6 @@ class AudioHandler:
         by ``_bounded_audio_stats`` before retention.
         """
         stats = _bounded_audio_stats(msg)
-        self._link_quality = stats
         if self._rx_active and self._broadcaster is not None:
             self._broadcaster.record_client_stats(self._frame_queue, stats)
             category = stats.get("microphoneCaptureError")

@@ -1948,7 +1948,6 @@ class CivRuntime:
 
         if frame.command == 0x27 and frame.sub == 0x00 and len(frame.data) >= 3:
             receiver = frame.data[0]
-            self._host._scope_activity_counter += 1
             self._host._scope_activity_event.set()
             self._publish_civ_event(
                 CivEvent(
@@ -2098,11 +2097,9 @@ class CivRuntime:
                 else:
                     freq = parse_frequency_response(frame)
                     host._state_cache.update_freq(freq)
-                    host._last_freq_hz = freq
             elif frame.command in (0x04, 0x01):
                 mode_val, filt = parse_mode_response(frame)
                 host._state_cache.update_mode(mode_val.name, filt)
-                host._last_mode = mode_val
                 if filt is not None:
                     host._filter_width = filt
             elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
@@ -2211,18 +2208,6 @@ class CivRuntime:
                 rx_name = rs.active
             rx = rs.receiver(rx_name)
 
-            # Per-slot override: when the poller is actively reading the
-            # unselected VFO slot on a receiver (issue #715), it sets
-            # ``host._vfo_slot_override[rx_name]`` to "A" or "B" so that
-            # incoming 0x03/0x04 responses are routed to the correct slot
-            # instead of the currently-active one.
-            override_map = getattr(self._host, "_vfo_slot_override", None)
-            slot_override: str | None = None
-            if isinstance(override_map, dict):
-                _so = override_map.get(rx_name)
-                if _so in ("A", "B"):
-                    slot_override = _so
-
             handler = self._RADIO_STATE_HANDLERS.get(frame.command)
             if handler is not None:
                 self._record_state_diagnostic(
@@ -2234,9 +2219,8 @@ class CivRuntime:
                     field_family=_CIV_STATE_FIELD_FAMILIES.get(
                         frame.command, "unknown"
                     ),
-                    slot_override=slot_override,
                 )
-                handler(self, frame, rx, rs, slot_override)
+                handler(self, frame, rx, rs)
 
         except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
             logger.debug(
@@ -2547,7 +2531,7 @@ class CivRuntime:
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""
 
-        receiver_id, receiver_name, slot_override = self._receiver_context(frame)
+        receiver_id, receiver_name = self._receiver_context(frame)
         observations: list[Observation] = []
 
         if (
@@ -2569,7 +2553,6 @@ class CivRuntime:
                     self._observation(
                         self._freq_mode_path(
                             receiver_id=receiver_id,
-                            slot_override=slot_override,
                             name="freq_hz",
                         ),
                         parse_frequency_response(frame),
@@ -2582,7 +2565,6 @@ class CivRuntime:
                 self._observation(
                     self._freq_mode_path(
                         receiver_id=receiver_id,
-                        slot_override=slot_override,
                         name="mode",
                     ),
                     mode_val.name,
@@ -2594,7 +2576,6 @@ class CivRuntime:
                     self._observation(
                         self._freq_mode_path(
                             receiver_id=receiver_id,
-                            slot_override=slot_override,
                             name="filter_num",
                         ),
                         int(filt),
@@ -2618,7 +2599,6 @@ class CivRuntime:
                         self._observation(
                             self._freq_mode_path(
                                 receiver_id=receiver_id,
-                                slot_override=slot_override,
                                 name="filter_width",
                             ),
                             declared,
@@ -2877,7 +2857,6 @@ class CivRuntime:
                     self._observation(
                         self._freq_mode_path(
                             receiver_id=receiver_id,
-                            slot_override=slot_override,
                             name="filter_width",
                         ),
                         self._decode_filter_width(frame),
@@ -2901,7 +2880,6 @@ class CivRuntime:
                 self._observation(
                     self._freq_mode_path(
                         receiver_id=receiver_id,
-                        slot_override=slot_override,
                         name="data_mode",
                     ),
                     frame.data[0],
@@ -3179,8 +3157,8 @@ class CivRuntime:
             for name, value in pairs
         ]
 
-    def _receiver_context(self, frame: CivFrame) -> tuple[str, str, str | None]:
-        """Return receiver id/name plus any temporary VFO-slot override."""
+    def _receiver_context(self, frame: CivFrame) -> tuple[str, str]:
+        """Return receiver id and name for a frame."""
 
         rs = getattr(self._host, "_radio_state", None)
         if frame.receiver is not None:
@@ -3190,14 +3168,7 @@ class CivRuntime:
             receiver_name = "SUB" if getattr(rs, "active", "MAIN") == "SUB" else "MAIN"
             receiver_id = "1" if receiver_name == "SUB" else "0"
 
-        slot_override: str | None = None
-        override_map = getattr(self._host, "_vfo_slot_override", None)
-        if isinstance(override_map, dict):
-            candidate = override_map.get(receiver_name)
-            if candidate in ("A", "B"):
-                slot_override = candidate
-
-        return receiver_id, receiver_name, slot_override
+        return receiver_id, receiver_name
 
     def _tx_receiver_for_transceiver_wide_reply(
         self, selected: TxReceiver
@@ -3324,11 +3295,8 @@ class CivRuntime:
     def _freq_mode_path(
         *,
         receiver_id: str,
-        slot_override: str | None,
         name: str,
     ) -> FieldPath:
-        if slot_override is not None:
-            return FieldPath.vfo_slot(receiver_id, slot_override, "freq_mode", name)
         return FieldPath.active(receiver_id, "freq_mode", name)
 
     def _observation(
@@ -3413,8 +3381,8 @@ class CivRuntime:
     # Per-command handlers for _update_radio_state_from_frame.
     #
     # All handlers share the uniform signature
-    # ``(self, frame, rx, rs, slot_override)``. Some handlers ignore
-    # ``rx`` or ``slot_override``; the uniform shape keeps the dispatch
+    # ``(self, frame, rx, rs)``. Some handlers ignore
+    # ``rx``; the uniform shape keeps the dispatch
     # site at ``_update_radio_state_from_frame`` clean.
     # ------------------------------------------------------------------
 
@@ -3423,7 +3391,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x03 (GET freq response) and 0x00 (unsolicited freq).
         if len(frame.data) != _FREQ_BCD_LEN:
@@ -3436,50 +3403,25 @@ class CivRuntime:
             )
             return
         freq = parse_frequency_response(frame)
-        if slot_override is not None:
-            from dataclasses import replace as _replace
-
-            tgt_slot = rx.vfo_b if slot_override == "B" else rx.vfo_a
-            new_slot = _replace(tgt_slot, freq_hz=freq)
-            if slot_override == "B":
-                rx.vfo_b = new_slot
-            else:
-                rx.vfo_a = new_slot
-        else:
-            rx.freq = freq
+        rx.freq = freq
 
     def _handle_mode(
         self,
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x04 (GET mode response) and 0x01 (unsolicited mode).
         mode_val, filt = parse_mode_response(frame)
-        if slot_override is not None:
-            from dataclasses import replace as _replace
-
-            tgt_slot = rx.vfo_b if slot_override == "B" else rx.vfo_a
-            kw: dict[str, Any] = {"mode": mode_val.name}
-            if filt is not None:
-                kw["filter_num"] = filt
-            new_slot = _replace(tgt_slot, **kw)
-            if slot_override == "B":
-                rx.vfo_b = new_slot
-            else:
-                rx.vfo_a = new_slot
-        else:
-            rx.mode = mode_val.name
-            if filt is not None:
-                rx.filter = filt
+        rx.mode = mode_val.name
+        if filt is not None:
+            rx.filter = filt
 
     def _handle_07(
         self,
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x07: VFO active sub-sub (0xD2). Dual-watch (0xC2) is now
         # observation-backed (MOR-437); only the 0xD2 active mirror remains.
@@ -3500,7 +3442,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x0E: scan state.
         if frame.data:
@@ -3514,7 +3455,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x10: tuning step (BCD nibble pair).
         # Mirror write migrated to the StateStore observation pipeline (MOR-461);
@@ -3529,7 +3469,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x11: attenuator value (BCD nibbles → dB).
         # Mirror write migrated to the StateStore observation pipeline (MOR-437);
@@ -3541,7 +3480,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x12: antenna selection (sub 0x00 → ANT1, 0x01 → ANT2; data byte
         # → RX-ANT OFF/ON). Mirror write migrated to the StateStore observation
@@ -3554,7 +3492,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x14: receiver/global levels (BCD pairs).
         if len(frame.data) >= 2:
@@ -3578,7 +3515,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x15: meter/SQL reads.
         # The squelch-open / DCD status (sub 0x01 and sub 0x05) mirror writes
@@ -3610,7 +3546,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x16: function on/off + values (flags, BCD nibbles).
         sub = frame.sub or 0
@@ -3656,7 +3591,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x1A: CTL mem levels + AF mute. Filter width (0x03), AGC time
         # constant (0x04) and data mode (0x06) are now observation-backed
@@ -3694,7 +3628,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x1B: tone/TSQL freq (frequency-encoded). The mirror write for
         # both subs was migrated to the StateStore observation pipeline
@@ -3708,7 +3641,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x1C: PTT (sub 0x00). Tuner status (0x01) and tx-freq monitor
         # (0x03) are now observation-backed (MOR-437); only PTT mirrors here.
@@ -3721,7 +3653,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x1E: TX band edge (sub 0x01, payload ≥ 10 bytes).
         if frame.sub == 0x01 and len(frame.data) >= 10:
@@ -3738,7 +3669,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x21: RIT freq, on/off, tx status.
         if frame.sub == 0x00 and len(frame.data) >= 3:
@@ -3755,7 +3685,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x25: dual-RX freq by receiver ID.
         if len(frame.data) >= 6:
@@ -3787,7 +3716,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x26: dual-RX mode by receiver ID + optional data_mode + filter.
         if len(frame.data) >= 2:
@@ -3823,7 +3751,6 @@ class CivRuntime:
         frame: CivFrame,
         rx: Any,
         rs: "RadioState",
-        slot_override: str | None,
     ) -> None:
         # cmd 0x27: scope control (11 sub-subs).
         scope = rs.scope_controls
