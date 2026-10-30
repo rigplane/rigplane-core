@@ -101,6 +101,10 @@ class StubIcomRadio:
     backend_id: str = "rigplane"
     observe_store: StateStore | None = None
     fail_on: set[str] = field(default_factory=set)
+    #: Ack frequency writes but keep the frequency (the C0 capture shape:
+    #: the radio accepts the set yet stays where it was). Unlike ``fail_on``,
+    #: which refuses the write, this models a silent ignore.
+    ignore_freq_writes: bool = False
     b_mode_writes: list[dict[str, Any]] = field(default_factory=list)
     mod_inputs: dict[int, int] = field(default_factory=dict)
 
@@ -119,6 +123,8 @@ class StubIcomRadio:
 
     async def set_freq(self, freq_hz: int, receiver: int = 0) -> None:
         self._fail("set_freq")
+        if self.ignore_freq_writes:
+            return
         self.freq_a = int(freq_hz)
         self._applied(FieldPath.active("main", "freq_mode", "freq_hz"), self.freq_a)
 
@@ -217,6 +223,8 @@ class StubIcomRadio:
         after_readback: Callable[[], None] | None = None,
     ) -> int:
         self._fail("write_relative_vfo_frequency")
+        if self.ignore_freq_writes:
+            return self.freq_b
         self.freq_b = int(freq_hz)
         return self.freq_b
 
@@ -448,6 +456,7 @@ def make_handler(
     queue: StubCommandQueue | None = None,
     service: StubCommandService | None = None,
     controller_authority: Any = None,
+    config: Any = None,
 ) -> Any:
     """Build the adapter handler over fakes (signature mirrors the factory)."""
     from rigplane.tci_adapter.handler import TciAdapterHandler
@@ -460,6 +469,7 @@ def make_handler(
         command_queue=queue,
         command_service=service,
         controller_authority=controller_authority,
+        config=config,
     )
 
 
