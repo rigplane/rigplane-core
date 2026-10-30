@@ -27,7 +27,7 @@ from rigplane.runtime.radio import CoreRadio
 from rigplane.web import radio_poller as icom_poller
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.web.websocket import WS_OP_TEXT
+from rigplane.ws import WS_OP_TEXT
 from test_web_command_batch_http import _post_json
 
 LEVELS = (
