@@ -10,6 +10,7 @@ cap, the repo-path refusal, and clean shutdown.
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import socket
 import struct
@@ -26,6 +27,7 @@ from rigplane.tci.frames import (
 )
 from rigplane.tci.handler import CommandOutcome
 from rigplane.tci.server import TciServer
+from rigplane.ws import make_accept_key
 
 pytest.importorskip("eesdr_tci", reason="mini-only dev dependency")
 
@@ -361,6 +363,131 @@ def test_non_loopback_host_flagged(proxy_module: object) -> None:
     assert proxy_module.is_loopback_host("localhost") is True  # type: ignore[attr-defined]
     assert proxy_module.is_loopback_host("0.0.0.0") is False  # type: ignore[attr-defined]
     assert proxy_module.is_loopback_host("192.168.1.2") is False  # type: ignore[attr-defined]
+
+
+async def test_upstream_ping_and_close_replies_are_masked(
+    tcp_available: None, proxy_module: object, tmp_path: Path
+) -> None:
+    """Fake upstream pings and closes; proxy replies must be masked (RFC 6455).
+
+    The proxy speaks to upstream as a client, so every frame it builds
+    there (PONG, CLOSE) must carry a mask. The capture file must still
+    open with session_start and close with session_end.
+    """
+    seen: dict[str, tuple[int, bytes, bool]] = {}
+
+    async def _fake_upstream(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        try:
+            head = await reader.readuntil(b"\r\n\r\n")
+            key = ""
+            for line in head.decode("ascii").split("\r\n")[1:]:
+                name, sep, value = line.partition(":")
+                if sep and name.strip().lower() == "sec-websocket-key":
+                    key = value.strip()
+            writer.write(
+                (
+                    "HTTP/1.1 101 Switching Protocols\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Accept: {make_accept_key(key)}\r\n"
+                    "\r\n"
+                ).encode("ascii")
+            )
+            await writer.drain()
+            # Unmasked PING, server role.
+            writer.write(bytes([0x89, 0x05]) + b"ping!")
+            await writer.drain()
+            pong_head = await reader.readexactly(2)
+            pong_masked = bool(pong_head[1] & 0x80)
+            pong_len = pong_head[1] & 0x7F
+            pong_key = await reader.readexactly(4) if pong_masked else b""
+            pong_raw = await reader.readexactly(pong_len) if pong_len else b""
+            pong_payload = (
+                bytes(b ^ pong_key[i % 4] for i, b in enumerate(pong_raw))
+                if pong_masked
+                else pong_raw
+            )
+            seen["pong"] = (pong_head[0] & 0x0F, pong_payload, pong_masked)
+            # Unmasked CLOSE 1000, server role.
+            writer.write(bytes([0x88, 0x02]) + struct.pack("!H", 1000))
+            await writer.drain()
+            close_head = await reader.readexactly(2)
+            close_masked = bool(close_head[1] & 0x80)
+            close_len = close_head[1] & 0x7F
+            close_key = await reader.readexactly(4) if close_masked else b""
+            close_raw = await reader.readexactly(close_len) if close_len else b""
+            close_payload = (
+                bytes(b ^ close_key[i % 4] for i, b in enumerate(close_raw))
+                if close_masked
+                else close_raw
+            )
+            seen["close"] = (close_head[0] & 0x0F, close_payload, close_masked)
+        finally:
+            writer.close()
+
+    upstream = await asyncio.start_server(_fake_upstream, "127.0.0.1", 0)
+    assert upstream.sockets
+    upstream_port = int(upstream.sockets[0].getsockname()[1])
+    proxy = proxy_module.Proxy(  # type: ignore[attr-defined]
+        "127.0.0.1",
+        0,
+        "127.0.0.1",
+        upstream_port,
+        out_dir=tmp_path,
+        label="mask",
+    )
+    client_writer: asyncio.StreamWriter | None = None
+    try:
+        port = await proxy.start()
+        async with asyncio.timeout(15.0):
+            reader, client_writer = await asyncio.open_connection("127.0.0.1", port)
+            key = base64.b64encode(b"0123456789abcdef").decode("ascii")
+            client_writer.write(
+                (
+                    "GET / HTTP/1.1\r\n"
+                    "Host: 127.0.0.1\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Key: {key}\r\n"
+                    "Sec-WebSocket-Version: 13\r\n"
+                    "\r\n"
+                ).encode("ascii")
+            )
+            await client_writer.drain()
+            head = await reader.readuntil(b"\r\n\r\n")
+            assert head.startswith(b"HTTP/1.1 101")
+
+            async def _session_over() -> bool:
+                files = sorted(tmp_path.glob("*.jsonl"))
+                if not files:
+                    return False
+                text = files[0].read_text(encoding="utf-8")
+                return '"session_end"' in text
+
+            while not await _session_over():
+                await asyncio.sleep(0.02)
+    finally:
+        if client_writer is not None:
+            client_writer.close()
+        await proxy.stop()
+        upstream.close()
+        await upstream.wait_closed()
+
+    assert seen["pong"][0] == 0xA
+    assert seen["pong"][1] == b"ping!"
+    assert seen["pong"][2] is True
+    assert seen["close"][0] == 0x8
+    assert seen["close"][1] == struct.pack("!H", 1000)
+    assert seen["close"][2] is True
+
+    import json
+
+    capture = only_capture(tmp_path)
+    records = [json.loads(line) for line in capture.read_text().splitlines()]
+    assert records[0]["event"] == "session_start"
+    assert records[-1]["event"] == "session_end"
 
 
 async def test_clean_shutdown_writes_session_end(

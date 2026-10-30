@@ -7,12 +7,10 @@ as the decoded 64-byte header fields plus payload length only. Audio
 payload bytes are never written to disk.
 
 Framing and parsing come from the one shared implementation,
-``rigplane.ws``; header decoding from the stdlib-only leaf
-``rigplane.tci.frames``. The only framing this file adds is the
-client-side masked send the server-only ``rigplane.ws`` API does not
-provide (the same shape the leaf's own socket tests use to speak as a
-client). Pings are answered by each connection's own ``recv`` loop, not
-relayed.
+``rigplane.ws`` (the upstream leg uses its client role with
+``mask_outgoing=True``); header decoding from the stdlib-only leaf
+``rigplane.tci.frames``. Pings are answered by each connection's own
+``recv`` loop, not relayed.
 
 Usage (capture)::
 
@@ -123,27 +121,6 @@ def check_out_dir(out: str | Path) -> Path:
 
 def _utc_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _masked_frame(opcode: int, payload: bytes) -> bytes:
-    """Build one client-to-server (masked) WebSocket frame.
-
-    ``rigplane.ws`` only serializes server-to-client frames, so the
-    upstream send needs its masked complement here. Parsing stays in
-    ``rigplane.ws``; this mirrors the minimal client sender the leaf's
-    own socket tests use.
-    """
-    first = 0x80 | (opcode & 0x0F)
-    mask_key = os.urandom(4)
-    length = len(payload)
-    if length <= 125:
-        header = bytes([first, 0x80 | length])
-    elif length <= 65535:
-        header = struct.pack("!BBH", first, 0x80 | 126, length)
-    else:
-        header = struct.pack("!BBQ", first, 0x80 | 127, length)
-    masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
-    return header + mask_key + masked
 
 
 def _decode_binary(payload: bytes) -> dict[str, object]:
@@ -381,7 +358,10 @@ async def _connect_upstream(
     if accept != make_accept_key(key):
         writer.close()
         return None
-    return WebSocketConnection(reader, writer), writer
+    # Client role: the upstream server expects every frame masked
+    # (RFC 6455 section 5.1), including the PONG/CLOSE replies that
+    # ``recv`` builds on this connection.
+    return WebSocketConnection(reader, writer, mask_outgoing=True), writer
 
 
 class _Session:
@@ -454,10 +434,8 @@ class _Session:
     async def _pump(self) -> str:
         assert self._client is not None
         assert self._server is not None
-        assert self._server_writer is not None
         client = self._client
         server = self._server
-        server_writer = self._server_writer
 
         async def forward_client() -> None:
             while True:
@@ -465,13 +443,12 @@ class _Session:
                 moment = self._clock()
                 if opcode == WS_OP_TEXT:
                     self._recorder.record_text("c2s", payload, moment, _wall_now())
-                    server_writer.write(_masked_frame(WS_OP_TEXT, payload))
+                    await server.send_text(payload.decode("utf-8", "replace"))
                 elif opcode == WS_OP_BINARY:
                     self._recorder.record_binary("c2s", payload, moment, _wall_now())
-                    server_writer.write(_masked_frame(WS_OP_BINARY, payload))
+                    await server.send_binary(payload)
                 else:
                     continue
-                await server_writer.drain()
 
         async def forward_server() -> None:
             while True:
@@ -662,7 +639,13 @@ def _first_value(texts: Sequence[str], prefix: str) -> str | None:
 
 
 def _echo_delay_ms(records: Sequence[dict[str, object]], prefix: str) -> float | None:
-    """Delay between the first c2s write and the next matching s2c line."""
+    """Delay between the first c2s write and the next matching s2c echo.
+
+    TCI messages may batch several `;`-terminated commands in one frame,
+    so each `;`-separated command is inspected on its own through the
+    shared `_first_value` splitter; the record's own timestamp and
+    direction still order the write before the echo.
+    """
     lowered = prefix.lower()
     wrote_at: float | None = None
     for record in records:
@@ -673,10 +656,10 @@ def _echo_delay_ms(records: Sequence[dict[str, object]], prefix: str) -> float |
         if not isinstance(moment, (int, float)):
             continue
         if record.get("dir") == "c2s" and wrote_at is None:
-            if text.strip().lower().startswith(lowered):
+            if _first_value([text], lowered) is not None:
                 wrote_at = float(moment)
         elif record.get("dir") == "s2c" and wrote_at is not None:
-            if text.strip().lower().startswith(lowered):
+            if _first_value([text], lowered) is not None:
                 return (float(moment) - wrote_at) * 1000.0
     return None
 
@@ -860,7 +843,9 @@ def coverage_report(records: Sequence[dict[str, object]]) -> CoverageReport:
     else:
         items.append(CoverageItem("tx_chrono", OPEN, "no s2c TX_CHRONO seen"))
 
-    tx_headers = _binaries(rows, "s2c", 2)
+    # Design 8.3: the server sends TX_CHRONO (type 3) while the client
+    # answers with TX_AUDIO (type 2), so the TX header comes from c2s.
+    tx_headers = _binaries(rows, "c2s", 2)
     if tx_headers:
         first = tx_headers[0]["bin"]
         assert isinstance(first, dict)
@@ -874,7 +859,7 @@ def coverage_report(records: Sequence[dict[str, object]]) -> CoverageReport:
             )
         )
     else:
-        items.append(CoverageItem("tx_header", OPEN, "no s2c TX header seen"))
+        items.append(CoverageItem("tx_header", OPEN, "no c2s TX header seen"))
 
     return CoverageReport(
         items=tuple(items), complete=all(i.status == COVERED for i in items)

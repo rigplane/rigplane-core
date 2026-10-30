@@ -106,7 +106,7 @@ def full_session() -> list[dict[str, object]]:
         brec("s2c", 1, nxt(), length=2048, channels=1, payload_len=64 + 4096),
         trec("c2s", "trx:0,true;", nxt()),
         brec("s2c", 3, nxt(), length=2048, channels=1, payload_len=64),
-        brec("s2c", 2, nxt(), length=2048, channels=1, payload_len=64 + 4096),
+        brec("c2s", 2, nxt(), length=2048, channels=1, payload_len=64 + 4096),
     ]
     return records
 
@@ -177,6 +177,52 @@ def test_extract_fixtures_writes_only_c2s_text(
     assert all("protocol:" not in line for line in lines)
     blob = dest.read_bytes()
     assert b"ExpertSDR3" not in blob
+
+
+def test_vfo_echo_found_inside_batched_messages(proxy_module: object) -> None:
+    """One batched c2s write plus batched s2c echoes still count as echoes."""
+    records = [
+        trec("c2s", "vfo:0,0,14074000;vfo:0,1,14075000;", 1.0),
+        trec("s2c", "vfo:0,0,14074000;vfo:0,1,14075000;", 1.1),
+    ]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("vfo0_echo").status == "COVERED"
+    assert report.by_id("vfo1_echo").status == "COVERED"
+
+
+def test_vfo_echo_ignores_unrelated_command_first(proxy_module: object) -> None:
+    """An unrelated command before the VFO command must not hide the echo."""
+    records = [
+        trec("c2s", "modulation:0,DIGU;vfo:0,0,14074000;", 1.0),
+        trec("s2c", "modulation:0,DIGU;vfo:0,0,14074000;", 1.1),
+    ]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("vfo0_echo").status == "COVERED"
+
+
+def test_vfo_echo_missing_one_stays_incomplete(proxy_module: object) -> None:
+    """Only one of the two echoes present: the other item stays OPEN."""
+    records = [
+        trec("c2s", "vfo:0,0,14074000;vfo:0,1,14075000;", 1.0),
+        trec("s2c", "vfo:0,0,14074000;", 1.1),
+    ]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("vfo0_echo").status == "COVERED"
+    assert report.by_id("vfo1_echo").status == "OPEN"
+
+
+def test_tx_header_covered_by_client_to_server_audio(proxy_module: object) -> None:
+    """Genuine c2s TX_AUDIO covers the tx_header item (design 8.3)."""
+    records = [brec("c2s", 2, 1.0)]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("tx_header").status == "COVERED"
+
+
+def test_tx_header_open_when_only_server_to_client_audio(proxy_module: object) -> None:
+    """An s2c type-2 frame alone must NOT cover tx_header."""
+    records = [brec("s2c", 2, 1.0)]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("tx_header").status == "OPEN"
 
 
 def test_extract_fixtures_round_trips_through_capture_file(
