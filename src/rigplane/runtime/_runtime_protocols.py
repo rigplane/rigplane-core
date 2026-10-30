@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
     from rigplane.scope import ScopeAssembler, ScopeFrame
     from rigplane.transport import IcomTransport
-    from rigplane.types import Mode
 
 
 __all__ = [
@@ -76,7 +75,6 @@ class CivRuntimeHost(Protocol):
     _scope_frame_queue: "BoundedQueue[ScopeFrame]"
     _scope_callback: "Callable[[ScopeFrame], Any] | None"
     _raw_civ_listeners: "list[Callable[[bytes], Any]]"
-    _scope_activity_counter: int
     _scope_activity_event: asyncio.Event
     _civ_event_queue: "BoundedQueue[CivEvent]"
 
@@ -84,11 +82,8 @@ class CivRuntimeHost(Protocol):
     _state_cache: "StateCache"
     _state_store: "StateStore"
     _last_commanded_powerstat: "bool | None"
-    _last_freq_hz: "int | None"
-    _last_mode: "Mode | None"
     _filter_width: "int | None"
     _last_vfo: "str | None"
-    _civ_retry_slice_timeout: float
     _radio_addr: int
     _profile: "RadioProfile"
     _relative_vfo_observations_suspended: bool
@@ -152,7 +147,6 @@ class ControlPhaseHost(Protocol):
 
     # Status / error tracking
     _last_status_error: int
-    _last_status_disconnected: bool
     _last_auth_error: int
 
     # Background tasks

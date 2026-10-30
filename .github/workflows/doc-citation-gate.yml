@@ -1,6 +1,6 @@
 name: Doc citation gate
 
-# Fails any push or PR that adds a `path:line` (or `path#Lline`) code
+# Fails any PR that adds a `path:line` (or `path#Lline`) code
 # citation to docs/** that is not already grandfathered in
 # .github/scripts/doc-citation-baseline.txt. Documentation cites file plus
 # symbol name, never a line number — line numbers rot. See
@@ -64,16 +64,15 @@ name: Doc citation gate
 # changes, so the checker remains self-validating without taxing docs-only PRs.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/scripts/check-doc-citations.sh"
-      - ".github/workflows/doc-citation-gate.yml"
   pull_request:
     branches: [main]
     paths:
       - ".github/scripts/check-doc-citations.sh"
       - ".github/workflows/doc-citation-gate.yml"
+  # Also called by full.yml for the scheduled run on main (MOR-3878): the merge
+  # queue does not run this informational gate, so the merged tree gets its
+  # signal from there with this same job definition.
+  workflow_call:
 
 concurrency:
   group: doc-citation-gate-${{ github.workflow }}-${{ github.ref }}

@@ -202,8 +202,6 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_bauds_tried: tuple[int, ...] = (baudrate,)
         self.serial_baud_notice: str | None = None
         self._serial_identity_read_refused = False
-        self._serial_rx_device_override = rx_device
-        self._serial_tx_device_override = tx_device
         # MOR-1453: rediscovery seams for a renumbered device node. Glob is
         # auto-derived unless overridden; identity is captured fresh after
         # each successful connect (see ``_capture_serial_identity``).
@@ -498,7 +496,6 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_stream_ready = False
         self._civ_recovering = False
         self._last_status_error = 0
-        self._last_status_disconnected = False
         attempt_epoch = self._civ_epoch
         # MOR-3436: per-attempt owner-stop epoch, captured before any
         # await — the audio tail below skips recovery when the owner tore
@@ -2280,12 +2277,6 @@ class _IcomSerialRadioBase(CoreRadio):
             AudioCodec.OPUS_1CH,
             AudioCodec.OPUS_2CH,
         }
-
-    async def _ensure_audio_started(self) -> None:
-        pass
-
-    async def _ensure_audio_stopped(self) -> None:
-        pass
 
 
 __all__ = [

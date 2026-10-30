@@ -168,8 +168,16 @@ describe('frequency label thinning (MOR-3011)', () => {
       const w = text.length * MONO_ADVANCE_PX;
       return { text, left: x - w / 2, right: x + w / 2 };
     });
+  const expectNoOverlap = (bs: ReturnType<typeof boxes>) => {
+    for (let a = 0; a < bs.length; a++) {
+      for (let b = a + 1; b < bs.length; b++) {
+        const clear = bs[a].right <= bs[b].left || bs[b].right <= bs[a].left;
+        expect(clear).toBe(true);
+      }
+    }
+  };
 
-  it.each([360, 390])('draws non-overlapping labels at phone width %i', (width) => {
+  it.each([320, 360, 375, 390, 430])('draws non-overlapping labels at phone width %i', (width) => {
     const { ctx, log } = createLabelCtx();
     renderSpectrum(ctx, data50(), width, 200, phoneOpts());
     const bs = boxes(log);
@@ -177,11 +185,21 @@ describe('frequency label thinning (MOR-3011)', () => {
     expect(bs.length).toBeGreaterThan(2);
     expect(bs[0].text).toBe('14.160');
     expect(bs[bs.length - 1].text).toBe('14.260');
-    for (let a = 0; a < bs.length; a++) {
-      for (let b = a + 1; b < bs.length; b++) {
-        expect(bs[a].right <= bs[b].left || bs[b].right <= bs[a].left).toBe(true);
-      }
-    }
+    expectNoOverlap(bs);
+  });
+
+  const edgeCases: [number, number][] = [320, 375, 430].flatMap((w) =>
+    [25_000, 50_000, 100_000, 200_000, 500_000, 1_000_000].map((s) => [w, s] as [number, number]),
+  );
+  it.each(edgeCases)('keeps edge labels clear at width %i span %i', (width, spanHz) => {
+    const centerHz = 14_295_000;
+    const { ctx, log } = createLabelCtx();
+    renderSpectrum(ctx, data50(), width, 200, opts({ spanHz, centerHz }));
+    const bs = boxes(log);
+    expect(bs.length).toBeGreaterThanOrEqual(2);
+    expect(bs[0].text).toBe(((centerHz - spanHz / 2) / 1e6).toFixed(3));
+    expect(bs[bs.length - 1].text).toBe(((centerHz + spanHz / 2) / 1e6).toFixed(3));
+    expectNoOverlap(bs);
   });
 
   it('keeps all eleven labels exactly as today at desktop width 1440', () => {

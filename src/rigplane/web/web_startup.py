@@ -199,7 +199,7 @@ def _observed_paths(
     against. ``_profile_path_for_observation`` is how that same module
     already resolves an observed path against the profile
     (``CivRuntime._record_coalesced_meter_observation``), off the single
-    ``_RECEIVER_ALIASES`` table it also credits observations through
+    ``RECEIVER_ID_ALIASES`` table it also credits observations through
     (``_field_paths_match``); reusing it keeps that table the only one.
     Pinned by ``test_civ_ingress_counts_as_observed_against_profile_paths``.
     """
@@ -625,10 +625,18 @@ async def _await_initial_state_acquisition(
                 for path, at in primed_at.items()
                 if queued_at - at < _STARTUP_GATE_REPRIME_SECONDS
             )
+            # MOR-3630: the startup sweep honors the same conditional
+            # availability as the gate below — a contradicted field (an
+            # FM-NAKed read while the mode reads FM) is neither outstanding
+            # nor primed, and is re-primed once its clause set holds again.
+            sweep_availability = resolve_available_when(
+                scheduler._profile, server.command_state_store.snapshot()
+            )
             for request in scheduler.prime_unobserved(
                 _observed_paths(server, scheduler) + withheld,
                 reason="startup-gate",
                 limit=_STARTUP_GATE_PRIME_LIMIT,
+                availability=sweep_availability,
             ):
                 for path in request.paths:
                     primed_at[path] = queued_at

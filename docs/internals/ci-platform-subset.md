@@ -1,8 +1,7 @@
 # Platform subset workflow
 
 `.github/workflows/platform-subset.yml` runs a small set of platform-sensitive
-tests on a native, non-container runner, because every other Core workflow runs
-on Linux.
+tests on a native, non-container runner.
 
 ## Legs
 

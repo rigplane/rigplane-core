@@ -477,8 +477,8 @@ are ordinary translatable copy.
 
 Files:
 
-- `frontend/src/components-v2/layout/VfoHeader.svelte:172,206,212` — labels
-  `SCOPE`, `SPLIT`, `RX {rxFrequency} TX {txFrequency}`.
+- `frontend/src/components-v2/layout/VfoHeader.svelte` (deleted since, MOR-2728)
+  — labels `SCOPE`, `SPLIT`, `RX {rxFrequency} TX {txFrequency}`.
 - `frontend/src/components-v2/vfo/VfoOps.svelte` — 5 user-facing prose
   `title=` tooltips: `Equalize VFOs`, `SPLIT` mode toggle, `DUAL WATCH`,
   `Exchange VFOs`, `Transmit on receive VFO`. Glossary-stable tokens

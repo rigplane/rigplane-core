@@ -113,8 +113,9 @@ class TestCreateRadioFactory:
             )
         )
         assert isinstance(radio, Icom7610SerialRadio)
-        assert radio._serial_rx_device_override == "IC-7610 USB Audio"
-        assert radio._serial_tx_device_override == "BlackHole 2ch"
+        audio_config = radio._serial_audio_driver._config
+        assert audio_config.rx_device == "IC-7610 USB Audio"
+        assert audio_config.tx_device == "BlackHole 2ch"
 
     def test_create_radio_passes_serial_scope_low_baud_override(self) -> None:
         radio = create_radio(
