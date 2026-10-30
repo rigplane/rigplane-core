@@ -84,7 +84,8 @@ class _UdpProtocol(asyncio.DatagramProtocol):
     def error_received(self, exc: Exception) -> None:
         owner = self._owner
         owner._udp_error_count += 1
-        n = owner._udp_error_count
+        owner._udp_error_total += 1
+        n = owner._udp_error_total
         if n <= 3:
             logger.warning("UDP error [peer=%s] (#%d): %s", self._peer, n, exc)
         elif n % 100 == 0:
@@ -146,7 +147,11 @@ class IcomTransport:
         self._raw_send = self._default_raw_send
         self.rx_packet_count: int = 0  # total packets received (incl. pings)
         self._last_tracked_send: float = 0.0  # monotonic time of last tracked send
-        self._udp_error_count: int = 0  # consecutive UDP errors (Broken pipe etc.)
+        # Consecutive UDP errors (Broken pipe etc.); reset to 0 on any
+        # inbound datagram by _handle_packet.
+        self._udp_error_count: int = 0
+        # Lifetime UDP error count, used only to throttle the warning log.
+        self._udp_error_total: int = 0
         # Optional fast-path callback for scope data — bypasses packet queue
         self._scope_fast_path: Callable[[bytes], None] | None = None
         self._scope_dropped: int = 0  # scope packets dropped under queue pressure
@@ -684,6 +689,8 @@ class IcomTransport:
 
     def _handle_packet(self, data: bytes) -> None:
         """Process an incoming UDP packet via dispatch table."""
+        # Any inbound datagram proves the path works, so the error run is over.
+        self._udp_error_count = 0
         if len(data) < HEADER_SIZE:
             return
         self.rx_packet_count += 1
