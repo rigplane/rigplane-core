@@ -1152,7 +1152,9 @@ class TciAdapterHandler:
                 intent = self._intent("set_split_freq", {"freq_hz": hz})
                 await self._execute_write(intent)
             except Exception:
-                logger.debug("tci %s: set_split_freq failed", self._owner, exc_info=True)
+                logger.debug(
+                    "tci %s: set_split_freq failed", self._owner, exc_info=True
+                )
                 return await self._sender_current(self._read_vfo(args[:2]))
         actual = await self._confirmed_vfo_freq(channel, hz)
         return self._reply(f"vfo:0,{channel},{actual};")
@@ -1171,7 +1173,7 @@ class TciAdapterHandler:
         deadline = self._clock() + self._config.command_timeout
         while True:
             state = await self._state()
-            actual = state.freq_a if channel == 0 else state.freq_b
+            actual: int = state.freq_a if channel == 0 else state.freq_b
             if actual == hz or self._clock() >= deadline:
                 return actual
             # Pacing only: the deadline above decides the verdict, not this
