@@ -583,7 +583,7 @@ class TestWebServerDXBroadcast:
 
         from rigplane.web.handlers import ControlHandler
         from rigplane.web.server import WebConfig, WebServer
-        from rigplane.web.websocket import WS_OP_TEXT, WebSocketConnection
+        from rigplane.ws import WS_OP_TEXT, WebSocketConnection
 
         config = WebConfig(
             host="127.0.0.1",

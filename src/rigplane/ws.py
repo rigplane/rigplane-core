@@ -1,7 +1,14 @@
 """RFC 6455 WebSocket + RFC 7692 permessage-deflate (stdlib only).
 
+The single shared framing implementation in the lowest layer: the one
+place that speaks the WebSocket wire. ``rigplane.tci`` (listener,
+sessions) and ``rigplane.web`` (browser UI and controller channels)
+both import it; it imports only the standard library.
+
 Provides:
 - HTTP Upgrade handshake key computation
+- Server-side upgrade check (injected Origin/Host policy, key check,
+  accept header, 101 response bytes)
 - Frame serialization (server→client, unmasked)
 - Frame parsing (client→server, masked)
 - WebSocketConnection class for full-duplex messaging
@@ -16,7 +23,8 @@ import hashlib
 import struct
 import time
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 
 __all__ = [
     "WS_MAGIC",
@@ -27,10 +35,17 @@ __all__ = [
     "WS_OP_PING",
     "WS_OP_PONG",
     "WS_KEEPALIVE_INTERVAL",
+    "AllowHeaders",
+    "UpgradeAccept",
+    "UpgradeDecline",
     "WebSocketError",
+    "check_upgrade_headers",
     "make_accept_key",
     "make_frame",
+    "make_upgrade_response",
     "negotiate_deflate",
+    "upgrade_response",
+    "validate_tci_handshake",
     "WebSocketConnection",
 ]
 
@@ -51,6 +66,21 @@ _RSV1 = 0x40  # per-message deflate flag
 # are rejected with close code 1009 (Message Too Big) before any allocation
 # to prevent memory exhaustion from a malicious/malformed length field.
 _MAX_WS_FRAME = 64 * 1024
+
+# Maximum retained bytes across all fragments of one incoming message.
+# A client can otherwise send non-final frames forever (each within
+# ``_MAX_WS_FRAME``) while every frame refreshes ``last_activity``,
+# defeating the watchdog and growing memory without bound. Four times
+# the single-frame limit: ~60x above any legitimate message on this
+# path (browser control JSON is a few KiB; one TX audio frame is
+# 48 kHz x 20 ms x 2 ch x 2 B = 3840 B PCM16, less when Opus-coded),
+# so no legitimate sender fragments anywhere near this budget.
+_MAX_MESSAGE_BYTES = 4 * _MAX_WS_FRAME
+
+# Maximum fragments retained for one incoming message. Empty
+# continuations carry no bytes but each occupies a list slot, so the
+# count is bounded separately from the byte total.
+_MAX_FRAGMENTS = 64
 
 # zlib flush marker appended by deflate, stripped per RFC 7692 §7.2.1
 _DEFLATE_TAIL = b"\x00\x00\xff\xff"
@@ -202,8 +232,10 @@ class WebSocketConnection:
         self._closed = False
         self._deflate = deflate
         self._fragmented_opcode: int = 0
+        self._fragmented_rsv1 = False
         self._fragments: list[bytes] = []
         self._last_pong: float = clock()
+        self._last_frame: float = clock()
         self._pong_timeout: float = 60.0
         self._clock = clock
 
@@ -249,6 +281,7 @@ class WebSocketConnection:
                 await self.close(1009, "frame too large")
                 raise EOFError("frame too large") from exc
 
+            self._last_frame = self._clock()
             if opcode == WS_OP_PING:
                 await self._send_raw(make_frame(WS_OP_PONG, payload))
                 continue
@@ -270,15 +303,32 @@ class WebSocketConnection:
             if opcode == WS_OP_CONTINUATION:
                 if not self._fragments:
                     raise WebSocketError("unexpected continuation frame")
+                retained = sum(map(len, self._fragments))
+                if (
+                    len(self._fragments) + 1 > _MAX_FRAGMENTS
+                    or retained + len(payload) > _MAX_MESSAGE_BYTES
+                ):
+                    # Bound retention before keeping this fragment: drop
+                    # what was held and refuse with 1009, like an
+                    # oversize single frame. The session teardown stays
+                    # bounded through the same EOF path.
+                    self._fragments = []
+                    self._fragmented_opcode = 0
+                    self._fragmented_rsv1 = False
+                    await self.close(1009, "message too large")
+                    raise EOFError("message too large")
                 self._fragments.append(payload)
                 if fin:
                     data = b"".join(self._fragments)
                     op = self._fragmented_opcode
+                    compressed = self._fragmented_rsv1
                     self._fragments = []
                     self._fragmented_opcode = 0
-                    # RSV1 is set on the FIRST fragment only (per RFC 7692)
-                    # Decompression was deferred to reassembly
-                    if rsv1 and self._deflate:
+                    self._fragmented_rsv1 = False
+                    # RSV1 is set on the FIRST fragment only (RFC 7692
+                    # S7.2.1): the final continuation usually carries
+                    # none, so the stored flag decides, not this bit.
+                    if compressed and self._deflate:
                         data = self._decompress(data)
                     return op, data
                 continue
@@ -286,6 +336,7 @@ class WebSocketConnection:
             # Data frame (text or binary)
             if not fin:
                 self._fragmented_opcode = opcode
+                self._fragmented_rsv1 = rsv1
                 self._fragments = [payload]
                 continue
 
@@ -349,10 +400,12 @@ class WebSocketConnection:
         write buffer — ``close()``'s close-frame write (and its own
         best-effort ``self._writer.close()``) can otherwise wedge behind
         ``drain()`` for as long as the peer never drains its receive
-        window (MOR-1429 review). Safe to call more than once.
+        window (MOR-1429 review). Runs even when the connection is
+        already protocol-closed (a received CLOSE with a saturated
+        echo drain still leaves the transport attached otherwise), so
+        the watchdog teardown always reaches the real transport. Safe
+        to call more than once.
         """
-        if self._closed:
-            return
         self._closed = True
         try:
             self._writer.transport.abort()
@@ -363,6 +416,20 @@ class WebSocketConnection:
     def closed(self) -> bool:
         """True if the connection has been closed."""
         return self._closed
+
+    @property
+    def last_activity(self) -> float:
+        """Clock time of the last inbound frame (any opcode).
+
+        Updated on every successfully read frame — data, ping, pong,
+        close — on the connection's injected clock, so a liveness check
+        can use it without depending on heartbeat writes.
+        """
+        return self._last_frame
+
+    async def send_ping(self, payload: bytes = b"") -> None:
+        """Send one ping frame (the caller bounds the write)."""
+        await self._send_raw(make_frame(WS_OP_PING, payload))
 
     async def keepalive_loop(self, interval: float = 20.0) -> None:
         """Send periodic ping frames to detect dead connections."""
@@ -383,3 +450,133 @@ class WebSocketConnection:
     async def _send_raw(self, data: bytes) -> None:
         self._writer.write(data)
         await self._writer.drain()
+
+
+@dataclass(frozen=True)
+class UpgradeDecline:
+    """A refused upgrade: HTTP status, reason phrase, and body to send."""
+
+    status: int
+    reason: str
+    body: bytes
+
+
+@dataclass(frozen=True)
+class UpgradeAccept:
+    """An accepted upgrade: the 101 response bytes and the deflate flag."""
+
+    response: bytes
+    deflate: bool
+
+
+AllowHeaders = Callable[[Mapping[str, str]], UpgradeDecline | None]
+"""Origin/Host policy injected by the caller.
+
+Takes the lowercase request headers, returns ``None`` when the upgrade
+may proceed or an :class:`UpgradeDecline` describing the refusal
+(``web`` refuses foreign Hosts with 421 and foreign Origins with 403).
+"""
+
+
+def check_upgrade_headers(
+    headers: Mapping[str, str],
+    *,
+    allow: AllowHeaders,
+) -> UpgradeDecline | None:
+    """Apply the injected Origin/Host policy; ``None`` means admitted."""
+    return allow(headers)
+
+
+def _header_tokens(headers: Mapping[str, str], name: str) -> list[str]:
+    """Split a comma-separated header into lowercase tokens."""
+    return [part.strip().lower() for part in headers.get(name, "").split(",")]
+
+
+def validate_tci_handshake(headers: Mapping[str, str]) -> UpgradeDecline | None:
+    """Validate the complete TCI upgrade request; ``None`` means admitted.
+
+    Checks the ``Upgrade``/``Connection`` tokens, ``Sec-WebSocket-Version:
+    13``, and strict Base64 decoding of the key to 16 bytes. ``web``
+    performs these checks upstream in its routing, so it calls
+    :func:`make_upgrade_response` without this step and its behaviour is
+    byte-identical; only the TCI caller opts in.
+    """
+    if "websocket" not in _header_tokens(headers, "upgrade"):
+        return UpgradeDecline(400, "Bad Request", b"missing upgrade token")
+    if "upgrade" not in _header_tokens(headers, "connection"):
+        return UpgradeDecline(400, "Bad Request", b"missing connection token")
+    if headers.get("sec-websocket-version", "").strip() != "13":
+        return UpgradeDecline(426, "Upgrade Required", b"unsupported version")
+    raw = headers.get("sec-websocket-key", "").strip()
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+    except ValueError:
+        return UpgradeDecline(400, "Bad Request", b"invalid key")
+    if len(decoded) != 16:
+        return UpgradeDecline(400, "Bad Request", b"invalid key")
+    return None
+
+
+def make_upgrade_response(
+    headers: Mapping[str, str],
+    *,
+    protocol: str = "",
+    allow_deflate: bool = True,
+    strict_tci: bool = False,
+) -> UpgradeAccept | UpgradeDecline:
+    """Validate ``Sec-WebSocket-Key`` and build the 101 response bytes.
+
+    The response layout matches what ``web`` has always sent (accept
+    header, optional deflate line, optional subprotocol line).
+    ``allow_deflate=False`` ignores the extension offer entirely: the
+    101 carries no ``Sec-WebSocket-Extensions`` line, so no frame on
+    the connection is ever compressed (the TCI leaf per design 4.2).
+    ``strict_tci=True`` additionally runs :func:`validate_tci_handshake`
+    first (the checks ``web`` performs upstream); ``web`` leaves it off,
+    so its responses are unchanged.
+    """
+    if strict_tci:
+        decline = validate_tci_handshake(headers)
+        if decline is not None:
+            return decline
+    key = headers.get("sec-websocket-key", "")
+    if not key:
+        return UpgradeDecline(400, "Bad Request", b"Missing key")
+    accept = make_accept_key(key)
+    ext_header = headers.get("sec-websocket-extensions", "")
+    deflate_resp = (
+        negotiate_deflate(ext_header) if (ext_header and allow_deflate) else None
+    )
+    ext_line = f"Sec-WebSocket-Extensions: {deflate_resp}\r\n" if deflate_resp else ""
+    response = (
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Accept: {accept}\r\n"
+        f"{ext_line}"
+        + (f"Sec-WebSocket-Protocol: {protocol}\r\n" if protocol else "")
+        + "\r\n"
+    )
+    return UpgradeAccept(response=response.encode("ascii"), deflate=bool(deflate_resp))
+
+
+def upgrade_response(
+    headers: Mapping[str, str],
+    *,
+    allow: AllowHeaders,
+    allow_deflate: bool = True,
+    strict_tci: bool = False,
+) -> UpgradeAccept | UpgradeDecline:
+    """Full server-side upgrade: policy, key check, accept, response bytes.
+
+    ``allow_deflate=False`` answers 101 without the extension header,
+    so the connection never negotiates compression (the TCI leaf).
+    ``strict_tci=True`` additionally validates the complete handshake
+    (the TCI caller; ``web`` performs these checks upstream instead).
+    """
+    decline = check_upgrade_headers(headers, allow=allow)
+    if decline is not None:
+        return decline
+    return make_upgrade_response(
+        headers, allow_deflate=allow_deflate, strict_tci=strict_tci
+    )

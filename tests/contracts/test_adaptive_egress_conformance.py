@@ -24,7 +24,7 @@ from rigplane.types import AudioCodec
 from rigplane.web.handlers import AudioBroadcaster, AudioHandler
 from rigplane.web.handlers.audio import DEGRADE_WINDOW_S
 from rigplane.web.protocol import AUDIO_CODEC_OPUS
-from rigplane.web.websocket import WebSocketConnection
+from rigplane.ws import WebSocketConnection
 
 # 20 ms @ 48 kHz mono s16le.
 PCM_PAYLOAD = b"\x01\x02" * 960

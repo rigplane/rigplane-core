@@ -35,6 +35,7 @@ under 3.0.0 below, plus the changes in this section.
 
 ### Fixed
 
+- `rigplane validate --hardware` reports a model the radio factory has no backend for (for example X6100 or TX-500 on a serial port) or an invalid bridge timeout as an `Error:` line, a failed `discovery.identify` artifact and exit code 3, instead of a Python traceback.
 - **A quick key, unkey, key, unkey could leave the radio transmitting
   (MOR-3838, #4390).** A release that arrived while the previous key-on was
   still being sent was lost: the key-on went out afterwards and nothing

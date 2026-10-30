@@ -362,9 +362,10 @@ it performs an HTTP Upgrade handshake via pure-stdlib RFC 6455 implementation, t
 WebSocket messaging with ping/pong support. Integrates audio bridge and handlers; no external
 web framework (pure stdlib: asyncio, socket, struct).
 
-**`web/websocket.py`** — Pure-stdlib RFC 6455 WebSocket implementation. HTTP Upgrade handshake
-key computation, frame serialisation/parsing, and `WebSocketConnection` class for full-duplex
-messaging with ping/pong support. Used by `server.py`.
+**`rigplane/ws.py`** — Pure-stdlib RFC 6455 WebSocket implementation in the lowest
+layer. HTTP Upgrade handshake key computation, frame serialisation/parsing, and
+`WebSocketConnection` class for full-duplex messaging with ping/pong support.
+Used by `web/server.py` and the TCI leaf; imports only the standard library.
 
 **`web/protocol.py`** — Binary frame codec for web UI data streams. Encodes scope frames
 (16-byte header + pixel data), meter frames (4-byte header + values), and audio frames

@@ -1,4 +1,4 @@
-"""Extra coverage tests for web/websocket.py.
+"""Extra coverage tests for the shared `rigplane.ws` module, as `web` uses it.
 
 Covers:
 - _read_one_frame: non-zero RSV bits → WebSocketError (line 110)
@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.web.websocket import (
+from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
     WS_OP_CONTINUATION,
@@ -416,7 +416,7 @@ async def test_keepalive_loop_sends_ping() -> None:
         if call_count >= 2:
             ws._closed = True  # stop loop after 2 pings
 
-    with patch("rigplane.web.websocket.asyncio.sleep", fast_sleep):
+    with patch("rigplane.ws.asyncio.sleep", fast_sleep):
         await ws.keepalive_loop(interval=0.001)
 
     assert writer.write.call_count >= 1
@@ -452,6 +452,6 @@ async def test_keepalive_loop_suppresses_non_cancelled_exception() -> None:
         ws._closed = False
         raise OSError("pipe broken")
 
-    with patch("rigplane.web.websocket.asyncio.sleep", raise_once):
+    with patch("rigplane.ws.asyncio.sleep", raise_once):
         # Must not propagate
         await ws.keepalive_loop(interval=0.001)

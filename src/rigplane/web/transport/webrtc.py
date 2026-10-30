@@ -29,7 +29,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Final
 
-from ..websocket import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
+from ...ws import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from aiortc import (  # type: ignore[import-not-found]
