@@ -172,7 +172,9 @@ async def test_read_round_trips(radio_factory: Any) -> None:
     assert (await handler.on_command("xit_enable", ())).to_sender == (
         "xit_enable:0,false;",
     )
-    assert (await handler.on_command("rit_offset", ())).to_sender == ("rit_offset:0,0;",)
+    assert (await handler.on_command("rit_offset", ())).to_sender == (
+        "rit_offset:0,0;",
+    )
     assert (await handler.on_command("drive", ("0",))).to_sender == ("drive:0,50;",)
     assert (await handler.on_command("tune_drive", ("0",))).to_sender == (
         "tune_drive:0,50;",
@@ -182,7 +184,11 @@ async def test_read_round_trips(radio_factory: Any) -> None:
     assert (await handler.on_command("tx_frequency", ())).to_sender == (
         "tx_frequency:14074000;",
     )
-    assert (await handler.on_command("dds", ("0",))).to_sender == ("dds:0,14074000;",)
+    assert (await handler.on_command("dds", ("0",))).to_sender == (
+        "dds:0,14074000;",
+        "if:0,0,0;",
+        "if:0,1,0;",
+    )
     assert (await handler.on_command("cw_keyer_speed", ())).to_sender == (
         "cw_keyer_speed:20;",
     )
@@ -212,7 +218,9 @@ async def test_tier_c_ignored_without_reply_and_logged_once(caplog: Any) -> None
         assert await handler.on_command("iq_start", ("0",)) == CommandOutcome()
         assert await handler.on_command("iq_start", ("0",)) == CommandOutcome()
     hits = [
-        r for r in caplog.records if "iq_start" in r.getMessage() and r.levelno == logging.INFO
+        r
+        for r in caplog.records
+        if "iq_start" in r.getMessage() and r.levelno == logging.INFO
     ]
     assert len(hits) == 1
     assert "0" not in hits[0].getMessage()
@@ -236,7 +244,11 @@ async def _connect(port: int) -> Any:
     listener_mod = importlib.import_module("eesdr_tci.listener")
     listener = listener_mod.Listener(f"ws://127.0.0.1:{port}")
     seen: list[Any] = []
-    listener.add_param_listener("*", lambda n, r, s, p: seen.append((n, r, s, p)))
+
+    async def _record(name: Any, rx: Any, sub_rx: Any, params: Any) -> None:
+        seen.append((name, rx, sub_rx, params))
+
+    listener.add_param_listener("*", _record)
     await listener.start()
     await listener.ready()
     return listener, seen
@@ -280,9 +292,14 @@ async def test_conformance_init_burst_only_emits_known_commands(
     """The eesdr-tci output guard: an unknown name raises in its listener."""
     from rigplane.tci_adapter.server import TciAdapterServer
 
-    handler = make_handler(radio=StubIcomRadio(), store=_loaded_store())
+    store = _loaded_store()
+    handler = make_handler(radio=StubIcomRadio(), store=store)
     server = TciAdapterServer(
-        handler_factory=lambda owner: handler, host="127.0.0.1", port=0
+        radio=StubIcomRadio(),
+        state_store=store,
+        handler_factory=lambda owner: handler,
+        host="127.0.0.1",
+        port=0,
     )
     await server.start()
     try:
@@ -308,7 +325,11 @@ async def test_multi_client_sync_and_unknown_silence(tcp_available: None) -> Non
     handler_b = make_handler(radio=StubIcomRadio(), store=store, owner="tci-client-2")
     handlers = iter([handler_a, handler_b])
     server = TciAdapterServer(
-        handler_factory=lambda owner: next(handlers), host="127.0.0.1", port=0
+        radio=StubIcomRadio(),
+        state_store=store,
+        handler_factory=lambda owner: next(handlers),
+        host="127.0.0.1",
+        port=0,
     )
     await server.start()
     try:

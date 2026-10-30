@@ -8,9 +8,8 @@ the command pipeline is a recording stub.
 
 from __future__ import annotations
 
-import asyncio
 import itertools
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -39,7 +38,10 @@ def observe(
     """Apply one confirmed observation to a real store."""
     store.apply(
         Observation(
-            path=path, value=value, source=_source(), timestamp_monotonic=at,
+            path=path,
+            value=value,
+            source=_source(),
+            timestamp_monotonic=at,
             max_age=max_age,
         )
     )

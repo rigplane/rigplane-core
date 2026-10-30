@@ -51,12 +51,14 @@ def test_core_to_tci_mode_table(mode: Mode, data: bool, tci_name: str) -> None:
 
 def test_every_mode_member_is_classified() -> None:
     """A new Mode member fails here until the adapter classifies it (5.6)."""
-    covered = set(cmds.CORE_TO_TCI_MODE) | {
-        (mode, flag) for mode in cmds.UNMAPPED_CORE_MODES for flag in (False, True)
-    }
+    mapped_modes = {mode for mode, _data in cmds.TCI_TO_CORE_MODE.values()}
+    assert not (mapped_modes & set(cmds.UNMAPPED_CORE_MODES))
     for mode in Mode:
-        assert (mode, False) in covered, f"{mode} is not classified"
-        assert (mode, True) in covered or mode in cmds.UNMAPPED_CORE_MODES
+        assert mode in mapped_modes or mode in cmds.UNMAPPED_CORE_MODES, (
+            f"{mode} is not classified"
+        )
+    assert (Mode.LSB, True) in cmds.CORE_TO_TCI_MODE
+    assert (Mode.USB, True) in cmds.CORE_TO_TCI_MODE
 
 
 def test_unmapped_modes_are_exactly_the_non_tci_ones() -> None:
@@ -66,7 +68,9 @@ def test_unmapped_modes_are_exactly_the_non_tci_ones() -> None:
 
 
 def test_modulations_list_is_tci_ordered_intersection() -> None:
-    assert cmds.modulations_list(("USB", "LSB", "AM", "CW", "FM"), data_capable=True) == (
+    assert cmds.modulations_list(
+        ("USB", "LSB", "AM", "CW", "FM"), data_capable=True
+    ) == (
         "AM",
         "LSB",
         "USB",
@@ -75,7 +79,9 @@ def test_modulations_list_is_tci_ordered_intersection() -> None:
         "DIGL",
         "DIGU",
     )
-    assert cmds.modulations_list(("USB", "LSB", "AM", "CW", "FM"), data_capable=False) == (
+    assert cmds.modulations_list(
+        ("USB", "LSB", "AM", "CW", "FM"), data_capable=False
+    ) == (
         "AM",
         "LSB",
         "USB",
