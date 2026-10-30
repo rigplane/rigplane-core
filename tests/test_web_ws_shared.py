@@ -222,7 +222,7 @@ def test_upgrade_missing_key_refused_400() -> None:
     assert refused.status == 400
 
 
-def test_keepalive_constants_web_relies_on() -> None:
+async def test_keepalive_constants_web_relies_on() -> None:
     """Web's 20 s pings and 60 s pong timeout are unchanged."""
     assert WS_KEEPALIVE_INTERVAL == 20.0
     clock = _FakeClock()
