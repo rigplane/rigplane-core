@@ -94,10 +94,20 @@ const goldens = goldenFile as unknown as Record<string, GoldenEntry>;
 const polledModels = Object.keys(goldens).filter((model) => goldens[model].polledDcdOpen).sort();
 
 /** What each polled-reply case must look like on every surface. */
-const LAMP: Record<LampCase, { reading: unknown; lit: string; mobile: string }> = {
-  polledDcdOpen: { reading: { status: 'known', value: true }, lit: 'true', mobile: 'on' },
-  polledDcdClosed: { reading: { status: 'known', value: false }, lit: 'false', mobile: 'off' },
-  polledDcdUnanswered: { reading: { status: 'unknown' }, lit: 'false', mobile: 'unknown' },
+const LAMP: Record<
+  LampCase,
+  { reading: unknown; lit: string; mobile: string; sentence: string | null }
+> = {
+  polledDcdOpen: {
+    reading: { status: 'known', value: true }, lit: 'true', mobile: 'on', sentence: 'Squelch open',
+  },
+  polledDcdClosed: {
+    reading: { status: 'known', value: false }, lit: 'false', mobile: 'off', sentence: 'Squelch closed',
+  },
+  // Unread: the dimmed label says nothing (no state sentence).
+  polledDcdUnanswered: {
+    reading: { status: 'unknown' }, lit: 'false', mobile: 'unknown', sentence: null,
+  },
 };
 const cases = Object.keys(LAMP) as LampCase[];
 const matrix: [string, LampCase][] = polledModels.flatMap(
@@ -213,6 +223,7 @@ describe('polled squelch-status wire goldens → BUSY lamp', () => {
 
     expect(busy?.textContent).toBe('BUSY');
     expect(busy?.getAttribute('data-lit')).toBe(LAMP[lampCase].lit);
+    expect(busy?.getAttribute('aria-label')).toBe(LAMP[lampCase].sentence);
   });
 
   it.each(matrix)('%s %s: mobile layout meta-row lamp', async (model, lampCase) => {
@@ -223,6 +234,7 @@ describe('polled squelch-status wire goldens → BUSY lamp', () => {
 
     expect(busy?.textContent?.trim()).toBe('BUSY');
     expect(busy?.getAttribute('data-state')).toBe(LAMP[lampCase].mobile);
+    expect(busy?.getAttribute('aria-label')).toBe(LAMP[lampCase].sentence);
   });
 
   it.each(polledModels)('%s: no BUSY lamp when the server publishes no squelch fact', async (model) => {

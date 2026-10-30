@@ -105,7 +105,11 @@ def _assert_delta_matches_golden(
     # No extra envelope fields (``removed`` appears only when something was).
     assert set(envelope) - {"removed"} == set(golden)
     assert envelope["stateContractVersion"] == golden["stateContractVersion"]
-    assert envelope["providerGeneration"] == golden["providerGeneration"]
+    # The provider generation is the stream's epoch: the delta must carry the
+    # one its baseline did. The golden's value is not the live one (the
+    # generator's radio never connects; a live connect advances it), so it is
+    # compared as a type, not as a number.
+    assert isinstance(envelope["providerGeneration"], int)
     assert envelope["providerGeneration"] == baseline["providerGeneration"]
     # The delta is a newer state of the same stream, with its freshness
     # counters, not a replay of the baseline.
@@ -255,6 +259,13 @@ async def test_polled_open_then_closed_squelch_reaches_http_and_ws(model: str) -
                 _golden_slice(model, "polledDcdOpen"),
             )
 
+            opened = await _wait_for_http_dcd(session, base, True)
+            assert _http_slice(opened) == _golden_slice(model, "polledDcdOpen")
+            ws_opened = await _first_ws_full_state(session, base)
+            assert _dcd_slice(
+                ws_opened["main"], ws_opened["fieldStatus"]
+            ) == _golden_slice(model, "polledDcdOpen")
+
             stack.sim.set_squelch_open(False)
             closed_delta, held = await _await_dcd_delta(ws, held, False)
             _assert_delta_matches_golden(
@@ -265,16 +276,8 @@ async def test_polled_open_then_closed_squelch_reaches_http_and_ws(model: str) -
                 _golden_slice(model, "polledDcdClosed"),
             )
 
-        opened = await _wait_for_http_dcd(session, base, True)
-        assert _http_slice(opened) == _golden_slice(model, "polledDcdOpen")
-        ws_opened = await _first_ws_full_state(session, base)
-        assert _dcd_slice(ws_opened["main"], ws_opened["fieldStatus"]) == _golden_slice(
-            model, "polledDcdOpen"
-        )
-
-        stack.sim.set_squelch_open(False)
-        reclosed = await _wait_for_http_dcd(session, base, False)
-        assert _http_slice(reclosed) == _golden_slice(model, "polledDcdClosed")
+            reclosed = await _wait_for_http_dcd(session, base, False)
+            assert _http_slice(reclosed) == _golden_slice(model, "polledDcdClosed")
 
 
 @pytest.mark.parametrize("model", _MODELS)

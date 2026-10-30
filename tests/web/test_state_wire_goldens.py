@@ -65,6 +65,7 @@ _ENVELOPE_CASES = [
     if case in entry
 ]
 _POLLED_DCD_CASES = ("polledDcdOpen", "polledDcdClosed", "polledDcdUnanswered")
+_POLLED_DCD_DELTA_CASES = ("polledDcdDeltaOpen", "polledDcdDeltaClosed")
 _POLLED_DCD_MODELS = _GENERATOR.polled_dcd_models()
 _POLLED_DCD_ENVELOPES = [
     (model, case) for model in _POLLED_DCD_MODELS for case in _POLLED_DCD_CASES
@@ -212,13 +213,24 @@ def test_polled_dcd_cases_exist_exactly_for_the_profiles_that_poll_dcd() -> None
     with_cases = {
         model
         for model, entry in _GOLDENS.items()
-        if any(case in entry for case in (*_POLLED_DCD_CASES, "polledDcdCapabilities"))
+        if any(
+            case in entry
+            for case in (
+                *_POLLED_DCD_CASES,
+                *_POLLED_DCD_DELTA_CASES,
+                "polledDcdCapabilities",
+            )
+        )
     }
 
     assert with_cases == set(_POLLED_DCD_MODELS)
     assert {"IC-705", "IC-7300"} <= with_cases
     for model in with_cases:
-        assert set(_GOLDENS[model]) >= {*_POLLED_DCD_CASES, "polledDcdCapabilities"}
+        assert set(_GOLDENS[model]) >= {
+            *_POLLED_DCD_CASES,
+            *_POLLED_DCD_DELTA_CASES,
+            "polledDcdCapabilities",
+        }
 
 
 @pytest.mark.parametrize(("model", "case"), _POLLED_DCD_ENVELOPES)
@@ -226,6 +238,28 @@ def test_polled_dcd_envelope_matches_wire_schema(model: str, case: str) -> None:
     validated = StateUpdateEnvelope.model_validate(_GOLDENS[model][case])
 
     assert validated.type == "full"
+
+
+@pytest.mark.parametrize("case", _POLLED_DCD_DELTA_CASES)
+@pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
+def test_polled_dcd_delta_is_a_wire_delta_carrying_the_flipped_leaf(
+    model: str, case: str
+) -> None:
+    """The live squelch-change frame: a schema-valid delta with dcd and its status."""
+    envelope = _GOLDENS[model][case]
+    validated = StateUpdateEnvelope.model_validate(envelope)
+    opened = case == "polledDcdDeltaOpen"
+    changed = envelope["changed"]
+
+    assert validated.type == "delta"
+    assert changed["main"]["dcd"] is opened
+    assert changed["main"]["sMeterSqlOpen"] is opened
+    assert changed["fieldStatus"]["main.dcd"]["observed"] is True
+    assert changed["fieldStatus"]["main.dcd"]["availability"] == "available"
+    # The delta belongs to the same stream as the polled full envelopes.
+    full = _GOLDENS[model]["polledDcdOpen"]
+    assert envelope["stateContractVersion"] == full["stateContractVersion"]
+    assert envelope["providerGeneration"] == full["providerGeneration"]
 
 
 @pytest.mark.parametrize(("model", "case"), _POLLED_DCD_ENVELOPES)
