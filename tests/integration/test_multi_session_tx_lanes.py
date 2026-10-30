@@ -526,7 +526,12 @@ async def test_path5_tx_starts_from_a_non_holder_are_refused_on_every_surface(
 
 
 async def _wait_tx_read_after_unkey(arena: _Arena) -> None:
-    """Wait for a poll that read TX after Core's unkey was acknowledged."""
+    """Wait for a poll that read TX after now (Core's unkey was acknowledged).
+
+    The foreign-TX guard refuses on a TX reading younger than the field's TTL
+    (1.2 s, ``resolve_rf_state``); an older one reads UNKNOWN and the key is
+    admitted. Call it right before each key the guard must refuse, so a poll
+    starved on a loaded runner cannot age the reading out between the keys."""
     since = time.monotonic()
     ptt = FieldPath.global_("tx_state", "ptt")
     end = since + _GATE_TIMEOUT_S
@@ -605,8 +610,10 @@ async def test_path6_operator_mic_held_through_a_remote_unkey_blocks_until_it_le
         await _wait_tx_read_after_unkey(arena)
         writes = len(arena.sim.ptt_set_writes)
         for ws in (a.primary, b.primary, legacy):
+            await _wait_tx_read_after_unkey(arena)
             response = await ws.command("key", "ptt_on")
             assert response.get("message") == "radio_tx_unreleased", response
+        await _wait_tx_read_after_unkey(arena)
         assert await arena.tcp_line(tcp, "T 1") == _CAT_REFUSED
         assert arena.sim.ptt_set_writes[writes:] == []
         # The operator lets go: the radio reads RX and the next key is applied.
