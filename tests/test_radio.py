@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -287,7 +288,13 @@ class MockTransport:
     def start_retransmit_loop(self) -> None:
         pass
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        # Same contract as core.transport.IcomTransport.send_tracked: a
+        # false currency guard refuses the write before it is sent.
+        if is_current is not None and not is_current():
+            raise CommandError("Tracked write is no longer current")
         self.sent_packets.append(data)
         self.send_seq += 1
         for pkt in self._responses_by_send.pop(self.send_seq, []):
@@ -365,6 +372,7 @@ class TestContextManager:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         await radio.disconnect()
         assert not radio.connected
@@ -376,6 +384,7 @@ class TestContextManager:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         # __aenter__ calls connect() which redoes handshake;
         # test __aexit__ path directly instead
@@ -693,6 +702,7 @@ class TestPower:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(CommandError, match="power_control"):
             await radio.set_rf_power(128)
         assert mock_transport.sent_packets == []
@@ -708,6 +718,7 @@ class TestPower:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         await radio.set_rf_power(128)
         assert bytes(mock_transport.sent_packets[-1]).endswith(
             bytes.fromhex("fefea4e0140a0128fd")
@@ -725,6 +736,7 @@ class TestPower:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         await radio.set_rf_power(128)
         assert bytes(mock_transport.sent_packets[-1]).endswith(
             bytes.fromhex("fefe70e0140a0128fd")
@@ -743,6 +755,7 @@ class TestPower:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(CommandError):
             await radio.set_powerstat(False)
         assert mock_transport.sent_packets == []
@@ -1295,6 +1308,7 @@ class TestTimeout:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(TimeoutError):
             await radio.get_freq()
 
@@ -1306,6 +1320,7 @@ class TestTimeout:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         with pytest.raises(TimeoutError):
             await radio.get_freq()
@@ -1533,6 +1548,7 @@ class TestAckSinkRobustness:
         radio._ctrl_transport = t
         radio._civ_transport = t
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         ff = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01"
@@ -1565,6 +1581,9 @@ class TestAckSinkRobustness:
             await radio._civ_runtime.stop_pump()
             radio._civ_runtime.advance_generation("unit-test-reconnect")
             radio._civ_runtime.start_pump()
+            # The new generation forgets the selection until the radio
+            # reports it again (MOR-3591).
+            observe_selected_receiver(radio, 0)
 
             mock_transport.queue_response_on_send(1, _freq_response(14_074_000))
             mock_transport.queue_response_on_send(2, _mode_response(Mode.USB))
@@ -2809,6 +2828,7 @@ class TestCivTimeoutIsolation:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         # First command: no response → times out
         with pytest.raises(TimeoutError):
@@ -2831,6 +2851,7 @@ class TestCivTimeoutIsolation:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         # Two timeouts in a row
         for _ in range(2):
@@ -2961,6 +2982,7 @@ class TestSpeechTransceiverIdXfc:
     def radio(self, mock_transport: MockTransport) -> IcomRadio:
         r = IcomRadio("192.168.1.100", model="IC-7610")
         r._connected = True
+        observe_selected_receiver(r, 0)
         r._radio_addr = 0x98
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
@@ -3041,6 +3063,7 @@ class TestStateCacheFromUnsolicitedFrames:
     def _make_radio(self) -> IcomRadio:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         return radio
 
     def test_freq_frame_updates_cache(self) -> None:
@@ -3132,6 +3155,7 @@ class TestGetFallbackToCache:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_freq(7_200_000)
 
         freq = await radio.get_freq()
@@ -3146,6 +3170,7 @@ class TestGetFallbackToCache:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         with pytest.raises(TimeoutError):
             await radio.get_freq()
@@ -3159,6 +3184,7 @@ class TestGetFallbackToCache:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_mode("CW", 2)
 
         mode, filt = await radio.get_mode_info()
@@ -3174,6 +3200,7 @@ class TestGetFallbackToCache:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
 
         with pytest.raises(TimeoutError):
             await radio.get_mode_info()
@@ -3198,6 +3225,7 @@ class TestGetFallbackCacheTTL:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_freq(7_200_000)
         # Back-date to make it stale
         radio.state_cache.freq_ts = radio.state_cache.freq_ts - 20.0
@@ -3216,6 +3244,7 @@ class TestGetFallbackCacheTTL:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_freq(7_200_000)
 
         freq = await radio.get_freq()
@@ -3232,6 +3261,7 @@ class TestGetFallbackCacheTTL:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_mode("CW", 2)
         radio.state_cache.mode_ts = radio.state_cache.mode_ts - 20.0
 
@@ -3249,6 +3279,7 @@ class TestGetFallbackCacheTTL:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_mode("CW", 2)
 
         mode, filt = await radio.get_mode_info()
@@ -3269,6 +3300,7 @@ class TestGetFallbackCacheTTL:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_rf_power(128 / 255.0)
         radio.state_cache.rf_power_ts = radio.state_cache.rf_power_ts - 60.0
 
@@ -3289,6 +3321,7 @@ class TestGetFallbackCacheTTL:
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         radio.state_cache.update_rf_power(128 / 255.0)
 
         level = await radio.get_rf_power()
@@ -3602,6 +3635,7 @@ class TestDspLevelParity:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         await radio.set_cw_pitch(1200)
         assert mock_transport.sent_packets[-1].endswith(
             b"\xfe\xfe\xa4\xe0\x14\x09\x02\x55\xfd"
@@ -3773,6 +3807,7 @@ class TestNbDepthWidthPollerDispatch:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         mock_transport.queue_response_on_send(
             2, _ctl_mem_response(0x05, b"\x04", prefix=b"\x02\x90")
         )
@@ -3810,6 +3845,7 @@ class TestNbDepthWidthPollerDispatch:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         mock_transport.queue_response_on_send(
             2, _ctl_mem_response(0x05, b"\x02\x00", prefix=b"\x02\x91")
         )
@@ -4038,6 +4074,7 @@ class TestAgcDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"AGC mode must be one of"):
             await radio.set_agc(0)
         assert mock_transport.sent_packets == []
@@ -4051,6 +4088,7 @@ class TestAgcDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         for legal in (1, 2, 3):
             await radio.set_agc(legal)
         assert len(mock_transport.sent_packets) == 3
@@ -4066,6 +4104,7 @@ class TestAgcDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         await radio.set_agc(0)
         assert mock_transport.sent_packets[-1].endswith(b"\x16\x12\x00\xfd")
         radio._connected = False
@@ -4078,6 +4117,7 @@ class TestAgcDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"AGC mode must be one of"):
             await radio.set_agc(9)
         assert mock_transport.sent_packets == []
@@ -4120,6 +4160,7 @@ class TestAgcReadPath:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         mock_transport.queue_response(_x6200_function_response(0x12, b"\x00"))
         assert await radio.get_agc() == 0
         radio._connected = False
@@ -4135,6 +4176,7 @@ class TestAgcReadPath:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         mock_transport.queue_response(_x6200_function_response(0x12, b"\x03"))
         result = await radio.get_agc()
         assert result == 3
@@ -4151,6 +4193,7 @@ class TestAgcReadPath:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         mock_transport.queue_response(_x6200_function_response(0x12, b"\x09"))
         with pytest.raises(ValueError, match=r"AGC mode.*not in declared domain"):
             await radio.get_agc()
@@ -4176,6 +4219,7 @@ class TestPreampDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"Preamp level must be one of"):
             await radio.set_preamp(3)
         assert mock_transport.sent_packets == []
@@ -4189,6 +4233,7 @@ class TestPreampDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         for legal in (0, 1, 2):
             await radio.set_preamp(legal)
         assert len(mock_transport.sent_packets) == 3
@@ -4202,6 +4247,7 @@ class TestPreampDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         await radio.set_preamp(1)
         assert mock_transport.sent_packets[-1].endswith(b"\x16\x02\x01\xfd")
         radio._connected = False
@@ -4216,6 +4262,7 @@ class TestPreampDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"Preamp level must be one of"):
             await radio.set_preamp(2)
         assert mock_transport.sent_packets == []
@@ -4295,6 +4342,7 @@ class TestBreakInDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         for legal in (0, 1, 2):
             await radio.set_break_in(legal)
         assert len(mock_transport.sent_packets) == 3
@@ -4308,6 +4356,7 @@ class TestBreakInDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"Break-in mode must be one of"):
             await radio.set_break_in(9)
         assert mock_transport.sent_packets == []
@@ -4326,6 +4375,7 @@ class TestBreakInDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"No break-in value domain declared"):
             await radio.set_break_in(0)
         assert mock_transport.sent_packets == []
@@ -4344,6 +4394,7 @@ class TestManualNotchWidthDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         for legal in (0, 1, 2):
             await radio.set_manual_notch_width(legal)
         assert len(mock_transport.sent_packets) == 3
@@ -4357,6 +4408,7 @@ class TestManualNotchWidthDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"Manual notch width must be one of"):
             await radio.set_manual_notch_width(9)
         assert mock_transport.sent_packets == []
@@ -4391,6 +4443,7 @@ class TestManualNotchWidthDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(CommandError, match="not declared"):
             await radio.set_manual_notch_width(1)
         assert mock_transport.sent_packets == []
@@ -4410,6 +4463,7 @@ class TestFilterShapeDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         for legal in (0, 1):
             await radio.set_filter_shape(legal)
         assert len(mock_transport.sent_packets) == 2
@@ -4423,6 +4477,7 @@ class TestFilterShapeDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"Filter shape must be one of"):
             await radio.set_filter_shape(9)
         assert mock_transport.sent_packets == []
@@ -4442,6 +4497,7 @@ class TestSsbTxBandwidthDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         for legal in (0, 1, 2):
             await radio.set_ssb_tx_bandwidth(legal)
         assert len(mock_transport.sent_packets) == 3
@@ -4455,6 +4511,7 @@ class TestSsbTxBandwidthDomainValidation:
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
         radio._connected = True
+        observe_selected_receiver(radio, 0)
         with pytest.raises(ValueError, match=r"SSB TX bandwidth must be one of"):
             await radio.set_ssb_tx_bandwidth(9)
         assert mock_transport.sent_packets == []
@@ -4519,6 +4576,7 @@ class TestToneTsqlParity:
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
+        observe_selected_receiver(r, 0)
         yield r
         r._connected = False  # reset _conn_state so __del__ stays quiet
 
@@ -4935,6 +4993,7 @@ class TestRepeaterToneDedupeKeyReceiverScoped:
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
+        observe_selected_receiver(r, 0)
         yield r
         r._connected = False  # reset _conn_state so __del__ stays quiet
 
@@ -4979,6 +5038,7 @@ class TestRequireReceiverToneMethodsPin:
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
         r._connected = True
+        observe_selected_receiver(r, 0)
         yield r
         r._connected = False
 

@@ -24,15 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receiver you have selected. A command for the other receiver -- or for
   either receiver before the radio has reported which one is selected -- is
   refused with the stable reason code `receiver_not_selected` ("select that
-  receiver first"; rigctld answers `RPRT -9`) instead of RigPlane briefly
+  receiver first"; HTTP 409, rigctld `RPRT -9`) instead of RigPlane briefly
   selecting the other receiver, writing, and selecting back. Select the
   receiver first, then change its settings. On the IC-9700 this covers SUB
   frequency, mode, DATA, filter width, tone/TSQL and VFO A/B, and MAIN
   writes while SUB is selected; on the IC-7610 the SUB frequency and mode
-  are written directly through CI-V 0x25/0x26 selector 01. An IC-9700 SUB
-  frequency/mode read while MAIN is selected returns the value last
-  observed while SUB was selected (refused if never observed) instead of
-  reading the unselected MAIN VFO.
+  are written directly through CI-V 0x25/0x26 selector 01. A frequency or
+  mode read of a receiver that is not selected (MAIN or SUB) returns the
+  value last observed while it was selected (refused if never observed)
+  instead of reading the other receiver.
 - Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
 - **Core 3.0 is marked stable.** The package declares
   `Development Status :: 5 - Production/Stable`. The README, installation

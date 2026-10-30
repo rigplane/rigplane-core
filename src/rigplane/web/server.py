@@ -3117,6 +3117,12 @@ class WebServer:
                 }
             else:
                 return False
+        elif event.state == "failed" and set(details) == {"session_id", "reason"}:
+            # MOR-3591: a queued command refused because its receiver is not
+            # the selected one. Rebuilt from the literal, never passed through.
+            if details.get("reason") != "receiver_not_selected":
+                return False
+            public_details = {"reason": "receiver_not_selected"}
         elif event.state == "failed" and set(details) == {
             "session_id",
             "outcome",
@@ -6235,6 +6241,7 @@ class WebServer:
                 "unsupported_command",
                 "radio_nak",
                 "memory_write_unverified",
+                "receiver_not_selected",
             }:
                 status, reason = 409, "Conflict"
             else:

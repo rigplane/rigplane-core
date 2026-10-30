@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Callable, cast
 
 from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
-from ..core.exceptions import BackgroundSendDropped
+from ..core.exceptions import BackgroundSendDropped, ReceiverNotSelectedError
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
 from ..capabilities import (
     CAP_AGC,
@@ -951,6 +951,10 @@ class RadioPoller:
                 "blockedBy": "tx_interlock",
                 "reason": exc.reason_code,
             }
+        elif isinstance(exc, ReceiverNotSelectedError):
+            # MOR-3591: a queued write for a receiver that is not selected
+            # reaches its issuer with the stable refusal code.
+            params["details"] = {"reason": exc.reason_code}
         entry.command_service.fail_command(
             entry.command_id,
             **params,

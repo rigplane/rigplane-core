@@ -16,6 +16,7 @@ SUB; IC-705: single receiver), asserting on the captured CI-V frames that no
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -69,12 +70,16 @@ class Wire:
         self.radio = radio
         self.frames: list[bytes] = []
         self.fail_select = False
+        # Runs when a 0x07 D0/D1 select is sent, before it is answered.
+        self.on_select: Callable[[], Awaitable[None]] | None = None
 
     async def send(self, civ_frame: bytes, **kwargs: Any) -> CivFrame | None:
         frame = bytes(civ_frame)
         self.frames.append(frame)
         wrapped, receiver, inner = _inner(frame)
         if inner[0] == 0x07 and inner[1:2] and inner[1] in _SELECT_CODES:
+            if self.on_select is not None:
+                await self.on_select()
             if self.fail_select:
                 raise TimeoutError("select timed out")
         if not kwargs.get("wait_response", True):
@@ -130,7 +135,6 @@ class Op:
     cmd: tuple[int, int | None]
     declared: tuple[str, ...] = ()
     direct: tuple[str, ...] = ()
-    guards_main: bool = True
 
 
 OPS: tuple[Op, ...] = (
@@ -226,7 +230,6 @@ OPS: tuple[Op, ...] = (
         (0x03, None),
         (),
         ("get_unselected_freq",),
-        guards_main=False,
     ),
     Op(
         "get_mode_info",
@@ -234,7 +237,6 @@ OPS: tuple[Op, ...] = (
         (0x04, None),
         (),
         ("get_unselected_mode",),
-        guards_main=False,
     ),
 )
 
@@ -260,9 +262,7 @@ def _expected(radio: IcomRadio, op: Op, receiver: int, selected: int | None) -> 
         return "direct"
     if receiver == 1 and profile.supports_cmd29(*op.cmd):
         return "cmd29"
-    if receiver == 0 and (
-        not op.guards_main or profile.supports_cmd29(*op.cmd) or selected == 0
-    ):
+    if receiver == 0 and (profile.supports_cmd29(*op.cmd) or selected == 0):
         return "sent"
     if selected == receiver:
         return "plain"
@@ -546,3 +546,331 @@ class TestRigctldRefusal:
             reply = await _exchange(writer, reader, b"M VFOA USB 2400\n")
             assert reply == b"RPRT -9\n"
             assert len(peer.requests) == sent_before
+
+
+# --- Second round (pre-review findings) -----------------------------------
+
+
+def _commander_radio(model: str) -> tuple[IcomRadio, MockTransport]:
+    """A radio with the real commander worker and wire seam, fake transport."""
+    from _helpers import observe_selected_receiver
+
+    radio = IcomRadio("192.168.1.102", timeout=2.0, model=model)
+    transport = MockTransport()
+    radio._civ_transport = transport
+    radio._ctrl_transport = transport
+    radio._connected = True
+    radio._radio_state.main.mode = "USB"
+    observe_selected_receiver(radio, 0)
+    return radio, transport
+
+
+def _civ_frames(packets: list[bytes]) -> list[bytes]:
+    out: list[bytes] = []
+    for packet in packets:
+        start = packet.find(b"\xfe\xfe")
+        end = packet.find(b"\xfd", start)
+        if start >= 0 and end > start:
+            out.append(packet[start + 4 : end])
+    return out
+
+
+class TestSelectionCheckedAtWireDispatch:
+    """P1: a selection change between admission and dispatch refuses the
+    queued plain command before it reaches the wire."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("operation", "opcode"),
+        [
+            (lambda r: r.set_freq(145_000_000, receiver=0), 0x05),
+            (lambda r: r.set_vfo_slot("A", receiver=0), 0x07),
+            (lambda r: r.set_af_level(128, receiver=0), 0x14),
+        ],
+        ids=["set_freq", "set_vfo_slot", "set_af_level"],
+    )
+    async def test_queued_main_write_refused_when_sub_becomes_selected(
+        self, operation: Callable[[IcomRadio], Awaitable[Any]], opcode: int
+    ) -> None:
+        from _helpers import wrap_civ_in_udp
+
+        radio, transport = _commander_radio("IC-9700")
+        radio._civ_runtime.start_worker()
+        try:
+            # A read occupies the serialized send; the write queues behind it.
+            blocker = asyncio.create_task(radio.get_freq(receiver=0))
+            async with asyncio.timeout(2):
+                while not transport.sent_packets:
+                    await asyncio.sleep(0)
+            write = asyncio.create_task(operation(radio))
+            await asyncio.sleep(0.01)
+            assert not write.done()
+            _observe_selection(radio, 1)  # the radio now reports SUB selected
+            transport.queue_response(
+                wrap_civ_in_udp(
+                    build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x03)[:-1]
+                    + bcd_encode(145_000_000)
+                    + b"\xfd"
+                )
+            )
+            await asyncio.wait_for(blocker, 2)
+            with pytest.raises(ReceiverNotSelectedError):
+                await asyncio.wait_for(write, 2)
+        finally:
+            await radio._civ_runtime.stop_worker()
+            radio._connected = False
+        sent = _civ_frames(transport.sent_packets)
+        assert sent == [b"\x03"]  # only the blocking read; no write, no select
+        assert opcode not in [frame[0] for frame in sent[1:]]
+
+
+class TestFailedSelectLeavesSelectionUnknown:
+    """P1: a failed or cancelled select forgets the selection, even when a
+    0x07 0xD2 answer arrived while it was in flight."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_with_stale_d2_answer_during_select(self) -> None:
+        radio, wire = _radio("IC-9700")
+        _observe_selection(radio, 0)
+
+        async def stale_answer() -> None:
+            _observe_selection(radio, 0)  # an earlier D2 query's reply
+
+        wire.on_select = stale_answer
+        wire.fail_select = True
+        with pytest.raises(TimeoutError):
+            await radio.select_receiver(1)
+        wire.frames.clear()
+        for receiver in (0, 1):
+            with pytest.raises(ReceiverNotSelectedError):
+                await radio.set_freq(_FREQ, receiver=receiver)
+        assert wire.frames == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_select(self) -> None:
+        radio, wire = _radio("IC-9700")
+        _observe_selection(radio, 0)
+        entered, never = asyncio.Event(), asyncio.Event()
+
+        async def hang() -> None:
+            entered.set()
+            _observe_selection(radio, 0)
+            await never.wait()
+
+        wire.on_select = hang
+        task = asyncio.create_task(radio.select_receiver(1))
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        wire.frames.clear()
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.set_freq(_FREQ, receiver=0)
+        assert wire.frames == []
+
+
+class TestReconnectOwnership:
+    """P2: after a new CI-V generation, plain answers filed under a stale
+    selection are not served as the other receiver's value."""
+
+    @pytest.mark.asyncio
+    async def test_pre_d2_answer_after_reconnect_is_not_sub(self) -> None:
+        radio, wire = _radio("IC-9700")
+        _observe_selection(radio, 1)  # SUB selected before the reconnect
+        radio._civ_runtime.advance_generation("reconnect-attempt")
+        # The radio came back on MAIN; its 0x03 answer arrives before 07 D2
+        # and is filed under the stale RadioState.active (SUB).
+        _feed(radio, 0x03, *bcd_encode(145_000_000))
+        _observe_selection(radio, 0)
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.get_freq(receiver=1)
+        assert wire.frames == []
+        # A genuinely owned SUB answer is served.
+        _observe_selection(radio, 1)
+        _feed(radio, 0x03, *bcd_encode(435_000_000))
+        _observe_selection(radio, 0)
+        assert await radio.get_freq(receiver=1) == 435_000_000
+
+
+class TestMalformedSelectors:
+    """P2: only selector 00/01 establishes a selection or a receiver value."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [0x02, 0xFF])
+    async def test_malformed_d2_establishes_nothing(self, value: int) -> None:
+        radio, wire = _radio("IC-9700")
+        _feed(radio, 0x07, 0xD2, value)
+        assert radio._selected_receiver() is None
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.set_freq(_FREQ, receiver=1)
+        assert wire.frames == []
+        with pytest.raises(KeyError):
+            radio.state_store.snapshot().field(
+                FieldPath.global_("slow_state", "active")
+            )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            (0x25, 0x02, *bcd_encode(435_000_000)),
+            (0x26, 0x02, 0x05, 0x00, 0x01),
+        ],
+        ids=["0x25", "0x26"],
+    )
+    def test_malformed_25_26_selector_is_dropped(
+        self, payload: tuple[int, ...]
+    ) -> None:
+        radio, _wire = _radio("IC-7610")
+        before = (radio._radio_state.sub.freq, radio._radio_state.sub.mode)
+        _feed(radio, *payload)
+        snapshot = radio.state_store.snapshot()
+        for name in ("freq_hz", "mode"):
+            with pytest.raises(KeyError):
+                snapshot.field(FieldPath.active("1", "freq_mode", name))
+        assert (radio._radio_state.sub.freq, radio._radio_state.sub.mode) == before
+
+
+class TestMainReadsAreReceiverAware:
+    """P2: MAIN reads follow the SUB rule; never SUB's value for MAIN."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("model", ["IC-9700", "IC-7610"])
+    async def test_main_read_while_sub_selected(self, model: str) -> None:
+        radio, wire = _radio(model)
+        _observe_selection(radio, 0)
+        _feed(radio, 0x03, *bcd_encode(145_000_000))
+        _feed(radio, 0x04, 0x01, 0x02)  # USB FIL2
+        _observe_selection(radio, 1)
+        assert await radio.get_freq(receiver=0) == 145_000_000
+        mode, filt = await radio.get_mode_info(receiver=0)
+        assert (mode.name, filt) == ("USB", 2)
+        assert wire.frames == []  # the plain 03/04 would read SUB
+
+    @pytest.mark.asyncio
+    async def test_main_read_with_unknown_selection_is_refused(self) -> None:
+        radio, wire = _radio("IC-9700")
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.get_freq(receiver=0)
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.get_mode_info(receiver=0)
+        assert wire.frames == []
+
+
+class TestDirectSubWriteKeepsReadback:
+    """P2: the IC-7610 selector-01 write stores the verified readback."""
+
+    @pytest.mark.asyncio
+    async def test_differing_readback_is_stored_and_reported(self) -> None:
+        radio, wire = _radio("IC-7610")
+        radio._radio_state.sub.freq = 7_000_000
+        with pytest.raises(CommandError, match="readback 145500000 Hz"):
+            await radio.set_freq(145_500_100, receiver=1)
+        assert radio._radio_state.sub.freq == _FREQ  # the radio's readback
+
+
+class TestQueuedRefusalReachesIssuer:
+    """P2: a queued command's receiver refusal keeps its stable code."""
+
+    def test_poller_marks_lifecycle_with_reason(self) -> None:
+        from rigplane.web.radio_poller import RadioPoller
+
+        calls: list[dict[str, Any]] = []
+
+        class Service:
+            def fail_command(self, command_id: str, **params: Any) -> bool:
+                calls.append({"command_id": command_id, **params})
+                return True
+
+        class Entry:
+            command_service = Service()
+            command_id = "cmd-1"
+            session_id = "session-issuer"
+            source = "websocket"
+
+        RadioPoller._mark_queued_command_failed(
+            None,  # type: ignore[arg-type]
+            Entry(),  # type: ignore[arg-type]
+            ReceiverNotSelectedError("select that receiver first"),
+        )
+        assert calls[0]["details"] == {"reason": "receiver_not_selected"}
+
+    @pytest.mark.asyncio
+    async def test_failed_lifecycle_carries_the_code_to_the_issuer(self) -> None:
+        from rigplane.web.server import WebConfig, WebServer
+        from test_web_server_coverage import _ack_held, _life, _register_two_sessions
+
+        srv = WebServer(None, WebConfig(radio_model="IC-9700"))
+        issuer_q, bystander_q = _register_two_sessions(srv)
+        await _ack_held(srv)
+        srv._on_command_lifecycle_event(
+            _life(
+                state="failed",
+                message="select that receiver first",
+                details={
+                    "session_id": "session-issuer",
+                    "reason": "receiver_not_selected",
+                },
+            )
+        )
+        assert issuer_q.get_nowait()["type"] == "notification"
+        payload = issuer_q.get_nowait()
+        assert payload["details"] == {"reason": "receiver_not_selected"}
+        assert bystander_q.empty()
+
+    @pytest.mark.asyncio
+    async def test_forged_reason_is_rejected(self) -> None:
+        from rigplane.web.server import WebConfig, WebServer
+        from test_web_server_coverage import _ack_held, _life, _register_two_sessions
+
+        srv = WebServer(None, WebConfig(radio_model="IC-9700"))
+        issuer_q, _bystander_q = _register_two_sessions(srv)
+        await _ack_held(srv)
+        srv._on_command_lifecycle_event(
+            _life(
+                state="failed",
+                details={"session_id": "session-issuer", "reason": "made_up"},
+            )
+        )
+        assert issuer_q.empty()
+
+
+class TestHttpConflict:
+    """P2: HTTP answers a receiver refusal 409 with the stable code."""
+
+    @pytest.mark.asyncio
+    async def test_main_set_freq_while_sub_selected(self) -> None:
+        from rigplane.web.radio_poller import RadioPoller
+        from rigplane.web.server import WebConfig, WebServer
+        from test_web_split_writes import _request
+
+        radio, transport = _commander_radio("IC-9700")
+        _observe_selection(radio, 1)
+        web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        poller = RadioPoller(
+            radio, web.command_queue, state_store=web.command_state_store
+        )
+        web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+
+        async def execute_queued_command() -> None:
+            await web.command_queue.wait(timeout=5.0)
+            entry = web.command_queue.take_entry()
+            assert entry is not None
+            # The poller loop logs the refusal; the HTTP issuer gets it.
+            with pytest.raises(ReceiverNotSelectedError):
+                await poller._execute_queued_entry(entry)
+
+        consumer = asyncio.create_task(execute_queued_command())
+        try:
+            status, body = await asyncio.wait_for(
+                _request(web, "http", "set_freq", {"freq": 145_000_000, "receiver": 0}),
+                timeout=10.0,
+            )
+            await asyncio.wait_for(consumer, timeout=5.0)
+        finally:
+            consumer.cancel()
+            web._server.close()
+            await web._server.wait_closed()
+            radio._connected = False
+        assert status == 409
+        assert body["error"] == "receiver_not_selected"
+        assert transport.sent_packets == []

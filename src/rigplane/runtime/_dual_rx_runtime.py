@@ -7,7 +7,10 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from rigplane.audio.route import profile_data_mode_count
@@ -95,6 +98,41 @@ def _receiver_name(receiver: int) -> str:
     return "MAIN" if receiver == RECEIVER_MAIN else "SUB"
 
 
+@dataclass(frozen=True, slots=True)
+class ReceiverAdmission:
+    """A plain receiver-scoped command admitted for the selected receiver.
+
+    ``_require_cmd29_route`` records it for the calling task; the next CI-V
+    send of the same command (``CoreRadio._send_civ_raw``) consumes it and
+    re-checks the selection at wire dispatch, inside the serialized send,
+    so a selection change between admission and the wire refuses the frame
+    instead of sending it to the other receiver (MOR-3591).
+    """
+
+    receiver: int
+    command: int
+    sub: int | None
+    operation: str
+
+    def matches(self, command: int, sub: int | None) -> bool:
+        return command == self.command and (self.sub is None or sub == self.sub)
+
+
+RECEIVER_ADMISSION: ContextVar[ReceiverAdmission | None] = ContextVar(
+    "rigplane_receiver_admission", default=None
+)
+
+
+def receiver_not_selected(
+    operation: str, receiver: int, model: str, detail: str
+) -> ReceiverNotSelectedError:
+    return ReceiverNotSelectedError(
+        f"{operation} receiver={receiver} refused for profile {model}: {detail}"
+        f"{_receiver_name(receiver)} is not the selected receiver; "
+        "select that receiver first"
+    )
+
+
 def require_receiver_for_profile(
     profile: RadioProfile, receiver: int, *, operation: str
 ) -> None:
@@ -109,6 +147,11 @@ def require_receiver_for_profile(
 
 class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     """Dual-receiver routing methods for CoreRadio (mixin)."""
+
+    # Selection bookkeeping, initialised by CoreRadio.__init__ (MOR-3591).
+    _last_vfo: str | None
+    _receiver_select_inflight: int
+    _selection_known_since: float | None
 
     @contextmanager
     def _vfo_selection_change(self) -> Iterator[None]:
@@ -168,16 +211,22 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         the selection is unknown -- raises :class:`ReceiverNotSelectedError`.
         """
         if self._profile.supports_cmd29(command, sub):
+            RECEIVER_ADMISSION.set(None)
             return
         if self._selected_receiver() == receiver:
+            if self._profile.receiver_count > 1:
+                RECEIVER_ADMISSION.set(
+                    ReceiverAdmission(receiver, command, sub, operation)
+                )
             return
-        raise ReceiverNotSelectedError(
-            f"{operation} receiver={receiver} refused for profile "
-            f"{self._profile.model}: command 0x{command:02X}"
+        RECEIVER_ADMISSION.set(None)
+        raise receiver_not_selected(
+            operation,
+            receiver,
+            self._profile.model,
+            f"command 0x{command:02X}"
             + (f"/0x{sub:02X}" if sub is not None else "")
-            + " has no cmd29 route and "
-            + _receiver_name(receiver)
-            + " is not the selected receiver; select that receiver first"
+            + " has no cmd29 route and ",
         )
 
     def _selected_receiver(self) -> int | None:
@@ -188,17 +237,37 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         own 0x07 0xD2 answer or from an acknowledged select this runtime
         sent (both recorded in ``_last_vfo``); never from a defaulted cache.
         It is unknown before either happens, after a new CI-V generation,
-        and while a selection change is in flight: fail closed.
+        and while a receiver select is in flight or after one failed: fail
+        closed.
         """
         if self._profile.receiver_count <= 1:
             return RECEIVER_MAIN
-        if self._vfo_selection_epoch % 2 == 0:
+        if self._receiver_select_inflight:
             return None
         if self._last_vfo == "MAIN":
             return RECEIVER_MAIN
         if self._last_vfo == "SUB":
             return 1
         return None
+
+    def _record_selection(self, name: str) -> None:
+        """Record a selection the radio reported or acknowledged (MOR-3591).
+
+        Ignored while a receiver select is in flight (an answer may predate
+        it). The first known selection of a CI-V generation starts the
+        window in which plain frequency/mode answers are owned by a known
+        receiver (see ``CoreRadio._observed_freq_mode``).
+        """
+        if self._receiver_select_inflight or name not in ("MAIN", "SUB"):
+            return
+        self._last_vfo = name
+        if self._selection_known_since is None:
+            self._selection_known_since = time.monotonic()
+
+    def _forget_selection(self) -> None:
+        """A new CI-V generation: selection and its ownership window reset."""
+        self._last_vfo = None
+        self._selection_known_since = None
 
     def _sub_direct_route(self, receiver: int, *command_names: str) -> bool:
         """Whether profile data address SUB directly via the 0x25/0x26 selector.

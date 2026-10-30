@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -16,6 +17,7 @@ from rigplane.commands import (
     _SUB_RF_POWER,
     build_civ_frame,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.radio import IcomRadio
 from rigplane.types import Mode
 
@@ -66,7 +68,13 @@ class _MockLanTransport:
     def start_retransmit_loop(self) -> None:
         return None
 
-    async def send_tracked(self, data: bytes) -> None:
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        # Same contract as core.transport.IcomTransport.send_tracked: a
+        # false currency guard refuses the write before it is sent.
+        if is_current is not None and not is_current():
+            raise CommandError("Tracked write is no longer current")
         self.sent_packets.append(data)
         self.send_seq += 1
         for pkt in self._responses_by_send.pop(self.send_seq, []):

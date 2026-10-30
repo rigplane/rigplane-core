@@ -1129,7 +1129,7 @@ class CivRuntime:
         self._host._state_store.begin_provider_generation()
         # A new generation may face a different selection: unknown until
         # the radio answers 0x07 0xD2 again (MOR-3591, fail closed).
-        self._host._last_vfo = None
+        self._host._forget_selection()
         for token in self._managed_tx_ports.values():
             if token.civ_source_generation == source_generation:
                 self._poison_managed_tx_port(token)
@@ -2163,8 +2163,10 @@ class CivRuntime:
             elif frame.command == 0x07 and frame.data and len(frame.data) >= 2:
                 sub07 = frame.data[0]
                 val07 = frame.data[1]
-                if sub07 == 0xD2:
-                    host._last_vfo = "SUB" if val07 else "MAIN"
+                if sub07 == 0xD2 and val07 in (0, 1):
+                    # MOR-3591: only a well-formed selector establishes the
+                    # selection; ignored while a receiver select is in flight.
+                    host._record_selection("SUB" if val07 else "MAIN")
                 elif sub07 == 0xC2:
                     host._state_cache.dual_watch = bool(val07)
                     self._notify_change("dual_watch_changed", {"on": bool(val07)})
@@ -2609,7 +2611,7 @@ class CivRuntime:
                             quality=("declared",),
                         )
                     )
-        elif frame.command == 0x25 and len(frame.data) >= 6:
+        elif frame.command == 0x25 and len(frame.data) >= 6 and frame.data[0] in (0, 1):
             relative = getattr(
                 self._host._profile, "split_tx_target", "none"
             ) == "main_unselected" or (
@@ -2631,7 +2633,7 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x26 and len(frame.data) >= 2:
+        elif frame.command == 0x26 and len(frame.data) >= 2 and frame.data[0] in (0, 1):
             relative = getattr(
                 self._host._profile, "split_tx_target", "none"
             ) == "main_unselected" or (
@@ -3012,7 +3014,7 @@ class CivRuntime:
         elif frame.command == 0x07 and len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
-            if sub07 == 0xD2:
+            if sub07 == 0xD2 and val07 in (0, 1):
                 observations.append(
                     self._observation(
                         FieldPath.global_("slow_state", "active"),
@@ -3431,7 +3433,7 @@ class CivRuntime:
         if len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
-            if sub07 == 0xD2:
+            if sub07 == 0xD2 and val07 in (0, 1):
                 new_active = "SUB" if val07 else "MAIN"
                 if rs.active != new_active:
                     rs.active = new_active
@@ -3689,8 +3691,8 @@ class CivRuntime:
         rx: Any,
         rs: "RadioState",
     ) -> None:
-        # cmd 0x25: dual-RX freq by receiver ID.
-        if len(frame.data) >= 6:
+        # cmd 0x25: dual-RX freq by receiver ID (selector 00/01 only).
+        if len(frame.data) >= 6 and frame.data[0] in (0, 1):
             from rigplane.types import bcd_decode
 
             rcvr_byte = frame.data[0]
@@ -3720,8 +3722,9 @@ class CivRuntime:
         rx: Any,
         rs: "RadioState",
     ) -> None:
-        # cmd 0x26: dual-RX mode by receiver ID + optional data_mode + filter.
-        if len(frame.data) >= 2:
+        # cmd 0x26: dual-RX mode by receiver ID + optional data_mode + filter
+        # (selector 00/01 only).
+        if len(frame.data) >= 2 and frame.data[0] in (0, 1):
             from rigplane.types import Mode
 
             rcvr_byte = frame.data[0]
