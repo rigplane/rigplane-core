@@ -1667,9 +1667,7 @@ async def test_wait_for_recovery_kick_queued_before_owner_stop_never_starts(
 
     radio.soft_reconnect = record_soft_reconnect
 
-    kick = radio._civ_runtime._get_or_start_fast_reconnect_task(
-        radio._owner_stop_epoch
-    )
+    kick = radio._civ_runtime._get_or_start_fast_reconnect_task(radio._owner_stop_epoch)
     # What CoreRadio.disconnect does: advance the epoch and tear down the
     # control session before the queued kick gets its first loop turn.
     radio._owner_stop_epoch += 1
@@ -1913,9 +1911,7 @@ async def test_lock_acquisition_is_bounded_by_the_wait_deadline(
         with pytest.raises(
             RigplaneTimeoutError, match="CI-V transport recovery timed out"
         ):
-            await radio._civ_runtime._wait_for_civ_transport_recovery(
-                timeout=0.6
-            )
+            await radio._civ_runtime._wait_for_civ_transport_recovery(timeout=0.6)
         elapsed = time.monotonic() - start
         assert elapsed < 1.5, (
             f"lock acquisition was not bounded by the deadline: {elapsed:.2f}s"
