@@ -67,7 +67,9 @@ def _pump(radio, store):  # type: ignore[no-untyped-def]
 
 async def test_vfo_a_set_round_trip() -> None:
     radio = StubIcomRadio()
-    handler = make_handler(radio=radio, store=_loaded_store())
+    store = _loaded_store()
+    radio.observe_store = store
+    handler = make_handler(radio=radio, store=store)
     outcome = await handler.on_command("vfo", ("0", "0", "14075000"))
     assert outcome.to_sender == ("vfo:0,0,14075000;",)
     assert outcome.to_others == ("vfo:0,0,14075000;",)
