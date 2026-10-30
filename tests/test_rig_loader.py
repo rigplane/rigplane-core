@@ -4216,3 +4216,41 @@ class TestFtx1ManualOnlyCommands:
 
 class TestTx500DeclaresAbsentCommands(_CatOnlyDeclaresAllGroupBAbsent):
     _TOML_NAME = "tx500.toml"
+
+
+# ── [radio].id / [radio].model types (MOR-3859) ──────────────────
+
+
+class TestRadioIdentityFieldTypes:
+    """A bad ``id``/``model`` is a RigLoadError at load, never a crash later."""
+
+    @pytest.mark.parametrize(
+        ("field", "bad_value"),
+        [
+            ("id", "123"),
+            ("id", "true"),
+            ("id", '""'),
+            ("id", '"   "'),
+            ("id", '["icom_ic7300"]'),
+            ("model", "7300"),
+            ("model", "false"),
+            ("model", '""'),
+            ("model", '"  "'),
+            ("model", '{ name = "IC-7300" }'),
+        ],
+    )
+    def test_non_string_or_blank_identity_is_a_load_error(
+        self, tmp_path: Path, field: str, bad_value: str
+    ) -> None:
+        toml = re.sub(
+            rf"(?m)^{field} = .*$", f"{field} = {bad_value}", _MINIMAL_TOML, count=1
+        )
+        path = _write_toml(tmp_path, toml)
+        with pytest.raises(RigLoadError, match=rf"\[radio\]\.{field} must be a"):
+            load_rig(path)
+
+    def test_radio_section_must_be_a_table(self, tmp_path: Path) -> None:
+        rest = _MINIMAL_TOML[_MINIMAL_TOML.index("[spectrum]") :]
+        path = _write_toml(tmp_path, 'radio = "IC-7300"\n' + rest)
+        with pytest.raises(RigLoadError, match=r"\[radio\] must be a table"):
+            load_rig(path)
