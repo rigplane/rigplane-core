@@ -4208,6 +4208,11 @@ class CivRuntime:
                 "Fast CI-V soft_reconnect teardown failed",
                 exc_info=True,
             )
+        # The join above swallows CancelledError: keep the caller's own
+        # cancellation (a cancelled ``disconnect()``) alive.
+        caller = asyncio.current_task()
+        if caller is not None and caller.cancelling():
+            raise asyncio.CancelledError
 
     async def _await_fast_soft_reconnect(
         self, deadline: float, owner_stop_epoch: int
