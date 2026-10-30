@@ -1136,9 +1136,7 @@ class CivRuntime:
             and not owned_recovery
             and not rc_task.done()
         ):
-            is_pending_replacement = (
-                pending is not None and rc_task is pending[0]
-            )
+            is_pending_replacement = pending is not None and rc_task is pending[0]
             predecessor = pending[1] if is_pending_replacement else None
             rc_task.cancel()
             try:
