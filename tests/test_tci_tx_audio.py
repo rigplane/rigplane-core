@@ -454,6 +454,75 @@ class TestPlayout:
         assert session.dropped_not_owner == 1
         await session.stop()
 
+    async def test_handoff_suspended_inside_push_nothing_of_a_reaches_b(self) -> None:
+        """A frame past the pre-check is still refused after a handoff (8.3.5).
+
+        The push suspends INSIDE ``TxLease.push`` — after the adapter's
+        holder pre-check passed, before the admission verdict — while A
+        unkeys and B keys; on resume the admission sees B and refuses,
+        so nothing of A reaches B's over. Removing the admission from
+        the push lets the frame through, so this test goes red without
+        it (mutation proof, never committed).
+        """
+        from rigplane.tci_adapter.audio import TciAudioSettings, TciTxSession
+
+        pushed: list[bytes] = []
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class _Lease:
+            async def push(self, data: bytes, *, admission=None) -> None:  # type: ignore[no-untyped-def]
+                entered.set()
+                await release.wait()
+                if admission is not None:
+                    async with admission() as admitted:
+                        if admitted is not True:
+                            return
+                pushed.append(bytes(data))
+
+        class _Authority:
+            def __init__(self) -> None:
+                self.holder: str | None = "tci-client-1"
+
+            def tx_holder_nowait(self) -> str | None:
+                return self.holder
+
+            def owned_tx_submission(self, owner: str):  # type: ignore[no-untyped-def]
+                authority = self
+
+                class _Ctx:
+                    async def __aenter__(self) -> bool:
+                        return authority.holder == owner
+
+                    async def __aexit__(self, *exc: object) -> bool:
+                        return False
+
+                return _Ctx()
+
+        authority = _Authority()
+        session = TciTxSession(
+            radio=_tx_radio(),
+            owner="tci-client-1",
+            authority=authority,
+            lease=_Lease(),
+            settings=TciAudioSettings(samplerate=8000, samples=256),
+            iq=False,
+            emit=lambda frame: None,
+        )
+        session.buffering_ms_override = 50
+        session.feed_pcm(struct.pack("<960h", *([1000] * 960)))
+        tick_task = asyncio.ensure_future(session.tick())
+        try:
+            await asyncio.wait_for(entered.wait(), 5.0)
+            authority.holder = "tci-client-2"
+            release.set()
+            await asyncio.wait_for(tick_task, 5.0)
+        finally:
+            if not tick_task.done():
+                tick_task.cancel()
+            await session.stop()
+        assert pushed == []
+
 
 class TestBinaryTxFrames:
     async def test_keyed_frame_pushes_s16le(self) -> None:
