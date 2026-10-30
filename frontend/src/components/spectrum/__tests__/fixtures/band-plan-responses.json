@@ -38,7 +38,7 @@
  "configPost": {
   "IARU-R1": {
    "region": "IARU-R1",
-   "segments": 178,
+   "segments": 191,
    "status": "ok"
   },
   "IARU-R3": {
@@ -48,7 +48,7 @@
   },
   "US": {
    "region": "US",
-   "segments": 159,
+   "segments": 161,
    "status": "ok"
   }
  },

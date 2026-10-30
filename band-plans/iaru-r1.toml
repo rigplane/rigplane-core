@@ -600,6 +600,13 @@ start = 430_000_000
 end = 440_000_000
 
   [[band.segment]]
+  start = 430_000_000
+  end = 430_025_000
+  mode = "other"
+  label = "ALL"
+  notes = "Sub-regional (national bandplanning); all modes, no bandwidth limit; no usage channel assigned here"
+
+  [[band.segment]]
   start = 430_025_000
   end = 430_375_000
   mode = "phone"
@@ -607,11 +614,25 @@ end = 440_000_000
   notes = "Sub-regional; FM repeater output channels (F/PA/ON), 12.5 kHz spacing, 1.6 MHz shift"
 
   [[band.segment]]
+  start = 430_375_000
+  end = 430_400_000
+  mode = "other"
+  label = "ALL"
+  notes = "Sub-regional (national bandplanning); all modes, no bandwidth limit; no usage channel assigned here"
+
+  [[band.segment]]
   start = 430_400_000
   end = 430_575_000
   mode = "digital"
   label = "DIGI"
   notes = "Sub-regional; digital communication link channels"
+
+  [[band.segment]]
+  start = 430_575_000
+  end = 430_600_000
+  mode = "other"
+  label = "ALL"
+  notes = "Sub-regional (national bandplanning); all modes, no bandwidth limit; no usage channel assigned here"
 
   [[band.segment]]
   start = 430_600_000
@@ -626,6 +647,13 @@ end = 440_000_000
   mode = "other"
   label = "MULTI"
   notes = "Sub-regional; multi mode channels"
+
+  [[band.segment]]
+  start = 431_025_000
+  end = 431_050_000
+  mode = "other"
+  label = "ALL"
+  notes = "Sub-regional (national bandplanning); all modes, no bandwidth limit; no usage channel assigned here"
 
   [[band.segment]]
   start = 431_050_000
@@ -726,11 +754,25 @@ end = 440_000_000
   notes = "Satellite service and digital television; 437.000 DATV/data centre of activity; no fixed repeaters, gateways or nodes"
 
   [[band.segment]]
+  start = 438_000_000
+  end = 438_025_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, no bandwidth limit; no usage channel assigned here"
+
+  [[band.segment]]
   start = 438_025_000
   end = 438_175_000
   mode = "digital"
   label = "DIGI"
   notes = "All modes; digital communications channel frequencies"
+
+  [[band.segment]]
+  start = 438_175_000
+  end = 438_200_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, no bandwidth limit; no usage channel assigned here"
 
   [[band.segment]]
   start = 438_200_000
@@ -740,11 +782,25 @@ end = 440_000_000
   notes = "All modes; digital communications repeater channels"
 
   [[band.segment]]
+  start = 438_525_000
+  end = 438_550_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, no bandwidth limit; no usage channel assigned here"
+
+  [[band.segment]]
   start = 438_550_000
   end = 438_625_000
   mode = "other"
   label = "MULTI"
   notes = "All modes; multi-mode channels for experiments with new transmission technologies"
+
+  [[band.segment]]
+  start = 438_625_000
+  end = 438_650_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, no bandwidth limit; no usage channel assigned here"
 
   [[band.segment]]
   start = 438_650_000
@@ -754,11 +810,25 @@ end = 440_000_000
   notes = "All modes; repeater outputs Region 1, 12.5 kHz spacing, 7.6 MHz shift"
 
   [[band.segment]]
+  start = 439_587_500
+  end = 439_800_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, no bandwidth limit; no usage channel assigned here"
+
+  [[band.segment]]
   start = 439_800_000
   end = 439_975_000
   mode = "digital"
   label = "DIGI"
   notes = "All modes; digital communications link channels"
+
+  [[band.segment]]
+  start = 439_975_000
+  end = 440_000_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, no bandwidth limit; no usage channel assigned here"
 
 # ── 23cm (1240-1300 MHz, Region 1) ───────────────────
 # IARU-R1 VHF Handbook v10.03, printed pages 45-46 (section 7.6) and its notes.
@@ -806,6 +876,13 @@ end = 1_300_000_000
   notes = "Repeater outputs: RS1-RS10 1242.025-1242.250, RS11-RS28 1242.275-1242.700"
 
   [[band.segment]]
+  start = 1_242_700_000
+  end = 1_242_725_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 20 kHz; no usage channel assigned here (between repeater output channel RS28 and digital channel RS29)"
+
+  [[band.segment]]
   start = 1_242_725_000
   end = 1_243_250_000
   mode = "digital"
@@ -841,11 +918,25 @@ end = 1_300_000_000
   notes = "Satellite service"
 
   [[band.segment]]
+  start = 1_270_000_000
+  end = 1_270_025_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 20 kHz; no usage channel assigned here (below repeater input channel RS1)"
+
+  [[band.segment]]
   start = 1_270_025_000
   end = 1_270_700_000
   mode = "phone"
   label = "RPT"
   notes = "All modes, 20 kHz; repeater inputs, channels RS1-RS28"
+
+  [[band.segment]]
+  start = 1_270_700_000
+  end = 1_270_725_000
+  mode = "other"
+  label = "ALL"
+  notes = "All modes, 20 kHz; no usage channel assigned here (between repeater input channel RS28 and digital channel RS29)"
 
   [[band.segment]]
   start = 1_270_725_000

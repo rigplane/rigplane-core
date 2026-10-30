@@ -466,7 +466,18 @@ _R1_HANDBOOK_ROWS: tuple[tuple[int, str | None], ...] = (
     (145_999_000, "SAT"),
     # 70 cm (pages 41-43): no analogue ATV since 2021
     (430_100_000, "RPT"),
-    (430_380_000, None),
+    (430_370_000, "RPT"),
+    (430_380_000, "ALL"),  # inside the 430.000-432.000 all-mode block
+    (430_395_000, "ALL"),
+    (430_410_000, "DIGI"),
+    (430_010_000, "ALL"),
+    (430_030_000, "RPT"),
+    (430_570_000, "DIGI"),
+    (430_590_000, "ALL"),
+    (430_610_000, "DIGI"),
+    (431_020_000, "MULTI"),
+    (431_035_000, "ALL"),
+    (431_060_000, "RPT"),
     (430_500_000, "DIGI"),
     (430_700_000, "DIGI"),
     (430_950_000, "MULTI"),
@@ -490,7 +501,27 @@ _R1_HANDBOOK_ROWS: tuple[tuple[int, str | None], ...] = (
     (438_300_000, "DIGI"),
     (438_600_000, "MULTI"),
     (439_000_000, "RPT"),
-    (439_700_000, None),
+    (437_990_000, "SAT"),
+    (438_010_000, "ALL"),  # 438.000-440.000 is one all-mode block
+    (438_030_000, "DIGI"),
+    (438_170_000, "DIGI"),
+    (438_180_000, "ALL"),
+    (438_190_000, "ALL"),
+    (438_210_000, "DIGI"),
+    (438_520_000, "DIGI"),
+    (438_530_000, "ALL"),
+    (438_540_000, "ALL"),
+    (438_560_000, "MULTI"),
+    (438_620_000, "MULTI"),
+    (438_630_000, "ALL"),
+    (438_640_000, "ALL"),
+    (438_660_000, "RPT"),
+    (439_580_000, "RPT"),
+    (439_700_000, "ALL"),
+    (439_790_000, "ALL"),
+    (439_810_000, "DIGI"),
+    (439_970_000, "DIGI"),
+    (439_990_000, "ALL"),
     (439_900_000, "DIGI"),
     # 23 cm (pages 45-46)
     (1_240_100_000, "ALL"),
@@ -498,11 +529,19 @@ _R1_HANDBOOK_ROWS: tuple[tuple[int, str | None], ...] = (
     (1_240_800_000, "FM"),
     (1_241_500_000, "ALL"),
     (1_242_100_000, "RPT"),
+    (1_242_690_000, "RPT"),
+    (1_242_710_000, "ALL"),  # between channels RS28 and RS29 of the all-mode block
+    (1_242_730_000, "DIGI"),
     (1_243_000_000, "DIGI"),
     (1_250_000_000, "ATV"),
     (1_259_000_000, "RPT"),
     (1_265_000_000, "SAT"),
+    (1_270_010_000, "ALL"),  # the 1270.000-1272.000 block starts here
+    (1_270_030_000, "RPT"),
     (1_270_500_000, "RPT"),
+    (1_270_690_000, "RPT"),
+    (1_270_710_000, "ALL"),
+    (1_270_730_000, "DIGI"),
     (1_271_000_000, "DIGI"),
     (1_280_000_000, "ATV"),
     (1_291_200_000, "RPT"),
@@ -520,6 +559,16 @@ _R1_HANDBOOK_ROWS: tuple[tuple[int, str | None], ...] = (
     (1_298_500_000, "ALL"),
     (1_299_300_000, "DD"),
     (1_299_800_000, "ALL"),
+)
+
+
+# Handbook mode ranges whose usage rows are only a subset of the range
+# (pages 42 and 45): the whole range is "all modes".
+_R1_ALL_MODE_BLOCKS: tuple[tuple[int, int], ...] = (
+    (430_000_000, 431_987_500),  # sub-regional (national bandplanning), no limit
+    (438_000_000, 440_000_000),  # all modes, no limit
+    (1_241_000_000, 1_243_250_000),  # all modes, 20 kHz
+    (1_270_000_000, 1_272_000_000),  # all modes, 20 kHz
 )
 
 
@@ -541,6 +590,20 @@ class TestIaruR1HandbookRows:
         labels = {s["label"] for s in _covering(r1, freq_hz)}
         assert labels == ({label} if label else set()), (
             f"R1 {freq_hz / 1e6:.4f} MHz: handbook says {label}, plan says {labels}"
+        )
+
+    @pytest.mark.parametrize(
+        ("lo", "hi"),
+        _R1_ALL_MODE_BLOCKS,
+        ids=[f"{lo / 1e6:.4f}-{hi / 1e6:.4f}MHz" for lo, hi in _R1_ALL_MODE_BLOCKS],
+    )
+    def test_all_mode_block_has_no_hole_between_usage_rows(
+        self, r1: BandPlanRegistry, lo: int, hi: int
+    ) -> None:
+        """Usage channels sit inside a handbook mode range; the range stays."""
+        assert _holes(r1, lo, hi) == [], (
+            f"R1 plan leaves part of the {lo / 1e6:.4f}-{hi / 1e6:.4f} MHz "
+            "all-mode block unassigned"
         )
 
     def test_no_analogue_atv_on_70cm(self, r1: BandPlanRegistry) -> None:
@@ -777,6 +840,95 @@ class TestArrlSourceRowsAreAssigned:
         # Both sides of the 432.400 beacon boundary.
         assert {s["label"] for s in _covering(us, 432_399_000)} == {"BCN"}
         assert {s["label"] for s in _covering(us, 432_401_000)} == {"ALL"}
+
+
+# (frequency Hz, labels that must cover it, notes fragments that must appear,
+# notes fragments that must NOT appear): ARRL rows that overlap another row.
+# Each ``-1 kHz`` / ``+1 kHz`` pair brackets a row edge on both sides.
+_US_OVERLAPS: tuple[tuple[int, set[str], tuple[str, ...], tuple[str, ...]], ...] = (
+    # 70 cm: ATV runs 438.000-444.000, the local-option repeater row starts 442.
+    (437_999_000, {"SAT"}, (), ("atv",)),
+    (438_001_000, {"ATV"}, ("439.250",), ("repeater inputs and outputs",)),
+    (441_999_000, {"ATV"}, ("439.250",), ("repeater inputs and outputs",)),
+    (442_001_000, {"ATV", "RPT"}, ("439.250", "repeater inputs and outputs"), ()),
+    (443_000_000, {"ATV", "RPT"}, ("439.250", "repeater inputs and outputs"), ()),
+    (443_999_000, {"ATV", "RPT"}, ("439.250", "repeater inputs and outputs"), ()),
+    (444_001_000, {"RPT"}, ("repeater inputs and outputs",), ("439.250",)),
+    # 23 cm: the 1240-1260 FM ATV regional option spans the channel rows.
+    (1_239_999_000, set(), (), ()),
+    (1_240_001_000, {"ATV"}, ("fm atv",), ()),
+    (1_246_001_000, {"ATV", "LINK"}, ("fm atv", "point-to-point"), ()),
+    (1_249_000_000, {"ATV", "DIGI"}, ("fm atv",), ()),
+    (1_259_999_000, {"ATV", "LINK"}, ("fm atv", "point-to-point"), ()),
+    (1_260_001_000, {"SAT"}, ("satellite",), ("fm atv",)),
+    # 23 cm: the 1270-1274 inputs are paired with 1290-1294 (regional option).
+    (1_269_999_000, {"SAT"}, ("satellite",), ("1290.000-1294.000",)),
+    (1_270_001_000, {"RPT"}, ("1282.000-1288.000", "1290.000-1294.000"), ()),
+    (1_271_000_000, {"RPT"}, ("1282.000-1288.000", "1290.000-1294.000"), ()),
+    (1_273_999_000, {"RPT"}, ("1282.000-1288.000", "1290.000-1294.000"), ()),
+    (1_274_001_000, {"RPT"}, ("1282.000-1288.000",), ("1290.000-1294.000",)),
+    # 23 cm: experimental/simplex ATV runs 1288.000-1294.000 over the
+    # regional repeater outputs 1290.000-1294.000.
+    (1_287_999_000, {"RPT"}, ("1270.000-1276.000",), ("experimental",)),
+    (1_288_001_000, {"EXP"}, ("broadband experimental",), ("regional option",)),
+    (1_289_999_000, {"EXP"}, ("broadband experimental",), ("regional option",)),
+    (1_290_001_000, {"EXP", "RPT"}, ("broadband experimental", "regional option"), ()),
+    (1_292_000_000, {"EXP", "RPT"}, ("broadband experimental", "regional option"), ()),
+    (1_293_999_000, {"EXP", "RPT"}, ("broadband experimental", "regional option"), ()),
+    (1_294_001_000, {"FM"}, ("fm simplex",), ("broadband experimental",)),
+)
+
+
+class TestArrlOverlappingOptions:
+    """Where the ARRL page lists two rows for one frequency, both are served."""
+
+    @pytest.fixture(scope="class")
+    def us(self, tmp_path_factory: pytest.TempPathFactory) -> BandPlanRegistry:
+        plans = _copy_plans(tmp_path_factory.mktemp("us_overlaps"))
+        _write_region(plans, "US")
+        return _load(plans)
+
+    @pytest.mark.parametrize(
+        ("freq_hz", "labels", "present", "absent"),
+        _US_OVERLAPS,
+        ids=[f"{f / 1e6:.4f}MHz" for f, *_ in _US_OVERLAPS],
+    )
+    def test_overlapping_rows_at_frequency(
+        self,
+        us: BandPlanRegistry,
+        freq_hz: int,
+        labels: set[str],
+        present: tuple[str, ...],
+        absent: tuple[str, ...],
+    ) -> None:
+        covering = _covering(us, freq_hz)
+        assert {s["label"] for s in covering} == labels
+        notes = [(s.get("notes") or "").lower() for s in covering]
+        for needle in present:
+            assert any(needle in n for n in notes), (
+                f"{freq_hz / 1e6:.4f} MHz: no row mentions {needle!r}: {notes}"
+            )
+        for needle in absent:
+            assert not any(needle in n for n in notes), (
+                f"{freq_hz / 1e6:.4f} MHz: a row still mentions {needle!r}: {notes}"
+            )
+
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        (
+            (438_000_000, 444_000_000),  # ATV repeater input row
+            (1_240_000_000, 1_260_000_000),  # FM ATV regional option
+            (1_270_000_000, 1_274_000_000),  # inputs paired with 1290-1294
+            (1_288_000_000, 1_294_000_000),  # broadband experimental, simplex ATV
+        ),
+    )
+    def test_source_row_is_one_complete_row(
+        self, us: BandPlanRegistry, start: int, end: int
+    ) -> None:
+        assert any(
+            s["start"] == start and s["end"] == end
+            for s in _ham_segments(us, start, end)
+        ), f"the ARRL row {start / 1e6:.3f}-{end / 1e6:.3f} MHz is cut short or missing"
 
 
 @pytest.mark.parametrize("ham_file", sorted(set(_REGION_HAM_FILE.values())))

@@ -677,10 +677,10 @@ end = 450_000_000
 
   [[band.segment]]
   start = 438_000_000
-  end = 442_000_000
+  end = 444_000_000
   mode = "other"
   label = "ATV"
-  notes = "ATV repeater input with 439.250 MHz video carrier frequency and repeater links (the source row runs 438.000-444.000)"
+  notes = "ATV repeater input with 439.250 MHz video carrier frequency and repeater links"
 
   [[band.segment]]
   start = 442_000_000
@@ -715,7 +715,7 @@ end = 1_300_000_000
   end = 1_246_000_000
   mode = "other"
   label = "ATV"
-  notes = "ATV channel 1; 1240.000-1260.000 FM ATV is a regional option"
+  notes = "ATV channel 1"
 
   [[band.segment]]
   start = 1_246_000_000
@@ -736,7 +736,14 @@ end = 1_300_000_000
   end = 1_258_000_000
   mode = "other"
   label = "ATV"
-  notes = "ATV channel 2; 1240.000-1260.000 FM ATV is a regional option"
+  notes = "ATV channel 2"
+
+  [[band.segment]]
+  start = 1_240_000_000
+  end = 1_260_000_000
+  mode = "other"
+  label = "ATV"
+  notes = "FM ATV (regional option)"
 
   [[band.segment]]
   start = 1_258_000_000
@@ -760,6 +767,13 @@ end = 1_300_000_000
   notes = "FM repeater inputs, -12 MHz offset, outputs 1282.000-1288.000"
 
   [[band.segment]]
+  start = 1_270_000_000
+  end = 1_274_000_000
+  mode = "phone"
+  label = "RPT"
+  notes = "FM, digital repeater inputs, 25 kHz channel spacing (regional option), paired with outputs 1290.000-1294.000"
+
+  [[band.segment]]
   start = 1_276_000_000
   end = 1_282_000_000
   mode = "other"
@@ -775,17 +789,17 @@ end = 1_300_000_000
 
   [[band.segment]]
   start = 1_288_000_000
-  end = 1_290_000_000
+  end = 1_294_000_000
   mode = "other"
   label = "EXP"
-  notes = "Broadband experimental, simplex ATV (the source row runs 1288.000-1294.000)"
+  notes = "Broadband experimental, simplex ATV"
 
   [[band.segment]]
   start = 1_290_000_000
   end = 1_294_000_000
   mode = "phone"
   label = "RPT"
-  notes = "FM repeater outputs (regional option), paired with 1270.000-1274.000"
+  notes = "FM, digital repeater outputs, 25 kHz channel spacing (regional option), paired with inputs 1270.000-1274.000"
 
   [[band.segment]]
   start = 1_294_000_000
