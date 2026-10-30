@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -714,6 +715,71 @@ async def test_serial_disconnect_cleans_watchdog_when_already_disconnected() -> 
     radio._civ_data_watchdog_task = asyncio.create_task(asyncio.sleep(10))
     await radio.disconnect()
     assert getattr(radio, "_civ_data_watchdog_task", None) is None
+
+
+@pytest.mark.asyncio
+async def test_serial_disconnect_retires_kick_blocked_in_reconnect_open() -> None:
+    """Owner disconnect cancels a kick parked in the serial open (MOR-2083).
+
+    The serial ``soft_reconnect`` reopens the port directly instead of
+    awaiting the lifecycle's shared recovery, so a fast kick blocked in
+    the (fake) blocked open would survive ``disconnect()`` and reopen
+    the port once the open is released. The owner-stop path must cancel
+    it: after disconnect + release the port stays closed and the
+    pump/worker stay stopped.
+    """
+    open_gate = asyncio.Event()
+    entered_open = asyncio.Event()
+
+    class _BlockedOpenLink(_FakeSerialCivLink):
+        async def connect(self) -> None:
+            self.connect_calls += 1
+            if self.connect_calls == 1:
+                self.connected = True
+                self.ready = True
+                self.healthy = True
+                return
+            entered_open.set()
+            await open_gate.wait()
+            self.connected = True
+            self.ready = True
+            self.healthy = True
+
+    link = _BlockedOpenLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    await radio.connect()
+    assert radio._civ_transport is not None
+    # Freeze the serial watchdog so only the test's own kick can reopen.
+    await radio._stop_civ_data_watchdog()
+    # Simulate the CI-V link dropping while the control session survives.
+    radio._civ_transport = None
+    waiter = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+    )
+    try:
+        await asyncio.wait_for(entered_open.wait(), timeout=10.0)
+        kick = radio._civ_runtime._fast_reconnect_task
+        assert kick is not None and not kick.done()
+        waiter.cancel()
+        with suppress(asyncio.CancelledError):
+            await waiter
+        assert not kick.done(), "cancelling the waiter must not kill the kick"
+        await asyncio.wait_for(radio.disconnect(), timeout=15.0)
+        assert kick.done()
+        assert radio._civ_runtime._fast_reconnect_task is None
+        open_gate.set()
+        await asyncio.sleep(0.2)
+        assert link.connect_calls == 2, "the released open must not reopen it"
+        assert link.connected is False
+        assert radio._civ_transport is None
+        assert radio._civ_rx_task is None
+        assert radio._conn_state is RadioConnectionState.DISCONNECTED
+    finally:
+        open_gate.set()
+        if not waiter.done():
+            waiter.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await waiter
 
 
 class _FakeManagedTxRuntime:

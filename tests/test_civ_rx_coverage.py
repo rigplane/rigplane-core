@@ -1667,7 +1667,9 @@ async def test_wait_for_recovery_kick_queued_before_owner_stop_never_starts(
 
     radio.soft_reconnect = record_soft_reconnect
 
-    kick = radio._civ_runtime._get_or_start_fast_reconnect_task()
+    kick = radio._civ_runtime._get_or_start_fast_reconnect_task(
+        radio._owner_stop_epoch
+    )
     # What CoreRadio.disconnect does: advance the epoch and tear down the
     # control session before the queued kick gets its first loop turn.
     radio._owner_stop_epoch += 1
@@ -1764,6 +1766,180 @@ async def test_wait_for_recovery_owner_stop_is_terminal_for_the_original_waiter(
                 await waiter
             except (asyncio.CancelledError, ConnectionError):
                 pass
+
+
+async def test_stale_waiter_behind_lock_aborts_on_owner_stop(
+    radio: IcomRadio,
+) -> None:
+    """A waiter queued behind the lock must not recover after an owner
+    stop (MOR-2083).
+
+    Waiter A holds the recovery lock parked in the shared kick; waiter B
+    blocks on the lock; the owner stops the radio; A is released. B must
+    raise ``ConnectionError`` on its waiter-entry epoch without starting
+    a new recovery — the ``soft_reconnect`` stub runs exactly once.
+    """
+    _arm_recovery_wait_scenario(radio)
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    calls = 0
+
+    async def parked_soft_reconnect() -> None:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+
+    radio.soft_reconnect = parked_soft_reconnect
+
+    waiter_a = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        waiter_b = asyncio.ensure_future(
+            radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+        )
+        try:
+            # Let B reach the lock acquisition behind A.
+            await asyncio.sleep(0.5)
+            assert not waiter_b.done()
+            # What disconnect() does while B is queued behind the lock.
+            radio._owner_stop_epoch += 1
+            radio._ctrl_transport._udp_transport = None
+            release.set()
+            with pytest.raises(ConnectionError, match="Not connected to radio"):
+                await asyncio.wait_for(waiter_b, timeout=10.0)
+            with pytest.raises(ConnectionError, match="Not connected to radio"):
+                await asyncio.wait_for(waiter_a, timeout=10.0)
+        finally:
+            if not waiter_b.done():
+                waiter_b.cancel()
+                try:
+                    await waiter_b
+                except (asyncio.CancelledError, ConnectionError):
+                    pass
+        assert calls == 1, "the waiter behind the lock must not start a recovery"
+        assert not radio._civ_recovery_lock.locked(), (
+            "both waiters must release the recovery lock"
+        )
+    finally:
+        if not waiter_a.done():
+            waiter_a.cancel()
+            try:
+                await waiter_a
+            except (asyncio.CancelledError, ConnectionError):
+                pass
+
+
+async def test_disconnect_retires_blocked_fast_reconnect_kick(
+    radio: IcomRadio,
+) -> None:
+    """Owner disconnect retires a kick blocked in soft_reconnect (MOR-2083).
+
+    The kick is parked in a ``soft_reconnect`` that never returns;
+    cancelling the requesting command abandons only the wait, so
+    ``disconnect()`` must cancel the kick itself — otherwise it survives
+    and the stub resumes after the owner stopped the radio.
+    """
+    transport = radio._ctrl_transport
+    transport._udp_transport = object()
+    radio._civ_transport = None
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    resumed = asyncio.Event()
+
+    async def parked_soft_reconnect() -> None:
+        entered.set()
+        await release.wait()
+        resumed.set()
+
+    radio.soft_reconnect = parked_soft_reconnect
+
+    waiter = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        kick = radio._civ_runtime._fast_reconnect_task
+        assert kick is not None and not kick.done()
+        waiter.cancel()
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            pass
+        assert not kick.done(), "cancelling the waiter must not kill the kick"
+        await asyncio.wait_for(radio.disconnect(), timeout=10.0)
+        assert kick.done() and kick.cancelled()
+        assert radio._civ_runtime._fast_reconnect_task is None
+        release.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not resumed.is_set(), "the retired kick never resumes after stop"
+    finally:
+        release.set()
+        if not waiter.done():
+            waiter.cancel()
+            try:
+                await waiter
+            except (asyncio.CancelledError, ConnectionError):
+                pass
+
+
+async def test_lock_acquisition_is_bounded_by_the_wait_deadline(
+    radio: IcomRadio,
+) -> None:
+    """A waiter queued behind a stuck kick fails on its own deadline
+    (MOR-2083).
+
+    Waiter A (long deadline) holds the recovery lock parked in a stuck
+    kick; waiter B (short deadline) must end with the recovery
+    ``TimeoutError`` within ~1.5 s while A is still waiting — the shared
+    recovery keeps running.
+    """
+    _arm_recovery_wait_scenario(radio)
+    stub, release, state = _make_stuck_soft_reconnect()
+    radio.soft_reconnect = stub
+
+    waiter_a = asyncio.ensure_future(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=30.0)
+    )
+    try:
+        kick_wait_until = time.monotonic() + 5.0
+        while state["calls"] == 0 and time.monotonic() < kick_wait_until:
+            await asyncio.sleep(0.05)
+        assert state["calls"] == 1, "waiter A never started the stuck kick"
+        start = time.monotonic()
+        with pytest.raises(
+            RigplaneTimeoutError, match="CI-V transport recovery timed out"
+        ):
+            await radio._civ_runtime._wait_for_civ_transport_recovery(
+                timeout=0.6
+            )
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.5, (
+            f"lock acquisition was not bounded by the deadline: {elapsed:.2f}s"
+        )
+        assert state["calls"] == 1, "the bounded waiter starts no new recovery"
+        assert not waiter_a.done(), (
+            "the shared recovery keeps running after B gives up the lock"
+        )
+    finally:
+        if not waiter_a.done():
+            waiter_a.cancel()
+            try:
+                await waiter_a
+            except (asyncio.CancelledError, RigplaneTimeoutError):
+                pass
+        release.set()
+        fast = radio._civ_runtime._fast_reconnect_task
+        if fast is not None:
+            try:
+                await asyncio.wait_for(fast, timeout=5.0)
+            except asyncio.CancelledError:
+                pass
+        assert state["calls"] == 1
+        assert not radio._civ_recovery_lock.locked()
 
 
 async def test_watchdog_recover_rearms_after_successful_recovery(

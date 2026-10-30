@@ -1951,6 +1951,10 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # no-op and the CONNECTED-gated control-phase teardown never runs —
         # without this the loop would log back in after the user left.
         self._owner_stop_epoch += 1
+        # Retire the poller's detached fast-reconnect kick (MOR-2083): a
+        # kick blocked in a cancelled command's soft_reconnect must not
+        # survive disconnect() and reopen the session afterwards.
+        await self._civ_runtime.cancel_fast_reconnect()
         self._lan_identity_escalated_at = None
         self._control_phase._stop_watchdog()
         self._control_phase._stop_reconnect()
