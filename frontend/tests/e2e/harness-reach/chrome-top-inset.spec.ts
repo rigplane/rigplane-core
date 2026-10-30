@@ -256,6 +256,17 @@ for (const inset of [0, 48]) {
     expect(box!.y + box!.height).toBeCloseTo(800, 0);
   });
 
+  test(`fullscreen spectrum inside the desktop shell fits both viewport edges with ${inset}px chrome`, async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await open(page, '/fixtures/skin-witness.html?skin=desktop-v2', inset);
+    await page.getByTitle('Toggle fullscreen', { exact: true }).first().click();
+    const panel = page.locator('.spectrum-panel.fullscreen');
+    await fits(panel, inset, 800);
+    const box = await panel.boundingBox();
+    expect(box!.y).toBeCloseTo(inset, 0);
+    expect(box!.y + box!.height).toBeCloseTo(800, 0);
+  });
+
   test(`landscape mobile fullscreen fits both viewport edges with ${inset}px chrome`, async ({ page }) => {
     await page.setViewportSize({ width: 812, height: 375 });
     await open(page, '/fixtures/mobile-witness.html', inset);
