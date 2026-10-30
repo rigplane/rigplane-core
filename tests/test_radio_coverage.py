@@ -683,6 +683,106 @@ async def test_set_attenuator_level_no_declared_values_raises_command_error(
 
 
 # ---------------------------------------------------------------------------
+# MOR-2100: attenuator timeout fallback and read mirror are profile-driven
+#
+# The timeout fallback and the read mirror carry the last known dB -- never
+# the hardcoded 18 (an IC-7610 step, invalid on every other CI-V profile).
+# Parametrized over profiles, no per-model branch.
+# ---------------------------------------------------------------------------
+
+
+def _mor2100_radio(model: str, mock_transport: MockTransport) -> IcomRadio:
+    r = IcomRadio("192.168.1.100", timeout=0.05, model=model)
+    r._civ_transport = mock_transport
+    r._ctrl_transport = mock_transport
+    r._connected = True
+    return r
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,step",
+    [("IC-7300", 20), ("IC-705", 20), ("IC-7610", 21)],
+)
+async def test_mor2100_timeout_returns_last_set_db(
+    model: str, step: int, mock_transport: MockTransport
+) -> None:
+    """A timed-out read returns the declared dB the setter wrote."""
+    radio = _mor2100_radio(model, mock_transport)
+    try:
+        await radio.set_attenuator_level(step)
+        assert await radio.get_attenuator_level() == step
+        # strict=True still refuses the mirror and raises instead.
+        with pytest.raises((CommandError, TimeoutError)):
+            await radio.get_attenuator_level(strict=True)
+    finally:
+        radio._connected = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,step",
+    [("IC-7300", 20), ("IC-705", 20), ("IC-7610", 21)],
+)
+async def test_mor2100_timeout_returns_zero_after_off(
+    model: str, step: int, mock_transport: MockTransport
+) -> None:
+    """After set(0) a timed-out read returns 0 on every profile."""
+    radio = _mor2100_radio(model, mock_transport)
+    try:
+        await radio.set_attenuator_level(step)
+        await radio.set_attenuator_level(0)
+        assert await radio.get_attenuator_level() == 0
+    finally:
+        radio._connected = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300", "IC-705", "IC-7610"])
+async def test_mor2100_timeout_with_nothing_stored_raises(
+    model: str, mock_transport: MockTransport
+) -> None:
+    """With nothing stored a timed-out read raises CommandError."""
+    radio = _mor2100_radio(model, mock_transport)
+    try:
+        with pytest.raises(CommandError):
+            await radio.get_attenuator_level()
+    finally:
+        radio._connected = False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "model,raw,step",
+    [("IC-7300", 0x20, 20), ("IC-7610", 0x21, 21)],
+)
+async def test_mor2100_successful_read_updates_timeout_mirror(
+    model: str, raw: int, step: int, mock_transport: MockTransport
+) -> None:
+    """A successful BCD read updates the mirror a later timeout returns."""
+    radio = _mor2100_radio(model, mock_transport)
+    try:
+        if radio._profile.supports_cmd29(0x11):
+            civ = build_cmd29_frame(
+                CONTROLLER_ADDR,
+                radio._radio_addr,
+                0x11,
+                data=bytes([raw]),
+                receiver=0,
+            )
+        else:
+            civ = build_civ_frame(
+                CONTROLLER_ADDR, radio._radio_addr, 0x11, data=bytes([raw])
+            )
+        mock_transport.queue_response(_wrap_civ_in_udp(civ))
+        assert await radio.get_attenuator_level() == step
+        # No reply queued: the read times out and returns the stored dB.
+        assert await radio.get_attenuator_level() == step
+    finally:
+        radio._connected = False
+
+
+# ---------------------------------------------------------------------------
 # get_preamp() timeout + fallback (lines 1369-1374)
 # ---------------------------------------------------------------------------
 

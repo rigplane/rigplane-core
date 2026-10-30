@@ -658,6 +658,89 @@ async def test_cmd_att_and_preamp_all_paths(capsys: pytest.CaptureFixture[str]) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("key,db", [("IC-7300", 20), ("IC-705", 20)])
+async def test_cmd_att_on_uses_profile_single_step(
+    key: str, db: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """MOR-2100: ``att on`` resolves to the profile's single non-zero step."""
+    radio = AsyncMock()
+    radio.profile = get_radio_profile(key)
+    assert await _cmd_att(radio, argparse.Namespace(value="on", json=False)) == 0
+    radio.set_attenuator_level.assert_awaited_once_with(db)
+    radio.set_attenuator.assert_not_awaited()
+    assert capsys.readouterr().out == f"Attenuator: ON ({db} dB)\n"
+
+
+@pytest.mark.asyncio
+async def test_cmd_att_on_ftx1_uses_1db(capsys: pytest.CaptureFixture[str]) -> None:
+    """MOR-2100: ``att on`` on the FTX-1 resolves to its single 1 dB step."""
+    radio = AsyncMock()
+    radio.profile = get_radio_profile("FTX-1")
+    assert await _cmd_att(radio, argparse.Namespace(value="on", json=False)) == 0
+    radio.set_attenuator_level.assert_awaited_once_with(1)
+    radio.set_attenuator.assert_not_awaited()
+    assert capsys.readouterr().out == "Attenuator: ON (1 dB)\n"
+
+
+@pytest.mark.asyncio
+async def test_cmd_att_on_stepped_profile_is_ambiguous(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """MOR-2100: ``att on`` on the IC-7610 refuses without calling a setter."""
+    radio = AsyncMock()
+    radio.profile = get_radio_profile("IC-7610")
+    assert await _cmd_att(radio, argparse.Namespace(value="on", json=False)) == 1
+    radio.set_attenuator_level.assert_not_awaited()
+    radio.set_attenuator.assert_not_awaited()
+    err = capsys.readouterr().err
+    assert "Error:" in err
+    assert "ambiguous" in err
+    assert "18" in err
+    assert "45" in err
+    assert "rigplane att" in err
+
+
+@pytest.mark.asyncio
+async def test_cmd_att_on_without_profile_omits_db(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """MOR-2100: with no profile ``att on`` delegates and prints no number."""
+    radio = AsyncMock()
+    del radio.profile
+    assert await _cmd_att(radio, argparse.Namespace(value="on", json=False)) == 0
+    radio.set_attenuator.assert_awaited_once_with(True)
+    radio.set_attenuator_level.assert_not_awaited()
+    assert capsys.readouterr().out == "Attenuator: ON\n"
+
+
+@pytest.mark.asyncio
+async def test_cmd_att_invalid_hint_lists_profile_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """MOR-2100: the invalid-value hint lists the profile's declared steps."""
+    radio = AsyncMock()
+    radio.profile = get_radio_profile("IC-7300")
+    assert await _cmd_att(radio, argparse.Namespace(value="bogus", json=False)) == 1
+    err = capsys.readouterr().err
+    assert "0, 20" in err
+    assert "(e.g. 0, 6, 12, 18)" not in err
+    radio.set_attenuator_level.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cmd_att_invalid_hint_without_profile(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """MOR-2100: with no profile the hint names no hardcoded dB examples."""
+    radio = AsyncMock()
+    del radio.profile
+    assert await _cmd_att(radio, argparse.Namespace(value="bogus", json=False)) == 1
+    err = capsys.readouterr().err
+    assert "Use 'on', 'off', or a dB value" in err
+    assert "(e.g. 0, 6, 12, 18)" not in err
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("level,name", [(1, "INT"), (2, "EXT"), (3, "INT+EXT")])
 @pytest.mark.parametrize("setting", [False, True])
 @pytest.mark.parametrize("as_json", [False, True])
