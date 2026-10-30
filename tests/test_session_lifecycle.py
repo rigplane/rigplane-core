@@ -648,6 +648,65 @@ async def test_coalesced_waiters_on_a_cancelled_recovery(superseded: bool) -> No
         await lc.disconnect()
 
 
+async def test_superseded_outcome_survives_a_retry_by_an_earlier_waiter() -> None:
+    """MOR-3350: the superseded outcome is kept per recovery run.
+
+    A and B coalesce on run R, which is superseded. A resumes first, gets the
+    ConnectionError and immediately retries, starting a NEW run; B resumes
+    afterwards and must still see R's superseded outcome (not a bare
+    CancelledError, which would read as its own cancellation).
+    """
+    lc, mech, _events = make_lifecycle()
+    mech.queue_ok()
+    await lc.connect()
+
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    calls = 0
+
+    async def parked_then_ok() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+
+    mech.soft_reconnect_once = parked_then_ok  # type: ignore[method-assign]
+    outcomes: dict[str, str] = {}
+
+    async def caller_a() -> None:
+        try:
+            await lc.soft_reconnect()
+        except ConnectionError:
+            outcomes["a"] = "superseded"
+        # Immediate retry, inline: the new run exists before B's wake-up
+        # step (queued right behind A's) runs.
+        await lc.soft_reconnect()
+        outcomes["a_retry"] = "ok"
+
+    a = asyncio.ensure_future(caller_a())
+    b = asyncio.ensure_future(lc.soft_reconnect())
+    try:
+        for _ in range(100):
+            if lc._recover_task is not None and len(lc._recovery_waiters) == 2:
+                break
+            await asyncio.sleep(0)
+        assert len(lc._recovery_waiters) == 2
+        await asyncio.wait_for(entered.wait(), 5.0)
+        first_run = lc._recover_task
+        assert first_run is not None
+        lc.supersede_recovery()
+        with pytest.raises(ConnectionError, match="superseded"):
+            await b
+        await a
+        assert outcomes == {"a": "superseded", "a_retry": "ok"}
+        assert calls == 2  # A's retry ran a new run
+    finally:
+        release.set()
+        await asyncio.gather(a, b, return_exceptions=True)
+        await lc.disconnect()
+
+
 # ---------------------------------------------------------------------------
 # D1 — event listener add/remove + exceptions swallowed
 # ---------------------------------------------------------------------------

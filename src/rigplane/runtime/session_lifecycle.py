@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -744,10 +745,13 @@ class CoreRadioSessionLifecycle:
         self._connect_task: asyncio.Task[None] | None = None
         self._recover_task: asyncio.Task[None] | None = None
         self._recovery_waiters: dict[asyncio.Task[None], asyncio.Task[None]] = {}
-        # The recovery run a preempting replacement cancelled on purpose
-        # (:meth:`supersede_recovery`); lets coalesced callers tell that
-        # apart from a teardown cancel.
-        self._superseded_recovery: asyncio.Task[None] | None = None
+        # Recovery runs a preempting replacement cancelled on purpose
+        # (:meth:`supersede_recovery`); lets every coalesced caller tell that
+        # apart from a teardown cancel, however late it resumes (a per-run
+        # mark, not a single slot: a caller that retries starts a new run).
+        self._superseded_recoveries: weakref.WeakSet[asyncio.Task[None]] = (
+            weakref.WeakSet()
+        )
         # True once a session has been claimed (auth succeeded) and not yet
         # released — drives idempotent disconnect.
         self._claimed = False
@@ -1284,7 +1288,7 @@ class CoreRadioSessionLifecycle:
         """
         recovery = self._recover_task
         if recovery is not None and not recovery.done():
-            self._superseded_recovery = recovery
+            self._superseded_recoveries.add(recovery)
             recovery.cancel()
 
     async def soft_reconnect(self) -> None:
@@ -1293,7 +1297,6 @@ class CoreRadioSessionLifecycle:
         if recovery is None or recovery.done():
             recovery = asyncio.ensure_future(self._run_recover())
             self._recover_task = recovery
-            self._superseded_recovery = None
         caller = asyncio.current_task()
         if caller is not None:
             self._recovery_waiters[caller] = recovery
@@ -1301,7 +1304,7 @@ class CoreRadioSessionLifecycle:
             await recovery
         except asyncio.CancelledError:
             if (
-                recovery is self._superseded_recovery
+                recovery in self._superseded_recoveries
                 and recovery.cancelled()
                 and caller is not None
                 and caller.cancelling() == 0
