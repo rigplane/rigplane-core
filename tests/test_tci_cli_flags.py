@@ -43,9 +43,7 @@ def test_station_tci_flags_default_off() -> None:
     assert args.web_tci is False
     assert args.web_tci_port == 50001
     assert args.ingress_host is None
-    assert (
-        p.parse_args(["--host", "1.2.3.4", "station", "--tci"]).web_tci is True
-    )
+    assert p.parse_args(["--host", "1.2.3.4", "station", "--tci"]).web_tci is True
 
 
 def test_serve_has_no_tci_flag() -> None:

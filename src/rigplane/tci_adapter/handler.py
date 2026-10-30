@@ -37,8 +37,6 @@ from ..core.state_store import StateStore
 from ..runtime.controller_authority import ControllerError
 from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
 from ..runtime.managed_tx_submission import (
-    ManagedKeyRefused,
-    ManagedKeySetupError,
     ManagedPttTracker,
     execute_managed_ptt,
     release_managed_session_tx,
@@ -136,6 +134,13 @@ class TciAdapterHandler:
             )
         if not owner:
             raise ValueError("owner must be a non-empty session id")
+        if state_model_service is None:
+            # The web seat attaches the service to the radio during start,
+            # after listeners are built: handlers are minted per connection,
+            # so read the radio-carried service here (the rigctld seat does
+            # the same through its capability protocol). Duck-typed: the
+            # freshness call below re-validates the shape before using it.
+            state_model_service = getattr(radio, "state_model_service", None)
         self._radio = radio
         self._store = state_store
         self._owner = owner
@@ -457,11 +462,7 @@ class TciAdapterHandler:
                 source,
             )
             return self._refuse_key()
-        if (
-            self._authority is None
-            or self._queue is None
-            or self._service is None
-        ):
+        if self._authority is None or self._queue is None or self._service is None:
             # No managed composition: legacy ``set_ptt`` fallback does
             # not exist for TCI (spec 7.2).
             return self._refuse_key()
@@ -482,9 +483,7 @@ class TciAdapterHandler:
             if not await self._check_tx_tuple():
                 return self._refuse_key()
         except Exception:
-            logger.debug(
-                "tci %s: TX tuple check failed", self._owner, exc_info=True
-            )
+            logger.debug("tci %s: TX tuple check failed", self._owner, exc_info=True)
             return self._refuse_key()
         loop = asyncio.get_running_loop()
         try:
@@ -741,9 +740,7 @@ class TciAdapterHandler:
             if on:
                 await self._sync_split_on()
                 split_state = await self._state()
-                _, split_input = rigctld_wsjtx_policy(
-                    resolve_audio_route(self._radio)
-                )
+                _, split_input = rigctld_wsjtx_policy(resolve_audio_route(self._radio))
                 self._tx_required = (
                     split_state.modulation,
                     split_state.data_a,

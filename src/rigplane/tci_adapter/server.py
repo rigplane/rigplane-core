@@ -80,6 +80,7 @@ class TciAdapterServer:
         managed_tx_authority: Any = None,
         command_queue: Any = None,
         command_service: Any = None,
+        controller_authority: Any = None,
         state_model_service: Any = None,
         config: TciAdapterConfig | None = None,
         allow: AllowHeaders | None = None,
@@ -103,6 +104,7 @@ class TciAdapterServer:
         self._authority = managed_tx_authority
         self._queue = command_queue
         self._service = command_service
+        self._controller_authority = controller_authority
         self._state_model_service = state_model_service
         self._config = config or TciAdapterConfig()
         self._clock = clock
@@ -135,6 +137,7 @@ class TciAdapterServer:
             managed_tx_authority=self._authority,
             command_queue=self._queue,
             command_service=self._service,
+            controller_authority=self._controller_authority,
             state_model_service=self._state_model_service,
             config=self._config,
             clock=self._clock,

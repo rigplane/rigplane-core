@@ -114,9 +114,7 @@ class _E2E:
 
         return (
             patch("rigplane.web.server.WebServer", FakeWebServer),
-            patch(
-                "rigplane.tci_adapter.server.TciAdapterServer", self._recording
-            ),
+            patch("rigplane.tci_adapter.server.TciAdapterServer", self._recording),
             patch(
                 "rigplane.web.web_startup.prepare_managed_tx_observation_generation",
                 return_value=3,
@@ -166,17 +164,29 @@ async def _wait_until(predicate, timeout: float = 5.0) -> None:  # type: ignore[
             await asyncio.sleep(0.005)
 
 
+async def _bound_port(server: TciAdapterServer) -> int:
+    async with asyncio.timeout(10.0):
+        while True:
+            try:
+                return server.bound_port
+            except RuntimeError:
+                await asyncio.sleep(0.005)
+
+
 async def _drive_session(e2e: _E2E) -> None:
     async with asyncio.timeout(10.0):
         await _wait_until(lambda: len(e2e.servers) == 1)
     server = e2e.servers[0]
+    port = await _bound_port(server)
     assert server._authority is e2e.authority  # noqa: SLF001
     observed: list[tuple[object, object, object, object]] = []
 
-    async def on_param(name: object, rx: object, sub_rx: object, params: object) -> None:
+    async def on_param(
+        name: object, rx: object, sub_rx: object, params: object
+    ) -> None:
         observed.append((name, rx, sub_rx, params))
 
-    listener = Listener(f"ws://127.0.0.1:{server.bound_port}")
+    listener = Listener(f"ws://127.0.0.1:{port}")
     listener.add_param_listener("*", on_param)
     await listener.start()
     try:
@@ -235,6 +245,24 @@ async def test_tci_wiring_start_stop_twice(tcp_available: None) -> None:
         await e2e.authority.close()
 
 
+async def test_handler_uses_radio_carried_state_model_service() -> None:
+    """The web seat attaches the service to the radio after listeners exist."""
+    from tci_adapter_stub import make_handler
+
+    calls: list[tuple[object, ...]] = []
+
+    class Service:
+        def ensure_fresh(self, paths, *, max_age, priority, reason):  # type: ignore[no-untyped-def]
+            calls.append((tuple(paths), max_age, priority, reason))
+
+    radio = StubIcomRadio()
+    radio.state_model_service = Service()
+    handler = make_handler(radio=radio, store=_loaded_store())
+    outcome = await handler.on_command("vfo", ("0", "0"))
+    assert outcome.to_sender == ("vfo:0,0,14074000;",)
+    assert len(calls) == 1
+
+
 async def test_tci_busy_port_aborts_startup(tcp_available: None) -> None:
     from rigplane.cli import _build_parser, _cmd_web
 
@@ -250,7 +278,7 @@ async def test_tci_busy_port_aborts_startup(tcp_available: None) -> None:
 
     class FakeWebServer:
         def __init__(self, _radio: Any, _cfg: Any) -> None:
-            pass
+            self.command_state_store = object()
 
         async def serve_forever(self, *, on_started=None):  # type: ignore[no-untyped-def]
             raise AssertionError("web must not start when TCI fails hard")
