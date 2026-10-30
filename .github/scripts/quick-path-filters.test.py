@@ -418,6 +418,40 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         )
         self.assertIn("uv run pytest tests/web tests/test_web_*.py", quick)
 
+    def test_quick_halves_run_in_parallel_behind_the_required_aggregator(
+        self,
+    ) -> None:
+        # MOR-3875: in one job the frontend chain and the full pytest suite ran
+        # in series (~28-30 min). The halves now run on separate build runners,
+        # each inside 25 minutes, and the required `quick` context is a light
+        # aggregator, so branch protection keeps the same context name.
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        body = quick.split("\njobs:\n", 1)[1]
+        jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", body))
+        self.assertEqual(
+            set(jobs), {"classify", "quick-frontend", "quick-python", "quick"}
+        )
+        for half in ("quick-frontend", "quick-python"):
+            with self.subTest(job=half):
+                block = jobs[half]
+                self.assertIn("    needs: classify\n", block)
+                self.assertIn("    runs-on: [self-hosted, linux, build]\n", block)
+                self.assertIn("    timeout-minutes: 25\n", block)
+                self.assertIn("needs.classify.outputs.docs != 'true'", block)
+                self.assertIn("needs.classify.outputs.reuse != 'true'", block)
+        self.assertIn("npm ci", jobs["quick-frontend"])
+        self.assertNotIn("uv run pytest tests/ ", jobs["quick-frontend"])
+        self.assertIn("uv run pytest tests/ ", jobs["quick-python"])
+        self.assertNotIn("npm ci", jobs["quick-python"])
+        aggregator = jobs["quick"]
+        self.assertIn("    needs: [classify, quick-frontend, quick-python]\n", aggregator)
+        self.assertIn("    runs-on: [self-hosted, linux, light]\n", aggregator)
+        self.assertIn("    timeout-minutes: 5\n", aggregator)
+        self.assertIn("needs.classify.outputs.reuse != 'true'", aggregator)
+        self.assertNotIn("actions/checkout", aggregator)
+        for result in ("quick-frontend.result", "quick-python.result"):
+            self.assertIn(f"${{{{ needs.{result} }}}}", aggregator)
+
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         visual = VISUAL_YML.read_text(encoding="utf-8")
@@ -431,7 +465,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)
         self.assertIn("needs.classify.outputs.core == 'true'", quick)
         self.assertIn("needs.classify.outputs.frontend == 'true'", quick)
-        self.assertIn("    timeout-minutes: 40", quick)
+        self.assertNotIn("timeout-minutes: 40", quick)
         self.assertIn('      - "frontend/**"', visual)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)

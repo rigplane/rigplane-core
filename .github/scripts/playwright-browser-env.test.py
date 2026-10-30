@@ -18,7 +18,7 @@ BROWSER_ENV = {
     "VK_ICD_FILENAMES": "''",
 }
 EXPECTED_BROWSER_JOBS = {
-    ("quick.yml", "quick"),
+    ("quick.yml", "quick-frontend"),
     ("full.yml", "capture-harness"),
     ("visual.yml", "visual"),
 }
