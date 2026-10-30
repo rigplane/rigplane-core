@@ -429,7 +429,9 @@ def _lifecycle(
     return (methods if all(methods) else None), any(item is not None for item in raw)
 
 
-def tx_path_for_codec(radio: object, codec: AudioCodec) -> tuple[str, tuple[Any, ...]] | None:
+def tx_path_for_codec(
+    radio: object, codec: AudioCodec
+) -> tuple[str, tuple[Any, ...]] | None:
     """How TX audio reaches this radio, or ``None`` when it cannot.
 
     Moved from ``web/handlers/audio.py`` (MOR-3821 A2): prefers the
@@ -504,11 +506,15 @@ def tx_audio_facts(radio: object, *, has_mod_input_routing: bool) -> TxAudioFact
     accepted = False
     if route is not None:
         accepted = (route.tx_audio_source, route.data_mode_policy) in TX_ROUTE_ALLOWLIST
-        if accepted and required is not None and (
-            route.tx_audio_source is not TxAudioSource.LAN
-            or not isinstance(required, int)
-            or isinstance(required, bool)
-            or not 0 <= required <= 9_007_199_254_740_991
+        if (
+            accepted
+            and required is not None
+            and (
+                route.tx_audio_source is not TxAudioSource.LAN
+                or not isinstance(required, int)
+                or isinstance(required, bool)
+                or not 0 <= required <= 9_007_199_254_740_991
+            )
         ):
             accepted = False
     return TxAudioFacts(
