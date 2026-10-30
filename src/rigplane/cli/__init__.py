@@ -5057,7 +5057,7 @@ async def _cmd_web(
     # failures abort startup the same way (MOR-1437).
     if getattr(args, "web_tci", False):
         from rigplane.tci_adapter.commands import TCI_DEFAULT_PORT
-        from rigplane.tci_adapter.server import TciAdapterServer
+        from rigplane.tci_adapter.server import TciAdapterServer, tci_allow_predicate
 
         tci_port = getattr(args, "web_tci_port", TCI_DEFAULT_PORT)
         tci_kwargs: dict[str, Any] = {
@@ -5066,6 +5066,10 @@ async def _cmd_web(
             "host": tci_host,
             "port": tci_port,
             "controller_authority": getattr(radio, "_controller_authority", None),
+            # Same allowed-hosts source as the web predicate (pre-review
+            # P2): with --allowed-host X a native TCI connection on X is
+            # admitted exactly like a web one.
+            "allow": tci_allow_predicate(allowed_hosts=tuple(allowed_hosts or ())),
         }
         if managed_tx_composition is not None:
             tci_kwargs["managed_tx_authority"] = managed_tx_composition.authority
