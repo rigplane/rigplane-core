@@ -473,6 +473,68 @@ async def test_blocked_on_connect_no_promotion_after_stop(
         await server.stop()
 
 
+async def test_cancel_resistant_on_connect_client_sees_eof_before_gate(
+    tcp_available: None,
+) -> None:
+    """A repeat-cancel ``on_connect`` still releases the socket on ``stop()``.
+
+    ``stop()`` closes the accepted transport directly, so the client
+    observes EOF before the cleanup gate opens; releasing the gate
+    later completes the retained setup with exactly-once disconnect
+    and no session promotion.
+    """
+    handler = FakeHandler()
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleaned = asyncio.Event()
+    gate = asyncio.Event()
+    real_on_connect = handler.on_connect
+
+    async def _repeat_cancel_on_connect() -> list[str]:
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            while not gate.is_set():
+                try:
+                    await gate.wait()
+                except asyncio.CancelledError:
+                    continue
+            cleaned.set()
+        return await real_on_connect()
+
+    handler.on_connect = _repeat_cancel_on_connect  # type: ignore[method-assign]
+    server = make_server(handler)
+    await server.start()
+    client: RawClient | None = None
+    try:
+        client = await RawClient.connect(server.bound_port)
+        async with asyncio.timeout(5.0):
+            await entered.wait()
+        stop_task = asyncio.create_task(server.stop())
+        async with asyncio.timeout(5.0):
+            await cleaning.wait()
+        async with asyncio.timeout(10.0):
+            await stop_task
+        assert not cleaned.is_set()
+        async with asyncio.timeout(5.0):
+            data = await client.reader.read()
+        assert data == b"", "pending setup transport still open after stop()"
+        assert server.sessions == ()
+        gate.set()
+        async with asyncio.timeout(5.0):
+            while not cleaned.is_set():
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+        assert server.sessions == ()
+    finally:
+        gate.set()
+        if client is not None:
+            client.writer.close()
+        await server.stop()
+
+
 async def test_watchdog_expires_silent_session_automatically(
     tcp_available: None,
 ) -> None:

@@ -1623,8 +1623,11 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
     cleaned = asyncio.Event()
     gate = asyncio.Event()
 
+    seen: list[str] = []
+
     class _RepeatCancelHandler(FakeHandler):
         async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
+            seen.append(name)
             entered.set()
             try:
                 await asyncio.Event().wait()
@@ -1644,7 +1647,7 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
     task: asyncio.Task[None] | None = None
     try:
         await wait_for_frames(writer, len(BURST))
-        reader.feed_data(client_frame(WS_OP_TEXT, b"gated:1;"))
+        reader.feed_data(client_frame(WS_OP_TEXT, b"gated;second;"))
         async with asyncio.timeout(2.0):
             await entered.wait()
         task = asyncio.create_task(session.finish())
@@ -1660,16 +1663,95 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
         assert session not in server.sessions
         assert writer.is_closing()
         assert not cleaned.is_set()
+        assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
         # The retained cleanup survives a second cancellation too.
         pending = [t for t in list(session._tasks) if not t.done()]
         for t in pending:
             t.cancel()
         await asyncio.sleep(0.05)
         assert not cleaned.is_set()
+        assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
         gate.set()
         async with asyncio.timeout(5.0):
             while not cleaned.is_set():
                 await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+        assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
+    finally:
+        gate.set()
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.wait([task], timeout=10.0)
+        for pending_task in list(session._tasks):
+            if not pending_task.done():
+                pending_task.cancel()
+        try:
+            async with asyncio.timeout(5.0):
+                await session.finish()
+        except (asyncio.CancelledError, TimeoutError):
+            pass
+
+
+async def test_second_command_never_dispatched_when_first_raises_after_teardown() -> None:
+    """A raising first command must not leak the second one past teardown.
+
+    Same shape as the repeat-cancel join test, but the gated cleanup
+    raises instead of returning an empty outcome: the ``except``
+    arm in ``_handle_text`` must still observe ``_done`` before the
+    next dispatch, so ``second`` never runs.
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
+    clock = FakeClock()
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleaned = asyncio.Event()
+    gate = asyncio.Event()
+    seen: list[str] = []
+
+    class _RaisingRepeatCancelHandler(FakeHandler):
+        async def on_command(self, name: str, args: tuple[str, ...]) -> CommandOutcome:
+            seen.append(name)
+            if name != "gated":
+                return CommandOutcome()
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                while not gate.is_set():
+                    try:
+                        await gate.wait()
+                    except asyncio.CancelledError:
+                        continue
+                cleaned.set()
+                raise RuntimeError("boom-after-teardown")
+
+    handler = _RaisingRepeatCancelHandler()
+    server = make_server(handler, clock)
+    session, writer, reader = await open_session(server, handler)
+    task: asyncio.Task[None] | None = None
+    try:
+        await wait_for_frames(writer, len(BURST))
+        reader.feed_data(client_frame(WS_OP_TEXT, b"gated;second;"))
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        task = asyncio.create_task(session.finish())
+        async with asyncio.timeout(2.0):
+            await cleaning.wait()
+        _, pending_wait = await asyncio.wait([task], timeout=TEARDOWN_TIMEOUT_S + 5.0)
+        if pending_wait:
+            raise AssertionError("finish() wedged on a raising repeat-cancel cleanup")
+        assert handler.disconnect_calls == 1
+        assert session not in server.sessions
+        assert writer.is_closing()
+        assert not cleaned.is_set()
+        assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
+        gate.set()
+        async with asyncio.timeout(5.0):
+            while not cleaned.is_set():
+                await asyncio.sleep(0.005)
+        assert seen == ["gated"], f"second command dispatched after teardown: {seen}"
         assert handler.disconnect_calls == 1
     finally:
         gate.set()
@@ -1684,6 +1766,82 @@ async def test_join_observed_before_gate_with_repeated_cancel_command() -> None:
                 await session.finish()
         except (asyncio.CancelledError, TimeoutError):
             pass
+
+
+async def test_stop_closes_pending_setup_transport_before_gate_release() -> None:
+    """``stop()`` releases the accepted socket even when setup never returns.
+
+    A cancellation-resistant ``on_connect`` (repeated-cancel shape):
+    ``stop()`` must close the pending writer before the gate opens
+    (the client observes closed), then the retained setup completes
+    after the gate opens with exactly-once disconnect and no session.
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
+    clock = FakeClock()
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    cleaned = asyncio.Event()
+    gate = asyncio.Event()
+
+    class _RepeatCancelConnectHandler(FakeHandler):
+        async def on_connect(self) -> Sequence[str]:
+            self.connect_calls += 1
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaning.set()
+                while not gate.is_set():
+                    try:
+                        await gate.wait()
+                    except asyncio.CancelledError:
+                        continue
+                cleaned.set()
+            return list(BURST)
+
+    handler = _RepeatCancelConnectHandler()
+    server = make_server(handler, clock)
+    reader = asyncio.StreamReader()
+    writer = FakeWriter()
+    setup_task = asyncio.create_task(server._open_session(reader, writer, handler))
+    server._setup_tasks.add(setup_task)
+    stop_task: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(2.0):
+            await entered.wait()
+        stop_task = asyncio.create_task(server.stop())
+        async with asyncio.timeout(2.0):
+            await cleaning.wait()
+        _, pending_wait = await asyncio.wait([stop_task], timeout=10.0)
+        if pending_wait:
+            raise AssertionError("stop() wedged on a repeat-cancel on_connect cleanup")
+        assert writer.is_closing(), "pending setup transport still open after stop()"
+        assert not cleaned.is_set()
+        assert server.sessions == ()
+        gate.set()
+        _, pending_setup = await asyncio.wait([setup_task], timeout=5.0)
+        assert not pending_setup, "setup did not complete after the gate opened"
+        async with asyncio.timeout(5.0):
+            while not cleaned.is_set():
+                await asyncio.sleep(0.005)
+        assert handler.disconnect_calls == 1
+        assert server.sessions == ()
+    finally:
+        gate.set()
+        server._setup_tasks.discard(setup_task)
+        if not setup_task.done():
+            setup_task.cancel()
+            await asyncio.wait([setup_task], timeout=5.0)
+        if stop_task is not None and not stop_task.done():
+            stop_task.cancel()
+            await asyncio.wait([stop_task], timeout=5.0)
+        try:
+            async with asyncio.timeout(10.0):
+                await server.stop()
+        except (asyncio.CancelledError, TimeoutError):
+            pass
+        assert TEARDOWN_TIMEOUT_S > 0
 
 
 async def test_join_observed_before_gate_with_repeated_cancel_binary() -> None:
