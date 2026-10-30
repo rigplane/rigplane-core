@@ -564,11 +564,13 @@ class TestRigctldRefusal:
 # --- Second round (pre-review findings) -----------------------------------
 
 
-def _commander_radio(model: str) -> tuple[IcomRadio, MockTransport]:
+def _commander_radio(
+    model: str, *, timeout: float = 2.0
+) -> tuple[IcomRadio, MockTransport]:
     """A radio with the real commander worker and wire seam, fake transport."""
     from _helpers import observe_selected_receiver
 
-    radio = IcomRadio("192.168.1.102", timeout=2.0, model=model)
+    radio = IcomRadio("192.168.1.102", timeout=timeout, model=model)
     transport = MockTransport()
     radio._civ_transport = transport
     radio._ctrl_transport = transport
@@ -588,6 +590,32 @@ def _civ_frames(packets: list[bytes]) -> list[bytes]:
     return out
 
 
+async def _queued_behind_a_selection_change(
+    radio: IcomRadio,
+    transport: MockTransport,
+    operation: Callable[[IcomRadio], Awaitable[Any]],
+    new_selection: int,
+) -> asyncio.Task[Any]:
+    """Queue ``operation`` behind a raw in-flight read, then let the radio
+    report ``new_selection`` before the queued command reaches the wire."""
+    from _helpers import wrap_civ_in_udp
+
+    # A raw 1C 00 read (no receiver admission) occupies the serialized send.
+    blocker = asyncio.create_task(radio.send_civ(0x1C, 0x00))
+    async with asyncio.timeout(2):
+        while not transport.sent_packets:
+            await asyncio.sleep(0)
+    queued = asyncio.create_task(operation(radio))
+    await asyncio.sleep(0.01)
+    assert not queued.done()
+    _observe_selection(radio, new_selection)  # the radio reports the change
+    transport.queue_response(
+        wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x1C, 0x00, b"\x00"))
+    )
+    await asyncio.wait_for(blocker, 2)
+    return queued
+
+
 class TestSelectionCheckedAtWireDispatch:
     """P1: a selection change between admission and dispatch refuses the
     queued plain command before it reaches the wire."""
@@ -605,36 +633,58 @@ class TestSelectionCheckedAtWireDispatch:
     async def test_queued_main_write_refused_when_sub_becomes_selected(
         self, operation: Callable[[IcomRadio], Awaitable[Any]], opcode: int
     ) -> None:
-        from _helpers import wrap_civ_in_udp
-
         radio, transport = _commander_radio("IC-9700")
         radio._civ_runtime.start_worker()
         try:
-            # A read occupies the serialized send; the write queues behind it.
-            blocker = asyncio.create_task(radio.get_freq(receiver=0))
-            async with asyncio.timeout(2):
-                while not transport.sent_packets:
-                    await asyncio.sleep(0)
-            write = asyncio.create_task(operation(radio))
-            await asyncio.sleep(0.01)
-            assert not write.done()
-            _observe_selection(radio, 1)  # the radio now reports SUB selected
-            transport.queue_response(
-                wrap_civ_in_udp(
-                    build_civ_frame(CONTROLLER_ADDR, 0xA2, 0x03)[:-1]
-                    + bcd_encode(145_000_000)
-                    + b"\xfd"
-                )
+            write = await _queued_behind_a_selection_change(
+                radio, transport, operation, new_selection=1
             )
-            await asyncio.wait_for(blocker, 2)
             with pytest.raises(ReceiverNotSelectedError):
                 await asyncio.wait_for(write, 2)
         finally:
             await radio._civ_runtime.stop_worker()
             radio._connected = False
         sent = _civ_frames(transport.sent_packets)
-        assert sent == [b"\x03"]  # only the blocking read; no write, no select
+        assert sent == [b"\x1c\x00"]  # only the blocking read; no write, no select
         assert opcode not in [frame[0] for frame in sent[1:]]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("operation", "opcode"),
+        [
+            (lambda r, rx: r.get_freq(receiver=rx), 0x03),
+            (lambda r, rx: r.get_mode_info(receiver=rx), 0x04),
+        ],
+        ids=["get_freq", "get_mode_info"],
+    )
+    @pytest.mark.parametrize(
+        ("receiver", "new_selection"), [(0, 1), (1, 0)], ids=["main", "sub"]
+    )
+    async def test_queued_selected_read_refused_when_selection_changes(
+        self,
+        operation: Callable[[IcomRadio, int], Awaitable[Any]],
+        opcode: int,
+        receiver: int,
+        new_selection: int,
+    ) -> None:
+        radio, transport = _commander_radio("IC-9700")
+        _observe_selection(radio, receiver)  # the read is for the selected one
+        radio._civ_runtime.start_worker()
+        try:
+            read = await _queued_behind_a_selection_change(
+                radio,
+                transport,
+                lambda r: operation(r, receiver),
+                new_selection=new_selection,
+            )
+            with pytest.raises(ReceiverNotSelectedError):
+                await asyncio.wait_for(read, 2)
+        finally:
+            await radio._civ_runtime.stop_worker()
+            radio._connected = False
+        sent = _civ_frames(transport.sent_packets)
+        assert sent == [b"\x1c\x00"]  # the plain read never reached the wire
+        assert opcode not in [frame[0] for frame in sent]
 
 
 class TestFailedSelectLeavesSelectionUnknown:
@@ -940,3 +990,103 @@ class TestSelectionEstablishedByReading:
         radio, wire = _radio("IC-705")
         await radio.get_freq()
         assert wire.selection_reads == []
+
+
+class TestWebSocketRefusalEndToEnd:
+    """P1: the refusal reaches the issuing client through the real WebSocket
+    API: real client, real command, real queue and poller; only the radio
+    link is fake."""
+
+    @pytest.mark.asyncio
+    async def test_sub_set_freq_while_main_selected(self) -> None:
+        import contextlib
+        import json
+
+        from rigplane.web.radio_poller import RadioPoller
+        from rigplane.web.server import WebConfig, WebServer
+        from test_web_server import _ws_connect, _ws_recv_frame, _ws_send_text
+
+        # MAIN selected. A short CI-V timeout: the poller's start-up menu reads
+        # go unanswered on this fake link before it runs the queued command.
+        radio, transport = _commander_radio("IC-9700", timeout=0.2)
+        web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        poller = RadioPoller(
+            radio, web.command_queue, state_store=web.command_state_store
+        )
+        web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+
+        async def open_client() -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+            reader, writer, _ = await _ws_connect("127.0.0.1", web.port, "/api/v1/ws")
+            for expected in ("hello", "state_update"):
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                assert json.loads(payload)["type"] == expected
+            # As the frontend runtime does (frontend-runtime.ts).
+            await _ws_send_text(
+                writer, json.dumps({"type": "subscribe", "streams": ["events"]})
+            )
+            return reader, writer
+
+        async def frames_until(
+            reader: asyncio.StreamReader, done: Callable[[dict[str, Any]], bool]
+        ) -> list[dict[str, Any]]:
+            seen: list[dict[str, Any]] = []
+            while True:
+                opcode, payload = await _ws_recv_frame(reader, timeout=10.0)
+                if opcode != 0x1:  # text frames only
+                    continue
+                message = json.loads(payload)
+                seen.append(message)
+                if done(message):
+                    return seen
+
+        issuer = await open_client()
+        bystander = await open_client()
+        poller.start()  # the real poller loop executes the queued command
+        try:
+            await _ws_send_text(
+                issuer[1],
+                json.dumps(
+                    {
+                        "type": "cmd",
+                        "id": "sub-freq",
+                        "name": "set_freq",
+                        "params": {"freq": 435_000_000, "receiver": 1},
+                    }
+                ),
+            )
+            issuer_frames = await frames_until(
+                issuer[0],
+                lambda m: (
+                    m.get("type") == "command_lifecycle" and m.get("state") == "failed"
+                ),
+            )
+            bystander_frames: list[dict[str, Any]] = []
+            with contextlib.suppress(asyncio.TimeoutError, TimeoutError):
+                while True:
+                    opcode, payload = await _ws_recv_frame(bystander[0], timeout=0.3)
+                    if opcode == 0x1:
+                        bystander_frames.append(json.loads(payload))
+        finally:
+            poller.stop()
+            for _reader, writer in (issuer, bystander):
+                writer.close()
+            web._server.close()
+            await web._server.wait_closed()
+            radio._connected = False
+
+        assert {"type": "response", "id": "sub-freq", "ok": True}.items() <= next(
+            m for m in issuer_frames if m.get("type") == "response"
+        ).items()
+        notification = next(m for m in issuer_frames if m.get("type") == "notification")
+        assert notification["level"] == "error"
+        lifecycle = issuer_frames[-1]
+        assert lifecycle["commandId"] == "sub-freq"
+        assert lifecycle["details"] == {"reason": "receiver_not_selected"}
+        assert not any(
+            m.get("type") in ("command_lifecycle", "notification")
+            for m in bystander_frames
+        )
+        # Only the poller's own start-up reads reached the radio: no
+        # frequency write and no receiver selection.
+        sent = _civ_frames(transport.sent_packets)
+        assert not [f for f in sent if f[:1] in (b"\x05", b"\x07")]
