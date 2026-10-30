@@ -3996,8 +3996,25 @@ async def _cmd_att(radio: Radio, args: argparse.Namespace) -> int:
     if args.value is not None:
         val = args.value.strip().lower()
         if val == "on":
-            await radio.set_attenuator(True)
-            print("Attenuator: ON (18 dB)")
+            profile = getattr(radio, "profile", None)
+            if profile is None:
+                await radio.set_attenuator(True)
+                print("Attenuator: ON")
+            else:
+                db = profile.attenuator_on_db()
+                if db is None:
+                    declared = ", ".join(
+                        str(step) for step in (profile.att_values or ())
+                    )
+                    print(
+                        "Error: attenuator 'on' is ambiguous for this "
+                        f"radio (declared values: {declared}); pass a dB "
+                        "value (`rigplane att <dB>`).",
+                        file=sys.stderr,
+                    )
+                    return 1
+                await radio.set_attenuator_level(db)
+                print(f"Attenuator: ON ({db} dB)")
         elif val == "off":
             await radio.set_attenuator_level(0)
             print("Attenuator: OFF (0 dB)")
@@ -4005,9 +4022,19 @@ async def _cmd_att(radio: Radio, args: argparse.Namespace) -> int:
             try:
                 db = int(val)
             except ValueError:
+                profile = getattr(radio, "profile", None)
+                att_values = (
+                    getattr(profile, "att_values", None)
+                    if profile is not None
+                    else None
+                )
+                if isinstance(att_values, (tuple, list)) and att_values:
+                    declared = ", ".join(str(step) for step in att_values)
+                    hint = f"Use 'on', 'off', or a declared dB value: {declared}."
+                else:
+                    hint = "Use 'on', 'off', or a dB value."
                 print(
-                    f"Error: invalid attenuator value {val!r}. "
-                    "Use 'on', 'off', or a dB value (e.g. 0, 6, 12, 18).",
+                    f"Error: invalid attenuator value {val!r}. {hint}",
                     file=sys.stderr,
                 )
                 return 1

@@ -2749,7 +2749,6 @@ class RigctldHandler:
             )
             return RigctldResponse(values=[str(db)])
 
-        # ATT — returns dB directly (0, 6, 12, 18)
         if level == "ATT":
             db = await self._radio.get_attenuator_level()
             self._record_state_sample(

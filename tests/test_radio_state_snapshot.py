@@ -22,7 +22,7 @@ class _SnapshotFakeRadio:
     """Minimal fake exposing the getters/setters snapshot/restore use.
 
     ``fail`` names getters that raise instead of answering. The ``_last_*``
-    / ``_attenuator_state`` / ``_preamp_level`` / ``_filter_width`` mirrors
+    / ``_attenuator_db`` / ``_preamp_level`` / ``_filter_width`` mirrors
     hold decoy values: snapshot must never record them.
     """
 
@@ -36,7 +36,7 @@ class _SnapshotFakeRadio:
         self._filter_width: int | None = 1
         self._last_split: bool | None = True
         self._last_vfo: str | None = "VFOB"
-        self._attenuator_state: bool | None = True
+        self._attenuator_db: int | None = 20
         self._preamp_level: int | None = 2
 
     def _check_connected(self) -> None:
@@ -258,7 +258,7 @@ async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_pream
 ):
     """Every read timing out on a real IcomRadio: no split/attenuator/preamp/vfo keys.
 
-    The setter-written mirrors (``_last_split``, ``_attenuator_state``,
+    The setter-written mirrors (``_last_split``, ``_attenuator_db``,
     ``_preamp_level``) are set, and no reply is queued, so each read times
     out. The snapshot must record none of them — and no ``vfo`` key, since
     no radio read exists for the VFO slot — and restoring it must call none
@@ -271,7 +271,7 @@ async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_pream
     radio._connected = True
     try:
         radio._last_split = True
-        radio._attenuator_state = True
+        radio._attenuator_db = 20
         radio._preamp_level = 2
 
         snap = await snapshot_state(radio)

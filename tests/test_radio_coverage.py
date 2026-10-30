@@ -545,17 +545,17 @@ async def test_set_squelch_negative_raises(radio: IcomRadio) -> None:
 async def test_get_attenuator_level_returns_fallback_on_timeout(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """Timeout falls back to _attenuator_state if set."""
-    radio._attenuator_state = True
-    # No response → timeout → fallback to 18 (non-zero attenuator)
+    """Timeout falls back to the stored _attenuator_db dB if set."""
+    radio._attenuator_db = 21
+    # No response → timeout → fallback to the stored 21 dB
     result = await radio.get_attenuator_level()
-    assert result == 18
+    assert result == 21
 
 
 async def test_get_attenuator_level_returns_zero_fallback_when_off(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    radio._attenuator_state = False
+    radio._attenuator_db = 0
     result = await radio.get_attenuator_level()
     assert result == 0
 
@@ -563,7 +563,7 @@ async def test_get_attenuator_level_returns_zero_fallback_when_off(
 async def test_get_attenuator_level_raises_when_no_state(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    radio._attenuator_state = None
+    radio._attenuator_db = None
     with pytest.raises(CommandError):
         await radio.get_attenuator_level()
 
@@ -2384,7 +2384,7 @@ async def test_snapshot_state_omits_attenuator_when_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """A failed strict attenuator read omits attenuator, never the mirror."""
-    radio._attenuator_state = True
+    radio._attenuator_db = 21
     # No queued reply: the real get_attenuator(strict=True) raises, the
     # default read still returns the mirror for every other caller.
     with pytest.raises((CommandError, TimeoutError)):
