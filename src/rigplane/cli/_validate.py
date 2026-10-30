@@ -865,21 +865,7 @@ async def _run_hardware(
         # Build a minimal failure artifact so callers always get a tuple.
         transport = TransportInfo(backend="fixture")
         levels = _transport_failure_levels(template, exc)
-        artifact = build_validation_artifact(
-            template=template,
-            levels=levels,
-            transport=transport,
-            safety=safety,
-            core_version=__version__,
-            core_commit=None,
-            mode="hardware",
-        )
-        artifact = dataclasses.replace(
-            artifact,
-            metadata={**artifact.metadata, "provider": "native"},
-            generated_at=_utcnow_iso(),
-        )
-        return 3, artifact
+        return 3, _build_native_artifact(template, levels, transport, safety)
 
     # Resolve the radio profile for per-radio validation classification
     # (write-only controls, MOR-208; fixed-value checks, MOR-2105 part 2).
@@ -898,7 +884,15 @@ async def _run_hardware(
             fixed_value_checks = profile.fixed_value_checks
 
     transport = _transport_info_from_config(config)
-    radio = create_radio(config)
+    try:
+        radio = create_radio(config)
+    except ValueError as exc:
+        # The factory refuses a model it has no backend for (MOR-174); that is
+        # a wrong invocation, reported like the config failure above. Only the
+        # construction is guarded, never the checks that run on the radio.
+        print(f"Error: cannot create the radio backend: {exc}", file=sys.stderr)
+        levels = _transport_failure_levels(template, exc)
+        return 3, _build_native_artifact(template, levels, transport, safety)
     exit_code = 0
     try:
         async with radio:
@@ -923,6 +917,16 @@ async def _run_hardware(
         levels = _transport_failure_levels(template, exc)
         exit_code = 3
 
+    return exit_code, _build_native_artifact(template, levels, transport, safety)
+
+
+def _build_native_artifact(
+    template: MatrixTemplate,
+    levels: list[LevelResult],
+    transport: TransportInfo,
+    safety: OperatorSafetyBlock,
+) -> ValidationArtifact:
+    """Assemble a hardware artifact stamped with native-provider metadata."""
     artifact = build_validation_artifact(
         template=template,
         levels=levels,
@@ -932,12 +936,11 @@ async def _run_hardware(
         core_commit=None,
         mode="hardware",
     )
-    artifact = dataclasses.replace(
+    return dataclasses.replace(
         artifact,
         metadata={**artifact.metadata, "provider": "native"},
         generated_at=_utcnow_iso(),
     )
-    return exit_code, artifact
 
 
 async def _await_tcp_ready(host: str, port: int, *, timeout: float = 10.0) -> bool:
@@ -1052,10 +1055,34 @@ async def _run_hardware_hamlib(
     front_port = _free_tcp_port()
     timeout = getattr(args, "timeout", 5.0) or 5.0
 
+    # Both constructions that can reject the invocation happen before the
+    # bridge log file exists or any port is held, so a refusal leaks nothing.
+    # The bridge client config is a different event from the native backend
+    # and says so.
+    try:
+        hamlib_cfg = RigctldBackendConfig(
+            host="127.0.0.1", port=front_port, timeout=timeout, model=config.model
+        )
+    except ValueError as exc:
+        print(
+            f"Error: cannot build the Hamlib bridge client config: {exc}",
+            file=sys.stderr,
+        )
+        levels = _transport_failure_levels(template, exc)
+        return 3, _build_hamlib_artifact(
+            template, levels, transport, safety, profile, hamlib_model
+        )
+    try:
+        native_radio = create_radio(config)
+    except ValueError as exc:
+        print(f"Error: cannot create the native radio backend: {exc}", file=sys.stderr)
+        levels = _transport_failure_levels(template, exc)
+        return 3, _build_hamlib_artifact(
+            template, levels, transport, safety, profile, hamlib_model
+        )
+
     stderr_fd, stderr_path = tempfile.mkstemp(prefix="rigplane-rigctld-", suffix=".log")
     os.close(stderr_fd)
-
-    native_radio = create_radio(config)
     exit_code = 0
     try:
         async with native_radio:
@@ -1090,12 +1117,6 @@ async def _run_hardware_hamlib(
                         f"127.0.0.1:{front_port} within 10s "
                         f"(rig_open may have failed; see {stderr_path})" + stderr_tail
                     )
-                hamlib_cfg = RigctldBackendConfig(
-                    host="127.0.0.1",
-                    port=front_port,
-                    timeout=timeout,
-                    model=config.model,
-                )
                 hamlib_radio = create_radio(hamlib_cfg)
                 async with hamlib_radio:
                     levels = await execute_hardware_checks(

@@ -38,7 +38,7 @@ from rigplane.web.protocol import (
     MSG_TYPE_AUDIO_RX,
 )
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.web.websocket import WS_OP_BINARY, WS_OP_TEXT
+from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
 
 
 W1_RX_ID = r"MME|SWD\MMDEVAPI\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AFB3A0}"

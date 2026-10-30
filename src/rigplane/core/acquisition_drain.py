@@ -236,6 +236,11 @@ class AcquisitionDrain:
         # the freshness tick's own cadence call, so the two writers cannot
         # disagree about one store state.
         scheduler.note_tx_active(tx_active(store, self._tx_active_hint))
+        # MOR-3630: and the conditional availability, for the same reason --
+        # a read queued before the mode changed must not be sent into a NAK
+        # just because no freshness tick has run since.
+        if store is not None:
+            scheduler.note_availability(store.snapshot())
         # MOR-1533: dispatch must use the tx_active-gated view; crediting an
         # already-sent answer (runtime._civ_rx, driven by the radio's own CI-V
         # pump) uses the unfiltered pending_requests() instead, so an answer
@@ -250,6 +255,16 @@ class AcquisitionDrain:
         # above: a request the seat declines to send is still pending, and its
         # ledger entry must survive the pass.
         for request in self._dispatchable(pending):
+            # MOR-3630: ``pending`` was gated once, at the top of the pass, but
+            # an earlier send in this loop awaits the radio, and its answer can
+            # change the mode that a later read's ``available_when`` reads. Ask
+            # again right before each send; a request withheld here stays
+            # pending (and keeps its ledger entry) for the first pass that sees
+            # its clauses hold.
+            if store is not None:
+                scheduler.note_availability(store.snapshot())
+                if not scheduler.is_dispatchable(request):
+                    continue
             provider_generation = 0 if store is None else store.provider_generation
             if not scheduler.try_claim(
                 request,

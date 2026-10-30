@@ -365,26 +365,19 @@ implementation agent may not be the review agent.
   `Tests (quick)` run was cancelled each carry an overall `FAILURE` state.
   A red commit on `main` from a cancelled run needs a person to look at
   it, because nothing else will.
-- `quick.yml` keys its `concurrency.group` on the workflow name plus
-  `github.ref`, so every push to `main` shares one group with every other
-  push to `main`. Within one group, GitHub keeps at most one *queued*
-  (not-yet-started) run: a push that arrives while the previous push's run
-  is still waiting for a runner cancels that waiting run outright — it
-  never reaches a runner (empty `runner_name`, no steps recorded). This
-  happens regardless of the group's `cancel-in-progress` setting, which
-  only governs whether an *already-started* run is cancelled by a later
-  push, not whether a *queued* one is. All four cancelled `main` runs
-  sampled on 2026-08-30 died this way — queued, not mid-run. Measured and
-  tracked as MOR-2048; see that ticket rather than re-deriving the counts.
+- `quick.yml` has no `push` trigger (MOR-3878): the merge queue's `merge_group`
+  run tests the tree that lands on `main` (a squash keeps the tree), so no
+  `quick` run follows the merge. The queued-run cancellation on `main`
+  measured in MOR-2048 cannot happen to it any more. The scheduled
+  `full.yml` run (every 3 hours on weekdays, skipped when that commit
+  already passed) and `docs.yml` are what runs on `main` itself.
 - The merge operator may train-merge file-disjoint PRs whose immutable heads
   each have an exact-head PASS and every required PR check green. Guard every
-  merge with `--match-head-commit`. Do not wait for or rerun intermediate
-  `main` quick runs: queued intermediate runs may be displaced by the next
-  train merge and are not acceptance evidence. After the final merge, require
-  one aggregate `main` quick on the final batch head. An actual conflict,
-  proven interaction between train members, or failure on that final aggregate
-  head stops the train for diagnosis. This keeps exact-head protection while
-  avoiding the queued-run churn tracked in MOR-2048.
+  merge with `--match-head-commit`. The merge queue's `merge_group` `quick`
+  run on the batch head is the aggregate run; there is no `main` quick run to
+  wait for or rerun after the merge. An actual conflict, proven interaction
+  between train members, or failure on that queue run stops the train for
+  diagnosis.
 - After a merge, if a run on `main` looks cancelled or otherwise
   unverified and you want to know whether an earlier PR run already
   covered the code that landed, compare
