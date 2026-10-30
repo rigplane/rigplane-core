@@ -297,6 +297,33 @@ class TciSession:
         """Stable per-connection id (``tci-session-N``)."""
         return self._id
 
+    @property
+    def handler(self) -> TciHandler:
+        """The adapter side of this session (owns its queued audio)."""
+        return self._handler
+
+    def offer_binary(self, payload: bytes) -> bool:
+        """Enqueue one binary frame; ``False`` when the peer overflowed.
+
+        The adapter's RX-audio drain uses this instead of reaching into
+        the outbox: the bounded-outbox/overflow policy is unchanged — a
+        stalled peer aborts through the normal teardown and the frame
+        drops instead of being retained. Offers after teardown refuse.
+        """
+        if self._done:
+            return False
+        return self._offer(make_frame(WS_OP_BINARY, bytes(payload)))
+
+    def abort_stalled(self) -> None:
+        """Abort a stalled session and schedule its normal teardown.
+
+        Public form of the overflow path: the transport drops at once
+        and ``finish()`` runs next tick so a sender blocked in ``drain``
+        is cancelled too. The adapter uses it for a behind audio client
+        (no drain for the behind window).
+        """
+        self._overflow()
+
     def _offer(self, frame: bytes) -> bool:
         """Enqueue one frame; ``False`` when the stalled peer overflowed.
 
