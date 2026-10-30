@@ -197,7 +197,8 @@ async def test_tci_accept_ignores_deflate_offer() -> None:
     del writer.buffer[:head_end]
     try:
         session = server.sessions[0]
-        assert session._conn.deflate_enabled is False
+        # No public deflate flag on the connection; private state only.
+        assert session._conn._deflate is False
         await wait_for_frames(writer, len(BURST))
         reader.feed_data(client_frame(WS_OP_TEXT, b"vfo:0,0,14074000;"))
         frames = await wait_for_frames(writer, len(BURST) + 1)
