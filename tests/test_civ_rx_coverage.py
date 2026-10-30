@@ -1183,6 +1183,163 @@ async def test_request_recovery_now_ignored_while_session_not_reestablished(
                 pass
 
 
+@dataclasses.dataclass
+class _PreemptRaceArm:
+    order: list[str]
+    calls: list[str]
+    entered: asyncio.Event
+    entered_second: asyncio.Event
+    go: asyncio.Event
+    never: asyncio.Event
+
+
+def _arm_preempt_race_recovery(radio: IcomRadio) -> _PreemptRaceArm:
+    """Arm a real-lifecycle recovery whose tail parks inside the attempt.
+
+    Mirrors ``_arm_notice_recovery`` for ``_force_cleanup_civ``/``release``
+    but keeps the REAL ``radio.soft_reconnect``: the stubbed
+    ``soft_reconnect_once`` mechanism parks the shared lifecycle recovery
+    in the predecessor's tail, where the identity revalidation would run
+    ``stop_data_watchdog``, then parks forever on a never-set event.
+    """
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._civ_recovering = False
+    radio._civ_runtime._reconnect_task = None
+    radio._civ_runtime._recovery_cleaned_task = None
+    radio._civ_runtime._pending_replacement = None
+    arm = _PreemptRaceArm(
+        order=[],
+        calls=[],
+        entered=asyncio.Event(),
+        entered_second=asyncio.Event(),
+        go=asyncio.Event(),
+        never=asyncio.Event(),
+    )
+
+    async def record_force_cleanup() -> None:
+        arm.order.append("force_cleanup")
+
+    async def record_release() -> None:
+        arm.order.append("release")
+
+    radio._force_cleanup_civ = record_force_cleanup
+    radio._control_phase.release = record_release
+    radio._ctrl_transport.remote_id = 0xEF167A45
+
+    async def parked_tail_attempt() -> None:
+        arm.calls.append("soft_reconnect_once")
+        if len(arm.calls) == 1:
+            radio._conn_state = RadioConnectionState.CONNECTED
+            arm.entered.set()
+            await asyncio.wait_for(arm.go.wait(), 10.0)
+            # The teardown the identity revalidation runs in the tail.
+            await radio._civ_runtime.stop_data_watchdog()
+            await arm.never.wait()
+            return
+        arm.entered_second.set()
+        await arm.never.wait()
+
+    mech = radio._session_lifecycle._mech
+    mech.soft_reconnect_once = parked_tail_attempt  # type: ignore[method-assign]
+    return arm
+
+
+async def _cancel_recovery_tasks(*tasks: asyncio.Task[None] | None) -> None:
+    live = [task for task in tasks if task is not None]
+    for task in live:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*live, return_exceptions=True)
+
+
+async def test_preempting_recovery_survives_predecessor_teardown(
+    radio: IcomRadio,
+) -> None:
+    """MOR-3350: the replacement recovery survives the predecessor's tail.
+
+    The preempted run's tail teardown (``stop_data_watchdog``, as run by
+    the identity revalidation) must not cancel the replacement it handed
+    off to: the replacement then runs its own fresh lifecycle recovery.
+    """
+    arm = _arm_preempt_race_recovery(radio)
+    first: asyncio.Task[None] | None = None
+    second: asyncio.Task[None] | None = None
+    try:
+        with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+            radio._civ_runtime.request_recovery_now("busy=0 (first)")
+            first = radio._civ_runtime._reconnect_task
+            assert first is not None
+            try:
+                await asyncio.wait_for(arm.entered.wait(), 10.0)
+            except asyncio.TimeoutError:
+                pytest.fail("the first recovery never reached its tail")
+            # ``go`` first, with no yield before the second notice: the
+            # predecessor's teardown step then runs before the
+            # replacement's first step, while the predecessor is still
+            # the registered lifecycle waiter and the replacement is
+            # not one yet.
+            arm.go.set()
+            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            second = radio._civ_runtime._reconnect_task
+            assert second is not None and second is not first, (
+                "a busy=0 notice during the recovery tail must restart "
+                "the recovery, not be ignored"
+            )
+            try:
+                await asyncio.wait_for(arm.entered_second.wait(), 10.0)
+            except asyncio.TimeoutError:
+                pytest.fail("the replacement recovery never ran its fresh recovery")
+            assert not second.cancelled()
+            assert not second.done()
+            assert radio._civ_runtime._reconnect_task is second
+            assert arm.calls == ["soft_reconnect_once"] * 2
+            assert arm.order == ["force_cleanup", "release"] * 2
+    finally:
+        arm.go.set()
+        arm.never.set()
+        await _cancel_recovery_tasks(
+            first, second, radio._session_lifecycle._recover_task
+        )
+
+
+async def test_external_teardown_still_cancels_the_pending_replacement(
+    radio: IcomRadio,
+) -> None:
+    """MOR-3350: a teardown from outside the handoff still cancels it.
+
+    ``stop_data_watchdog`` called from another task (e.g. a user
+    ``disconnect()``) while the replacement is pending must cancel the
+    replacement exactly as before the handoff guard.
+    """
+    arm = _arm_preempt_race_recovery(radio)
+    first: asyncio.Task[None] | None = None
+    second: asyncio.Task[None] | None = None
+    try:
+        with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+            radio._civ_runtime.request_recovery_now("busy=0 (first)")
+            first = radio._civ_runtime._reconnect_task
+            assert first is not None
+            try:
+                await asyncio.wait_for(arm.entered.wait(), 10.0)
+            except asyncio.TimeoutError:
+                pytest.fail("the first recovery never reached its tail")
+            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            second = radio._civ_runtime._reconnect_task
+            assert second is not None and second is not first
+            # External teardown: this test task is neither the
+            # predecessor nor its lifecycle waiter.
+            await radio._civ_runtime.stop_data_watchdog()
+            assert second.cancelled()
+            assert radio._civ_runtime._reconnect_task is None
+            assert arm.calls == ["soft_reconnect_once"]
+    finally:
+        arm.go.set()
+        arm.never.set()
+        await _cancel_recovery_tasks(
+            first, second, radio._session_lifecycle._recover_task
+        )
+
+
 async def test_watchdog_handoff_does_not_replace_a_live_reconnect_task(
     radio: IcomRadio,
 ) -> None:

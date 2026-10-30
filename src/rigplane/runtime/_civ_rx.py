@@ -729,6 +729,12 @@ class CivRuntime:
         # dropped the session AGAIN, so the tail gives way to a fresh
         # recovery (MOR-3350); anything earlier is still re-establishing.
         self._recovery_cleaned_task: asyncio.Task[None] | None = None
+        # Preempt handoff (MOR-3350): the (replacement, predecessor) pair
+        # while a tail-parked recovery is being replaced, so the
+        # predecessor's teardown leaves the replacement alone.
+        self._pending_replacement: (
+            tuple[asyncio.Task[None], asyncio.Task[None]] | None
+        ) = None
         self._soft_recovery_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, bytes] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
@@ -1110,9 +1116,22 @@ class CivRuntime:
         # runs, freezing recovery after a single attempt (#1217 invariant 2:
         # self-cancel guard).
         current = asyncio.current_task()
+        pending = self._pending_replacement
         owned_recovery = (
             rc_task is not None
-            and self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+            and (
+                self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+                or (
+                    pending is not None
+                    and rc_task is pending[0]
+                    and (
+                        current is pending[1]
+                        or self._host._session_lifecycle.is_current_recovery_awaited_by(
+                            pending[1]
+                        )
+                    )
+                )
+            )
         )
         if (
             rc_task is not None
@@ -1660,6 +1679,8 @@ class CivRuntime:
             ),
             name="civ-watchdog-recover",
         )
+        if preempt is not None:
+            self._pending_replacement = (self._reconnect_task, preempt)
         return self._reconnect_task
 
     def request_recovery_now(self, reason: str) -> None:
@@ -1755,6 +1776,9 @@ class CivRuntime:
             if preempt is not None:
                 preempt.cancel()
                 await asyncio.gather(preempt, return_exceptions=True)
+                pending = self._pending_replacement
+                if pending is not None and pending[0] is asyncio.current_task():
+                    self._pending_replacement = None
             await self._host._force_cleanup_civ()
             self._recovery_cleaned_task = asyncio.current_task()
             if escalate:
@@ -1791,6 +1815,9 @@ class CivRuntime:
                 exc_info=True,
             )
         finally:
+            pending = self._pending_replacement
+            if pending is not None and pending[0] is asyncio.current_task():
+                self._pending_replacement = None
             if self._recovery_cleaned_task is asyncio.current_task():
                 self._recovery_cleaned_task = None
             if cancelled:
