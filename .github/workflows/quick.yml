@@ -1,8 +1,16 @@
 name: Tests (quick)
 
 on:
-  push:
+  # Merge queue: the queue tests the PR on top of main and the entries ahead
+  # of it, and that tree is exactly what lands on main (a squash keeps the
+  # tree), so there is no push trigger: a push run would test it a second time
+  # (MOR-3878). The version and test-count badges are updated by full.yml on
+  # its scheduled run. merge_group has no path filter; classify decides.
+  merge_group:
+    types: [checks_requested]
+  pull_request:
     branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
     paths-ignore:
       - "docs/**"
       # Machine-readable data files under docs/ (parsed by tests/code, e.g.
@@ -49,61 +57,12 @@ on:
       - "!docs/guide/audio-recipes.md"
       - "!docs/guide/diagnostic-reports.md"
       - "!docs/internals/audio-capture-health.md"
-  # Merge queue: the queue tests the PR on top of main and the
-  # entries ahead of it. merge_group has no path filter; classify decides.
-  merge_group:
-    types: [checks_requested]
-  pull_request:
-    branches: [main]
-    types: [opened, reopened, synchronize, ready_for_review]
-    paths-ignore:
-      - "docs/**"
-      # Same re-inclusion as the push trigger above: docs data files
-      # (*.toml/*.json/*.yaml/*.yml) reach the classify job and run quick.
-      - "!docs/**/*.toml"
-      - "!docs/**/*.json"
-      - "!docs/**/*.yaml"
-      - "!docs/**/*.yml"
-      - ".claude/**"
-      - "**/*.md"
-      - "**/*.mD"
-      - "**/*.Md"
-      - "**/*.MD"
-      - "**/*.rst"
-      - "**/*.rsT"
-      - "**/*.rSt"
-      - "**/*.rST"
-      - "**/*.RsT"
-      - "**/*.Rst"
-      - "**/*.RSt"
-      - "**/*.RST"
-      - ".github/scripts/doc-citation-baseline.txt"
-      - ".github/scripts/doc-citation-dangling-baseline.txt"
-      - ".github/scripts/doc-link-baseline.txt"
-      - "AUTHORS"
-      - "COPYING"
-      - "LICENSE"
-      - "LICENSE.txt"
-      - "NOTICE"
-      - "mkdocs.yml"
-      # Same re-inclusion as the push trigger above, for test-read Markdown
-      # under docs/ (CORE_DOCS_TEST_INPUT_EXACT).
-      - "!docs/PROJECT.md"
-      - "!docs/parity/README.md"
-      - "!docs/operations/managed-runtime-packaging.md"
-      - "!docs/api/web.md"
-      - "!docs/guide/web-ui.md"
-      - "!docs/api/command-catalog.md"
-      - "!docs/api/radio.md"
-      - "!docs/guide/connection.md"
-      - "!docs/api/audio.md"
-      - "!docs/guide/audio-recipes.md"
-      - "!docs/guide/diagnostic-reports.md"
-      - "!docs/internals/audio-capture-health.md"
 
 permissions:
   contents: read
   pull-requests: read
+  checks: read
+  actions: read
 
 concurrency:
   group: tests-quick-${{ github.workflow }}-${{ github.ref }}
@@ -118,6 +77,7 @@ jobs:
       ci: ${{ steps.paths.outputs.ci }}
       docs: ${{ steps.paths.outputs.docs }}
       web: ${{ steps.paths.outputs.web }}
+      reuse: ${{ steps.reuse.outputs.reuse }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -136,6 +96,33 @@ jobs:
           --base "$QUICK_BASE_SHA"
           --head "$QUICK_HEAD_SHA"
 
+      # MOR-3878: the first entry of a merge group is its pull request on the
+      # current main. When that tree is byte-identical to the tree of the PR
+      # head, `quick` already passed on exactly this code, so the queue run
+      # skips the `quick` job (a skipped job satisfies the required context).
+      # Any doubt or API error answers reuse=false and the tests run. The
+      # decision script is checked out from the base commit, never from the
+      # queued commit, so a PR cannot change the code that gates its own tests.
+      - name: Check out the trusted queue controls
+        if: github.event_name == 'merge_group'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.merge_group.base_sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Reuse the pull-request run when the queue tree is the tested head tree
+        id: reuse
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REPO: ${{ github.repository }}
+          QUEUE_REF: ${{ github.event.merge_group.head_ref }}
+          QUEUE_TREE: ${{ github.event.merge_group.head_commit.tree_id }}
+        run: |
+          python3 trusted/.github/scripts/queue-tree-reuse.py --check quick \
+            || echo "reuse=false" >> "$GITHUB_OUTPUT"
+
   quick:
     needs: classify
     # Draft pushes are development checkpoints, not immutable review heads.
@@ -145,15 +132,20 @@ jobs:
     if: >-
       always() &&
       needs.classify.outputs.docs != 'true' &&
-      (github.event_name == 'push' ||
-      github.event_name == 'merge_group' ||
+      needs.classify.outputs.reuse != 'true' &&
+      (github.event_name == 'merge_group' ||
       github.event.pull_request.draft == false)
     # Self-hosted Mac mini build-tier runner. Python 3.11+/uv/Node 24/Rust
     # and the Tauri/audio system libs are pre-baked in the image, so this
     # job avoids the ubuntu-latest pickup + apt install passes. Operator
     # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
     runs-on: [self-hosted, linux, build]
-    timeout-minutes: 25
+    # 40, not 25: a PR that sets both `core` and `frontend` runs the whole
+    # frontend chain (~17-19 min on a busy build runner) and then the full
+    # pytest suite (~10 min) in series, ~28-30 min. At 25 min every such run
+    # was cancelled in `Run tests` on every build pool (gtr7, mini-server,
+    # nsu), which kept merge-queue entries failing.
+    timeout-minutes: 40
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
     # loop test. Nothing in this repo reads them.
@@ -210,6 +202,10 @@ jobs:
       - name: Focused workflow contract tests
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/run-focused-checks.test.py
+
+      - name: Queue tree reuse tests
+        if: needs.classify.outputs.ci == 'true'
+        run: python3 .github/scripts/queue-tree-reuse.test.py
 
       - name: Quick path and event contract tests
         if: needs.classify.outputs.ci == 'true'
@@ -351,6 +347,15 @@ jobs:
         working-directory: frontend
         run: npm run test:e2e:placeholder-guard
 
+      # MOR-3845 — the --rp-chrome-top geometry spec (top AND bottom bounds of
+      # every fixed surface with inset 0 and nonzero). Same fixtures server and
+      # already-provisioned Chromium as the placeholder-guard scan above; the
+      # unrelated harness-reach matrix in the same directory stays unwired.
+      - name: Frontend page-chrome inset geometry (MOR-3845)
+        if: needs.classify.outputs.frontend == 'true'
+        working-directory: frontend
+        run: npm run test:e2e:chrome-top-inset
+
       # MOR-3275 — the FTX-1 RIT click -> wire -> fake server -> DOM scenario
       # (MOR-1732) against tests/e2e/ftx1_rit_web_server.py, which the
       # Playwright config starts through `uv run`. Serves the frontend/dist
@@ -404,7 +409,6 @@ jobs:
           --tb=short --timeout=300 --timeout-method=thread
 
       - name: Run tests
-        id: tests
         if: needs.classify.outputs.core == 'true'
         env:
           PYTHONPATH: ${{ github.workspace }}/.github/scripts
@@ -412,17 +416,13 @@ jobs:
         run: |
           # Without pipefail the pipe's exit status is tee's (always 0), so
           # pytest failures were swallowed and the step reported success.
-          # Capture pytest's exit code via PIPESTATUS, extract the summary
-          # (still needed for the badge, including on failure), then exit
-          # with pytest's code so failing tests fail the step.
+          # Capture pytest's exit code via PIPESTATUS, then exit with
+          # pytest's code so failing tests fail the step.
           # Several quick jobs share one CI host; uncapped workers
           # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
           uv run pytest tests/ -p pytest_worker_diagnostics -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
-          SUMMARY=$(tail -1 pytest-output.txt)
-          PASSED=$(echo "$SUMMARY" | grep -oP '\d+ passed' | grep -oP '\d+' || echo "0")
-          echo "passed=$PASSED" >> "$GITHUB_OUTPUT"
           exit "$rc"
 
       - name: Bound worker diagnostics
@@ -446,46 +446,6 @@ jobs:
             ${{ runner.temp }}/pytest-worker-diagnostics/bounds.json
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Extract version
-        if: github.ref == 'refs/heads/main' && needs.classify.outputs.core == 'true'
-        id: version
-        run: |
-          VERSION=$(uv run python -c "from importlib.metadata import version; print(version('rigplane'))")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Update tests badge
-        if: github.ref == 'refs/heads/main' && needs.classify.outputs.core == 'true' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-tests.json
-          label: tests
-          message: "${{ steps.tests.outputs.passed }} passed"
-          color: ${{ steps.tests.outcome == 'success' && 'brightgreen' || 'red' }}
-
-      - name: Update version badge
-        if: github.ref == 'refs/heads/main' && needs.classify.outputs.core == 'true' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-version.json
-          label: version
-          message: "v${{ steps.version.outputs.version }}"
-          color: blue
-
-      - name: Update mypy badge
-        if: github.ref == 'refs/heads/main' && needs.classify.outputs.frontend == 'true' && always()
-        uses: schneegans/dynamic-badges-action@v1.8.0
-        with:
-          auth: ${{ secrets.GIST_TOKEN }}
-          gistID: bce917f4007ac491e527e142564fbbae
-          filename: rigplane-mypy.json
-          label: mypy
-          message: "0 errors"
-          color: blue
 
       - name: Summarize quick-check selection
         if: always()
