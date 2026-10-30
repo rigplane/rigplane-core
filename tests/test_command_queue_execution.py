@@ -18,6 +18,15 @@ from rigplane.runtime._poller_types import (
     SetFreq,
     SetMode,
 )
+from rigplane.runtime.tx_interlock import REPEATER_WRITE_INTENTS
+
+# Descriptor intents a rigctld request queues and may withdraw while the leaf
+# runs: the split writes and (MOR-3633) the repeater descriptor writes.
+_RIGCTLD_CANCELLABLE_INTENTS = (
+    "set_split_freq",
+    "set_split_mode",
+    *sorted(REPEATER_WRITE_INTENTS),
+)
 
 
 async def wait_for_event_or_exit(event, task):
@@ -424,7 +433,7 @@ async def test_cancelled_ordered_reply_keeps_only_legacy_unkey(command, keep_pen
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["set_split_freq", "set_split_mode"])
+@pytest.mark.parametrize("name", _RIGCTLD_CANCELLABLE_INTENTS)
 async def test_kernel_split_request_cancel_stops_leaf_and_joins_cleanup(name):
     reply = asyncio.get_running_loop().create_future()
     started, cleanup, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -466,7 +475,7 @@ async def test_kernel_split_request_cancel_stops_leaf_and_joins_cleanup(name):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("name", ["set_split_freq", "set_split_mode"])
+@pytest.mark.parametrize("name", _RIGCTLD_CANCELLABLE_INTENTS)
 @pytest.mark.parametrize("outcome", ["cancel", "return", "error"])
 async def test_kernel_split_reply_then_owner_cancel_joins_cleanup_once(name, outcome):
     reply = asyncio.get_running_loop().create_future()

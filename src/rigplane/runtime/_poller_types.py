@@ -19,6 +19,7 @@ from rigplane.core.state_pipeline_contracts import (
     CommandSource,
     FieldPath,
 )
+from rigplane.core.tx_interlock_contract import REPEATER_WRITE_INTENTS
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerTicket
 
 __all__ = [
@@ -1197,6 +1198,15 @@ async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
     await receipt.wait_settlement()
 
 
+# Descriptor intents a rigctld request queues and withdraws with the request:
+# when its reply future is cancelled (timeout, or the client left), the leaf
+# that already runs is cancelled too, so the rig never changes after the
+# client was told it did not (MOR-3633 adds the repeater descriptors).
+_RIGCTLD_WITHDRAWABLE_INTENTS = frozenset(
+    {"set_split_freq", "set_split_mode"} | REPEATER_WRITE_INTENTS
+)
+
+
 async def execute_command_queue_entry(
     entry: CommandQueueEntry,
     execute: Callable[[CommandQueueEntry], Awaitable[Any]],
@@ -1230,7 +1240,7 @@ async def execute_command_queue_entry(
         and entry.positive_tx_submission is None
         and isinstance(entry.command, CommandIntent)
         and entry.command.source == "rigctld"
-        and entry.command.name in ("set_split_freq", "set_split_mode")
+        and entry.command.name in _RIGCTLD_WITHDRAWABLE_INTENTS
     ):
         reply_cancel_callback = cancel_request_leaf
         reply.add_done_callback(reply_cancel_callback)

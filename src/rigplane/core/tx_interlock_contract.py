@@ -4,11 +4,32 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 __all__ = [
+    "REPEATER_WRITE_INTENTS",
     "TX_INTERLOCK_COMMAND_FAMILY_METADATA",
     "TxInterlockCommandFamily",
     "TxInterlockCommandFamilyMetadata",
     "TxInterlockDisposition",
 ]
+
+# MOR-3633: the one table that classifies repeater writes. A shift, tone,
+# TSQL or tone-frequency write while keyed moves the TX frequency (up to
+# 5 MHz on 70 cm) mid-transmission, so every member defers like the VFO
+# topology and memory families — never a hard block, so a known-RX pass
+# stays easy. These commands are descriptor-backed: their only name source
+# is the command descriptor (``core/command_dispatch.py``), so the table is
+# keyed by descriptor intent name and no typed command exists for them. A
+# later repeater command joins by adding one name here; the interlock
+# classification, the family metadata, the control channel's reply handling
+# and the queue's request-withdrawal rule all read this set.
+REPEATER_WRITE_INTENTS = frozenset(
+    {
+        "set_repeater_shift",
+        "set_repeater_tone",
+        "set_repeater_tsql",
+        "set_tone_freq",
+        "set_tsql_freq",
+    }
+)
 
 
 class TxInterlockDisposition(StrEnum):

@@ -42,6 +42,8 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime import _poller_types
 from rigplane.runtime._poller_types import (
     PttOff,
+    ScanStop,
+    SendCiv,
     SetRepeaterTone,
     SetRepeaterTsql,
     execute_command_queue_entry,
@@ -54,6 +56,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxOutcome,
 )
 from rigplane.runtime.tx_interlock import (
+    DeferredTxCommandLane,
     RfState,
     TxInterlockCommandFamily,
     TxInterlockDisposition,
@@ -507,6 +510,43 @@ async def test_managed_failing_radio_tx_probe_refuses_repeater_writes() -> None:
         await managed.close()
 
 
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
+async def test_managed_repeater_refusal_is_immediate_and_never_delays_the_release(
+    name: str, params: dict
+) -> None:
+    """Managed mode refuses, never holds: the unkey is not queued behind it."""
+
+    managed, _, _, _, _, _ = authority()
+    try:
+        assert await managed.transmit_on() is ManagedTxOutcome.ACCEPTED
+
+        refused = await asyncio.wait_for(
+            managed.admit_managed_write(_intent(name, params)), 1
+        )
+        assert refused is False
+
+        await asyncio.wait_for(managed.force_off(), 1)
+        state = (await managed.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+    finally:
+        await _finish(managed)
+
+
+@pytest.mark.parametrize(("name", "params"), _DESCRIPTOR_INTENTS)
+async def test_managed_poller_does_not_hold_a_repeater_write(
+    name: str, params: dict
+) -> None:
+    """With managed authority the lane is bypassed: refusal is the admission's."""
+
+    poller, _radio_, store, clock = _poller()
+    poller._managed_tx_authority = SimpleNamespace()  # noqa: SLF001
+    _observe_ptt(store, True, observed_at=clock.now())
+    entry = CommandQueueEntry(_intent(name, params))
+
+    assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
+    assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
+
+
 # ---------------------------------------------------------------------------
 # Production composition: only KNOWN, FRESH receive admits a repeater write
 # ---------------------------------------------------------------------------
@@ -724,6 +764,55 @@ async def test_managed_rigctld_refuses_a_repeater_function_without_a_fresh_rx_re
     assert await _replies(rf_rig, 1) == [b"RPRT -9\n"]
     for spy in spies.values():
         spy.assert_not_awaited()
+
+
+@pytest.mark.parametrize("ending", ("timeout", "disconnect"))
+@pytest.mark.parametrize(("wire", "method"), _RIGCTLD_REPEATER_WIRES)
+async def test_managed_rigctld_ended_repeater_request_never_writes_late(
+    rf_rig: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    wire: str,
+    method: str,
+    ending: str,
+) -> None:
+    """A timed-out or abandoned ``U TONE``/``U TSQL`` is withdrawn, not finished.
+
+    The write is blocked at the radio before it reaches the wire. The client
+    times out (``RPRT -5``) or drops the connection; releasing the block
+    afterwards must not let the descriptor write land: the rigctld client was
+    told it did not happen, or left, and the rig keeps its old setting.
+    """
+
+    _repeater_spies(rf_rig, monkeypatch)
+    entered, release, written = asyncio.Event(), asyncio.Event(), []
+
+    async def blocked(*, on: bool, receiver: int) -> None:
+        entered.set()
+        await release.wait()
+        written.append((on, receiver))
+
+    setattr(rf_rig.radio, method, blocked)
+    rf_rig.server._config.command_timeout = 0.2 if ending == "timeout" else 5  # noqa: SLF001
+    try:
+        await _send(rf_rig, wire)
+        await asyncio.wait_for(entered.wait(), 2)
+        if ending == "timeout":
+            assert await _replies(rf_rig, 1) == [b"RPRT -5\n"]
+        else:
+            rf_rig.writer.close()
+            await rf_rig.writer.wait_closed()
+            await asyncio.wait_for(
+                asyncio.gather(*tuple(rf_rig.server._client_tasks)),  # noqa: SLF001
+                2,
+            )
+
+        release.set()
+        for _ in range(10):
+            await asyncio.sleep(0.02)
+
+        assert written == []
+    finally:
+        release.set()
 
 
 @pytest.mark.parametrize(("wire", "method"), _RIGCTLD_REPEATER_WIRES)
@@ -948,3 +1037,296 @@ async def test_web_repeater_write_is_held_while_keyed_then_runs_in_quiet_rx(
         result = (await asyncio.wait_for(reply, 2))[-1]
         assert result["ok"] is True
         assert len(peer.repeater_writes) == 1
+
+
+# ---------------------------------------------------------------------------
+# A held repeater write never delays, reorders behind or swallows a stop
+# ---------------------------------------------------------------------------
+#
+# The hold is a courtesy to the operator's repeater setting; a transmission
+# stop (PTT off, a raw exact de-key, scan stop, CW stop) must reach the radio
+# at once, whatever is held and whichever ingress carried it.
+
+_PTT_OFF_RAW = {"command": 28, "sub": 0, "data": "00"}  # CI-V 1C 00 00
+_TUNER_OFF_RAW = {"command": 28, "sub": 1, "data": "00"}  # CI-V 1C 01 00
+_HOLD_NAME, _HOLD_PARAMS = "set_repeater_shift", {"direction": 1}
+
+
+def _held_entry(poller: RadioPoller) -> CommandQueueEntry:
+    """Stage one awaited repeater write against a keyed radio: it is held."""
+
+    held = CommandQueueEntry(
+        _intent(_HOLD_NAME, _HOLD_PARAMS),
+        future=asyncio.get_running_loop().create_future(),
+    )
+    assert poller._stage_tx_interlocked_entries([held]) == []  # noqa: SLF001
+    assert poller._deferred_tx_lane.pending is held.command  # noqa: SLF001
+    return held
+
+
+@pytest.mark.parametrize(
+    "stop",
+    (
+        PttOff(),
+        ScanStop(),
+        SendCiv(command=0x1C, sub=0x00, data=b"\x00"),
+        SendCiv(command=0x1C, sub=0x01, data=b"\x00"),
+    ),
+    ids=("ptt-off", "scan-stop", "raw-ptt-off", "raw-tuner-off"),
+)
+async def test_icom_stop_is_staged_ready_beside_a_held_repeater_write(
+    stop: object,
+) -> None:
+    """The hold occupies its own slot; a stop is ready in the same turn."""
+
+    poller, _radio_, store, clock = _poller()
+    _observe_ptt(store, True, observed_at=clock.now())
+    held = _held_entry(poller)
+    entry = CommandQueueEntry(stop)
+
+    assert poller._stage_tx_interlocked_entries([entry]) == [entry]  # noqa: SLF001
+    assert poller._enforce_tx_interlock(stop) is None  # noqa: SLF001
+    # The stop did not displace, release or fail the held write.
+    assert poller._deferred_tx_lane.pending is held.command  # noqa: SLF001
+    assert not held.future.done()  # type: ignore[union-attr]
+
+
+async def test_icom_ptt_off_executes_while_a_repeater_write_is_held() -> None:
+    poller, radio, store, clock = _poller()
+    _observe_ptt(store, True, observed_at=clock.now())
+    held = _held_entry(poller)
+
+    await poller._execute(PttOff())  # noqa: SLF001
+
+    radio.set_ptt.assert_awaited_once_with(False)
+    assert not held.future.done()  # type: ignore[union-attr]
+    getattr(radio, _HOLD_NAME).assert_not_awaited()
+
+
+async def test_icom_stop_ahead_of_and_behind_a_hold_in_one_turn_keeps_its_place() -> (
+    None
+):
+    """Held entries drop out of the turn; every stop keeps its queue order."""
+
+    poller, _radio_, store, clock = _poller()
+    _observe_ptt(store, True, observed_at=clock.now())
+    first = CommandQueueEntry(PttOff())
+    held = CommandQueueEntry(
+        _intent(_HOLD_NAME, _HOLD_PARAMS),
+        future=asyncio.get_running_loop().create_future(),
+    )
+    second = CommandQueueEntry(SendCiv(command=0x1C, sub=0x00, data=b"\x00"))
+
+    ready = poller._stage_tx_interlocked_entries(  # noqa: SLF001
+        [first, held, second]
+    )
+
+    assert ready == [first, second]
+    assert poller._deferred_tx_lane.pending is held.command  # noqa: SLF001
+
+
+async def test_a_held_repeater_write_is_superseded_not_executed_by_a_newer_one() -> (
+    None
+):
+    """Several pending writes while keyed: one slot, the others fail unrun."""
+
+    poller, radio, store, clock = _poller()
+    _observe_ptt(store, True, observed_at=clock.now())
+    older = _held_entry(poller)
+    newer = CommandQueueEntry(
+        _intent("set_repeater_tone", {"on": True}),
+        future=asyncio.get_running_loop().create_future(),
+    )
+    stop = CommandQueueEntry(PttOff())
+
+    ready = poller._stage_tx_interlocked_entries([newer, stop])  # noqa: SLF001
+
+    assert ready == [stop]
+    assert isinstance(older.future.exception(), CommandError)  # type: ignore[union-attr]
+    assert "superseded" in str(older.future.exception())  # type: ignore[union-attr]
+    assert poller._deferred_tx_lane.pending is newer.command  # noqa: SLF001
+    getattr(radio, _HOLD_NAME).assert_not_awaited()
+
+
+async def _ws_open(web: WebServer):
+    reader, writer, _ = await _ws_connect("127.0.0.1", web.port, "/api/v1/ws")
+    return reader, writer
+
+
+async def _ws_send_command(writer, command_id: str, name: str, params: dict) -> None:
+    await _ws_send_text(
+        writer,
+        json.dumps({"type": "cmd", "id": command_id, "name": name, "params": params}),
+    )
+
+
+async def _ws_responses(reader, wanted: set[str], *, within: float) -> dict[str, dict]:
+    """Command responses by id, until all ``wanted`` arrived or ``within`` elapsed."""
+
+    deadline = time.monotonic() + within
+    answers: dict[str, dict] = {}
+    while wanted - answers.keys():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            _opcode, raw = await _ws_recv_frame(reader, timeout=remaining)
+        except (TimeoutError, asyncio.TimeoutError):
+            break
+        frame = json.loads(raw)
+        if frame.get("type") == "response":
+            answers[frame["id"]] = frame
+    return answers
+
+
+async def _wait_until(condition, *, within: float) -> bool:
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        await asyncio.sleep(0.02)
+    return condition()
+
+
+_WS_STOPS = (
+    pytest.param(
+        "send_civ",
+        _PTT_OFF_RAW,
+        lambda peer: peer.ptt_writes == [False],
+        id="raw-ptt-off",
+    ),
+    pytest.param(
+        "stop_cw_text",
+        {},
+        lambda peer: any(command == 0x17 for command, _sub, _data in peer.requests),
+        id="stop-cw-text",
+    ),
+)
+
+
+@pytest.mark.parametrize(("stop_name", "stop_params", "reached"), _WS_STOPS)
+@pytest.mark.parametrize(("name", "params"), _WEB_REPEATER_WRITES)
+async def test_ws_stop_behind_a_held_repeater_write_reaches_the_wire_at_once(
+    name: str, params: dict, stop_name: str, stop_params: dict, reached
+) -> None:
+    """The WebSocket reader stays free while a repeater write is held.
+
+    One socket: a repeater write while keyed (held three seconds), then the
+    stop. The stop reaches the radio well inside the hold, with nobody
+    publishing RX, and the held write has neither run nor been answered.
+    """
+
+    async with _web_ingress("IC-705") as (web, peer):
+        _web_rf(web, True)
+        reader, writer = await _ws_open(web)
+        try:
+            await _ws_send_command(writer, "hold", name, params)
+            await _ws_send_command(writer, "stop", stop_name, stop_params)
+
+            assert await _wait_until(lambda: reached(peer), within=1.0), peer.requests
+            answers = await _ws_responses(reader, {"hold", "stop"}, within=0.3)
+            assert "hold" not in answers  # still held, reply open
+            assert peer.repeater_writes == []
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
+async def test_ws_held_repeater_write_expires_unrun_after_a_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hold's own contract survives the stop: never run while keyed.
+
+    The stop does not make the radio read RX by itself; the write stays held
+    until quiet RX is observed or its hold expires, and then fails with no
+    wire traffic for it.
+    """
+
+    monkeypatch.setattr(DeferredTxCommandLane, "_TTL_SECONDS", 0.6)
+    async with _web_ingress("IC-705") as (web, peer):
+        _web_rf(web, True)
+        reader, writer = await _ws_open(web)
+        try:
+            await _ws_send_command(writer, "hold", _HOLD_NAME, _HOLD_PARAMS)
+            await _ws_send_command(writer, "stop", "send_civ", _PTT_OFF_RAW)
+
+            assert await _wait_until(lambda: peer.ptt_writes == [False], within=0.5)
+            answers = await _ws_responses(reader, {"hold", "stop"}, within=3.0)
+
+            assert answers["stop"]["ok"] is True
+            assert answers["hold"]["ok"] is False
+            assert "expired" in answers["hold"]["message"]
+            assert peer.repeater_writes == []
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
+async def test_ws_stop_with_several_pending_repeater_writes_while_keyed() -> None:
+    """A burst of writes then a stop: one is held, the rest fail, the stop runs."""
+
+    async with _web_ingress("IC-705") as (web, peer):
+        _web_rf(web, True)
+        reader, writer = await _ws_open(web)
+        try:
+            for index, (name, params) in enumerate(_WEB_REPEATER_WRITES):
+                await _ws_send_command(writer, f"w{index}", name, params)
+            await _ws_send_command(writer, "stop", "send_civ", _PTT_OFF_RAW)
+
+            assert await _wait_until(lambda: peer.ptt_writes == [False], within=1.0)
+            superseded = {f"w{i}" for i in range(len(_WEB_REPEATER_WRITES) - 1)}
+            answers = await _ws_responses(reader, superseded | {"stop"}, within=1.0)
+
+            assert answers["stop"]["ok"] is True
+            assert all(answers[key]["ok"] is False for key in superseded)
+            assert all("superseded" in answers[key]["message"] for key in superseded)
+            assert f"w{len(_WEB_REPEATER_WRITES) - 1}" not in answers  # the held one
+            assert peer.repeater_writes == []
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+
+async def test_ws_held_write_of_a_vanished_client_is_never_executed() -> None:
+    """The socket drops while its write is held; quiet RX later runs nothing."""
+
+    async with _web_ingress("IC-705") as (web, peer):
+        _web_rf(web, True)
+        reader, writer = await _ws_open(web)
+        await _ws_send_command(writer, "hold", _HOLD_NAME, _HOLD_PARAMS)
+        await asyncio.sleep(0.2)
+        writer.close()
+        await writer.wait_closed()
+        await asyncio.sleep(0.2)
+
+        for _ in range(60):  # quiet RX long enough to release any held write
+            _web_rf(web, False)
+            await asyncio.sleep(0.05)
+
+        assert peer.repeater_writes == []
+
+
+async def test_ws_pipelined_writes_keep_their_queue_order() -> None:
+    """Freeing the reader must not let a later frame overtake an earlier one."""
+
+    async with _web_ingress("IC-705") as (web, peer):
+        _web_rf(web, False)
+        reader, writer = await _ws_open(web)
+        try:
+            await _ws_send_command(
+                writer, "shift", "set_repeater_shift", {"direction": 1}
+            )
+            await _ws_send_command(writer, "tone", "set_repeater_tone", {"on": True})
+            await _ws_send_command(writer, "freq", "set_tone_freq", {"freq": 8850})
+
+            answers = await _ws_responses(reader, {"shift", "tone", "freq"}, within=3.0)
+
+            assert all(answers[key]["ok"] is True for key in ("shift", "tone", "freq"))
+            assert [c for c, _sub, _data in peer.repeater_writes] == [
+                0x0F,
+                0x16,
+                0x1B,
+            ]
+        finally:
+            writer.close()
+            await writer.wait_closed()

@@ -1717,6 +1717,83 @@ async def test_yaesu_queued_repeater_intent_fails_on_unknown_rf_without_a_write(
     assert poller._deferred_tx_lane.pending is None  # noqa: SLF001
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held_first", (True, False), ids=("stop-after", "stop-before"))
+async def test_yaesu_stop_runs_at_once_beside_a_held_repeater_write(
+    monkeypatch: pytest.MonkeyPatch, held_first: bool
+) -> None:
+    """MOR-3633: a repeater write held while keyed never delays an unkey.
+
+    The held write sits in the lane's own slot; the PTT off queued before or
+    after it reaches the radio in the same drain, and the hold is untouched.
+    """
+
+    from rigplane.runtime._poller_types import PttOff
+
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_repeater_shift = AsyncMock()
+    radio.set_ptt = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    intent = bind_command_intent("set_repeater_shift", {"direction": 1}, source="http")
+    held = asyncio.get_running_loop().create_future()
+    stop_reply = asyncio.get_running_loop().create_future()
+
+    def put_held() -> None:
+        queue.put_ordered(intent, future=held, command_id=intent.id)
+
+    def put_stop() -> None:
+        queue.put_ordered(PttOff(), future=stop_reply)
+
+    for put in (put_held, put_stop) if held_first else (put_stop, put_held):
+        put()
+    await _drain_with_ptt(poller, clock, 20.0, True)
+
+    assert stop_reply.result() is None
+    radio.set_ptt.assert_awaited_once_with(False)
+    assert not held.done()
+    assert poller._deferred_tx_lane.pending is not None  # noqa: SLF001
+    radio.set_repeater_shift.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_held_repeater_write_of_a_gone_session_is_dropped_unrun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The control session leaves while its write is held: nothing is written."""
+
+    clock = [20.0]
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.poller.time.monotonic", lambda: clock[0]
+    )
+    radio, queue = make_radio(), CommandQueue()
+    radio.set_repeater_shift = AsyncMock()
+    poller = YaesuCatPoller(radio, command_queue=queue)
+    queue.register_session("ws-gone")
+    intent = bind_command_intent(
+        "set_repeater_shift", {"direction": 1}, source="websocket"
+    )
+    held = asyncio.get_running_loop().create_future()
+    queue.put_ordered(
+        intent,
+        future=held,
+        command_id=intent.id,
+        source="websocket",
+        session_id="ws-gone",
+    )
+    await _drain_with_ptt(poller, clock, 20.0, True)
+    assert not held.done()
+
+    queue.unregister_session("ws-gone")
+    await _drain_with_ptt(poller, clock, 20.5, False)
+    await _drain_with_ptt(poller, clock, 21.6, False)
+
+    radio.set_repeater_shift.assert_not_awaited()
+
+
 _FTX1_REPEATER_WRITES = (
     ("set_repeater_shift", {"direction": 1}),
     ("set_repeater_tone", {"on": True}),

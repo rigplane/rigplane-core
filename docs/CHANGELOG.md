@@ -36,7 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transmit authority they are admitted only in known, fresh receive: nothing
   held, owed (an unkey still being released) or reported as transmitting by
   the radio, and a missing or stale PTT observation refuses the write. This
-  holds for the web ingress and for rigctld `U TONE`/`U TSQL` alike.
+  holds for the web ingress and for rigctld `U TONE`/`U TSQL` alike. A held
+  write never delays a transmission stop: the WebSocket keeps reading frames,
+  so a PTT-off or `stop_cw_text` sent behind it reaches the radio at once, and
+  a write whose client left (or whose rigctld request timed out) is withdrawn
+  instead of run later.
 
 ## [3.0.1] — 2026-10-28
 

@@ -47,6 +47,7 @@ from ...profiles.control_domain import encode_legacy_control, validate_control_r
 from ...runtime._poller_types import SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
 from ...runtime.tx_interlock import (
+    REPEATER_WRITE_INTENTS,
     RfState,
     TxInterlockRefusal,
     classify_raw_civ_frame_tx_family,
@@ -971,6 +972,9 @@ class ControlHandler:
         # coalesce_key -> the single deferred-flush task scheduled for it
         # (one handle per (session, key) — this session owns them all).
         self._cmd_flush_tasks: dict[str, asyncio.Task[None]] = {}
+        # MOR-3633: dispatches whose reply may stay open for the whole TX
+        # interlock hold (``REPEATER_WRITE_INTENTS``); see ``_start_held_dispatch``.
+        self._held_dispatch_tasks: set[asyncio.Task[None]] = set()
         # coalesce_key -> count of frames coalesced (superseded before they
         # could flush) in the current burst — reset once that burst flushes.
         self._cmd_coalesced: dict[str, int] = {}
@@ -1385,7 +1389,49 @@ class ControlHandler:
                 return
             self._cmd_last[key] = now
 
+        if name in REPEATER_WRITE_INTENTS:
+            self._start_held_dispatch(cmd_id, name, params)
+            # One loop turn lets the new task run up to its reply wait, which
+            # is after it enqueued: the next frame cannot overtake this one.
+            await asyncio.sleep(0)
+            return
         await self._dispatch_command(cmd_id, name, params)
+
+    def _start_held_dispatch(
+        self, cmd_id: Any, name: str, params: dict[str, Any]
+    ) -> None:
+        """Dispatch a command whose reply may stay open for the TX hold (MOR-3633).
+
+        A repeater write while the radio is keyed is held by the TX interlock
+        for up to its hold time, and its reply stays open until it runs. The
+        receive loop awaits each frame, so dispatching such a command inline
+        would leave every later frame on this socket unread for that time,
+        a transmission stop (``send_civ`` PTT off, ``stop_cw_text``) included.
+        The wait therefore runs in its own task, tracked so teardown cancels it:
+        a cancelled reply is skipped by the poller, so a client that left never
+        has its held write executed afterwards.
+        """
+        task = asyncio.create_task(self._run_held_dispatch(cmd_id, name, params))
+        self._held_dispatch_tasks.add(task)
+        task.add_done_callback(self._held_dispatch_tasks.discard)
+
+    async def _run_held_dispatch(
+        self, cmd_id: Any, name: str, params: dict[str, Any]
+    ) -> None:
+        try:
+            await self._dispatch_command(cmd_id, name, params)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Nothing awaits this task. ``_dispatch_command`` answers command
+            # failures itself; this covers the reply write failing on a dead
+            # socket, which must not escape as an unretrieved task exception.
+            logger.warning(
+                "control: held dispatch of %r (id=%r) failed",
+                name,
+                cmd_id,
+                exc_info=True,
+            )
 
     def _coalesce_key(self, name: str, params: dict[str, Any]) -> str:
         """Coalescing-bucket key for a SET command (MOR-1499).
@@ -1513,6 +1559,10 @@ class ControlHandler:
         cmd_id, name, params = pending
         self._cmd_last[key] = self._clock()
         self._cmd_coalesced[key] = 0
+        if name in REPEATER_WRITE_INTENTS:
+            # Tracked by the session, not by this flush task that ends here.
+            self._start_held_dispatch(cmd_id, name, params)
+            return
         try:
             await self._dispatch_command(cmd_id, name, params)
         except asyncio.CancelledError:
@@ -1533,17 +1583,21 @@ class ControlHandler:
             )
 
     def _cancel_pending_command_flushes(self) -> None:
-        """Cancel in-flight coalesced-flush tasks on session teardown (MOR-1427).
+        """Cancel in-flight flush and held-write tasks on session teardown.
 
         A flush firing after the socket is gone would enqueue a stale
         command on behalf of a session that no longer exists and try to
-        write an ack to a dead transport. Bookkeeping only — the command
-        queue and radio state are untouched; this never enqueues anything.
+        write an ack to a dead transport (MOR-1427). This never enqueues
+        anything; it only withdraws what this session still waits on.
         """
         for task in self._cmd_flush_tasks.values():
             task.cancel()
         self._cmd_flush_tasks.clear()
         self._cmd_pending.clear()
+        # MOR-3633: a write held by the TX interlock belongs to this session
+        # too; cancelling it cancels its reply, which the poller skips.
+        for task in tuple(self._held_dispatch_tasks):
+            task.cancel()
 
     async def _dispatch_command(
         self, cmd_id: Any, name: str, params: dict[str, Any]
