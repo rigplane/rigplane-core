@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "AdapterState",
+    "READ_PATHS",
     "TciNotifier",
     "announced_modulations",
     "drive_percent",
@@ -50,6 +51,25 @@ _RIT_FREQ_PATH = FieldPath.global_("operator_controls", "rit_freq")
 _RIT_ON_PATH = FieldPath.global_("tx_state", "rit_on")
 _RIT_TX_PATH = FieldPath.global_("tx_state", "rit_tx")
 _POWER_PATH = FieldPath.global_("operator_controls", "power_level")
+
+#: Every store path a TCI read can project: the adapter handler asks
+#: acquisition to refresh exactly these (instead of an empty request,
+#: which the scheduler rejects), because :func:`project_state` reads
+#: exactly these on every read.
+READ_PATHS: tuple[FieldPath, ...] = (
+    _FREQ_A_PATH,
+    _FREQ_B_PATH,
+    _MODE_A_PATH,
+    _DATA_A_PATH,
+    _MODE_B_PATH,
+    _DATA_B_PATH,
+    _SPLIT_PATH,
+    _RIT_FREQ_PATH,
+    _RIT_ON_PATH,
+    _RIT_TX_PATH,
+    _POWER_PATH,
+    OBSERVED_PTT_PATH,
+)
 
 
 @dataclass(frozen=True)

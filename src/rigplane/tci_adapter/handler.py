@@ -50,6 +50,7 @@ from .commands import (
     TIER_AB_COMMANDS,
 )
 from .notifier import (
+    READ_PATHS,
     TciNotifier,
     announced_modulations,
     drive_percent,
@@ -324,7 +325,12 @@ class TciAdapterHandler:
         if inspect.iscoroutinefunction(ensure):
             return
         try:
-            ensure((), max_age=self._config.cache_ttl, priority="user", reason=reason)
+            ensure(
+                READ_PATHS,
+                max_age=self._config.cache_ttl,
+                priority="user",
+                reason=reason,
+            )
         except Exception:
             logger.debug("tci %s: ensure_fresh failed", self._owner, exc_info=True)
 
