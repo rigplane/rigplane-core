@@ -62,6 +62,7 @@ permissions:
   contents: read
   pull-requests: read
   checks: read
+  actions: read
 
 concurrency:
   group: tests-quick-${{ github.workflow }}-${{ github.ref }}

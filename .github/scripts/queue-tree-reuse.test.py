@@ -151,6 +151,16 @@ class QueueTreeReuseTest(unittest.TestCase):
         self.assertIn("python3 trusted/.github/scripts/queue-tree-reuse.py --check quick", quick)
         self.assertIn("needs.classify.outputs.reuse != 'true' &&", quick)
 
+    def test_the_workflow_token_covers_every_api_the_helper_calls(self) -> None:
+        # pulls and git/commits/compare need pull-requests and contents, check-runs
+        # needs checks, and the workflow run needs actions in a private repository.
+        quick = (ROOT / ".github" / "workflows" / "quick.yml").read_text(encoding="utf-8")
+        permissions = quick.split("\npermissions:\n", 1)[1].split("\n\n", 1)[0]
+        for line in ("contents: read", "pull-requests: read", "checks: read", "actions: read"):
+            self.assertIn(f"  {line}", permissions)
+        source = (ROOT / ".github" / "scripts" / "queue-tree-reuse.py").read_text(encoding="utf-8")
+        self.assertIn('f"repos/{repo}/actions/runs/', source)
+
 
 if __name__ == "__main__":
     unittest.main()
