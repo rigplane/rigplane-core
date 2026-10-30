@@ -4,8 +4,9 @@ One instance per accepted socket; the owner id (``tci-client-N``) is minted
 once by the server factory, as ``rigctld-client-N`` is. Reads project the
 shared store; writes build a ``CommandIntent`` (``source="tci"``) and take
 the same queue and executor arms as a ``rigctld`` write. A write is always
-answered: success echoes to every session, a no-op or failure answers the
-actual state to the requester only.
+answered: success replies to every session — a VFO write with the
+confirmed frequency from Core's state, any other with an echo — and a
+no-op or failure answers the actual state to the requester only.
 """
 
 from __future__ import annotations
@@ -1146,14 +1147,36 @@ class TciAdapterHandler:
             except Exception:
                 logger.debug("tci %s: set_freq failed", self._owner, exc_info=True)
                 return await self._sender_current(self._read_vfo(args[:2]))
-            return self._reply(f"vfo:0,0,{hz};")
-        try:
-            intent = self._intent("set_split_freq", {"freq_hz": hz})
-            await self._execute_write(intent)
-        except Exception:
-            logger.debug("tci %s: set_split_freq failed", self._owner, exc_info=True)
-            return await self._sender_current(self._read_vfo(args[:2]))
-        return self._reply(f"vfo:0,1,{hz};")
+        else:
+            try:
+                intent = self._intent("set_split_freq", {"freq_hz": hz})
+                await self._execute_write(intent)
+            except Exception:
+                logger.debug("tci %s: set_split_freq failed", self._owner, exc_info=True)
+                return await self._sender_current(self._read_vfo(args[:2]))
+        actual = await self._confirmed_vfo_freq(channel, hz)
+        return self._reply(f"vfo:0,{channel},{actual};")
+
+    async def _confirmed_vfo_freq(self, channel: int, hz: int) -> int:
+        """Confirm a VFO write from Core's state, never the request (MOR-3821).
+
+        The store lands the radio's report after the executor returns (the
+        write confirmation is queued, never synchronous), so the first read
+        can still carry the pre-write value. Re-project through the read
+        path (``_state``, the same projection the reads use) until it shows
+        the requested frequency or ``command_timeout`` expires, then answer
+        the actual frequency either way: when the radio kept another
+        frequency the client re-syncs to the shared truth.
+        """
+        deadline = self._clock() + self._config.command_timeout
+        while True:
+            state = await self._state()
+            actual = state.freq_a if channel == 0 else state.freq_b
+            if actual == hz or self._clock() >= deadline:
+                return actual
+            # Pacing only: the deadline above decides the verdict, not this
+            # pause (the rigctld seat paces its DATA readback the same way).
+            await asyncio.sleep(0.05)
 
     async def _queued_split_freq(self, intent: Any, ticket: Any) -> None:
         """Channel-1 write: queued when managed, direct otherwise (rigctld)."""

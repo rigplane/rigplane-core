@@ -97,6 +97,7 @@ async def test_write_goes_through_command_service_when_composed() -> None:
     """Brief B: every TCI write is a source=tci intent via the service."""
     radio = StubIcomRadio()
     store = build_store({FieldPath.active("main", "freq_mode", "freq_hz"): 14_074_000})
+    radio.observe_store = store
     used: list[tuple[str, object]] = []
 
     class FakeService:
