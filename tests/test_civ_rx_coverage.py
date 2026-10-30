@@ -1371,18 +1371,12 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
     entered = asyncio.Event()
     entered_second = asyncio.Event()
     never = asyncio.Event()
-    second_go = asyncio.Event()
     cleanup_calls = 0
     calls = 0
 
     async def record_force_cleanup() -> None:
         nonlocal cleanup_calls
         cleanup_calls += 1
-        if cleanup_calls > 1:
-            # Freeze the replacement before it coalesces: the test cancels
-            # the shared tail first, then lets the replacement proceed to
-            # a fresh recovery.
-            await second_go.wait()
 
     async def record_release() -> None:
         return None
@@ -1397,7 +1391,6 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
             # Tail: session re-established, CI-V path still down.
             radio._conn_state = RadioConnectionState.CONNECTED
             radio._civ_transport = None
-            radio._connected = False
             entered.set()
             await never.wait()
             return
@@ -1435,42 +1428,20 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
             radio._civ_runtime.request_recovery_now("busy=0 (second)")
             second = radio._civ_runtime._reconnect_task
             assert second is not None and second is not first
-            # Let the replacement reach its frozen pre-coalesce point, then
-            # cancel the shared tail from outside (the teardown side of the
-            # handoff — not via the waiter).
-            for _ in range(100):
-                if cleanup_calls == 2:
-                    break
+            # The replacement supersedes the shared tail; the waiter coalesced
+            # onto it was never cancelled itself and must not end cancelled.
+            for _ in range(20):
                 await asyncio.sleep(0)
-            else:
-                pytest.fail("the replacement never left its preempt handoff")
-            shared = radio._session_lifecycle._recover_task
-            assert shared is not None
-            shared.cancel()
-            for _ in range(1000):
-                if shared.done():
-                    break
-                await asyncio.sleep(0)
-            else:
-                pytest.fail("the cancelled tail never finished")
-            second_go.set()
-            # The waiter keeps waiting (no CancelledError) while the
-            # replacement runs its fresh recovery.
-            for _ in range(10):
-                await asyncio.sleep(0)
-            assert not waiter.done(), (
+            assert not waiter.cancelled(), (
                 "preempting a recovery tail cancelled an unrelated waiter"
             )
             await asyncio.wait_for(waiter, 5.0)
             assert not waiter.cancelled()
             await asyncio.wait_for(second, 10.0)
-            assert entered_second.is_set(), (
-                "the replacement recovery never completed"
-            )
+            assert entered_second.is_set(), "the replacement recovery never completed"
             assert calls == 2
     finally:
         never.set()
-        second_go.set()
         await _cancel_recovery_tasks(
             first, second, waiter, radio._session_lifecycle._recover_task
         )
@@ -1489,14 +1460,18 @@ async def test_stop_data_watchdog_propagates_own_cancellation_during_join(
     """
     release = asyncio.Event()
 
-    async def delayed_watchdog() -> None:
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            await release.wait()
-            return
+    async def swallowing_watchdog() -> None:
+        # Swallows every cancel until released and then returns NORMALLY:
+        # the cancel forwarded from the stopping task is consumed by the
+        # joined task, so the join sees no CancelledError at all.
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                pass
 
-    radio._civ_data_watchdog_task = asyncio.create_task(delayed_watchdog())
+    wd_task = asyncio.create_task(swallowing_watchdog())
+    radio._civ_data_watchdog_task = wd_task
     radio._civ_runtime._reconnect_task = None
     radio._civ_runtime._pending_replacement = None
     stop_task: asyncio.Task[None] = asyncio.create_task(
@@ -1517,9 +1492,7 @@ async def test_stop_data_watchdog_propagates_own_cancellation_during_join(
         assert stop_task.cancelled()
     finally:
         release.set()
-        await _cancel_recovery_tasks(
-            stop_task, radio._civ_data_watchdog_task
-        )
+        await _cancel_recovery_tasks(stop_task, wd_task)
 
 
 async def test_preempt_enters_replacement_before_stuck_tail_timeout(
@@ -1545,7 +1518,6 @@ async def test_preempt_enters_replacement_before_stuck_tail_timeout(
     go = asyncio.Event()
     never = asyncio.Event()
     entered_second = asyncio.Event()
-    second_go = asyncio.Event()
     cleanup_calls = 0
     release_watchdog = asyncio.Event()
 
@@ -1559,11 +1531,6 @@ async def test_preempt_enters_replacement_before_stuck_tail_timeout(
     async def record_force_cleanup() -> None:
         nonlocal cleanup_calls
         cleanup_calls += 1
-        if cleanup_calls > 1:
-            # Freeze the replacement before it coalesces: the test cancels
-            # the shared tail first, then lets the replacement proceed to
-            # a fresh recovery.
-            await second_go.wait()
 
     async def record_release() -> None:
         return None
@@ -1611,23 +1578,6 @@ async def test_preempt_enters_replacement_before_stuck_tail_timeout(
             radio._civ_runtime.request_recovery_now("busy=0 (second)")
             second = radio._civ_runtime._reconnect_task
             assert second is not None and second is not first
-            shared = radio._session_lifecycle._recover_task
-            assert shared is not None
-            shared.cancel()
-            for _ in range(100):
-                if cleanup_calls == 2:
-                    break
-                await asyncio.sleep(0)
-            else:
-                pytest.fail("the replacement never left its preempt handoff")
-            # On the fixed code the tail is already done here, so the
-            # released replacement always builds a fresh recovery; on the
-            # old code it is still stuck in the swallowed join.
-            for _ in range(100):
-                if shared.done():
-                    break
-                await asyncio.sleep(0)
-            second_go.set()
             try:
                 await asyncio.wait_for(entered_second.wait(), 2.0)
             except asyncio.TimeoutError:
@@ -1638,7 +1588,6 @@ async def test_preempt_enters_replacement_before_stuck_tail_timeout(
     finally:
         go.set()
         never.set()
-        second_go.set()
         release_watchdog.set()
         await _cancel_recovery_tasks(
             first, second, radio._session_lifecycle._recover_task

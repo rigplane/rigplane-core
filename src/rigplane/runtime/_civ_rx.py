@@ -1091,6 +1091,26 @@ class CivRuntime:
         )
         logger.info("civ-data-watchdog: started")
 
+    @staticmethod
+    async def _join_cancelled(task: "asyncio.Task[None]") -> None:
+        """Await a task this call has just cancelled (MOR-3350).
+
+        The joined task's own ``CancelledError`` is expected and swallowed.
+        A cancel requested on THE CALLING task while it waits here must not be
+        consumed with it: it is re-raised once the join ends, whether the
+        joined task ended cancelled or returned normally after swallowing the
+        cancel that was forwarded to it. Counted against ``cancelling()`` at
+        entry so a caller that handled an earlier cancel keeps working.
+        """
+        me = asyncio.current_task()
+        before = me.cancelling() if me is not None else 0
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        if me is not None and me.cancelling() > before:
+            raise asyncio.CancelledError
+
     async def stop_data_watchdog(self) -> None:
         """Stop CI-V data watchdog and any in-flight detached reconnect task.
 
@@ -1103,16 +1123,9 @@ class CivRuntime:
         if task is not None and not task.done():
             task.cancel()
             try:
-                await task
-            except asyncio.CancelledError:
-                # MOR-3350: the join also swallows THIS task's own
-                # cancellation (this is how preempt.cancel() lands when the
-                # predecessor's tail is inside this join).  Propagate it
-                # after the handle bookkeeping, like stop_pump.
-                me = asyncio.current_task()
-                if me is not None and me.cancelling():
-                    self._host._civ_data_watchdog_task = None
-                    raise asyncio.CancelledError
+                await self._join_cancelled(task)
+            finally:
+                self._host._civ_data_watchdog_task = None
         self._host._civ_data_watchdog_task = None
 
         rc_task = self._reconnect_task
@@ -1147,37 +1160,20 @@ class CivRuntime:
             predecessor = pending[1] if is_pending_replacement else None
             rc_task.cancel()
             try:
-                await rc_task
-            except asyncio.CancelledError:
-                # MOR-3350: same swallow as above — a cancel of the stopping
-                # task itself landing in this join must propagate after the
-                # handle bookkeeping, not be mistaken for the joined task.
-                if current is not None and current.cancelling():
-                    self._reconnect_task = None
-                    if is_pending_replacement:
-                        self._pending_replacement = None
-                    raise asyncio.CancelledError
-            if (
-                predecessor is not None
-                and predecessor is not current
-                and not predecessor.done()
-            ):
-                predecessor.cancel()
-                try:
-                    await predecessor
-                except asyncio.CancelledError:
-                    # MOR-3350: same swallow as above — propagate the
-                    # stopping task's own cancellation after bookkeeping.
-                    if current is not None and current.cancelling():
-                        self._reconnect_task = None
-                        if is_pending_replacement:
-                            self._pending_replacement = None
-                        raise asyncio.CancelledError
-            self._reconnect_task = None
-            if is_pending_replacement:
-                # The replacement never started, so its ``finally``
-                # never ran: drop the handoff pair explicitly.
-                self._pending_replacement = None
+                await self._join_cancelled(rc_task)
+                if (
+                    predecessor is not None
+                    and predecessor is not current
+                    and not predecessor.done()
+                ):
+                    predecessor.cancel()
+                    await self._join_cancelled(predecessor)
+            finally:
+                self._reconnect_task = None
+                if is_pending_replacement:
+                    # A replacement cancelled before it started never ran its
+                    # ``finally``: drop the handoff pair explicitly.
+                    self._pending_replacement = None
         elif rc_task is not current and not owned_recovery:
             self._reconnect_task = None
 
@@ -1807,6 +1803,10 @@ class CivRuntime:
         cancelled = False
         try:
             if preempt is not None:
+                # Mark the shared lifecycle run as superseded first, so
+                # callers coalesced onto it (not the predecessor) get a
+                # recoverable ConnectionError rather than a foreign cancel.
+                self._host._session_lifecycle.supersede_recovery()
                 preempt.cancel()
                 await asyncio.gather(preempt, return_exceptions=True)
                 pending = self._pending_replacement

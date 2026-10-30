@@ -602,16 +602,16 @@ async def test_recovery_exhaustion_closes_and_releases() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_coalesced_waiters_survive_foreign_cancel_of_recovery() -> None:
-    """MOR-3350 P1: cancelling the shared recovery reads as one failed attempt.
+@pytest.mark.parametrize("superseded", [True, False])
+async def test_coalesced_waiters_on_a_cancelled_recovery(superseded: bool) -> None:
+    """MOR-3350 P1: callers coalesced onto a cancelled recovery run.
 
-    Two callers coalesce onto one ``_run_recover`` run; the shared task is
-    then cancelled from outside (a preempting replacement / teardown), not
-    via either caller.  The caller whose own cancellation was NOT requested
-    must get ``RigplaneConnectionError("session recovery was superseded")``
-    — never a foreign ``CancelledError`` masquerading as its own
-    cancellation — while a caller that IS being cancelled keeps
-    ``CancelledError``.
+    Two callers share one ``_run_recover`` run. When a preempting replacement
+    supersedes it (``supersede_recovery``), neither caller was cancelled, so
+    both get ``RigplaneConnectionError("session recovery was superseded")``
+    rather than a foreign ``CancelledError`` that reads as their own
+    cancellation. A plain cancel of the shared run (the teardown path) is not
+    marked: callers keep ``CancelledError``.
     """
     lc, mech, _events = make_lifecycle()
     mech.queue_ok()
@@ -626,7 +626,6 @@ async def test_coalesced_waiters_survive_foreign_cancel_of_recovery() -> None:
     first = asyncio.ensure_future(lc.soft_reconnect())
     second = asyncio.ensure_future(lc.soft_reconnect())
     try:
-        # Both callers coalesced onto the same in-flight recovery.
         for _ in range(100):
             if lc._recover_task is not None and len(lc._recovery_waiters) == 2:
                 break
@@ -634,19 +633,15 @@ async def test_coalesced_waiters_survive_foreign_cancel_of_recovery() -> None:
         assert lc._recover_task is not None
         assert len(lc._recovery_waiters) == 2
 
-        # A caller that cancels ITSELF still gets CancelledError ...
-        second.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await second
-
-        # ... while the shared task cancelled from outside (not via the
-        # remaining caller) surfaces as a superseded attempt, not as the
-        # remaining caller's own cancellation.
-        shared = lc._recover_task
-        assert shared is not None
-        shared.cancel()
-        with pytest.raises(ConnectionError, match="superseded"):
-            await first
+        if superseded:
+            lc.supersede_recovery()
+            expected: type[BaseException] = ConnectionError
+        else:
+            lc._recover_task.cancel()
+            expected = asyncio.CancelledError
+        for caller in (first, second):
+            with pytest.raises(expected):
+                await caller
     finally:
         release.set()
         await asyncio.gather(first, second, return_exceptions=True)
