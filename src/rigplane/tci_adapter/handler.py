@@ -762,9 +762,7 @@ class TciAdapterHandler:
         if len(args) >= 2:
             count = parse_int(args[1])
             if count is None:
-                return self._sender_only(
-                    f"audio_stream_samples:{settings.samples};"
-                )
+                return self._sender_only(f"audio_stream_samples:{settings.samples};")
             settings.set_samples(count)
             self._apply_audio_settings()
         return self._sender_only(f"audio_stream_samples:{settings.samples};")
@@ -788,9 +786,7 @@ class TciAdapterHandler:
             try:
                 await pump.start()
             except Exception:
-                logger.debug(
-                    "tci %s: audio start failed", self._owner, exc_info=True
-                )
+                logger.debug("tci %s: audio start failed", self._owner, exc_info=True)
                 return CommandOutcome()
             self._rx_pump = pump
         return self._sender_only("audio_start:0;")
@@ -900,9 +896,7 @@ class TciAdapterHandler:
         is released at unkey/disconnect.
         """
         if tx_route_ready(self._radio) is None:
-            logger.info(
-                "tci %s: refusing tci key with no PCM TX route", self._owner
-            )
+            logger.info("tci %s: refusing tci key with no PCM TX route", self._owner)
             return self._refuse_key()
         if self._authority is None or self._queue is None or self._service is None:
             return self._refuse_key()
@@ -977,9 +971,7 @@ class TciAdapterHandler:
         try:
             await self._authority.submit_ptt(False, self._owner)
         except Exception:
-            logger.debug(
-                "tci %s: best-effort unkey failed", self._owner, exc_info=True
-            )
+            logger.debug("tci %s: best-effort unkey failed", self._owner, exc_info=True)
 
     async def _run_before_on(self) -> bool:
         """Authority ``before_on`` hook: route prep inside the admitted key."""
