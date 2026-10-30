@@ -2104,3 +2104,83 @@ async def test_overflowed_sender_observers_still_updated() -> None:
         await session_a.finish()
         await session_b.finish()
     assert handler.disconnect_calls == 2
+
+
+class TestPublicBinarySink:
+    """Public per-session binary sink for the adapter (MOR-3821 PR5).
+
+    The adapter drains RX audio without reaching into leaf privates:
+    ``session.handler`` finds the owner, ``offer_binary`` enqueues one
+    binary frame under the existing bounded-outbox policy, and
+    ``abort_stalled`` drops a behind client through the normal teardown.
+    """
+
+    async def test_offer_binary_delivers_one_binary_frame(self) -> None:
+        clock = FakeClock()
+        handler = FakeHandler()
+        server = make_server(handler, clock)
+        session, writer, _reader = await open_session(server, handler)
+        try:
+            await wait_for_frames(writer, len(BURST))
+            writer.buffer.clear()
+            assert session.offer_binary(b"rx-audio") is True
+            frames = await wait_for_frames(writer, 1)
+            assert frames == [(WS_OP_BINARY, b"rx-audio")]
+        finally:
+            await session.finish()
+
+    async def test_handler_property_returns_session_handler(self) -> None:
+        clock = FakeClock()
+        handler = FakeHandler()
+        server = make_server(handler, clock)
+        session, _writer, _reader = await open_session(server, handler)
+        try:
+            assert session.handler is handler
+        finally:
+            await session.finish()
+
+    async def test_overflow_closes_only_slow_session(self) -> None:
+        clock = FakeClock()
+        handler = FakeHandler()
+        server = make_server(handler, clock)
+        writer_a = FakeWriter()
+        writer_a.block_drain()
+        session_a, _w, _r = await open_session(server, handler, writer_a)
+        session_b, writer_b, _rb = await open_session(server, handler)
+        try:
+            await wait_for_frames(writer_b, len(BURST))
+            await wait_for_frames(writer_a, 1)
+            stalled = False
+            for _ in range(MAX_QUEUED_OUTBOUND + len(BURST) + 10):
+                if session_a.offer_binary(b"x") is False:
+                    stalled = True
+                    break
+            assert stalled, "slow session must overflow through the public sink"
+            assert writer_a.transport.aborted, "overflow must drop the transport"
+            healthy = await wait_for_frames(writer_b, len(BURST))
+            assert session_b.offer_binary(b"ok") is True
+            frames_b = await wait_for_frames(writer_b, len(healthy) + 1)
+            assert (WS_OP_BINARY, b"ok") in frames_b
+        finally:
+            await session_a.finish()
+            await session_b.finish()
+
+    async def test_offers_refused_after_teardown(self) -> None:
+        clock = FakeClock()
+        handler = FakeHandler()
+        server = make_server(handler, clock)
+        session, _writer, _reader = await open_session(server, handler)
+        await session.finish()
+        assert session.offer_binary(b"late") is False
+
+    async def test_abort_stalled_drops_transport(self) -> None:
+        clock = FakeClock()
+        handler = FakeHandler()
+        server = make_server(handler, clock)
+        session, writer, _reader = await open_session(server, handler)
+        try:
+            session.abort_stalled()
+            assert writer.transport.aborted, "abort must drop the transport"
+        finally:
+            await session.finish()
+        assert session.offer_binary(b"late") is False
