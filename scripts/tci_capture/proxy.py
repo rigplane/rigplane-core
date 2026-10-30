@@ -639,15 +639,19 @@ def _first_value(texts: Sequence[str], prefix: str) -> str | None:
 
 
 def _echo_delay_ms(records: Sequence[dict[str, object]], prefix: str) -> float | None:
-    """Delay between the first c2s write and the next matching s2c echo.
+    """Delay between the first c2s write and the next same-value s2c echo.
 
     TCI messages may batch several `;`-terminated commands in one frame,
     so each `;`-separated command is inspected on its own through the
     shared `_first_value` splitter; the record's own timestamp and
-    direction still order the write before the echo.
+    direction still order the write before the echo. A server reply
+    carrying a different value than the client asked for is not the
+    echo: only the first s2c command whose normalized value equals the
+    requested one counts, so a mismatching reply in between is skipped.
     """
     lowered = prefix.lower()
     wrote_at: float | None = None
+    wanted: str | None = None
     for record in records:
         if record.get("opcode") != WS_OP_TEXT or "text" not in record:
             continue
@@ -656,10 +660,13 @@ def _echo_delay_ms(records: Sequence[dict[str, object]], prefix: str) -> float |
         if not isinstance(moment, (int, float)):
             continue
         if record.get("dir") == "c2s" and wrote_at is None:
-            if _first_value([text], lowered) is not None:
+            value = _first_value([text], lowered)
+            if value is not None:
                 wrote_at = float(moment)
+                wanted = value
         elif record.get("dir") == "s2c" and wrote_at is not None:
-            if _first_value([text], lowered) is not None:
+            value = _first_value([text], lowered)
+            if value is not None and value == wanted:
                 return (float(moment) - wrote_at) * 1000.0
     return None
 

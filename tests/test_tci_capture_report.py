@@ -211,6 +211,51 @@ def test_vfo_echo_missing_one_stays_incomplete(proxy_module: object) -> None:
     assert report.by_id("vfo1_echo").status == "OPEN"
 
 
+def test_vfo_echo_mismatching_value_stays_open(proxy_module: object) -> None:
+    """A different-value s2c reply is not an echo, even when batched."""
+    records = [
+        trec("c2s", "modulation:0,DIGU;vfo:0,0,14074000;", 1.0),
+        trec("s2c", "modulation:0,DIGU;vfo:0,0,7100000;", 1.1),
+    ]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("vfo0_echo").status == "OPEN"
+
+
+def test_vfo_echo_matching_value_covers(proxy_module: object) -> None:
+    """Same batched pair with the equal value counts as an echo."""
+    records = [
+        trec("c2s", "modulation:0,DIGU;vfo:0,0,14074000;", 1.0),
+        trec("s2c", "modulation:0,DIGU;vfo:0,0,14074000;", 1.1),
+    ]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("vfo0_echo").status == "COVERED"
+
+
+def test_vfo_echo_skips_different_value_reply(proxy_module: object) -> None:
+    """A wrong-value reply first, then the matching one: COVERED, later timing."""
+    records = [
+        trec("c2s", "vfo:0,0,14074000;", 1.0),
+        trec("s2c", "vfo:0,0,7100000;", 1.1),
+        trec("s2c", "vfo:0,0,14074000;", 1.5),
+    ]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    item = report.by_id("vfo0_echo")
+    assert item.status == "COVERED"
+    assert "500" in item.evidence
+
+
+def test_vfo_echo_mismatching_value_stays_open_unbatched(
+    proxy_module: object,
+) -> None:
+    """Non-batched different-value reply is not an echo either."""
+    records = [
+        trec("c2s", "vfo:0,0,14074000;", 1.0),
+        trec("s2c", "vfo:0,0,7100000;", 1.1),
+    ]
+    report = proxy_module.coverage_report(records)  # type: ignore[attr-defined]
+    assert report.by_id("vfo0_echo").status == "OPEN"
+
+
 def test_tx_header_covered_by_client_to_server_audio(proxy_module: object) -> None:
     """Genuine c2s TX_AUDIO covers the tx_header item (design 8.3)."""
     records = [brec("c2s", 2, 1.0)]
