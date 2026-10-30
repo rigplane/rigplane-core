@@ -207,11 +207,6 @@ class WebSocketConnection:
         self._pong_timeout: float = 60.0
         self._clock = clock
 
-    @property
-    def deflate_enabled(self) -> bool:
-        """True if permessage-deflate was negotiated."""
-        return self._deflate
-
     def is_alive(self) -> bool:
         """True if connection is open and a pong was received recently enough."""
         if self._closed:

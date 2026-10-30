@@ -54,7 +54,7 @@ Push to `main`:
 | Workflow | Trigger | Runner labels | What it runs | Status |
 |---|---|---|---|---|
 | `quick.yml`, `visual.yml`, `consumer-contracts-gate.yml`, `state-types-gate.yml`, `rebrand-gate.yml`, `doc-citation-gate.yml` | `push` to `main`, with the same `paths` or `paths-ignore` entries as the workflow's `pull_request` trigger | As in the Development table | The jobs of the pull-request run, without the draft condition; `quick.yml` also runs the steps gated on `github.ref == 'refs/heads/main'` (version extraction and badge updates). `visual.yml` annotates a failed push run as informational | Informational |
-| `full.yml` | `push` to `main` when the head commit message contains `[full-ci]` | `[self-hosted, linux, build]` | The jobs of the scheduled run below | Informational |
+| `full.yml` | Every `push` to `main` | `[self-hosted, linux, build]` | The jobs of the scheduled run below | Informational |
 
 Scheduled against `main` (each also has `workflow_dispatch`):
 
