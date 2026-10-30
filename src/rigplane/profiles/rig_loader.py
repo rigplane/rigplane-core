@@ -3430,12 +3430,14 @@ def load_rig(path: Path) -> RigConfig:
             usb_section,
             frozenset({"audio_codec", "serial_functions"}),
         )
-        usb_functions: dict[str, frozenset[UsbFunctionId]] = {}
+        usb_functions: dict[
+            str, frozenset[UsbFunctionId] | tuple[UsbFunctionId, ...]
+        ] = {}
         for key in ("audio_codec", "serial_functions"):
             entries = usb_section.get(key, [])
             if not isinstance(entries, list):
                 raise RigLoadError(f"{filename}: [usb].{key} must be a list of tables")
-            functions: set[UsbFunctionId] = set()
+            ordered: list[UsbFunctionId] = []
             for entry in entries:
                 if not isinstance(entry, dict):
                     raise RigLoadError(
@@ -3450,10 +3452,14 @@ def load_rig(path: Path) -> RigConfig:
                         f"{filename}: [usb].{key} requires string vid and pid"
                     )
                 try:
-                    functions.add(UsbFunctionId(vid, pid))
+                    ordered.append(UsbFunctionId(vid, pid))
                 except ValueError as exc:
                     raise RigLoadError(f"{filename}: [usb].{key}: {exc}") from exc
-            usb_functions[key] = frozenset(functions)
+            # Each serial_functions entry is one serial function: the same
+            # VID:PID may appear more than once. audio_codec stays a set.
+            usb_functions[key] = (
+                frozenset(ordered) if key == "audio_codec" else tuple(ordered)
+            )
         usb_identity = UsbAudioIdentity(
             audio_codec=usb_functions["audio_codec"],
             serial_functions=usb_functions["serial_functions"],
