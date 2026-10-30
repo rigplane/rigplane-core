@@ -720,6 +720,13 @@ class CivRuntime:
         # late soft_reconnect from firing after an explicit disconnect
         # (Codex P1 on PR #851).
         self._reconnect_task: asyncio.Task[None] | None = None
+        # One in-flight fast-reconnect task owned by the recovery-wait poller
+        # (MOR-2083). ``_wait_for_civ_transport_recovery`` runs its bounded
+        # kick on this task and later waits reuse it while it is still
+        # running, so a permanently stuck recovery cannot pile up one task
+        # per poll. Tracked here so stop_data_watchdog() can cancel it on
+        # the same teardown path as ``_reconnect_task``.
+        self._fast_reconnect_task: asyncio.Task[None] | None = None
         self._soft_recovery_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, bytes] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
@@ -1119,6 +1126,27 @@ class CivRuntime:
             self._reconnect_task = None
         elif rc_task is not current and not owned_recovery:
             self._reconnect_task = None
+
+        # Same teardown for the poller's in-flight fast-reconnect task
+        # (MOR-2083): an explicit disconnect during the cooldown must not be
+        # undone by a late soft_reconnect. Cancelling this task is safe for
+        # the lifecycle's shared recovery — cancelling an awaiter never
+        # cancels the awaited ``_recover_task`` — and the poller itself only
+        # ever abandons its wait, never cancels. Unlike ``_reconnect_task``
+        # (whose coroutine swallows its own errors) this task can carry a
+        # real soft_reconnect exception, so swallow that too on teardown.
+        fast_task = self._fast_reconnect_task
+        if fast_task is not None and fast_task is not current and not fast_task.done():
+            fast_task.cancel()
+            try:
+                await fast_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+            self._fast_reconnect_task = None
+        elif fast_task is not current:
+            self._fast_reconnect_task = None
 
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
@@ -4112,6 +4140,66 @@ class CivRuntime:
                 return
             raise ConnectionError("Not connected to radio")
 
+    @staticmethod
+    def _retrieve_fast_reconnect_exception(task: asyncio.Task[None]) -> None:
+        """Retrieve a finished fast-reconnect task's outcome (MOR-2083).
+
+        A poller whose wait timed out abandons the task while it keeps
+        running; without retrieval asyncio would log "exception was never
+        retrieved" when it later fails.
+        """
+        if not task.cancelled():
+            task.exception()
+
+    def _get_or_start_fast_reconnect_task(self) -> asyncio.Task[None]:
+        """Return the one in-flight fast-reconnect task, starting it if needed."""
+        task = self._fast_reconnect_task
+        if task is None or task.done():
+            task = asyncio.ensure_future(self._host.soft_reconnect())
+            task.add_done_callback(self._retrieve_fast_reconnect_exception)
+            self._fast_reconnect_task = task
+        return task
+
+    async def _await_fast_soft_reconnect(self, deadline: float) -> None:
+        """Run one fast soft_reconnect bounded by ``deadline`` (MOR-2083).
+
+        The poller's own wait must never cancel the recovery:
+        ``host.soft_reconnect()`` coalesces onto the lifecycle's shared
+        ``_recover_task`` (also awaited by the watchdog's detached
+        recovery), so a bare ``asyncio.wait_for`` here would kill the
+        lifecycle's retry ladder on a poller timeout. Instead the call runs
+        as its own task and only this wait is abandoned — ``asyncio.wait``
+        never cancels the waited task. On expiry this raises the same
+        ``TimeoutError("CI-V transport recovery timed out")`` the caller
+        raises at the deadline, so a lock held by the caller is released
+        promptly. Outcome handling is unchanged: ``ConnectionError``/
+        ``TimeoutError``/``OSError`` -> debug, anything else -> warning.
+        The caller's own ``CancelledError`` propagates from the wait.
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("CI-V transport recovery timed out")
+        task = self._get_or_start_fast_reconnect_task()
+        done, _ = await asyncio.wait({task}, timeout=remaining)
+        if not done:
+            raise TimeoutError("CI-V transport recovery timed out")
+        try:
+            task.result()
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.debug(
+                "Fast CI-V soft_reconnect attempt failed: %s",
+                exc,
+            )
+        except asyncio.CancelledError:
+            # The task itself was cancelled (e.g. teardown raced the poller);
+            # the caller's own cancellation already propagated via the wait.
+            logger.debug("Fast CI-V soft_reconnect attempt was cancelled")
+        except Exception:
+            logger.warning(
+                "Fast CI-V soft_reconnect: unexpected error",
+                exc_info=True,
+            )
+
     async def _wait_for_civ_transport_recovery(
         self, timeout: "float | None" = None
     ) -> None:
@@ -4155,31 +4243,9 @@ class CivRuntime:
                             self._host, "_connected", False
                         )
                         if (civ_t2 is None or still_stalled) and ctrl_alive:
-                            try:
-                                await self._host.soft_reconnect()
-                            except (ConnectionError, TimeoutError, OSError) as exc:
-                                logger.debug(
-                                    "Fast CI-V soft_reconnect attempt failed: %s",
-                                    exc,
-                                )
-                            except Exception:
-                                logger.warning(
-                                    "Fast CI-V soft_reconnect: unexpected error",
-                                    exc_info=True,
-                                )
+                            await self._await_fast_soft_reconnect(deadline)
                 else:
-                    try:
-                        await self._host.soft_reconnect()
-                    except (ConnectionError, TimeoutError, OSError) as exc:
-                        logger.debug(
-                            "Fast CI-V soft_reconnect attempt failed: %s",
-                            exc,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Fast CI-V soft_reconnect: unexpected error",
-                            exc_info=True,
-                        )
+                    await self._await_fast_soft_reconnect(deadline)
 
             await asyncio.sleep(0.2)
 
