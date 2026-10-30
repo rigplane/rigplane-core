@@ -478,6 +478,12 @@ class TciSession:
             await self.finish()
             return
         for command in parse_line(text):
+            if self._done:
+                # Teardown won while the previous callback was parked:
+                # never dispatch the next compound command against a
+                # disconnected handler (also covers iterations reached
+                # through the ``except``/type guards below).
+                return
             try:
                 outcome = await self._handler.on_command(command.name, command.args)
             except Exception:
@@ -632,6 +638,9 @@ class TciServer:
         self._starting = False
         self._sessions: dict[str, TciSession] = {}
         self._setup_tasks: set[asyncio.Task[Any]] = set()
+        # Accepted sockets parked in the upgrade or ``on_connect``: closed
+        # directly by ``stop()``, independent of callback cancellation.
+        self._setup_writers: set[Any] = set()
         # Disconnect callbacks that outlived their bounded waits: held
         # strongly until they end (then dropped and reaped), so an
         # abandoned finalizer is never garbage-collected mid-cleanup.
@@ -741,6 +750,15 @@ class TciServer:
         pending = [task for task in list(self._setup_tasks) if not task.done()]
         for task in pending:
             task.cancel()
+        # Release every accepted socket first: a cancellation-resistant
+        # ``on_connect`` keeps its setup task parked past the bounded
+        # waits below, but the client must still observe EOF now. The
+        # setup task itself is bound-waited (and retained) as before.
+        for pending_writer in list(self._setup_writers):
+            try:
+                pending_writer.close()
+            except Exception:
+                pass
         finish_tasks = [asyncio.create_task(session.finish()) for session in sessions]
         joined: list[asyncio.Task[Any]] = [*finish_tasks, *pending]
         if joined:
@@ -821,30 +839,38 @@ class TciServer:
         """
         session_id = f"tci-session-{next(self._ids)}"
         setup_gen = self._generation
+        # Own the accepted socket while ``on_connect`` runs: ``stop()``
+        # closes it directly, so a callback that never returns still
+        # releases the client (also covers direct ``_open_session``
+        # callers, not only ``_accept_request``).
+        self._setup_writers.add(writer)
         try:
-            burst = await handler.on_connect()
-        except asyncio.CancelledError:
-            # Shutdown cancelled the pending setup: the handler started
-            # but never completed, so it is cleaned up exactly once.
-            writer.close()
-            await self._guarded_disconnect(handler)
-            return None
-        except Exception:
-            logger.debug("tci %s: on_connect failed", session_id)
-            writer.close()
-            await self._guarded_disconnect(handler)
-            return None
-        if self._generation != setup_gen:
-            writer.close()
-            await self._guarded_disconnect(handler)
-            return None
-        session = TciSession(session_id, reader, writer, handler, self, self._clock)
-        self._sessions[session_id] = session
-        for line in burst:
-            session._offer(make_frame(WS_OP_TEXT, line.encode("utf-8")))
-        session.launch()
-        logger.info("tci %s: connected", session_id)
-        return session
+            try:
+                burst = await handler.on_connect()
+            except asyncio.CancelledError:
+                # Shutdown cancelled the pending setup: the handler started
+                # but never completed, so it is cleaned up exactly once.
+                writer.close()
+                await self._guarded_disconnect(handler)
+                return None
+            except Exception:
+                logger.debug("tci %s: on_connect failed", session_id)
+                writer.close()
+                await self._guarded_disconnect(handler)
+                return None
+            if self._generation != setup_gen:
+                writer.close()
+                await self._guarded_disconnect(handler)
+                return None
+            session = TciSession(session_id, reader, writer, handler, self, self._clock)
+            self._sessions[session_id] = session
+            for line in burst:
+                session._offer(make_frame(WS_OP_TEXT, line.encode("utf-8")))
+            session.launch()
+            logger.info("tci %s: connected", session_id)
+            return session
+        finally:
+            self._setup_writers.discard(writer)
 
     async def _guarded_disconnect(self, handler: TciHandler) -> None:
         await _run_guarded_disconnect(handler, "startup", self._unsettled)
@@ -864,6 +890,10 @@ class TciServer:
         task = asyncio.current_task()
         if task is not None:
             self._setup_tasks.add(task)
+        # Own the accepted socket for the whole accept (upgrade park
+        # included): ``stop()`` closes it directly even when the task
+        # cancel lands in a callback that swallows cancellation.
+        self._setup_writers.add(writer)
         try:
             try:
                 head = await reader.readuntil(b"\r\n\r\n")
@@ -913,5 +943,6 @@ class TciServer:
             writer.close()
             raise
         finally:
+            self._setup_writers.discard(writer)
             if task is not None:
                 self._setup_tasks.discard(task)
