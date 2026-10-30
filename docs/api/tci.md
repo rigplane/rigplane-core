@@ -85,10 +85,13 @@ Keying goes only through `ManagedTxAuthority` with the shared
 `execute_managed_ptt` submission; there is no second keying path (no
 `Radio.set_ptt` call exists in `rigplane.tci_adapter`). Each socket
 mints one owner id (`tci-client-N`), released on disconnect through
-the shared `release_managed_session_tx`: a client that drops mid-over
-cannot strand the lease past the handback bound. Without the managed
-composition the server announces `receive_only:true`, `tx_enable` is
-false, and every key is refused.
+the shared `release_managed_session_tx`: the release attempt is bounded
+by the handback timeout, and a failed or twice-cancelled handback
+leaves the documented `RELEASE_REQUIRED` outcome — the lease stays
+held with its release obligation unsettled, surfaced by the
+uncertain-shutdown diagnostics. Without the managed composition the
+server announces `receive_only:true`, `tx_enable` is false, and every
+key is refused.
 
 A key is refused, with no radio write, when the composite is absent,
 the controller mode is `remote`, another owner holds PTT, the radio

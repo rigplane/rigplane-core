@@ -110,7 +110,10 @@ class TciAdapterServer:
         self._clock = clock
         self._poll_interval = poll_interval
         self._notifier = TciNotifier(
-            radio=radio, store=state_store, managed_present=all(supplied)
+            radio=radio,
+            store=state_store,
+            managed_present=all(supplied),
+            managed_tx_authority=managed_tx_authority,
         )
         self._ids = itertools.count(1)
         self._external_factory = handler_factory

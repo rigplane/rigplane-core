@@ -22,7 +22,9 @@ from ..audio.route import (
     resolve_audio_route,
     rigctld_wsjtx_policy,
 )
+from ..core.command_dispatch import command_descriptor
 from ..core.command_service import (
+    CommandExecutionInvalidatedError,
     command_intent_from_request,
     resolve_power_level_target,
 )
@@ -53,10 +55,12 @@ from .notifier import (
     READ_PATHS,
     TciNotifier,
     announced_modulations,
+    authority_keyed,
     drive_percent,
     project_state,
     supports_data_mode,
     tx_frequency,
+    tx_role_tci,
 )
 
 logger = logging.getLogger(__name__)
@@ -105,6 +109,70 @@ class TciAdapterConfig:
 
 class _TciWriteError(Exception):
     """A write that reached no radio effect (no-op or refused input)."""
+
+
+class _TciCommandExecutor:
+    """Execute TCI write intents against the radio (rigctld parity).
+
+    The ticket is captured at the start of every intent and re-validated
+    immediately before each radio effect; when another seat holds the
+    controller the write is refused with no radio effect. Relative-VFO
+    writes carry the validation as ``before_set`` so the transport's
+    final currency check enforces it as well.
+    """
+
+    def __init__(self, handler: TciAdapterHandler) -> None:
+        self._handler = handler
+
+    async def execute(self, intent: Any) -> None:
+        handler = self._handler
+        try:
+            ticket = handler._capture_ticket()
+        except ControllerError as exc:
+            raise CommandRejectedError(str(exc)) from exc
+        name = intent.name
+        params = intent.params
+        if name == "set_freq":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_freq(
+                int(params["freq_hz"]), receiver=int(params.get("receiver", 0))
+            )
+        elif name == "set_split_freq":
+            handler._validate_ticket(ticket)
+            await handler._queued_split_freq(intent, ticket)
+        elif name == "set_mode":
+            receiver = int(params.get("receiver", 0))
+            mode = str(params["mode"])
+            handler._validate_ticket(ticket)
+            if receiver == 0:
+                await handler._radio.set_mode(mode, filter_width=None)
+            else:
+                await handler._radio.set_mode(
+                    mode, filter_width=None, receiver=receiver
+                )
+        elif name == "set_split":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_split(bool(params["on"]))
+        elif name == "set_rit":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_rit_frequency(int(params["hz"]))
+        elif name == "set_xit":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_rit_frequency(int(params["hz"]))
+        elif name == "set_rit_status":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_rit_status(bool(params["on"]))
+        elif name == "set_rit_tx_status":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_rit_tx_status(bool(params["on"]))
+        elif name == "set_rf_power":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_rf_power(int(params["native"]))
+        elif name == "set_key_speed":
+            handler._validate_ticket(ticket)
+            await handler._radio.set_key_speed(int(params["speed"]))
+        else:
+            raise ValueError(f"unsupported TCI command intent: {name!r}")
 
 
 class TciAdapterHandler:
@@ -161,7 +229,9 @@ class TciAdapterHandler:
             radio=radio,
             store=state_store,
             managed_present=all(supplied),
+            managed_tx_authority=managed_tx_authority,
         )
+        self._executor = _TciCommandExecutor(self)
         self._ignored_logged: set[str] = set()
         self._state_model_service_checked = False
 
@@ -178,19 +248,30 @@ class TciAdapterHandler:
     # -- leaf contract ---------------------------------------------------
 
     async def on_connect(self) -> Sequence[str]:
-        """Return the init burst (spec 5.4)."""
+        """Register the session, then return the init burst (spec 5.4)."""
+        if self._queue is not None:
+            self._queue.register_session(self._owner)
         return await self._notifier.init_burst()
 
     async def on_binary(self, payload: bytes) -> None:
         """Binary frames are phase audio: ignored until it ships (spec 6.2)."""
 
     async def on_disconnect(self) -> None:
-        """Release the session's managed TX lease, exactly once (spec 7.4)."""
-        await release_managed_session_tx(
-            self.release_session_tx if self._authority is not None else None,
-            self._owner,
-            handback_timeout_s=SESSION_TX_HANDBACK_TIMEOUT_S,
-        )
+        """Unregister the session, then release its managed TX lease (7.4).
+
+        Unregistration runs before the awaited disconnect cleanup so no
+        queued key can outlive the socket; the managed release is preserved
+        on every path.
+        """
+        try:
+            if self._queue is not None:
+                self._queue.unregister_session(self._owner)
+        finally:
+            await release_managed_session_tx(
+                self.release_session_tx if self._authority is not None else None,
+                self._owner,
+                handback_timeout_s=SESSION_TX_HANDBACK_TIMEOUT_S,
+            )
 
     async def release_session_tx(self, session_id: str) -> None:
         """Hand back any managed TX lease ``session_id`` still holds."""
@@ -336,21 +417,60 @@ class TciAdapterHandler:
 
     async def _state(self) -> Any:
         self._ensure_fresh("tci.read")
-        return await project_state(
+        state = await project_state(
             self._radio,
             self._store,
-            managed_keyed=self._managed_keyed(),
+            managed_keyed=authority_keyed(self._authority),
             fallback_modulation=self._notifier.modulation,
         )
+        # Reads share the projection path: retain what was announced so a
+        # later unmapped mode falls back to it (never to a stale value).
+        self._notifier.note_modulation(state.modulation)
+        return state
 
-    def _managed_keyed(self) -> bool:
-        if self._authority is None:
-            return False
-        try:
-            snapshot = self._authority.snapshot_nowait()
-        except Exception:
-            return False
-        return bool(getattr(getattr(snapshot, "state", None), "intent", None))
+    def _capture_ticket(self) -> Any:
+        """Capture the controller ticket for one write (rigctld parity).
+
+        Raises :class:`ControllerError` when the seat is held elsewhere:
+        the caller refuses the write with the actual state and performs
+        no radio effect. The explicit remote-mode check mirrors the key
+        path, so doubles without a ``capture`` method are gated exactly
+        like the real authority (whose ``capture`` refuses there too).
+        """
+        controller = self._controller_authority
+        if controller is None:
+            return None
+        if getattr(controller, "mode", "local") == "remote":
+            raise ControllerError("controller holds the remote seat")
+        capture = getattr(controller, "capture", None)
+        if not callable(capture):
+            return None
+        return capture()
+
+    @staticmethod
+    def _validate_ticket(ticket: Any) -> None:
+        """Re-validate a captured ticket immediately before the effect."""
+        if ticket is not None:
+            ticket.authority.validate(ticket)
+
+    async def _execute_write(self, intent: Any) -> None:
+        """Run one write intent through the shared command pipeline.
+
+        With the composed service present the intent goes through
+        :meth:`CommandService.execute` with the adapter executor (pending
+        overlays, lifecycle, invalidation — exactly like the rigctld
+        seat); in seat-less tests the same executor runs directly, so the
+        controller gate holds on every path.
+        """
+        service = self._service
+        execute = getattr(service, "execute", None)
+        if callable(execute) and command_descriptor(intent.name) is not None:
+            try:
+                await execute(intent, executor=self._executor)
+            except CommandExecutionInvalidatedError as exc:
+                raise _TciWriteError(f"write invalidated: {exc}") from exc
+            return
+        await self._executor.execute(intent)
 
     @staticmethod
     def _reply(line: str) -> CommandOutcome:
@@ -383,8 +503,7 @@ class TciAdapterHandler:
 
     async def _read_drive(self, name: str = "drive") -> CommandOutcome:
         state = await self._state()
-        drive = drive_percent(state.power_native, self._radio)
-        return self._reply(f"{name}:0,{drive};")
+        return self._reply(f"{name}:0,{state.drive};")
 
     async def _read_rit_enable(self, name: str) -> CommandOutcome:
         state = await self._state()
@@ -485,20 +604,20 @@ class TciAdapterHandler:
                 "tci %s: TX admission probe failed", self._owner, exc_info=True
             )
             return self._refuse_key()
-        try:
-            if not await self._check_tx_tuple():
-                return self._refuse_key()
-        except Exception:
-            logger.debug("tci %s: TX tuple check failed", self._owner, exc_info=True)
-            return self._refuse_key()
         loop = asyncio.get_running_loop()
         try:
+            # The tuple check runs INSIDE the managed admission (as
+            # ``before_on``): after the intent commits to PTT(owner) and
+            # before PTT_ON dispatches. A mode/DATA change queued between
+            # an early look and admission is therefore refused with no
+            # PTT write, instead of keying a stale tuple.
             submission, ready = self._tracker.begin_key(
                 self._authority,
                 owner=self._owner,
                 on=True,
                 expires_at_monotonic=loop.time() + self._config.command_timeout,
                 connection_generation=self._queue.capture_connection_generation(),
+                before_on=self._check_tx_tuple,
             )
             await execute_managed_ptt(
                 authority=self._authority,
@@ -552,24 +671,29 @@ class TciAdapterHandler:
         return self._reply("trx:0,false;")
 
     async def _check_tx_tuple(self) -> bool:
-        """Pre-key check (spec 5.7): observed TX tuple matches programming.
+        """Admission-time check (spec 5.7): observed TX tuple matches.
 
-        The last adapter-programmed tuple (TCI name, numeric DATA
-        sub-mode, MOD input) is read back from the observed store state
-        (channel B while split is on, else A) and, for an explicit
-        numeric sub-mode, from the radio's ``get_data<N>_mod_input``.
-        Anything else -- never programmed, mode or sub-mode moved, input
-        moved, readback failed -- refuses the key before any PTT write.
+        Runs inside the managed admission (as ``before_on``), on a fresh
+        read-back of the RAW TX-role tuple (native mode, numeric DATA,
+        MOD input). Missing evidence (no published mode/DATA), an
+        unmapped raw mode (e.g. RTTY), a moved tuple or MOD input, or a
+        failed readback refuses the key with no PTT write. With no prior
+        programming (bare ``trx:0,true``) the current input keys when the
+        radio is correctly configured and the authority admits it: there
+        is no per-socket programming prerequisite.
         """
         required = self._tx_required
         if required is None:
-            return False
+            return True
         name, data, mod_input = required
-        state = await self._state()
-        if state.split:
-            actual_name, actual_data = state.modulation_b, state.data_b
-        else:
-            actual_name, actual_data = state.modulation, state.data_a
+        try:
+            state = await self._state()
+            actual_name, actual_data = tx_role_tci(self._store, split=state.split)
+        except Exception:
+            logger.debug("tci %s: TX tuple readback failed", self._owner, exc_info=True)
+            return False
+        if actual_name is None or actual_data is None:
+            return False
         if actual_name != name or _data_num(actual_data) != _data_num(data):
             return False
         if (
@@ -579,16 +703,17 @@ class TciAdapterHandler:
             and mod_input is not None
         ):
             getter = getattr(self._radio, f"get_data{int(data)}_mod_input", None)
-            if callable(getter):
-                try:
-                    actual_input = await getter()
-                except Exception:
+            if not callable(getter):
+                return False
+            try:
+                actual_input = await getter()
+            except Exception:
+                return False
+            try:
+                if int(actual_input) != int(mod_input):
                     return False
-                try:
-                    if int(actual_input) != int(mod_input):
-                        return False
-                except (TypeError, ValueError):
-                    return False
+            except (TypeError, ValueError):
+                return False
         return True
 
     def _intent(self, name: str, params: Mapping[str, Any], **kwargs: Any) -> Any:
@@ -614,20 +739,20 @@ class TciAdapterHandler:
         if channel == 0:
             try:
                 intent = self._intent("set_freq", {"freq": hz, "receiver": 0})
-                await self._radio.set_freq(int(intent.params["freq_hz"]), receiver=0)
+                await self._execute_write(intent)
             except Exception:
                 logger.debug("tci %s: set_freq failed", self._owner, exc_info=True)
                 return await self._sender_current(self._read_vfo(args[:2]))
             return self._reply(f"vfo:0,0,{hz};")
         try:
             intent = self._intent("set_split_freq", {"freq_hz": hz})
-            await self._write_split_freq(intent)
+            await self._execute_write(intent)
         except Exception:
             logger.debug("tci %s: set_split_freq failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_vfo(args[:2]))
         return self._reply(f"vfo:0,1,{hz};")
 
-    async def _write_split_freq(self, intent: Any) -> None:
+    async def _queued_split_freq(self, intent: Any, ticket: Any) -> None:
         """Channel-1 write: queued when managed, direct otherwise (rigctld)."""
         if self._authority is not None and self._queue is not None:
             loop = asyncio.get_running_loop()
@@ -658,7 +783,9 @@ class TciAdapterHandler:
             raise _TciWriteError("no relative-VFO surface")
         try:
             await self._radio.write_relative_vfo_frequency(
-                int(intent.params["freq_hz"]), selected=False
+                int(intent.params["freq_hz"]),
+                selected=False,
+                before_set=lambda: self._validate_ticket(ticket),
             )
         except (CommandRejectedError, ControllerError, CommandError) as exc:
             raise _TciWriteError(f"split write refused: {exc}") from exc
@@ -671,24 +798,24 @@ class TciAdapterHandler:
         mode, data_on = TCI_TO_CORE_MODE[name]
         try:
             intent = self._intent("set_mode", {"mode": mode.name, "receiver": 0})
-            await self._radio.set_mode(
-                str(intent.params["mode"]), filter_width=None, receiver=0
-            )
+            await self._execute_write(intent)
+            ticket = self._capture_ticket()
             if data_on:
-                data_value = await self._write_data_on()
+                data_value = await self._write_data_on(ticket)
             else:
                 data_value = False
                 if mode.name in ("USB", "LSB"):
-                    await self._write_data_off()
-            await self._sync_split_mode(int(mode.value), data_value)
+                    await self._write_data_off(ticket)
+            await self._sync_split_mode(int(mode.value), data_value, ticket)
             _, policy_input = rigctld_wsjtx_policy(resolve_audio_route(self._radio))
             self._tx_required = (name, data_value, policy_input)
+            self._notifier.note_modulation(name)
         except Exception:
             logger.debug("tci %s: set_mode failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_modulation())
         return self._reply(f"modulation:0,{name};")
 
-    async def _write_data_on(self) -> int | bool:
+    async def _write_data_on(self, ticket: Any = None) -> int | bool:
         """Apply the WSJT-X DATA route shared with the rigctld seat (P0d)."""
         route = resolve_audio_route(self._radio)
         data_mode, mod_input = rigctld_wsjtx_policy(route)
@@ -703,36 +830,48 @@ class TciAdapterHandler:
             value = True
         if not supports_data_mode(self._radio):
             raise _TciWriteError("no DATA-mode command")
+        self._validate_ticket(ticket)
         await apply_wsjtx_data_mod_input(self._radio, data_mode=value, source=mod_input)
         setter = getattr(self._radio, "set_data_mode", None)
         if not callable(setter):
             raise _TciWriteError("no DATA-mode command")
+        self._validate_ticket(ticket)
         await setter(value)
         return value
 
-    async def _write_data_off(self) -> None:
+    async def _write_data_off(self, ticket: Any = None) -> None:
         """Clear DATA for a plain USB/LSB set, verified like rigctld's."""
         if not supports_data_mode(self._radio):
             return
         setter = getattr(self._radio, "set_data_mode", None)
         if not callable(setter):
             return
+        self._validate_ticket(ticket)
         await setter(False)
         reader = getattr(self._radio, "get_data_mode", None)
         if callable(reader) and await reader():
             raise _TciWriteError("DATA still on after clear")
 
-    async def _sync_split_mode(self, mode_civ: int, data: int | bool) -> None:
+    async def _sync_split_mode(
+        self, mode_civ: int, data: int | bool, ticket: Any = None
+    ) -> None:
         """Keep B's mode tuple equal to A's (spec 5.7).
 
         Direct radio call, never queued: the ``set_split_mode`` intent
         binding rejects numeric DATA (``ValueError: data must be a boolean
         or None``), so the queued intent cannot carry the sub-mode P0e
-        added. The method itself is that widened surface.
+        added. The method itself is that widened surface. The controller
+        ticket travels as ``before_set`` so the transport's final currency
+        check enforces it too.
         """
         if not isinstance(self._radio, RelativeVfoModeWritable):
             return
-        await self._radio.write_relative_vfo_mode(mode_civ, selected=False, data=data)
+        await self._radio.write_relative_vfo_mode(
+            mode_civ,
+            selected=False,
+            data=data,
+            before_set=lambda: self._validate_ticket(ticket),
+        )
 
     async def _write_split(self, args: tuple[str, ...]) -> CommandOutcome:
         on = parse_bool(args[1])
@@ -741,10 +880,11 @@ class TciAdapterHandler:
         if not isinstance(self._radio, SplitCapable):
             return await self._sender_current(self._read_split())
         try:
-            self._intent("set_split", {"on": on})
-            await self._radio.set_split(on)
+            intent = self._intent("set_split", {"on": on})
+            await self._execute_write(intent)
             if on:
-                await self._sync_split_on()
+                ticket = self._capture_ticket()
+                await self._sync_split_on(ticket)
                 split_state = await self._state()
                 _, split_input = rigctld_wsjtx_policy(resolve_audio_route(self._radio))
                 self._tx_required = (
@@ -757,14 +897,16 @@ class TciAdapterHandler:
             return await self._sender_current(self._read_split())
         return self._reply(f"split_enable:0,{_tf(on)};")
 
-    async def _sync_split_on(self) -> None:
+    async def _sync_split_on(self, ticket: Any = None) -> None:
         """On ``split_enable:0,true``, program B with A's tuple (spec 5.7)."""
         state = await self._state()
         entry = TCI_TO_CORE_MODE.get(state.modulation)
         if entry is None:
             return
         mode, data_on = entry
-        await self._sync_split_mode(int(mode.value), state.data_a if data_on else False)
+        await self._sync_split_mode(
+            int(mode.value), state.data_a if data_on else False, ticket
+        )
 
     async def _write_rit_enable(
         self, name: str, args: tuple[str, ...]
@@ -777,11 +919,10 @@ class TciAdapterHandler:
             return await self._sender_current(self._read_rit_enable(name))
         try:
             if name == "rit_enable":
-                self._intent("set_rit_status", {"on": on})
-                await self._radio.set_rit_status(on)
+                intent = self._intent("set_rit_status", {"on": on})
             else:
-                self._intent("set_rit_tx_status", {"on": on})
-                await self._radio.set_rit_tx_status(on)
+                intent = self._intent("set_rit_tx_status", {"on": on})
+            await self._execute_write(intent)
         except Exception:
             logger.debug("tci %s: rit status failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_rit_enable(name))
@@ -797,14 +938,13 @@ class TciAdapterHandler:
         if not isinstance(self._radio, RitXitCapable):
             return await self._sender_current(self._read_rit_offset(name))
         try:
+            # Offset writes change ONLY the offset (spec 5.5): TCI exposes
+            # separate enable commands, so no enable state is touched here.
             if name == "rit_offset":
                 intent = self._intent("set_rit", {"hz": hz})
-                await self._radio.set_rit_frequency(int(intent.params["hz"]))
-                await self._radio.set_rit_status(int(intent.params["hz"]) != 0)
             else:
                 intent = self._intent("set_xit", {"hz": hz})
-                await self._radio.set_rit_frequency(int(intent.params["hz"]))
-                await self._radio.set_rit_tx_status(int(intent.params["hz"]) != 0)
+            await self._execute_write(intent)
         except Exception:
             logger.debug("tci %s: rit offset failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_rit_offset(name))
@@ -826,14 +966,14 @@ class TciAdapterHandler:
                 power_max_watts=getattr(radio_profile, "max_watts", None),
                 power_min_watts=getattr(radio_profile, "min_watts", None),
             )
-            self._intent(
+            intent = self._intent(
                 "set_rf_power",
-                {"value": pct / 100.0},
+                {"value": pct / 100.0, "native": int(native)},
                 power_native_unit=getattr(self._radio, "native_power_unit", "raw_255"),
                 power_max_watts=getattr(radio_profile, "max_watts", None),
                 power_min_watts=getattr(radio_profile, "min_watts", None),
             )
-            await setter(int(native))
+            await self._execute_write(intent)
         except Exception:
             logger.debug("tci %s: set_rf_power failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_drive("drive"))
@@ -850,8 +990,8 @@ class TciAdapterHandler:
         if not callable(setter):
             return await self._sender_current(self._read_key_speed(name))
         try:
-            self._intent("set_key_speed", {"speed": speed})
-            await setter(speed)
+            intent = self._intent("set_key_speed", {"speed": speed})
+            await self._execute_write(intent)
         except Exception:
             logger.debug("tci %s: set_key_speed failed", self._owner, exc_info=True)
             return await self._sender_current(self._read_key_speed(name))

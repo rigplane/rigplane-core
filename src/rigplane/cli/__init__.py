@@ -5099,6 +5099,17 @@ async def _cmd_web(
                     exc,
                     exc.errno,
                 )
+            if rigctld_server is not None:
+                # The TCI bind failed after rigctld bound: release the
+                # earlier listener before aborting startup, or it keeps
+                # the radio session with no web server in front of it.
+                try:
+                    await rigctld_server.stop()
+                except Exception:
+                    logger.debug(
+                        "rigctld stop after tci bind failure failed",
+                        exc_info=True,
+                    )
             raise
         else:
             tci_server = candidate_tci
@@ -5144,20 +5155,32 @@ async def _cmd_web(
     except asyncio.CancelledError:
         pass
     finally:
+        # Each acquired listener is torn down independently: a failing
+        # rigctld stop must not skip the TCI shutdown (and vice versa).
+        # The first teardown error is re-raised after both have run.
+        teardown_errors: list[BaseException] = []
         if rigctld_server is not None:
             from rigplane.rigctld.server import STOP_TIMEOUT_S
 
             stop = asyncio.ensure_future(rigctld_server.stop())
             if shutdown_backstop is not None:
                 shutdown_backstop.protect(stop, "rigctld stop", STOP_TIMEOUT_S)
-            await stop
+            try:
+                await stop
+            except BaseException as exc:
+                teardown_errors.append(exc)
         if tci_server is not None:
             from rigplane.tci.server import STOP_TIMEOUT_S as _TciStopTimeout
 
             stop_tci = asyncio.ensure_future(tci_server.stop())
             if shutdown_backstop is not None:
                 shutdown_backstop.protect(stop_tci, "tci stop", _TciStopTimeout)
-            await stop_tci
+            try:
+                await stop_tci
+            except BaseException as exc:
+                teardown_errors.append(exc)
+        if teardown_errors:
+            raise teardown_errors[0]
     return 0
 
 
