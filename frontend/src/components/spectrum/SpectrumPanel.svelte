@@ -36,6 +36,7 @@
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
+  import { getBandPlanRegion, loadBandPlanConfig } from '$lib/stores/band-plan-region.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
   import EiBiBrowser from './EiBiBrowser.svelte';
   import { t } from '$lib/i18n';
@@ -273,10 +274,13 @@
   let frameScopeMode = $state(0);  // scope mode from binary frame header (authoritative)
   let fullscreen = $state(false);
   let showEiBi = $state(false);
-  // Effective band-plan region, owned by the toolbar (it syncs with
-  // /api/v1/band-plan/config) and forwarded to the overlay so a region
-  // switch refetches segments even when the viewport did not move.
-  let bandPlanRegion = $state('US');
+  // Effective band-plan region: one shared state (band-plan-region store, read
+  // from /api/v1/band-plan/config), loaded here so it exists even when the
+  // toolbar is hidden (portrait layout). The SpectrumToolbar region selector
+  // reads and changes the same state; the overlay gets it so a region switch
+  // refetches segments even when the viewport did not move. `null` = unknown.
+  let bandPlanRegion = $derived(getBandPlanRegion());
+  void loadBandPlanConfig();
   let hiddenLayers = $state<string[]>(
     typeof localStorage !== 'undefined'
       ? JSON.parse(localStorage.getItem('rigplane-hidden-layers') || '[]')
@@ -1220,7 +1224,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi bind:currentRegion={bandPlanRegion} {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource ? sdrToolbarStatus : scopeStatusIndicator} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource ? sdrToolbarStatus : scopeStatusIndicator} />
   {/if}
   <div
     class="spectrum-split-region"

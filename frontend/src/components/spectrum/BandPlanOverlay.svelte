@@ -27,13 +27,14 @@
     /**
      * Effective band-plan region (e.g. 'US', 'IARU-R1'). The backend serves
      * segments for this region; a change invalidates the fetch cache so the
-     * overlay refetches even when the viewport did not move. `null` keeps
-     * the legacy viewport-only behavior.
+     * overlay refetches even when the viewport did not move. `null` = the
+     * region is not known yet (the bundled US copy is not shown for it);
+     * omitted keeps the legacy viewport-only behavior.
      */
     region?: string | null;
   }
 
-  let { startFreq, endFreq, visible = true, hiddenLayers = [], region = null }: Props = $props();
+  let { startFreq, endFreq, visible = true, hiddenLayers = [], region = undefined }: Props = $props();
 
   let containerWidth = $state(0);
 
@@ -45,7 +46,7 @@
   // An empty array is an authoritative "nothing in this window" and renders empty.
   let remoteSegments = $state<RemoteSegment[] | null>(null);
   let lastFetchRange = $state({ start: 0, end: 0 });
-  let lastFetchRegion = $state<string | null>(null);
+  let lastFetchRegion = $state<string | null | undefined>(null);
   let fetchTimeout: ReturnType<typeof setTimeout> | null = null;
   // Single request token. Every viewport or region change takes a new
   // one, cancelling the pending timer, and a completion applies only while its

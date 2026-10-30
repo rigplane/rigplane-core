@@ -8,6 +8,9 @@
   import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
   import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { getAuthHeaders } from '$lib/auth';
+  import {
+    getBandPlanRegion, getAvailableBandPlanRegions, loadBandPlanConfig, selectBandPlanRegion,
+  } from '$lib/stores/band-plan-region.svelte';
   import ScopeSettingsPopover from './ScopeSettingsPopover.svelte';
   import {
     SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
@@ -43,13 +46,6 @@
      * `scopeStatusIndicator` so no source pin can confuse it with the dead
      * VfoHeader `scopeStatus` bridge (MOR-1409 A13b keeps that name dead). */
     scopeStatusIndicator?: Snippet;
-    /**
-     * Effective band-plan region, synced from `/api/v1/band-plan/config`.
-     * Bindable so the owning panel can forward it to `BandPlanOverlay`,
-     * which refetches its segments on change. Callers that omit it behave
-     * exactly as before.
-     */
-    currentRegion?: string;
   }
 
   let {
@@ -124,7 +120,6 @@
     hideAutoStepToggle = false,
     scopeControls,
     scopeStatusIndicator,
-    currentRegion = $bindable('US'),
   }: Props = $props();
 
   const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
@@ -154,40 +149,30 @@
     return `top: ${top}px; right: ${right}px;`;
   });
   let availableLayers = $state<LayerInfo[]>([]);
-  let availableRegions = $state<string[]>([]);
+  // The effective region and the selectable regions are the shared
+  // band-plan-region state (the panel loads it too, toolbar or not).
+  let currentRegion = $derived(getBandPlanRegion());
+  let availableRegions = $derived(getAvailableBandPlanRegions());
 
-  // Fetch available layers and config from REST API
+  // Fetch available layers and the region config from the REST API
   async function fetchLayers() {
     try {
-      const [layerResp, configResp] = await Promise.all([
+      const [layerResp] = await Promise.all([
         fetch('/api/v1/band-plan/layers', { headers: getAuthHeaders() }),
-        fetch('/api/v1/band-plan/config', { headers: getAuthHeaders() }),
+        loadBandPlanConfig(),
       ]);
       if (layerResp.ok) {
         const data = await layerResp.json();
         availableLayers = data.layers ?? [];
       }
-      if (configResp.ok) {
-        const config = await configResp.json();
-        currentRegion = config.region ?? 'US';
-        availableRegions = config.availableRegions ?? [];
-      }
     } catch { /* ignore */ }
   }
 
   async function setRegion(region: string) {
-    try {
-      const resp = await fetch('/api/v1/band-plan/config', {
-        method: 'POST',
-        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ region }),
-      });
-      if (resp.ok) {
-        currentRegion = region;
-        // Refetch layers (they may change with region)
-        await fetchLayers();
-      }
-    } catch { /* ignore */ }
+    if (await selectBandPlanRegion(region)) {
+      // Refetch layers (they may change with region)
+      await fetchLayers();
+    }
   }
 
   // Load on mount

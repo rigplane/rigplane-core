@@ -15,6 +15,7 @@ import BandPlanOverlay from '../BandPlanOverlay.svelte';
 import BandPlanRegionHarness, { harnessRegion, harnessViewport } from './BandPlanRegionHarness.svelte';
 import { getVisibleSegments } from '../../../lib/data/arrl-band-plan';
 import responseGoldens from './fixtures/band-plan-responses.json';
+import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte';
 
 // The local fallback is the REAL `lib/data/arrl-band-plan` module the overlay
 // imports (frontend/src/lib/data/arrl-band-plan.ts). It used to be mocked with
@@ -112,6 +113,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   localStorage.clear();
+  resetBandPlanRegionForTests();
 });
 
 // ── Tests ──

@@ -477,6 +477,7 @@ import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw'
 import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 import type { Capabilities } from '$lib/types/capabilities';
 import bandPlanGoldens from './fixtures/band-plan-responses.json';
+import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte';
 
 // MOR-2497 (post-#3519): the captured IC-7300 capabilities predate
 // `pbtStepHz`, so AS CAPTURED they are the legacy payload — not what these
@@ -3412,7 +3413,7 @@ describe('SpectrumPanel scope handle hover-intent CSS (MOR-2562)', () => {
 
 // MOR-3631 — the production region-selection wiring. A region click in the
 // real SpectrumToolbar must reach the real BandPlanOverlay through
-// SpectrumPanel's `bind:currentRegion={bandPlanRegion}` and
+// the shared band-plan-region state and SpectrumPanel's
 // `region={bandPlanRegion}`, and the overlay must then show the new region's
 // segments at an unchanged viewport. The fetch backend answers with
 // `fixtures/band-plan-responses.json`, the bodies the real server handlers
@@ -3441,6 +3442,7 @@ describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    resetBandPlanRegionForTests();
   });
 
   it('a toolbar region click refetches and re-renders the overlay for the new region', async () => {
@@ -3496,5 +3498,77 @@ describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
     expect(segmentUrls.at(-1)).toBe(urlBefore);
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(segmentUrls.length).toBe(fetchesBefore + 1);
+  });
+  it('the panel and its toolbar read the band-plan config with one request', async () => {
+    const configReads: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/v1/band-plan/layers') return ok(goldens.layers);
+      if (url === '/api/v1/band-plan/config') {
+        configReads.push(url);
+        return ok(goldens.config['IARU-R3']);
+      }
+      return ok({ segments: [], plansLoaded: false });
+    }));
+
+    const target = mountPanel();
+    emitFrame({ mode: 1, ...VIEW });
+    await vi.waitFor(() => {
+      expect(target.querySelector('.layer-toggle-btn')).not.toBeNull();
+    }, { timeout: 3000 });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    expect(configReads).toHaveLength(1);
+  });
+
+  // The production portrait layout (MobileRadioLayout) mounts the panel with
+  // `hideToolbar`, so the toolbar never runs. The effective region must still
+  // come from the server's band-plan config (the same state the toolbar
+  // shows), or a failed segment request falls back to the local ARRL/US copy
+  // while an IARU-R3 install is configured.
+  describe('with the toolbar hidden (portrait layout)', () => {
+    const SIXTY_M = { startFreq: 5_380_000, endFreq: 5_390_000 };
+
+    async function mountHidden(config: () => Response | Promise<Response>) {
+      const segmentUrls: string[] = [];
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === '/api/v1/band-plan/layers') return ok(goldens.layers);
+        if (url === '/api/v1/band-plan/config') return config();
+        if (url.startsWith('/api/v1/band-plan/segments?')) {
+          segmentUrls.push(url);
+          return { ok: false, status: 500 } as Response;
+        }
+        return { ok: false, status: 404 } as Response;
+      }));
+      const target = mountPanel({ hideToolbar: true });
+      emitFrame({ mode: 1, ...SIXTY_M });
+      expect(target.querySelector('.layer-toggle-btn')).toBeNull();
+      await vi.waitFor(() => {
+        expect(segmentUrls.length).toBeGreaterThan(0);
+      }, { timeout: 3000 });
+      // Let the failed request settle and the overlay re-render.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      flushSync();
+      return target;
+    }
+    const labels = (target: HTMLElement) =>
+      Array.from(target.querySelectorAll('.bandplan-overlay .band-segment'))
+        .map((el) => el.getAttribute('aria-label'));
+
+    it('control: a US config with a failed segment request still shows the local US copy', async () => {
+      const target = await mountHidden(() => ok(goldens.config['US']));
+      expect(labels(target)).toContain('PHONE');
+    });
+
+    it('an IARU-R3 config with a failed segment request shows nothing', async () => {
+      const target = await mountHidden(() => ok(goldens.config['IARU-R3']));
+      expect(labels(target)).toEqual([]);
+    });
+
+    it('an unreachable config never authorises the US copy', async () => {
+      const target = await mountHidden(() => ({ ok: false, status: 503 }) as Response);
+      expect(labels(target)).toEqual([]);
+    });
   });
 });
