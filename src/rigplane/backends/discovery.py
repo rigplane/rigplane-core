@@ -1131,16 +1131,24 @@ async def discover_serial_radios(
         candidate enumeration order.
     """
     candidates = enumerate_serial_ports()
-    probed = await asyncio.gather(
-        *(
+    tasks = [
+        asyncio.ensure_future(
             _discover_one_port(
                 port,
                 _open_serial=_open_serial,
                 _yaesu_transport_factory=_yaesu_transport_factory,
             )
-            for port in candidates
         )
-    )
+        for port in candidates
+    ]
+    try:
+        probed = await asyncio.gather(*tasks)
+    except BaseException:
+        # A failed or cancelled scan must not leave sibling probes holding serial ports.
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     return [result for result in probed if result is not None]
 
 

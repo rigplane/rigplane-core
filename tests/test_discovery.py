@@ -1724,6 +1724,37 @@ class TestDiscoverSerialRadiosConcurrent:
         assert cat.model == "FTX-1"
         assert cat.profile_id == "yaesu_ftx1"
 
+    @pytest.mark.asyncio
+    async def test_failed_probe_cancels_and_awaits_sibling_probes(self) -> None:
+        """One port raising must not leave the other probes running on their ports."""
+        ports = [
+            _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
+            for i in range(2)
+        ]
+        started = asyncio.Event()
+        sibling_cancelled = False
+
+        async def _probe(port: object, **_kw: object) -> None:
+            nonlocal sibling_cancelled
+            if port.device == "/dev/ttyUSB0":  # type: ignore[attr-defined]
+                await started.wait()
+                raise OSError("device unplugged")
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                sibling_cancelled = True
+                raise
+
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports),
+            patch("rigplane.backends.discovery._discover_one_port", _probe),
+            pytest.raises(OSError, match="device unplugged"),
+        ):
+            await discover_serial_radios()
+
+        assert sibling_cancelled
+
     def test_recorded_macos_fixture_offers_both_ic705_ports(self) -> None:
         """Recorded bench entries: both IC-705 usbmodem ports are candidates."""
         ports = [
