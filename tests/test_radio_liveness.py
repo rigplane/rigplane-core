@@ -854,6 +854,60 @@ async def test_identity_only_liveness_refresh_reaches_existing_websocket(
             radio.set_state_change_callback(None)
 
 
+@pytest.mark.parametrize("model", ["IC-7300", "IC-705"])
+@pytest.mark.parametrize("command", [0x03, 0x25])
+async def test_relative_vfo_bootstrap_liveness_reaches_existing_websocket(
+    model: str, command: int
+) -> None:
+    from test_web_server import _close_ws, _ws_connect, _ws_recv_frame
+
+    radio = IcomRadio("127.0.0.1", model=model)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    radio.set_state_change_callback(server._on_radio_state_change)
+    listener = await asyncio.start_server(server._handle_connection, "127.0.0.1", 0)
+    async with listener:
+        port = listener.sockets[0].getsockname()[1]
+        reader, writer, _ = await _ws_connect("127.0.0.1", port, "/api/v1/ws")
+
+        async def receive_state() -> dict[str, Any]:
+            async with asyncio.timeout(5):
+                while True:
+                    _, payload = await _ws_recv_frame(reader)
+                    event = json.loads(payload)
+                    if event["type"] == "state_update":
+                        return event["data"]
+
+        try:
+            baseline = await receive_state()
+            assert baseline["data"]["connection"]["liveness"]["lastFrameAgeMs"] is None
+            store = radio._state_store
+            store.configure_relative_vfo_retention(
+                generation=store.provider_generation, max_age=31, coherence_window=5
+            )
+            before = store.snapshot()
+            for _ in range(2):
+                data = bcd_encode(14_074_000)
+                if command == 0x25:
+                    data = b"\x00" + data
+                frame = parse_civ_frame(
+                    build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, command, data=data)
+                )
+                await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+                assert radio.last_valid_frame_monotonic is not None
+                update = await receive_state()
+                body = update.get("changed", update.get("data"))
+                assert body["connection"]["liveness"]["lastFrameAgeMs"] is not None
+                assert update["transportSeq"] > baseline["transportSeq"]
+                baseline = update
+            after = store.snapshot()
+            assert after.state_revision == before.state_revision
+            assert after.freshness_revision == before.freshness_revision
+            assert after.observation_seq == before.observation_seq
+        finally:
+            await _close_ws(writer)
+            radio.set_state_change_callback(None)
+
+
 async def test_api_info_liveness_stays_null_until_a_real_read() -> None:
     """The daemon-only phase (connected, VFO probe refused, no rig read yet)
     must show daemon reachability as ``null`` age, never as radio liveness."""
