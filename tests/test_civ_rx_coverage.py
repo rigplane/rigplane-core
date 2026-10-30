@@ -1532,7 +1532,9 @@ async def test_wait_for_recovery_bounds_stuck_soft_reconnect(
         )
     elapsed = time.monotonic() - start
 
-    assert elapsed < 2.5, f"recovery wait was not bounded by the deadline: {elapsed:.2f}s"
+    assert elapsed < 2.5, (
+        f"recovery wait was not bounded by the deadline: {elapsed:.2f}s"
+    )
     assert not radio._civ_recovery_lock.locked(), "the recovery lock must be released"
     assert not state["cancelled"], (
         "the poller timeout must abandon its wait, never cancel the recovery"
