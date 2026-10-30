@@ -462,7 +462,9 @@ async def test_receiver_zero_fallback_preserves_sub_and_data() -> None:
     )
     sent: list[AcquisitionQueryCase] = []
 
-    async def sender(sent_query: AcquisitionQueryCase, _priority: str) -> None:
+    async def sender(
+        sent_query: AcquisitionQueryCase, _priority: str, _class: object = None
+    ) -> None:
         sent.append(sent_query)
 
     executor = IcomCivAcquisitionExecutor(
@@ -487,7 +489,9 @@ async def test_receiver_zero_fallback_preserves_sub_and_data() -> None:
 async def test_executor_does_not_swallow_sender_exception() -> None:
     path = FieldPath.global_("tx_state", "ptt")
 
-    async def sender(_query: AcquisitionQueryCase, _priority: str) -> None:
+    async def sender(
+        _query: AcquisitionQueryCase, _priority: str, _class: object = None
+    ) -> None:
         raise RuntimeError("send failed")
 
     executor = IcomCivAcquisitionExecutor(
@@ -711,7 +715,9 @@ class TestBuildStateQueries:
         pollable = acquisition.pollable_paths()
         sent: list[AcquisitionQueryCase] = []
 
-        async def sender(query: AcquisitionQueryCase, _priority: str) -> None:
+        async def sender(
+            query: AcquisitionQueryCase, _priority: str, _class: object = None
+        ) -> None:
             sent.append(query)
 
         executor = IcomCivAcquisitionExecutor(
