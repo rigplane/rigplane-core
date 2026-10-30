@@ -13,7 +13,13 @@ error and any malformed input answers `reuse=false`, which runs the tests:
 * the queue ref names exactly one pull request;
 * the tree id of the merge-group commit equals the tree id of that pull
   request's current head commit;
-* every check named with `--check` has completed with `success` on that head.
+* every check named with `--check` has completed with `success` on that head,
+  in a `pull_request` workflow run whose recorded base commit is an ancestor
+  of the head. A pull request run checks out the head merged onto its base
+  (`refs/pull/N/merge`), not the head itself; the merge of a head with its own
+  ancestor has the head's tree, so only then did the run test the head tree.
+  A stale head tested on a base that has since moved (or been reverted) is
+  not reused.
 
 Run this file from a checkout of the merge group's *base* commit, never from
 the queued commit: a pull request must not be able to change the code that
@@ -33,6 +39,7 @@ from typing import Callable, Sequence
 
 QUEUE_REF = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/.+/pr-(\d+)-[0-9a-f]{40}$")
 TREE_ID = re.compile(r"^[0-9a-f]{40}$")
+RUN_ID = re.compile(r"/actions/runs/(\d+)(?:/|$)")
 
 Getter = Callable[[str], object]
 
@@ -53,6 +60,7 @@ def decide(
     head_tree = get(f"repos/{repo}/git/commits/{head_sha}")["tree"]["sha"]  # type: ignore[index]
     if head_tree != merge_tree:
         return False, f"PR #{number} head tree {head_tree[:7]} differs from the queue tree"
+    ancestors: dict[str, bool] = {}
     for name in checks:
         query = urllib.parse.urlencode(
             {"check_name": name, "filter": "latest", "per_page": 100}
@@ -60,9 +68,29 @@ def decide(
         runs = get(f"repos/{repo}/commits/{head_sha}/check-runs?{query}")["check_runs"]  # type: ignore[index]
         if not runs:
             return False, f"PR #{number} head has no '{name}' check run"
-        for run in runs:  # type: ignore[attr-defined]
-            if run["status"] != "completed" or run["conclusion"] != "success":
-                return False, f"PR #{number} head '{name}' is {run['status']}/{run['conclusion']}"
+        for check in runs:  # type: ignore[attr-defined]
+            if check["status"] != "completed" or check["conclusion"] != "success":
+                return False, f"PR #{number} head '{name}' is {check['status']}/{check['conclusion']}"
+            found = RUN_ID.search(str(check.get("details_url") or ""))
+            if not found:
+                return False, f"'{name}' check run is not bound to a workflow run"
+            run = get(f"repos/{repo}/actions/runs/{found.group(1)}")
+            associated = run.get("pull_requests") or []  # type: ignore[attr-defined]
+            if (
+                run.get("event") != "pull_request"  # type: ignore[attr-defined]
+                or run.get("head_sha") != head_sha  # type: ignore[attr-defined]
+                or len(associated) != 1
+                or associated[0].get("number") != number
+            ):
+                return False, f"'{name}' run does not bind to PR #{number} at its head"
+            base_sha = str((associated[0].get("base") or {}).get("sha") or "")
+            if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+                return False, f"'{name}' run records no base commit"
+            if base_sha not in ancestors:
+                comparison = get(f"repos/{repo}/compare/{base_sha}...{head_sha}?per_page=1")
+                ancestors[base_sha] = comparison["status"] in ("ahead", "identical")  # type: ignore[index]
+            if not ancestors[base_sha]:
+                return False, f"'{name}' ran on base {base_sha[:7]}, which is not an ancestor of the head"
     return True, f"PR #{number} head {head_sha[:7]} has the queue tree and passed {', '.join(checks)}"
 
 

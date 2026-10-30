@@ -22,19 +22,43 @@ TREE = "b" * 40
 REF = "gh-readonly-queue/main/pr-42-" + "c" * 40
 
 
-def fake_api(*, tree: str = TREE, runs: dict | None = None):
+BASE = "e" * 40
+RUN_ID = 777
+
+
+def fake_api(
+    *,
+    tree: str = TREE,
+    runs: dict | None = None,
+    compare: str = "ahead",
+    run_event: str = "pull_request",
+    run_head: str = HEAD,
+    associated: list | None = None,
+):
     found = {"quick": [("completed", "success")]} if runs is None else runs
+    bound = [{"number": 42, "base": {"sha": BASE}}] if associated is None else associated
 
     def get(path: str):
         if path == f"repos/{REPO}/pulls/42":
             return {"head": {"sha": HEAD}}
         if path == f"repos/{REPO}/git/commits/{HEAD}":
             return {"tree": {"sha": tree}}
+        if path == f"repos/{REPO}/actions/runs/{RUN_ID}":
+            return {"event": run_event, "head_sha": run_head, "pull_requests": bound}
+        if path == f"repos/{REPO}/compare/{BASE}...{HEAD}?per_page=1":
+            return {"status": compare}
         if f"/commits/{HEAD}/check-runs?" in path:
             for name, results in found.items():
                 if f"check_name={name}" in path:
                     return {
-                        "check_runs": [{"status": s, "conclusion": c} for s, c in results]
+                        "check_runs": [
+                            {
+                                "status": s,
+                                "conclusion": c,
+                                "details_url": f"https://github.com/o/r/actions/runs/{RUN_ID}/job/1",
+                            }
+                            for s, c in results
+                        ]
                     }
             return {"check_runs": []}
         raise AssertionError(path)
@@ -66,6 +90,27 @@ class QueueTreeReuseTest(unittest.TestCase):
                 self.assertFalse(self.decide(fake_api(runs=runs)))
         two = fake_api(runs={"quick": [("completed", "success")]})
         self.assertFalse(self.decide(two, checks=("quick", "Pytest Gate")))
+
+    def test_a_run_on_a_base_that_is_not_an_ancestor_of_the_head_is_not_reused(self) -> None:
+        # The PR run tested the head merged onto an older base. If that base is
+        # not an ancestor of the head, the tested merge tree can differ from the
+        # head tree even though the head and queue trees are equal.
+        for status in ("diverged", "behind"):
+            with self.subTest(status=status):
+                self.assertFalse(self.decide(fake_api(compare=status)))
+        self.assertTrue(self.decide(fake_api(compare="identical")))
+
+    def test_the_check_must_come_from_this_pull_requests_run_at_this_head(self) -> None:
+        for kwargs in (
+            {"run_event": "merge_group"},
+            {"run_head": "f" * 40},
+            {"associated": []},
+            {"associated": [{"number": 7, "base": {"sha": BASE}}]},
+            {"associated": [{"number": 42, "base": {}}]},
+            {"associated": [{"number": 42, "base": {"sha": BASE}}] * 2},
+        ):
+            with self.subTest(kwargs=kwargs):
+                self.assertFalse(self.decide(fake_api(**kwargs)))
 
     def test_malformed_input_runs_the_tests(self) -> None:
         for ref in (

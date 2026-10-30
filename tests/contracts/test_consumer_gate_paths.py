@@ -8,8 +8,9 @@ which is the literal handler command list unioned with
 ``frozenset(command_descriptors())`` imported from
 ``rigplane.core.command_dispatch``. This test therefore requires
 ``src/rigplane/core/command_dispatch.py`` plus every ``rigplane.*`` module the
-runner imports to appear in BOTH the ``push:`` and ``pull_request:`` ``paths:``
-blocks.
+runner imports to appear in the ``pull_request:`` ``paths:`` block. There is no
+``push:`` trigger (MOR-3878); ``full.yml`` calls the workflow for the scheduled
+run on ``main``.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ CONTROL_HANDLER_PATH = (
     REPO_ROOT / "src" / "rigplane" / "web" / "handlers" / "control.py"
 )
 COMMAND_DISPATCH_PATH = "src/rigplane/core/command_dispatch.py"
-TRIGGERS = ("push", "pull_request")
+TRIGGERS = ("pull_request",)
 
 DISPATCH_SYMBOLS = ("command_descriptors",)
 
@@ -38,7 +39,7 @@ def _workflow_path_blocks(text: str) -> dict[str, set[str]]:
             continue
         trigger = None
         for previous in reversed(lines[:index]):
-            match = re.fullmatch(r"\s{2}(push|pull_request):\s*", previous)
+            match = re.fullmatch(r"\s{2}(pull_request):\s*", previous)
             if match:
                 trigger = match.group(1)
                 break
@@ -80,7 +81,8 @@ def _dispatch_imports(text: str) -> set[str]:
 def test_gate_paths_cover_runner_sources_and_command_dispatch() -> None:
     blocks = _workflow_path_blocks(WORKFLOW_PATH.read_text(encoding="utf-8"))
     assert set(blocks) == set(TRIGGERS), (
-        f"expected exactly one paths: block each for push and pull_request, "
+        f"expected exactly one paths: block, on pull_request (no push trigger, "
+        f"MOR-3878; full.yml calls the workflow for the scheduled run), "
         f"found blocks for {sorted(blocks)}"
     )
 
@@ -102,3 +104,11 @@ def test_gate_paths_cover_runner_sources_and_command_dispatch() -> None:
         for path in sorted(required - blocks[trigger])
     ]
     assert not missing, "; ".join(missing)
+
+
+def test_gate_is_called_by_the_scheduled_full_run_instead_of_a_push_run() -> None:
+    gate = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "\n  workflow_call:\n" in gate
+    assert "\n  push:\n" not in gate
+    full = (WORKFLOW_PATH.parent / "full.yml").read_text(encoding="utf-8")
+    assert "    uses: ./.github/workflows/consumer-contracts-gate.yml\n" in full
