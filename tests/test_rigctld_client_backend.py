@@ -86,9 +86,11 @@ async def test_transport_timeout_eof_malformed_and_negative_rprt() -> None:
         transport = RigctldTransport(
             host=server.host,
             port=server.port,
-            timeout=0.01,
         )
         await transport.connect()
+        # Shorten only the read budget; the connect above must use the
+        # default timeout so a loaded runner cannot fail the handshake.
+        transport.timeout = 0.01
         try:
             with pytest.raises(RadioTimeoutError, match="timed out"):
                 await transport.query("f", response_lines=1)
@@ -1031,8 +1033,7 @@ async def test_radio_transport_loss_retires_exactly_once(
     failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with FakeRigctldServer() as server:
-        timeout = 0.01 if failure == "read_timeout" else 5.0
-        radio = RigctldClientRadio(host=server.host, port=server.port, timeout=timeout)
+        radio = RigctldClientRadio(host=server.host, port=server.port)
         await radio.connect()
         transitions: list[bool] = []
         radio.bind_provider_generation(
@@ -1063,6 +1064,10 @@ async def test_radio_transport_loss_retires_exactly_once(
             if failure.startswith("stale") or failure == "read_timeout"
             else radio.set_freq(7_050_000)
         )
+        if failure == "read_timeout":
+            # Nothing can answer (the writer swallows data), so the budget
+            # only keeps the test fast; it is not a bound under test.
+            radio._transport.timeout = 0.01  # noqa: SLF001
         with pytest.raises(error_type):
             await operation
         expected_write = b"f\n" if failure == "read_timeout" else b"F 7050000\n"
@@ -1252,7 +1257,8 @@ async def test_failed_core_setters_leave_radio_state_unchanged() -> None:
 
 
 async def test_radio_reports_actionable_connection_failure() -> None:
-    radio = RigctldClientRadio(host="127.0.0.1", port=9, timeout=0.01)
+    # Default timeout: refusal is immediate, no short budget is needed.
+    radio = RigctldClientRadio(host="127.0.0.1", port=9)
 
     with pytest.raises(RadioConnectionError, match="127.0.0.1:9"):
         await radio.connect()
