@@ -1023,6 +1023,7 @@ async def test_owned_identity_hold_admits_the_full_reconnect(
 async def test_request_recovery_now_is_a_no_op_when_blocked(
     radio: IcomRadio,
     blocker: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Not CONNECTED and no owned identity hold, already recovering, or a live
     recovery task: do nothing."""
@@ -1039,16 +1040,146 @@ async def test_request_recovery_now_is_a_no_op_when_blocked(
         live: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(60))
         radio._civ_runtime._reconnect_task = live
     try:
-        radio._civ_runtime.request_recovery_now("busy=0")
+        with caplog.at_level("INFO"):
+            radio._civ_runtime.request_recovery_now("busy=0")
         assert radio._civ_runtime._reconnect_task is (
             None if blocker != "live_task" else live
         )
         released.assert_not_awaited()
+        ignored = [
+            r
+            for r in caplog.records
+            if "notice ignored" in r.getMessage() and "busy=0" in r.getMessage()
+        ]
+        assert len(ignored) == 1, (
+            f"blocker={blocker}: expected exactly one ignored-notice log line "
+            f"carrying the reason, saw {[r.getMessage() for r in caplog.records]}"
+        )
     finally:
         if blocker == "live_task":
             live.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await live
+
+
+async def test_request_recovery_now_preempts_a_recovery_tail(
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-3350: a busy=0 notice while a recovery is only in its tail (session
+    re-established, task parked past cleanup) restarts the recovery instead of
+    being dropped silently."""
+    order, _released = _arm_notice_recovery(radio)
+    tail_release = asyncio.Event()
+    tail_entered = asyncio.Event()
+
+    async def tail_soft_reconnect() -> None:
+        order.append("soft_reconnect")
+        order.append(f"remote_id={radio._ctrl_transport.remote_id}")
+        radio._conn_state = RadioConnectionState.CONNECTED
+        tail_entered.set()
+        await asyncio.wait_for(tail_release.wait(), 10.0)
+
+    radio.soft_reconnect = tail_soft_reconnect
+    first: asyncio.Task[None] | None = None
+    second: asyncio.Task[None] | None = None
+    try:
+        with (
+            patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
+            caplog.at_level("INFO"),
+        ):
+            radio._civ_runtime.request_recovery_now("busy=0 (first)")
+            first = radio._civ_runtime._reconnect_task
+            assert first is not None
+            try:
+                await asyncio.wait_for(tail_entered.wait(), 10.0)
+            except asyncio.TimeoutError:
+                pytest.fail("the first recovery never reached its tail")
+            assert radio._conn_state is RadioConnectionState.CONNECTED
+            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            second = radio._civ_runtime._reconnect_task
+            assert second is not None and second is not first, (
+                "a busy=0 notice during the recovery tail must restart "
+                "the recovery, not be ignored"
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(first, 10.0)
+            tail_release.set()
+            await asyncio.wait_for(second, 10.0)
+
+        assert order == ["force_cleanup", "release", "soft_reconnect", "remote_id=0"] * 2
+        assert any(
+            "restarting the recovery" in r.message
+            and "busy=0 (second)" in r.message
+            for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+        assert not any(
+            "notice ignored" in r.message for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+    finally:
+        tail_release.set()
+        for task in (first, second):
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+
+async def test_request_recovery_now_ignored_while_session_not_reestablished(
+    radio: IcomRadio,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-3350: a notice while the live recovery has not re-established the
+    session (still RECONNECTING) is ignored with one log line, not preempted."""
+    _order, released = _arm_notice_recovery(radio)
+    parked = asyncio.Event()
+
+    async def parking_soft_reconnect() -> None:
+        radio._conn_state = RadioConnectionState.RECONNECTING
+        await asyncio.wait_for(parked.wait(), 10.0)
+
+    radio.soft_reconnect = parking_soft_reconnect
+    first: asyncio.Task[None] | None = None
+    try:
+        with (
+            patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()),
+            caplog.at_level("INFO"),
+        ):
+            radio._civ_runtime.request_recovery_now("busy=0 (first)")
+            first = radio._civ_runtime._reconnect_task
+            assert first is not None
+            deadline = time.monotonic() + 10.0
+            while radio._conn_state is not RadioConnectionState.RECONNECTING:
+                assert time.monotonic() < deadline, (
+                    "the first recovery never started re-establishing the session"
+                )
+                await asyncio.sleep(0.01)
+            radio._civ_runtime.request_recovery_now("busy=0 (second)")
+            assert radio._civ_runtime._reconnect_task is first, (
+                "a notice before the session is re-established must not "
+                "restart the recovery"
+            )
+            ignored = [
+                r
+                for r in caplog.records
+                if "notice ignored" in r.getMessage()
+                and "busy=0 (second)" in r.getMessage()
+            ]
+            assert len(ignored) == 1, (
+                "expected exactly one ignored-notice log line for the second "
+                f"notice, saw {[r.getMessage() for r in caplog.records]}"
+            )
+            assert released.await_count == 1
+    finally:
+        parked.set()
+        if first is not None and not first.done():
+            first.cancel()
+            try:
+                await first
+            except asyncio.CancelledError:
+                pass
 
 
 async def test_watchdog_handoff_does_not_replace_a_live_reconnect_task(
