@@ -570,8 +570,9 @@ repeater = true
 # Per-band rated TX power in watts (MOR-3634), from the IC-9700 manuals:
 # 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W. Tier B- -- not hardware-verified;
 # no recording of this model exists. Data only: the capabilities txBands
-# payload publishes it and the power slider scales to the band the radio is
-# on. It never changes a power value that is written.
+# payload publishes it. The IC-9700 level is a percentage of the current
+# band's maximum, so the power slider shows watts for the band the radio is
+# on and keeps its full range. It never changes a power value that is written.
 [[freq_ranges.ranges.bands]]
 name = "2m"
 start_hz = 144_000_000

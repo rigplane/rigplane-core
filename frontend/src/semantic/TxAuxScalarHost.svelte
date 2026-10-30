@@ -15,7 +15,9 @@
     type ContinuousScalarPolicy,
     type ScalarDomain,
   } from '../primitives/scalar/continuous-scalar.svelte';
-  import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
+  import {
+    rawToPercentDisplay, rfPowerDisplay, validRfPowerScale, type RfPowerScale,
+  } from '../primitives/scalar/value-control-core';
   import { disabledReasonText } from './disabled-reason';
   import { finiteValue, valueText } from '../primitives/reading-text';
   import type { RadioViewModel, TxAuxField } from './radio-view-model';
@@ -33,10 +35,10 @@
     view: RadioViewModel | null;
     levelFeedback?: TxAuxLevelFeedback;
     rfPowerFeedback?: Readonly<CommandScalarFeedback>;
-    /** MOR-3634: upper end of the RF power slider on its normalized scale
-     *  (`rfPowerScaleMax`, the band's rated maximum over the flat maximum).
-     *  The slider's scale only; the value requested is sent as chosen. */
-    rfPowerMax?: number;
+    /** MOR-3634: range and watts label of the RF power slider for the band
+     *  the radio is on (`rfPowerScale`). The scale only; the value requested
+     *  is sent as chosen. */
+    rfPowerScale?: RfPowerScale;
     onLevelChange?: (field: TxAuxLevelField, value: number) => void;
     scalarAppearance?: ScalarAppearance;
     presentationIsCurrent?: () => boolean;
@@ -44,7 +46,7 @@
   }
 
   let {
-    view, levelFeedback, rfPowerFeedback, rfPowerMax, onLevelChange, scalarAppearance,
+    view, levelFeedback, rfPowerFeedback, rfPowerScale, onLevelChange, scalarAppearance,
     presentationIsCurrent, children,
   }: Props = $props();
   let txAux = $derived(view?.txAux);
@@ -69,19 +71,16 @@
     const [, , min, max, , format] = row(field);
     return valueText(
       finiteValue(value),
-      format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)),
+      field === 'rfPower'
+        ? (raw: number) => rfPowerDisplay(raw, rfScale)
+        : format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)),
     );
   };
 
-  // MOR-3634: the RF power slider tops out at the band's rated maximum; a
-  // missing or out-of-range scale leaves the row's full-scale maximum.
-  function levelMax(field: TxAuxLevelField): number {
-    const [, , , max] = row(field);
-    return field === 'rfPower' && rfPowerMax !== undefined
-      && Number.isFinite(rfPowerMax) && rfPowerMax > 0 && rfPowerMax <= max
-      ? rfPowerMax
-      : max;
-  }
+  // MOR-3634: a malformed or missing scale leaves the unchanged one.
+  let rfScale = $derived(validRfPowerScale(rfPowerScale));
+  const levelMax = (field: TxAuxLevelField): number =>
+    field === 'rfPower' ? rfScale.max : row(field)[3];
 
   function request(field: TxAuxLevelField, value: number): void {
     const current = txAux?.[field];

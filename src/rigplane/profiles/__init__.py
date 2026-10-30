@@ -200,8 +200,8 @@ class BandInfo:
     #: Rated maximum TX power of this band in watts (MOR-3634), from the
     #: manuals; ``None`` means the band has no row of its own and the flat
     #: ``RadioProfile.max_watts`` applies. Data only: the capabilities
-    #: ``txBands`` payload publishes it and the power slider scales to it;
-    #: it never changes a power value that is written.
+    #: ``txBands`` payload publishes it and the power slider's range or watts
+    #: label follows it; it never changes a power value that is written.
     max_power_w: int | None = None
 
 

@@ -747,12 +747,16 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     // The slider scale follows the band, but nothing between the slider and the
     // wire may change the value the user set: no clamp, no rescale.
     const current = state();
-    for (const freqHz of [145_000_000, 435_000_000, 1_296_000_000, 14_074_000]) {
+    for (const [powerUnit, freqHz] of [
+      ['raw_255', 145_000_000], ['raw_255', 435_000_000], ['raw_255', 1_296_000_000],
+      ['watts', 435_000_000], ['watts', 1_296_000_000], ['watts', 14_074_000],
+    ] as const) {
       h.sendCommand.mockClear();
       h.state = { ...current, main: { ...current.main, freqHz } } as ServerState;
       h.caps = {
         ...h.caps,
         maxPowerW: 100,
+        powerUnit,
         txBands: [
           { name: '2m', start: 144_000_000, end: 148_000_000, maxPowerW: 100 },
           { name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: 75 },
@@ -762,7 +766,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       const tx = makeTxHandlers();
       tx.onRfPowerChange(0.9);
       tx.onRfPowerChange(1);
-      expect(exactCalls(), String(freqHz)).toEqual([
+      expect(exactCalls(), `${powerUnit} ${freqHz}`).toEqual([
         ['set_rf_power', { level: 0.9, level_unit: 'normalized' }],
         ['set_rf_power', { level: 1, level_unit: 'normalized' }],
       ]);

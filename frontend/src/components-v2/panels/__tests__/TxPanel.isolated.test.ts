@@ -49,7 +49,7 @@ const mockProps = {
   txActive: false,
   txActiveAvailable: true,
   rfPower: 0.5,
-  rfPowerMax: 1,
+  rfPowerScale: { max: 1, wattsAtFull: null as number | null },
   micGain: 128,
   atuActive: false,
   atuTuning: false,
@@ -168,7 +168,7 @@ beforeEach(() => {
   tx = new ManagedAppTxHarness();
   txHost.current = tx.controller;
   Object.assign(mockProps, {
-    txActive: false, txActiveAvailable: true, rfPower: 0.5, rfPowerMax: 1, micGain: 128,
+    txActive: false, txActiveAvailable: true, rfPower: 0.5, rfPowerScale: { max: 1, wattsAtFull: null }, micGain: 128,
     atuActive: false,
     atuTuning: false, voxActive: false, compActive: false, compLevel: 64,
     monActive: false, monLevel: 64, driveGain: 128,
@@ -249,14 +249,22 @@ describe('panel structure', () => {
     expect(rfPowerValue(t)).toBe('50%');
   });
 
-  it('scales the RF Power slider to the band maximum the projection gives (MOR-3634)', () => {
+  it('scales the watts-native RF Power range to the band the projection gives (MOR-3634)', () => {
     const slider = (t: HTMLElement) => t.querySelector<HTMLElement>('[role="slider"][aria-label="RF Power"]');
     const full = mountPanel({ rfPower: 0.5 });
     openTxSettings(full);
     expect(slider(full)?.getAttribute('aria-valuemax')).toBe('1');
-    const narrowed = mountPanel({ rfPower: 0.5, rfPowerMax: 0.75 });
+    const narrowed = mountPanel({ rfPower: 0.5, rfPowerScale: { max: 0.75, wattsAtFull: null } });
     openTxSettings(narrowed);
     expect(slider(narrowed)?.getAttribute('aria-valuemax')).toBe('0.75');
+    expect(rfPowerValue(narrowed)).toBe('50%');
+  });
+
+  it('labels the raw-percent RF Power in watts of the band and keeps the full range (MOR-3634)', () => {
+    const t = mountPanel({ rfPower: 0.5, rfPowerScale: { max: 1, wattsAtFull: 10 } });
+    openTxSettings(t);
+    expect(t.querySelector('[role="slider"][aria-label="RF Power"]')?.getAttribute('aria-valuemax')).toBe('1');
+    expect(rfPowerValue(t)).toBe('5W');
   });
 
   it('renders a non-finite RF Power as an empty slot, never NaN', () => {

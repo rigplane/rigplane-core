@@ -4766,7 +4766,9 @@ async def test_ic705_rx_only_bands_neither_endpoint_tx_band_over_http() -> None:
 _RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
 
 
-async def _capabilities_by_endpoint(rig_file: str) -> dict[str, dict[str, Any]]:
+async def _capabilities_by_endpoint(
+    rig_file: str, native_power_unit: str | None = None
+) -> dict[str, dict[str, Any]]:
     profile = load_rig(_RIGS_DIR / rig_file).to_profile()
     radio = SimpleNamespace(
         model=profile.model,
@@ -4776,6 +4778,8 @@ async def _capabilities_by_endpoint(rig_file: str) -> dict[str, dict[str, Any]]:
         control_connected=True,
         radio_ready=True,
     )
+    if native_power_unit is not None:
+        radio.native_power_unit = native_power_unit
     srv = WebServer(
         radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
     )
@@ -4793,17 +4797,34 @@ async def _capabilities_by_endpoint(rig_file: str) -> dict[str, dict[str, Any]]:
         await srv.stop()
 
 
-async def test_ic9700_publishes_per_band_max_power_over_http() -> None:
-    """IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W, on both endpoints."""
-    for path, capabilities in (await _capabilities_by_endpoint("ic9700.toml")).items():
+@pytest.mark.parametrize("unit", ["raw_255", "watts"])
+async def test_ic9700_publishes_per_band_max_power_over_http(unit: str) -> None:
+    """IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W, on both endpoints.
+
+    ``powerUnit`` is the attached radio's own ``native_power_unit`` (the value
+    the power-level resolution already uses), so the frontend can tell a level
+    that is a percentage of the current band's maximum (``raw_255``) from one
+    that is a fraction of the flat maximum (``watts``).
+    """
+    served = await _capabilities_by_endpoint("ic9700.toml", unit)
+    for path, capabilities in served.items():
         assert capabilities["maxPowerW"] == 100, path
+        assert capabilities["powerUnit"] == unit, path
         per_band = {b["name"]: b.get("maxPowerW") for b in capabilities["txBands"]}
         assert per_band == {"2m": 100, "70cm": 75, "23cm": 10}, path
 
 
+async def test_radio_that_does_not_declare_a_power_unit_publishes_none() -> None:
+    """No attribute on the radio, no guess: the key is absent, not defaulted."""
+    for path, capabilities in (await _capabilities_by_endpoint("ic9700.toml")).items():
+        assert "powerUnit" not in capabilities, path
+
+
 async def test_flat_maximum_radio_publishes_no_per_band_max_power_over_http() -> None:
     """The IC-7300 declares only the flat maximum: no band row carries maxPowerW."""
-    for path, capabilities in (await _capabilities_by_endpoint("ic7300.toml")).items():
+    served = await _capabilities_by_endpoint("ic7300.toml", "raw_255")
+    for path, capabilities in served.items():
         assert capabilities["maxPowerW"] == 100, path
+        assert capabilities["powerUnit"] == "raw_255", path
         assert capabilities["txBands"], path
         assert all("maxPowerW" not in band for band in capabilities["txBands"]), path

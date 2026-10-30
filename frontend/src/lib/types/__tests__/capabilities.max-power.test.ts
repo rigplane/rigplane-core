@@ -27,7 +27,7 @@ const band = (extra: Record<string, unknown> = {}) => ({
   name: '70cm', start: 430_000_000, end: 450_000_000, ...extra,
 });
 
-const optionalOnOlderServers: Pick<Capabilities, 'maxPowerW'> = {};
+const optionalOnOlderServers: Pick<Capabilities, 'maxPowerW' | 'powerUnit'> = {};
 void optionalOnOlderServers;
 
 describe('capabilities maxPowerW', () => {
@@ -43,6 +43,15 @@ describe('capabilities maxPowerW', () => {
     });
     expect(caps.maxPowerW).toBe(100);
     expect(caps.txBands?.[0]?.maxPowerW).toBe(75);
+  });
+
+  it.each(['raw_255', 'watts'] as const)('accepts powerUnit %s', (powerUnit) => {
+    expect(validateCapabilities({ ...baseCapabilities, maxPowerW: 100, powerUnit }).powerUnit).toBe(powerUnit);
+  });
+
+  it.each(['percent', 255, null])('rejects an unknown powerUnit %o', (powerUnit) => {
+    expect(() => validateCapabilities({ ...baseCapabilities, maxPowerW: 100, powerUnit }))
+      .toThrow(/\$\.powerUnit: expected "raw_255" or "watts"/);
   });
 
   it.each([0, -1, 7.5, '100', null])('rejects a malformed flat maximum %o', (maxPowerW) => {

@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added `rigplane models`: list supported radio profiles with the exact `--model` value for each, as a plain table or `rigplane models --json`.
 - `rigplane discover` prints a ready-to-copy `rigplane --model ... status` command after each radio connection line (a `<MODEL>` placeholder with a pointer to `rigplane models` when LAN discovery cannot tell the model).
-- The RF power slider scales to the rated maximum of the band the radio is on (MOR-3634). A band row in a radio profile can declare `max_power_w`, published as `txBands[].maxPowerW` next to the flat `maxPowerW`; the IC-9700 declares 100 W on 2 m, 75 W on 70 cm and 10 W on 23 cm (from the manuals, not yet verified on hardware). Radios without per-band data keep the full-scale slider. Nothing changes the power value you set: it is sent exactly as chosen.
+- The RF power slider follows the rated maximum of the band the radio is on (MOR-3634). A band row in a radio profile can declare `max_power_w`, published as `txBands[].maxPowerW` next to the flat `maxPowerW` and a `powerUnit`. On an Icom (level is a percentage of the current band's maximum) the slider keeps its full range and shows watts: the IC-9700 declares 100 W on 2 m, 75 W on 70 cm and 10 W on 23 cm (from the manuals, not yet verified on hardware). On a watts-based radio the slider range is the band maximum. Radios without per-band data keep the unchanged slider. Nothing changes the power value you set: it is sent exactly as chosen.
 
 ### Changed
 

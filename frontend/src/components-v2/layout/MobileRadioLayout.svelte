@@ -37,7 +37,7 @@
   import PttFab from '../controls/PttFab.svelte';
   import ModInputTxWarning from '../panels/ModInputTxWarning.svelte';
   import { ValueControl } from '../controls/value-control';
-  import { normalizedPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { rfPowerDisplay, validRfPowerScale } from '../../primitives/scalar/value-control-core';
   import { finiteValue, valueText } from '../../primitives/reading-text';
   import {
     Settings, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight,
@@ -506,7 +506,7 @@
   // (`normalizedPercentDisplay` has no non-finite branch). `toTxProps`
   // reports Number.NaN when the rig never sent `powerLevel`.
   function formatRfPowerDisplay(level: number): string {
-    return valueText(finiteValue(level), normalizedPercentDisplay);
+    return valueText(finiteValue(level), (value) => rfPowerDisplay(value, tx.rfPowerScale));
   }
   // The TX dock meter takes raw numbers and formats all four rows itself
   // (`formatPowerWatts`/`formatSwr`/`formatAlc` each render "NaN"-class
@@ -1073,7 +1073,7 @@
             label="RF Power"
             value={tx.rfPower}
             min={0}
-            max={tx.rfPowerMax ?? 1}
+            max={validRfPowerScale(tx.rfPowerScale).max}
             step={0.01}
             renderer="hbar"
             displayFn={formatRfPowerDisplay}

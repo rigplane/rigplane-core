@@ -283,6 +283,11 @@ export interface Capabilities {
    *  `TxBand.maxPowerW` is compared with. Absent when the profile declares
    *  none, and on older servers. */
   maxPowerW?: number;
+  /** How the radio's power level is scaled (MOR-3634), the attached radio's
+   *  own `native_power_unit`: `raw_255` (Icom) is a percentage of the CURRENT
+   *  band's rated maximum, `watts` (Yaesu CAT) a fraction of the flat
+   *  `maxPowerW`. Absent when the radio does not declare it. */
+  powerUnit?: 'raw_255' | 'watts';
   meterCalibrations?: Record<string, MeterCalPoint[]>;
   meterRedlines?: Record<string, number>;
 }
@@ -765,6 +770,9 @@ export function validateCapabilities(value: unknown): Capabilities {
     });
   }
   if ('maxPowerW' in raw) requireInteger(raw.maxPowerW, '$.maxPowerW', true);
+  if ('powerUnit' in raw && raw.powerUnit !== 'raw_255' && raw.powerUnit !== 'watts') {
+    invalid('$.powerUnit', '"raw_255" or "watts"');
+  }
 
   if ('controls' in raw) {
     const controls = normalizeControls(raw.controls);
