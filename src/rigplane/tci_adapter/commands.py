@@ -67,10 +67,11 @@ UNMAPPED_CORE_MODES = frozenset(
 #: Emission order of ``modulations_list`` (the order eesdr-tci observes).
 CANONICAL_TCI_MODE_ORDER = ("AM", "LSB", "USB", "CW", "FM", "WFM", "DIGL", "DIGU")
 
-#: TCI commands this server honours (spec 5.5 Tier A/B as built by C1+C2).
-#: Init-only names answer reads; ``spot*`` are accepted and dropped (C2);
-#: ``start``/``stop`` are echoed (C2); everything else is Tier C or unknown
-#: and is ignored without a reply (spec 6.1).
+#: TCI commands this server honours (spec 5.5 Tier A/B as built by C1+C2,
+#: plus the audio phase of 8.1 as built by A1/A2). Init-only names answer
+#: reads; ``spot*`` are accepted and dropped (C2); ``start``/``stop`` are
+#: echoed (C2); everything else is Tier C or unknown and is ignored
+#: without a reply (spec 6.1).
 TIER_AB_COMMANDS = frozenset(
     {
         "vfo",
@@ -102,6 +103,13 @@ TIER_AB_COMMANDS = frozenset(
         "spot_clear",
         "tune",
         "tune_drive",
+        "audio_samplerate",
+        "audio_stream_sample_type",
+        "audio_stream_channels",
+        "audio_stream_samples",
+        "audio_start",
+        "audio_stop",
+        "tx_stream_audio_buffering",
     }
 )
 
