@@ -22,9 +22,9 @@ from ..audio.route import (
     resolve_audio_route,
     rigctld_wsjtx_policy,
 )
-from ..core.command_dispatch import command_descriptor
 from ..core.command_service import (
     CommandExecutionInvalidatedError,
+    CommandExecutionResult,
     command_intent_from_request,
     resolve_power_level_target,
 )
@@ -124,7 +124,7 @@ class _TciCommandExecutor:
     def __init__(self, handler: TciAdapterHandler) -> None:
         self._handler = handler
 
-    async def execute(self, intent: Any) -> None:
+    async def execute(self, intent: Any) -> CommandExecutionResult:
         handler = self._handler
         try:
             ticket = handler._capture_ticket()
@@ -173,6 +173,7 @@ class _TciCommandExecutor:
             await handler._radio.set_key_speed(int(params["speed"]))
         else:
             raise ValueError(f"unsupported TCI command intent: {name!r}")
+        return CommandExecutionResult()
 
 
 class TciAdapterHandler:
@@ -456,7 +457,7 @@ class TciAdapterHandler:
     async def _execute_write(self, intent: Any) -> None:
         """Run one write intent through the shared command pipeline.
 
-        With the composed service present the intent goes through
+        With the composed service present every intent goes through
         :meth:`CommandService.execute` with the adapter executor (pending
         overlays, lifecycle, invalidation — exactly like the rigctld
         seat); in seat-less tests the same executor runs directly, so the
@@ -464,7 +465,7 @@ class TciAdapterHandler:
         """
         service = self._service
         execute = getattr(service, "execute", None)
-        if callable(execute) and command_descriptor(intent.name) is not None:
+        if callable(execute):
             try:
                 await execute(intent, executor=self._executor)
             except CommandExecutionInvalidatedError as exc:

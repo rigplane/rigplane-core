@@ -93,6 +93,32 @@ async def test_session_registered_on_connect_and_removed_on_disconnect() -> None
     assert "tci-client-1" not in queue.sessions
 
 
+async def test_write_goes_through_command_service_when_composed() -> None:
+    """Brief B: every TCI write is a source=tci intent via the service."""
+    radio = StubIcomRadio()
+    store = build_store({FieldPath.active("main", "freq_mode", "freq_hz"): 14_074_000})
+    used: list[tuple[str, object]] = []
+
+    class FakeService:
+        async def execute(self, intent, *, executor=None):  # type: ignore[no-untyped-def]
+            used.append((intent.name, executor))
+            assert executor is not None
+            assert intent.source == "tci"
+            return await executor.execute(intent)
+
+    handler = make_handler(
+        radio=radio,
+        store=store,
+        authority=StubAuthority(),
+        queue=StubCommandQueue(),
+        service=FakeService(),  # type: ignore[arg-type]
+    )
+    outcome = await handler.on_command("vfo", ("0", "0", "14075000"))
+    assert outcome.to_sender == ("vfo:0,0,14075000;",)
+    assert [name for name, _ in used] == ["set_freq"]
+    assert radio.freq_a == 14_075_000
+
+
 async def test_controller_remote_refuses_frequency_write() -> None:
     """Bot handler:617 — remote controller mode refuses a frequency write."""
     radio = StubIcomRadio()
