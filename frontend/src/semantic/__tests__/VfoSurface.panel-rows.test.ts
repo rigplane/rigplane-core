@@ -405,18 +405,24 @@ describe('standard BUSY lamp (2/main_sub)', () => {
     const busy = busyChip('open');
     expect(busy?.textContent).toBe('BUSY');
     expect(busy?.getAttribute('data-lit')).toBe('true');
+    expect(busy?.getAttribute('role')).toBe('img');
+    expect(busy?.getAttribute('aria-label')).toBe('Squelch open');
   });
 
   it('darkens while the squelch reads closed, keeping the label', () => {
     const busy = busyChip('closed');
     expect(busy?.textContent).toBe('BUSY');
     expect(busy?.getAttribute('data-lit')).toBe('false');
+    expect(busy?.getAttribute('role')).toBe('img');
+    expect(busy?.getAttribute('aria-label')).toBe('Squelch closed');
   });
 
   it('stays unlit with the label while the squelch is unread', () => {
     const busy = busyChip('unknown');
     expect(busy?.textContent).toBe('BUSY');
     expect(busy?.getAttribute('data-lit')).toBe('false');
+    // Unread: the dimmed label only, no state sentence.
+    expect(busy?.getAttribute('aria-label')).toBeNull();
   });
 
   it('draws nothing when the radio declares no squelch fact', () => {

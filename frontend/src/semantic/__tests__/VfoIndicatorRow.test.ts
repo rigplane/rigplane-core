@@ -609,6 +609,8 @@ describe('chips appearance (MOR-2852) — the phone meta facts', () => {
     expect(busy.getAttribute('data-state')).toBe('on');
     expect(busy.textContent).toBe('BUSY');
     expect(busy.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.busy}ch`);
+    expect(busy.getAttribute('role')).toBe('img');
+    expect(busy.getAttribute('aria-label')).toBe('Squelch open');
   });
 
   it('darkens the BUSY chip while the squelch reads closed, keeping the label', () => {
@@ -617,6 +619,8 @@ describe('chips appearance (MOR-2852) — the phone meta facts', () => {
     const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
     expect(busy.getAttribute('data-state')).toBe('off');
     expect(busy.textContent).toBe('BUSY');
+    expect(busy.getAttribute('role')).toBe('img');
+    expect(busy.getAttribute('aria-label')).toBe('Squelch closed');
   });
 
   it('dims the BUSY chip while the squelch is unread', () => {
@@ -625,6 +629,8 @@ describe('chips appearance (MOR-2852) — the phone meta facts', () => {
     const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
     expect(busy.getAttribute('data-state')).toBe('unknown');
     expect(busy.textContent).toBe('BUSY');
+    // Unread: the dimmed label only, no state sentence (same as the desktop lamp).
+    expect(busy.getAttribute('aria-label')).toBeNull();
   });
 
   it('omits the BUSY chip when the radio declares no squelch fact', () => {

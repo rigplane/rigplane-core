@@ -13,7 +13,11 @@ then closed, then never answered, and look at what a client sees:
 
 The delivered ``dcd`` value and ``fieldStatus`` rows must equal the golden
 payloads in ``state-wire-goldens.json`` (``polledDcdOpen``/``Closed``/
-``Unanswered``). The browser spec
+``Unanswered``). The live deltas are held to the whole delta contract
+against ``polledDcdDeltaOpen``/``Closed``: the envelope fields (type,
+revisions, state-contract version, provider generation) and the ``dcd``
+value, alias and ``fieldStatus`` rows, and the state a client reconstructs
+from baseline plus delta. The browser spec
 ``frontend/src/components-v2/layout/__tests__/state-wire-goldens.busy-lamp.isolated.test.ts``
 replays those same goldens through the real client, view-model adapter,
 ``VfoSurface`` and ``MobileRadioLayout``, so the lamp is tied to what the
@@ -29,6 +33,7 @@ projecting ``dcd`` into the public state (``web/runtime_helpers.py``).
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -38,6 +43,7 @@ from typing import Any
 import aiohttp
 import pytest
 
+from rigplane.web._delta_encoder import apply_delta
 from scripts.soak import soak_driver
 
 _GOLDEN_PATH = (
@@ -81,14 +87,49 @@ def _http_slice(state: dict[str, Any]) -> dict[str, Any]:
     return _dcd_slice(state["main"], state["fieldStatus"])
 
 
-def _delta_dcd(message: dict[str, Any]) -> bool | None:
-    """The ``main.dcd`` a ``state_update`` frame carries, ``None`` if it has none."""
-    if message.get("type") != "state_update":
-        return None
-    envelope = message["data"]
-    payload = envelope["data"] if envelope["type"] == "full" else envelope["changed"]
-    value = (payload.get("main") or {}).get("dcd")
-    return value if isinstance(value, bool) else None
+def _assert_delta_matches_golden(
+    golden: dict[str, Any],
+    baseline: dict[str, Any],
+    envelope: dict[str, Any],
+    reconstructed: dict[str, Any],
+    expected_state: dict[str, Any],
+) -> None:
+    """Hold one live squelch-change delta to the committed delta golden.
+
+    ``golden`` is the ``polledDcdDelta*`` envelope, ``baseline`` the full
+    envelope the client held before, ``envelope`` the live frame,
+    ``reconstructed`` the client state after applying it, and
+    ``expected_state`` the ``polledDcd*`` full golden of the new squelch.
+    """
+    assert envelope["type"] == "delta" == golden["type"]
+    # No extra envelope fields (``removed`` appears only when something was).
+    assert set(envelope) - {"removed"} == set(golden)
+    assert envelope["stateContractVersion"] == golden["stateContractVersion"]
+    assert envelope["providerGeneration"] == golden["providerGeneration"]
+    assert envelope["providerGeneration"] == baseline["providerGeneration"]
+    # The delta is a newer state of the same stream, with its freshness
+    # counters, not a replay of the baseline.
+    assert envelope["stateRevision"] > baseline["stateRevision"]
+    assert envelope["observationSeq"] > baseline["observationSeq"]
+    assert envelope["freshnessRevision"] >= baseline["freshnessRevision"]
+    removed = envelope.get("removed", [])
+    assert "main" not in removed
+    assert "fieldStatus" not in removed
+    changed = envelope["changed"]
+    assert "main" in changed
+    assert "fieldStatus" in changed
+    for row in _DCD_FIELD_ROWS:
+        assert row in changed["fieldStatus"], f"the delta carries no {row} status row"
+    # The dcd value, its alias and their status rows travel together in the
+    # delta itself, equal to the golden delta's.
+    assert _dcd_slice(changed["main"], changed["fieldStatus"]) == _dcd_slice(
+        golden["changed"]["main"], golden["changed"]["fieldStatus"]
+    )
+    # And the client that applied it holds the full golden state.
+    assert (
+        _dcd_slice(reconstructed["main"], reconstructed["fieldStatus"])
+        == expected_state
+    )
 
 
 async def _wait_until(predicate: Callable[[], Any], what: str) -> None:
@@ -154,6 +195,31 @@ async def _first_ws_full_state(
                     return message["data"]["data"]  # type: ignore[no-any-return]
 
 
+async def _next_state_envelope(ws: aiohttp.ClientWebSocketResponse) -> dict[str, Any]:
+    async with asyncio.timeout(_DEADLINE_S):
+        while True:
+            message = json.loads((await ws.receive()).data)
+            if message["type"] == "state_update":
+                return message["data"]  # type: ignore[no-any-return]
+
+
+async def _await_dcd_delta(
+    ws: aiohttp.ClientWebSocketResponse,
+    held: dict[str, Any],
+    expected: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Apply stream frames to ``held`` until ``main.dcd`` reads ``expected``.
+
+    Returns the frame that made it so and the reconstructed state after it.
+    """
+    state = held
+    while True:
+        envelope = await _next_state_envelope(ws)
+        state = apply_delta(state, envelope)
+        if state["main"].get("dcd") is expected:
+            return envelope, state
+
+
 @pytest.mark.parametrize("model", _MODELS)
 async def test_polled_open_then_closed_squelch_reaches_http_and_ws(model: str) -> None:
     """Open then closed, both delivered over HTTP and over WebSocket (MOR-3630).
@@ -170,12 +236,34 @@ async def test_polled_open_then_closed_squelch_reaches_http_and_ws(model: str) -
             model, "polledDcdClosed"
         )
 
-        # A client already connected sees the change arrive on the stream.
+        # A client already connected holds the full baseline, then sees each
+        # change arrive as a delta on the stream.
         async with session.ws_connect(base.replace("http", "ws") + "/api/v1/ws") as ws:
+            baseline = await _next_state_envelope(ws)
+            assert baseline["type"] == "full"
+            assert _dcd_slice(
+                baseline["data"]["main"], baseline["data"]["fieldStatus"]
+            ) == _golden_slice(model, "polledDcdClosed")
+
             stack.sim.set_squelch_open(True)
-            async with asyncio.timeout(_DEADLINE_S):
-                while _delta_dcd(json.loads((await ws.receive()).data)) is not True:
-                    pass
+            open_delta, held = await _await_dcd_delta(ws, baseline["data"], True)
+            _assert_delta_matches_golden(
+                _GOLDENS[model]["polledDcdDeltaOpen"],
+                baseline,
+                open_delta,
+                held,
+                _golden_slice(model, "polledDcdOpen"),
+            )
+
+            stack.sim.set_squelch_open(False)
+            closed_delta, held = await _await_dcd_delta(ws, held, False)
+            _assert_delta_matches_golden(
+                _GOLDENS[model]["polledDcdDeltaClosed"],
+                open_delta,
+                closed_delta,
+                held,
+                _golden_slice(model, "polledDcdClosed"),
+            )
 
         opened = await _wait_for_http_dcd(session, base, True)
         assert _http_slice(opened) == _golden_slice(model, "polledDcdOpen")
@@ -216,5 +304,96 @@ async def test_squelch_status_the_radio_never_answers_stays_unobserved(
 
 def test_the_goldens_cover_the_radios_exercised_here() -> None:
     for model in _MODELS:
-        for case in ("polledDcdOpen", "polledDcdClosed", "polledDcdUnanswered"):
+        for case in (
+            "polledDcdOpen",
+            "polledDcdClosed",
+            "polledDcdUnanswered",
+            "polledDcdDeltaOpen",
+            "polledDcdDeltaClosed",
+        ):
             assert case in _GOLDENS[model], f"{model}: no {case} golden"
+
+
+def _live_like_delta(model: str, case: str) -> dict[str, Any]:
+    """A frame as the stream delivers it: the golden delta, volatile keys aside."""
+    return copy.deepcopy(_GOLDENS[model][case])  # type: ignore[no-any-return]
+
+
+def _check_golden_delta(
+    model: str, case: str, expected_case: str, envelope: dict[str, Any]
+) -> None:
+    baseline = copy.deepcopy(_GOLDENS[model]["polledDcdClosed"])
+    baseline["stateRevision"] -= 1
+    baseline["observationSeq"] -= 1
+    reconstructed = apply_delta(copy.deepcopy(baseline["data"]), envelope)
+    _assert_delta_matches_golden(
+        _GOLDENS[model][case],
+        baseline,
+        envelope,
+        reconstructed,
+        _golden_slice(model, expected_case),
+    )
+
+
+@pytest.mark.parametrize("model", _MODELS)
+def test_a_delta_equal_to_the_golden_passes_the_delta_contract(model: str) -> None:
+    _check_golden_delta(
+        model,
+        "polledDcdDeltaOpen",
+        "polledDcdOpen",
+        _live_like_delta(model, "polledDcdDeltaOpen"),
+    )
+
+
+def _drop_status_row(envelope: dict[str, Any]) -> None:
+    del envelope["changed"]["fieldStatus"]["main.dcd"]
+
+
+def _mark_dcd_unobserved(envelope: dict[str, Any]) -> None:
+    row = envelope["changed"]["fieldStatus"]["main.dcd"]
+    row["observed"] = False
+    row["availability"] = "missing"
+
+
+def _mark_dcd_stale(envelope: dict[str, Any]) -> None:
+    envelope["changed"]["fieldStatus"]["main.dcd"]["freshness"] = "stale"
+
+
+def _wrong_value(envelope: dict[str, Any]) -> None:
+    envelope["changed"]["main"]["dcd"] = False
+
+
+def _wrong_generation(envelope: dict[str, Any]) -> None:
+    envelope["providerGeneration"] += 1
+
+
+def _extra_envelope_field(envelope: dict[str, Any]) -> None:
+    envelope["unexpected"] = True
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        _drop_status_row,
+        _mark_dcd_unobserved,
+        _mark_dcd_stale,
+        _wrong_value,
+        _wrong_generation,
+        _extra_envelope_field,
+    ],
+)
+@pytest.mark.parametrize("model", _MODELS)
+def test_a_corrupted_live_delta_fails_the_delta_contract(
+    model: str, corrupt: Callable[[dict[str, Any]], None]
+) -> None:
+    """The delta check is not satisfied by ``main.dcd=True`` alone (MOR-3630).
+
+    ``_mark_dcd_unobserved`` is the case the real adapter must never produce:
+    the value arrives but its status row says nothing was observed, so the
+    lamp would be dark while the value reads open.
+    """
+    envelope = _live_like_delta(model, "polledDcdDeltaOpen")
+    corrupt(envelope)
+
+    with pytest.raises(AssertionError):
+        _check_golden_delta(model, "polledDcdDeltaOpen", "polledDcdOpen", envelope)

@@ -27,6 +27,10 @@
   export interface VfoPanelAnnunciator extends VfoPanelSlot {
     family: 'amber' | 'red' | 'brown';
     group: 'agc' | 'front' | 'rfg';
+    /** Accessible state sentence for a lamp whose lit state carries meaning
+     *  the text does not (BUSY: "Squelch open"/"Squelch closed"); absent
+     *  while the state is unread, so the lamp stays a bare dimmed label. */
+    label?: string;
     /** Optional legacy-path colour token name; overrides the family tone. */
     color?: string;
   }
@@ -240,6 +244,7 @@
         {#if i > 0 && ann.group !== sections.annunciators[i - 1].group}<i class="ann-sep"></i>{/if}
         <span class="lamp" data-family={ann.family} data-chip={ann.key} data-lit={ann.lit}
           aria-hidden={ann.text ? undefined : 'true'}
+          role={ann.label ? 'img' : undefined} aria-label={ann.label}
           style={ann.color ? `--vfo-lamp-color: ${legacyLampColor(ann.color)}` : undefined}
           {...(ann.key === 'rfg' ? { 'data-indicator-fact': 'rfg' } : {})}>{ann.text}</span>
       {/each}

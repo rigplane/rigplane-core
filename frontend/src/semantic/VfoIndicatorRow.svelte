@@ -74,7 +74,7 @@
   import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import { rfUnconfirmedLabel } from './rx-tx-surface';
-  import { finiteValue, observationValue, readingText, readingValue } from '../primitives/reading-text';
+  import { finiteValue, observationValue, readingText, readingValue, squelchStateLabel } from '../primitives/reading-text';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -123,15 +123,6 @@
    *  composes. */
   function sharedBoolean(field: TxAuxField<boolean>): string {
     return readingText(field, (v) => (v ? 'ON' : 'OFF'));
-  }
-
-  /** MOR-3630: the BUSY lamp's accessible state sentence — present only
-   *  while the squelch state is known (the RF-gain conditional-label
-   *  pattern); unread shows the dimmed label with no sentence. */
-  function busyLabel(field: ReceiverIndicatorField<boolean>): string | undefined {
-    return field.reading.status === 'known'
-      ? (field.reading.value ? 'Squelch open' : 'Squelch closed')
-      : undefined;
   }
 
   /** The RF gain the display shows, independent of provenance: the observed
@@ -203,7 +194,8 @@
            state lives in data-state like the NB/NR chips. Nothing renders
            without the squelch fact. -->
       <span class="fact" data-indicator-fact="busy" data-state={booleanState(indicator.squelchOpen)}
-        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.busy}ch`}>BUSY</span>
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.busy}ch`}
+        role="img" aria-label={squelchStateLabel(indicator.squelchOpen)}>BUSY</span>
     {:else if fact === 'bandwidth' && indicator.bandwidthHz.availability.structural}
       <span class="fact" data-indicator-fact="bandwidth" data-state={indicator.bandwidthHz.reading.status}
         style:min-inline-size={`${bandwidthReservationCh}ch`}>BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} ${t('core.filter.unit.hz')}`)}</span>
@@ -294,7 +286,7 @@
            absent from the 'chips' appearance, which draws no S-meter. -->
       <span class="fact" data-indicator-fact="busy" data-state={booleanState(indicator.squelchOpen)}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.busy}ch`}
-        role="img" aria-label={busyLabel(indicator.squelchOpen)}
+        role="img" aria-label={squelchStateLabel(indicator.squelchOpen)}
         >BUSY</span
       >
     {/if}
