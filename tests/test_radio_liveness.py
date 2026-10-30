@@ -726,7 +726,8 @@ async def _serve_info(radio: Any) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    "radio_cls", [Ic705SerialRadio, Ic7300SerialRadio, Icom7610SerialRadio, Ic9700SerialRadio]
+    "radio_cls",
+    [Ic705SerialRadio, Ic7300SerialRadio, Icom7610SerialRadio, Ic9700SerialRadio],
 )
 @pytest.mark.parametrize("action", ["disconnect", "failed_reopen"])
 async def test_serial_partial_lifecycle_retires_liveness_before_wait(
@@ -745,7 +746,9 @@ async def test_serial_partial_lifecycle_retires_liveness_before_wait(
     await radio.connect()
     assert radio.conn_state is RadioConnectionState.CONNECTING
     assert radio.last_valid_frame_monotonic is not None
-    assert (await _serve_info(radio))["connection"]["liveness"]["lastFrameAgeMs"] is not None
+    assert (await _serve_info(radio))["connection"]["liveness"][
+        "lastFrameAgeMs"
+    ] is not None
     retired = radio._civ_epoch
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -764,9 +767,13 @@ async def test_serial_partial_lifecycle_retires_liveness_before_wait(
         task = asyncio.create_task(radio.connect())
     try:
         await asyncio.wait_for(entered.wait(), 2)
-        assert (await _serve_info(radio))["connection"]["liveness"]["lastFrameAgeMs"] is None
+        assert (await _serve_info(radio))["connection"]["liveness"][
+            "lastFrameAgeMs"
+        ] is None
         frame = parse_civ_frame(
-            build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0x19, sub=0, data=b"\x01")
+            build_civ_frame(
+                CONTROLLER_ADDR, radio._radio_addr, 0x19, sub=0, data=b"\x01"
+            )
         )
         await radio._civ_runtime._route_civ_frame(frame, generation=retired)
         assert radio.last_valid_frame_monotonic is None
@@ -776,7 +783,9 @@ async def test_serial_partial_lifecycle_retires_liveness_before_wait(
                 await task
         else:
             await task
-        assert (await _serve_info(radio))["connection"]["liveness"]["lastFrameAgeMs"] is None
+        assert (await _serve_info(radio))["connection"]["liveness"][
+            "lastFrameAgeMs"
+        ] is None
     finally:
         release.set()
         await asyncio.gather(task, return_exceptions=True)
@@ -813,9 +822,13 @@ async def test_identity_only_liveness_refresh_reaches_existing_websocket(
             before = radio._state_store.snapshot()
             for _ in range(2):
                 frame = parse_civ_frame(
-                    build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x19, sub=0, data=b"\x01")
+                    build_civ_frame(
+                        CONTROLLER_ADDR, IC_7610_ADDR, 0x19, sub=0, data=b"\x01"
+                    )
                 )
-                await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+                await radio._civ_runtime._route_civ_frame(
+                    frame, generation=radio._civ_epoch
+                )
                 update = await receive_state()
                 body = update.get("changed", update.get("data"))
                 assert body["connection"]["liveness"]["lastFrameAgeMs"] is not None
@@ -823,9 +836,14 @@ async def test_identity_only_liveness_refresh_reaches_existing_websocket(
                 key = server._public_state_delivery_key(before, health_revision=0)
                 with monkeypatch.context() as clock:
                     clock.setattr(
-                        runtime_helpers, "time", SimpleNamespace(monotonic=lambda: time.monotonic() + 1)
+                        runtime_helpers,
+                        "time",
+                        SimpleNamespace(monotonic=lambda: time.monotonic() + 1),
                     )
-                    assert server._public_state_delivery_key(before, health_revision=0) == key
+                    assert (
+                        server._public_state_delivery_key(before, health_revision=0)
+                        == key
+                    )
                 baseline = update
             after = radio._state_store.snapshot()
             assert after.state_revision == before.state_revision

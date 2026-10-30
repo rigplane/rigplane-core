@@ -2435,6 +2435,18 @@ class WebServer:
         *,
         health_revision: int,
     ) -> tuple[object, ...]:
+        liveness = connection_liveness_payload(self._radio)
+        evidence = (
+            (
+                getattr(self._radio, "last_valid_frame_monotonic", None)
+                if liveness["lastFrameAgeMs"] is not None
+                else None,
+                liveness["staleAfterMs"],
+                liveness["source"],
+            )
+            if liveness is not None
+            else None
+        )
         return (
             self.monitor_mute.on,
             tuple(sorted(self.monitor_mute.saved_af.items())),
@@ -2443,6 +2455,7 @@ class WebServer:
             snapshot.observation_seq,
             snapshot.provider_generation,
             health_revision,
+            evidence,
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
