@@ -154,9 +154,7 @@ def test_scanner_reports_forbidden_imports(source: str) -> None:
 
 def test_scanner_allows_shared_ws_import() -> None:
     """The leaf may import the shared lowest layer ``rigplane.ws``."""
-    assert (
-        _forbidden_imports("from rigplane.ws import WebSocketConnection\n") == []
-    )
+    assert _forbidden_imports("from rigplane.ws import WebSocketConnection\n") == []
 
 
 def test_shared_ws_module_is_stdlib_only() -> None:
@@ -170,9 +168,7 @@ def test_shared_ws_module_is_stdlib_only() -> None:
 
 def test_scanner_nested_extra_forbidden_import_fails() -> None:
     """A forbidden import inside ``tci/extra/foo.py`` must fail."""
-    assert (
-        _forbidden_imports("import numpy\n", package="rigplane.tci.extra") != []
-    )
+    assert _forbidden_imports("import numpy\n", package="rigplane.tci.extra") != []
 
 
 def test_scanner_allows_same_package_relative_import() -> None:

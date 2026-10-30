@@ -137,7 +137,7 @@ from .handlers import (  # noqa: TID251
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
 from .handlers.control import _consume_normalized_level_unit  # noqa: TID251
 from .handlers.rigctl import OpenRigctlChannel, RigctlChannelHandler  # noqa: TID251
-from .host_guard import (  # noqa: TID251
+from ..core.host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
     ORIGIN_FORBIDDEN_BODY,
     host_header_allowed,
@@ -168,7 +168,7 @@ from .runtime_helpers import (  # noqa: TID251
     store_has_radio_observation,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
-from .websocket import WS_KEEPALIVE_INTERVAL, WebSocketConnection  # noqa: TID251
+from ..ws import WS_KEEPALIVE_INTERVAL, WebSocketConnection  # noqa: TID251
 from ..radio_protocol import (
     CivTransactionCapable,
     ProviderOwnedStateCapable,
@@ -2324,7 +2324,7 @@ class WebServer:
         event = {"type": "state_update", "data": delta}
         self._state_diagnostics.record(
             "web_delivery_trigger",
-            "web.websocket",
+            "web.ws_state",
             revision=body.get("revision"),
             state_revision=body.get("stateRevision"),
             freshness_revision=body.get("freshnessRevision"),
@@ -7891,11 +7891,11 @@ class WebServer:
         # MOR-2880: refuse foreign Hosts (421) and foreign Origins (403)
         # BEFORE the upgrade handshake — never a loopback exception.
         # The policy lives in rigplane.core.host_guard (shared with the
-        # TCI server); the check itself runs in rigplane.tci.ws.
-        from ..tci.ws import UpgradeAccept as _UpgradeAccept
-        from ..tci.ws import UpgradeDecline as _UpgradeDecline
-        from ..tci.ws import check_upgrade_headers as _check_upgrade_headers
-        from ..tci.ws import make_upgrade_response as _make_upgrade_response
+        # TCI server); the check itself runs in rigplane.ws.
+        from ..ws import UpgradeAccept as _UpgradeAccept
+        from ..ws import UpgradeDecline as _UpgradeDecline
+        from ..ws import check_upgrade_headers as _check_upgrade_headers
+        from ..ws import make_upgrade_response as _make_upgrade_response
 
         def _allow_upgrade(
             request_headers: Mapping[str, str],
@@ -7972,7 +7972,7 @@ class WebServer:
             )
             return
         # Key check, accept header and 101 response bytes come from the
-        # shared leaf implementation (rigplane.tci.ws).
+        # shared lowest-layer implementation (rigplane.ws).
         upgrade = _make_upgrade_response(headers, protocol=selected_protocol)
         if not isinstance(upgrade, _UpgradeAccept):
             self._controller.detach(ticket)

@@ -12,8 +12,8 @@ layers =
     rigplane.runtime
     rigplane.profiles | rigplane.audio | rigplane.sdr
     rigplane.commands | rigplane.scope | rigplane.dsp
-    rigplane.core
-    rigplane.tci
+    rigplane.core | rigplane.tci
+    rigplane.ws
 ignore_imports =
     rigplane.core.radio_protocol -> rigplane.audio_bus
     rigplane.core.radio_protocol -> rigplane.scope

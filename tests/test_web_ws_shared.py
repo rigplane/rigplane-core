@@ -1,8 +1,8 @@
 """Web-side pins for the shared ``rigplane.ws`` module (MOR-3821 round 7).
 
 The RFC 6455 implementation ``web`` uses now lives in the stdlib-only
-lowest layer ``rigplane.ws`` (moved from ``rigplane.tci.ws``; the old
-``rigplane.web.websocket`` / ``rigplane.web.host_guard`` shims are
+lowest layer ``rigplane.ws`` (moved from the TCI leaf; the old
+``websocket`` / ``host_guard`` shims under ``rigplane.web`` are
 deleted). Every test here goes through ``WebSocketConnection`` exactly
 as ``WebServer._handle_websocket`` constructs it
 (``WebSocketConnection(reader, writer, deflate=...)``) or through the
@@ -180,9 +180,7 @@ async def test_first_fragment_rsv1_decides_deflate() -> None:
 async def test_abort_after_protocol_close_releases_transport() -> None:
     """``abort()`` reaches the transport even after a received CLOSE."""
     writer = _FakeWriter()
-    conn = WebSocketConnection(
-        _reader(_client_frame(WS_OP_CLOSE, b"")), writer
-    )
+    conn = WebSocketConnection(_reader(_client_frame(WS_OP_CLOSE, b"")), writer)
     with pytest.raises(EOFError, match="closed"):
         async with asyncio.timeout(5.0):
             await conn.recv()

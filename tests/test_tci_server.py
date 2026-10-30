@@ -21,7 +21,7 @@ from rigplane.tci.server import (
     PING_INTERVAL_S,
     TciServer,
 )
-from rigplane.tci.ws import (
+from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
     WS_OP_PING,
@@ -651,7 +651,7 @@ async def test_accept_good_request_upgrades() -> None:
 
 async def test_accept_refused_predicate() -> None:
     def _refuse(headers: object) -> object:
-        from rigplane.tci.ws import UpgradeDecline
+        from rigplane.ws import UpgradeDecline
 
         return UpgradeDecline(403, "Forbidden", b"nope")
 

@@ -1,5 +1,10 @@
 """RFC 6455 WebSocket + RFC 7692 permessage-deflate (stdlib only).
 
+The single shared framing implementation in the lowest layer: the one
+place that speaks the WebSocket wire. ``rigplane.tci`` (listener,
+sessions) and ``rigplane.web`` (browser UI and controller channels)
+both import it; it imports only the standard library.
+
 Provides:
 - HTTP Upgrade handshake key computation
 - Server-side upgrade check (injected Origin/Host policy, key check,

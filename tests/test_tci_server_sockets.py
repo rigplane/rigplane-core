@@ -14,7 +14,7 @@ import time
 import pytest
 
 from rigplane.tci.server import TciServer
-from rigplane.tci.ws import (
+from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
     WS_OP_CONTINUATION,

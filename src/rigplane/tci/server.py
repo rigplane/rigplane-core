@@ -22,7 +22,7 @@ from typing import Any
 
 from rigplane.tci.handler import CommandOutcome, TciHandler
 from rigplane.tci.protocol import parse_line
-from rigplane.tci.ws import (
+from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_TEXT,
     AllowHeaders,

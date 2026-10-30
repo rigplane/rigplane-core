@@ -731,7 +731,7 @@ def test_radio_health_reports_server_unreachable_without_radio_guess() -> None:
 async def test_webserver_and_control_handler_use_same_capabilities_and_ready() -> None:
     """HTTP /api/v1/info and WS hello share the same runtime helpers."""
     from rigplane.web.handlers import ControlHandler
-    from rigplane.web.websocket import WebSocketConnection
+    from rigplane.ws import WebSocketConnection
 
     caps = {"audio", "scope", "dual_rx", "tx"}
     radio = _FakeRadio(caps=caps, connected=True, radio_ready_flag=True)
@@ -774,7 +774,7 @@ async def test_websocket_hello_projects_only_trusted_vfo_primitives() -> None:
     """WS hello cannot expose injected VFO primitive capability tags."""
     from rigplane.profiles import resolve_radio_profile
     from rigplane.web.handlers import ControlHandler
-    from rigplane.web.websocket import WebSocketConnection
+    from rigplane.ws import WebSocketConnection
 
     reserved = {"vfo_swap", "vfo_equalize"}
     ic7300 = resolve_radio_profile(model="IC-7300")

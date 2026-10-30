@@ -148,7 +148,7 @@ def make_server(handler: FakeHandler, **kwargs: object) -> object:
 
     from rigplane.tci.server import TciServer
 
-    from rigplane.tci.ws import UpgradeDecline
+    from rigplane.ws import UpgradeDecline
 
     def _allow(headers: dict[str, str]) -> UpgradeDecline | None:
         if headers.get("origin") is not None:
