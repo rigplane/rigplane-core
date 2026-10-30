@@ -724,8 +724,9 @@ class CivRuntime:
         # (MOR-2083). ``_wait_for_civ_transport_recovery`` runs its bounded
         # kick on this task and later waits reuse it while it is still
         # running, so a permanently stuck recovery cannot pile up one task
-        # per poll. Tracked here so stop_data_watchdog() can cancel it on
-        # the same teardown path as ``_reconnect_task``.
+        # per poll. Tracked here so a later wait can reuse the in-flight
+        # kick; teardown only forgets it, never cancels it — the task
+        # awaits the lifecycle's shared recovery.
         self._fast_reconnect_task: asyncio.Task[None] | None = None
         self._soft_recovery_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, bytes] = {}
@@ -1127,26 +1128,21 @@ class CivRuntime:
         elif rc_task is not current and not owned_recovery:
             self._reconnect_task = None
 
-        # Same teardown for the poller's in-flight fast-reconnect task
-        # (MOR-2083): an explicit disconnect during the cooldown must not be
-        # undone by a late soft_reconnect. Cancelling this task is safe for
-        # the lifecycle's shared recovery — cancelling an awaiter never
-        # cancels the awaited ``_recover_task`` — and the poller itself only
-        # ever abandons its wait, never cancels. Unlike ``_reconnect_task``
-        # (whose coroutine swallows its own errors) this task can carry a
-        # real soft_reconnect exception, so swallow that too on teardown.
-        fast_task = self._fast_reconnect_task
-        if fast_task is not None and fast_task is not current and not fast_task.done():
-            fast_task.cancel()
-            try:
-                await fast_task
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                pass
-            self._fast_reconnect_task = None
-        elif fast_task is not current:
-            self._fast_reconnect_task = None
+        # Forget the poller's in-flight fast-reconnect task without cancelling
+        # it (MOR-2083). The task only awaits the lifecycle's shared
+        # ``_recover_task`` (``CoreRadioSessionLifecycle.soft_reconnect`` does
+        # ``await recovery``), and cancelling a task that awaits another task
+        # forwards the cancel to the awaited one — so cancelling here would
+        # kill the shared recovery. This teardown can even run from inside
+        # that very recovery: the stalled-transport branch of
+        # ``ControlPhaseRuntime.soft_reconnect`` calls ``_force_cleanup_civ``
+        # → ``stop_data_watchdog`` from within ``_run_recover``, which would
+        # self-cancel the run in progress (cf. #1217 invariant 2 above, which
+        # is why ``_reconnect_task`` uses ``is_current_recovery_awaited_by``).
+        # The task ends by itself when the recovery ends or the lifecycle's
+        # own disconnect cancels it; forgetting the reference only makes a
+        # later wait start a fresh kick instead of reusing a stale one.
+        self._fast_reconnect_task = None
 
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
@@ -4191,8 +4187,9 @@ class CivRuntime:
                 exc,
             )
         except asyncio.CancelledError:
-            # The task itself was cancelled (e.g. teardown raced the poller);
-            # the caller's own cancellation already propagated via the wait.
+            # The task itself was cancelled (e.g. the lifecycle's own
+            # disconnect cancelled the shared recovery); the caller's own
+            # cancellation already propagated via the wait.
             logger.debug("Fast CI-V soft_reconnect attempt was cancelled")
         except Exception:
             logger.warning(

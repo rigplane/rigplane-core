@@ -1607,6 +1607,45 @@ async def test_wait_for_recovery_reuses_inflight_fast_reconnect(
                 pass
 
 
+async def test_wait_for_recovery_teardown_inside_the_recovery_does_not_self_cancel(
+    radio: IcomRadio,
+) -> None:
+    """Teardown inside the shared recovery must not self-cancel it (MOR-2083).
+
+    The stalled-transport branch of ``ControlPhaseRuntime.soft_reconnect``
+    calls ``_force_cleanup_civ`` → ``stop_data_watchdog`` from *inside* the
+    lifecycle's recovery run. The poller's fast-reconnect task awaits that
+    same shared ``_recover_task``, so cancelling it on teardown would cancel
+    the run in progress. The teardown therefore only forgets the reference,
+    and a real lifecycle recovery whose mechanism runs the teardown
+    mid-attempt still completes and the poller returns normally.
+    """
+    _arm_recovery_wait_scenario(radio)
+    lifecycle = radio._session_lifecycle
+    lifecycle._max_recovery_attempts = 1
+    lifecycle._recovery_backoff_s = (0.0,)
+    state: dict[str, Any] = {"teardown_ran": False}
+
+    async def mechanism_with_mid_run_teardown() -> None:
+        # What the stalled branch does inside the recovery run, minus the
+        # transport rebuild (the stub performs that inline below).
+        await radio._civ_runtime.stop_data_watchdog()
+        radio._civ_transport = MagicMock()
+        radio._conn_state = RadioConnectionState.CONNECTED
+        state["teardown_ran"] = True
+
+    lifecycle._mech.soft_reconnect_once = (  # type: ignore[method-assign]
+        mechanism_with_mid_run_teardown
+    )
+
+    await asyncio.wait_for(
+        radio._civ_runtime._wait_for_civ_transport_recovery(timeout=3.0),
+        timeout=10.0,
+    )
+
+    assert state["teardown_ran"], "the mechanism stub must run to completion"
+
+
 async def test_watchdog_recover_rearms_after_successful_recovery(
     radio: IcomRadio,
 ) -> None:
