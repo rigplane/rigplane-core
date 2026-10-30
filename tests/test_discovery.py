@@ -1625,6 +1625,176 @@ class TestDiscoverSerialRadios:
         assert protocols == {"civ", "yaesu_cat"}
 
 
+class TestDiscoverSerialRadiosConcurrent:
+    """MOR-3682: candidate ports are probed concurrently, not one after another."""
+
+    @pytest.mark.asyncio
+    async def test_silent_ports_are_probed_concurrently(self) -> None:
+        ports = [
+            _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
+            for i in range(4)
+        ]
+        per_open = 0.05
+        active = 0
+        peak = 0
+
+        async def _open(*, url: str, baudrate: int, **_kw: object):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(per_open)
+                raise OSError("silent port")
+            finally:
+                active -= 1
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=ports),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_open,
+                _yaesu_transport_factory=_make_yaesu_factory(None),
+            )
+        elapsed = loop.time() - start
+
+        assert results == []
+        assert peak > 1
+        assert elapsed < len(ports) * per_open
+
+    @pytest.mark.asyncio
+    async def test_mixed_results_keep_enumeration_order(self) -> None:
+        """[silent, IC-705, silent, Yaesu FTX-1] yields the two radios in order."""
+        ic705 = _make_port(
+            "/dev/ttyUSB1",
+            "IC-705",
+            "USB VID:PID=0C26:0036",
+            vid=0x0C26,
+            pid=0x0036,
+            manufacturer="Icom Inc.",
+            product="IC-705",
+            serial_number="12003912",
+        )
+        yaesu = _make_port(
+            "/dev/ttyUSB3",
+            "USB Serial",
+            "USB VID:PID=0403:6001",
+            vid=0x0403,
+            pid=0x6001,
+        )
+        ports = [
+            _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=0403:6001"),
+            ic705,
+            _make_port("/dev/ttyUSB2", "USB Serial", "USB VID:PID=0403:6001"),
+            yaesu,
+        ]
+
+        async def _open(*, url: str, baudrate: int, **kw: object):
+            if url == "/dev/ttyUSB1":
+                return await CivSerialPort(CivRadioFake("IC-705")).opener(
+                    url=url, baudrate=baudrate, **kw
+                )
+            return await CivSerialPort(CivRadioFake("IC-7610"), silent=True).opener(
+                url=url, baudrate=baudrate, **kw
+            )
+
+        def _factory(**kwargs: object) -> _FakeCatTransport:
+            if kwargs.get("device") == "/dev/ttyUSB3":
+                return _FakeCatTransport("ID0840")
+            return _FakeCatTransport(None)
+
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=ports),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_open,
+                _yaesu_transport_factory=_factory,
+            )
+
+        assert [r.port for r in results] == ["/dev/ttyUSB1", "/dev/ttyUSB3"]
+        civ, cat = results
+        assert civ.protocol == "civ"
+        assert civ.model == "IC-705"
+        assert civ.profile_id == "icom_ic705"
+        assert civ.address == 0xA4
+        assert cat.protocol == "yaesu_cat"
+        assert cat.model == "FTX-1"
+        assert cat.profile_id == "yaesu_ftx1"
+
+    def test_recorded_macos_fixture_offers_both_ic705_ports(self) -> None:
+        """Recorded bench entries: both IC-705 usbmodem ports are candidates."""
+        ports = [
+            _make_port(
+                "/dev/cu.usbmodem3122201",
+                "IC-705",
+                "USB VID:PID=0C26:0036 SER=IC-705",
+                vid=0x0C26,
+                pid=0x0036,
+                manufacturer="Icom Inc.",
+                product="IC-705",
+                serial_number="IC-705 12003912",
+            ),
+            _make_port(
+                "/dev/cu.usbmodem3122203",
+                "IC-705",
+                "USB VID:PID=0C26:0036 SER=IC-705",
+                vid=0x0C26,
+                pid=0x0036,
+                manufacturer="Icom Inc.",
+                product="IC-705",
+                serial_number="IC-705 12003912",
+            ),
+            _make_port(
+                "/dev/cu.usbserial-01AE340D0",
+                "CP2105 Dual USB to UART Bridge Controller",
+                "USB VID:PID=10C4:EA70",
+                vid=0x10C4,
+                pid=0xEA70,
+                manufacturer="Silicon Labs",
+                product="CP2105 Dual USB to UART Bridge Controller",
+            ),
+            _make_port(
+                "/dev/cu.usbserial-01AE340D1",
+                "CP2105 Dual USB to UART Bridge Controller",
+                "USB VID:PID=10C4:EA70",
+                vid=0x10C4,
+                pid=0xEA70,
+                manufacturer="Silicon Labs",
+                product="CP2105 Dual USB to UART Bridge Controller",
+            ),
+            _make_port(
+                "/dev/cu.usbmodem00000000000011",
+                "YAESU HRI USB I/F",
+                "USB VID:PID=0B00:3011",
+                vid=0x0B00,
+                pid=0x3011,
+                manufacturer="YAESU",
+                product="HRI USB I/F",
+            ),
+            _make_port("/dev/cu.Bluetooth-Incoming-Port", "Bluetooth-Incoming-Port"),
+            _make_port("/dev/cu.debug-console", "Debug console"),
+        ]
+        with patch("serial.tools.list_ports.comports", return_value=ports):
+            result = enumerate_serial_ports()
+
+        devices = [c.device for c in result]
+        assert devices == [
+            "/dev/cu.usbmodem3122201",
+            "/dev/cu.usbmodem3122203",
+            "/dev/cu.usbserial-01AE340D0",
+            "/dev/cu.usbserial-01AE340D1",
+            "/dev/cu.usbmodem00000000000011",
+        ]
+        first = result[0]
+        assert (first.vid, first.pid) == (0x0C26, 0x0036)
+        assert first.product == "IC-705"
+        assert first.manufacturer == "Icom Inc."
+        assert first.serial_number == "IC-705 12003912"
+
+
 # ---------------------------------------------------------------------------
 # LAN UDP discovery (discover_lan_radios) — probe retransmit / dedup
 # ---------------------------------------------------------------------------
