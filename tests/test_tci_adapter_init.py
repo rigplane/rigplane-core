@@ -54,6 +54,34 @@ async def test_no_scheduler_answers_vfo_from_composed_store() -> None:
     assert set(asyncio.all_tasks()) <= before | {asyncio.current_task()}  # noqa: SLF001
 
 
+async def test_read_requests_projection_paths_for_refresh() -> None:
+    """P2 follow-up: reads must name the projected fields for ``ensure_fresh``.
+
+    An empty path request is rejected by the scheduler, so TCI reads would
+    never trigger the configured refresh.
+    """
+    calls: list[tuple[tuple[object, ...], float, object, str]] = []
+
+    class Service:
+        def ensure_fresh(self, paths, *, max_age, priority, reason):  # type: ignore[no-untyped-def]
+            calls.append((tuple(paths), max_age, priority, reason))
+
+    radio = StubIcomRadio()
+    radio.state_model_service = Service()
+    handler = make_handler(radio=radio, store=_loaded_store())
+    outcome = await handler.on_command("vfo", ("0", "0"))
+    assert outcome == CommandOutcome(
+        to_sender=("vfo:0,0,14074000;",), to_others=("vfo:0,0,14074000;",)
+    )
+    assert len(calls) == 1
+    paths, max_age, _priority, _reason = calls[0]
+    assert len(paths) > 0, "reads must request refresh paths; () is rejected"
+    assert FieldPath.active("main", "freq_mode", "freq_hz") in paths
+    assert FieldPath.global_("tx_state", "split") in paths
+    assert FieldPath.global_("operator_controls", "power_level") in paths
+    assert max_age == 0.2
+
+
 async def test_init_burst_exact_order_and_content() -> None:
     handler = make_handler(radio=StubIcomRadio(), store=_loaded_store())
     burst = list(await handler.on_connect())
