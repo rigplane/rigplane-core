@@ -128,9 +128,11 @@ class ManagedTxComposition:
         self._abort_fence = TxAbortFence()
         self._local_tx_work_runner = LocalTxWorkRunner(self._abort_fence)
         self._tot_config_store = ManagedTxTotConfigStore(config_path)
-        # MOR-3537: the store as it stood when Core's own TX last ended, and
-        # when Core keyed that TX.
-        self._released: tuple[StateSnapshot, float] | None = None
+        # MOR-3537: the store as it stood when Core last keyed, and when.
+        self._keyed: tuple[StateSnapshot, float] | None = None
+        # MOR-3537: the store as it stood when Core's own TX last ended, when
+        # Core keyed that TX, and whether the radio was read as TX in between.
+        self._released: tuple[StateSnapshot, float, bool] | None = None
         self._effect_lane = ManagedTxEffectLane(
             actuator, poison_generation=self._poison_tx_generation
         )
@@ -181,10 +183,34 @@ class ManagedTxComposition:
             )
             await self._ensure_current_locked()
 
-    def radio_released(self, keyed_at: float) -> None:
-        """Remember the readback as Core's own TX ends (MOR-3537)."""
+    def radio_keyed(self, keyed_at: float) -> None:
+        """Remember the readback as Core keys (MOR-3537)."""
         store = self._state_store
-        self._released = None if store is None else (store.snapshot(), keyed_at)
+        self._keyed = None if store is None else (store.snapshot(), keyed_at)
+
+    def radio_released(self) -> None:
+        """Remember the readback as Core's own TX ends (MOR-3537).
+
+        ``saw_tx``: the radio was read as TX between the key and now. Only
+        then is an RX reading after the key proof that the radio let go. A
+        poll answer is stamped when it is processed, and one asked before the
+        key can be processed after it: it reads RX although the radio had not
+        yet keyed. Such a stale answer comes before the first TX reading, so
+        with none seen the RX reading proves nothing.
+        """
+        store, keyed, self._keyed = self._state_store, self._keyed, None
+        self._released = None
+        if store is None or keyed is None:
+            return
+        keyed_snapshot, keyed_at = keyed
+        since_key = store.delta_since(keyed_snapshot)
+        if since_key.requires_full_snapshot:
+            return  # history trimmed: reads as foreign, like no history at all
+        saw_tx = any(
+            change.path == _PTT_PATH and change.current is True
+            for change in since_key.changes
+        )
+        self._released = (store.snapshot(), keyed_at, saw_tx)
 
     def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
         """Origin of a TX the radio reported in an observation newer than ``since``.
@@ -195,7 +221,8 @@ class ManagedTxComposition:
         ``RigctldHandler._ptt_observed_after`` for the clock-domain note). The
         TX is Core's own, unreleased, unless an RX was observed since Core's
         own TX last ended: an RX reading at that moment taken after Core
-        keyed, or a change to RX in the store's history after it. Before
+        keyed and after the radio was read as TX (see ``radio_released``), or
+        a change to RX in the store's history after it. Before
         Core's first TX, or when the store cannot replay that history (trimmed,
         or a new provider generation), it reads as foreign. Either origin
         refuses every TX start; neither gates force_off.
@@ -210,14 +237,15 @@ class ManagedTxComposition:
             return None
         if self._released is None:
             return RadioTxOrigin.FOREIGN
-        released, keyed_at = self._released
+        released, keyed_at, saw_tx = self._released
         try:
             at_release = released.field(_PTT_PATH)
         except KeyError:
             pass
         else:
             if (
-                at_release.value is False
+                saw_tx
+                and at_release.value is False
                 and at_release.last_observed_monotonic > keyed_at
             ):
                 return RadioTxOrigin.FOREIGN

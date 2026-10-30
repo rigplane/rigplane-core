@@ -614,7 +614,10 @@ class FakeRadioTx:
         self.origin = RadioTxOrigin.FOREIGN
         self.releases = 0
 
-    def radio_released(self, keyed_at: float) -> None:
+    def radio_keyed(self, keyed_at: float) -> None:
+        pass
+
+    def radio_released(self) -> None:
         self.releases += 1
 
     def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
@@ -820,6 +823,42 @@ async def test_the_readback_tells_core_tx_the_radio_kept_from_an_operator_tx(
         sent = unkeys()
         assert await authority.force_off() is ACCEPTED
         assert unkeys() == sent + 1  # force_off unkeys even the operator
+    finally:
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.parametrize(
+    ("radio_reads_tx_before_release", "refusal"),
+    [
+        # A poll asked before the key is processed after it: an RX reading
+        # stamped after the key, before any TX reading. It proves nothing,
+        # so the TX the radio then keeps is Core's own (MOR-3868).
+        (False, "radio_tx_unreleased"),
+        # The radio was read as TX, then as RX before Core's unkey settled:
+        # it let go, so the next TX is the operator's.
+        (True, "radio_tx_unowned"),
+    ],
+)
+async def test_an_rx_reading_after_the_key_proves_a_release_only_after_a_tx_reading(
+    tmp_path: Path, radio_reads_tx_before_release: bool, refusal: str
+) -> None:
+    actuator, radio = RecordingActuator(), LegacyRadio()
+    composition = ManagedTxComposition(actuator, config_path=tmp_path / "tx.json")
+    install_managed_tx_composition(radio, composition)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(radio)
+    await composition.bind_state_store(store)
+    authority = composition.authority
+    try:
+        _radio_reports(store, False)
+        assert await authority.ptt_down("websocket-1") is ACCEPTED
+        if radio_reads_tx_before_release:
+            _radio_reports(store, True)
+        _radio_reports(store, False)  # processed after the key
+        assert await authority.ptt_up("websocket-1") is ACCEPTED
+        _radio_reports(store, True)  # a TX the unkey did not end
+        assert authority.radio_tx_refusal_nowait() == refusal
     finally:
         await composition.shutdown(asyncio.Event())
 

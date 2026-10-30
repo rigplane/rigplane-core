@@ -62,8 +62,12 @@ class RadioTxOrigin(StrEnum):
 class RadioTxProbe(Protocol):
     """The radio's PTT readback, as the composition observes it (MOR-3537)."""
 
-    def radio_released(self, keyed_at: float) -> None:
-        """Core's own TX, keyed at ``keyed_at``, just ended: its unkey settled."""
+    def radio_keyed(self, keyed_at: float) -> None:
+        """Core is about to key the radio, at ``keyed_at``."""
+        ...
+
+    def radio_released(self) -> None:
+        """Core's own TX just ended: its unkey settled."""
         ...
 
     def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
@@ -1379,11 +1383,13 @@ class ManagedTxAuthority:
         if was_clean and self._state.intent.kind is not ManagedTxIntentKind.RX:
             self._latest_on_epoch = self._state.effect_epoch
             self._keyed_at = self._clock()  # MOR-3537: Core keys
+            if self._radio_tx is not None:
+                self._radio_tx.radio_keyed(self._keyed_at)
         if self._state_is_clean_locked():
             if not was_clean:
                 self._idle_since = self._clock()
                 if self._keyed_at is not None and self._radio_tx is not None:
-                    self._radio_tx.radio_released(self._keyed_at)
+                    self._radio_tx.radio_released()
                 self._keyed_at = None
             self._release_drained.set()
         else:
