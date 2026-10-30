@@ -1091,26 +1091,6 @@ class CivRuntime:
         )
         logger.info("civ-data-watchdog: started")
 
-    @staticmethod
-    async def _join_cancelled(task: "asyncio.Task[None]") -> None:
-        """Await a task this call has just cancelled (MOR-3350).
-
-        The joined task's own ``CancelledError`` is expected and swallowed.
-        A cancel requested on THE CALLING task while it waits here must not be
-        consumed with it: it is re-raised once the join ends, whether the
-        joined task ended cancelled or returned normally after swallowing the
-        cancel that was forwarded to it. Counted against ``cancelling()`` at
-        entry so a caller that handled an earlier cancel keeps working.
-        """
-        me = asyncio.current_task()
-        before = me.cancelling() if me is not None else 0
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        if me is not None and me.cancelling() > before:
-            raise asyncio.CancelledError
-
     async def stop_data_watchdog(self) -> None:
         """Stop CI-V data watchdog and any in-flight detached reconnect task.
 
@@ -1123,9 +1103,9 @@ class CivRuntime:
         if task is not None and not task.done():
             task.cancel()
             try:
-                await self._join_cancelled(task)
-            finally:
-                self._host._civ_data_watchdog_task = None
+                await task
+            except asyncio.CancelledError:
+                pass
         self._host._civ_data_watchdog_task = None
 
         rc_task = self._reconnect_task
@@ -1156,26 +1136,12 @@ class CivRuntime:
             and not owned_recovery
             and not rc_task.done()
         ):
-            is_pending_replacement = pending is not None and rc_task is pending[0]
-            predecessor = (
-                pending[1] if pending is not None and is_pending_replacement else None
-            )
             rc_task.cancel()
             try:
-                await self._join_cancelled(rc_task)
-                if (
-                    predecessor is not None
-                    and predecessor is not current
-                    and not predecessor.done()
-                ):
-                    predecessor.cancel()
-                    await self._join_cancelled(predecessor)
-            finally:
-                self._reconnect_task = None
-                if is_pending_replacement:
-                    # A replacement cancelled before it started never ran its
-                    # ``finally``: drop the handoff pair explicitly.
-                    self._pending_replacement = None
+                await rc_task
+            except asyncio.CancelledError:
+                pass
+            self._reconnect_task = None
         elif rc_task is not current and not owned_recovery:
             self._reconnect_task = None
 
