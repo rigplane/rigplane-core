@@ -32,6 +32,7 @@ from rigplane.core.acquisition_scheduler import (
     StateFreshnessService,
 )
 from rigplane.core.state_pipeline_contracts import (
+    AcquisitionClass,
     ChangeSet,
     FieldChange,
     FieldPath,
@@ -136,7 +137,9 @@ async def _run_polled_rounds(*, model: str, sql_bytes: tuple[int, ...]) -> list[
         sent: list[AcquisitionQuery] = []
 
         async def send_query(
-            query: AcquisitionQuery, _priority: AcquisitionPriority
+            query: AcquisitionQuery,
+            _priority: AcquisitionPriority,
+            _acquisition_class: AcquisitionClass,
         ) -> None:
             sent.append(query)
 
