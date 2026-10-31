@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402, TID251
-from rigplane.types import ScopeFixedEdge  # noqa: E402
+from rigplane.types import ScopeFixedEdge, bcd_decode, bcd_encode  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -48,7 +48,8 @@ _CONTROLLER_ADDR = 0xE0
 _RADIO_ADDR = 0x98
 
 # ---------------------------------------------------------------------------
-# BCD helpers (mirror commands.py, kept local to avoid coupling)
+# Single-byte BCD helpers (kept local; frequency bytes use the
+# ``rigplane.core.types`` codec like production code)
 # ---------------------------------------------------------------------------
 
 
@@ -60,27 +61,6 @@ def _bcd_byte(value: int) -> int:
 def _bcd_byte_decode(b: int) -> int:
     """Decode one BCD byte to integer (e.g. 0x14 → 14)."""
     return ((b >> 4) & 0x0F) * 10 + (b & 0x0F)
-
-
-def _bcd_encode_freq(freq_hz: int) -> bytes:
-    """Encode frequency in Hz to Icom 5-byte BCD (little-endian pairs)."""
-    digits = f"{freq_hz:010d}"
-    result = bytearray(5)
-    for i in range(5):
-        low = int(digits[9 - 2 * i])
-        high = int(digits[9 - 2 * i - 1])
-        result[i] = (high << 4) | low
-    return bytes(result)
-
-
-def _bcd_decode_freq(data: bytes) -> int:
-    """Decode Icom 5-byte BCD to frequency in Hz."""
-    freq = 0
-    for i in range(len(data)):
-        high = (data[i] >> 4) & 0x0F
-        low = data[i] & 0x0F
-        freq += low * (10 ** (2 * i)) + high * (10 ** (2 * i + 1))
-    return freq
 
 
 # ---------------------------------------------------------------------------
@@ -151,16 +131,16 @@ class ScopeMockRadio(MockIcomRadio):
             if len(rest) >= 12:  # SET: <range><edge> + start(5) + end(5)
                 self._fixed_range_index = _bcd_byte_decode(rest[0])
                 self._fixed_edge = _bcd_byte_decode(rest[1])
-                self._fixed_start_hz = _bcd_decode_freq(rest[2:7])
-                self._fixed_end_hz = _bcd_decode_freq(rest[7:12])
+                self._fixed_start_hz = bcd_decode(rest[2:7])
+                self._fixed_end_hz = bcd_decode(rest[7:12])
                 return self._civ_ack(to, frm)
             # GET: a <range><edge> selector (2 bytes) is required by the
             # IC-7610 (MOR-662); respond with the 12-byte fixed-edge bounds.
             data = (
                 bytes([_bcd_byte(self._fixed_range_index)])
                 + bytes([_bcd_byte(self._fixed_edge)])
-                + _bcd_encode_freq(self._fixed_start_hz)
-                + _bcd_encode_freq(self._fixed_end_hz)
+                + bcd_encode(self._fixed_start_hz)
+                + bcd_encode(self._fixed_end_hz)
             )
             return self._civ_frame(to, frm, _CMD_SCOPE, sub=sub, data=data)
 
