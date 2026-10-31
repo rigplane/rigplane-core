@@ -77,6 +77,23 @@ async def _program_digu(handler):  # type: ignore[no-untyped-def]
     assert outcome.to_sender == ("modulation:0,DIGU;",)
 
 
+async def _await_release_settled(authority: ManagedTxAuthority) -> None:
+    """Wait until the TX release has settled (MOR-4001).
+
+    The settle event that clears ``release_required`` and ``pending_effect``
+    is reduced after the force-off effect lands, so closing the authority
+    right after observing the effect races with disposal's clean-RX check.
+    """
+    while True:
+        snapshot = await authority.snapshot()
+        if (
+            not snapshot.state.release_required
+            and snapshot.state.pending_effect is None
+        ):
+            return
+        await asyncio.sleep(0.01)
+
+
 async def test_key_accepted_end_to_end() -> None:
     handler, authority, lane, _queue = _seam()
     await _program_digu(handler)
@@ -300,6 +317,8 @@ async def test_disconnect_while_keyed_releases() -> None:
     finally:
         if not key_task.done():
             key_task.cancel()
+    async with asyncio.timeout(5.0):
+        await _await_release_settled(authority)
     snapshot = await authority.snapshot()
     assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
     await authority.close()
@@ -318,6 +337,7 @@ async def test_tot_expiry_bounds_keyed_over() -> None:
             effect.operation.name == "FORCE_RECEIVE" for effect in lane.effects
         ):
             await asyncio.sleep(0.01)
+        await _await_release_settled(authority)
     snapshot = await authority.snapshot()
     assert snapshot.state.intent.kind is ManagedTxIntentKind.RX
     assert snapshot.configured_tot_seconds == 0.05
