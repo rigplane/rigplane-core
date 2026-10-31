@@ -48,8 +48,8 @@ _FORBIDDEN_TEXT_SNIPPETS = (
 
 # Every module that touches a CI-V frequency field must take the codec
 # from the single implementation (directly, or through the
-# ``rigplane.types`` / ``rigplane.commands`` re-exports, which are the
-# same module object, not copies).
+# ``rigplane.types`` alias, which is the same module object, not a copy;
+# ``rigplane.commands`` only re-exports the name).
 _CODEC_SOURCES = frozenset(
     {"rigplane.core.types", "rigplane.types", "rigplane.commands"}
 )
@@ -194,7 +194,9 @@ class TestSixByteField:
 
     @pytest.mark.parametrize("length", [0, 1, 4, 7])
     def test_rejected_length_raises(self, length: int) -> None:
-        with pytest.raises(ValueError, match="5 or 6"):
+        with pytest.raises(
+            ValueError, match=r"must be 5 bytes \(6 for SHF fields\), got"
+        ):
             bcd_decode(bytes(length))
 
     def test_invalid_bcd_digit_raises(self) -> None:

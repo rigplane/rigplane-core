@@ -375,8 +375,12 @@ def _ghz_digit_ceiling(memory: MemoryProfile) -> int:
     Profiles declaring ``frequency_ranges`` take it from the highest band
     top (IC-9700: 1.3 GHz -> 1); otherwise the write layout's frequency
     ``max_hz`` (IC-705: 999_999_999 -> 0); profiles declaring neither keep
-    the codec's shared default. Every existing radio resolves exactly as
-    the old addressing-string branch did.
+    the codec's shared default. This is not identical to the old
+    addressing-string branch: channel-addressed IC-7300/IC-7300MK2 resolve
+    ceiling 0 here via the write layout's ``max_hz`` (74_800_000) while the
+    old branch allowed them GHz 0-1. The gap never surfaces: the write path
+    rejects anything above ``max_hz`` at the layout limit first, and the
+    read path only decodes stored records of a known addressing layout.
     """
     if memory.frequency_ranges:
         return max(high // 1_000_000_000 for _, _, high in memory.frequency_ranges)
@@ -882,7 +886,7 @@ def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, A
         "mode": mode,
         "data_mode": block[7] == 1,
         "duplex": _DUPLEX_BY_NIBBLE.get(duplex_nibble),
-        # [10 MHz|1 MHz][100 kHz|10 kHz][1 kHz|100 Hz], least significant first
+        # [10 MHz|1 MHz][100 kHz|10 kHz][1 kHz|100 Hz], most significant first
         "offset_hz": _bcd_decode_value(block[22:19:-1]) * 100,
         "tone_mode": tone_mode,
         "tone_centihz": _bcd_decode_value(block[10:13]) * 10,
