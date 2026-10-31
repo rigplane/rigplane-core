@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from _helpers import observe_selected_receiver
 from fake_rigctld import FakeRigctldServer
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
@@ -153,6 +154,8 @@ async def test_icom_remapped_level_route_controls_admission_and_write(
     radio._connected = True
     radio._civ_transport = object()
     radio._send_civ_raw = write
+    # MAIN is selected: without a route only MAIN takes the plain frame.
+    observe_selected_receiver(radio, 0)
     try:
         assert radio.supports_command(command, receiver=receiver) == (
             receiver == 0 or route_declared

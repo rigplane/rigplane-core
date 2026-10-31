@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import pytest
 
+from rigplane.core.exceptions import ReceiverNotSelectedError
 from rigplane.radio import IcomRadio
 from rigplane.radio_protocol import ReceiverBankCapable, VfoSlotCapable
 
 from test_radio import MockTransport, _wrap_civ_in_udp
+from _helpers import observe_selected_receiver
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +44,7 @@ def _make_radio(model: str, mock_transport: MockTransport) -> IcomRadio:
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    observe_selected_receiver(r, 0)
     return r
 
 
@@ -288,10 +291,8 @@ class TestSetVfoSlot:
     async def test_ic7610_main_slot_a_emits_0x07_0x00(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # Dual-RX path: VFO-switch fallback. _radio_state.active defaults to
-        # MAIN, so when receiver=0 the fallback detects current==target and
-        # does NOT switch, but the surrounding pattern still emits the slot
-        # frame directly. No ACK queueing needed.
+        # Dual-RX, MAIN selected (the radio answered 0x07 0xD2): the slot
+        # frame is sent directly. No ACK queueing needed.
         await ic7610.set_vfo_slot("A", receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
         assert SLOT_A_7610 in frames
@@ -305,55 +306,31 @@ class TestSetVfoSlot:
         assert SLOT_B_7610 in frames
 
     @pytest.mark.asyncio
-    async def test_ic7610_sub_uses_select_restore_pattern(
-        self, ic7610: IcomRadio, mock_transport: MockTransport
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-9700"])
+    async def test_sub_slot_plain_only_while_sub_selected(
+        self, model: str, mock_transport: MockTransport
     ) -> None:
-        # Dual-RX SUB path: select SUB → emit slot → restore MAIN.
-        # Release each ACK only after its own send (1=select SUB, 2=slot
-        # fire-and-forget, 3=restore MAIN). Pre-queueing ACKs upfront lets the
-        # rx pump race them into the wrong consumer (fire-and-forget ACK sink
-        # vs restore waiter); the race winner differs between 3.11 and 3.12+
-        # because pre-3.12 asyncio.wait_for wraps the awaitable in an extra
-        # Task (gh-96764), changing scheduling order.
-        mock_transport.queue_response_on_send(1, ACK_IC7610)
-        mock_transport.queue_response_on_send(2, ACK_IC7610)
-        mock_transport.queue_response_on_send(3, ACK_IC7610)
-        await ic7610.set_vfo_slot("B", receiver=1)
+        # MOR-3591: the slot opcode reaches the selected receiver only; SUB
+        # is never selected behind the operator's back to reach it.
+        radio = _make_radio(model, mock_transport)  # MAIN selected
+        with pytest.raises(ReceiverNotSelectedError):
+            await radio.set_vfo_slot("B", receiver=1)
+        assert mock_transport.sent_packets == []
+
+        observe_selected_receiver(radio, 1)
+        await radio.set_vfo_slot("B", receiver=1)
         frames = _civ_bytes(mock_transport.sent_packets)
-        sel_idx = next((i for i, f in enumerate(frames) if f == SEL_SUB_7610), None)
-        slot_idx = next((i for i, f in enumerate(frames) if f == SLOT_B_7610), None)
-        assert sel_idx is not None, "expected 0x07 0xD1 (select SUB)"
-        assert slot_idx is not None and slot_idx > sel_idx
-        restore_idx = next(
-            (i for i, f in enumerate(frames) if f == SEL_MAIN_7610 and i > slot_idx),
-            None,
-        )
-        assert restore_idx is not None, (
-            "expected 0x07 0xD0 (restore MAIN) after slot frame"
-        )
+        addr = radio.profile.civ_addr
+        assert frames == [bytes([0xFE, 0xFE, addr, 0xE0, 0x07, 0x01, 0xFD])]
+        assert await radio.get_vfo_slot(receiver=1) == "B"
 
     @pytest.mark.asyncio
     async def test_ic9700_main_slot_a_emits_0x07_0x00(
         self, ic9700: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # IC-9700 also dual-RX with same wire scheme; receiver=0 (MAIN) is
-        # current, so no select/restore round-trip.
+        # IC-9700 also dual-RX with same wire scheme; MAIN is selected.
         await ic9700.set_vfo_slot("A", receiver=0)
         frames = _civ_bytes(mock_transport.sent_packets)
-        assert SLOT_A_9700 in frames
-
-    @pytest.mark.asyncio
-    async def test_ic9700_sub_uses_select_restore_pattern(
-        self, ic9700: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        # Per-send ACK release — see test_ic7610_sub_uses_select_restore_
-        # pattern for the 3.11-vs-3.12+ scheduling rationale.
-        mock_transport.queue_response_on_send(1, ACK_IC9700)
-        mock_transport.queue_response_on_send(2, ACK_IC9700)
-        mock_transport.queue_response_on_send(3, ACK_IC9700)
-        await ic9700.set_vfo_slot("A", receiver=1)
-        frames = _civ_bytes(mock_transport.sent_packets)
-        assert SEL_SUB_9700 in frames
         assert SLOT_A_9700 in frames
 
     @pytest.mark.asyncio

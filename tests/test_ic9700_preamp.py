@@ -20,6 +20,7 @@ from test_radio import MockTransport
 from test_web_command_batch_http import _FakeWriter
 from test_web_server import _ws_connect, _ws_recv_frame, _ws_send_text
 from test_web_split_writes import _request
+from _helpers import observe_selected_receiver
 
 
 @pytest.fixture
@@ -33,6 +34,7 @@ def radio(mock_transport: MockTransport):
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    observe_selected_receiver(r, 0)
     yield r
     r._connected = False
 

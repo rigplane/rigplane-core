@@ -6,6 +6,7 @@ Consolidates helpers that were duplicated across multiple test files.
 from __future__ import annotations
 
 import struct
+from typing import Any
 
 from rigplane import IC_7610_ADDR
 from rigplane.commands import (
@@ -14,6 +15,7 @@ from rigplane.commands import (
     _CMD_FREQ_GET,
     _CMD_MODE_GET,
     build_civ_frame,
+    parse_civ_frame,
 )
 from rigplane.types import Mode, PacketType, bcd_encode
 
@@ -62,3 +64,24 @@ def ack_response() -> bytes:
     """Build a CI-V ACK wrapped in UDP."""
     civ = build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK)
     return wrap_civ_in_udp(civ)
+
+
+def observe_selected_receiver(radio: Any, receiver: int = 0) -> None:
+    """Deliver the radio's 0x07 0xD2 answer (which receiver is selected).
+
+    On a dual-receiver profile a receiver-scoped command without a cmd29
+    route is admitted only for the selected receiver, and the selection is
+    unknown until the radio reports it (MOR-3591). The connect flow's state
+    queries ask for it; tests that bypass connect deliver the answer here,
+    through the real CI-V RX path.
+    """
+    radio._update_state_cache_from_frame(
+        parse_civ_frame(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                radio._radio_addr,
+                0x07,
+                data=bytes([0xD2, receiver]),
+            )
+        )
+    )
