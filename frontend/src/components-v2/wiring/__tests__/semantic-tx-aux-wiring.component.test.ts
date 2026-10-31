@@ -1380,6 +1380,70 @@ describe('the rfPower scalar consumes the admitted-target lane (MOR-1687 F2)', (
   });
 });
 
+describe('the rfPower scalar follows the band the radio is on (MOR-3634)', () => {
+  const slider = () => q<HTMLElement>('[data-testid="tx-aux-rfPower"] [role="slider"]')!;
+  const canonical = () => q<HTMLElement>('[data-testid="tx-aux-rfPower"] [data-canonical-value]')!.textContent;
+  // IC-9700 manuals: 2 m 100 W, 70 cm 75 W, 23 cm 10 W; flat maximum 100 W.
+  const ic9700Caps = (powerUnit?: 'raw_255' | 'watts'): Capabilities => ({
+    ...liveCaps(true),
+    maxPowerW: 100,
+    ...(powerUnit === undefined ? {} : { powerUnit }),
+    txBands: [
+      { name: '2m', start: 144_000_000, end: 148_000_000, maxPowerW: 100 },
+      { name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: 75 },
+      { name: '23cm', start: 1_240_000_000, end: 1_300_000_000, maxPowerW: 10 },
+    ],
+  } as Capabilities);
+  const onFrequency = (freqHz: number): ServerState => {
+    const state = liveState(true);   // powerLevel 0.8
+    return { ...state, main: { ...state.main, freqHz } } as ServerState;
+  };
+
+  it.each([
+    [145_000_000, '80W'], [435_000_000, '60W'], [1_296_000_000, '8W'],
+  ])('raw-percent radio on %i Hz: full range, level labelled %s', (freqHz, label) => {
+    h.caps = ic9700Caps('raw_255');
+    h.state = onFrequency(freqHz);
+    render();
+    expect(slider().getAttribute('aria-valuemax')).toBe('1');
+    expect(canonical()).toBe(label);
+  });
+
+  it.each([
+    [145_000_000, '1'], [435_000_000, '0.75'], [1_296_000_000, '0.1'],
+  ])('watts-native radio on %i Hz: range tops out at %s, percent label kept', (freqHz, max) => {
+    h.caps = ic9700Caps('watts');
+    h.state = onFrequency(freqHz);
+    render();
+    expect(slider().getAttribute('aria-valuemax')).toBe(max);
+    expect(canonical()).toBe('80%');
+  });
+
+  it('leaves the other levels on their own scale', () => {
+    h.caps = ic9700Caps('watts');
+    h.state = onFrequency(435_000_000);
+    render();
+    const mic = q<HTMLElement>('[data-testid="tx-aux-micGain"] [role="slider"]')!;
+    expect(mic.getAttribute('aria-valuemax')).toBe('255');
+  });
+
+  it('changes nothing for a flat-maximum radio or one that did not say how its level is scaled', () => {
+    for (const caps of [
+      { ...liveCaps(true), maxPowerW: 100, powerUnit: 'raw_255' } as Capabilities,
+      ic9700Caps(),
+    ]) {
+      h.caps = caps;
+      h.state = onFrequency(435_000_000);
+      render();
+      expect(slider().getAttribute('aria-valuemax')).toBe('1');
+      expect(canonical()).toBe('80%');
+      unmount(component!);
+      component = null;
+      target.remove();
+    }
+  });
+});
+
 // ── MOR-1082: the workspace's per-zone visibility/order, consulted HERE ─────
 //
 // The plans below are built by the real `resolveSurfacePlan` from a real,

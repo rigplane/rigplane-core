@@ -4749,3 +4749,122 @@ async def test_ic705_rx_only_bands_neither_endpoint_tx_band_over_http() -> None:
         assert _IC705_RX_ONLY_BANDS <= range_band_names
     finally:
         await srv.stop()
+
+
+# MOR-3634: per-band rated maximum power (``max_power_w`` on a band row) is
+# published as ``txBands[].maxPowerW`` next to the flat ``maxPowerW``; the
+# power slider scales to it. Same shipped-profile -> loader -> WebServer ->
+# real socket seam, for a radio with per-band rows and one with a flat maximum.
+_RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
+
+
+async def _capabilities_by_endpoint(
+    rig_file: str, native_power_unit: str | None = None
+) -> dict[str, dict[str, Any]]:
+    profile = load_rig(_RIGS_DIR / rig_file).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+    )
+    if native_power_unit is not None:
+        radio.native_power_unit = native_power_unit
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        out: dict[str, dict[str, Any]] = {}
+        for path in ("/api/v1/capabilities", "/api/v1/info"):
+            status, _, body = await _http_get(host, port, path)
+            assert status == 200, path
+            payload = json.loads(body)
+            out[path] = payload["capabilities"] if path == "/api/v1/info" else payload
+        return out
+    finally:
+        await srv.stop()
+
+
+@pytest.mark.parametrize("unit", ["raw_255", "watts"])
+async def test_ic9700_publishes_per_band_max_power_over_http(unit: str) -> None:
+    """IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W, on both endpoints.
+
+    ``powerUnit`` is the attached radio's own ``native_power_unit`` (the value
+    the power-level resolution already uses), so the frontend can tell a level
+    that is a percentage of the current band's maximum (``raw_255``) from one
+    that is a fraction of the flat maximum (``watts``).
+    """
+    served = await _capabilities_by_endpoint("ic9700.toml", unit)
+    for path, capabilities in served.items():
+        assert capabilities["maxPowerW"] == 100, path
+        assert capabilities["powerUnit"] == unit, path
+        per_band = {b["name"]: b.get("maxPowerW") for b in capabilities["txBands"]}
+        assert per_band == {"2m": 100, "70cm": 75, "23cm": 10}, path
+
+
+async def test_radio_that_does_not_declare_a_power_unit_publishes_none() -> None:
+    """No attribute on the radio, no guess: the key is absent, not defaulted."""
+    for path, capabilities in (await _capabilities_by_endpoint("ic9700.toml")).items():
+        assert "powerUnit" not in capabilities, path
+
+
+async def test_flat_maximum_radio_publishes_no_per_band_max_power_over_http() -> None:
+    """The IC-7300 declares only the flat maximum: no band row carries maxPowerW."""
+    served = await _capabilities_by_endpoint("ic7300.toml", "raw_255")
+    for path, capabilities in served.items():
+        assert capabilities["maxPowerW"] == 100, path
+        assert capabilities["powerUnit"] == "raw_255", path
+        assert capabilities["txBands"], path
+        assert all("maxPowerW" not in band for band in capabilities["txBands"]), path
+
+
+# MOR-3634 seam twin (frontend:
+# frontend/src/components-v2/wiring/__tests__/power-slider-scale.seam.isolated.test.ts).
+# The shared IC-9700 document below is what the frontend replays through its
+# real client and stores into the rendered power slider; this test serves that
+# same document from the real WebServer and pins the capability payload the
+# slider scale reads (per-band max power, powerUnit). Only the seam is
+# asserted: the fixture carries the validator's structural minimum around it,
+# never a byte copy of the served payload.
+_POWER_SLIDER_SEAM_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "frontend"
+    / "src"
+    / "components-v2"
+    / "wiring"
+    / "__tests__"
+    / "fixtures"
+    / "power-slider-scale.ic9700.seam.json"
+)
+_POWER_SLIDER_SEAM: dict[str, Any] = json.loads(
+    _POWER_SLIDER_SEAM_PATH.read_text(encoding="utf-8")
+)
+
+
+async def test_ic9700_power_slider_seam_document_matches_served_capabilities() -> None:
+    """The shared seam document's capability payload is what the server serves.
+
+    IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W; the level is
+    a percentage of the current band's maximum (``raw_255``).
+    """
+    seam_caps = _POWER_SLIDER_SEAM["capabilities"]
+    assert [band["name"] for band in seam_caps["txBands"]] == ["2m", "70cm", "23cm"]
+    for band, tx_band in zip(_POWER_SLIDER_SEAM["bands"], seam_caps["txBands"]):
+        assert tx_band["start"] <= band["freqHz"] <= tx_band["end"], band["name"]
+        assert band["powerLevel"] == 0.8, band["name"]
+    served = await _capabilities_by_endpoint("ic9700.toml", seam_caps["powerUnit"])
+    for path, capabilities in served.items():
+        assert capabilities["maxPowerW"] == seam_caps["maxPowerW"] == 100, path
+        assert capabilities["powerUnit"] == seam_caps["powerUnit"] == "raw_255", path
+        assert capabilities["txBands"] == seam_caps["txBands"], path
+    info_caps = served["/api/v1/capabilities"]
+    assert info_caps["model"] == seam_caps["model"] == "IC-9700"
+    assert info_caps["tx"] is True
+    assert info_caps["scope"] is False
+    assert info_caps["audio"] is False
+    assert info_caps["scopeSource"] is None
+    assert set(seam_caps["capabilities"]) <= set(info_caps["capabilities"])

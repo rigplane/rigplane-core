@@ -1214,6 +1214,9 @@ Notable fields:
 | `modeFamilies` | `object` | Profile `[modes] families`: family name -> mode names, e.g. `{"cw": ["CW-U", "CW-L"]}`. `{}` when the profile declares none. Also in `/api/v1/info` `capabilities`. Use it instead of guessing a radio's CW mode names. |
 | `vfoScheme` | `"ab"` \| `"main_sub"` \| `"ab_shared"` \| `"single"` | VFO label scheme |
 | `freqRanges[].bands[].bsrCode` | `int` (optional) | Band Stack Register code for `set_band` |
+| `maxPowerW` | `int` (optional) | The profile's flat rated maximum TX power in watts (`[power].max_watts`): the base the per-band `txBands[].maxPowerW` rows are compared with. Absent when the profile declares none. Also in `/api/v1/info` `capabilities` |
+| `txBands[].maxPowerW` | `int` (optional) | Rated maximum TX power of that band in watts (profile band row `max_power_w`), never above `maxPowerW`. The RF power slider follows the band the active receiver is on, by `powerUnit`: `raw_255` keeps the full range and labels the level in watts (level x band maximum); `watts` scales the range to the band maximum over the flat `maxPowerW`. Full range and a percent label when no band declares a maximum, `powerUnit` is absent or the frequency is unknown. It is display data only: a power value that is sent is never clamped or rescaled by it |
+| `powerUnit` | `"raw_255"` \| `"watts"` (optional) | How the radio's `powerLevel` is scaled: the attached radio's `native_power_unit`. `raw_255` (Icom): a percentage of the current band's rated maximum. `watts` (Yaesu CAT): a fraction of the flat `maxPowerW`. Present with `maxPowerW`; absent when the radio does not declare it. Also in `/api/v1/info` `capabilities` |
 | `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
 | `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
 | `audioConfig` | object | Web audio transport defaults |

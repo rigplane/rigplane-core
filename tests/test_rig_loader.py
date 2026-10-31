@@ -2059,6 +2059,107 @@ class TestToProfile:
         profile = load_rig(p).to_profile()
         assert profile.freq_ranges[0].bands[0].rx_only is True
 
+    # ── per-band rated maximum power (MOR-3634) ──────────────────────────
+
+    @staticmethod
+    def _toml_with_band_power(band_power: str, power: str = "[power]\nmax_watts = 100"):
+        """Minimal rig with one HF band row carrying ``band_power`` and a power section."""
+        return (
+            _MINIMAL_TOML.replace(
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000',
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000\n\n'
+                "[[freq_ranges.ranges.bands]]\n"
+                'name = "160m"\n'
+                "start_hz = 1800000\n"
+                "end_hz = 2000000\n"
+                "default_hz = 1825000\n" + band_power,
+            )
+            + "\n"
+            + power
+            + "\n"
+        )
+
+    def test_band_max_power_w_defaults_none(self):
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        assert all(
+            band.max_power_w is None
+            for freq_range in profile.freq_ranges
+            for band in freq_range.bands
+        )
+
+    def test_band_max_power_w_loads(self, tmp_path):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 75"))
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].bands[0].max_power_w == 75
+
+    def test_band_max_power_w_may_equal_flat_maximum(self, tmp_path):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 100"))
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].bands[0].max_power_w == 100
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "max_power_w = 0",
+            "max_power_w = -5",
+            "max_power_w = 7.5",
+            "max_power_w = true",
+        ],
+    )
+    def test_band_max_power_w_rejects_non_positive_or_non_integer(self, tmp_path, bad):
+        p = _write_toml(tmp_path, self._toml_with_band_power(bad))
+        with pytest.raises(
+            RigLoadError,
+            match=(
+                r"freq_ranges\.ranges\[0\]\.bands\[0\]\.max_power_w must be a "
+                r"positive integer \(band '160m'\)"
+            ),
+        ):
+            load_rig(p)
+
+    def test_band_max_power_w_rejects_value_above_flat_maximum(self, tmp_path):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 101"))
+        with pytest.raises(
+            RigLoadError,
+            match=(
+                r"bands\[0\]\.max_power_w must not exceed \[power\]\.max_watts "
+                r"\(100\) \(band '160m'\)"
+            ),
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize("power", ["", "[power]\nmin_watts = 5"])
+    def test_band_max_power_w_requires_flat_maximum(self, tmp_path, power):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 50", power))
+        with pytest.raises(
+            RigLoadError, match=r"max_power_w requires \[power\]\.max_watts"
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            # IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W.
+            ("ic9700.toml", {"2m": 100, "70cm": 75, "23cm": 10}),
+            # Flat-maximum radios declare no per-band row.
+            ("ic7300.toml", {}),
+            ("ic705.toml", {}),
+            ("ftx1.toml", {}),
+        ],
+    )
+    def test_shipped_profiles_band_max_power_w(self, filename, expected):
+        profile = load_rig(RIGS_DIR / filename).to_profile()
+        declared = {
+            band.name: band.max_power_w
+            for freq_range in profile.freq_ranges
+            for band in freq_range.bands
+            if band.max_power_w is not None
+        }
+        assert declared == expected
+        if expected:
+            assert profile.max_watts is not None
+            assert max(expected.values()) <= profile.max_watts
+
     def test_modes(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.modes == (

@@ -609,6 +609,12 @@ start_hz = 144_000_000
 end_hz = 148_000_000
 repeater = true
 
+# Per-band rated TX power in watts (MOR-3634), from the IC-9700 manuals:
+# 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W. Tier B- -- not hardware-verified;
+# no recording of this model exists. Data only: the capabilities txBands
+# payload publishes it. The IC-9700 level is a percentage of the current
+# band's maximum, so the power slider shows watts for the band the radio is
+# on and keeps its full range. It never changes a power value that is written.
 [[freq_ranges.ranges.bands]]
 name = "2m"
 start_hz = 144_000_000
@@ -616,6 +622,7 @@ end_hz = 148_000_000
 default_hz = 146_520_000
 bsr_code = 0x01
 default_mode = "FM"
+max_power_w = 100
 
 [[freq_ranges.ranges]]
 label = "70cm"
@@ -630,6 +637,7 @@ end_hz = 450_000_000
 default_hz = 446_000_000
 bsr_code = 0x02
 default_mode = "FM"
+max_power_w = 75
 
 [[freq_ranges.ranges]]
 # The CI-V guide names this band "1.2GHz".
@@ -645,6 +653,7 @@ end_hz = 1_300_000_000
 default_hz = 1_294_500_000
 bsr_code = 0x03
 default_mode = "FM"
+max_power_w = 10
 
 # ── Command 29 Routes ───────────────────────────────────────────
 # The IC-9700 uses the MAIN/SUB receiver-select scheme (0x07 0xD0/0xD1)

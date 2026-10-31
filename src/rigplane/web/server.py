@@ -809,6 +809,49 @@ def _serialize_choices(
     return [{"value": value, "label": labels[str(value)]} for value in values]
 
 
+def _serialize_tx_bands(profile: "RadioProfile") -> list[dict[str, object]] | None:
+    """Publish the profile's transmit-permitted bands as ``txBands``.
+
+    MOR-3632: receive-only band rows (``rx_only``) never grant transmit
+    permission, so they stay out. MOR-3634: a band row that declares a rated
+    maximum carries it as ``maxPowerW`` (watts); the power slider's range
+    or watts label follows it. A row without one carries no key, and the flat top-level
+    ``maxPowerW`` applies. ``None`` when no band qualifies.
+    """
+    return [
+        {
+            "name": b.name,
+            "start": b.start,
+            "end": b.end,
+            **({"maxPowerW": b.max_power_w} if b.max_power_w is not None else {}),
+        }
+        for fr in profile.freq_ranges
+        for b in fr.bands
+        if not b.rx_only
+    ] or None
+
+
+def _serialize_max_power(profile: "RadioProfile", radio: object) -> dict[str, object]:
+    """Publish the flat rated maximum and the power-level scale (MOR-3634).
+
+    ``maxPowerW`` is the base the per-band ``txBands[].maxPowerW`` rows are
+    compared with; absent when the profile declares no ``[power].max_watts``.
+    ``powerUnit`` is the attached radio's own ``native_power_unit`` -- the
+    value the power-level resolution already uses (``resolve_power_level_target``)
+    -- so a client can tell a level that is a percentage of the CURRENT band's
+    rated maximum (``raw_255``, Icom) from one that is a fraction of the flat
+    maximum (``watts``, Yaesu CAT). Absent when the radio does not declare it:
+    nothing is guessed.
+    """
+    if profile.max_watts is None:
+        return {}
+    payload: dict[str, object] = {"maxPowerW": profile.max_watts}
+    unit = getattr(radio, "native_power_unit", None)
+    if unit in ("raw_255", "watts"):
+        payload["powerUnit"] = unit
+    return payload
+
+
 def _startup_busy_session_payload(
     busy: bool, retry_in_seconds: float | None
 ) -> dict[str, object]:
@@ -4265,15 +4308,8 @@ class WebServer:
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
-                    # MOR-3632: receive-only band rows (``rx_only``) never
-                    # grant transmit permission, so they stay out of txBands.
-                    "txBands": [
-                        {"name": b.name, "start": b.start, "end": b.end}
-                        for fr in profile.freq_ranges
-                        for b in fr.bands
-                        if not b.rx_only
-                    ]
-                    or None,
+                    "txBands": _serialize_tx_bands(profile),
+                    **_serialize_max_power(profile, self._radio),
                 }
             )
         body = json.dumps(
@@ -4986,14 +5022,8 @@ class WebServer:
             )
             if profile.controls:
                 payload["controls"] = profile.controls
-            # MOR-3632: receive-only band rows (``rx_only``) never grant
-            # transmit permission, so they stay out of txBands.
-            payload["txBands"] = [
-                {"name": b.name, "start": b.start, "end": b.end}
-                for fr in profile.freq_ranges
-                for b in fr.bands
-                if not b.rx_only
-            ] or None
+            payload["txBands"] = _serialize_tx_bands(profile)
+            payload.update(_serialize_max_power(profile, self._radio))
         payload["webrtc"] = {
             "available": webrtc_available(),
             "enabled": self._config.webrtc_enabled,

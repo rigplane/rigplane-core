@@ -198,6 +198,12 @@ class BandInfo:
     #: only — no band name or frequency lives in code.
     rx_only: bool = False
     default_mode: str | None = None  # e.g. "FM" — used on BSR-miss fallback
+    #: Rated maximum TX power of this band in watts (MOR-3634), from the
+    #: manuals; ``None`` means the band has no row of its own and the flat
+    #: ``RadioProfile.max_watts`` applies. Data only: the capabilities
+    #: ``txBands`` payload publishes it and the power slider's range or watts
+    #: label follows it; it never changes a power value that is written.
+    max_power_w: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

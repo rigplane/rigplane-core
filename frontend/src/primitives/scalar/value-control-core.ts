@@ -467,3 +467,37 @@ export function rawToPercentDisplay(v: number, min = 0, max = 255): string {
 export function normalizedPercentDisplay(v: number): string {
   return `${Math.round(Math.max(0, Math.min(1, v)) * 100)}%`;
 }
+
+/**
+ * Scale of the RF power slider (MOR-3634), on the normalized `powerLevel`
+ * 0.0-1.0 scale. `max` is the slider's upper end; `wattsAtFull` is what a
+ * full-scale level is worth in watts on the band the radio is on, or `null`
+ * to label the level as a percentage. Scale only: the level that is sent is
+ * the one the user set.
+ */
+export interface RfPowerScale {
+  readonly max: number;
+  readonly wattsAtFull: number | null;
+}
+
+/** The unchanged scale: full range, percent label. */
+export const FULL_RF_POWER_SCALE: RfPowerScale = Object.freeze({ max: 1, wattsAtFull: null });
+
+/** A scale a surface was handed, or the unchanged one when it is malformed. */
+export function validRfPowerScale(scale: RfPowerScale | undefined): RfPowerScale {
+  if (scale === undefined) return FULL_RF_POWER_SCALE;
+  const max = Number.isFinite(scale.max) && scale.max > 0 && scale.max <= 1 ? scale.max : 1;
+  const watts = scale.wattsAtFull;
+  return {
+    max,
+    wattsAtFull: watts !== null && Number.isFinite(watts) && watts > 0 ? watts : null,
+  };
+}
+
+/** RF power label: watts of the band when known, otherwise a percentage. */
+export function rfPowerDisplay(v: number, scale: RfPowerScale | undefined): string {
+  const { wattsAtFull } = validRfPowerScale(scale);
+  return wattsAtFull === null
+    ? normalizedPercentDisplay(v)
+    : `${Math.round(Math.max(0, Math.min(1, v)) * wattsAtFull)}W`;
+}
