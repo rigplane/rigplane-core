@@ -460,7 +460,7 @@ async def _send_through_rigctld(
     server = object.__new__(RigctldServer)
     server._radio = radio
     await RigctldServer._send_one_state_query(server, query)  # noqa: SLF001
-    assert radio.options == [(False, None, True)]
+    assert radio.options == [(False, Priority.BACKGROUND, True)]
     return radio.sent[0]
 
 
