@@ -727,6 +727,21 @@ class CivRuntime:
         # kick; teardown only forgets it, never cancels it — the task
         # awaits the lifecycle's shared recovery.
         self._fast_reconnect_task: asyncio.Task[None] | None = None
+        # The live recovery task once it has finished ``_force_cleanup_civ``.
+        # Past that point the host state is not CONNECTED, so "this task is
+        # the recorded one AND the host is CONNECTED again" means the session
+        # is re-established and the task is only running its tail
+        # (identity revalidation, TX re-arm, audio re-arm). Cleared when the
+        # recorded task ends. A busy=0 notice in that state means the radio
+        # dropped the session AGAIN, so the tail gives way to a fresh
+        # recovery (MOR-3350); anything earlier is still re-establishing.
+        self._recovery_cleaned_task: asyncio.Task[None] | None = None
+        # Preempt handoff (MOR-3350): the (replacement, predecessor) pair
+        # while a tail-parked recovery is being replaced, so the
+        # predecessor's teardown leaves the replacement alone.
+        self._pending_replacement: (
+            tuple[asyncio.Task[None], asyncio.Task[None]] | None
+        ) = None
         self._soft_recovery_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, bytes] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
@@ -1108,9 +1123,19 @@ class CivRuntime:
         # runs, freezing recovery after a single attempt (#1217 invariant 2:
         # self-cancel guard).
         current = asyncio.current_task()
-        owned_recovery = (
-            rc_task is not None
-            and self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+        pending = self._pending_replacement
+        owned_recovery = rc_task is not None and (
+            self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+            or (
+                pending is not None
+                and rc_task is pending[0]
+                and (
+                    current is pending[1]
+                    or self._host._session_lifecycle.is_current_recovery_awaited_by(
+                        pending[1]
+                    )
+                )
+            )
         )
         if (
             rc_task is not None
@@ -1651,10 +1676,7 @@ class CivRuntime:
                         )
                         live = self._reconnect_task
                         if live is None or live.done():
-                            self._reconnect_task = asyncio.create_task(
-                                self._watchdog_recover(),
-                                name="civ-watchdog-recover",
-                            )
+                            self._spawn_recovery_task()
                         return
                 else:
                     if recovering:
@@ -1665,31 +1687,84 @@ class CivRuntime:
         except asyncio.CancelledError:
             pass
 
+    def _spawn_recovery_task(
+        self,
+        *,
+        full_reconnect_reason: str | None = None,
+        preempt: asyncio.Task[None] | None = None,
+    ) -> asyncio.Task[None]:
+        """Create the detached recovery task and track it as ``_reconnect_task``.
+
+        Single construction point for the watchdog hand-off and
+        :meth:`request_recovery_now` (including the tail-preempt restart).
+        """
+        self._reconnect_task = asyncio.create_task(
+            self._watchdog_recover(
+                full_reconnect_reason=full_reconnect_reason, preempt=preempt
+            ),
+            name="civ-watchdog-recover",
+        )
+        if preempt is not None:
+            self._pending_replacement = (self._reconnect_task, preempt)
+        return self._reconnect_task
+
     def request_recovery_now(self, reason: str) -> None:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
         It is a no-op unless the session is CONNECTED or held by the identity
         phase (``_lan_identity_phase_owns_open_link``), no recovery is already
-        flagged, and no recovery task is still running.
+        flagged, and no recovery task is still running — with one exception: a
+        notice that arrives while a live recovery has already re-established
+        the session (``_conn_state`` CONNECTED again while the recorded task
+        is past ``_force_cleanup_civ``, i.e. only in its tail) means the radio
+        dropped the session AGAIN, so the tail gives way to a fresh recovery.
+        Every ignored notice logs exactly one line carrying the reason.
         """
         owns_hold = getattr(self._host, "_lan_identity_phase_owns_open_link", None)
         if self._host._conn_state != RadioConnectionState.CONNECTED and not (
             owns_hold is not None and owns_hold()
         ):
-            return
-        if self._host._civ_recovering:
+            logger.info(
+                "civ-data-watchdog: notice ignored (%s): "
+                "no session to recover (state=%s)",
+                reason,
+                self._host._conn_state.value,
+            )
             return
         live = self._reconnect_task
         if live is not None and not live.done():
+            if (
+                live is self._recovery_cleaned_task
+                and self._host._conn_state == RadioConnectionState.CONNECTED
+            ):
+                logger.warning(
+                    "civ-data-watchdog: %s during the recovery tail, "
+                    "restarting the recovery",
+                    reason,
+                )
+                self._spawn_recovery_task(full_reconnect_reason=reason, preempt=live)
+                return
+            logger.info(
+                "civ-data-watchdog: notice ignored (%s): "
+                "a recovery is still re-establishing the session",
+                reason,
+            )
             return
-        self._reconnect_task = asyncio.create_task(
-            self._watchdog_recover(full_reconnect_reason=reason),
-            name="civ-watchdog-recover",
-        )
+        if self._host._civ_recovering:
+            logger.info(
+                "civ-data-watchdog: notice ignored (%s): "
+                "the data watchdog is already recovering",
+                reason,
+            )
+            return
+        self._spawn_recovery_task(full_reconnect_reason=reason)
 
     async def _watchdog_recover(
-        self, *, full_reconnect_reason: str | None = None
+        self,
+        *,
+        full_reconnect_reason: str | None = None,
+        preempt: asyncio.Task[None] | None = None,
     ) -> None:
         """Detached recovery handoff: force_cleanup → lifecycle soft_reconnect.
 
@@ -1704,6 +1779,13 @@ class CivRuntime:
         on exhaustion, routes through CLOSING + full release (after which the
         control session is gone and re-arming below correctly no-ops).
 
+        ``preempt`` is a tail-parked recovery run this task replaces: it is
+        cancelled and awaited first, so the new run never starts its work
+        while the old one is still unwinding (the lifecycle coalesces
+        ``soft_reconnect()`` onto a shared task that is only cleared when the
+        cancelled run finishes). The slot already holds the new task — the old
+        run's ``finally`` only clears the slot when it still holds itself.
+
         Re-arms in ``finally`` after uncancelled recovery (#1217). An identity
         hold keeps it paused until acceptance; a released control session has
         no stream to watch.
@@ -1716,7 +1798,18 @@ class CivRuntime:
         self._soft_recovery_epoch = None
         cancelled = False
         try:
+            if preempt is not None:
+                # Mark the shared lifecycle run as superseded first, so
+                # callers coalesced onto it (not the predecessor) get a
+                # recoverable ConnectionError rather than a foreign cancel.
+                self._host._session_lifecycle.supersede_recovery()
+                preempt.cancel()
+                await asyncio.gather(preempt, return_exceptions=True)
+                pending = self._pending_replacement
+                if pending is not None and pending[0] is asyncio.current_task():
+                    self._pending_replacement = None
             await self._host._force_cleanup_civ()
+            self._recovery_cleaned_task = asyncio.current_task()
             if escalate:
                 if full_reconnect_reason is not None:
                     logger.warning(
@@ -1751,6 +1844,11 @@ class CivRuntime:
                 exc_info=True,
             )
         finally:
+            pending = self._pending_replacement
+            if pending is not None and pending[0] is asyncio.current_task():
+                self._pending_replacement = None
+            if self._recovery_cleaned_task is asyncio.current_task():
+                self._recovery_cleaned_task = None
             if cancelled:
                 if self._reconnect_task is asyncio.current_task():
                     self._reconnect_task = None

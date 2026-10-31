@@ -886,7 +886,12 @@ class TestBuildStateQueries:
         queries = build_state_queries(profile)
         # IC-9700 stays out of MOR-2540 (unverified band-selection/split
         # semantics, no bench radio): no 1C 03 read is declared for it.
-        assert len(pollable) == len(queries) == 35
+        # MOR-3623 adds four pollable paths (repeater_tone, repeater_tsql,
+        # tone_squelch_type, repeater_shift); the first three collapse into
+        # one 16 5D query and repeater_shift into split's existing bare 0F
+        # read, so 39 paths resolve to 36 distinct queries.
+        assert len(pollable) == 39
+        assert len(queries) == 36
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries

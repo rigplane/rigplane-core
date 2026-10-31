@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..core.types import ToneSquelchType
 from ._builders import _build_function_bool_set, _build_function_get
 from ._codec import _bcd_decode_value, bcd_encode_value
 from ._frame import (
@@ -27,6 +28,7 @@ from ._frame import (
     _SUB_REPEATER_TONE,
     _SUB_REPEATER_TSQL,
     _SUB_TONE_FREQ,
+    _SUB_TONE_SQUELCH_TYPE,
     _SUB_TSQL_FREQ,
     _build_from_map,
     expose_command_key,
@@ -34,6 +36,8 @@ from ._frame import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from ..command_map import CommandMap
     from ..types import CivFrame
 
@@ -331,3 +335,70 @@ def parse_tsql_freq_response(
         frame.receiver,
         _require_profile_tone(_decode_tone_freq(frame.data), ctcss_tones_centihz),
     )
+
+
+@expose_command_key(lambda cmd_map: "get_tone_squelch_type")
+@require_cmd_map
+def get_tone_squelch_type(
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    receiver: int = RECEIVER_MAIN,
+    *,
+    command29: bool = False,
+    cmd_map: CommandMap,
+) -> bytes:
+    """Build CI-V command to read the tone squelch selector (0x16 0x5D)."""
+    return _build_function_get(
+        _SUB_TONE_SQUELCH_TYPE,
+        to_addr=to_addr,
+        from_addr=from_addr,
+        receiver=receiver,
+        command29=command29,
+        cmd_map=cmd_map,
+        cmd_name="get_tone_squelch_type",
+    )
+
+
+@expose_command_key(lambda cmd_map: "set_tone_squelch_type")
+@require_cmd_map
+def set_tone_squelch_type(
+    code: int,
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    receiver: int = RECEIVER_MAIN,
+    *,
+    command29: bool = False,
+    cmd_map: CommandMap,
+) -> bytes:
+    """Build CI-V command to write the tone squelch selector (0x16 0x5D).
+
+    ``code`` is one raw selector byte from the profile's
+    ``[tone_squelch_types]`` table; the caller resolves the neutral type to
+    its code. Anything but an exact ``int`` byte raises ``ValueError``
+    before anything is sent.
+    """
+    if type(code) is not int or not 0x00 <= code <= 0xFF:
+        raise ValueError(f"tone squelch type code must be a byte, got {code!r}")
+    return _build_from_map(
+        cmd_map,
+        "set_tone_squelch_type",
+        to_addr=to_addr,
+        from_addr=from_addr,
+        data=bytes([code]),
+        receiver=receiver,
+        command29=command29,
+    )
+
+
+def parse_tone_squelch_type_response(
+    data: bytes,
+    tone_squelch_types: Mapping[int, ToneSquelchType] | None,
+) -> ToneSquelchType | None:
+    """Return the neutral type a 16 5D reply code names, or ``None``.
+
+    A code the profile's ``[tone_squelch_types]`` table does not name -- or
+    an empty reply -- is not a known type.
+    """
+    if not data or not tone_squelch_types:
+        return None
+    return tone_squelch_types.get(data[0])
