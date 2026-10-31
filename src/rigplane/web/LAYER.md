@@ -25,15 +25,20 @@ Internal layout:
   state_update over `/api/v1/ws`.
 - `web/_delta_encoder.py` — payload diffing.
 - `web/runtime_helpers.py`, `web/band_plan.py`, `web/dx_cluster.py`,
-  `web/eibi.py`, `web/discovery.py`, `web/tls.py`, `web/protocol.py`,
-  `web/websocket.py` — supporting modules.
+  `web/eibi.py`, `web/discovery.py`, `web/tls.py`, `web/protocol.py`
+  — supporting modules.
+- Framing comes from the shared stdlib-only lowest-layer module
+  `rigplane.ws` (imported, never copied); the Host/Origin guard comes
+  from `rigplane.core.host_guard`.
 - `web/static/` — built frontend (symlinked from `frontend/dist/`).
 
 ## Allowed dependencies
 
-`core`, `commands`, `profiles`, `audio`, `scope`, `dsp`, `runtime`
+`core`, `commands`, `profiles`, `audio`, `scope`, `dsp`, `runtime`,
+and the lowest-layer framing module `rigplane.ws`
 (plan §3 matrix row `web`). Note `web` does **not** depend on
-`backends` — `web_startup` consumes `StatePollable.create_state_poller`
+`backends`, and never on `rigplane.tci` (the leaf is a sibling package,
+not a dependency) — `web_startup` consumes `StatePollable.create_state_poller`
 and detects optional features via `isinstance(radio, *Capable)` rather
 than backend-id branching (#1298, #1323-#1326). The transitional
 `web → backends` ignores listed in plan §3.3 are gone.

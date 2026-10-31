@@ -16,6 +16,7 @@ import pytest  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: TID251, E402
 from rigplane.types import HEADER_SIZE, PacketType  # noqa: E402
 
+from _helpers import observe_selected_receiver  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
@@ -215,6 +216,9 @@ async def connected_radio(mock_radio: MockIcomRadio) -> AsyncGenerator[IcomRadio
     )
     with fast_connect():
         await radio.connect()
+    # fast_connect skips the initial state fetch, whose 0x07 0xD2 answer
+    # establishes the selected receiver (MOR-3591): deliver MAIN here.
+    observe_selected_receiver(radio, 0)
     yield radio
     await radio.disconnect()
 

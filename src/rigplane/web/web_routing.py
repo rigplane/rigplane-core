@@ -27,7 +27,7 @@ from rigplane.runtime.tx_interlock import (
     send_civ_frame,
 )
 
-from .host_guard import (  # noqa: TID251
+from rigplane.core.host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
     ORIGIN_FORBIDDEN_BODY,
     host_header_allowed,

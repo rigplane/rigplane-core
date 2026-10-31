@@ -18,6 +18,7 @@ import time
 from rigplane.radio import IcomRadio
 from rigplane_testkit.icom import MockIcomRadio
 
+from _helpers import observe_selected_receiver
 from _perf_helpers import fast_connect
 
 # Manual-transcribed oracle row, tests/golden/wire_oracle/ic7610.toml
@@ -52,6 +53,8 @@ async def _connected_radio(sim: MockIcomRadio) -> IcomRadio:
     with fast_connect():
         await radio.connect()
     assert radio.connected
+    # fast_connect skips the 0x07 0xD2 query: MAIN is selected (MOR-3591).
+    observe_selected_receiver(radio, 0)
     return radio
 
 
