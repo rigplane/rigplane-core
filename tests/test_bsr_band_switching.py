@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
+from _helpers import CIV_HEADER_SIZE, observe_selected_receiver, wrap_civ_in_udp
 from test_radio import MockTransport
 from test_web_command_batch_http import _post_json
 
@@ -764,8 +765,10 @@ class _FakeIcomHardware(MockTransport):
         frame = build_civ_frame(CONTROLLER_ADDR, self.civ_addr, command, data=data)
         self.queue_response(wrap_civ_in_udp(frame))
 
-    async def send_tracked(self, data: bytes) -> None:
-        await super().send_tracked(data)
+    async def send_tracked(
+        self, data: bytes, *, is_current: Callable[[], bool] | None = None
+    ) -> None:
+        await super().send_tracked(data, is_current=is_current)
         frame = parse_civ_frame(data[CIV_HEADER_SIZE:])
         if frame.to_addr != self.civ_addr:
             return
@@ -810,6 +813,11 @@ class TestSetBandProductionComposition:
         radio._ctrl_transport = hardware  # noqa: SLF001
         radio._connected = True  # noqa: SLF001
         radio._civ_get_timeout = 0.5  # noqa: SLF001
+        # MOR-3591 (#4415): plain 0x05/0x06 writes on a dual-receiver
+        # profile (IC-9700) are admitted only for the selected receiver.
+        # The connect flow learns it from the radio's 0x07 0xD2 answer;
+        # this fixture bypasses connect, so deliver that answer here.
+        observe_selected_receiver(radio, 0)
         srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
         poller = RadioPoller(
             radio, srv.command_queue, state_store=srv.command_state_store
