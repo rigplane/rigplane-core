@@ -1165,6 +1165,24 @@ def _arm_preempt_race_recovery(radio: IcomRadio) -> _PreemptRaceArm:
 
     async def record_force_cleanup() -> None:
         arm.order.append("force_cleanup")
+        # MOR-3350: let the superseded shared run finish unwinding before the
+        # replacement proceeds to ``soft_reconnect``. Production cleanup
+        # always yields on real teardown I/O, so by the time the replacement
+        # reaches the lifecycle the old run is gone and a fresh run starts;
+        # this stub is instant, which collapses that settling window to zero
+        # and lets the replacement coalesce onto the dying run under load
+        # (it then dies with "superseded" instead of running its fresh
+        # recovery — the CI-only ``entered_second`` timeout). Wait for the
+        # real event, not a sleep. Instant for the first recovery (no shared
+        # run exists yet).
+        await await_until(
+            lambda: (
+                radio._session_lifecycle._recover_task is None
+                or radio._session_lifecycle._recover_task.done()
+            ),
+            timeout=10.0,
+            description="the superseded recovery finishing its unwind",
+        )
 
     async def record_release() -> None:
         arm.order.append("release")
@@ -1178,7 +1196,11 @@ def _arm_preempt_race_recovery(radio: IcomRadio) -> _PreemptRaceArm:
         if len(arm.calls) == 1:
             radio._conn_state = RadioConnectionState.CONNECTED
             arm.entered.set()
-            await asyncio.wait_for(arm.go.wait(), 10.0)
+            await await_until(
+                arm.go.is_set,
+                timeout=10.0,
+                description="the test releasing the first recovery's tail",
+            )
             # The teardown the identity revalidation runs in the tail.
             await radio._civ_runtime.stop_data_watchdog()
             await arm.never.wait()
@@ -1216,10 +1238,11 @@ async def test_preempting_recovery_survives_predecessor_teardown(
             radio._civ_runtime.request_recovery_now("busy=0 (first)")
             first = radio._civ_runtime._reconnect_task
             assert first is not None
-            try:
-                await asyncio.wait_for(arm.entered.wait(), 10.0)
-            except asyncio.TimeoutError:
-                pytest.fail("the first recovery never reached its tail")
+            await await_until(
+                arm.entered.is_set,
+                timeout=10.0,
+                description="the first recovery reaching its tail",
+            )
             # ``go`` first, with no yield before the second notice: the
             # predecessor's teardown step then runs before the
             # replacement's first step, while the predecessor is still
@@ -1232,10 +1255,11 @@ async def test_preempting_recovery_survives_predecessor_teardown(
                 "a busy=0 notice during the recovery tail must restart "
                 "the recovery, not be ignored"
             )
-            try:
-                await asyncio.wait_for(arm.entered_second.wait(), 10.0)
-            except asyncio.TimeoutError:
-                pytest.fail("the replacement recovery never ran its fresh recovery")
+            await await_until(
+                arm.entered_second.is_set,
+                timeout=10.0,
+                description="the replacement recovery running its fresh recovery",
+            )
             assert not second.cancelled()
             assert not second.done()
             assert radio._civ_runtime._reconnect_task is second
