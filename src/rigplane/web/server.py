@@ -247,6 +247,95 @@ _build_public_state_payload_from_snapshot_impl: _PublicStatePayloadFromSnapshotF
 _TxReleaseHook = Callable[["asyncio.Future[Any]", str, float], None]
 
 
+# Modules whose tasks the second shutdown signal must not cancel (MOR-3999).
+# A launcher that signals the whole process group delivers SIGTERM twice
+# within the same millisecond; cancelling these kills the managed-TX release
+# while it is in flight (every later force_receive fails with "Commander is
+# not started") and the rig may stay keyed. All of them are shared-path
+# machinery, not per-radio code: the serialized command executor, the CI-V
+# receive pump and raw transactions behind it, the managed-TX release tree,
+# and the shared serial CI-V link driver the transmit path writes through.
+_RELEASE_CRITICAL_MODULES: frozenset[str] = frozenset(
+    {
+        "rigplane.commands.commander",
+        "rigplane.runtime._civ_rx",
+        "rigplane.runtime.managed_tx_authority",
+        "rigplane.runtime.managed_tx_composition",
+        "rigplane.runtime.managed_tx_effect_lane",
+        "rigplane.runtime.managed_tx_effect_service",
+        "rigplane.backends.icom7610.drivers.serial_civ_link",
+    }
+)
+
+
+def _task_runs_release_critical_code(task: asyncio.Task[Any]) -> bool:
+    """Whether cancelling ``task`` would break the in-flight TX release."""
+    seen: set[int] = set()
+    coro: Any = task.get_coro()
+    while coro is not None and id(coro) not in seen:
+        seen.add(id(coro))
+        frame = getattr(coro, "cr_frame", None)
+        while frame is not None:
+            if frame.f_globals.get("__name__") in _RELEASE_CRITICAL_MODULES:
+                return True
+            frame = frame.f_back
+        coro = getattr(coro, "cr_await", None)
+        if isinstance(coro, asyncio.Task):
+            coro = coro.get_coro()
+        elif not hasattr(coro, "cr_frame") and not hasattr(coro, "cr_await"):
+            # A bare future or already-computed value ends the await chain.
+            break
+    return False
+
+
+class _ShutdownSignalHandler:
+    """Counts SIGTERM/SIGINT for ``serve_forever`` (MOR-3999).
+
+    The first signal starts the orderly shutdown. The second cancels every
+    task EXCEPT the managed-TX release path: futures registered through
+    :meth:`protect` (the shutdown's TX drains, via ``on_tx_release``) and
+    tasks currently executing release-critical code (the Commander, the
+    CI-V pump, the link writer, the release tree itself). Everything else
+    is cancelled exactly as before, and the release stays bounded by its
+    own drain/settle timeouts; a third signal still forces the exit.
+    """
+
+    def __init__(
+        self, loop: asyncio.AbstractEventLoop, *, on_first_signal: Callable[[], None]
+    ) -> None:
+        self._loop = loop
+        self._on_first_signal = on_first_signal
+        self._signal_count = 0
+        self._protected: set[asyncio.Future[Any]] = set()
+
+    @property
+    def signal_count(self) -> int:
+        return self._signal_count
+
+    def protect(self, release: asyncio.Future[Any]) -> None:
+        """Spare an in-flight TX release/drain from the second signal."""
+        self._protected = {f for f in self._protected if not f.done()}
+        self._protected.add(release)
+
+    def __call__(self) -> None:
+        self._signal_count += 1
+        if self._signal_count == 1:
+            logger.info("received shutdown signal")
+            self._on_first_signal()
+        elif self._signal_count == 2:
+            logger.info("second signal — cancelling tasks except the TX release path")
+            self._protected = {f for f in self._protected if not f.done()}
+            for task in asyncio.all_tasks(self._loop):
+                if task in self._protected or _task_runs_release_critical_code(task):
+                    continue
+                task.cancel()
+        else:
+            logger.info("forced exit")
+            import os
+
+            os._exit(1)
+
+
 def _install_shutdown_signal_handlers(
     loop: asyncio.AbstractEventLoop,
     on_signal: Callable[[], None],
@@ -4031,27 +4120,24 @@ class WebServer:
 
         loop = asyncio.get_running_loop()
         stop_event = asyncio.Event()
-        _signal_count = 0
 
-        def _on_signal() -> None:
-            nonlocal _signal_count
-            _signal_count += 1
-            if _signal_count == 1:
-                logger.info("received shutdown signal")
-                stop_event.set()
-                if on_shutdown_signal is not None:
-                    on_shutdown_signal()
-            elif _signal_count == 2:
-                logger.info("second signal — cancelling all tasks")
-                for task in asyncio.all_tasks(loop):
-                    task.cancel()
-            else:
-                logger.info("forced exit")
-                import os
+        def _on_first_signal() -> None:
+            stop_event.set()
+            if on_shutdown_signal is not None:
+                on_shutdown_signal()
 
-                os._exit(1)
+        signals = _ShutdownSignalHandler(loop, on_first_signal=_on_first_signal)
+        if on_tx_release is not None:
+            _hook = on_tx_release
 
-        _install_shutdown_signal_handlers(loop, _on_signal)
+            def _record_and_forward(
+                release: asyncio.Future[Any], what: str, bound_s: float
+            ) -> None:
+                signals.protect(release)
+                _hook(release, what, bound_s)
+
+            self._on_tx_release = _record_and_forward
+        _install_shutdown_signal_handlers(loop, signals)
 
         try:
             await stop_event.wait()
