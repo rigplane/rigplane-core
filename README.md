@@ -159,13 +159,13 @@ GPLv3 code. Icom™ and IC-* product names are registered trademarks of
 fair-use compatibility identification only — this project is not affiliated
 with, endorsed by, or sponsored by Icom.
 
-rigplane is the **open-core** half of a planned product split. A
-proprietary commercial layer ([`rigplane-pro`](https://rigplane.com/pricing/?utm_source=github&utm_medium=readme&utm_campaign=core-launch&utm_content=readme-pro)) is under active development
-and will integrate with this library through the public `Radio` protocol
+rigplane is the **open-core** half of a planned product split. RigPlane Pro
+(`rigplane-pro`), the commercial desktop app, is in public beta and can be
+downloaded from [rigplane.com/downloads](https://rigplane.com/downloads/?utm_source=github&utm_medium=readme&utm_campaign=core-launch&utm_content=readme-download).
+It integrates with this library through the public `Radio` protocol
 and the `local-extensions/` host API. Open-core constraints — no
 telemetry, headless mode is sacred, no hollowing out — are codified in
 [`docs/architecture/open-core-policy.md`](https://github.com/rigplane/rigplane-core/blob/main/docs/architecture/open-core-policy.md).
-The RigPlane Pro desktop app is available from [rigplane.com/downloads](https://rigplane.com/downloads/?utm_source=github&utm_medium=readme&utm_campaign=core-launch&utm_content=readme-download).
 
 ## Status
 
