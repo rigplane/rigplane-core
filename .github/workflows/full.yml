@@ -1,9 +1,18 @@
 name: Tests (full matrix)
 
+# The full platform matrix runs on the merged tree on a schedule, on demand,
+# and on release-candidate tags. It does not run on every push to main: every
+# change reaches main through the merge queue, whose merge_group run already
+# tested the exact tree that lands (a squash keeps the tree), so a push run
+# only repeated it (MOR-3878).
 on:
   schedule:
-    # Mon/Wed/Fri 03:00 UTC (06:00 MSK)
-    - cron: "0 3 * * 1,3,5"
+    # Weekdays, every 3 hours from 00:00 UTC. Main only advances through the
+    # merge queue, so this is the broader safety net behind it; three hours
+    # keeps a regression inside the working session of whoever merged it, and
+    # at most 8 runs a day replaces a run per merge. A tick whose commit
+    # already passed this workflow is skipped by the `fresh` job.
+    - cron: "0 */3 * * 1-5"
   workflow_dispatch:
     inputs:
       rc:
@@ -11,14 +20,54 @@ on:
         type: boolean
         default: false
   push:
-    branches: [main]
+    # Release-candidate tags (vX.Y.ZrcN) are tested here exactly once; the
+    # final tag goes on the same commit, so no later run repeats them.
+    tags: ["v*rc*"]
+
+# A reusable workflow may not ask for more than its caller grants, and the
+# gates called below read pull-request metadata; the `fresh` job reads runs.
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
 
 concurrency:
   group: tests-full-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  fresh:
+    # Scheduled runs only: skip a tick when this exact commit already passed
+    # this workflow (an earlier tick, a dispatch or the candidate tag run).
+    # `test` and `capture-harness` are skipped with a false answer.
+    runs-on: [self-hosted, linux, build]
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - name: Has this commit already passed the full matrix
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          RUNS_URL: ${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/full.yml/runs?head_sha=${{ github.sha }}&status=success&per_page=1
+        run: |
+          set -euo pipefail
+          run=true
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            passed="$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" "$RUNS_URL" \
+              | python3 -c 'import json,sys; print(json.load(sys.stdin)["total_count"])')"
+            if [ "$passed" != "0" ]; then
+              run=false
+            fi
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          echo "full matrix needed for this commit: $run"
+
   test:
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
     # Self-hosted Mac mini build-tier runner. Python 3.11/3.12/3.13, uv,
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
@@ -112,15 +161,16 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/.github/scripts
           RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics
-        # When the dispatch input `rc` is true, the -m replaces the 'not slow
-        # and not benchmark' from addopts, so the slow-marked tests run too.
+        # When the dispatch input `rc` is true, or the run is a release-candidate
+        # tag, the -m replaces the 'not slow and not benchmark' from addopts, so
+        # the slow-marked tests run too.
         run: |
           # Without pipefail the pipe's exit status is tee's (always 0), so
           # pytest failures were swallowed and the step reported success.
           # Capture pytest's exit code via PIPESTATUS, extract the summary
           # (still needed for the badge, including on failure), then exit
           # with pytest's code so failing tests fail the step.
-          uv run pytest tests/ -p pytest_worker_diagnostics -n auto ${{ inputs.rc && '-m "not benchmark"' || '' }} --tb=short --timeout=300 --timeout-method=thread \
+          uv run pytest tests/ -p pytest_worker_diagnostics -n auto ${{ (inputs.rc || github.ref_type == 'tag') && '-m "not benchmark"' || '' }} --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
           SUMMARY=$(tail -1 pytest-output.txt)
@@ -191,6 +241,8 @@ jobs:
           color: blue
 
   capture-harness:
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
     # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
     # capture (`frontend/fixtures/capture.mjs`) into CI. It ran in NO
     # workflow before this. Deliberately a single dedicated job, NOT a
@@ -282,3 +334,32 @@ jobs:
       - name: Annotate result
         if: always()
         run: '[ "${{ steps.capture.outcome }}" = "failure" ] && echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the Run fixture-harness capture step log." || true'
+
+  # The informational per-PR gates (path-filtered on pull_request, not required
+  # contexts, so the merge queue does not run them) get their signal on the
+  # merged tree here, with the same job definitions, instead of from a push run
+  # after every merge (MOR-3878). A scheduled run is not path-selected.
+  visual:
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
+    uses: ./.github/workflows/visual.yml
+
+  state-types-gate:
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
+    uses: ./.github/workflows/state-types-gate.yml
+
+  consumer-contracts-gate:
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
+    uses: ./.github/workflows/consumer-contracts-gate.yml
+
+  doc-citation-gate:
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
+    uses: ./.github/workflows/doc-citation-gate.yml
+
+  rebrand-gate:
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
+    uses: ./.github/workflows/rebrand-gate.yml

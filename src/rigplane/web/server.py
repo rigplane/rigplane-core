@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import contextlib
 import ctypes
 import ctypes.util
 import functools
@@ -39,7 +38,6 @@ import threading
 import time
 import urllib.parse
 from collections.abc import (
-    AsyncIterator,
     Awaitable,
     Callable,
     Collection,
@@ -136,7 +134,7 @@ from .handlers import (  # noqa: TID251
 from .handlers.audio import browser_tx_audio_facts  # noqa: TID251
 from .handlers.control import _consume_normalized_level_unit  # noqa: TID251
 from .handlers.rigctl import OpenRigctlChannel, RigctlChannelHandler  # noqa: TID251
-from .host_guard import (  # noqa: TID251
+from ..core.host_guard import (  # noqa: TID251
     MISDIRECTED_BODY,
     ORIGIN_FORBIDDEN_BODY,
     host_header_allowed,
@@ -167,12 +165,7 @@ from .runtime_helpers import (  # noqa: TID251
     store_has_radio_observation,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
-from .websocket import (  # noqa: TID251
-    WS_KEEPALIVE_INTERVAL,
-    WebSocketConnection,
-    make_accept_key,
-    negotiate_deflate,
-)
+from ..ws import WS_KEEPALIVE_INTERVAL, WebSocketConnection  # noqa: TID251
 from ..radio_protocol import (
     CivTransactionCapable,
     ProviderOwnedStateCapable,
@@ -2311,7 +2304,7 @@ class WebServer:
         event = {"type": "state_update", "data": delta}
         self._state_diagnostics.record(
             "web_delivery_trigger",
-            "web.websocket",
+            "web.ws_state",
             revision=body.get("revision"),
             state_revision=body.get("stateRevision"),
             freshness_revision=body.get("freshnessRevision"),
@@ -5553,38 +5546,6 @@ class WebServer:
         if authority is not None:
             await authority.owner_disconnect(owner)
 
-    @contextlib.asynccontextmanager
-    async def _controller_outside_tx_admission(
-        self, ticket: ControllerTicket
-    ) -> AsyncIterator[bool]:
-        """Outside-only (``0x12``) TX audio admission for one ticket (MOR-3764).
-
-        Yields False when there is no managed TX authority, the ticket is
-        remote, the ticket no longer validates, or the controller is in
-        remote mode (``controller.mode == "remote"``, same rule as
-        ``_bridge_tx_gate_open``). Otherwise the controller checks run
-        INSIDE ``ManagedTxAuthority.outside_tx_submission`` — after its lock
-        is held — and its verdict is yielded. Yields exactly once on every
-        path.
-        """
-        authority = self._managed_tx_authority()
-        if not isinstance(authority, ManagedTxAuthority) or ticket.remote:
-            yield False
-            return
-        async with authority.outside_tx_submission() as admitted:
-            if not admitted:
-                yield False
-                return
-            try:
-                self._controller.validate(ticket)
-            except ControllerError:
-                yield False
-                return
-            if self._controller.mode == "remote":
-                yield False
-                return
-            yield True
-
     async def _controller_audio_gate(
         self, ticket: ControllerTicket, source: object
     ) -> bool:
@@ -7883,36 +7844,44 @@ class WebServer:
     ) -> None:
         # MOR-2880: refuse foreign Hosts (421) and foreign Origins (403)
         # BEFORE the upgrade handshake — never a loopback exception.
-        raw_host = headers.get("host")
-        if not host_header_allowed(raw_host, self._config.allowed_hosts):
-            self._log_refused_request("websocket host", path, headers)
+        # The policy lives in rigplane.core.host_guard (shared with the
+        # TCI server); the check itself runs in rigplane.ws.
+        from ..ws import UpgradeAccept as _UpgradeAccept
+        from ..ws import UpgradeDecline as _UpgradeDecline
+        from ..ws import check_upgrade_headers as _check_upgrade_headers
+        from ..ws import make_upgrade_response as _make_upgrade_response
+
+        def _allow_upgrade(
+            request_headers: Mapping[str, str],
+        ) -> _UpgradeDecline | None:
+            raw_host = request_headers.get("host")
+            if not host_header_allowed(raw_host, self._config.allowed_hosts):
+                self._log_refused_request("websocket host", path, request_headers)
+                return _UpgradeDecline(421, "Misdirected Request", MISDIRECTED_BODY)
+            origin = request_headers.get("origin")
+            if origin is not None:
+                scheme = "https" if self._config.tls else "http"
+                if not same_origin_allowed(
+                    origin,
+                    raw_host,
+                    scheme,
+                    self._config.allowed_hosts,
+                    self._config.trusted_origins,
+                ):
+                    self._log_refused_request("websocket origin", path, request_headers)
+                    return _UpgradeDecline(403, "Forbidden", ORIGIN_FORBIDDEN_BODY)
+            return None
+
+        decline = _check_upgrade_headers(headers, allow=_allow_upgrade)
+        if decline is not None:
             await _send_response(
                 writer,
-                421,
-                "Misdirected Request",
-                MISDIRECTED_BODY,
+                decline.status,
+                decline.reason,
+                decline.body,
                 {"Content-Type": "application/json"},
             )
             return
-        origin = headers.get("origin")
-        if origin is not None:
-            scheme = "https" if self._config.tls else "http"
-            if not same_origin_allowed(
-                origin,
-                raw_host,
-                scheme,
-                self._config.allowed_hosts,
-                self._config.trusted_origins,
-            ):
-                self._log_refused_request("websocket origin", path, headers)
-                await _send_response(
-                    writer,
-                    403,
-                    "Forbidden",
-                    ORIGIN_FORBIDDEN_BODY,
-                    {"Content-Type": "application/json"},
-                )
-                return
 
         protocols = [
             part.strip()
@@ -7956,40 +7925,24 @@ class WebServer:
                 writer, 403, "Forbidden", {"error": "controller_session_required"}
             )
             return
-        ws_key = headers.get("sec-websocket-key", "")
-        if not ws_key:
+        # Key check, accept header and 101 response bytes come from the
+        # shared lowest-layer implementation (rigplane.ws).
+        upgrade = _make_upgrade_response(headers, protocol=selected_protocol)
+        if not isinstance(upgrade, _UpgradeAccept):
             self._controller.detach(ticket)
-            await _send_response(writer, 400, "Bad Request", b"Missing key", {})
+            await _send_response(
+                writer, upgrade.status, upgrade.reason, upgrade.body, {}
+            )
             return
 
-        accept = make_accept_key(ws_key)
-        # Negotiate permessage-deflate (RFC 7692)
-        ext_header = headers.get("sec-websocket-extensions", "")
-        deflate_resp = negotiate_deflate(ext_header) if ext_header else None
-        ext_line = (
-            f"Sec-WebSocket-Extensions: {deflate_resp}\r\n" if deflate_resp else ""
-        )
-        response = (
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Accept: {accept}\r\n"
-            f"{ext_line}"
-            + (
-                f"Sec-WebSocket-Protocol: {selected_protocol}\r\n"
-                if selected_protocol
-                else ""
-            )
-            + "\r\n"
-        )
         try:
-            writer.write(response.encode("ascii"))
+            writer.write(upgrade.response)
             await writer.drain()
         except BaseException:
             self._controller.detach(ticket)
             raise
 
-        ws = WebSocketConnection(reader, writer, deflate=bool(deflate_resp))
+        ws = WebSocketConnection(reader, writer, deflate=upgrade.deflate)
         raw_model = (
             getattr(self._radio, "model", None) if self._radio is not None else None
         )
@@ -8024,9 +7977,6 @@ class WebServer:
                 self._radio,
                 self._audio_broadcaster,
                 tx_gate=lambda: self._controller_audio_gate(ticket, audio_source),
-                outside_tx_admission=lambda: self._controller_outside_tx_admission(
-                    ticket
-                ),
                 controller=self._controller,
                 controller_ticket=ticket,
                 controller_audio_source=audio_source,

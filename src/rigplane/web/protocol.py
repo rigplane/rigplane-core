@@ -23,7 +23,6 @@ __all__ = [
     "MSG_TYPE_SCOPE",
     "MSG_TYPE_AUDIO_RX",
     "MSG_TYPE_AUDIO_TX",
-    "MSG_TYPE_AUDIO_TX_OUTSIDE",
     "SCOPE_HEADER_SIZE",
     "encode_scope_frame",
     "encode_audio_frame",
@@ -38,10 +37,6 @@ __all__ = [
 MSG_TYPE_SCOPE: int = 0x01
 MSG_TYPE_AUDIO_RX: int = 0x10
 MSG_TYPE_AUDIO_TX: int = 0x11
-# MOR-3764: TX audio admitted only while the radio is keyed outside Core.
-# Same 8-byte header and payload as 0x11; an old Core drops it as a wrong
-# type (fail-closed).
-MSG_TYPE_AUDIO_TX_OUTSIDE: int = 0x12
 
 # Header sizes
 SCOPE_HEADER_SIZE: int = 16
@@ -96,7 +91,7 @@ def encode_audio_frame(
     """Serialize an audio frame to binary wire format (RFC).
 
     Args:
-        msg_type: 0x10 for RX, 0x11 for TX, 0x12 for outside-only TX.
+        msg_type: 0x10 for RX, 0x11 for TX.
         codec: 0x01 = Opus, 0x02 = PCM16.
         sequence: Wrapping sequence counter (uint16).
         sample_rate: Sample rate / 100 as uint16 (e.g. 480 for 48000).

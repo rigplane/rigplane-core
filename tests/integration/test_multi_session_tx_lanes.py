@@ -606,7 +606,7 @@ async def test_path6_operator_mic_held_through_a_remote_unkey_blocks_until_it_le
         writes = len(arena.sim.ptt_set_writes)
         for ws in (a.primary, b.primary, legacy):
             response = await ws.command("key", "ptt_on")
-            assert response.get("message") == "radio_tx_unreleased", response
+            assert response.get("message") == "radio_tx_unowned", response
         assert await arena.tcp_line(tcp, "T 1") == _CAT_REFUSED
         assert arena.sim.ptt_set_writes[writes:] == []
         # The operator lets go: the radio reads RX and the next key is applied.

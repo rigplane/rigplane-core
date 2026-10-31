@@ -153,6 +153,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 9000;
     display: flex;
     align-items: center;

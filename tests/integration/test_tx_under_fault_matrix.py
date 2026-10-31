@@ -1167,7 +1167,7 @@ async def test_core_tx_the_radio_kept_after_an_acked_unkey_still_gets_unkeyed(
         for name, params in (("ptt_on", {}), *_TX_STARTS):
             response = await session.command(f"kept-{name}", name, params)
             assert response.get("ok") is False, response
-            assert response.get("message") == "radio_tx_unreleased", response
+            assert response.get("message") == "radio_tx_unowned", response
         assert sim.ptt_on
 
         # The radio honours de-keys again; force_off is not blocked by any of

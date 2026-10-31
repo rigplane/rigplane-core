@@ -25,7 +25,7 @@ from rigplane.audio_bus import AudioBus
 from rigplane.radio_protocol import AudioCapable
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import AudioBroadcaster
-from rigplane.web.websocket import WebSocketConnection
+from rigplane.ws import WebSocketConnection
 
 
 def _make_radio() -> tuple[Any, AudioBus]:
