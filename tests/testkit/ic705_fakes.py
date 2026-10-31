@@ -57,14 +57,15 @@ def ic705_usb_fake(**kw) -> CivSerialFake:
     )
 
 
-def ic705_lan_fake(**kw) -> MockIcomRadio:
+def ic705_lan_fake(*, cls: type[MockIcomRadio] = MockIcomRadio, **kw) -> MockIcomRadio:
     """``MockIcomRadio(radio_addr=0xA4)`` with the recorded LAN table mounted.
 
     ``model_id`` is an instance attribute (the constructor does not take
     it); it is set to the recorded ``A4`` so the native ``19 00`` identity
-    answer matches the recording.
+    answer matches the recording. ``cls`` lets a test mount the same
+    personality on a subclass that adds a state-dependent behaviour.
     """
     kw.setdefault("radio_addr", RADIO_ADDR)
-    server = MockIcomRadio(recorded_answers=_answer_table("lan"), **kw)
+    server = cls(recorded_answers=_answer_table("lan"), **kw)
     server.model_id = MODEL_ID
     return server

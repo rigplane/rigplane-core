@@ -286,8 +286,11 @@ class _PacingScheduler(AcquisitionScheduler):
         *,
         reason: str = "prime-unobserved",
         limit: int = 5,
+        availability: Mapping[FieldPath, bool | None] = MappingProxyType({}),
     ) -> tuple[AcquisitionRequest, ...]:
-        queued = super().prime_unobserved(observed_paths, reason=reason, limit=limit)
+        queued = super().prime_unobserved(
+            observed_paths, reason=reason, limit=limit, availability=availability
+        )
         for request in queued:
             self.primes.append((self._gate_clock.now, request.paths))
         return queued
@@ -501,6 +504,7 @@ class _RecordingScheduler:
         *,
         reason: str = "prime-unobserved",
         limit: int | None = 5,
+        availability: Mapping[FieldPath, bool | None] = MappingProxyType({}),
     ) -> tuple[object, ...]:
         self.prime_limits.append(limit)
         if self.on_prime is not None:

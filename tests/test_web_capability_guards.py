@@ -20,7 +20,7 @@ from rigplane.types import AudioCodec
 from rigplane.web.handlers.audio import browser_tx_audio_facts
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.web.websocket import WebSocketConnection
+from rigplane.ws import WebSocketConnection
 
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"

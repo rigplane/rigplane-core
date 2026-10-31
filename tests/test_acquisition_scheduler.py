@@ -17,6 +17,7 @@ import pytest
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
+    AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionStatus,
@@ -4558,6 +4559,377 @@ def test_ic7610_sub_filter_shape_read_is_gated_by_sub_mode() -> None:
     dispatched = {path for request in requests for path in request.paths}
     assert _IC7610_SUB_SHAPE in dispatched
     assert acquisition_query(0x16, sub=0x56, receiver=1) in sent
+
+
+_IC705_FM_POLLED = (
+    FieldPath.receiver("main", "operator_controls", "pbt_inner"),
+    FieldPath.receiver("main", "operator_controls", "pbt_outer"),
+    FieldPath.receiver("main", "operator_controls", "manual_notch_width"),
+)
+_IC705_FM_SHAPE = FieldPath.receiver("main", "operator_controls", "filter_shape")
+_IC705_FM_QUERIES = (
+    acquisition_query(0x14, sub=0x07, receiver=0),
+    acquisition_query(0x14, sub=0x08, receiver=0),
+    acquisition_query(0x16, sub=0x57, receiver=0),
+)
+
+
+def _ic705_scheduler_availability(
+    main_mode: str,
+) -> tuple[
+    AcquisitionScheduler,
+    dict[FieldPath, bool | None],
+]:
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    store = StateStore()
+    at = time.monotonic()
+    store.apply(
+        _observation(FieldPath.active("main", "freq_mode", "mode"), main_mode, at=at)
+    )
+    return (
+        scheduler,
+        resolve_available_when(scheduler._profile, store.snapshot()),
+    )
+
+
+def _ic705_due_and_sent(
+    scheduler: AcquisitionScheduler,
+    availability: dict[FieldPath, bool | None],
+) -> tuple[tuple[AcquisitionRequest, ...], list[Any]]:
+    executor, sent = recording_executor(get_radio_profile("IC-705"))
+    requests = scheduler.due_requests(availability=availability)
+    for request in requests:
+        execution = asyncio.run(
+            executor.execute(request, already_sent_paths=frozenset())
+        )
+        assert execution.failed_paths == ()
+    return requests, sent
+
+
+def test_ic705_fm_absent_reads_are_gated_by_main_mode() -> None:
+    """MAIN in FM: no 14 07/08 or 16 57 reads; MAIN back in USB: they fire (MOR-3630).
+
+    The bench probe NAKed the PBT, notch-width, filter-shape, filter-width
+    and AGC-time reads in FM (tests/fixtures/ic705/README.md). The width
+    keeps its declared FM publication (MOR-2503) and the AGC time stays
+    undeclared (MOR-2915), so the clause covers the other four. The
+    filter-shape read is on demand rather than polled, so only its
+    resolution is asserted here.
+    """
+
+    scheduler, availability = _ic705_scheduler_availability("FM")
+    for path in (*_IC705_FM_POLLED, _IC705_FM_SHAPE):
+        assert availability[path] is False, path
+    requests, sent = _ic705_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    for path in _IC705_FM_POLLED:
+        assert path not in dispatched, path
+    for query in _IC705_FM_QUERIES:
+        assert query not in sent, query
+
+    scheduler, availability = _ic705_scheduler_availability("USB")
+    for path in (*_IC705_FM_POLLED, _IC705_FM_SHAPE):
+        assert availability[path] is True, path
+    requests, sent = _ic705_due_and_sent(scheduler, availability)
+    dispatched = {path for request in requests for path in request.paths}
+    for path in _IC705_FM_POLLED:
+        assert path in dispatched, path
+    for query in _IC705_FM_QUERIES:
+        assert query in sent, query
+
+
+_IC705_FM_SHAPE_QUERY = acquisition_query(0x16, sub=0x56, receiver=0)
+_IC705_FM_MODE = FieldPath.active("main", "freq_mode", "mode")
+
+
+def _ic705_live_service() -> tuple[
+    StateStore,
+    FreshnessClock,
+    AcquisitionScheduler,
+    StateFreshnessService,
+]:
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    clock = FreshnessClock(start=1000.0)
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    return store, clock, scheduler, service
+
+
+def test_ic705_prime_skips_fm_contradicted_reads_then_reacquires_in_usb() -> None:
+    """MOR-3630 finding 1: priming honours ``available_when`` across USB→FM→USB.
+
+    One scheduler plus its freshness service drives the whole journey while
+    a recording executor captures the actual dispatched queries. In USB the
+    on-demand filter-shape read (16 56) goes out and its answer is kept.
+    After the MAIN mode flips to FM the freshness tick discards the FM-NAKed
+    values, and two full prime windows must neither queue nor send any of
+    the contradicted reads — on the old code the shape prime re-queues here
+    and 16 56 goes out in FM, where the bench probe NAKed it
+    (tests/fixtures/ic705/README.md), leaving it unobserved and retried
+    forever. Returning to USB re-primes the shape read and the answer
+    recovers the value.
+    """
+
+    store, clock, scheduler, service = _ic705_live_service()
+    executor, sent = recording_executor(get_radio_profile("IC-705"))
+    contradicted = (*_IC705_FM_POLLED, _IC705_FM_SHAPE)
+    forbidden_queries = (*_IC705_FM_QUERIES, _IC705_FM_SHAPE_QUERY)
+    seen_ids: set[str] = set()
+
+    def dispatch_new() -> tuple[list[AcquisitionRequest], list[AcquisitionQuery]]:
+        dispatched: list[AcquisitionRequest] = []
+        base = len(sent)
+        for request in scheduler.dispatchable_requests():
+            if request.id in seen_ids:
+                continue
+            seen_ids.add(request.id)
+            asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+            dispatched.append(request)
+        return dispatched, list(sent[base:])
+
+    def settle(dispatched: list[AcquisitionRequest], shape_value: int | None) -> None:
+        for request in dispatched:
+            if shape_value is not None and _IC705_FM_SHAPE in request.paths:
+                change = store.apply(
+                    _observation(_IC705_FM_SHAPE, shape_value, at=clock.now())
+                )
+                scheduler.record_acquisition_result(request, change)
+            else:
+                scheduler.record_acquisition_failure(
+                    request, reason="test-consumed", now=clock.now()
+                )
+
+    def pending_contradicted() -> set[FieldPath]:
+        return {
+            path
+            for request in scheduler.pending_requests()
+            for path in request.paths
+            if path in contradicted
+        }
+
+    # USB: the shape prime must go out on the wire and its answer sticks.
+    store.apply(_observation(_IC705_FM_MODE, "USB", at=clock.now()))
+    for _ in range(60):
+        service.tick(now=clock.now())
+        dispatched, _ = dispatch_new()
+        shape_requests = [
+            request for request in dispatched if _IC705_FM_SHAPE in request.paths
+        ]
+        if shape_requests:
+            settle(dispatched, 1)
+            break
+        settle(dispatched, None)
+        clock.advance(5.1)
+    else:
+        pytest.fail("USB prime never dispatched the filter-shape read")
+    assert store.snapshot().field(_IC705_FM_SHAPE).value == 1
+
+    # FM: the tick discards the FM-NAKed values; two prime windows after
+    # the discard must queue nothing contradicted and send none of the
+    # forbidden queries.
+    store.apply(_observation(_IC705_FM_MODE, "FM", at=clock.now()))
+    for _ in range(3):
+        clock.advance(5.1)
+        service.tick(now=clock.now())
+        _, fm_sent = dispatch_new()
+        assert pending_contradicted() == set()
+        assert not (set(fm_sent) & set(forbidden_queries)), fm_sent
+    assert _IC705_FM_SHAPE not in {field.path for field in store.snapshot().fields}
+
+    # USB again: the shape prime re-fires on the wire and the answer
+    # recovers the value through the same observation path.
+    store.apply(_observation(_IC705_FM_MODE, "USB", at=clock.now()))
+    for _ in range(60):
+        clock.advance(5.1)
+        service.tick(now=clock.now())
+        dispatched, usb_sent = dispatch_new()
+        shape_requests = [
+            request for request in dispatched if _IC705_FM_SHAPE in request.paths
+        ]
+        if shape_requests:
+            assert _IC705_FM_SHAPE_QUERY in usb_sent
+            settle(dispatched, 1)
+            break
+        settle(dispatched, None)
+    else:
+        pytest.fail("USB return never re-primed the filter-shape read")
+    assert store.snapshot().field(_IC705_FM_SHAPE).value == 1
+
+
+def test_availability_resolves_a_clause_source_stored_under_the_other_receiver_id() -> (
+    None
+):
+    """MOR-3630 round 3 finding 2: CI-V ingress spells MAIN ``receiver.0``.
+
+    The profile declares ``available_when`` over ``receiver.main...``; the
+    production ingress stores the same receiver as ``receiver.0...``
+    (``runtime/_civ_rx.py: CivRuntime._receiver_context``). A clause source
+    stored under the other spelling must resolve, or no receiver-sourced
+    condition ever holds or fails on a real radio.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    ingress_mode = FieldPath.active("0", "freq_mode", "mode")
+
+    in_fm = resolve_available_when(acquisition, _snapshot_of({ingress_mode: "FM"}))
+    in_usb = resolve_available_when(acquisition, _snapshot_of({ingress_mode: "USB"}))
+
+    for path in (*_IC705_FM_POLLED, _IC705_FM_SHAPE):
+        assert in_fm[path] is False, path
+        assert in_usb[path] is True, path
+
+
+def test_tick_discards_a_value_stored_under_the_other_receiver_id() -> None:
+    """MOR-3630 round 3 finding 2: the discard removes the stored spelling.
+
+    The value lives at ``receiver.0.operator_controls.pbt_inner`` while the
+    profile's policy key (and so the availability map) says ``receiver.main``.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    clock = FreshnessClock(start=1000.0)
+    store = StateStore(freshness_clock=clock)
+    scheduler = AcquisitionScheduler(profile=acquisition, clock=clock)
+    service = StateFreshnessService(store=store, scheduler=scheduler)
+    stored_mode = FieldPath.active("0", "freq_mode", "mode")
+    stored_pbt = FieldPath.receiver("0", "operator_controls", "pbt_inner")
+    store.apply(_observation(stored_mode, "FM", at=clock.now()))
+    store.apply(_observation(stored_pbt, 128, at=clock.now()))
+
+    service.tick(now=clock.now())
+
+    assert stored_pbt not in {field.path for field in store.snapshot().fields}
+    assert stored_mode in {field.path for field in store.snapshot().fields}
+
+
+def _dispatchable_paths(scheduler: AcquisitionScheduler) -> set[FieldPath]:
+    return {
+        path for request in scheduler.dispatchable_requests() for path in request.paths
+    }
+
+
+def _pending_paths(scheduler: AcquisitionScheduler) -> set[FieldPath]:
+    return {path for request in scheduler.pending_requests() for path in request.paths}
+
+
+def _ic705_queued_in_usb() -> tuple[AcquisitionScheduler, StateSnapshot, StateSnapshot]:
+    """An IC-705 scheduler with the FM-contradicted reads queued while MAIN is USB."""
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(
+        profile=acquisition, clock=FreshnessClock(start=100.0)
+    )
+    usb = _snapshot_of({_IC705_FM_MODE: "USB"})
+    fm = _snapshot_of({_IC705_FM_MODE: "FM"})
+    scheduler.due_requests(availability=resolve_available_when(acquisition, usb))
+    scheduler.prime_unobserved((), limit=1000)
+    return scheduler, usb, fm
+
+
+def test_dispatch_withholds_reads_queued_before_the_mode_flipped_to_fm() -> None:
+    """MOR-3630 round 3 finding 1: eligibility is enforced at DISPATCH too.
+
+    The reads are queued while MAIN is USB (the cadence poll of the PBT and
+    notch width, the on-demand prime of the filter shape). The mode then
+    reads FM before the drain gets to them. Priming and demand already skip
+    a contradicted path; a request queued earlier must not reach the wire
+    either, or the radio NAKs it and the NAK enters timeout accounting. The
+    request stays pending, and goes out again once the mode is USB.
+    """
+
+    scheduler, usb, fm = _ic705_queued_in_usb()
+    contradicted = {*_IC705_FM_POLLED, _IC705_FM_SHAPE}
+    scheduler.note_availability(usb)
+    assert contradicted <= _dispatchable_paths(scheduler)
+
+    scheduler.note_availability(fm)
+    assert _dispatchable_paths(scheduler).isdisjoint(contradicted)
+    assert contradicted <= _pending_paths(scheduler)
+    executor, sent = recording_executor(get_radio_profile("IC-705"))
+    for request in scheduler.dispatchable_requests():
+        asyncio.run(executor.execute(request, already_sent_paths=frozenset()))
+    assert not set(sent) & {*_IC705_FM_QUERIES, _IC705_FM_SHAPE_QUERY}
+
+    scheduler.note_availability(usb)
+    assert contradicted <= _dispatchable_paths(scheduler)
+
+
+def test_resumed_external_cat_requests_honour_the_current_mode() -> None:
+    """MOR-3630 round 3 finding 1: deferred requests re-queue into the same gate."""
+
+    scheduler, usb, fm = _ic705_queued_in_usb()
+    contradicted = {*_IC705_FM_POLLED, _IC705_FM_SHAPE}
+    scheduler.pause_external_cat(owner="wsjtx", reason="test")
+    scheduler.note_availability(fm)
+    scheduler.resume_external_cat()
+    assert _dispatchable_paths(scheduler).isdisjoint(contradicted)
+
+    scheduler.note_availability(usb)
+    assert contradicted <= _dispatchable_paths(scheduler)
+
+
+def test_dispatch_gate_does_not_withhold_explicit_reads() -> None:
+    """A caller-owned read is never withheld by the gate.
+
+    Same rule as the ``tx_only`` gate: only automatic traffic (background
+    cadence and priming, reconciliation hints) is gated; a request a caller
+    asked for by name goes out and settles with the radio's own answer.
+    """
+
+    acquisition = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(profile=acquisition)
+    scheduler.note_availability(_snapshot_of({_IC705_FM_MODE: "FM"}))
+
+    result = scheduler.ensure_fresh(
+        (_IC705_FM_SHAPE,),
+        max_age=1.0,
+        priority=AcquisitionPriority.USER,
+        reason="user-read",
+    )
+
+    assert result.status is AcquisitionStatus.QUEUED
+    assert _IC705_FM_SHAPE in _dispatchable_paths(scheduler)
+
+
+def test_dispatch_gate_applies_to_another_conditional_profile() -> None:
+    """IC-7610: MAIN's shape read queued in USB is withheld once MAIN reads RTTY."""
+
+    acquisition = load_rig(RIGS_DIR / "ic7610.toml").to_profile().state_acquisition
+    assert acquisition is not None
+    scheduler = AcquisitionScheduler(
+        profile=acquisition, clock=FreshnessClock(start=100.0)
+    )
+    both_usb = _snapshot_of(
+        {
+            FieldPath.active("main", "freq_mode", "mode"): "USB",
+            FieldPath.active("sub", "freq_mode", "mode"): "USB",
+        }
+    )
+    main_rtty = _snapshot_of(
+        {
+            FieldPath.active("main", "freq_mode", "mode"): "RTTY",
+            FieldPath.active("sub", "freq_mode", "mode"): "USB",
+        }
+    )
+    scheduler.due_requests(availability=resolve_available_when(acquisition, both_usb))
+    scheduler.note_availability(both_usb)
+    assert {_IC7610_MAIN_SHAPE, _IC7610_SUB_SHAPE} <= _dispatchable_paths(scheduler)
+
+    scheduler.note_availability(main_rtty)
+    dispatchable = _dispatchable_paths(scheduler)
+    assert _IC7610_MAIN_SHAPE not in dispatchable
+    assert _IC7610_SUB_SHAPE in dispatchable
+
+    scheduler.note_availability(both_usb)
+    assert _IC7610_MAIN_SHAPE in _dispatchable_paths(scheduler)
 
 
 def test_tick_discards_the_attenuator_above_the_declared_band_bound() -> None:

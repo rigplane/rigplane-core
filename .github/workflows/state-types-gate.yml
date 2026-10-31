@@ -8,16 +8,6 @@ name: State types gate
 # corpus-drift / rebrand-gate staleness pattern.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/rigplane/web/state_schema.py"
-      - "scripts/gen_state_types.py"
-      - "frontend/src/lib/types/state.ts"
-      - "frontend/package.json"
-      - "frontend/package-lock.json"
-      - "pyproject.toml"
-      - ".github/workflows/state-types-gate.yml"
   pull_request:
     branches: [main]
     paths:
@@ -28,6 +18,10 @@ on:
       - "frontend/package-lock.json"
       - "pyproject.toml"
       - ".github/workflows/state-types-gate.yml"
+  # Also called by full.yml for the scheduled run on main (MOR-3878): the merge
+  # queue does not run this informational gate, so the merged tree gets its
+  # signal from there with this same job definition.
+  workflow_call:
 
 concurrency:
   group: state-types-gate-${{ github.workflow }}-${{ github.ref }}

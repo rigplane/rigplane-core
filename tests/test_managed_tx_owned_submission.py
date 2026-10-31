@@ -1,8 +1,8 @@
 """MOR-3821 P0b capability: owner-specific admission and keying preparation.
 
 ``ManagedTxAuthority.owned_tx_submission`` admits one owner's TX audio push
-only while the held intent is ``PTT(owner)`` (spec 8.3 item 5), modelled on
-``outside_tx_submission`` (MOR-3764). ``before_on`` on
+only while the held intent is ``PTT(owner)`` (spec 8.3 item 5), under the
+admission lock every key-down also takes. ``before_on`` on
 ``start_ptt_submission`` (spec 7.3a) prepares the route inside the admitted
 key — after the intent commits to ``PTT(owner)``, before the PTT_ON effect
 is dispatched, bounded by the attempt timeout. A hook that raises, times
@@ -19,7 +19,10 @@ from dataclasses import replace
 import pytest
 from test_controller_sessions import radio_tx_authority
 
-from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_authority import (
+    TX_SUBMISSION_BUDGET_S,
+    ManagedTxAuthority,
+)
 from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ManagedTxIntentKind,
@@ -85,12 +88,12 @@ async def test_owned_submission_handoff_before_admission_verdict() -> None:
     try:
         assert await managed.ptt_down("a") is ACCEPTED
         out: list[bool] = []
-        await managed._outside_tx_lock.acquire()
+        await managed._tx_admission_lock.acquire()
         try:
             frame_task = asyncio.ensure_future(_enter_owned(managed, "a", out))
             assert await managed.ptt_up("a") is ACCEPTED
         finally:
-            managed._outside_tx_lock.release()
+            managed._tx_admission_lock.release()
         assert await managed.ptt_down("b") is ACCEPTED
         await frame_task
         assert out == [False]
@@ -132,6 +135,38 @@ async def test_owned_push_inside_excludes_the_rival_key() -> None:
         assert (await rival).outcome is REJECTED
         assert await managed.ptt_up("a") is ACCEPTED
     finally:
+        await managed.close()
+
+
+async def test_stuck_owned_push_is_cut_at_the_submission_budget() -> None:
+    """An admitted push that never returns is cut at the budget; unkeying proceeds."""
+    managed, _clock, _lane, _probe = radio_tx_authority()
+    submission_task = None
+    try:
+        assert await managed.ptt_down("a") is ACCEPTED
+        delivered: list[bytes] = []
+        push_started = asyncio.Event()
+
+        async def submission() -> None:
+            async with managed.owned_tx_submission("a") as admitted:
+                assert admitted is True
+                push_started.set()
+                await asyncio.Event().wait()  # never released
+                delivered.append(b"stuck")
+
+        submission_task = asyncio.ensure_future(submission())
+        await asyncio.wait_for(push_started.wait(), 1.0)
+        done, _ = await asyncio.wait(
+            {submission_task}, timeout=TX_SUBMISSION_BUDGET_S * 4
+        )
+        assert submission_task in done, "a stuck push escaped the submission budget"
+        assert isinstance(submission_task.exception(), TimeoutError)
+        assert delivered == []
+        assert not managed._tx_admission_lock.locked()  # the cut released it
+        assert await managed.ptt_up("a") is ACCEPTED
+    finally:
+        if submission_task is not None and not submission_task.done():
+            submission_task.cancel()
         await managed.close()
 
 

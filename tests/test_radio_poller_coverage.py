@@ -3007,10 +3007,9 @@ def test_relative_vfo_retention_window_follows_provider_poll_cadence(
     assert acquisition is not None
     expected_rotation = acquisition.default_policy.cadence_seconds
     assert expected_rotation is not None
-    assert poller._relative_vfo_retention_max_age == pytest.approx(
-        2 * expected_rotation + 5.0
-    )
-    assert poller._relative_vfo_retention_max_age == pytest.approx(expected_seconds)
+    retention_age, _ = poller._relative_vfo_retention_policy()  # noqa: SLF001
+    assert retention_age == pytest.approx(2 * expected_rotation + 5.0)
+    assert retention_age == pytest.approx(expected_seconds)
 
 
 def test_relative_vfo_retention_policy_fallback_is_zero_without_state_acquisition() -> (
