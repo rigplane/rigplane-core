@@ -148,20 +148,37 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
   if (totalCount === null || jobs.length !== totalCount) { throw new ObservationError('invalid_binding', 'legacy quick job topology is incomplete'); }
   return jobs;
 }
+// MOR-3875: legacy quick runs classify, two parallel build-tier halves, and the
+// `quick` aggregator on the light pool. classify may sit on the hosted image or
+// on the light pool while its own move is in flight. The base classifier's
+// frontend and ci routes are subsets of the workflow's, so those routes pin a
+// half; its core route also covers unknown roots the workflow selects nothing
+// for, so it does not.
+const BUILD_LABELS = Object.freeze(['self-hosted', 'linux', 'build']);
+const LIGHT_LABELS = Object.freeze(['self-hosted', 'linux', 'light']);
+function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
+function ranOnRunner(job) { return job !== undefined && job.conclusion !== 'skipped' && typeof job.runner_name === 'string' && job.runner_name.length > 0; }
 function evaluateJobTopology(run, jobs, routes, draft) { const names = jobs.map((job) => job.name);
-  const expectedNames = ['classify', 'quick'];
-  const topologyMatches = jobs.length === 2 && expectedNames.every((name) => names.filter((candidate) => candidate === name).length === 1) && jobs.every((job) => job.run_attempt === run.run_attempt && job.status === 'completed');
+  const expectedNames = ['classify', 'quick-frontend', 'quick-python', 'quick'];
+  const topologyMatches = jobs.length === expectedNames.length && expectedNames.every((name) => names.filter((candidate) => candidate === name).length === 1) && jobs.every((job) => job.run_attempt === run.run_attempt && job.status === 'completed');
   const classify = jobs.find((job) => job.name === 'classify');
+  const frontend = jobs.find((job) => job.name === 'quick-frontend');
+  const python = jobs.find((job) => job.name === 'quick-python');
   const quick = jobs.find((job) => job.name === 'quick');
-  const classifyMatches = classify?.conclusion === 'success' && Array.isArray(classify.labels) && classify.labels.includes('ubuntu-latest');
-  const quickWasSubstantive = quick?.conclusion !== 'skipped' && typeof quick?.runner_name === 'string' && quick.runner_name.length > 0;
-  const labelsMatch = Array.isArray(quick?.labels) && ['self-hosted', 'linux', 'build'].every((label) => quick.labels.includes(label));
+  const workers = [frontend, python];
+  const frontendRequired = routes.frontend === true;
+  const pythonRequired = routes.ci === true;
+  const classifyMatches = classify?.conclusion === 'success' && (hasLabels(classify, ['ubuntu-latest']) || hasLabels(classify, LIGHT_LABELS));
+  const workersBound = workers.every((job) => job?.conclusion === 'skipped' || (ranOnRunner(job) && hasLabels(job, BUILD_LABELS)));
+  const skippedWork = quick?.conclusion === 'skipped' || (frontendRequired && frontend?.conclusion === 'skipped') || (pythonRequired && python?.conclusion === 'skipped');
+  const quickWasSubstantive = ranOnRunner(quick) && (!frontendRequired || ranOnRunner(frontend)) && (!pythonRequired || ranOnRunner(python));
+  const labelsMatch = hasLabels(quick, LIGHT_LABELS) && workersBound;
   const routeConcordance = topologyMatches && classifyMatches && labelsMatch && routes.docs === false && draft === false && quickWasSubstantive;
-  if (run.conclusion === 'success' && quick?.conclusion === 'skipped') { return {ok: false, code: 'skipped_substantive', routeConcordance: false};
+  if (run.conclusion === 'success' && skippedWork) { return {ok: false, code: 'skipped_substantive', routeConcordance: false};
   }
   if (!routeConcordance) { return {ok: false, code: 'route_mismatch', routeConcordance: false};
   }
-  if (run.conclusion !== 'success' || quick.conclusion !== 'success') { return {ok: false, code: 'terminal_failure', routeConcordance: true};
+  if (run.conclusion !== 'success' || quick.conclusion !== 'success' || workers.some((job) => job.conclusion !== 'success' && job.conclusion !== 'skipped')) { return {ok: false, code: 'terminal_failure', routeConcordance: true};
   }
   return {ok: true, code: 'terminal_match', routeConcordance: true};
 }

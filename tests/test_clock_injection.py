@@ -24,7 +24,7 @@ from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.handlers import ControlHandler
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
-from rigplane.web.websocket import WebSocketConnection
+from rigplane.ws import WebSocketConnection
 
 
 class FakeClock:

@@ -39,16 +39,18 @@ Also pins the `-m` marker selection. `pyproject.toml` `addopts` deselects the
 `slow` and `benchmark` tests, and a `-m` on the command line replaces that
 expression. `publish.yml`, which runs when a release is published, passes
 `-m 'not benchmark'`; `quick.yml` passes no `-m`; `full.yml` passes one only
-when `inputs.rc` is true. `full.yml` writes that choice as one
-`${{ inputs.rc && '...' || '' }}` expression, which `_marker_selection`
-evaluates for `rc` true, false and unset instead of matching its text. These
+when `inputs.rc` is true or the run is a release-candidate tag. `full.yml` writes that choice as one
+`${{ (inputs.rc || github.ref_type == 'tag') && '...' || '' }}` expression,
+which `_marker_selection` evaluates for `rc` true, false and unset on a branch
+and on a tag instead of matching its text. These
 pins read the `uv run pytest tests/` line, so a `-m` on a later physical line
 of a `run: >` block, such as `quick.yml`'s web-subset step, is not seen.
 
-Also pins `full.yml`'s `main` push trigger and its two jobs so that an
-accidental guard regression — a missing push trigger, a narrowed
-`paths`/`paths-ignore` filter, or a `jobs.test`/`jobs.capture-harness`
-`if: false` that silently disables the matrix — turns red.
+Also pins `full.yml`'s triggers (schedule, dispatch, release-candidate tags,
+and no push to `main`: the merge queue already tested that tree, MOR-3878)
+and its two jobs so that an accidental guard regression — a dropped trigger,
+or a `jobs.test`/`jobs.capture-harness` `if:` other than the freshness guard
+that silently disables the matrix — turns red.
 """
 
 from __future__ import annotations
@@ -90,9 +92,10 @@ _FETCH_DEPTH_RE = re.compile(r"fetch-depth:\s*(\d+)")
 PYPROJECT = WORKFLOWS_DIR.parent.parent / "pyproject.toml"
 
 # The one expression shape `full.yml` uses to choose the marker flags:
-# `${{ inputs.rc && '<flags when true>' || '<flags otherwise>' }}`.
+# `${{ (inputs.rc || github.ref_type == 'tag') && '<flags when true>' || '<flags otherwise>' }}`.
 _RC_GATE_RE = re.compile(
-    r"\$\{\{\s*inputs\.rc\s*&&\s*'(?P<on>(?:[^']|'')*)'"
+    r"\$\{\{\s*\(inputs\.rc\s*\|\|\s*github\.ref_type\s*==\s*'tag'\)"
+    r"\s*&&\s*'(?P<on>(?:[^']|'')*)'"
     r"\s*\|\|\s*'(?P<off>(?:[^']|'')*)'\s*\}\}"
 )
 
@@ -177,10 +180,13 @@ def _run_tests_step_body(workflow_name: str) -> str:
     return match.group(1)
 
 
-def _marker_selection(command: str, *, rc: bool | None = None) -> list[str]:
-    """The `-m` expressions `command` passes when `inputs.rc` is `rc`."""
+def _marker_selection(
+    command: str, *, rc: bool | None = None, tag: bool = False
+) -> list[str]:
+    """The `-m` expressions `command` passes when `inputs.rc` is `rc` (or the
+    run is on a tag)."""
     rendered = _RC_GATE_RE.sub(
-        lambda m: (m["on"] if rc else m["off"]).replace("''", "'"), command
+        lambda m: (m["on"] if rc or tag else m["off"]).replace("''", "'"), command
     )
     assert "${{" not in rendered, (
         f"an expression this pin does not evaluate is in {command!r} — "
@@ -271,10 +277,13 @@ def test_publish_validate_runs_the_slow_tests() -> None:
         )
 
 
-def test_full_runs_the_slow_tests_only_for_an_rc_dispatch() -> None:
+def test_full_runs_the_slow_tests_only_for_an_rc_dispatch_or_rc_tag() -> None:
     for invocation in _pytest_invocations("full.yml"):
         assert _marker_selection(invocation, rc=True) == ["not benchmark"], (
             f"an RC dispatch of full.yml does not select `-m 'not benchmark'`: {invocation!r}"
+        )
+        assert _marker_selection(invocation, tag=True) == ["not benchmark"], (
+            f"an RC tag run of full.yml does not select `-m 'not benchmark'`: {invocation!r}"
         )
         for rc in (False, None):
             assert _marker_selection(invocation, rc=rc) == [], (
@@ -290,16 +299,30 @@ def test_full_declares_a_boolean_rc_input_defaulting_to_false() -> None:
     assert re.search(r"^\s+default:\s*false\s*$", body, re.MULTILINE), body
 
 
-def test_full_push_trigger_is_main_without_narrowing() -> None:
-    body = _push_trigger_body("full.yml")
-    lines = _non_comment_lines(body)
-    assert len(lines) == 1, (
-        f"full.yml push trigger must have exactly one non-comment line; "
-        f"found {len(lines)}: {lines!r}"
+def test_full_runs_on_schedule_dispatch_and_rc_tags_not_on_a_push_to_main() -> None:
+    on_sec = _on_section("full.yml")
+    assert re.search(r"^  schedule:\n", on_sec, re.MULTILINE), (
+        "full.yml lost its schedule"
     )
-    assert lines[0] == "branches: [main]", (
-        f"full.yml push trigger line must be `branches: [main]`; found {lines[0]!r}"
+    assert re.search(r"^  workflow_dispatch:\n", on_sec, re.MULTILINE)
+    # The merge queue already tested the tree that lands on main, so a push to
+    # main would test it a second time (MOR-3878): only candidate tags push.
+    lines = _non_comment_lines(_push_trigger_body("full.yml"))
+    assert lines == ['tags: ["v*rc*"]'], (
+        f"full.yml push trigger must be exactly the release-candidate tags; found {lines!r}"
     )
+
+
+def test_only_the_docs_deploy_runs_on_a_push_to_main() -> None:
+    """Every other workflow gets its main signal from the merge queue, the
+    schedule or a tag, never a re-run on the push that follows the queue."""
+    pushing_main = []
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        on_match = _ON_SECTION_RE.search(path.read_text())
+        push = _PUSH_TRIGGER_RE.search(on_match.group(1)) if on_match else None
+        if push and re.search(r"^    branches:", push.group(1), re.MULTILINE):
+            pushing_main.append(path.name)
+    assert pushing_main == ["docs.yml"], pushing_main
 
 
 def test_full_has_both_jobs_in_jobs_section() -> None:
@@ -309,16 +332,24 @@ def test_full_has_both_jobs_in_jobs_section() -> None:
     assert "capture-harness" in job_names, "full.yml must have a `capture-harness` job"
 
 
-def test_full_test_and_capture_harness_have_no_job_level_if() -> None:
+def test_full_test_and_capture_harness_are_gated_only_by_the_freshness_job() -> None:
     jobs_text = _jobs_text("full.yml")
     for name, body in _JOB_RE.findall(jobs_text):
         if name not in ("test", "capture-harness"):
             continue
-        job_if = _JOB_IF_KEY_RE.search(body)
-        assert job_if is None, (
-            f"full.yml `{name}` job has a job-level `if:` at the body "
-            "indent — the matrix must run unconditionally on every main push"
+        job_ifs = re.findall(r"^    if: (.*)$", body, re.MULTILINE)
+        assert job_ifs == ["needs.fresh.outputs.run == 'true'"], (
+            f"full.yml `{name}` job has a job-level `if:` other than the "
+            f"freshness guard, which could silently disable the matrix: {job_ifs!r}"
         )
+        assert re.search(r"^    needs: fresh$", body, re.MULTILINE), name
+
+
+def test_full_freshness_job_skips_only_a_scheduled_tick_that_already_passed() -> None:
+    body = _job_body("full.yml", "fresh")
+    assert 'if [ "$EVENT_NAME" = "schedule" ]; then' in body
+    assert "workflows/full.yml/runs?head_sha=${{ github.sha }}&status=success" in body
+    assert "run=true\n" in body, "the default answer must be to run the matrix"
 
 
 def _job_body(workflow_name: str, job_name: str) -> str:

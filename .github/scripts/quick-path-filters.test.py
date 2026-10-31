@@ -418,6 +418,40 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         )
         self.assertIn("uv run pytest tests/web tests/test_web_*.py", quick)
 
+    def test_quick_halves_run_in_parallel_behind_the_required_aggregator(
+        self,
+    ) -> None:
+        # MOR-3875: in one job the frontend chain and the full pytest suite ran
+        # in series (~28-30 min). The halves now run on separate build runners,
+        # each inside 25 minutes, and the required `quick` context is a light
+        # aggregator, so branch protection keeps the same context name.
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        body = quick.split("\njobs:\n", 1)[1]
+        jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", body))
+        self.assertEqual(
+            set(jobs), {"classify", "quick-frontend", "quick-python", "quick"}
+        )
+        for half in ("quick-frontend", "quick-python"):
+            with self.subTest(job=half):
+                block = jobs[half]
+                self.assertIn("    needs: classify\n", block)
+                self.assertIn("    runs-on: [self-hosted, linux, build]\n", block)
+                self.assertIn("    timeout-minutes: 25\n", block)
+                self.assertIn("needs.classify.outputs.docs != 'true'", block)
+                self.assertIn("needs.classify.outputs.reuse != 'true'", block)
+        self.assertIn("npm ci", jobs["quick-frontend"])
+        self.assertNotIn("uv run pytest tests/ ", jobs["quick-frontend"])
+        self.assertIn("uv run pytest tests/ ", jobs["quick-python"])
+        self.assertNotIn("npm ci", jobs["quick-python"])
+        aggregator = jobs["quick"]
+        self.assertIn("    needs: [classify, quick-frontend, quick-python]\n", aggregator)
+        self.assertIn("    runs-on: [self-hosted, linux, light]\n", aggregator)
+        self.assertIn("    timeout-minutes: 5\n", aggregator)
+        self.assertIn("needs.classify.outputs.reuse != 'true'", aggregator)
+        self.assertNotIn("actions/checkout", aggregator)
+        for result in ("quick-frontend.result", "quick-python.result"):
+            self.assertIn(f"${{{{ needs.{result} }}}}", aggregator)
+
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         visual = VISUAL_YML.read_text(encoding="utf-8")
@@ -431,30 +465,17 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)
         self.assertIn("needs.classify.outputs.core == 'true'", quick)
         self.assertIn("needs.classify.outputs.frontend == 'true'", quick)
-        self.assertIn("    timeout-minutes: 25", quick)
+        self.assertNotIn("timeout-minutes: 40", quick)
         self.assertIn('      - "frontend/**"', visual)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
         self.assertNotIn('      - ".github/workflows/visual.yml"', visual)
-        # The push-to-main trigger carries the same paths
-        # list as pull_request, entry for entry, and targets only main.
-        pull_request_paths = [
-            line
-            for line in visual[
-                visual.index("  pull_request:") : visual.index("  push:")
-            ].splitlines()
-            if line.startswith('      - "')
-        ]
-        self.assertEqual(
-            "\n".join(
-                ["  push:", "    branches: [main]", "    paths:", *pull_request_paths]
-            ),
-            visual[
-                visual.index("  push:") : visual.index("  workflow_dispatch:")
-            ].strip("\n"),
-        )
+        # No push trigger (MOR-3878): the merge queue tested the tree that
+        # lands, and full.yml calls this workflow for the scheduled run on main.
+        self.assertNotIn("\n  push:\n", visual)
+        self.assertIn("\n  workflow_call:\n", visual)
 
-    def test_visual_push_run_is_wired_and_dispatch_has_its_own_concurrency(
+    def test_visual_unfiltered_run_is_wired_and_dispatch_has_its_own_concurrency(
         self,
     ) -> None:
         visual = VISUAL_YML.read_text(encoding="utf-8")
@@ -462,35 +483,33 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn(visual_job_start, visual)
         visual_job = visual[visual.index(visual_job_start) :]
 
-        # The push trigger alone would give an all-skipped green run: the
-        # `changes` job must select push runs and the `visual` job must let
-        # them through.
+        # Without a paths filter (a dispatch, or full.yml calling this
+        # workflow) the `changes` job must select the run and the `visual` job
+        # must let it through, or the run would be all-skipped and green.
         self.assertIn(
             "      frontend: ${{ steps.filter.outputs.frontend"
-            " || steps.manual.outputs.frontend"
-            " || steps.push.outputs.frontend }}",
+            " || steps.manual.outputs.frontend }}",
             visual,
         )
-        push_step_start = "      - name: Select push main run\n"
-        self.assertIn(push_step_start, visual)
-        push_step = visual[
-            visual.index(push_step_start) : visual.index(visual_job_start)
+        manual_step_start = "      - name: Select unfiltered visual run\n"
+        self.assertIn(manual_step_start, visual)
+        manual_step = visual[
+            visual.index(manual_step_start) : visual.index(visual_job_start)
         ]
-        self.assertIn("        id: push\n", push_step)
-        self.assertIn("        if: github.event_name == 'push'\n", push_step)
+        self.assertIn("        id: manual\n", manual_step)
+        self.assertIn("        if: github.event_name != 'pull_request'\n", manual_step)
         self.assertIn(
-            '        run: echo "frontend=true" >> "$GITHUB_OUTPUT"', push_step
+            '        run: echo "frontend=true" >> "$GITHUB_OUTPUT"', manual_step
         )
         self.assertIn(
             "    if: >-\n"
             "      needs.changes.outputs.frontend == 'true' &&\n"
-            "      (github.event_name == 'workflow_dispatch' ||\n"
-            "      github.event_name == 'push' ||\n"
+            "      (github.event_name != 'pull_request' ||\n"
             "      github.event.pull_request.draft == false)\n",
             visual_job,
         )
 
-        # The event name is part of the group key, so a push to main and a
+        # The event name is part of the group key, so a scheduled run on main and a
         # workflow_dispatch on main are different groups.
         self.assertIn(
             "concurrency:\n"
@@ -560,12 +579,12 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         for path in exact:
             with self.subTest(path=path):
                 self.assertIn(f'"{path}"', docs_paths)
-                self.assertEqual(quick.count(f'      - "{path}"'), 2)
+                self.assertEqual(quick.count(f'      - "{path}"'), 1)
         for pattern in ("docs/**", ".claude/**", *suffix_patterns):
             with self.subTest(pattern=pattern):
-                self.assertEqual(quick.count(f'      - "{pattern}"'), 2)
-        # docs/ data files are re-included after "docs/**" in both
-        # paths-ignore blocks so a data-only diff still runs quick (MOR-2580).
+                self.assertEqual(quick.count(f'      - "{pattern}"'), 1)
+        # docs/ data files are re-included after "docs/**" in the
+        # paths-ignore block so a data-only diff still runs quick (MOR-2580).
         for pattern in (
             "!docs/**/*.toml",
             "!docs/**/*.json",
@@ -573,7 +592,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "!docs/**/*.yml",
         ):
             with self.subTest(pattern=pattern):
-                self.assertEqual(quick.count(f'      - "{pattern}"'), 2)
+                self.assertEqual(quick.count(f'      - "{pattern}"'), 1)
         # The publisher predicate and the base route policy mirror the
         # classifier's docs data suffixes and test-read docs Markdown list;
         # comparing parsed set contents fails when any mirror diverges.
@@ -585,11 +604,11 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             with self.subTest(mirror=name):
                 self.assertEqual(self.js_set_literals(docs_paths, name), expected)
                 self.assertEqual(self.js_set_literals(base_policy, name), expected)
-        # quick.yml re-includes every test-read docs Markdown file in both
-        # paths-ignore blocks so such a diff reaches the classifier (MOR-2589).
+        # quick.yml re-includes every test-read docs Markdown file in its
+        # paths-ignore block so such a diff reaches the classifier (MOR-2589).
         for path in sorted(CLASSIFIER.CORE_DOCS_TEST_INPUT_EXACT):
             with self.subTest(test_read_negation=path):
-                self.assertEqual(quick.count(f'      - "!{path}"'), 2)
+                self.assertEqual(quick.count(f'      - "!{path}"'), 1)
 
         self.assertIn("pull_request_target:", docs_quick)
         self.assertNotIn("\n  pull_request:\n", docs_quick)
@@ -727,9 +746,9 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 )
                 self.assertEqual(result["statuses"], [])
 
-    def test_rejected_publisher_paths_select_both_normal_quick_routes(self) -> None:
+    def test_rejected_publisher_paths_select_the_normal_quick_route(self) -> None:
         blocks = self.quick_ignore_blocks()
-        self.assertEqual(len(blocks), 2)
+        self.assertEqual(len(blocks), 1)
         for path in (
             "docs",
             ".claude",
@@ -737,7 +756,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "frontend/README.md\n",
             "frontend/README.rst\r\n",
             # docs/ data files are re-included by the ordered "!docs/**"
-            # negations, so both quick.yml triggers fire for them (MOR-2580).
+            # negations, so the quick.yml trigger fires for them (MOR-2580).
             # Test-read Markdown under docs/ is re-included the same way by
             # exact "!<path>" negations (MOR-2589).
             "docs/internals/ui-radio-control-contract.toml",
@@ -753,8 +772,8 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 self.assertTrue(
                     all(not self.ignored_by_block(path, block) for block in blocks)
                 )
-        # Prose under docs/ that tests do not read stays ignored by both
-        # triggers.
+        # Prose under docs/ that tests do not read stays ignored by the
+        # trigger.
         for path in (
             "docs/guide.md",
             "docs/operations/other.md",
@@ -772,10 +791,10 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertNotIn('      - "**/*.md"', citation)
         self.assertNotIn('      - "docs/**"', citation)
         self.assertEqual(
-            citation.count('      - ".github/scripts/check-doc-citations.sh"'), 2
+            citation.count('      - ".github/scripts/check-doc-citations.sh"'), 1
         )
         self.assertEqual(
-            citation.count('      - ".github/workflows/doc-citation-gate.yml"'), 2
+            citation.count('      - ".github/workflows/doc-citation-gate.yml"'), 1
         )
         for ignored in (
             '      - "!docs/**"',
@@ -786,13 +805,13 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             '      - "!tests/test_ci_path_filters.py"',
         ):
             with self.subTest(ignored=ignored):
-                self.assertEqual(rebrand.count(ignored), 2)
+                self.assertEqual(rebrand.count(ignored), 1)
         for control in (
             '      - ".github/scripts/check-rebrand-allowlist.sh"',
             '      - ".github/workflows/rebrand-gate.yml"',
         ):
             with self.subTest(control=control):
-                self.assertEqual(rebrand.count(control), 2)
+                self.assertEqual(rebrand.count(control), 1)
 
 
 if __name__ == "__main__":

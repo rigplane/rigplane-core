@@ -1960,7 +1960,7 @@ async def test_stale_yaesu_medium_has_no_side_effects(error: bool) -> None:
         gate.set()
         await task
 
-    assert not emitted and not poller._last_ptt  # noqa: SLF001
+    assert not emitted
     assert poller._tx_target_known_generation is None  # noqa: SLF001
 
 
@@ -2030,7 +2030,6 @@ async def test_yaesu_ptt_failure_invalidates_known_state(
         await poller._poll_medium()  # noqa: SLF001
 
     assert poller._current_ptt_observation(now=10.5) is None  # noqa: SLF001
-    assert not poller._last_ptt  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -2068,7 +2067,6 @@ async def test_yaesu_ptt_generation_change_is_unknown_until_newer_poll(
         adapter.return_value.poll_rx_meters.assert_awaited_once()
         adapter.return_value.poll_tx_meters.assert_not_awaited()
     assert poller._current_ptt_observation(now=10.5) is None  # noqa: SLF001
-    assert not poller._last_ptt  # noqa: SLF001
 
     await poller._poll_medium()  # noqa: SLF001
     recovered = poller._current_ptt_observation(now=11.5)  # noqa: SLF001

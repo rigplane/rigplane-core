@@ -188,7 +188,7 @@ Every client may read state, scope and audio, and any client may command the rad
 - `POST /api/v1/controller` with `{"kind": "browser"}` or `{"kind": "pro"}` opens a session (`201` with `controller_key`, `generation`, `ttl_ms` 6000 and `heartbeat_ms` 2000). Any number of sessions may exist.
 - WebSocket channels join a session with the subprotocol `rigplane-controller-v1.<controller_key>`. The session's first `/api/v1/ws` channel is its primary (`controller_role=primary`, the default) and sends `{"type": "controller_heartbeat"}` every 2 s; further channels are auxiliaries (`controller_role=auxiliary` on `/api/v1/ws`; `/api/v1/audio`, `/api/v1/scope` and `/api/v1/audio-scope` always). An HTTP request acts for the session when it carries `X-RigPlane-Controller: <controller_key>`. An unknown or ended key is refused with `403 {"error": "controller_invalid"}`; `DELETE /api/v1/controller` with the header ends the session.
 - The session owns the TX it keys: `ptt_on` from any of its control channels, and `transmit_on` on `POST /api/v1/managed-transmit/command` sent with its header. While one owner holds TX, `ptt_on` and `transmit_on` from any other owner are rejected (`transmit_on` answers `409`), and `send_cw_text`, `set_vox` with `on` not `false`, and `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0 are refused with `controller_tx_unsupported`, and refused again if another owner keys before they run. `force_off` is accepted from anyone.
-- While no owner holds or owes TX, a TX the radio's PTT readback reports is never keyed over. It is `radio_tx_unreleased` when no RX was observed since Core's own TX last ended (Core's own TX the radio did not release, or a poll taken before the release landed), and `radio_tx_unowned` after an RX, before Core's first TX, or when that history is no longer known (for example the operator's own microphone or PTT at the radio). Either way `ptt_on` and `transmit_on` from anyone are refused with that code (`transmit_on` answers `409`); so are `send_cw_text`, `set_vox` with `on` not `false`, `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0, when received and again when they run. Over rigctld, `T 1` and `U VOX 1` answer `RPRT -9`. `force_off` is never refused: it unkeys whoever keyed, the operator's own TX included. `stop_cw_text` is not refused. Core's own CW text still being sent while no owner holds TX reads the same way, so further CW text is refused until the radio reports RX. Keying works again once the radio reports RX.
+- While no owner holds or owes TX, a TX the radio's PTT readback reports is never keyed over, whoever keyed the radio. `ptt_on` and `transmit_on` from anyone are refused with `radio_tx_unowned` (`transmit_on` answers `409`); so are `send_cw_text`, `set_vox` with `on` not `false`, `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0, when received and again when they run. Over rigctld, `T 1` and `U VOX 1` answer `RPRT -9`. `force_off` is never refused: it unkeys whoever keyed, the operator's own TX included. `stop_cw_text` is not refused. Core's own CW text still being sent while no owner holds TX reads the same way, so further CW text is refused until the radio reports RX. Keying works again once the radio reports RX.
 - A session ends when its primary channel closes or when its primary sends no heartbeat for 6 s (checked every 2 s, so TX on a silent link is released within about 8 s). An ended session's channels are closed and the TX it holds is released; other sessions are not affected. Closing an auxiliary `/api/v1/ws` channel releases the session's TX only when that channel's own last PTT request was a key (`ptt_on`, or `ptt` with `state` true).
 - While a session holds TX, TX audio on the WebSocket route `/api/v1/audio` is admitted only from that session's own channel; frames from any other `/api/v1/audio` channel, sessionless ones included, are dropped (logged as `action=dropped_tx_gate_closed`). TX audio over the optional WebRTC `audio` DataChannel is not pinned to the holder.
 - The per-client WebSocket limit (9 per channel path) counts a session's channels against that session and sessionless channels against their IP, so clients behind one gateway IP do not evict each other. Channels of the TX holder's session, and the control channel of a sessionless socket that keyed PTT, are never evicted.
@@ -1296,19 +1296,13 @@ from the radio's hardware scope.
 
 The optional gated WebRTC transport uses `control`, `scope`, and `audio`
 DataChannels that mirror these WebSocket routes. WebRTC changes only the
-transport, not command names, event names, or binary headers. One exception
-applies to TX audio: `0x12` (outside-only TX) is accepted only on the
-`/api/v1/audio` WebSocket route for a local (non-remote) controller ticket.
-The WebRTC `audio` channel builds its `AudioHandler` without an outside-TX
-admission callback (see the handler construction in
-`webrtc_session.py`), and a remote controller ticket yields no admission, so
-both paths drop every `0x12` frame in `AudioHandler._handle_tx_audio`.
+transport, not command names, event names, or binary headers.
 
 Binary audio frames use an 8-byte header followed by codec-specific payload:
 
 | Offset | Size | Field | Notes |
 |--------|------|-------|-------|
-| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX, `0x12` TX outside-only |
+| `0` | 1 | `msg_type` | `0x10` RX, `0x11` TX |
 | `1` | 1 | `codec` | `0x01` Opus, `0x02` PCM16 |
 | `2` | 2 | `sequence` | uint16 little-endian |
 | `4` | 2 | `sample_rate` | encoded as Hz / 100, uint16 little-endian |
@@ -1322,12 +1316,10 @@ use `payload_bytes / (channels * 2)` to compute sample frames and use the
 header sample rate for playback timing; Opus consumers should decode the
 payload and use decoder output metadata.
 
-`0x12` is the outside-only TX variant of `0x11` (same 8-byte header and
-payload): a frame is admitted only while the radio is observed keyed outside
-Core (managed TX intent `rx`, no release debt, a foreign TX observation) and
-is refused from the moment any Core client keys; see `managed_tx_authority.py:
-ManagedTxAuthority.outside_tx_submission`. A Core without this feature drops
-`0x12` as an unknown type (fail-closed); `0x11` behavior is unchanged.
+A `0x11` TX frame reaches the radio while the managed TX intent is keyed or a
+fresh PTT readback reports TX, whoever keyed the radio (`runtime/tx_gate.py:
+tx_gate_open`). Any other TX `msg_type`, including the retired `0x12`, is
+dropped as a wrong type (fail-closed).
 
 An `audio_start` with `direction: "rx"` whose stream fails to start is answered
 on `/api/v1/audio` with `{"type": "error", "message": ..., "reason": ...}`:

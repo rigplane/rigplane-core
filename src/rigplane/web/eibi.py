@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # ── Constants ──
 
 _EIBI_BASE = "http://www.eibispace.de/dx"
-_CACHE_DIR_NAME = ".cache"
 _CACHE_CSV = "eibi.csv"
 _CACHE_META = "eibi-meta.json"
 _FETCH_TIMEOUT = 30  # seconds
@@ -39,7 +38,6 @@ _CACHE_TTL = 7 * 86400  # 7 days
 # ── Day parsing ──
 
 _DAY_MAP = {"Mo": 0, "Tu": 1, "We": 2, "Th": 3, "Fr": 4, "Sa": 5, "Su": 6}
-_DAY_DIGITS = {"1": 0, "2": 1, "3": 2, "4": 3, "5": 4, "6": 5, "7": 6}
 
 # ── Band classification (kHz ranges) ──
 
@@ -326,7 +324,6 @@ def _load_cache_files_sync(
 # ── FCC AM/FM lookup ──
 
 _FCC_AM_URL = "https://transition.fcc.gov/fcc-bin/amq"
-_FCC_FM_URL = "https://transition.fcc.gov/fcc-bin/fmq"
 # Cache: freq_khz → list of station dicts, TTL 24h
 _fcc_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 _FCC_CACHE_TTL = 86400

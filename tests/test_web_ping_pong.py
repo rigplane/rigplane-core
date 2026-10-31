@@ -22,7 +22,7 @@ from rigplane.web.handlers import (
     ControlHandler,
     ScopeHandler,
 )
-from rigplane.web.websocket import WS_OP_TEXT
+from rigplane.ws import WS_OP_TEXT
 from test_web_audio_link_quality import _make_radio, _make_ws
 
 

@@ -2104,6 +2104,22 @@ def test_ftx1_declares_when_manual_notch_and_attenuator_exist() -> None:
     )
 
 
+def test_ic705_declares_fm_absent_reads() -> None:
+    """The four IC-705 reads the FM NAK probe found conditional (MOR-3630)."""
+
+    acquisition = get_radio_profile("IC-705").state_acquisition
+    assert acquisition is not None
+
+    clause = AvailabilityClause(
+        field=FieldPath.active("main", "freq_mode", "mode"),
+        operator="not_in",
+        value=("FM",),
+    )
+    for leaf in ("pbt_inner", "pbt_outer", "manual_notch_width", "filter_shape"):
+        path = FieldPath.receiver("main", "operator_controls", leaf)
+        assert acquisition.policy_for(path).available_when == (clause,), path
+
+
 def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
     """Loading every shipped profile turns up exactly these declarations."""
 
@@ -2130,6 +2146,14 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("IC-705", "global.meters.comp"),
         ("IC-705", "global.meters.power"),
         ("IC-705", "global.meters.swr"),
+        # MOR-3630: a probe reading, not a guess: the 14 07/14 08 PBT reads,
+        # the 16 57 notch-width read and the 16 56 filter-shape read answered
+        # NAK in FM on the bench (tests/fixtures/ic705/README.md), so each is
+        # gated on MAIN's mode reading anything but FM.
+        ("IC-705", "receiver.main.operator_controls.pbt_inner"),
+        ("IC-705", "receiver.main.operator_controls.pbt_outer"),
+        ("IC-705", "receiver.main.operator_controls.manual_notch_width"),
+        ("IC-705", "receiver.main.operator_controls.filter_shape"),
         ("IC-7300", "global.meters.alc"),
         ("IC-7300", "global.meters.comp"),
         # MOR-2593: not a probe: id gets the gate the other four IC-7300 TX

@@ -5,5 +5,4 @@
 # Growth is blocked (see check-doc-citations.sh, DOC-LINK EXTENSION); a
 # fixed link disappearing from this file is fine and not required before
 # CI passes. Do not hand-edit additions.
-frontend/README.md	docs/component-architecture.md
-frontend/README.md	docs/css-design-tokens.md
+
