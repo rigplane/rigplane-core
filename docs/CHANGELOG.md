@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Without `--backend`, `--host` or `--serial-port`, a CI-V radio whose profile has no LAN interface (IC-7300, X6200) now scans USB for the radio instead of the network; LAN-capable profiles (IC-7610, IC-705) still use LAN, and an explicit `--host` still means LAN.
 - **Dual-receiver radios: no hidden receiver switching (MOR-3591).** A
   receiver-scoped command for a receiver the radio cannot address directly
   (no cmd29 route, no profile-declared selector) now goes only to the
