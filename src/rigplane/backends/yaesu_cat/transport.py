@@ -122,7 +122,6 @@ class TransportStats:
     stale_lines_skipped: int = 0
     bytes_flushed: int = 0
     last_error: str = ""
-    last_error_time: float = 0.0
     _consecutive_errors: int = field(default=0, repr=False)
     _reconnect_episode_counted: bool = field(default=False, repr=False)
 
@@ -151,7 +150,6 @@ class TransportStats:
         self.errors += 1
         self._consecutive_errors += 1
         self.last_error = msg
-        self.last_error_time = time.monotonic()
 
     @property
     def consecutive_errors(self) -> int:
@@ -582,30 +580,6 @@ class YaesuCatTransport:
             ) from exc
         if not current:
             raise CatTransportError("Managed Yaesu CAT write is no longer current.")
-
-    async def query_safe(
-        self, command: str, *, timeout: float | None = None, default: Any = None
-    ) -> str | Any:
-        """Like ``query()`` but returns *default* on any error.
-
-        Useful for polling loops where a single failed read should not
-        crash the cycle.
-        """
-        try:
-            return await self.query(command, timeout=timeout)
-        except CatTransportError:
-            return default
-
-    # ── Diagnostics ───────────────────────────────────────────────────
-
-    def format_stats(self) -> str:
-        """One-line diagnostic summary."""
-        s = self._stats
-        return (
-            f"CAT q={s.queries} w={s.writes} err={s.errors} "
-            f"to={s.timeouts} skip={s.stale_lines_skipped} "
-            f"flush={s.bytes_flushed}B reconn={s.reconnects}"
-        )
 
     # ── Context manager ───────────────────────────────────────────────
 

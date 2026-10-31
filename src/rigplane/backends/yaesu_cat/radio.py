@@ -1137,11 +1137,6 @@ class YaesuCatRadio:
 
     # -- Runtime profile introspection -------------------------------------
 
-    def _has_command(self, name: str) -> bool:
-        """Check if a command is defined in the rig profile."""
-        spec = self._config.commands.get(name)
-        return spec is not None and isinstance(spec, CatCommandSpec)
-
     def _has_write_command(self, name: str) -> bool:
         """Check if a write command is defined in the rig profile."""
         spec = self._config.commands.get(name)

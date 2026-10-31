@@ -27,7 +27,7 @@ from rigplane.web.protocol import (
     MSG_TYPE_AUDIO_RX,
     encode_audio_frame,
 )
-from rigplane.web.websocket import WebSocketConnection
+from rigplane.ws import WebSocketConnection
 
 # 20 ms @ 48 kHz mono s16le.
 PCM_PAYLOAD = b"\x01\x02" * 960

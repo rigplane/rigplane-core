@@ -535,9 +535,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._filter_width: int | None = None
         self._attenuator_state: bool | None = None
         self._preamp_level: int | None = None
-        self._last_freq_hz: int | None = None
-        self._last_mode: Mode | None = None
-        self._last_power: int | None = None
         self._last_split: bool | None = None
         self._last_vfo: str | None = None
         self._vfo_selection_epoch: int = 1
@@ -628,7 +625,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_request_tracker = CivRequestTracker()
         self._civ_epoch = self._civ_request_tracker.generation
         self._scope_frame_queue: BoundedQueue[ScopeFrame] = BoundedQueue(maxsize=64)
-        self._scope_activity_counter: int = 0
         self._scope_activity_event = asyncio.Event()
         self._civ_event_queue: BoundedQueue[CivEvent] = BoundedQueue(maxsize=256)
         self._civ_ack_sink_grace: float = (
@@ -636,9 +632,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         )
         self._civ_waiter_ttl_gc_interval: float = 1.0
         self._civ_last_waiter_gc_monotonic: float = time.monotonic()
-        self._civ_retry_slice_timeout: float = (
-            float(os.environ.get("ICOM_CIV_RETRY_SLICE_MS", "150")) / 1000.0
-        )
         self._state_cache: StateCache = StateCache()
         # Canonical state-ingress store exposed via ``state_store``. It is
         # constructed bare here and does NOT decay on its own (MOR-432):
@@ -3264,7 +3257,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 civ, key="get_rf_power", dedupe=True, label="get_rf_power"
             )
             level = _level_bcd_decode(resp.data)
-            self._last_power = level
             self._state_cache.update_rf_power(level / 255.0)
             return level
         except TimeoutError:
@@ -3289,7 +3281,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_capability("power_control", operation="set_rf_power")
         civ = self._commands.set_rf_power(level, to_addr=self._radio_addr)
         await self._send_civ_raw(civ, wait_response=False)
-        self._last_power = level
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
         """Read the current RF gain level (0-255)."""
@@ -6575,43 +6566,3 @@ class IcomRadio(CoreRadio):
         return await ControlPhaseRuntime._flush_queue(transport, max_pkts)
 
     pass
-
-
-# ---------------------------------------------------------------------------
-# Protocol compliance checks (not executed automatically — call explicitly)
-# ---------------------------------------------------------------------------
-
-
-def _check_protocol_compliance() -> None:
-    """Verify IcomRadio satisfies all Radio protocol variants.
-
-    Note: ``@runtime_checkable`` checks only method/attribute *existence*.
-    It does not validate full runtime semantics.
-    """
-    from rigplane.radio_protocol import (
-        AudioCapable,
-        DualReceiverCapable,
-        Radio,
-        ReceiverBankCapable,
-        ScopeCapable,
-        VfoSlotCapable,
-    )
-
-    assert isinstance(IcomRadio(host=""), Radio), (
-        "IcomRadio does not satisfy Radio protocol"
-    )
-    assert isinstance(IcomRadio(host=""), AudioCapable), (
-        "IcomRadio does not satisfy AudioCapable protocol"
-    )
-    assert isinstance(IcomRadio(host=""), ScopeCapable), (
-        "IcomRadio does not satisfy ScopeCapable protocol"
-    )
-    assert isinstance(IcomRadio(host=""), DualReceiverCapable), (
-        "IcomRadio does not satisfy DualReceiverCapable protocol"
-    )
-    assert isinstance(IcomRadio(host=""), ReceiverBankCapable), (
-        "IcomRadio does not satisfy ReceiverBankCapable protocol"
-    )
-    assert isinstance(IcomRadio(host=""), VfoSlotCapable), (
-        "IcomRadio does not satisfy VfoSlotCapable protocol"
-    )

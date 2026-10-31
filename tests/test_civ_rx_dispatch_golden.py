@@ -85,8 +85,6 @@ _FIXTURES = _load_fixtures()
 def test_civ_rx_dispatch_golden(radio: IcomRadio, fixture: dict[str, Any]) -> None:
     """Each JSON fixture: build CivFrame → dispatch → assert expected state."""
     setup = fixture.get("host_setup") or {}
-    if "vfo_slot_override" in setup:
-        radio._vfo_slot_override = dict(setup["vfo_slot_override"])  # type: ignore[attr-defined]
     if setup.get("clear_profile"):
         radio._profile = None  # type: ignore[assignment]
     if "preexisting_tx_band_edge" in setup:

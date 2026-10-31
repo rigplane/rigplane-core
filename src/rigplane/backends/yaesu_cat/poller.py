@@ -137,7 +137,6 @@ class YaesuCatPoller:
         # EMA state per receiver (None until first sample).
         self._ema_s_main: float | None = None
         self._ema_s_sub: float | None = None
-        self._last_ptt = bool(getattr(radio.radio_state, "ptt", False))
         self._ptt_observation: Observation | None = None
         self._ptt_connection_generation: tuple[str | None, int] | None = None
         self._tx_target_generation = self._current_tx_target_generation()
@@ -182,7 +181,6 @@ class YaesuCatPoller:
     def _invalidate_ptt_observation(self) -> None:
         self._ptt_observation = None
         self._ptt_connection_generation = None
-        self._last_ptt = False
 
     def _current_ptt_observation(
         self, *, now: float | None = None
@@ -444,7 +442,6 @@ class YaesuCatPoller:
         else:
             self._ptt_observation = ptt_observation
             self._ptt_connection_generation = generation
-            self._last_ptt = ptt_observation.value
         self._observation_callback(self._annotate_yaesu_readbacks(observations))
         return True
 

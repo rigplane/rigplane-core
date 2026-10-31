@@ -10,7 +10,7 @@ from typing import Protocol, runtime_checkable
 
 from rigplane.core.radio_protocol import ManagedTxSupervisor
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.state_store import StateSnapshot, StateStore
+from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
     RadioTx,
     TxOutcome,
@@ -23,7 +23,6 @@ from rigplane.core.tx_safety import (
 from rigplane.runtime.local_tx_work import LocalTxWorkRunner
 from rigplane.runtime.managed_tx_authority import (
     ManagedTxAuthority,
-    RadioTxOrigin,
     ShutdownResult,
 )
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
@@ -128,9 +127,6 @@ class ManagedTxComposition:
         self._abort_fence = TxAbortFence()
         self._local_tx_work_runner = LocalTxWorkRunner(self._abort_fence)
         self._tot_config_store = ManagedTxTotConfigStore(config_path)
-        # MOR-3537: the store as it stood when Core's own TX last ended, and
-        # when Core keyed that TX.
-        self._released: tuple[StateSnapshot, float] | None = None
         self._effect_lane = ManagedTxEffectLane(
             actuator, poison_generation=self._poison_tx_generation
         )
@@ -181,53 +177,25 @@ class ManagedTxComposition:
             )
             await self._ensure_current_locked()
 
-    def radio_released(self, keyed_at: float) -> None:
-        """Remember the readback as Core's own TX ends (MOR-3537)."""
-        store = self._state_store
-        self._released = None if store is None else (store.snapshot(), keyed_at)
-
-    def radio_tx_since(self, since: float) -> RadioTxOrigin | None:
-        """Origin of a TX the radio reported in an observation newer than ``since``.
+    def radio_tx_since(self, since: float) -> bool:
+        """Whether the radio reported TX in an observation newer than ``since``.
 
         MOR-3537: the observed-RF truth every TX seat already resolves; the
         observation time is read from the same validated field, on the
         ``time.monotonic`` clock the authority reads (see
-        ``RigctldHandler._ptt_observed_after`` for the clock-domain note). The
-        TX is Core's own, unreleased, unless an RX was observed since Core's
-        own TX last ended: an RX reading at that moment taken after Core
-        keyed, or a change to RX in the store's history after it. Before
-        Core's first TX, or when the store cannot replay that history (trimmed,
-        or a new provider generation), it reads as foreign. Either origin
-        refuses every TX start; neither gates force_off.
+        ``RigctldHandler._ptt_observed_after`` for the clock-domain note).
+        Whoever keyed the radio, such a TX refuses every TX start; it never
+        gates force_off (MOR-3921: no origin classification).
         """
         store = self._state_store
         if store is None:
-            return None
+            return False
         snapshot = store.snapshot()
         if resolve_rf_state(snapshot) is not RfState.TX:
-            return None
+            return False
         if snapshot.field(_PTT_PATH).last_observed_monotonic <= since:
-            return None
-        if self._released is None:
-            return RadioTxOrigin.FOREIGN
-        released, keyed_at = self._released
-        try:
-            at_release = released.field(_PTT_PATH)
-        except KeyError:
-            pass
-        else:
-            if (
-                at_release.value is False
-                and at_release.last_observed_monotonic > keyed_at
-            ):
-                return RadioTxOrigin.FOREIGN
-        delta = store.delta_since(released)
-        if delta.requires_full_snapshot or any(
-            change.path == _PTT_PATH and change.current is False
-            for change in delta.changes
-        ):
-            return RadioTxOrigin.FOREIGN
-        return RadioTxOrigin.UNRELEASED
+            return False
+        return True
 
     def _provider_generation_changed(self, generation: int) -> None:
         self._observation_generation = int(generation)
