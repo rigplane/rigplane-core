@@ -18,10 +18,19 @@ class Priority(IntEnum):
     ABORT = -10
     IMMEDIATE = 0
     NORMAL = 10
+    #: MOR-3863: reads of KEYING-class state (the PTT read-back). Below user
+    #: commands, above the FIFO BACKGROUND poll lane, so a key/unkey
+    #: confirmation never waits behind a burst of other polls. Counts as a
+    #: known read, like BACKGROUND, and is never shed by the BACKGROUND cap.
+    KEYING = 15
     BACKGROUND = 20
 
 
 T = TypeVar("T")
+
+#: Lanes that carry polling reads only (never a state change): the
+#: interference rule below does not count a frame sent on them.
+_READ_LANES = frozenset((int(Priority.KEYING), int(Priority.BACKGROUND)))
 
 # Defensive upper bound on outstanding fire-and-forget BACKGROUND sends
 # (``wait_dispatch=False``).  Background polls are already bounded by the
@@ -60,10 +69,10 @@ class _QueueItem:
 class InterferenceScope:
     """Detection handle for one task's read-modify-write (MOR-3743).
 
-    The commander marks ``interfered`` whenever it dispatches a
-    non-BACKGROUND frame enqueued by another task while the scope is
-    active — only BACKGROUND polls are known reads, so every other frame
-    counts as a potential state change.  Fail-safe by design: a false
+    The commander marks ``interfered`` whenever it dispatches a frame
+    enqueued by another task while the scope is active, unless it is on
+    a polling-read lane (BACKGROUND, KEYING) — only those are known
+    reads, so every other frame counts as a potential state change.  Fail-safe by design: a false
     positive costs the owner a retry, never a delay.  The owner's own
     frames never mark the scope.
 
@@ -309,12 +318,12 @@ class IcomCommander:
 
         One marking rule shared by the worker loop and any dispatch that
         bypasses the commander queue (direct raw CI-V transactions):
-        every non-BACKGROUND frame marks each live scope its owner did
-        not enqueue — only BACKGROUND (the polling/read tier) is exempt,
+        every frame not on a polling-read lane (BACKGROUND, KEYING) marks
+        each live scope its owner did not enqueue,
         and the owner's own task never marks its own scope.  Fail-safe:
         a false positive costs the owner a retry, never a delay.
         """
-        if not self._interference_scopes or int(priority) == int(Priority.BACKGROUND):
+        if not self._interference_scopes or int(priority) in _READ_LANES:
             return
         for scope in self._interference_scopes:
             if scope.owner is not enqueued_by:

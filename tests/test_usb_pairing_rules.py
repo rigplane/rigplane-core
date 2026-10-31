@@ -155,6 +155,55 @@ def test_s2_codec_two_hubs_deeper_is_outside_boundary():
     _assert_refused(replace(snapshot, usb=nodes), "no_codec")
 
 
+def _dual_cp210x_snapshot(*, extra_nodes=(), extra_ports=(), serial_b_vid="10C4"):
+    base = _snapshot()
+    nodes = (
+        tuple(node for node in base.usb if node.id != "S")
+        + (
+            _node("SA", "H", vid="10C4", pid="EA60"),
+            _node("SB", "H", vid=serial_b_vid, pid="EA60"),
+        )
+        + tuple(extra_nodes)
+    )
+    ports = (SerialPortRef("COM3", "SA"), SerialPortRef("COM4", "SB")) + tuple(
+        extra_ports
+    )
+    return replace(base, usb=nodes, serial_ports=ports)
+
+
+def _cp210x_pair():
+    return (UsbFunctionId("10C4", "EA60"), UsbFunctionId("10C4", "EA60"))
+
+
+def test_s3_repeated_vid_pid_within_declared_multiset_pairs():
+    identity = UsbAudioIdentity(frozenset(), _cp210x_pair())
+    for port in ("COM3", "COM4"):
+        result = _assert_paired(_dual_cp210x_snapshot(), port, identity=identity)
+        assert result.codec_node == "C"
+
+
+def test_s3_repeated_vid_pid_beyond_declared_count_is_ambiguous():
+    identity = UsbAudioIdentity(frozenset(), _cp210x_pair()[:1])
+    _assert_refused(_dual_cp210x_snapshot(), "serial_ambiguous", identity=identity)
+    _assert_refused(
+        _dual_cp210x_snapshot(
+            extra_nodes=(_node("SC", "H", vid="10C4", pid="EA60"),),
+            extra_ports=(SerialPortRef("COM5", "SC"),),
+        ),
+        "serial_ambiguous",
+        identity=UsbAudioIdentity(frozenset(), _cp210x_pair()),
+    )
+
+
+def test_s3_undeclared_serial_vid_pid_under_hub_is_ambiguous():
+    identity = UsbAudioIdentity(frozenset(), _cp210x_pair())
+    _assert_refused(
+        _dual_cp210x_snapshot(serial_b_vid="FFFF"),
+        "serial_ambiguous",
+        identity=identity,
+    )
+
+
 def test_s2_two_serial_devices_are_ambiguous_but_two_ports_on_one_device_are_not():
     snapshot = _snapshot()
     ports = snapshot.serial_ports + (SerialPortRef("COM4", "S"),)

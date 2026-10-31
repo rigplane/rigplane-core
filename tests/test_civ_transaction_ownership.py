@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
-from collections.abc import Callable
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,6 +19,7 @@ from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq
+from _timing import await_until
 
 
 @pytest.fixture
@@ -40,15 +39,6 @@ def radio(transport: MockTransport):
     r._connected = False
     r._civ_transport = None
     r._ctrl_transport = None
-
-
-async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 0.5) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        await asyncio.sleep(0.005)
-    assert predicate()
 
 
 def _seed_fresh_rx(store: StateStore) -> None:
@@ -71,7 +61,7 @@ async def test_raw_transaction_holding_owner_blocks_competing_external_owner(
         radio.send_civ_transaction(0x03, expect="data", timeout=1.0)
     )
     try:
-        await _wait_until(lambda: radio.external_cat_session_active is True)
+        await await_until(lambda: radio.external_cat_session_active is True)
 
         with pytest.raises(RuntimeError, match="CI-V stream is already owned"):
             radio.begin_external_cat_session()
@@ -97,7 +87,7 @@ async def test_legacy_end_does_not_release_active_raw_transaction_owner(
     )
     poller_started = False
     try:
-        await _wait_until(lambda: radio.external_cat_session_active is True)
+        await await_until(lambda: radio.external_cat_session_active is True)
 
         radio.end_external_cat_session()
 
@@ -140,7 +130,7 @@ async def test_raw_transaction_quiesces_web_poller_and_defers_queue_until_releas
     )
     poller_started = False
     try:
-        await _wait_until(lambda: radio.external_cat_session_active is True)
+        await await_until(lambda: radio.external_cat_session_active is True)
 
         poller.start()
         poller_started = True
@@ -154,7 +144,7 @@ async def test_raw_transaction_quiesces_web_poller_and_defers_queue_until_releas
             await task
         assert radio.external_cat_session_active is False
 
-        await _wait_until(lambda: poller._execute.await_count == 1)  # noqa: SLF001
+        await await_until(lambda: poller._execute.await_count == 1)  # noqa: SLF001
         assert queue.has_commands is False
     finally:
         if not task.done():

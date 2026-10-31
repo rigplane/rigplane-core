@@ -331,7 +331,7 @@ def test_recorded_serial_functions_preserve_ambiguous_refusal(condition):
         identity = None
     else:
         identity = (
-            replace(identity, serial_functions=frozenset())
+            replace(identity, serial_functions=())
             if condition == "empty-functions"
             else type(identity)(identity.audio_codec)
         )

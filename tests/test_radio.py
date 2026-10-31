@@ -58,6 +58,7 @@ from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import observe_selected_receiver
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
+from _timing import VirtualClock, await_until
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -2099,73 +2100,34 @@ class TestRefusedReadSettlesOnNak:
         assert payload is None
 
 
-class _PacingClock:
-    """Controllable clock for the runtime send gate.
-
-    Patches ``asyncio.sleep`` and ``time.monotonic`` as seen from
-    ``runtime/_civ_rx.py``. Patching ``time.monotonic`` necessarily moves
-    the whole process clock -- including the event loop's own timers --
-    so the patched clock keeps real pace and only *adds* controllable
-    jumps: ``monotonic`` returns the installed base plus real elapsed
-    time, and each patched sleep jumps the base by its delay, then yields
-    once so parked tasks wake without waiting out the jump in real time.
-    Freezing the clock instead would freeze every loop timer with it (an
-    ``asyncio.sleep(0.001)`` would never wake), turning any missed
-    handover into a hang rather than a fast failure.
-    """
-
-    def __init__(self) -> None:
-        import time as _time
-
-        self._base = 0.0
-        self._real_monotonic = _time.monotonic
-        self._real0 = self._real_monotonic()
-        self._real_sleep = asyncio.sleep
-        self.sleeps: list[float] = []
-
-    def monotonic(self) -> float:
-        return self._base + (self._real_monotonic() - self._real0)
-
-    async def sleep(self, delay: float) -> None:
-        self.sleeps.append(delay)
-        self._base += max(0.0, delay)
-        await self._real_sleep(0)
-
-    def install_gc_guard(self, radio: IcomRadio) -> None:
-        """Keep waiter GC from reaping live waiters mid-test.
-
-        ``_cleanup_stale_civ_waiters`` runs at most once a second of clock
-        time; the test advances the clock by jumps, so refresh its stamp
-        from the controllable clock on every send.
-        """
-        radio._civ_last_waiter_gc_monotonic = self.monotonic()
-
-    async def wait_for_flag(self, flag: asyncio.Event, *, rounds: int = 2000) -> bool:
-        """Wait for an event on real time, immune to clock jumps."""
-        for _ in range(rounds):
-            if flag.is_set():
-                return True
-            await self._real_sleep(0.001)
-        return flag.is_set()
-
-    def install_wait_guard(self, radio: IcomRadio) -> None:
-        """Stretch the answer window past the test's clock jumps.
-
-        ``_execute_civ_raw`` spends its ``asyncio.wait_for`` budget from
-        the send onward. A 2 s window covers the whole test, which jumps
-        the controllable clock by milliseconds only.
-        """
-        radio._civ_get_timeout = 2.0
-
-
 def _install_pacing_clock(
     monkeypatch: pytest.MonkeyPatch, *, gap: float
-) -> _PacingClock:
-    clock = _PacingClock()
-    clock._base = gap
-    monkeypatch.setattr("rigplane.runtime._civ_rx.time.monotonic", clock.monotonic)
-    monkeypatch.setattr("rigplane.runtime._civ_rx.asyncio.sleep", clock.sleep)
+) -> VirtualClock:
+    """Controllable clock for the runtime send gate (``runtime/_civ_rx.py``).
+
+    Only that module's own ``time`` and ``asyncio`` names see it: its
+    ``time.monotonic()`` reads the clock and its ``asyncio.sleep(d)`` jumps the
+    clock by ``d`` and yields once. The clock is frozen between jumps, so no
+    real elapsed time leaks into the send stamps (MOR-3920), and the rest of
+    the process, including the event loop's own timers, keeps real time.
+    """
+    from rigplane.runtime import _civ_rx
+
+    clock = VirtualClock(start=gap)
+    clock.scope_to(monkeypatch, _civ_rx)
     return clock
+
+
+def _guard_radio_against_clock_jumps(radio: IcomRadio, clock: VirtualClock) -> None:
+    """Keep waiter GC and the answer window out of the way of clock jumps.
+
+    ``_cleanup_stale_civ_waiters`` runs at most once a second of clock time and
+    the test advances the clock by jumps, so refresh its stamp from the clock;
+    ``_execute_civ_raw`` spends its ``asyncio.wait_for`` budget (real loop
+    time) from the send onward, and a 2 s window covers the whole test.
+    """
+    radio._civ_last_waiter_gc_monotonic = clock()
+    radio._civ_get_timeout = 2.0
 
 
 class TestCivPacingIsSendToSend:
@@ -2192,8 +2154,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        clock.install_wait_guard(radio)
-        clock.install_gc_guard(radio)
+        _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         first_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
         second_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
@@ -2220,7 +2181,11 @@ class TestCivPacingIsSendToSend:
                 first_task = asyncio.create_task(radio._execute_civ_raw(first_civ))
                 reply_task = asyncio.create_task(first_reply())
                 second_task = asyncio.create_task(radio._execute_civ_raw(second_civ))
-                assert await clock.wait_for_flag(second_gated)
+                await await_until(
+                    second_gated.is_set,
+                    timeout=10.0,
+                    description="the second send to be gated",
+                )
                 mock_transport.queue_response(_mode_response(Mode.USB))
                 first = await asyncio.wait_for(first_task, timeout=10.0)
                 second = await asyncio.wait_for(second_task, timeout=10.0)
@@ -2249,8 +2214,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        clock.install_wait_guard(radio)
-        clock.install_gc_guard(radio)
+        _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
         try:
@@ -2297,8 +2261,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        clock.install_gc_guard(radio)
-        clock.install_wait_guard(radio)
+        _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         current = [True]
         original_send = mock_transport.send_tracked
@@ -2351,8 +2314,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        clock.install_gc_guard(radio)
-        clock.install_wait_guard(radio)
+        _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         observer: list[tx.ProviderPttObservation] = []
         assert radio._capture_managed_tx_port(11, observer.append)
@@ -2410,8 +2372,7 @@ class TestCivPacingIsSendToSend:
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
         radio._civ_ack_sink_grace = 0.0
-        clock.install_wait_guard(radio)
-        clock.install_gc_guard(radio)
+        _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         radio._civ_runtime.start_worker()
         first_sent = asyncio.Event()

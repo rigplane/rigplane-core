@@ -38,9 +38,10 @@ from ..core.acquisition_scheduler import (
     provider_uses_civ_acquisition,
 )
 from ..audio.route import apply_wsjtx_data_mod_input, profile_data_mode_count
+from ..commands.commander import Priority
 from ..profiles import RadioProfile
 from ..core.state_diagnostics import StateDiagnosticsRecorder
-from ..core.state_pipeline_contracts import FieldPath
+from ..core.state_pipeline_contracts import AcquisitionClass, FieldPath
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_store import StateStore
 from ..radio_protocol import (
@@ -554,8 +555,13 @@ class RigctldServer:
         self,
         query: AcquisitionQuery,
         priority: AcquisitionPriority = AcquisitionPriority.BACKGROUND,
+        acquisition_class: AcquisitionClass | None = None,
     ) -> None:
         """Send a single acquisition-scheduler CI-V state query.
+
+        This seat sends every read on the radio's default lane, in order, so
+        the class that lets the web seat lift KEYING reads ahead of its
+        background lane (MOR-3863) has nothing to change here.
 
         Wire-frame assembly (cmd29 wrap, 0x27 scope-receiver substitution)
         is shared with the other two acquisition senders via
@@ -572,11 +578,24 @@ class RigctldServer:
         command, sub, data = wire_parts_for_query(
             query, self._radio.radio_state.scope_controls.receiver
         )
+        # A COMMAND or USER request goes out at NORMAL so a post-write
+        # confirmation does not wait behind the poll burst; everything else
+        # stays BACKGROUND so background polls yield to user commands —
+        # the same mapping the web seat uses in
+        # ``RadioPoller._send_one_state_query``. Dropping the acquisition
+        # priority here (always NORMAL) also bypassed the commander's
+        # drop-newest cap for BACKGROUND fire-and-forget sends (MOR-3888).
+        lane = (
+            Priority.NORMAL
+            if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
+            else Priority.BACKGROUND
+        )
         await radio.send_civ(
             command,
             sub=sub,
             data=data,
             wait_response=False,
+            priority=lane,
         )
 
     def _record_state_diagnostic(

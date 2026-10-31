@@ -49,6 +49,7 @@ from rigplane.types import AudioCodec
 from rigplane.types import bcd_encode
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import _await_initial_state_acquisition
+from _timing import await_until
 
 try:  # MOR-3071: absent on the merge-base — the identity-gate tests below
     # fail first there (RED); the try keeps the module collectable so each
@@ -142,15 +143,6 @@ def _scope_state_response(sub: int, enabled: bool) -> bytes:
         sub=sub,
         data=bytes([enabled]),
     )
-
-
-async def _wait_until(predicate, *, timeout_s: float = 1.0) -> bool:  # type: ignore[no-untyped-def]
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while asyncio.get_running_loop().time() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.02)
-    return bool(predicate())
 
 
 async def _silence_clock_reset_gap(radio) -> None:  # type: ignore[no-untyped-def]
@@ -583,15 +575,15 @@ async def test_serial_radio_ready_tracks_serial_link_health() -> None:
     )
 
     await radio.connect()
-    assert await _wait_until(lambda: radio.radio_ready)
+    assert await await_until(lambda: radio.radio_ready)
 
     link.ready = False
     link.healthy = False
-    assert await _wait_until(lambda: not radio.radio_ready)
+    assert await await_until(lambda: not radio.radio_ready)
 
     link.ready = True
     link.healthy = True
-    assert await _wait_until(lambda: radio.radio_ready)
+    assert await await_until(lambda: radio.radio_ready)
 
     await radio.disconnect()
 
@@ -612,8 +604,8 @@ async def test_serial_watchdog_retries_after_transient_soft_reconnect_failure() 
 
     link.ready = False
     link.healthy = False
-    assert await _wait_until(lambda: link.connect_calls >= 3, timeout_s=2.0)
-    assert await _wait_until(lambda: radio.radio_ready, timeout_s=2.0)
+    assert await await_until(lambda: link.connect_calls >= 3, timeout=2.0)
+    assert await await_until(lambda: radio.radio_ready, timeout=2.0)
     assert radio.conn_state == RadioConnectionState.CONNECTED
 
     await radio.disconnect()
@@ -656,8 +648,8 @@ async def test_serial_watchdog_recovers_after_overflow_sized_outage() -> None:
     link.ready = False
     link.healthy = False
 
-    assert await _wait_until(lambda: link.connect_calls >= 1027, timeout_s=2.0)
-    assert await _wait_until(lambda: radio.radio_ready)
+    assert await await_until(lambda: link.connect_calls >= 1027, timeout=2.0)
+    assert await await_until(lambda: radio.radio_ready)
     assert radio.conn_state == RadioConnectionState.CONNECTED
     assert radio._civ_data_watchdog_task is not None
     assert not radio._civ_data_watchdog_task.done()
@@ -697,8 +689,8 @@ async def test_serial_watchdog_quiet_after_transient_open_failure(
         link.ready = False
         link.healthy = False
         # Wait until the port "returns" and the session recovers.
-        assert await _wait_until(lambda: link.connect_calls >= 6, timeout_s=3.0)
-        assert await _wait_until(lambda: radio.radio_ready, timeout_s=2.0)
+        assert await await_until(lambda: link.connect_calls >= 6, timeout=3.0)
+        assert await await_until(lambda: radio.radio_ready, timeout=2.0)
 
     warnings = [
         r
@@ -780,9 +772,8 @@ async def test_serial_link_down_detected_when_healthy_flag_stays_stuck_true(
                 await radio._send_civ_raw(frame, wait_response=True)
             await _silence_clock_reset_gap(radio)
 
-        assert await _wait_until(
-            lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
-            timeout_s=2.0,
+        assert await await_until(
+            lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout=2.0
         )
 
     error_lines = [
@@ -817,8 +808,8 @@ async def test_serial_link_down_propagates_to_web_radio_health() -> None:
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
         await _silence_clock_reset_gap(radio)
-    assert await _wait_until(
-        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
+    assert await await_until(
+        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout=2.0
     )
 
     health = classify_radio_health(radio)
@@ -850,8 +841,8 @@ async def test_serial_link_down_stops_audio_capture() -> None:
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
         await _silence_clock_reset_gap(radio)
-    assert await _wait_until(
-        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
+    assert await await_until(
+        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout=2.0
     )
 
     assert usb_audio.rx_running is False
@@ -913,9 +904,9 @@ async def test_silent_link_with_ready_session_declares_link_down(
     # The silence clock must start while the fake clock still reads t0: the
     # watchdog needs at least one evidence tick (polls outstanding, rx frozen)
     # BEFORE time advances, otherwise elapsed could never reach the limit.
-    assert await _wait_until(
+    assert await await_until(
         lambda: getattr(radio, "_civ_silence_started_monotonic", None) is not None,
-        timeout_s=2.0,
+        timeout=2.0,
     ), "watchdog never started the silence clock with polls outstanding"
 
     started = now["t"]
@@ -935,9 +926,8 @@ async def test_silent_link_with_ready_session_declares_link_down(
         # Cross N: silence with continuously fresh polls outstanding.
         now["t"] = started + silence_limit_s + poll_cadence_s
         _dispatch_poll()
-        assert await _wait_until(
-            lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
-            timeout_s=2.0,
+        assert await await_until(
+            lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout=2.0
         ), "silent link with polls outstanding never declared link-down"
 
     error_lines = [
@@ -1062,9 +1052,9 @@ async def test_silent_link_clock_clears_when_nothing_is_outstanding(
         wait=False, response_key=CivRequestKey(command=0x03, sub=None)
     )
     tracker._ack_waiters[-1].created_monotonic = now["t"]
-    assert await _wait_until(
+    assert await await_until(
         lambda: getattr(radio, "_civ_silence_started_monotonic", None) is not None,
-        timeout_s=2.0,
+        timeout=2.0,
     ), "watchdog never started the silence clock with a poll outstanding"
 
     # Nothing outstanding any more: the poll's caller retired its waiter.
@@ -1119,9 +1109,9 @@ async def test_lost_keyed_sink_alone_does_not_declare_link_down(
 
     tracker.register_ack(wait=False, response_key=CivRequestKey(command=0x03, sub=None))
     tracker._ack_waiters[-1].created_monotonic = now["t"]
-    assert await _wait_until(
+    assert await await_until(
         lambda: getattr(radio, "_civ_silence_started_monotonic", None) is not None,
-        timeout_s=2.0,
+        timeout=2.0,
     ), "watchdog never started the silence clock with a poll outstanding"
 
     with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
@@ -1170,8 +1160,8 @@ async def test_serial_link_down_while_ptt_active_parks_managed_tx_safely() -> No
         with pytest.raises(RigplaneTimeoutError):
             await radio._send_civ_raw(frame, wait_response=True)
         await _silence_clock_reset_gap(radio)
-    assert await _wait_until(
-        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout_s=2.0
+    assert await await_until(
+        lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout=2.0
     )
 
     assert managed_tx.ready_calls == [False]
@@ -1382,9 +1372,8 @@ async def test_serial_link_down_settles_after_successful_reconnect_same_node(
                 await radio._send_civ_raw(frame, wait_response=True)
             await _silence_clock_reset_gap(radio)
 
-        assert await _wait_until(
-            lambda: radio.conn_state == RadioConnectionState.RECONNECTING,
-            timeout_s=2.0,
+        assert await await_until(
+            lambda: radio.conn_state == RadioConnectionState.RECONNECTING, timeout=2.0
         )
 
         # Bank `threshold` timeouts while genuinely RECONNECTING (confirmed
@@ -1393,9 +1382,8 @@ async def test_serial_link_down_settles_after_successful_reconnect_same_node(
         for _ in range(threshold):
             radio._civ_request_tracker.note_timeout()
 
-        assert await _wait_until(
-            lambda: radio.conn_state == RadioConnectionState.CONNECTED,
-            timeout_s=2.0,
+        assert await await_until(
+            lambda: radio.conn_state == RadioConnectionState.CONNECTED, timeout=2.0
         )
 
         # A few more watchdog ticks to let the evidence check evaluate the
@@ -2183,7 +2171,7 @@ async def test_serial_scope_callback_streaming_path() -> None:
     seen = []
     radio.on_scope_data(seen.append)
     await radio.enable_scope(policy="verify", timeout=1.0)
-    assert await _wait_until(lambda: len(seen) == 1, timeout_s=1.0)
+    assert await await_until(lambda: len(seen) == 1, timeout=1.0)
     await radio.disable_scope(policy="fast")
     await radio.disconnect()
     assert seen[0].pixels == b"\x51\x52"
@@ -2727,7 +2715,7 @@ async def test_radio_answering_later_completes_the_connect(tmp_path) -> None:
     assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
     assert radio.connected is False
 
-    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    assert await await_until(lambda: radio.connected, timeout=3.0)
     identity = radio.connection_identity
     assert identity is not None
     assert identity.status is RadioIdentityStatus.UNVERIFIED
@@ -2780,12 +2768,12 @@ async def test_soft_reconnect_onto_silent_port_never_latches_or_reopens() -> Non
     link.ready = False
     link.healthy = False
 
-    assert await _wait_until(
+    assert await await_until(
         lambda: (
             radio.connection_identity is not None
             and radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
         ),
-        timeout_s=3.0,
+        timeout=3.0,
     )
     assert radio.connected is False
     assert radio.conn_state is not RadioConnectionState.CONNECTED
@@ -2854,7 +2842,7 @@ async def test_dead_link_during_identity_hold_hands_over_to_recovery() -> None:
 
     # soft_reconnect reopened the port once the device was back; the
     # identity gate ran again on the new link.
-    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    assert await await_until(lambda: radio.connected, timeout=3.0)
     identity = radio.connection_identity
     assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     assert link.connect_calls == 3  # initial open + failed reopen + reopen
@@ -2929,18 +2917,18 @@ async def test_reread_read_error_is_logged_and_leaves_the_hold(
 
     radio._read_serial_identity_payload = _exploding_read  # type: ignore[assignment]
     with caplog.at_level(logging.WARNING, logger="rigplane.backends._icom_serial_base"):
-        assert await _wait_until(
+        assert await await_until(
             lambda: any(
                 "identity re-read" in r.getMessage() and r.exc_info
                 for r in caplog.records
             ),
-            timeout_s=2.0,
+            timeout=2.0,
         )
     # The hold was abandoned: no re-read task owns the link anymore.
     assert radio._serial_identity_reread_task is None
     # The RUNNING watchdog recovered by reopening — the gate inside each
     # soft_reconnect raises the same error, so every backoff slot reopens.
-    assert await _wait_until(lambda: link.connect_calls >= 2, timeout_s=2.0)
+    assert await await_until(lambda: link.connect_calls >= 2, timeout=2.0)
     identity = radio.connection_identity
     assert identity is None or identity.status is RadioIdentityStatus.CHECKING
     assert radio.conn_state is not RadioConnectionState.CONNECTED
@@ -2979,7 +2967,7 @@ async def test_reread_command_error_never_latches_and_gates_again() -> None:
     # "checking" behind (the stale-status fix) — the evidence that the
     # gate keeps re-running is the reopen cadence itself, and CONNECTED
     # never latches without an answer.
-    assert await _wait_until(lambda: link.connect_calls >= 3, timeout_s=3.0)
+    assert await await_until(lambda: link.connect_calls >= 3, timeout=3.0)
     await radio.disconnect()
 
 
@@ -3014,7 +3002,7 @@ async def test_ready_reconnecting_without_answer_runs_gate_not_latch() -> None:
 
     # The one-shot error abandons the hold; the watchdog must reopen once
     # and re-gate into a fresh no_response hold with a new re-read task.
-    assert await _wait_until(_re_gated_hold, timeout_s=3.0)
+    assert await await_until(_re_gated_hold, timeout=3.0)
 
     # Steady state: the new re-read owns the reopened link — no latch
     # and no further reopen.
@@ -3106,9 +3094,8 @@ async def test_reread_arm_failure_keeps_connected_identity_and_logs(
 
     await radio.connect()  # held on silence; the re-read gets the answer
     with caplog.at_level(logging.ERROR, logger="rigplane.backends._icom_serial_base"):
-        assert await _wait_until(
-            lambda: radio.conn_state is RadioConnectionState.CONNECTED,
-            timeout_s=3.0,
+        assert await await_until(
+            lambda: radio.conn_state is RadioConnectionState.CONNECTED, timeout=3.0
         )
         await asyncio.sleep(0.1)  # the arm failure lands right after the latch
 
@@ -3173,7 +3160,7 @@ async def test_gate_write_error_connect_recovers_serves_and_heals(tmp_path) -> N
     assert connection["identity"] is None
 
     link.fail_sends = False
-    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    assert await await_until(lambda: radio.connected, timeout=3.0)
     identity = radio.connection_identity
     assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     await radio.disconnect()
@@ -3202,7 +3189,7 @@ async def test_gate_write_error_in_soft_reconnect_keeps_recovering() -> None:
 
     radio.start_reconnect_recovery()
     link.fail_sends = False
-    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    assert await await_until(lambda: radio.connected, timeout=3.0)
     identity = radio.connection_identity
     assert identity is not None and identity.status is RadioIdentityStatus.UNVERIFIED
     await radio.disconnect()
@@ -3278,20 +3265,20 @@ async def test_soft_reconnect_hold_late_answer_runs_reconnect_tail_once(
     link.policy_answer = False
     link.ready = False
     link.healthy = False
-    assert await _wait_until(
+    assert await await_until(
         lambda: (
             radio.connection_identity is not None
             and radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
             and radio._serial_identity_reread_task is not None
         ),
-        timeout_s=3.0,
+        timeout=3.0,
     )
     assert reconnect_calls == []
 
     # The radio comes back: the re-read answer must run the parked re-arm
     # and fire the callback exactly once.
     link.policy_answer = True
-    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    assert await await_until(lambda: radio.connected, timeout=3.0)
     await asyncio.sleep(0.3)  # let any duplicate tail land before judging
     assert reconnect_calls == [1]
     assert rearm_calls == [1]
@@ -3315,7 +3302,7 @@ async def test_initial_connect_hold_late_answer_fires_no_reconnect_callback() ->
     radio.set_reconnect_callback(lambda: reconnect_calls.append(1))
 
     await radio.connect()  # held on silence; the re-read gets the answer
-    assert await _wait_until(lambda: radio.connected, timeout_s=3.0)
+    assert await await_until(lambda: radio.connected, timeout=3.0)
     await asyncio.sleep(0.3)
     assert reconnect_calls == []
     await radio.disconnect()

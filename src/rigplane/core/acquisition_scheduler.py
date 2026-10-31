@@ -134,8 +134,12 @@ class AcquisitionQuery:
     receiver: int | None = None
 
 
+#: ``(query, request priority, acquisition class of the field being read)``.
+#: The class lets a sender put KEYING reads (the PTT read-back) on a lane that
+#: queued background reads cannot delay (MOR-3863).
 AcquisitionQuerySender = Callable[
-    [AcquisitionQuery, "AcquisitionPriority"], Awaitable[None]
+    [AcquisitionQuery, "AcquisitionPriority", AcquisitionClass],
+    Awaitable[None],
 ]
 AcquisitionQueryResolver = Callable[[FieldPath], AcquisitionQuery | None]
 CivCmd29Support = Callable[[int, int | None], bool]
@@ -362,7 +366,9 @@ class IcomCivAcquisitionExecutor:
                 sent.append(path)
                 continue
             try:
-                await self._send_query(query, request.priority)
+                await self._send_query(
+                    query, request.priority, acquisition_class_for_path(path)
+                )
             except BackgroundSendDropped:
                 if sent:
                     return AcquisitionExecutionResult(sent_paths=tuple(sent))

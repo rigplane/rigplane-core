@@ -63,6 +63,7 @@ def connect_command(
     model_arg: str,
     *,
     host: str | None = None,
+    control_port: int | None = None,
     serial_port: str | None = None,
     serial_baud: int | None = None,
     radio_addr: int | None = None,
@@ -70,10 +71,15 @@ def connect_command(
 ) -> str:
     """Format a ready-to-copy ``rigplane ... status`` command line."""
     if host is not None:
-        # LAN lines always pin the backend so replaying the command never
-        # depends on inference or environment variables.
+        # LAN lines always pin the backend and the observed control port so
+        # replaying the command never depends on inference or on environment
+        # variables such as ICOM_PORT.
         lan = backend if backend is not None else "lan"
-        return f"rigplane --model {model_arg} --backend {lan} --host {host} status"
+        parts = [f"rigplane --model {model_arg} --backend {lan} --host {host}"]
+        if control_port is not None:
+            parts.append(f"--control-port {control_port}")
+        parts.append("status")
+        return " ".join(parts)
     parts = [f"rigplane --model {model_arg} --serial-port {serial_port}"]
     if serial_baud is not None:
         parts.append(f"--serial-baud {serial_baud}")
@@ -83,17 +89,26 @@ def connect_command(
     return " ".join(parts)
 
 
-def backend_for_protocol(protocol_type: str | None, *, serial_port: bool) -> str | None:
-    """Infer the backend name from a profile protocol type.
+def backend_for_protocol(
+    protocol_type: str | None,
+    *,
+    serial_port: bool,
+    host: bool,
+    has_lan: bool,
+) -> str | None:
+    """Infer the backend name from a profile protocol type and its transports.
 
-    ``yaesu_cat`` always routes to ``yaesu-cat``; ``civ`` routes to
-    ``serial`` when a serial port is given and to ``lan`` otherwise;
-    anything else has no backend.
+    ``yaesu_cat`` always routes to ``yaesu-cat``. ``civ`` routes to ``serial``
+    when a serial port is given; otherwise to ``lan`` when a host is given or
+    the profile has a LAN interface (``has_lan``), and to ``serial`` (USB
+    discovery) for a profile without one. Anything else has no backend.
     """
     if protocol_type == "yaesu_cat":
         return "yaesu-cat"
     if protocol_type == "civ":
-        return "serial" if serial_port else "lan"
+        if serial_port:
+            return "serial"
+        return "lan" if host or has_lan else "serial"
     return None
 
 
@@ -108,8 +123,12 @@ def describe_rig(rig: RigConfig) -> dict[str, Any]:
     if usb_label is not None:
         transports.append(usb_label)
     candidates = (
-        backend_for_protocol(protocol, serial_port=False),
-        backend_for_protocol(protocol, serial_port=True),
+        backend_for_protocol(
+            protocol, serial_port=False, host=True, has_lan=rig.has_lan
+        ),
+        backend_for_protocol(
+            protocol, serial_port=True, host=False, has_lan=rig.has_lan
+        ),
     )
     backends: list[str] = []
     for candidate in candidates:

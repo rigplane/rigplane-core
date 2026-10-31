@@ -85,6 +85,33 @@ def _synthetic_session(*, nested=False, codec=("08BB", "2901")):
     }
 
 
+def _w3_session():
+    return json.loads(
+        Path("tests/fixtures/usb_audio/windows/w3-ic7610-dual-cp210x.json").read_text()
+    )["sessions"][0]
+
+
+def test_w3_dual_cp210x_pair_each_radio_by_topology():
+    session = _w3_session()
+    paired_7610 = pair(
+        adapt_windows(session), "COM5", get_radio_profile("IC-7610").usb_identity
+    )
+    assert isinstance(paired_7610, PairOk), paired_7610
+    assert (paired_7610.rx_index, paired_7610.tx_index) == (1, 5)
+    assert paired_7610.codec_node == r"USB\VID_08BB&PID_2901\R4S3UJHC5ES"
+    standby_7610 = pair(
+        adapt_windows(session), "COM6", get_radio_profile("IC-7610").usb_identity
+    )
+    assert isinstance(standby_7610, PairOk), standby_7610
+    assert standby_7610.codec_node == paired_7610.codec_node
+    paired_7300 = pair(
+        adapt_windows(session), "COM3", get_radio_profile("IC-7300").usb_identity
+    )
+    assert isinstance(paired_7300, PairOk), paired_7300
+    assert (paired_7300.rx_index, paired_7300.tx_index) == (2, 6)
+    assert paired_7300.codec_node == r"USB\VID_08BB&PID_2901\R7PXJWSI2XG"
+
+
 def _inject_windows(monkeypatch, session):
     from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
     from rigplane.audio._usb_raw_windows import RawWindows
@@ -228,7 +255,7 @@ def test_declared_serial_functions_share_one_radio_hub(condition, hri_has_com_na
     elif condition == "codec-only":
         identity = UsbAudioIdentity(identity.audio_codec)
     elif condition == "empty-functions":
-        identity = replace(identity, serial_functions=frozenset())
+        identity = replace(identity, serial_functions=())
     snapshot = adapt_windows(session)
     result = pair(snapshot, "COM3", identity)
     if condition == "pair":

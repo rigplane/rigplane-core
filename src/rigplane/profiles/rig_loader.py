@@ -2680,10 +2680,21 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [radio]
     radio = data["radio"]
+    if not isinstance(radio, dict):
+        raise RigLoadError(f"{filename}: [radio] must be a table")
     for field_name in _REQUIRED_RADIO_FIELDS:
         if field_name not in radio:
             raise RigLoadError(
                 f"{filename}: missing required field [radio].{field_name}"
+            )
+    # ``id`` and ``model`` name the profile everywhere downstream (CLI
+    # ``models``/``discover``, ``--model`` matching): reject other types here,
+    # once, instead of crashing in each consumer (MOR-3859).
+    for field_name in ("id", "model"):
+        value = radio[field_name]
+        if not isinstance(value, str) or not value.strip():
+            raise RigLoadError(
+                f"{filename}: [radio].{field_name} must be a non-empty string"
             )
 
     # civ_addr is optional (default 0 for non-civ radios); validate range if present
@@ -3465,12 +3476,14 @@ def load_rig(path: Path) -> RigConfig:
             usb_section,
             frozenset({"audio_codec", "serial_functions"}),
         )
-        usb_functions: dict[str, frozenset[UsbFunctionId]] = {}
+        usb_functions: dict[
+            str, frozenset[UsbFunctionId] | tuple[UsbFunctionId, ...]
+        ] = {}
         for key in ("audio_codec", "serial_functions"):
             entries = usb_section.get(key, [])
             if not isinstance(entries, list):
                 raise RigLoadError(f"{filename}: [usb].{key} must be a list of tables")
-            functions: set[UsbFunctionId] = set()
+            ordered: list[UsbFunctionId] = []
             for entry in entries:
                 if not isinstance(entry, dict):
                     raise RigLoadError(
@@ -3485,10 +3498,14 @@ def load_rig(path: Path) -> RigConfig:
                         f"{filename}: [usb].{key} requires string vid and pid"
                     )
                 try:
-                    functions.add(UsbFunctionId(vid, pid))
+                    ordered.append(UsbFunctionId(vid, pid))
                 except ValueError as exc:
                     raise RigLoadError(f"{filename}: [usb].{key}: {exc}") from exc
-            usb_functions[key] = frozenset(functions)
+            # Each serial_functions entry is one serial function: the same
+            # VID:PID may appear more than once. audio_codec stays a set.
+            usb_functions[key] = (
+                frozenset(ordered) if key == "audio_codec" else tuple(ordered)
+            )
         usb_identity = UsbAudioIdentity(
             audio_codec=usb_functions["audio_codec"],
             serial_functions=usb_functions["serial_functions"],

@@ -19,15 +19,9 @@ from _mor3777_pool_observer import (
     current_for,
     set_current,
 )
+from _timing import await_until
 
 _WORKERS = usb_driver._CAPTURE_OPEN_MAX_WORKERS
-
-
-async def _wait_until(predicate, timeout: float = 5.0) -> None:
-    """Bounded event polling — no fixed-sleep calibration."""
-    async with asyncio.timeout(timeout):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 async def _teardown_observed_pool(
@@ -104,7 +98,7 @@ async def test_pool_phase_observer_qualification(
         set_current(observer)
         for index in range(_WORKERS):
             blockers.append(pool._executor.submit(lambda i=index: blocker(i)))
-        await _wait_until(lambda: all(e.is_set() for e in entered))
+        await await_until(lambda: all(e.is_set() for e in entered))
         assert pool.inflight == 0
 
         before_queued = observer.latest_sub()
@@ -117,19 +111,19 @@ async def test_pool_phase_observer_qualification(
         queued = asyncio.create_task(
             pool.run_bounded(gated_body, what="qual", direction="rx", timeout=10.0)
         )
-        await _wait_until(lambda: observer.latest_sub() > before_queued)
+        await await_until(lambda: observer.latest_sub() > before_queued)
         sub = observer.latest_sub()
         assert not observer.has(sub, "start")
         assert not observer.has(sub, "settled")
 
         release_blockers.set()
-        await _wait_until(body_entered.is_set)
+        await await_until(body_entered.is_set)
         assert observer.has(sub, "start")
         assert not observer.has(sub, "body_end")
 
         release_body.set()
         assert await queued == 7
-        await _wait_until(lambda: observer.has(sub, "settled"))
+        await await_until(lambda: observer.has(sub, "settled"))
         assert observer.outcome(sub) == "ok"
         assert (
             observer.order(sub, "submit")
@@ -146,9 +140,9 @@ async def test_pool_phase_observer_qualification(
             await pool.run_bounded(
                 failing_body, what="qual", direction="rx", timeout=5.0
             )
-        await _wait_until(lambda: observer.latest_sub() > before_fail)
+        await await_until(lambda: observer.latest_sub() > before_fail)
         fail_sub = observer.latest_sub()
-        await _wait_until(lambda: observer.has(fail_sub, "settled"))
+        await await_until(lambda: observer.has(fail_sub, "settled"))
         assert observer.outcome(fail_sub) == "err"
         report = observer.report()
         assert "deliberate" not in "\n".join(report)
@@ -162,21 +156,21 @@ async def test_pool_phase_observer_qualification(
         victim = asyncio.create_task(
             pool.run_bounded(cancelled_body, what="qual", direction="rx", timeout=10.0)
         )
-        await _wait_until(lambda: observer.latest_sub() > before_cancel)
+        await await_until(lambda: observer.latest_sub() > before_cancel)
         cancel_sub = observer.latest_sub()
-        await _wait_until(lambda: observer.has(cancel_sub, "start"))
+        await await_until(lambda: observer.has(cancel_sub, "start"))
         victim.cancel()
         with pytest.raises(asyncio.CancelledError):
             await victim
         assert "cancelled" in observer.caller_states()
         release_cancel.set()
-        await _wait_until(lambda: observer.has(cancel_sub, "settled"))
+        await await_until(lambda: observer.has(cancel_sub, "settled"))
         assert (
             await pool.run_bounded(lambda: 3, what="qual", direction="rx", timeout=5.0)
             == 3
         )
 
-        await _wait_until(lambda: pool.inflight == 0)
+        await await_until(lambda: pool.inflight == 0)
         observer.mark_pool_state("after_drain")
         state = [m for m in observer.events() if m["ev"] == "after_drain"][-1]
         assert state["inflight"] == 0
@@ -299,7 +293,7 @@ async def test_pool_phase_observer_cleanup_restores_after_cancellation(
                 pool, observer, logger, ambient_level, release_events, None, []
             )
         )
-        await _wait_until(lambda: inflight_reads[0] >= 3)
+        await await_until(lambda: inflight_reads[0] >= 3)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

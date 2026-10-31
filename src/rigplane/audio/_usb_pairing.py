@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
@@ -255,21 +256,23 @@ def pair(
     if serial_devices != {serial.id.casefold()}:  # rule: S3
         if not identity or not identity.serial_functions:
             return refuse("serial_ambiguous")
-        declared_functions = {
+        declared_counts = Counter(
             (function.vid, function.pid) for function in identity.serial_functions
-        }
-        observed_functions = set()
+        )
+        observed_counts: Counter[tuple[str, str]] = Counter()
         for device_id in serial_devices:
             device = devices.get(device_id)
             if (
                 device is None
                 or device.parent is None
                 or device.parent.casefold() != hub.id.casefold()
-                or (device.vid, device.pid) not in declared_functions
-                or (device.vid, device.pid) in observed_functions
+                or (
+                    observed_counts[(device.vid, device.pid)]
+                    >= declared_counts[(device.vid, device.pid)]
+                )
             ):
                 return refuse("serial_ambiguous")
-            observed_functions.add((device.vid, device.pid))
+            observed_counts[(device.vid, device.pid)] += 1
     codecs = [
         node
         for key, node in devices.items()

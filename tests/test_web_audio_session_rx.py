@@ -19,9 +19,8 @@ released when the relay actually stops.
 from __future__ import annotations
 
 import asyncio
-import time
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 from unittest.mock import AsyncMock
 
 from _order_sensitive_radios import LanLikeRadio
@@ -39,6 +38,7 @@ from rigplane.runtime._audio_recovery import AudioRecoveryRuntime
 from rigplane.web.handlers import AudioBroadcaster
 from rigplane.web.protocol import AUDIO_HEADER_SIZE, MSG_TYPE_AUDIO_RX
 from rigplane.web.runtime_helpers import runtime_capabilities
+from _timing import await_until
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 
@@ -46,15 +46,6 @@ _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 # kwargs) — mirrors tests/test_audio_session_health.py.
 _WD_INTERVAL = 0.02
 _WD_TIMEOUT = 0.06
-
-
-async def _wait_for(predicate: Callable[[], bool], deadline_s: float = 2.0) -> bool:
-    deadline = time.monotonic() + deadline_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.005)
-    return predicate()
 
 
 class _RuntimeAudioSupplier:
@@ -169,7 +160,7 @@ async def test_watchdog_covers_web_only_listening() -> None:
     queue = await broadcaster.subscribe(ws=_make_ws())
     try:
         # No frames are ever injected — RX is silent from the arm point.
-        assert await _wait_for(
+        assert await await_until(
             lambda: radio.audio_session.state is AudioSessionState.RECOVERING
         ), "watchdog never ran for a browser-only listener (T3 gap — MOR-608)"
         assert events, "RECOVERING transition must publish an event"
@@ -256,8 +247,8 @@ async def test_radio_without_session_keeps_legacy_bus_path() -> None:
     finally:
         await broadcaster.unsubscribe(queue)
     # Legacy sync stop() schedules the bus removal — poll for completion.
-    assert await _wait_for(lambda: radio.audio_bus.subscriber_count == 0)
-    assert await _wait_for(lambda: radio.state == "idle")
+    assert await await_until(lambda: radio.audio_bus.subscriber_count == 0)
+    assert await await_until(lambda: radio.state == "idle")
 
 
 # ── 6. Reconnect resolves the session path (not the legacy replay) ──────────
