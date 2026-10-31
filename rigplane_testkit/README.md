@@ -127,7 +127,8 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   recorded power-off order is replayed first — one unsolicited 0x90 conninfo
   notice (busy=0, "session free"), then ~0.02 s in which discovery and
   control-port pings are still answered (CI-V-port pings from the pre-reboot
-  client stay fenced), then silence — `drop_session(at, notice=True)` — free
+  client stay fenced), then silence (`hold_notice_window=True` keeps that window open until
+  `end_notice_window()`, for a test that pins the order, not the 0.02 s) — `drop_session(at, notice=True)` — free
   the held session, rotate the token, stop unsolicited CI-V, ignore CI-V DATA
   from the dropped client while still answering pings on both ports, send one
   unsolicited 0x90 notice ~0.1 s after the drop, and apply the same
