@@ -319,6 +319,7 @@ scheme = "ab"
 # PDF page 5: ``0x11 0x00`` (off) / ``0x11 0x01`` (on) — binary toggle.
 [attenuator]
 values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
 
 # PDF page 8: ``0x16 0x02 0x00`` / ``0x16 0x02 0x01`` — binary toggle.
 [preamp]

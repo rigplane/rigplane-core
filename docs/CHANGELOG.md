@@ -13,6 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **IC-9700 repeater shift and tone-squelch type declarations (MOR-3623).**
+  The IC-9700 profile declares the repeater shift direction (CI-V `0F`:
+  10 simplex, 11 DUP−, 12 DUP+, the same codes as the IC-705) and the
+  `16 5D` tone-squelch type read with its type table, and polls the shift,
+  the type and the two CTCSS booleans beside split. The D-STAR DV mode
+  gets its fixed-width filter row. DD stays undeclared until mode selection
+  can be limited to the 1.2 GHz band. Tier B-, not hardware-verified: no
+  IC-9700 has been on the bench.
 - TCI listener (phase control): `rigplane web --tci` and `rigplane station --tci` serve frequency, mode, split and PTT over TCI (default port `50001`, loopback bind) with `--tci-port` and the shared `--ingress-host` setting also read by the `rigctld` listener; off by default, no `serve` support. See the TCI API page and the TCI setup guide.
 - Added `rigplane models`: list supported radio profiles with the exact `--model` value for each, as a plain table or `rigplane models --json`.
 - `rigplane discover` prints a ready-to-copy `rigplane --model ... status` command after each radio connection line (a `<MODEL>` placeholder with a pointer to `rigplane models` when LAN discovery cannot tell the model).

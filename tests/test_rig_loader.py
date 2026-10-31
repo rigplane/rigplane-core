@@ -2322,6 +2322,9 @@ class TestToProfile:
                 "RTTY-R": 50,
                 "AM": 200,
                 "FM": None,
+                # MOR-3623: DV is a fixed-width digital mode with no twin PBT,
+                # like the IC-705's.
+                "DV": None,
             },
         }
         for name, per_mode in expected.items():

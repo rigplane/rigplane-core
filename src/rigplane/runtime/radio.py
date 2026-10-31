@@ -99,6 +99,7 @@ from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.commands import (
     _SUB_REPEATER_TONE,
     _SUB_REPEATER_TSQL,
+    _SUB_TONE_SQUELCH_TYPE,
     CONTROLLER_ADDR,
     RECEIVER_MAIN,
     _level_bcd_decode,
@@ -174,6 +175,7 @@ from rigplane.commands import (
     parse_system_date_response,
     parse_system_time_response,
     parse_tone_freq_response,
+    parse_tone_squelch_type_response,
     parse_tsql_freq_response,
     parse_utc_offset_response,
     parse_powerstat,
@@ -241,6 +243,7 @@ from rigplane.core.types import (
     RepeaterShiftDirection,
     ScopeCompletionPolicy,
     SsbTxBandwidth,
+    ToneSquelchType,
     get_audio_capabilities,
 )
 
@@ -551,7 +554,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_rtt_estimate: float = 0.009
         self._commander: IcomCommander | None = None
         self._filter_width: int | None = None
-        self._attenuator_state: bool | None = None
+        self._attenuator_db: dict[int, int] = {}
         self._preamp_level: int | None = None
         self._last_split: bool | None = None
         self._last_vfo: str | None = None
@@ -5029,9 +5032,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         return False
 
     async def get_repeater_shift(self, receiver: int = 0) -> RepeaterShiftDirection:
-        """Read the repeater shift direction (CI-V ``0x0F``, MOR-2930)."""
+        """Read the repeater shift direction (CI-V ``0x0F``, MOR-2930).
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
         self._check_connected()
         self._require_receiver(receiver, operation="get_repeater_shift")
+        self._require_cmd29_route(
+            0x0F, None, receiver=receiver, operation="get_repeater_shift"
+        )
         civ = self._commands.get_repeater_shift(to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="get_repeater_shift")
         direction = parse_repeater_shift_response(resp.data)
@@ -5048,13 +5059,92 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         Only SIMPLEX, MINUS and PLUS have a code; any other direction, ARS
         included, raises ``ValueError`` before anything is sent.
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_repeater_shift")
+        self._require_cmd29_route(
+            0x0F, None, receiver=receiver, operation="set_repeater_shift"
+        )
         civ = self._commands.set_repeater_shift(direction, to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="set_repeater_shift")
         if parse_ack_nak(resp) is False:
             raise CommandError(f"Radio rejected repeater shift {direction!r}")
+
+    async def get_tone_squelch_type(self, receiver: int = 0) -> ToneSquelchType:
+        """Read the exclusive tone squelch selector (CI-V ``0x16 0x5D``).
+
+        The reply code's meaning comes from the profile's
+        ``[tone_squelch_types]`` table; a code the table does not name
+        raises ``CommandError``.
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_tone_squelch_type")
+        self._require_cmd29_route(
+            0x16,
+            _SUB_TONE_SQUELCH_TYPE,
+            receiver=receiver,
+            operation="get_tone_squelch_type",
+        )
+        cmd29 = self._profile.supports_cmd29(0x16, _SUB_TONE_SQUELCH_TYPE)
+        civ = self._commands.get_tone_squelch_type(
+            to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+        )
+        resp = await self._send_civ_expect(civ, label="get_tone_squelch_type")
+        kind = parse_tone_squelch_type_response(
+            resp.data, self._profile.tone_squelch_types
+        )
+        if kind is None:
+            raise CommandError(
+                f"invalid tone squelch type readback: {resp.data.hex() or 'empty'}"
+            )
+        return kind
+
+    async def set_tone_squelch_type(
+        self, kind: ToneSquelchType | str, receiver: int = 0
+    ) -> None:
+        """Write the exclusive tone squelch selector (CI-V ``0x16 0x5D``).
+
+        ``kind`` is a neutral type from the profile's
+        ``[tone_squelch_types]`` table; a type the table does not name
+        raises ``ValueError`` before anything is sent.
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_tone_squelch_type")
+        try:
+            neutral = ToneSquelchType(kind)
+        except ValueError:
+            raise ValueError(f"unknown tone squelch type {kind!r}") from None
+        table = self._profile.tone_squelch_types or {}
+        code = next((code for code, named in table.items() if named == neutral), None)
+        if code is None:
+            raise ValueError(
+                f"tone squelch type {neutral.value!r} is not declared by "
+                f"profile {self._profile.model}"
+            )
+        self._require_cmd29_route(
+            0x16,
+            _SUB_TONE_SQUELCH_TYPE,
+            receiver=receiver,
+            operation="set_tone_squelch_type",
+        )
+        cmd29 = self._profile.supports_cmd29(0x16, _SUB_TONE_SQUELCH_TYPE)
+        await self._send_fire_and_forget(
+            self._commands.set_tone_squelch_type(
+                code, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
+            )
+        )
 
     async def get_tuning_step(self) -> int:
         """Read the tuning step index (0-8, BCD-encoded per IC-7610, CI-V 0x10)."""
@@ -5232,7 +5322,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Args:
             receiver: RECEIVER_MAIN (0) or RECEIVER_SUB (1).
             strict: re-raise on timeout and raise on an empty reply instead
-                of returning the setter-written ``_attenuator_state`` mirror.
+                of returning the setter-written ``_attenuator_db`` mirror.
         """
         self._check_connected()
         self._require_capability("attenuator", operation="get_attenuator_level")
@@ -5253,13 +5343,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             if resp.data:
                 raw = resp.data[0]
                 val = ((raw >> 4) & 0x0F) * 10 + (raw & 0x0F)
-                self._attenuator_state = val != 0
+                self._attenuator_db[receiver] = val
                 return val
             if strict:
                 raise CommandError("Radio returned empty attenuator response")
 
-        if self._attenuator_state is not None:
-            return 18 if self._attenuator_state else 0
+        if receiver in self._attenuator_db:
+            return self._attenuator_db[receiver]
         raise CommandError("Radio returned empty attenuator response")
 
     async def get_attenuator(self, receiver: int = 0, *, strict: bool = False) -> bool:
@@ -5312,7 +5402,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             db, to_addr=self._radio_addr, receiver=receiver, command29=cmd29
         )
         await self._send_civ_raw(civ, wait_response=False)
-        self._attenuator_state = db > 0
+        self._attenuator_db[receiver] = db
         logger.debug("set_attenuator(%d dB) sent (fire-and-forget)", db)
 
     async def set_attenuator(self, on: bool, receiver: int = RECEIVER_MAIN) -> None:
@@ -5345,15 +5435,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if not on:
             await self.set_attenuator_level(0, receiver=receiver)
             return
-        non_zero = sorted({v for v in att_values if v != 0})
-        if len(non_zero) != 1:
+        db = self._profile.attenuator_on_db()
+        if db is None:
+            non_zero = sorted({v for v in att_values if v != 0})
             raise CommandError(
                 f"set_attenuator(on=True) is ambiguous for profile "
                 f"{self._profile.model}: {len(non_zero)} declared non-zero "
                 f"attenuator values {non_zero}; call set_attenuator_level "
                 f"directly with the desired dB value instead"
             )
-        await self.set_attenuator_level(non_zero[0], receiver=receiver)
+        await self.set_attenuator_level(db, receiver=receiver)
 
     async def get_preamp(
         self, receiver: int = RECEIVER_MAIN, *, strict: bool = False

@@ -91,6 +91,11 @@ features = [
     # Tone
     "repeater_tone",
     "tsql",
+    # MOR-3623: simplex / DUP− / DUP+ over 0F (guide p.4), the same code
+    # table as the IC-705 (MOR-2930). 0F 13 (RPS) exists only in DD mode
+    # and is not a shift direction, so there is no "repeater_shift_ars".
+    # Tier B-: not hardware-verified.
+    "repeater_shift",
     # Data
     "data_mode",
     # System
@@ -140,11 +145,18 @@ polling_only = [
     "receiver.main.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
+    # MOR-3623: the three tone-squelch paths ride one 16 5D selector read,
+    # as on the IC-705 (MOR-2131).
+    "receiver.main.operator_toggles.repeater_tone",
+    "receiver.main.operator_toggles.repeater_tsql",
+    "receiver.main.operator_controls.tone_squelch_type",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",
     "global.tx_state.ptt",
     "global.tx_state.split",
+    # MOR-3623: read by the same 0F query as split.
+    "receiver.main.operator_controls.repeater_shift",
     "scope_controls.global.display.receiver",
     "scope_controls.global.display.dual",
     "scope_controls.global.display.mode",
@@ -405,7 +417,24 @@ fields = [
 [ctcss]
 table = "standard_50"
 
+# What each 16 5D tone squelch selector code means (MOR-3623): the same
+# selector command and codes as the IC-705 (MOR-2131). Tier B-: no hardware
+# verified this table.
+[tone_squelch_types]
+0 = "off"
+1 = "tone"
+2 = "tsql"
+3 = "dtcs"
+6 = "dtcs_t"
+7 = "tone_t_dtcs_r"
+8 = "dtcs_t_tsql_r"
+9 = "tone_t_tsql_r"
+
 [modes]
+# D-STAR DV (CI-V 0x17) on every band. DD (0x22) is not listed: it runs on
+# the 1.2 GHz band only, and without band-aware mode admission the radio
+# would silently refuse it on 2 m / 70 cm. DD needs band-aware mode
+# admission (follow-up).
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R", "DV"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }
@@ -530,6 +559,15 @@ segments = [
 [filters.width.FM]
 fixed = true
 defaults = [15000, 10000, 7000]
+
+# DV (MOR-3623), the fixed-width shape the IC-705 uses for DV. INFERENCE,
+# not measurement, for this radio: no IC-9700 has been on the bench; the DV
+# slots ride the IC-705's own DV table (same D-STAR codec and filter
+# behaviour, MOR-3591 phase-1 research). DV has no twin PBT (the Twin PBT
+# manual heading names "SSB, CW, RTTY and AM modes" only). Tier B-.
+[filters.width.DV]
+fixed = true
+defaults = [7000, 7000, 7000]
 
 [vfo]
 # IC-9700 has MAIN/SUB receiver banks; normal split uses A/B within MAIN.
@@ -679,6 +717,11 @@ get_vfo = [0x07]
 set_vfo = [0x07]
 get_split = [0x0F]
 set_split = [0x0F]
+# MOR-3623: the repeater shift direction rides the same 0F command (guide
+# p.4: sets 10 = simplex, 11 = DUP−, 12 = DUP+), like the IC-705 (MOR-2930).
+# 13 (RPS) is a DD-mode duplex, not a shift direction. Tier B-.
+get_repeater_shift = [0x0F]              # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4
+set_repeater_shift = [0x0F]              # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.4
 # Dual Watch on/off: previously declared at 0x07 0xC2/0xC1/0xC0 (read/ON/OFF)
 # citing "Icom CI-V reference guide" as authority -- this guide's own
 # cmd-0x07 table has no C0/C1/C2 rows at all (only 00/01/A0/B0/D0/D1/D2).
@@ -861,6 +904,12 @@ get_tone_freq = [0x1B, 0x00]
 set_tone_freq = [0x1B, 0x00]
 get_tsql_freq = [0x1B, 0x01]
 set_tsql_freq = [0x1B, 0x01]
+# MOR-3623: 16 5D tone squelch type selector — the same command and codes
+# as the IC-705 (MOR-2131/MOR-2955). Tier B-: not hardware-verified; the
+# older MOR-2015 0x16-family sub-list cited by the digisel rows above does
+# not name 5D — see the MOR-3623 PR body for the reconciliation.
+get_tone_squelch_type = [0x16, 0x5D]     # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.5; MOR-3591 phase-1 research (2026-10-21) table 1.3
+set_tone_squelch_type = [0x16, 0x5D]     # source: IC-9700 CI-V Reference Guide (Icom, 2019) p.5; MOR-3591 phase-1 research (2026-10-21) table 1.3
 
 # ── Data Mode ──
 get_data_mode = [0x1A, 0x06]
