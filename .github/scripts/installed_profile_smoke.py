@@ -26,6 +26,7 @@ EXPECTED_PROFILES: dict[str, tuple[str, str]] = {
     "ic7300.toml": ("icom_ic7300", "IC-7300"),
     "ic7300mk2.toml": ("icom_ic7300mk2", "IC-7300MK2"),
     "ic7610.toml": ("icom_ic7610", "IC-7610"),
+    "ic905.toml": ("icom_ic905", "IC-905"),
     "ic9700.toml": ("icom_ic9700", "IC-9700"),
     "tx500.toml": ("lab599_tx500", "TX-500"),
     "x6100.toml": ("xiegu_x6100", "X6100"),

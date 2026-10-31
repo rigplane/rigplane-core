@@ -422,8 +422,21 @@ async def test_http_single_descriptor_body_matches_enqueue_path(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2", "IC-705"])
-async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> None:
+@pytest.mark.parametrize(
+    ("model", "freq", "freq_bcd"),
+    [
+        ("IC-7300", 14_074_000, "00 40 07 14 00"),
+        ("IC-7300MK2", 14_074_000, "00 40 07 14 00"),
+        ("IC-705", 14_074_000, "00 40 07 14 00"),
+        # IC-905 (MOR-3984): 1296.5 MHz and 5760 MHz in the guide's 5-byte
+        # little-endian BCD (CI-V guide p.16, "Operating frequency").
+        ("IC-905", 1_296_500_000, "00 00 50 96 12"),
+        ("IC-905", 5_760_000_000, "00 00 00 60 57"),
+    ],
+)
+async def test_http_single_set_vfo_freq_reports_readback_body(
+    model: str, freq: int, freq_bcd: str
+) -> None:
     """POST /api/v1/commands set_vfo_freq waits for the write and readback.
 
     The command already awaits its own completion on the enqueue path, so the
@@ -452,9 +465,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> Non
         send_civ=AsyncMock(
             side_effect=[
                 parse_civ_frame(reply_prefix + bytes.fromhex("FB FD")),
-                parse_civ_frame(
-                    reply_prefix + bytes.fromhex("25 01 00 40 07 14 00 FD")
-                ),
+                parse_civ_frame(reply_prefix + bytes.fromhex(f"25 01 {freq_bcd} FD")),
             ]
         ),
         set_freq=AsyncMock(),
@@ -497,7 +508,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> Non
             )
         )
     params = {
-        "freq": 14_074_000,
+        "freq": freq,
         "receiver": 0,
         "slot": "B",
         "expected_active_slot": "A",
@@ -521,7 +532,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> Non
         call(
             0x25,
             None,
-            data=bytes.fromhex("01 00 40 07 14 00"),
+            data=bytes.fromhex(f"01 {freq_bcd}"),
             wait_response=True,
             is_current=ANY,
         ),
@@ -538,7 +549,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> Non
         "ok": True,
         "name": "set_vfo_freq",
         "result": {
-            "freq": 14_074_000,
+            "freq": freq,
             "receiver": 0,
             "slot": "B",
             "expected_active_slot": "A",
@@ -555,7 +566,7 @@ async def test_http_single_set_vfo_freq_reports_readback_body(model: str) -> Non
     )
     assert state_writer.response_status == 200
     state = state_writer.response_body
-    assert state["main"]["unselectedVfo"]["freqHz"] == 14_074_000
+    assert state["main"]["unselectedVfo"]["freqHz"] == freq
     assert state["main"]["activeSlot"] == "A"
     assert state["main"]["freqHz"] == 7_074_000
 

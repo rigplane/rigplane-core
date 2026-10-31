@@ -829,6 +829,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
         "IC-7300",
         "IC-7300MK2",
         "IC-7610",
+        "IC-905",
         "IC-9700",
         "X6200",
     }
@@ -885,6 +886,7 @@ def test_all_profiles_decay_ceiling_never_exceeds_freshness_limit() -> None:
         "IC-7300",
         "IC-7300MK2",
         "IC-7610",
+        "IC-905",
         "IC-9700",
         "X6100",
         "X6200",
@@ -931,6 +933,7 @@ def test_every_capability_path_of_every_profile_has_a_registry_class() -> None:
         "IC-7300",
         "IC-7300MK2",
         "IC-7610",
+        "IC-905",
         "IC-9700",
         "X6100",
         "X6200",
@@ -1306,6 +1309,7 @@ def test_civ_observation_stamp_is_the_policy_ttl_on_every_pollable_path() -> Non
         "IC-7300",
         "IC-7300MK2",
         "IC-7610",
+        "IC-905",
         "IC-9700",
         "X6100",
         "X6200",
@@ -2188,6 +2192,12 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         # mode.
         ("IC-7610", "receiver.main.operator_controls.filter_shape"),
         ("IC-7610", "receiver.sub.operator_controls.filter_shape"),
+        # IC-905: the four 0x15 TX meters take the IC-9700/IC-705 tx_only PTT
+        # gate as profile policy; documented tier, no probe was run on one.
+        ("IC-905", "global.meters.alc"),
+        ("IC-905", "global.meters.comp"),
+        ("IC-905", "global.meters.power"),
+        ("IC-905", "global.meters.swr"),
         ("IC-9700", "global.meters.alc"),
         ("IC-9700", "global.meters.comp"),
         ("IC-9700", "global.meters.power"),

@@ -179,7 +179,11 @@ def test_all_profile_probe_census_returns_exact_viable_names() -> None:
 def test_all_strict_prefix_overlaps_preserve_shorter_candidates() -> None:
     """Every strict-prefix pair must keep the shorter candidate viable.
 
-    The total is 22, not 20, since the IC-7300MK2 profile landed: MK2 declares
+    The total is 25 since the IC-905 profile landed: it adds the same three
+    overlaps the IC-705 carries (``set_memory_mode`` ``08`` under
+    ``set_memory_group`` ``08 A0``, and ``get_transceiver_status`` ``1C 00``
+    under ``ptt_on``/``ptt_off``). The total was 22, not 20, since the
+    IC-7300MK2 profile landed: MK2 declares
     the same 0x1C 0x00 transceiver-status shape the IC-7300 carries
     (``get_transceiver_status`` on the empty prefix; ``ptt_on``/``ptt_off``
     on the one-byte prefixes 01/00), and the empty prefix is a strict prefix
@@ -209,7 +213,7 @@ def test_all_strict_prefix_overlaps_preserve_shorter_candidates() -> None:
                         f"shorter={shorter!r} longer={longer!r}"
                     )
                     assert frozenset(prefix_groups[shorter]) <= expected
-    assert overlaps == 22
+    assert overlaps == 25
 
 
 class TestKnownCollisionShapes:

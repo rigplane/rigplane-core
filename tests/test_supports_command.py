@@ -70,6 +70,8 @@ _EXPECTED_COUNTS = {
     # (single receiver, no set_scope_main_sub), for exactly 4 unsupported.
     "IC-7300MK2": (30, 4),
     "IC-7610": (34, 0),
+    # IC-905 = the IC-705 shape: antenna-select relations are absent-declared.
+    "IC-905": (27, 7),
     "IC-9700": (34, 0),
     "TX-500": (11, 23),
     "X6100": (15, 19),
@@ -222,9 +224,9 @@ class TestProfileDerivedSupport:
         for name in (*CALLABLE_RELATIONS, *EXCLUDED_OPERATIONS):
             assert hasattr(CoreRadio, name)
 
-    def test_core_instances_delegate_for_all_seven_civ_profiles(self, profiles):
+    def test_core_instances_delegate_for_all_eight_civ_profiles(self, profiles):
         civ_profiles = [p for p in profiles.values() if p.protocol_type == "civ"]
-        assert len(civ_profiles) == 7
+        assert len(civ_profiles) == 8
         for profile in civ_profiles:
             radio = CoreRadio("127.0.0.1", profile=profile)
             assert all(
