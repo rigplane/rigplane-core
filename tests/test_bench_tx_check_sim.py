@@ -6,6 +6,7 @@ runs in --sim mode against Core's simulator stack (run 1 proves the move
 did not break existing behaviour, run 4 is the new in-flight force_off).
 """
 
+import importlib.util
 import json
 import os
 import shutil
@@ -15,6 +16,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 import tomllib
 
 import pytest
@@ -236,6 +238,63 @@ def test_default_rigs_dir_works_from_any_directory(tmp_path, stub_server):
     )
     assert proc.returncode == 0
     assert "DRY / READ ONLY" in proc.stdout
+
+
+def load_tool_module():
+    """Import the bench tool as a module (it is stdlib-only, no side effects)."""
+    spec = importlib.util.spec_from_file_location("bench_tx_check", TOOL)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_windows_timer_is_noop_off_windows(monkeypatch):
+    """Off Windows the tool must not touch the timer at all (real ctypes here)."""
+    tool = load_tool_module()
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert tool._raise_windows_timer_resolution() is None
+
+
+def test_windows_timer_raises_resolution_on_windows(monkeypatch):
+    """On win32: 1 ms multimedia timer plus above-normal scheduling."""
+    tool = load_tool_module()
+    events = []
+
+    class FakeWinmm:
+        def timeBeginPeriod(self, period):
+            events.append(("timeBeginPeriod", period))
+
+    class FakeKernel32:
+        def GetCurrentProcess(self):
+            return "process-handle"
+
+        def SetPriorityClass(self, handle, priority):
+            events.append(("SetPriorityClass", handle, priority))
+
+    fake_windll = SimpleNamespace(winmm=FakeWinmm(), kernel32=FakeKernel32())
+    monkeypatch.setattr(tool, "ctypes", SimpleNamespace(windll=fake_windll))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert tool._raise_windows_timer_resolution() is None
+    assert events == [
+        ("timeBeginPeriod", 1),
+        ("SetPriorityClass", "process-handle", 0x8000),
+    ]
+
+
+def test_windows_timer_failure_prints_one_stderr_line(monkeypatch, capsys):
+    """A timer failure is best effort: one stderr line, never fatal."""
+    tool = load_tool_module()
+
+    class FailingWinmm:
+        def timeBeginPeriod(self, period):
+            raise OSError("no multimedia timer here")
+
+    fake_windll = SimpleNamespace(winmm=FailingWinmm())
+    monkeypatch.setattr(tool, "ctypes", SimpleNamespace(windll=fake_windll))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert tool._raise_windows_timer_resolution() is None
+    assert len(capsys.readouterr().err.strip().splitlines()) == 1
 
 
 def journal_summary(cwd):
