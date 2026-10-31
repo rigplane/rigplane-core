@@ -75,7 +75,7 @@ The RC tier is `full.yml` on a release-candidate tag (`vX.Y.ZrcN`, pattern `v*rc
 gh workflow run full.yml --ref main -f rc=true
 ```
 
-`rc` is a boolean `workflow_dispatch` input, default false. When it is true, or the run is on a tag, the `Run tests` step passes `-m "not benchmark"`, which replaces the `addopts` selection, so the `slow`-marked tests run as well. Everything else is the scheduled `full.yml` run described above: the `test` job on Python 3.11, 3.12 and 3.13 and the `capture-harness` job, on `[self-hosted, linux, build]`. `tests/test_ci_pytest_invocation.py: test_full_runs_the_slow_tests_only_for_an_rc_dispatch_or_rc_tag` pins the selection for `rc` true, false and unset, and for a tag. The final tag goes on the same commit as the candidate, so the candidate run is the one test of that tree.
+`rc` is a boolean `workflow_dispatch` input, default false. When it is true, or the run is on a tag, the `Run tests` step passes `-m "not benchmark"`, which replaces the `addopts` selection, so the `slow`-marked tests run as well. Everything else is the scheduled `full.yml` run described above: the `test` job on Python 3.11, 3.12 and 3.13 and the `capture-harness` job, on `[self-hosted, linux, build]`. `tests/test_ci_pytest_invocation.py: test_full_runs_the_slow_tests_only_for_an_rc_dispatch_or_rc_tag` pins the selection for `rc` true, false and unset, and for a tag. The final is a separate version-only commit on top of the candidate (see "rc receipts for a version-only final" below), so the candidate run plus the checker's version-only proof cover the final tree.
 
 The run is a workflow run on `main` or on the tag, not a status on any pull request, and it is informational: no workflow reads its result, and `publish.yml` does not depend on it.
 
@@ -83,7 +83,7 @@ The run is a workflow run on `main` or on the tag, not a status on any pull requ
 
 `publish.yml` runs on `release` `published`:
 
-1. `validate` on `[self-hosted, linux, build]`, Python 3.12 and 3.13 (3.11 is not in its matrix). Its first step after checkout is the radio-smoke receipt gate (see below): it downloads `radio-smoke-rx.json` and `radio-smoke-tx.json` from the triggering release with the job's `GITHUB_TOKEN` and runs `scripts/release/check_radio_smoke.py check --tag "$TAG" --git-sha "$GITHUB_SHA"` on them. A missing asset fails the download; a red receipt fails the checker — either way the job is red before the expensive steps start. The rest of the job: frontend `npm run check`, Vitest and build; Ruff check and format check on `src/` and `tests/`; mypy strict on `src/rigplane/web`; import-linter; `pytest tests/ -n auto -m 'not benchmark'`, so `slow`-marked tests run (`test_publish_validate_runs_the_slow_tests` in `tests/test_ci_pytest_invocation.py`).
+1. `validate` on `[self-hosted, linux, build]`, Python 3.12 and 3.13 (3.11 is not in its matrix). After checkout it installs uv and the matrix Python, then the radio-smoke receipt gate runs (see below): it downloads `radio-smoke-rx.json` and `radio-smoke-tx.json` from the triggering release with the job's `GITHUB_TOKEN` and runs `uv run --no-project python scripts/release/check_radio_smoke.py check --tag "$TAG" --git-sha "$GITHUB_SHA"` on them — the matrix interpreter, because the runners' system python3 is 3.10 with no tomllib. A missing asset fails the download; a red receipt fails the checker — either way the job is red before the expensive steps start. The rest of the job: frontend `npm run check`, Vitest and build; Ruff check and format check on `src/` and `tests/`; mypy strict on `src/rigplane/web`; import-linter; `pytest tests/ -n auto -m 'not benchmark'`, so `slow`-marked tests run (`test_publish_validate_runs_the_slow_tests` in `tests/test_ci_pytest_invocation.py`).
 2. `build`, which `needs` `validate`: frontend build, `uv build`, an installed-profile smoke of the wheel, artifact upload.
 3. `publish`, which `needs` `build`: uploads to PyPI through the `pypi` environment. On 2026-10-12 that environment had no protection rules (`gh api repos/rigplane/rigplane-core/environments`), so no approval step sits between `build` and `publish`.
 
@@ -97,8 +97,8 @@ Both receipts are JSON objects written before the release is published and uploa
 |---|---|---|---|
 | `schema` | both | number | exactly `1` |
 | `kind` | both | string | `"rx"` in the RX fragment, `"tx"` in the TX fragment |
-| `core_version` | both | string | the tag version without its leading `v` |
-| `git_sha` | both | string | the tagged commit (`GITHUB_SHA` of the release event) |
+| `core_version` | both | string | the tag version without its leading `v` — or, for a version-only final (see below), the candidate version `X.Y.ZrcN` with the same `X.Y.Z` |
+| `git_sha` | both | string | the tagged commit (`GITHUB_SHA` of the release event) — or, for a version-only final, the candidate commit, with both receipts naming the same one |
 | `verdict` | both | string | `"PASS"` |
 | `generated_at` | both | string | ISO 8601 timestamp, parseable and not in the future |
 | `radios` | `rx` | object | non-empty map of radio name to `"PASS"` |
@@ -106,6 +106,22 @@ Both receipts are JSON objects written before the release is published and uploa
 | `stuck_tx` | `tx` | boolean | `false` — no wedged transmitter was observed |
 | `release_debt` | `tx` | boolean | `false` — no undrained TX-side work remained |
 | `ended_rx` | `tx` | boolean | `true` — a fresh radio-sourced RX observation closed the run |
+
+### rc receipts for a version-only final
+
+Release candidates keep the rc version in the version file (e.g. `3.1.0rc1` in `pyproject.toml`). The final is a separate commit that differs from the candidate only in the version: the `version =` line in `pyproject.toml`, the project's own entry in `uv.lock`, and the heading/compare links of `docs/CHANGELOG.md`. The candidate's radio smoke (the RX+TX receipts) is not re-run for such a version-only final, while `publish.yml`'s `validate` job still runs its own checks (frontend, Ruff, mypy, import-linter, the pytest matrix) on the final commit; any other difference means a new rc.
+
+So a receipt pair produced against the candidate (`core_version` `X.Y.ZrcN`, `git_sha` the candidate commit, tag `vX.Y.ZrcN` on it) also validates for the final tag `vX.Y.Z` — the receipts keep naming what was really tested, and the checker (`uv run --no-project python scripts/release/check_radio_smoke.py check --tag vX.Y.Z --git-sha FINAL --rx … --tx … --repo …`) proves the version-only diff in the checked-out repo. `publish.yml`'s `validate` job checks out full history with tags (`fetch-depth: 0`) and passes `--repo "$GITHUB_WORKSPACE"` for exactly this. A receipt pair naming the final tag version and commit validates exactly as before, without touching the repo. A mix of one final-matching and one candidate receipt fails.
+
+The candidate path requires all of the following; each failure prints one `rc:`-prefixed line and fails the gate (any git or parse error fails closed):
+
+0. rx and tx name the same candidate (`core_version` and `git_sha` equal; the version is `X.Y.ZrcN` with the same `X.Y.Z` as the tag, `N >= 1`, and the sha is 40 hex) — a mix of one final-matching and one candidate receipt fails;
+1. tag `vX.Y.ZrcN` resolves through `refs/tags/` to the receipt `git_sha` (a same-named branch is not a tag), and the candidate commit is an ancestor of the final commit;
+2. `git diff-tree -r --raw --no-renames --no-abbrev -z` candidate-to-final lists only identical-mode (`100644`) modifications of exactly `pyproject.toml`, `uv.lock` and `docs/CHANGELOG.md` — any other path, status, mode change, symlink, or rename fails and prints path and status;
+3. both revisions of `pyproject.toml` and `uv.lock` parse with `tomllib`: `project.version` must be the candidate version in the candidate revision and the tag version in the final revision, and the project's own `[[package]]` `version` in `uv.lock` likewise (the project name is read from `pyproject.toml`, never hard-coded); after deleting that one version key the two parsed documents must be equal — top-level fields and every other package included. A file the tree diff skips must still carry the claimed version (e.g. an unchanged lock still saying the rc version fails);
+4. `docs/CHANGELOG.md` at the final commit carries a line starting with `## [X.Y.Z]` and no line starting with `## [X.Y.ZrcN]`, while the candidate revision carries the latter. Nothing else about the changelog is checked: changelog body integrity is not checked.
+
+A candidate of a different `X.Y.Z`, a malformed sha, a missing repo/commit/tag, or any git error fails closed. Verdict, timestamps and the per-kind rules are unchanged in both modes.
 
 ## Outside the tiers
 
