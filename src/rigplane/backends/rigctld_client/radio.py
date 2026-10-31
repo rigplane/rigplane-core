@@ -798,6 +798,31 @@ class RigctldClientRadio:
     def backend_id(self) -> str:
         return "rigctld"
 
+    #: MOR-3845: liveness source label for the ``connection.liveness`` web
+    #: field — evidence comes through the daemon, so daemon reachability is
+    #: never shown as radio liveness.
+    liveness_source = "daemon"
+
+    @property
+    def last_valid_frame_monotonic(self) -> float | None:
+        """Unknown: standard rigctld responses carry no fresh-read provenance."""
+        return self._transport.last_valid_frame_monotonic
+
+    @property
+    def liveness_stale_after_ms(self) -> int:
+        """The medium observation cadence plus one request timeout, in ms."""
+        from .observations import (
+            build_external_rigctld_acquisition_profile,
+            resolve_external_rigctld_poll_intervals,
+        )
+
+        medium_interval, _slow = resolve_external_rigctld_poll_intervals(
+            build_external_rigctld_acquisition_profile(
+                vfo_supported=self._vfo_supported
+            )
+        )
+        return int((medium_interval + self._transport.timeout) * 1000)
+
     @property
     def capabilities(self) -> set[str]:
         # ``"tx"`` here advertises PTT key/un-key only (``get_ptt`` /

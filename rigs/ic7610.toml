@@ -35,6 +35,12 @@ sample_rate_by_codec = { PCM_2CH_16BIT = 48000, PCM_1CH_16BIT = 48000, ULAW_2CH 
 browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 
+[usb]
+# Field Windows device list, 2026-10: the internal hub carries two
+# Silicon Labs CP210x serial functions (instance ids ..._A and ..._B).
+# No audio_codec: no capture of the IC-7610 codec exists yet.
+serial_functions = [{ vid = "10C4", pid = "EA60" }, { vid = "10C4", pid = "EA60" }]
+
 [spectrum]
 seq_max = 15
 amp_max = 200

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
@@ -92,6 +93,35 @@ def _ctcss_index_to_centihz(index: int, *, domain: tuple[int, ...] | None) -> in
     ):
         raise ValueError("active profile has an invalid CTCSS tone domain")
     return int(table_index_to_hz(index, table=domain))
+
+
+# Single-character reply fields that a CAT radio always answers with a digit.
+# The shared parser stays tolerant of any character (its round-trip contract);
+# a non-digit answer is simply not credited as liveness evidence.
+_DIGIT_REPLY_FIELDS = frozenset(
+    {
+        "state",
+        "value",
+        "vfo",
+        "head",
+        "rx",
+        "tx",
+        "type",
+        "src",
+        "func",
+        "val",
+        "tone",
+        "shift",
+    }
+)
+
+
+def _digit_fields_valid(result: Mapping[str, Any]) -> bool:
+    return all(
+        value.isdigit()
+        for name, value in result.items()
+        if name in _DIGIT_REPLY_FIELDS and isinstance(value, str)
+    )
 
 
 def _load_config(profile: Any) -> "RigConfig":
@@ -324,6 +354,7 @@ class YaesuCatRadio:
             # The identity phase already owns the open port — a reopen
             # would toggle DTR/RTS on a radio that may merely be off.
             return
+        self._transport.last_valid_frame_monotonic = None
         self._cancel_identity_reread()
         self._identity_generation += 1
         generation = self._identity_generation
@@ -382,6 +413,7 @@ class YaesuCatRadio:
 
     async def disconnect(self) -> None:
         """Close the serial port."""
+        self._transport.last_valid_frame_monotonic = None
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
@@ -494,33 +526,13 @@ class YaesuCatRadio:
         spec = self._config.commands.get("get_id")
         if not (isinstance(spec, CatCommandSpec) and spec.read):
             return ""
-        try:
-            raw = await self._transport.query(spec.read)
-        except (CatTimeoutError, CatTransportError, ValueError):
-            return None
-        parser = self._parsers.get("get_id")
-        if parser is None:
+        if self._parsers.get("get_id") is None:
             return ""
         try:
-            result = parser.parse(raw + ";")
-        except ValueError:
+            result = await self._query_decoded("get_id", spec.read)
+        except (CatTimeoutError, CatTransportError, ValueError):
             return None
-        value = result.get("model")
-        if isinstance(value, str):
-            return (
-                value
-                if len(value) == 4 and value.isascii() and value.isdigit()
-                else None
-            )
-        if (
-            isinstance(value, bool)
-            or not isinstance(value, int)
-            or not 0 <= value <= 9999
-        ):
-            return None
-        # Typed custom templates may parse an integer; preserve the CAT
-        # identifier's canonical four-digit spelling.
-        return str(value).zfill(4)
+        return str(result["model"]).zfill(4)
 
     def _classify_identity_answer(
         self, answered: str
@@ -685,6 +697,24 @@ class YaesuCatRadio:
     def backend_id(self) -> str:
         """Stable backend family identifier — ``"yaesu_cat"`` for Yaesu CAT."""
         return "yaesu_cat"
+
+    #: MOR-3845: liveness source label for the ``connection.liveness`` web
+    #: field — this backend talks to the radio directly.
+    liveness_source = "radio"
+
+    @property
+    def last_valid_frame_monotonic(self) -> float | None:
+        """Monotonic time of the last response accepted by the profile parser."""
+        return self._transport.last_valid_frame_monotonic
+
+    @property
+    def liveness_stale_after_ms(self) -> int:
+        """MOR-3845: age at which the liveness stamp is stale — twice the
+        transport's per-attempt read timeout, the same 2x ladder the CI-V
+        health classifier uses. The CAT poller queries on a 75 ms fast
+        cadence (1 s slow), so quiet RX and sustained TX stay far below it.
+        """
+        return int(self._transport.timeout * 2 * 1000)
 
     @property
     def model(self) -> str:
@@ -1252,6 +1282,15 @@ class YaesuCatRadio:
             query_kwargs.update(is_current=is_current, tier=tier)
         if expect_rejection:
             query_kwargs["expect_rejection"] = True
+        return await self._query_decoded(cmd_name, read_cmd, **query_kwargs)
+
+    async def _query_decoded(
+        self, cmd_name: str, read_cmd: str, **query_kwargs: Any
+    ) -> dict[str, Any]:
+        """Decode a read and credit only its still-current connection."""
+        writer = self._transport._writer
+        identity_generation = self._identity_generation
+        reconnects = self._transport.stats.reconnects
         raw = await self._transport.query(read_cmd, **query_kwargs)
 
         parser = self._parsers.get(cmd_name)
@@ -1259,7 +1298,32 @@ class YaesuCatRadio:
             raise CommandError(f"Command {cmd_name!r} has no parse template")
 
         # Transport strips trailing ';'; add it back for the parser.
-        return parser.parse(raw + ";")
+        result = parser.parse(raw + ";")
+        if cmd_name in {
+            "get_mode",
+            "get_mode_sub",
+            "get_if_status",
+            "get_memory_channel",
+        }:
+            self._mode_name(result["mode"])
+        elif cmd_name in {"get_agc", "get_agc_sub"}:
+            int(result["mode"])
+        elif cmd_name == "get_id":
+            value = result.get("model")
+            if isinstance(value, str):
+                if not (len(value) == 4 and value.isascii() and value.isdigit()):
+                    raise ValueError("Malformed CAT identity")
+            elif type(value) is not int or not 0 <= value <= 9999:
+                raise ValueError("Malformed CAT identity")
+        if (
+            self._transport.connected
+            and _digit_fields_valid(result)
+            and self._transport._writer is writer
+            and self._identity_generation == identity_generation
+            and self._transport.stats.reconnects == reconnects
+        ):
+            self._transport.last_valid_frame_monotonic = time.monotonic()
+        return result
 
     async def _write(
         self,

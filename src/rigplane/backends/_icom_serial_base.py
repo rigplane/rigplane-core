@@ -496,6 +496,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._civ_stream_ready = False
         self._civ_recovering = False
         self._last_status_error = 0
+        self._advance_civ_generation("serial-connect")
         attempt_epoch = self._civ_epoch
         # MOR-3436: per-attempt owner-stop epoch, captured before any
         # await — the audio tail below skips recovery when the owner tore
@@ -534,8 +535,6 @@ class _IcomSerialRadioBase(CoreRadio):
 
         self._ctrl_transport = self._serial_session.control_transport  # type: ignore[assignment]
         self._civ_transport = self._serial_session.civ_transport  # type: ignore[assignment]
-        self._advance_civ_generation("serial-connect")
-        attempt_epoch = self._civ_epoch
         self._civ_last_waiter_gc_monotonic = time.monotonic()
         self._last_civ_data_received = time.monotonic()
         self._start_civ_rx_pump()
@@ -604,6 +603,8 @@ class _IcomSerialRadioBase(CoreRadio):
         await self.disconnect()
 
     async def disconnect(self) -> None:
+        if self._conn_state != RadioConnectionState.CONNECTED:
+            self._advance_civ_generation("serial-disconnect")
         self.serial_open_error = None
         # MOR-3436: move the owner-stop counter on EVERY teardown branch.
         # The two early returns below never reach ``CoreRadio.disconnect``
@@ -614,6 +615,7 @@ class _IcomSerialRadioBase(CoreRadio):
         # Always stop watchdog first to avoid orphan retry loops on failed reconnects.
         self._cancel_serial_identity_reread()
         self._connection_identity = None
+        self._serial_identity_gate_running = False
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
         self._serial_deferred_audio = None

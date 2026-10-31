@@ -5,7 +5,7 @@ import datetime
 import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from ..core.acquisition_scheduler import resolve_available_when
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
@@ -1093,6 +1093,52 @@ def classify_radio_health(
     }
 
 
+#: MOR-3845: fallback ``staleAfterMs`` for a radio object that does not
+#: declare ``liveness_stale_after_ms`` (test doubles; every shipping
+#: backend declares its own). Matches the CI-V ready/idle default ladder.
+_DEFAULT_LIVENESS_STALE_AFTER_MS: Final = 2000
+
+#: MOR-3845: values a backend may declare for ``liveness_source``.
+_LIVENESS_SOURCES: Final = frozenset({"radio", "daemon", "simulator"})
+
+
+def connection_liveness_payload(
+    radio: "Radio | None", *, now: float | None = None
+) -> dict[str, Any] | None:
+    """MOR-3845: the ``connection.liveness`` block for /api/v1/info and WS state.
+
+    ``None`` when no radio is attached. Otherwise the age is computed at
+    call (response) time from the backend's decode-point stamp
+    (:attr:`rigplane.core.radio_protocol.Radio.last_valid_frame_monotonic`);
+    ``lastFrameAgeMs`` is ``None`` when the radio has never answered on this
+    connection generation. ``staleAfterMs``/``source`` are backend-declared
+    data (``liveness_stale_after_ms``/``liveness_source``) with duck-typed
+    fallbacks, so no per-backend branch lives here.
+    """
+    if radio is None:
+        return None
+    stamp = getattr(radio, "last_valid_frame_monotonic", None)
+    age_ms: int | None = None
+    if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+        current = time.monotonic() if now is None else now
+        age_ms = int(max(0.0, current - float(stamp)) * 1000)
+    stale_after = getattr(radio, "liveness_stale_after_ms", None)
+    if (
+        not isinstance(stale_after, (int, float))
+        or isinstance(stale_after, bool)
+        or stale_after <= 0
+    ):
+        stale_after = _DEFAULT_LIVENESS_STALE_AFTER_MS
+    source = getattr(radio, "liveness_source", None)
+    if not isinstance(source, str) or source not in _LIVENESS_SOURCES:
+        source = "radio"
+    return {
+        "lastFrameAgeMs": age_ms,
+        "staleAfterMs": int(stale_after),
+        "source": source,
+    }
+
+
 def _radio_infers_power_on_from_liveness(radio: "Radio | None") -> bool:
     """Whether the radio's profile infers power state from liveness (MOR-2544).
 
@@ -1589,6 +1635,9 @@ def _build_public_state_payload_from_dict(
     }
 
     public = _camel_case_state(state)
+    # MOR-3845: computed at payload-build (response) time; additive next to
+    # the existing connection scalars.
+    public["connection"]["liveness"] = connection_liveness_payload(radio)
     _null_unobserved_public_leaves(public)
     _publish_last_commanded_power_off(public, radio)
     if monitor_mute is not None:

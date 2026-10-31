@@ -197,6 +197,13 @@ class BandInfo:
     #: permission, so the capabilities ``txBands`` payload omits it. Data
     #: only — no band name or frequency lives in code.
     rx_only: bool = False
+    default_mode: str | None = None  # e.g. "FM" — used on BSR-miss fallback
+    #: Rated maximum TX power of this band in watts (MOR-3634), from the
+    #: manuals; ``None`` means the band has no row of its own and the flat
+    #: ``RadioProfile.max_watts`` applies. Data only: the capabilities
+    #: ``txBands`` payload publishes it and the power slider's range or watts
+    #: label follows it; it never changes a power value that is written.
+    max_power_w: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -623,6 +630,20 @@ class RadioProfile:
             command,
             None,
         ) in self.cmd29_routes
+
+    def attenuator_on_db(self) -> int | None:
+        """The dB a boolean attenuator "on" resolves to, if unambiguous.
+
+        Returns the single non-zero value in ``att_values`` when exactly
+        one is declared, otherwise ``None`` (no values declared, or
+        several non-zero steps, so a boolean "on" is ambiguous).
+        """
+        if not self.att_values:
+            return None
+        non_zero = sorted({v for v in self.att_values if v != 0})
+        if len(non_zero) != 1:
+            return None
+        return non_zero[0]
 
     def supports_command(self, command_name: str) -> bool:
         """Whether ``command_name`` is declared (with bytes or a CAT

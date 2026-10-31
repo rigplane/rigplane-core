@@ -215,6 +215,10 @@
   },
   "toTxProps": {
     "rfPower": 0.15,
+    "rfPowerScale": {
+      "max": 1,
+      "wattsAtFull": null
+    },
     "atuActive": true,
     "atuTuning": false,
     "voxActive": false,

@@ -48,6 +48,7 @@ class RigctldTransport:
         self._lifecycle_lock = asyncio.Lock()
         self._provider_generation_advance: Callable[[], int] | None = None
         self._connection_retired = True
+        self.last_valid_frame_monotonic: float | None = None
 
     def bind_provider_generation(
         self, *, advance: Callable[[], int] | None = None
@@ -68,6 +69,7 @@ class RigctldTransport:
     async def _connect_locked(self) -> None:
         if self.connected:
             return
+        self.last_valid_frame_monotonic = None
         if self._reader is not None or self._writer is not None:
             await self._close_locked()
         try:
@@ -112,6 +114,7 @@ class RigctldTransport:
         """Quarantine only the captured connection, retaining its close barrier."""
         if self._reader is not reader or self._writer is not writer:
             return
+        self.last_valid_frame_monotonic = None
         had_connection = reader is not None or writer is not None
         self._reader = None
         if had_connection and not self._connection_retired:

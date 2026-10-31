@@ -72,7 +72,11 @@ from ..core.command_dispatch import (
     command_descriptor,
     prepare_command_intent,
 )
-from ..core.exceptions import CommandError, CommandRejectedError
+from ..core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ReceiverNotSelectedError,
+)
 from ..core.exceptions import ConnectionError as RadioConnectionError
 from ..profiles import MemoryWriteUnverifiedError
 from ..core.state_pipeline_contracts import (
@@ -155,6 +159,7 @@ from .runtime_helpers import (  # noqa: TID251
     VFO_CAPABILITY_TAGS,
     build_public_state_payload_from_snapshot,
     classify_radio_health,
+    connection_liveness_payload,
     primary_receiver_snapshot_ids,
     projected_af_level_sub_tag,
     projected_receiver_control_tags,
@@ -481,8 +486,8 @@ class _HttpCommandCollector:
 
 
 def _command_error_code(exc: BaseException) -> str:
-    if isinstance(exc, MemoryWriteUnverifiedError):
-        # MOR-3644: stable refusal code carried on the exception.
+    if isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
+        # MOR-3644 / MOR-3591: stable refusal code carried on the exception.
         return str(exc.reason_code)
     if isinstance(exc, CommandUnsupportedError):
         return "unsupported_command"
@@ -805,6 +810,49 @@ def _serialize_choices(
     return [{"value": value, "label": labels[str(value)]} for value in values]
 
 
+def _serialize_tx_bands(profile: "RadioProfile") -> list[dict[str, object]] | None:
+    """Publish the profile's transmit-permitted bands as ``txBands``.
+
+    MOR-3632: receive-only band rows (``rx_only``) never grant transmit
+    permission, so they stay out. MOR-3634: a band row that declares a rated
+    maximum carries it as ``maxPowerW`` (watts); the power slider's range
+    or watts label follows it. A row without one carries no key, and the flat top-level
+    ``maxPowerW`` applies. ``None`` when no band qualifies.
+    """
+    return [
+        {
+            "name": b.name,
+            "start": b.start,
+            "end": b.end,
+            **({"maxPowerW": b.max_power_w} if b.max_power_w is not None else {}),
+        }
+        for fr in profile.freq_ranges
+        for b in fr.bands
+        if not b.rx_only
+    ] or None
+
+
+def _serialize_max_power(profile: "RadioProfile", radio: object) -> dict[str, object]:
+    """Publish the flat rated maximum and the power-level scale (MOR-3634).
+
+    ``maxPowerW`` is the base the per-band ``txBands[].maxPowerW`` rows are
+    compared with; absent when the profile declares no ``[power].max_watts``.
+    ``powerUnit`` is the attached radio's own ``native_power_unit`` -- the
+    value the power-level resolution already uses (``resolve_power_level_target``)
+    -- so a client can tell a level that is a percentage of the CURRENT band's
+    rated maximum (``raw_255``, Icom) from one that is a fraction of the flat
+    maximum (``watts``, Yaesu CAT). Absent when the radio does not declare it:
+    nothing is guessed.
+    """
+    if profile.max_watts is None:
+        return {}
+    payload: dict[str, object] = {"maxPowerW": profile.max_watts}
+    unit = getattr(radio, "native_power_unit", None)
+    if unit in ("raw_255", "watts"):
+        payload["powerUnit"] = unit
+    return payload
+
+
 def _startup_busy_session_payload(
     busy: bool, retry_in_seconds: float | None
 ) -> dict[str, object]:
@@ -931,6 +979,9 @@ class WebConfig:
     scope_source: str = "auto"
     sdr_config: SdrConfig | None = None
     sdr_source_factory: Callable[[SdrConfig], IqSource] | None = None
+    # Band plan data directory (also holds the persisted ``_config.toml``);
+    # None = the bundled ``band-plans/`` (``bundled_band_plans_dir``). Tests inject a copy.
+    band_plans_dir: pathlib.Path | None = None
 
     def __post_init__(self) -> None:
         if self.auth_token:
@@ -1383,9 +1434,11 @@ class WebServer:
         self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
         self._scope_health_max_retries: int = 3  # give up after N failed re-enables
         # Band plan registry
-        from .band_plan import BandPlanRegistry  # noqa: TID251
+        from .band_plan import DEFAULT_BAND_PLANS_DIR, BandPlanRegistry  # noqa: TID251
 
-        self._band_plan = BandPlanRegistry()
+        self._band_plan = BandPlanRegistry(
+            self._config.band_plans_dir or DEFAULT_BAND_PLANS_DIR
+        )
         # EiBi broadcast database
         from .eibi import EiBiProvider  # noqa: TID251
 
@@ -2409,6 +2462,18 @@ class WebServer:
         *,
         health_revision: int,
     ) -> tuple[object, ...]:
+        liveness = connection_liveness_payload(self._radio)
+        evidence = (
+            (
+                getattr(self._radio, "last_valid_frame_monotonic", None)
+                if liveness["lastFrameAgeMs"] is not None
+                else None,
+                liveness["staleAfterMs"],
+                liveness["source"],
+            )
+            if liveness is not None
+            else None
+        )
         return (
             self.monitor_mute.on,
             tuple(sorted(self.monitor_mute.saved_af.items())),
@@ -2417,6 +2482,7 @@ class WebServer:
             snapshot.observation_seq,
             snapshot.provider_generation,
             health_revision,
+            evidence,
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
@@ -2429,6 +2495,7 @@ class WebServer:
         *,
         health_revision: int,
         public_state_seq: int,
+        liveness: Mapping[str, object] | None,
     ) -> str:
         def _etag_component(value: object) -> str:
             if isinstance(value, bool):
@@ -2444,7 +2511,12 @@ class WebServer:
                     snapshot,
                     health_revision=health_revision,
                 )
-                + (public_state_seq,)
+                + (
+                    public_state_seq,
+                    liveness.get("lastFrameAgeMs") if liveness else None,
+                    liveness.get("staleAfterMs") if liveness else None,
+                    liveness.get("source") if liveness else None,
+                )
             )
         )
 
@@ -2465,13 +2537,27 @@ class WebServer:
             snapshot,
             health_revision=self._health_revision,
         )
+        liveness = connection_liveness_payload(self._radio)
+        public_state_seq = self._public_state_seq_for_key(
+            cache_key
+            + (
+                liveness.get("lastFrameAgeMs") if liveness else None,
+                liveness.get("staleAfterMs") if liveness else None,
+                liveness.get("source") if liveness else None,
+            )
+        )
         if (
             updated_at is None
             and cache_key == self._cached_public_state_key
             and self._cached_public_state_payload is not None
         ):
-            return copy.deepcopy(self._cached_public_state_payload)
-        public_state_seq = self._public_state_seq_for_key(cache_key)
+            payload = copy.deepcopy(self._cached_public_state_payload)
+            # MOR-3845: the liveness frame age is wall-clock dependent — a
+            # cache hit must still serve the age at response time, not the
+            # value frozen when the payload was built.
+            payload["connection"]["liveness"] = liveness
+            payload["publicStateSeq"] = public_state_seq
+            return payload
         profile = self._get_profile_unless_provider_owned()
         # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
         # passes neither, and every unobserved entry stays ``missing``. A
@@ -2504,6 +2590,7 @@ class WebServer:
             monitor_mute=self.monitor_mute.public(receiver_count),
         )
         payload["publicStateSeq"] = public_state_seq
+        payload["connection"]["liveness"] = liveness
         payload["stateContractVersion"] = 1
         payload["providerGeneration"] = snapshot.provider_generation
         # Live SDR status (MOR-3201); the delivery key carries it (cache hit = no-op).
@@ -3106,6 +3193,12 @@ class WebServer:
                 }
             else:
                 return False
+        elif event.state == "failed" and set(details) == {"session_id", "reason"}:
+            # MOR-3591: a queued command refused because its receiver is not
+            # the selected one. Rebuilt from the literal, never passed through.
+            if details.get("reason") != "receiver_not_selected":
+                return False
+            public_details = {"reason": "receiver_not_selected"}
         elif event.state == "failed" and set(details) == {
             "session_id",
             "outcome",
@@ -4250,15 +4343,8 @@ class WebServer:
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
-                    # MOR-3632: receive-only band rows (``rx_only``) never
-                    # grant transmit permission, so they stay out of txBands.
-                    "txBands": [
-                        {"name": b.name, "start": b.start, "end": b.end}
-                        for fr in profile.freq_ranges
-                        for b in fr.bands
-                        if not b.rx_only
-                    ]
-                    or None,
+                    "txBands": _serialize_tx_bands(profile),
+                    **_serialize_max_power(profile, self._radio),
                 }
             )
         body = json.dumps(
@@ -4286,6 +4372,8 @@ class WebServer:
                         *self._startup_busy_hold()
                     ),
                     "wsClients": len(self._client_tasks),
+                    # MOR-3845: additive; computed at request time.
+                    "liveness": connection_liveness_payload(self._radio),
                 },
             },
             separators=(",", ":"),
@@ -4747,6 +4835,7 @@ class WebServer:
                 snapshot,
                 health_revision=health_revision,
                 public_state_seq=public_state_seq,
+                liveness=body_dict["connection"]["liveness"],
             ),
         )
 
@@ -4971,14 +5060,8 @@ class WebServer:
             )
             if profile.controls:
                 payload["controls"] = profile.controls
-            # MOR-3632: receive-only band rows (``rx_only``) never grant
-            # transmit permission, so they stay out of txBands.
-            payload["txBands"] = [
-                {"name": b.name, "start": b.start, "end": b.end}
-                for fr in profile.freq_ranges
-                for b in fr.bands
-                if not b.rx_only
-            ] or None
+            payload["txBands"] = _serialize_tx_bands(profile)
+            payload.update(_serialize_max_power(profile, self._radio))
         payload["webrtc"] = {
             "available": webrtc_available(),
             "enabled": self._config.webrtc_enabled,
@@ -5039,7 +5122,13 @@ class WebServer:
         # Sort by start freq (stable for overlay rendering)
         segments.sort(key=lambda s: s.get("start", 0))
 
-        body = json.dumps({"segments": segments}, separators=(",", ":")).encode()
+        # ``plansLoaded`` tells the overlay whether an empty list is the
+        # authoritative answer for this window (plans loaded, nothing in it)
+        # or just "no plan data on this install" (it then uses its own copy).
+        body = json.dumps(
+            {"segments": segments, "plansLoaded": self._band_plan.segment_count > 0},
+            separators=(",", ":"),
+        ).encode()
         await _send_response(
             writer, 200, "OK", body, {"Content-Type": "application/json"}
         )
@@ -5139,6 +5228,8 @@ class WebServer:
         body = json.dumps(
             {
                 "region": self._band_plan.region,
+                "requestedRegion": self._band_plan.requested_region,
+                "fallbackReason": self._band_plan.region_fallback_reason,
                 "availableRegions": ["US", "IARU-R1", "IARU-R2", "IARU-R3"],
             },
             separators=(",", ":"),
@@ -5206,10 +5297,11 @@ class WebServer:
                 )
                 return
 
-            # Write config and reload
-            from pathlib import Path as _Path
-
-            project_bp = _Path(__file__).resolve().parents[3] / "band-plans"
+            # Write config and reload (the registry's own directory: the one
+            # production startup loaded from, so the two cannot disagree).
+            project_bp = self._band_plan.directory
+            if project_bp is None:
+                raise RuntimeError("band-plan directory is not configured")
             config_path = project_bp / "_config.toml"
             existing: dict[str, Any] = {}
             if config_path.is_file():
@@ -6192,6 +6284,7 @@ class WebServer:
                 "unsupported_command",
                 "radio_nak",
                 "memory_write_unverified",
+                "receiver_not_selected",
             }:
                 status, reason = 409, "Conflict"
             else:

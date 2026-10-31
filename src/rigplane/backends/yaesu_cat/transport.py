@@ -193,12 +193,18 @@ class YaesuCatTransport:
         self._exchange_gate = PriorityExchangeGate()
         self._stats = TransportStats()
         self._last_reconnect: float = 0.0
+        self.last_valid_frame_monotonic: float | None = None
 
     # ── Properties ────────────────────────────────────────────────────
 
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def timeout(self) -> float:
+        """Per-attempt read timeout for queries (seconds)."""
+        return self._timeout
 
     @property
     def stats(self) -> TransportStats:
@@ -211,6 +217,7 @@ class YaesuCatTransport:
         """Open serial connection."""
         if self._connected:
             return
+        self.last_valid_frame_monotonic = None
 
         try:
             _require_pyserial_asyncio()
@@ -239,6 +246,7 @@ class YaesuCatTransport:
 
     async def close(self) -> None:
         """Close serial connection gracefully."""
+        self.last_valid_frame_monotonic = None
         if not self._connected:
             return
 

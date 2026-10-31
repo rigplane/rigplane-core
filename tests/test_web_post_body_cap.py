@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 
 import pytest
 
@@ -163,13 +164,19 @@ async def test_eibi_fetch_rejects_oversized_body() -> None:
 
 
 @pytest.mark.asyncio
-async def test_band_plan_config_accepts_valid_body() -> None:
-    """_handle_band_plan_config succeeds with a small valid body."""
+async def test_band_plan_config_accepts_valid_body(tmp_path: Path) -> None:
+    """_handle_band_plan_config succeeds with a small valid body.
+
+    The handler persists ``_config.toml`` into the server's band-plan
+    directory, so it gets a temporary one (never the shared checkout).
+    """
     from unittest.mock import MagicMock
 
     from rigplane.web.server import WebConfig, WebServer
 
-    srv = WebServer(MagicMock(), WebConfig(host="127.0.0.1", port=0))
+    srv = WebServer(
+        MagicMock(), WebConfig(host="127.0.0.1", port=0, band_plans_dir=tmp_path)
+    )
     srv._band_plan_manager = MagicMock()
     srv._band_plan_manager.set_region = MagicMock(return_value=None)
     srv._band_plan_manager.get_all_bands = MagicMock(return_value=[])

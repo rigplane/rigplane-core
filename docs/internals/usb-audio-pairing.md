@@ -22,9 +22,11 @@ The stages run in order, stopping at the first refusal:
   children and the children of any direct child hub, with no deeper search.
   There must be exactly one serial-owning USB device (the requested device),
   unless the profile declares `serial_functions`. Multiple serial owners may
-  count as one radio only when each is directly under H, each VID:PID is
-  declared, and no VID:PID occurs on two physical serial owners. Undeclared,
-  nested, or repeated additional serial owners refuse with `serial_ambiguous`.
+  count as one radio only when each is directly under H and the multiset of
+  their VID:PID is contained in the declared multiset (observed count per
+  VID:PID at most the declared count; duplicates mean several functions of
+  the same chip type). Undeclared, nested, or over-count additional serial
+  owners refuse with `serial_ambiguous`.
   Multiple ports on one USB owner still count as one device. There must also
   be exactly one USB device owning both capture and render endpoints; a
   capture-only camera does not qualify. Missing parent links, cycles, and
@@ -53,7 +55,8 @@ The stages run in order, stopping at the first refusal:
 Profiles may carry optional `[usb] audio_codec` and `serial_functions` VID:PID
 lists, stored as
 `src/rigplane/core/usb_identity.py: UsbAudioIdentity`. Only our own recordings
-justify entries. A non-empty `audio_codec` list checks the chosen codec after
+justify entries. Each `serial_functions` entry is one serial function, so the
+same VID:PID may be listed more than once. A non-empty `audio_codec` list checks the chosen codec after
 containment; a mismatch refuses with `codec_identity_mismatch`. Absence or an
 empty codec list omits that check. Absence or an empty `serial_functions` list
 retains strict single-serial S3. Radio facts belong in profile data; the

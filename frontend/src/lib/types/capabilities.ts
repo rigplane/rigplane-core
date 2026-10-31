@@ -185,6 +185,10 @@ export interface TxBand {
   name: string;
   start: number;
   end: number;
+  /** Rated maximum TX power of this band in watts (MOR-3634), from the
+   *  profile's band row. Absent when the band declares none; the flat
+   *  `Capabilities.maxPowerW` applies. Scales the RF power slider only. */
+  maxPowerW?: number;
 }
 
 export interface DataModeInput {
@@ -275,6 +279,15 @@ export interface Capabilities {
   webrtc: WebRtcCapabilities;
   controls?: Readonly<Record<string, ControlRange | ControlDomain>>;
   txBands: TxBand[] | null;
+  /** The profile's flat rated maximum TX power in watts (MOR-3634), the base
+   *  `TxBand.maxPowerW` is compared with. Absent when the profile declares
+   *  none, and on older servers. */
+  maxPowerW?: number;
+  /** How the radio's power level is scaled (MOR-3634), the attached radio's
+   *  own `native_power_unit`: `raw_255` (Icom) is a percentage of the CURRENT
+   *  band's rated maximum, `watts` (Yaesu CAT) a fraction of the flat
+   *  `maxPowerW`. Absent when the radio does not declare it. */
+  powerUnit?: 'raw_255' | 'watts';
   meterCalibrations?: Record<string, MeterCalPoint[]>;
   meterRedlines?: Record<string, number>;
 }
@@ -751,7 +764,14 @@ export function validateCapabilities(value: unknown): Capabilities {
       requireString(band.name, `$.txBands[${index}].name`);
       requireInteger(band.start, `$.txBands[${index}].start`);
       requireInteger(band.end, `$.txBands[${index}].end`);
+      if ('maxPowerW' in band) {
+        requireInteger(band.maxPowerW, `$.txBands[${index}].maxPowerW`, true);
+      }
     });
+  }
+  if ('maxPowerW' in raw) requireInteger(raw.maxPowerW, '$.maxPowerW', true);
+  if ('powerUnit' in raw && raw.powerUnit !== 'raw_255' && raw.powerUnit !== 'watts') {
+    invalid('$.powerUnit', '"raw_255" or "watts"');
   }
 
   if ('controls' in raw) {

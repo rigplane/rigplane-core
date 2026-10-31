@@ -69,7 +69,11 @@ from rigplane.core.tx_target import (
     TxTargetUnknownReason,
     UnknownTxTarget,
 )
-from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    normalize_observed_ptt,
+)
 from rigplane.core.state_pipeline_contracts import (
     RECEIVER_ID_ALIASES,
     ChangeSet,
@@ -504,8 +508,10 @@ _OBSERVABLE_CMD16_VALUE_FIELDS = {
 
 
 def _decode_bcd_nibble(value: int) -> int:
-    """Decode a single BCD-nibble byte (matches ``_handle_16``/``_handle_11``)."""
-    return ((value >> 4) & 0x0F) * 10 + (value & 0x0F)
+    """Decode a single packed BCD byte with the shared strict decoder."""
+    from rigplane.commands import _bcd_decode_value
+
+    return _bcd_decode_value(bytes([value]))
 
 
 def _frame_native_id(frame: CivFrame) -> str:
@@ -721,6 +727,21 @@ class CivRuntime:
         # kick; teardown only forgets it, never cancels it — the task
         # awaits the lifecycle's shared recovery.
         self._fast_reconnect_task: asyncio.Task[None] | None = None
+        # The live recovery task once it has finished ``_force_cleanup_civ``.
+        # Past that point the host state is not CONNECTED, so "this task is
+        # the recorded one AND the host is CONNECTED again" means the session
+        # is re-established and the task is only running its tail
+        # (identity revalidation, TX re-arm, audio re-arm). Cleared when the
+        # recorded task ends. A busy=0 notice in that state means the radio
+        # dropped the session AGAIN, so the tail gives way to a fresh
+        # recovery (MOR-3350); anything earlier is still re-establishing.
+        self._recovery_cleaned_task: asyncio.Task[None] | None = None
+        # Preempt handoff (MOR-3350): the (replacement, predecessor) pair
+        # while a tail-parked recovery is being replaced, so the
+        # predecessor's teardown leaves the replacement alone.
+        self._pending_replacement: (
+            tuple[asyncio.Task[None], asyncio.Task[None]] | None
+        ) = None
         self._soft_recovery_epoch: int | None = None
         self._raw_received_frame_bytes: dict[int, bytes] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
@@ -1102,9 +1123,19 @@ class CivRuntime:
         # runs, freezing recovery after a single attempt (#1217 invariant 2:
         # self-cancel guard).
         current = asyncio.current_task()
-        owned_recovery = (
-            rc_task is not None
-            and self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+        pending = self._pending_replacement
+        owned_recovery = rc_task is not None and (
+            self._host._session_lifecycle.is_current_recovery_awaited_by(rc_task)
+            or (
+                pending is not None
+                and rc_task is pending[0]
+                and (
+                    current is pending[1]
+                    or self._host._session_lifecycle.is_current_recovery_awaited_by(
+                        pending[1]
+                    )
+                )
+            )
         )
         if (
             rc_task is not None
@@ -1140,10 +1171,15 @@ class CivRuntime:
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
         source_generation = self._host._civ_epoch
+        self._host.last_valid_frame_monotonic = None
+        self._host._scope_assembler.shed_incomplete()
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
         self._host._state_store.begin_provider_generation()
+        # A new generation may face a different selection: unknown until
+        # the radio answers 0x07 0xD2 again (MOR-3591, fail closed).
+        self._host._forget_selection()
         for token in self._managed_tx_ports.values():
             if token.civ_source_generation == source_generation:
                 self._poison_managed_tx_port(token)
@@ -1640,10 +1676,7 @@ class CivRuntime:
                         )
                         live = self._reconnect_task
                         if live is None or live.done():
-                            self._reconnect_task = asyncio.create_task(
-                                self._watchdog_recover(),
-                                name="civ-watchdog-recover",
-                            )
+                            self._spawn_recovery_task()
                         return
                 else:
                     if recovering:
@@ -1654,31 +1687,84 @@ class CivRuntime:
         except asyncio.CancelledError:
             pass
 
+    def _spawn_recovery_task(
+        self,
+        *,
+        full_reconnect_reason: str | None = None,
+        preempt: asyncio.Task[None] | None = None,
+    ) -> asyncio.Task[None]:
+        """Create the detached recovery task and track it as ``_reconnect_task``.
+
+        Single construction point for the watchdog hand-off and
+        :meth:`request_recovery_now` (including the tail-preempt restart).
+        """
+        self._reconnect_task = asyncio.create_task(
+            self._watchdog_recover(
+                full_reconnect_reason=full_reconnect_reason, preempt=preempt
+            ),
+            name="civ-watchdog-recover",
+        )
+        if preempt is not None:
+            self._pending_replacement = (self._reconnect_task, preempt)
+        return self._reconnect_task
+
     def request_recovery_now(self, reason: str) -> None:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
         It is a no-op unless the session is CONNECTED or held by the identity
         phase (``_lan_identity_phase_owns_open_link``), no recovery is already
-        flagged, and no recovery task is still running.
+        flagged, and no recovery task is still running — with one exception: a
+        notice that arrives while a live recovery has already re-established
+        the session (``_conn_state`` CONNECTED again while the recorded task
+        is past ``_force_cleanup_civ``, i.e. only in its tail) means the radio
+        dropped the session AGAIN, so the tail gives way to a fresh recovery.
+        Every ignored notice logs exactly one line carrying the reason.
         """
         owns_hold = getattr(self._host, "_lan_identity_phase_owns_open_link", None)
         if self._host._conn_state != RadioConnectionState.CONNECTED and not (
             owns_hold is not None and owns_hold()
         ):
-            return
-        if self._host._civ_recovering:
+            logger.info(
+                "civ-data-watchdog: notice ignored (%s): "
+                "no session to recover (state=%s)",
+                reason,
+                self._host._conn_state.value,
+            )
             return
         live = self._reconnect_task
         if live is not None and not live.done():
+            if (
+                live is self._recovery_cleaned_task
+                and self._host._conn_state == RadioConnectionState.CONNECTED
+            ):
+                logger.warning(
+                    "civ-data-watchdog: %s during the recovery tail, "
+                    "restarting the recovery",
+                    reason,
+                )
+                self._spawn_recovery_task(full_reconnect_reason=reason, preempt=live)
+                return
+            logger.info(
+                "civ-data-watchdog: notice ignored (%s): "
+                "a recovery is still re-establishing the session",
+                reason,
+            )
             return
-        self._reconnect_task = asyncio.create_task(
-            self._watchdog_recover(full_reconnect_reason=reason),
-            name="civ-watchdog-recover",
-        )
+        if self._host._civ_recovering:
+            logger.info(
+                "civ-data-watchdog: notice ignored (%s): "
+                "the data watchdog is already recovering",
+                reason,
+            )
+            return
+        self._spawn_recovery_task(full_reconnect_reason=reason)
 
     async def _watchdog_recover(
-        self, *, full_reconnect_reason: str | None = None
+        self,
+        *,
+        full_reconnect_reason: str | None = None,
+        preempt: asyncio.Task[None] | None = None,
     ) -> None:
         """Detached recovery handoff: force_cleanup → lifecycle soft_reconnect.
 
@@ -1693,6 +1779,13 @@ class CivRuntime:
         on exhaustion, routes through CLOSING + full release (after which the
         control session is gone and re-arming below correctly no-ops).
 
+        ``preempt`` is a tail-parked recovery run this task replaces: it is
+        cancelled and awaited first, so the new run never starts its work
+        while the old one is still unwinding (the lifecycle coalesces
+        ``soft_reconnect()`` onto a shared task that is only cleared when the
+        cancelled run finishes). The slot already holds the new task — the old
+        run's ``finally`` only clears the slot when it still holds itself.
+
         Re-arms in ``finally`` after uncancelled recovery (#1217). An identity
         hold keeps it paused until acceptance; a released control session has
         no stream to watch.
@@ -1705,7 +1798,18 @@ class CivRuntime:
         self._soft_recovery_epoch = None
         cancelled = False
         try:
+            if preempt is not None:
+                # Mark the shared lifecycle run as superseded first, so
+                # callers coalesced onto it (not the predecessor) get a
+                # recoverable ConnectionError rather than a foreign cancel.
+                self._host._session_lifecycle.supersede_recovery()
+                preempt.cancel()
+                await asyncio.gather(preempt, return_exceptions=True)
+                pending = self._pending_replacement
+                if pending is not None and pending[0] is asyncio.current_task():
+                    self._pending_replacement = None
             await self._host._force_cleanup_civ()
+            self._recovery_cleaned_task = asyncio.current_task()
             if escalate:
                 if full_reconnect_reason is not None:
                     logger.warning(
@@ -1740,6 +1844,11 @@ class CivRuntime:
                 exc_info=True,
             )
         finally:
+            pending = self._pending_replacement
+            if pending is not None and pending[0] is asyncio.current_task():
+                self._pending_replacement = None
+            if self._recovery_cleaned_task is asyncio.current_task():
+                self._recovery_cleaned_task = None
             if cancelled:
                 if self._reconnect_task is asyncio.current_task():
                     self._reconnect_task = None
@@ -1949,7 +2058,11 @@ class CivRuntime:
     ) -> None:
         """Route one parsed CI-V frame into command/scope event paths."""
         if is_directed_ptt_reply(frame, self._host._radio_addr):
+            # Owed-reply accounting is generation-independent (a stale-generation
+            # answer still settles its debt); liveness below is not.
             self._ptt_reply_ledger.note_reply(frame)
+        if generation != self._host._civ_epoch:
+            return
         if frame.from_addr != self._host._radio_addr:
             return
         if frame.to_addr not in (CONTROLLER_ADDR, 0x00):
@@ -1975,6 +2088,7 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                self._stamp_liveness(notify=True)
                 self._publish_scope_mode_observation(
                     scope_frame, receiver=receiver, frame=frame
                 )
@@ -1990,8 +2104,6 @@ class CivRuntime:
             event = CivEvent(type=CivEventType.NAK, frame=frame)
         else:
             event = CivEvent(type=CivEventType.RESPONSE, frame=frame)
-            if generation != self._host._civ_epoch:
-                return
             self._update_state_cache_from_frame(
                 frame,
                 source_generation=generation,
@@ -2177,8 +2289,10 @@ class CivRuntime:
             elif frame.command == 0x07 and frame.data and len(frame.data) >= 2:
                 sub07 = frame.data[0]
                 val07 = frame.data[1]
-                if sub07 == 0xD2:
-                    host._last_vfo = "SUB" if val07 else "MAIN"
+                if sub07 == 0xD2 and val07 in (0, 1):
+                    # MOR-3591: only a well-formed selector establishes the
+                    # selection; ignored while a receiver select is in flight.
+                    host._record_selection("SUB" if val07 else "MAIN")
                 elif sub07 == 0xC2:
                     host._state_cache.dual_watch = bool(val07)
                     self._notify_change("dual_watch_changed", {"on": bool(val07)})
@@ -2257,15 +2371,20 @@ class CivRuntime:
     ) -> None:
         """Project supported CI-V ingress fields into the runtime StateStore."""
 
+        store_provider_generation = (
+            self._host._state_store.provider_generation
+            if generation is None
+            else generation
+        )
         if frame.command == 0x19 and frame.sub == 0x00:
-            # MOR-3071: a transceiver-ID reply (19 00) answers the
-            # connect-time identity probe, not a state query. It must not
-            # become store evidence — publishing it would count as the
-            # liveness-derived power_on observation (MOR-2544) and break
-            # the startup gate's "the link answers nothing" predicate, so
-            # a present-but-silent radio would read as answering. This
-            # layer cannot tell the probe's reply from any other 19 00
-            # reply, so every 19 00 frame is skipped; other subs project.
+            # Identity answers establish link liveness, but remain excluded
+            # from StateStore startup/power inference (MOR-3071).
+            if (
+                len(frame.data) in (1, 2)
+                and store_provider_generation
+                == self._host._state_store.provider_generation
+            ):
+                self._stamp_liveness(notify=True)
             return
         try:
             observations = self._observations_from_frame(frame)
@@ -2286,11 +2405,26 @@ class CivRuntime:
             )
             return
 
-        store_provider_generation = (
-            self._host._state_store.provider_generation
-            if generation is None
-            else generation
+        # A PTT readback is a single 0x00/0x01 byte; the projection above keeps
+        # its legacy tolerance for longer payloads, but they carry no
+        # radio-originated information to credit.
+        malformed_ptt = (
+            frame.command == 0x1C
+            and frame.sub == 0x00
+            and frame.data not in (b"\x00", b"\x01")
         )
+        qualifies_liveness = (
+            not malformed_ptt
+            and any(
+                observation.value is not None
+                and observation.value is not ObservedPtt.UNKNOWN
+                and not isinstance(observation.value, UnknownTxTarget)
+                for observation in observations
+            )
+            and store_provider_generation == self._host._state_store.provider_generation
+        )
+        if qualifies_liveness:
+            self._stamp_liveness()
         observations = tuple(
             _replace_dataclass(
                 observation,
@@ -2309,7 +2443,9 @@ class CivRuntime:
                 generation=store_provider_generation,
             )
             self._record_scheduler_results_for_changeset(changeset)
-            self._notify_state_store_changed(changeset)
+            notified = self._notify_state_store_changed(changeset)
+            if qualifies_liveness and not notified:
+                self._notify_change("liveness", {})
             return
 
         if frame.command == 0x18 and len(frame.data) == 1:
@@ -2531,12 +2667,12 @@ class CivRuntime:
             )
             self._record_scheduler_result_for_observation(observation, changeset)
 
-    def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
+    def _notify_state_store_changed(self, changeset: ChangeSet) -> bool:
         paths = {change.path for change in changeset.changes}
         paths.update(changeset.freshness_paths)
         paths.update(changeset.observed_paths)
         if not paths:
-            return
+            return False
         self._notify_change(
             "state_store_changed",
             {
@@ -2544,6 +2680,7 @@ class CivRuntime:
                 "paths": sorted(str(path) for path in paths),
             },
         )
+        return True
 
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""
@@ -2623,7 +2760,7 @@ class CivRuntime:
                             quality=("declared",),
                         )
                     )
-        elif frame.command == 0x25 and len(frame.data) >= 6:
+        elif frame.command == 0x25 and len(frame.data) >= 6 and frame.data[0] in (0, 1):
             relative = getattr(
                 self._host._profile, "split_tx_target", "none"
             ) == "main_unselected" or (
@@ -2645,7 +2782,7 @@ class CivRuntime:
                     frame=frame,
                 )
             )
-        elif frame.command == 0x26 and len(frame.data) >= 2:
+        elif frame.command == 0x26 and len(frame.data) >= 2 and frame.data[0] in (0, 1):
             relative = getattr(
                 self._host._profile, "split_tx_target", "none"
             ) == "main_unselected" or (
@@ -3026,7 +3163,7 @@ class CivRuntime:
         elif frame.command == 0x07 and len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
-            if sub07 == 0xD2:
+            if sub07 == 0xD2 and val07 in (0, 1):
                 observations.append(
                     self._observation(
                         FieldPath.global_("slow_state", "active"),
@@ -3075,11 +3212,10 @@ class CivRuntime:
             # Reuse the exact decode of ``_handle_10`` / ``get_tuning_step``;
             # the value is a device step code, not Hz (MOR-461). Promoted to a
             # neutral global slow-state int; Hz mapping is deferred to MOR-453.
-            b = frame.data[0]
             observations.append(
                 self._observation(
                     FieldPath.global_("slow_state", "tuning_step"),
-                    ((b >> 4) & 0x0F) * 10 + (b & 0x0F),
+                    _decode_bcd_nibble(frame.data[0]),
                     frame=frame,
                 )
             )
@@ -3231,8 +3367,9 @@ class CivRuntime:
 
     @staticmethod
     def _decode_level(data: bytes) -> int:
-        b0, b1 = data[0], data[1]
-        return (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
+        from rigplane.commands import _level_bcd_decode
+
+        return _level_bcd_decode(data)
 
     def _decode_filter_width(self, frame: CivFrame) -> int:
         """Decode a 0x1A/0x03 filter-width frame to Hz.
@@ -3445,7 +3582,7 @@ class CivRuntime:
         if len(frame.data) >= 2:
             sub07 = frame.data[0]
             val07 = frame.data[1]
-            if sub07 == 0xD2:
+            if sub07 == 0xD2 and val07 in (0, 1):
                 new_active = "SUB" if val07 else "MAIN"
                 if rs.active != new_active:
                     rs.active = new_active
@@ -3703,8 +3840,8 @@ class CivRuntime:
         rx: Any,
         rs: "RadioState",
     ) -> None:
-        # cmd 0x25: dual-RX freq by receiver ID.
-        if len(frame.data) >= 6:
+        # cmd 0x25: dual-RX freq by receiver ID (selector 00/01 only).
+        if len(frame.data) >= 6 and frame.data[0] in (0, 1):
             from rigplane.types import bcd_decode
 
             rcvr_byte = frame.data[0]
@@ -3734,8 +3871,9 @@ class CivRuntime:
         rx: Any,
         rs: "RadioState",
     ) -> None:
-        # cmd 0x26: dual-RX mode by receiver ID + optional data_mode + filter.
-        if len(frame.data) >= 2:
+        # cmd 0x26: dual-RX mode by receiver ID + optional data_mode + filter
+        # (selector 00/01 only).
+        if len(frame.data) >= 2 and frame.data[0] in (0, 1):
             from rigplane.types import Mode
 
             rcvr_byte = frame.data[0]
@@ -3855,6 +3993,11 @@ class CivRuntime:
         0x26: _handle_26,
         0x27: _handle_27,
     }
+
+    def _stamp_liveness(self, *, notify: bool = False) -> None:
+        self._host.last_valid_frame_monotonic = time.monotonic()
+        if notify:
+            self._notify_change("liveness", {})
 
     def _notify_change(self, event_name: str, data: dict[str, Any]) -> None:
         """Notify server of state change (best-effort)."""

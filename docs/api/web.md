@@ -144,7 +144,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/dx/spots` | Buffered DX spots |
 | `GET` | `/api/v1/band-plan/config` | Active band-plan region |
 | `GET` | `/api/v1/band-plan/layers` | Band-plan layers metadata |
-| `GET` | `/api/v1/band-plan/segments?start=<hz>&end=<hz>&layers=<csv>` | Band-plan overlay segments |
+| `GET` | `/api/v1/band-plan/segments?start=<hz>&end=<hz>&layers=<csv>` | Band-plan overlay segments; `plansLoaded` is false when this install has no band-plan data (an empty list is then not authoritative) |
 | `GET` | `/api/v1/eibi/status` | EiBi loader status |
 | `GET` | `/api/v1/eibi/stations` | EiBi station list (paged/filterable) |
 | `GET` | `/api/v1/eibi/segments?start=<hz>&end=<hz>&on_air=true` | EiBi overlay segments |
@@ -163,7 +163,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `POST` | `/api/v1/commands` | Apply one structured radio command and answer with its outcome |
 | `POST` | `/api/v1/commands/batch` | Apply a stateless ordered command batch |
 | `POST` | `/api/v1/civ/transaction` | Send one scoped raw CI-V transaction |
-| `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans (only when running from a source checkout: the wheel does not include `band-plans/`) |
+| `POST` | `/api/v1/band-plan/config` | Change active region and reload band plans. The plans ship in the wheel (`rigplane/band-plans`); the chosen region is written to `_config.toml` inside that directory, so the installation must be writable (a source checkout or a user-owned virtualenv) for the choice to persist |
 | `POST` | `/api/v1/eibi/fetch` | Fetch/refresh EiBi dataset |
 
 ### WebSocket Routes
@@ -1073,6 +1073,30 @@ line as the startup contract instead of parsing the human-readable banner:
 
 Version, model, capability summary, and connection metadata.
 
+`connection.liveness` is also carried by HTTP state and WebSocket state updates.
+It contains `lastFrameAgeMs` (response-time age, or `null` without qualified
+radio evidence), `staleAfterMs` (backend cadence threshold), and `source`
+(`radio`, `simulator`, or `daemon`). Without a radio, the object is `null`.
+Identity replies can establish liveness without establishing readiness or
+power state. See `runtime_helpers.py: connection_liveness_payload` and
+`tests/test_radio_liveness.py`.
+
+For an external rigctld backend, `source` is `daemon` and `lastFrameAgeMs`
+remains `null`, including after a successful frequency read. Standard rigctld
+returns only values or `RPRT` status; its extended response adds command and
+field labels, not physical-read provenance. `get_cache` returns the configured
+cache timeout, not evidence of a physical read. Setting that timeout to zero
+is insufficient: Hamlib's `rig_get_freq` has unconditional cache paths during
+Morse activity and uplink suppression, plus a fallback when a backend returns
+zero. This conclusion follows from the
+[rigctld protocol and cache commands](https://hamlib.sourceforge.net/snapshots/man1/rigctld.1.html)
+and [Hamlib `src/rig.c`: `rig_get_freq`](https://github.com/Hamlib/Hamlib/blob/master/src/rig.c).
+`test_rigctld_physical_and_cached_frequency_are_indistinguishable` exercises a
+simulated physical read and a byte-identical cached answer; neither carries
+client-verifiable freshness. Positive liveness needs a daemon contract binding
+a physical-read result to this request and connection generation; this client
+has no such supported contract.
+
 `audioReceive` retains the latest RX-start failure in schema version 1.
 Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start`),
 `code` (`core_rx_start_failed`) and `reason`. Pairing refusals with candidates
@@ -1214,6 +1238,9 @@ Notable fields:
 | `modeFamilies` | `object` | Profile `[modes] families`: family name -> mode names, e.g. `{"cw": ["CW-U", "CW-L"]}`. `{}` when the profile declares none. Also in `/api/v1/info` `capabilities`. Use it instead of guessing a radio's CW mode names. |
 | `vfoScheme` | `"ab"` \| `"main_sub"` \| `"ab_shared"` \| `"single"` | VFO label scheme |
 | `freqRanges[].bands[].bsrCode` | `int` (optional) | Band Stack Register code for `set_band` |
+| `maxPowerW` | `int` (optional) | The profile's flat rated maximum TX power in watts (`[power].max_watts`): the base the per-band `txBands[].maxPowerW` rows are compared with. Absent when the profile declares none. Also in `/api/v1/info` `capabilities` |
+| `txBands[].maxPowerW` | `int` (optional) | Rated maximum TX power of that band in watts (profile band row `max_power_w`), never above `maxPowerW`. The RF power slider follows the band the active receiver is on, by `powerUnit`: `raw_255` keeps the full range and labels the level in watts (level x band maximum); `watts` scales the range to the band maximum over the flat `maxPowerW`. Full range and a percent label when no band declares a maximum, `powerUnit` is absent or the frequency is unknown. It is display data only: a power value that is sent is never clamped or rescaled by it |
+| `powerUnit` | `"raw_255"` \| `"watts"` (optional) | How the radio's `powerLevel` is scaled: the attached radio's `native_power_unit`. `raw_255` (Icom): a percentage of the current band's rated maximum. `watts` (Yaesu CAT): a fraction of the flat `maxPowerW`. Present with `maxPowerW`; absent when the radio does not declare it. Also in `/api/v1/info` `capabilities` |
 | `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
 | `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
 | `audioConfig` | object | Web audio transport defaults |

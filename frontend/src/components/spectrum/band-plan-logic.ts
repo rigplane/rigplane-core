@@ -21,8 +21,26 @@ export interface RemoteSegment {
   schedule?: string | null;
 }
 
-/** Format frequency for human display: Hz → "X.XXX MHz" / "X.X kHz" / "X Hz". */
+/**
+ * Interpret a `/api/v1/band-plan/segments` body. Returns the segments when
+ * the answer is authoritative (including an authoritative EMPTY list: plans
+ * are loaded and nothing falls in the window), or `null` when it is
+ * unavailable (malformed body, or the install has no band-plan data) so the
+ * caller uses its local copy instead.
+ */
+export function parseSegmentsResponse(data: unknown): RemoteSegment[] | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const { segments, plansLoaded } = data as { segments?: unknown; plansLoaded?: unknown };
+  if (!Array.isArray(segments)) return null;
+  if (segments.length === 0 && plansLoaded === false) return null;
+  return segments as RemoteSegment[];
+}
+
+/** Format frequency for human display: Hz → "X.XXXXXX GHz" / "X.XXX MHz" / "X.X kHz" / "X Hz". */
 export function formatFreq(hz: number): string {
+  // GHz keeps six decimals so narrow 23 cm segments (e.g. 1296.000–1296.050 MHz)
+  // still render distinct endpoints at 1 kHz resolution.
+  if (hz >= 1_000_000_000) return `${(hz / 1_000_000_000).toFixed(6)} GHz`;
   if (hz >= 1_000_000) return `${(hz / 1_000_000).toFixed(3)} MHz`;
   if (hz >= 1_000) return `${(hz / 1_000).toFixed(1)} kHz`;
   return `${hz} Hz`;
@@ -88,7 +106,25 @@ export function shouldSkipFetch(
   end: number,
   lastStart: number,
   lastEnd: number,
+  region?: string | null,
+  lastRegion?: string | null,
 ): boolean {
   if (lastStart === 0) return false;
+  // The backend serves segments for the effective region, so a viewport
+  // contained in the previous fetch range must still refetch after a switch.
+  if (region !== undefined && region !== lastRegion) return false;
   return start >= lastStart && end <= lastEnd;
+}
+
+/**
+ * Does the bundled local copy (`lib/data/arrl-band-plan.ts`, the ARRL HF plan)
+ * describe this effective band-plan region? It does for the US plan and for
+ * IARU Region 2, which the server also serves from the ARRL file, and for a
+ * caller that passes no region at all (`undefined`, legacy behavior). Any
+ * other region, and an effective region that is not known yet (`null`), must
+ * never show it: after a failed or empty refresh the overlay renders nothing
+ * rather than another region's segments.
+ */
+export function localCopyServesRegion(region: string | null | undefined): boolean {
+  return region === undefined || region === 'US' || region === 'IARU-R2';
 }

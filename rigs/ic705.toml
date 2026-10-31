@@ -868,6 +868,7 @@ start_hz = 50_000_000
 end_hz = 54_000_000
 default_hz = 50_125_000
 bsr_code = 0x0A
+default_mode = "USB"
 
 [[freq_ranges.ranges]]
 label = "WFM RX"
@@ -907,6 +908,7 @@ start_hz = 144_000_000
 end_hz = 148_000_000
 default_hz = 146_520_000
 bsr_code = 0x0D
+default_mode = "FM"
 
 [[freq_ranges.ranges]]
 label = "70cm"
@@ -920,6 +922,7 @@ start_hz = 430_000_000
 end_hz = 450_000_000
 default_hz = 446_000_000
 bsr_code = 0x0E
+default_mode = "FM"
 
 # MOR-3782: receiver coverage per IC-705_ENG_Basic_9, "11 SPECIFICATIONS /
 # General / Frequency coverage (unit: MHz)": USA, EUR and UK versions all

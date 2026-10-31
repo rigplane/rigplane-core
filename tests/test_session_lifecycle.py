@@ -598,6 +598,57 @@ async def test_recovery_exhaustion_closes_and_releases() -> None:
 
 
 # ---------------------------------------------------------------------------
+# MOR-3350 P1 — a preempted recovery tail must not cancel unrelated waiters
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("superseded", [True, False])
+async def test_coalesced_waiters_on_a_cancelled_recovery(superseded: bool) -> None:
+    """MOR-3350 P1: callers coalesced onto a cancelled recovery run.
+
+    Two callers share one ``_run_recover`` run. When a preempting replacement
+    supersedes it (``supersede_recovery``), neither caller was cancelled, so
+    both get ``RigplaneConnectionError("session recovery was superseded")``
+    rather than a foreign ``CancelledError`` that reads as their own
+    cancellation. A plain cancel of the shared run (the teardown path) is not
+    marked: callers keep ``CancelledError``.
+    """
+    lc, mech, _events = make_lifecycle()
+    mech.queue_ok()
+    await lc.connect()
+
+    release = asyncio.Event()
+
+    async def parked_once() -> None:
+        await release.wait()
+
+    mech.soft_reconnect_once = parked_once  # type: ignore[method-assign]
+    first = asyncio.ensure_future(lc.soft_reconnect())
+    second = asyncio.ensure_future(lc.soft_reconnect())
+    try:
+        for _ in range(100):
+            if lc._recover_task is not None and len(lc._recovery_waiters) == 2:
+                break
+            await asyncio.sleep(0)
+        assert lc._recover_task is not None
+        assert len(lc._recovery_waiters) == 2
+
+        if superseded:
+            lc.supersede_recovery()
+            expected: type[BaseException] = ConnectionError
+        else:
+            lc._recover_task.cancel()
+            expected = asyncio.CancelledError
+        for caller in (first, second):
+            with pytest.raises(expected):
+                await caller
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+        await lc.disconnect()
+
+
+# ---------------------------------------------------------------------------
 # D1 — event listener add/remove + exceptions swallowed
 # ---------------------------------------------------------------------------
 

@@ -212,7 +212,7 @@ def test_linux_multiple_serial_functions_require_profile_declaration(
 
     sd, identity, _ = _linux_tree(tmp_path, monkeypatch, profile="FTX-1")
     if not declared:
-        identity = replace(identity, serial_functions=frozenset())
+        identity = replace(identity, serial_functions=())
     snapshot = adapt_linux(
         _usb_raw_linux.read_raw_linux(str(tmp_path)), read_portaudio_enumeration(sd)
     )

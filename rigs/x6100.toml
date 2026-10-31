@@ -204,6 +204,7 @@ scheme = "ab"
 
 [attenuator]
 values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
 
 [preamp]
 values = [0, 1]

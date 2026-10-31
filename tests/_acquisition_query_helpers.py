@@ -105,7 +105,9 @@ def recording_executor(
     """Create an executor whose exact one-object sender records queries."""
     sent: list[AcquisitionQueryCase] = []
 
-    async def send_query(query: AcquisitionQueryCase, _priority: str) -> None:
+    async def send_query(
+        query: AcquisitionQueryCase, _priority: str, _class: object = None
+    ) -> None:
         sent.append(_require_query(query))
 
     return (

@@ -34,7 +34,6 @@ import contextlib
 import logging
 import re
 import time
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -52,6 +51,7 @@ from rigplane.runtime.managed_tx_composition import (
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
 
 from rigplane_testkit.serial import CivSerialFake
+from _timing import await_until
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 
@@ -82,15 +82,6 @@ _ATTEMPT_ID = re.compile(r"^managed TX release attempt (\d+):")
 
 observation = logging.getLogger(__name__)
 observation.setLevel(logging.INFO)
-
-
-async def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 3.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.01)
-    return predicate()
 
 
 async def _poll_loop(radio: Ic7300SerialRadio, stop: asyncio.Event) -> None:
@@ -206,18 +197,17 @@ async def test_release_retry_cadence_bounded_across_silent_link_down(
     stop = asyncio.Event()
     poller = asyncio.create_task(_poll_loop(radio, stop))
     try:
-        assert await _wait_until(
-            lambda: any(frame.command == 0x1C for frame in fake.commands),
-            timeout_s=2.0,
+        assert await await_until(
+            lambda: any(frame.command == 0x1C for frame in fake.commands), timeout=2.0
         ), "the managed TX ON never reached the wire"
 
         with caplog.at_level(
             logging.ERROR, logger="rigplane.backends._icom_serial_base"
         ):
             fake.silence(60.0)
-            assert await _wait_until(
+            assert await await_until(
                 lambda: radio.conn_state is not RadioConnectionState.CONNECTED,
-                timeout_s=_LINK_DOWN_BUDGET_S + 0.5,
+                timeout=_LINK_DOWN_BUDGET_S + 0.5,
             ), "silent link with polls outstanding never declared link-down"
 
         # The observation window: 10 s of continued silence, the provider

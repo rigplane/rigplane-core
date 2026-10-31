@@ -43,7 +43,9 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core.radio_protocol import ScopeCapable
 from rigplane.profiles import resolve_radio_profile
+from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
+from rigplane.web import runtime_helpers
 from rigplane.web import server as server_module
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import (
@@ -696,6 +698,60 @@ async def test_control_run_initial_full_state_counts_registered_client() -> None
     body = updates[0]["data"]["data"]  # type: ignore[index]
     assert body["wsClients"]["control"] == 1
     assert srv._control_event_queues == set()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_control_delivers_simulator_liveness_on_cached_state(
+    connected_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from test_web_server import _close_ws, _ws_connect, _ws_recv_frame
+
+    radio = connected_radio
+    await radio.get_freq()
+    assert radio.last_valid_frame_monotonic is not None
+    age = 0.0
+    monkeypatch.setattr(
+        runtime_helpers,
+        "time",
+        SimpleNamespace(monotonic=lambda: radio.last_valid_frame_monotonic + age),
+    )
+    srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0, radio_model="IC-7610"))
+    listener = await asyncio.start_server(srv._handle_connection, "127.0.0.1", 0)
+    async with listener:
+        port = listener.sockets[0].getsockname()[1]
+        reader, writer, _ = await _ws_connect("127.0.0.1", port, "/api/v1/ws")
+        try:
+            _, hello = await _ws_recv_frame(reader)
+            assert json.loads(hello)["type"] == "hello"
+            _, payload = await _ws_recv_frame(reader)
+            initial = json.loads(payload)
+            assert initial["type"] == "state_update"
+            assert initial["data"]["type"] == "full"
+            first = initial["data"]["data"]
+            cached_payload = srv._cached_public_state_payload
+            store_before = srv.command_state_store.snapshot()
+            age = 0.5
+            srv._broadcast_state_update(force=True)
+            assert srv._cached_public_state_payload is cached_payload
+            async with asyncio.timeout(2.0):
+                while True:
+                    _, payload = await _ws_recv_frame(reader)
+                    update = json.loads(payload)
+                    if update["type"] == "state_update":
+                        break
+            envelope = update["data"]
+            second = envelope.get("changed", envelope.get("data"))
+            assert first["connection"]["liveness"]["lastFrameAgeMs"] == 0
+            assert second["connection"]["liveness"]["lastFrameAgeMs"] == 500
+            assert first["connection"]["liveness"]["source"] == "radio"
+            store_after = srv.command_state_store.snapshot()
+            assert store_after.state_revision == store_before.state_revision
+            assert store_after.freshness_revision == store_before.freshness_revision
+            assert store_after.observation_seq == store_before.observation_seq
+            assert store_after.fields == store_before.fields
+        finally:
+            await _close_ws(writer)
+            await _await_condition(lambda: not srv._control_event_queues)
 
 
 def test_control_queue_lifecycle_broadcasts_ws_client_count_changes() -> None:
@@ -5028,6 +5084,46 @@ class TestCamelCaseState:
 
 class TestStateEtag:
     """Backend ETag/304 support for /api/v1/state."""
+
+    @pytest.mark.asyncio
+    async def test_http_conditional_state_delivers_aged_simulator_liveness(
+        self, connected_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        radio = connected_radio
+        await radio.get_freq()
+        assert radio.last_valid_frame_monotonic is not None
+        age = 0.0
+        monkeypatch.setattr(
+            runtime_helpers,
+            "time",
+            SimpleNamespace(monotonic=lambda: radio.last_valid_frame_monotonic + age),
+        )
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        writer = _FakeWriter()
+        await srv._handle_http(writer, "GET", "/api/v1/state", {})
+        status, first = _response_json(writer)
+        assert status == 200
+        assert first["connection"]["liveness"]["lastFrameAgeMs"] == 0
+        etag = next(
+            line.split(":", 1)[1].strip()
+            for line in writer.buffer.decode().split("\r\n\r\n", 1)[0].splitlines()
+            if line.startswith("ETag:")
+        )
+        cached_payload = srv._cached_public_state_payload
+        store_before = srv.command_state_store.snapshot()
+        age = 0.5
+        writer2 = _FakeWriter()
+        await srv._handle_http(writer2, "GET", "/api/v1/state", {"if-none-match": etag})
+        status, second = _response_json(writer2)
+        assert status == 200
+        assert second["connection"]["liveness"]["lastFrameAgeMs"] == 500
+        assert srv._cached_public_state_payload is cached_payload
+        store_after = srv.command_state_store.snapshot()
+        assert store_after.state_revision == store_before.state_revision
+        assert store_after.freshness_revision == store_before.freshness_revision
+        assert store_after.observation_seq == store_before.observation_seq
+        assert store_after.fields == store_before.fields
+        assert second["publicStateSeq"] > first["publicStateSeq"]
 
     @pytest.mark.asyncio
     async def test_state_response_includes_etag(self) -> None:

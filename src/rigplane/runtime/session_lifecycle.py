@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -744,6 +745,13 @@ class CoreRadioSessionLifecycle:
         self._connect_task: asyncio.Task[None] | None = None
         self._recover_task: asyncio.Task[None] | None = None
         self._recovery_waiters: dict[asyncio.Task[None], asyncio.Task[None]] = {}
+        # Recovery runs a preempting replacement cancelled on purpose
+        # (:meth:`supersede_recovery`); lets every coalesced caller tell that
+        # apart from a teardown cancel, however late it resumes (a per-run
+        # mark, not a single slot: a caller that retries starts a new run).
+        self._superseded_recoveries: weakref.WeakSet[asyncio.Task[None]] = (
+            weakref.WeakSet()
+        )
         # True once a session has been claimed (auth succeeded) and not yet
         # released — drives idempotent disconnect.
         self._claimed = False
@@ -1268,6 +1276,21 @@ class CoreRadioSessionLifecycle:
             and self._recovery_waiters.get(task) is recovery
         )
 
+    def supersede_recovery(self) -> None:
+        """Cancel the in-flight recovery run because a replacement takes over.
+
+        A coalesced :meth:`soft_reconnect` caller that was not itself
+        cancelled then sees ``RigplaneConnectionError`` ("superseded") instead
+        of a foreign ``CancelledError`` that would read as its own cancellation
+        (background pollers treat that as shutdown and exit for good).  A
+        teardown cancel (:meth:`disconnect`) is not marked: callers keep
+        ``CancelledError`` there.  No-op when no run is in flight.
+        """
+        recovery = self._recover_task
+        if recovery is not None and not recovery.done():
+            self._superseded_recoveries.add(recovery)
+            recovery.cancel()
+
     async def soft_reconnect(self) -> None:
         # Coalesce concurrent recovery onto the in-flight one.
         recovery = self._recover_task
@@ -1279,6 +1302,17 @@ class CoreRadioSessionLifecycle:
             self._recovery_waiters[caller] = recovery
         try:
             await recovery
+        except asyncio.CancelledError:
+            if (
+                recovery in self._superseded_recoveries
+                and recovery.cancelled()
+                and caller is not None
+                and caller.cancelling() == 0
+            ):
+                raise RigplaneConnectionError(
+                    "session recovery was superseded"
+                ) from None
+            raise
         finally:
             if caller is not None and self._recovery_waiters.get(caller) is recovery:
                 del self._recovery_waiters[caller]

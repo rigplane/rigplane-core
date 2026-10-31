@@ -1,0 +1,234 @@
+{
+ "_provenance": "Real-handler replay: tests/test_band_plan_response_goldens.py builds this file from the production WebServer; regenerate by running that module with UPDATE_BAND_PLAN_GOLDENS=1.",
+ "config": {
+  "IARU-R1": {
+   "availableRegions": [
+    "US",
+    "IARU-R1",
+    "IARU-R2",
+    "IARU-R3"
+   ],
+   "fallbackReason": null,
+   "region": "IARU-R1",
+   "requestedRegion": "IARU-R1"
+  },
+  "IARU-R3": {
+   "availableRegions": [
+    "US",
+    "IARU-R1",
+    "IARU-R2",
+    "IARU-R3"
+   ],
+   "fallbackReason": null,
+   "region": "IARU-R3",
+   "requestedRegion": "IARU-R3"
+  },
+  "US": {
+   "availableRegions": [
+    "US",
+    "IARU-R1",
+    "IARU-R2",
+    "IARU-R3"
+   ],
+   "fallbackReason": null,
+   "region": "US",
+   "requestedRegion": "US"
+  }
+ },
+ "configPost": {
+  "IARU-R1": {
+   "region": "IARU-R1",
+   "segments": 191,
+   "status": "ok"
+  },
+  "IARU-R3": {
+   "region": "IARU-R3",
+   "segments": 122,
+   "status": "ok"
+  },
+  "US": {
+   "region": "US",
+   "segments": 161,
+   "status": "ok"
+  }
+ },
+ "layers": {
+  "layers": [
+   {
+    "file": "arrl-hf.toml",
+    "layer": "ham",
+    "name": "ARRL Band Plan",
+    "priority": 10,
+    "region": "US",
+    "source": "https://www.arrl.org/band-plan",
+    "updated": "2026-10-29"
+   },
+   {
+    "file": "broadcast.toml",
+    "layer": "broadcast",
+    "name": "Broadcast Bands",
+    "priority": 5,
+    "region": "",
+    "source": "ITU Radio Regulations",
+    "updated": ""
+   },
+   {
+    "file": "sked-*.csv",
+    "layer": "broadcast-eibi",
+    "name": "EiBi (live)",
+    "priority": 5,
+    "region": "",
+    "source": "http://www.eibispace.de/dx/",
+    "updated": ""
+   },
+   {
+    "file": "utility.toml",
+    "layer": "utility",
+    "name": "Utility & Services",
+    "priority": 3,
+    "region": "",
+    "source": "ITU / public references",
+    "updated": ""
+   }
+  ]
+ },
+ "segments": {
+  "IARU-R1|145600000-146400000": {
+   "plansLoaded": true,
+   "segments": [
+    {
+     "band": "2m",
+     "color": "#60A5FA",
+     "end": 145793500,
+     "label": "RPT",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "phone",
+     "notes": "FM/digital voice, 12 kHz; repeater output exclusive; established simplex frequencies may be retained",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 145575000,
+     "station": null,
+     "url": null
+    },
+    {
+     "band": "2m",
+     "color": "#60A5FA",
+     "end": 145806000,
+     "label": "SPC",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "phone",
+     "notes": "Space communication, FM/digital voice; 145.800 downlink of manned space stations",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 145794000,
+     "station": null,
+     "url": null
+    },
+    {
+     "band": "2m",
+     "color": "#60A5FA",
+     "end": 146000000,
+     "label": "SAT",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "phone",
+     "notes": "All modes; satellite exclusive",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 145806000,
+     "station": null,
+     "url": null
+    }
+   ]
+  },
+  "IARU-R3|5375000-5395000": {
+   "plansLoaded": true,
+   "segments": []
+  },
+  "US|145600000-146400000": {
+   "plansLoaded": true,
+   "segments": [
+    {
+     "band": "2m",
+     "color": "#9CA3AF",
+     "end": 145800000,
+     "label": "EXP",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "other",
+     "notes": "Miscellaneous and experimental modes",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 145500000,
+     "station": null,
+     "url": null
+    },
+    {
+     "band": "2m",
+     "color": "#60A5FA",
+     "end": 146000000,
+     "label": "SAT",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "phone",
+     "notes": "Satellite (OSCAR)",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 145800000,
+     "station": null,
+     "url": null
+    },
+    {
+     "band": "2m",
+     "color": "#60A5FA",
+     "end": 146370000,
+     "label": "RPT",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "phone",
+     "notes": "FM repeater inputs, -600 kHz offset, outputs 146.610-146.970",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 146010000,
+     "station": null,
+     "url": null
+    },
+    {
+     "band": "2m",
+     "color": "#60A5FA",
+     "end": 146580000,
+     "label": "FM",
+     "language": null,
+     "layer": "ham",
+     "license": null,
+     "mode": "phone",
+     "notes": "FM simplex, FM calling 146.520; 146.400 used as repeater input in some areas",
+     "opacity": 0.2,
+     "priority": 10,
+     "schedule": null,
+     "start": 146400000,
+     "station": null,
+     "url": null
+    }
+   ]
+  },
+  "unloaded|13825000-14525000": {
+   "plansLoaded": false,
+   "segments": []
+  }
+ }
+}
