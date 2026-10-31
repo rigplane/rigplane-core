@@ -288,7 +288,7 @@ goes through CLOSING (full release), never an abandoned session.
 
 ## 4. IC-7610 simulator (`MockIcomRadio` extension)
 
-Extend the existing `MockIcomRadio` (`tests/mock_server.py:143-786`,
+Extend the existing `MockIcomRadio` (`tests/mock_server.py`,
 `_MockProtocol:110`) rather than replace it — it already models the control+CIV
 UDP servers, AYT/IAH+login+token+conninfo→status handshake, a CI-V dispatcher,
 state setters, and `auth_fail`/`response_delay` flags. Reuse all of that.

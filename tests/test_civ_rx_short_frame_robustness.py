@@ -63,7 +63,6 @@ def test_short_freq_frame_does_not_raise_or_corrupt_state(
 ) -> None:
     radio = _make_radio()
     radio._radio_state.receiver("MAIN").freq = 14_074_000
-    radio._last_freq_hz = 14_074_000
 
     frame = _freq_frame(data, command=command)
 
@@ -74,7 +73,6 @@ def test_short_freq_frame_does_not_raise_or_corrupt_state(
 
     # State must be untouched by the malformed frame.
     assert radio._radio_state.receiver("MAIN").freq == 14_074_000
-    assert radio._last_freq_hz == 14_074_000
 
     # No error-level spam (the old code emitted "BCD data must be exactly..."
     # exceptions caught at debug; now we skip without ever invoking the decoder).
@@ -115,4 +113,3 @@ def test_valid_freq_frame_still_decodes_after_short_frame(command: int) -> None:
     radio._civ_runtime._update_state_cache_from_frame(valid)
 
     assert radio._radio_state.receiver("MAIN").freq == 14_074_000
-    assert radio._last_freq_hz == 14_074_000

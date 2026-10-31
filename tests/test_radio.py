@@ -425,7 +425,6 @@ class TestMode:
     ) -> None:
         """set_mode is fire-and-forget — completes without any radio response."""
         await radio.set_mode(Mode.USB)
-        assert radio._last_mode == Mode.USB
 
     @pytest.mark.asyncio
     async def test_set_mode_from_string(
@@ -2689,7 +2688,6 @@ class TestSetModeFireAndForget:
     ) -> None:
         """set_mode completes without queuing any radio response."""
         await radio.set_mode(Mode.USB)  # must not raise
-        assert radio._last_mode == Mode.USB
 
     @pytest.mark.asyncio
     async def test_set_mode_string_no_ack_needed(
@@ -2697,14 +2695,14 @@ class TestSetModeFireAndForget:
     ) -> None:
         """String mode variant also completes without a response."""
         await radio.set_mode("USB")
-        assert radio._last_mode == Mode.USB
+        assert len(mock_transport.sent_packets) > 0
 
     @pytest.mark.asyncio
     async def test_set_mode_string_case_insensitive(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         await radio.set_mode(" usb ")
-        assert radio._last_mode == Mode.USB
+        assert len(mock_transport.sent_packets) > 0
 
     @pytest.mark.asyncio
     async def test_set_mode_string_invalid_raises_value_error(
@@ -2712,14 +2710,6 @@ class TestSetModeFireAndForget:
     ) -> None:
         with pytest.raises(ValueError, match="Unknown mode"):
             await radio.set_mode("not-a-mode")
-
-    @pytest.mark.asyncio
-    async def test_set_mode_updates_last_mode(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        """set_mode updates _last_mode regardless of radio response."""
-        await radio.set_mode(Mode.LSB)
-        assert radio._last_mode == Mode.LSB
 
     @pytest.mark.asyncio
     async def test_set_mode_send_failure_propagates(
@@ -3322,28 +3312,25 @@ class TestSetCommandsLeaveStateCacheToReadbacks:
     """SET commands leave the state cache alone.
 
     The StateCache holds only radio readbacks, so the setters
-    must not write their commanded values into it; the ``_last_*`` mirrors
-    still track what was sent.
+    must not write their commanded values into it.
     """
 
     @pytest.mark.asyncio
     async def test_set_frequency_does_not_update_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_frequency leaves the frequency cache empty but tracks _last."""
+        """set_frequency leaves the frequency cache empty."""
         mock_transport.queue_response(_ack_response())
         await radio.set_freq(21_074_000)
         assert radio.state_cache.freq_ts == 0.0
-        assert radio._last_freq_hz == 21_074_000
 
     @pytest.mark.asyncio
     async def test_set_mode_does_not_update_state_cache(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """set_mode leaves the mode cache empty but tracks _last_mode."""
+        """set_mode leaves the mode cache empty."""
         await radio.set_mode(Mode.CW)
         assert radio.state_cache.mode_ts == 0.0
-        assert radio._last_mode == Mode.CW
 
     @pytest.mark.asyncio
     async def test_rapid_set_frequency_does_not_block(
@@ -3353,8 +3340,7 @@ class TestSetCommandsLeaveStateCacheToReadbacks:
         for freq in [7_000_000, 7_100_000, 7_200_000]:
             mock_transport.queue_response(_ack_response())
             await radio.set_freq(freq)
-        # The mirror holds the last value sent; the cache stays empty.
-        assert radio._last_freq_hz == 7_200_000
+        # The cache stays empty.
         assert radio.state_cache.freq_ts == 0.0
 
 

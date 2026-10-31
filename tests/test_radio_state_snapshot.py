@@ -21,18 +21,16 @@ from test_radio import MockTransport
 class _SnapshotFakeRadio:
     """Minimal fake exposing the getters/setters snapshot/restore use.
 
-    ``fail`` names getters that raise instead of answering. The ``_last_*``
-    / ``_attenuator_state`` / ``_preamp_level`` / ``_filter_width`` mirrors
-    hold decoy values: snapshot must never record them.
+    ``fail`` names getters that raise instead of answering. The ``_last_split``
+    / ``_last_vfo`` / ``_attenuator_state`` / ``_preamp_level`` /
+    ``_filter_width`` mirrors hold decoy values: snapshot must never record
+    them.
     """
 
     def __init__(self, *, fail: tuple[str, ...] = ()) -> None:
         self.fail = set(fail)
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.strict_seen: dict[str, bool] = {}
-        self._last_freq_hz: int | None = 7_074_000
-        self._last_mode: Mode | None = Mode.LSB
-        self._last_power: int | None = 100
         self._filter_width: int | None = 1
         self._last_split: bool | None = True
         self._last_vfo: str | None = "VFOB"

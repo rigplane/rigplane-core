@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 pytestmark = pytest.mark.mock_integration
 
 from rigplane.radio import IcomRadio  # noqa: E402
+from rigplane.runtime import radio_reconnect  # noqa: E402
 from rigplane.runtime.tx_interlock import RfState  # noqa: E402
 from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
@@ -51,7 +52,9 @@ from _perf_helpers import fast_connect  # noqa: E402
 from test_multi_session_tx_lanes import _Arena  # noqa: E402
 from test_tx_under_fault_matrix import (  # noqa: E402
     _GATE_TIMEOUT_S,
+    _KEEPALIVE_HOLD_S,
     _KEY_DEADLINE_S,
+    _WATCHDOG_TIMEOUT_S,
     _wait_ptt,
     _wait_rf,
     _ws_recv_frame,
@@ -242,6 +245,68 @@ async def test_marker_check_catches_a_wrong_tone(tmp_path: Path) -> None:
         )
         assert any("frequency" in problem for problem in problems)
         await arena.unkey(session)
+
+
+class _StallRightAfterCheck:
+    """``radio_reconnect``'s ``asyncio`` with one change: right after a
+    watchdog interval sleep returns (the check about to run sees activity as
+    of now), the event loop is blocked for ``stall_s`` once armed.
+
+    That is the worst phase of the real hazard — a loop stall that starts
+    just after a check, before any ping reply could be counted — made
+    deterministic instead of a 1-in-20 race.
+    """
+
+    def __init__(self, interval_s: float, stall_s: float) -> None:
+        self._interval_s = interval_s
+        self._stall_s = stall_s
+        self.armed = False
+        self.stalled = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(asyncio, name)
+
+    async def sleep(self, delay: float, *args: object) -> None:
+        await asyncio.sleep(delay, *args)
+        if self.armed and not self.stalled and delay == self._interval_s:
+            self.stalled = True
+            asyncio.get_running_loop().call_soon(time.sleep, self._stall_s)
+
+
+async def test_event_loop_stall_longer_than_the_watchdog_keeps_the_keyed_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MOR-3868: the simulator shares the client's event loop, so a stall of
+    that loop (a CPU-starved CI runner: logged as "Watchdog: no activity for
+    1.7s") silences both ends at once. The control watchdog (1.5 s in this
+    stack) must not read that as a dead link and drop a keyed session — the
+    CI symptom was the unkey failing with "the previous transmission is still
+    being released" while the reconnect released the key.
+    """
+    async with _Arena(
+        tmp_path, enable_audio=True, sim_options={"capture_tx_audio": True}
+    ) as arena:
+        radio = arena.stack.radio
+        stall_s = 1.7
+        assert _WATCHDOG_TIMEOUT_S < stall_s < _KEEPALIVE_HOLD_S
+        stall = _StallRightAfterCheck(radio.WATCHDOG_CHECK_INTERVAL, stall_s)
+        monkeypatch.setattr(radio_reconnect, "asyncio", stall)
+
+        session = await arena.session()
+        assert await session.primary.key("stall")
+        await _wait_ptt(arena.sim, True, _KEY_DEADLINE_S)
+        await _wait_rf(arena.web, RfState.TX, _GATE_TIMEOUT_S)
+
+        stall.armed = True
+        end = time.monotonic() + _GATE_TIMEOUT_S
+        while not stall.stalled:
+            assert time.monotonic() < end, "the watchdog never checked"
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(stall_s + 1.0)  # the stall, then two more checks
+
+        assert radio._reconnect_task is None  # noqa: SLF001
+        await arena.unkey(session)
+        await _wait_rf(arena.web, RfState.RX, _GATE_TIMEOUT_S)
 
 
 async def test_real_client_negotiated_tx_format_is_learned() -> None:

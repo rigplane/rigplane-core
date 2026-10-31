@@ -307,7 +307,7 @@
 <style>
   .keyboard-leader-pill {
     position: fixed;
-    top: 14px;
+    top: calc(var(--rp-chrome-top, 0px) + 14px); /* MOR-3845 */
     right: 14px;
     z-index: 1100;
     padding: 8px 12px;
@@ -323,6 +323,7 @@
   .keyboard-help-overlay {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 1200;
     display: grid;
     place-items: center;
@@ -339,7 +340,7 @@
   .keyboard-help-card {
     position: relative;
     width: min(1100px, calc(100vw - 32px));
-    max-height: calc(100vh - 40px);
+    max-height: calc(100vh - var(--rp-chrome-top, 0px) - 40px);
     overflow: auto;
     border: 1px solid var(--v2-border-soft);
     border-radius: 18px;
