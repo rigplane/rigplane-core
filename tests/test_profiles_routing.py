@@ -117,28 +117,21 @@ async def test_control_handler_checks_capabilities_not_model_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dual_profile_poller_routes_main_mode_via_select_receiver_when_active_sub() -> (
-    None
-):
-    """receiver=0 (MAIN) while SUB is active still gets a switch-and-restore.
+async def test_dual_profile_poller_main_mode_while_active_sub_never_switches() -> None:
+    """receiver=0 (MAIN) while SUB is active: no switch-and-restore.
 
-    There is no lower-layer equivalent for a VFO-aware MAIN write, so the
-    poller keeps this dance — but it must go through the public
-    ``select_receiver`` API instead of building the raw 0x07 CI-V frame
-    itself, and in the right order: MAIN before the write, SUB after.
+    The poller delegates the write unchanged and sends no receiver select;
+    the backend admits it only while MAIN is selected (MOR-3591).
     """
     radio = _dual_radio_mock()
     radio._radio_state.active = "SUB"
-    calls: list[str] = []
-    radio.select_receiver = AsyncMock(
-        side_effect=lambda which: calls.append(f"select_receiver({which})")
-    )
-    radio.set_mode = AsyncMock(side_effect=lambda *a, **k: calls.append("set_mode"))
+    radio.select_receiver = AsyncMock()
+    radio.set_mode = AsyncMock()
     poller = RadioPoller(radio, StateCache(), CommandQueue())
 
     await poller._execute(SetMode("USB", receiver=0))  # noqa: SLF001
 
-    assert calls == ["select_receiver(0)", "set_mode", "select_receiver(1)"]
+    radio.select_receiver.assert_not_awaited()
     radio.set_mode.assert_awaited_once_with("USB", None)
     radio.send_civ.assert_not_awaited()
 

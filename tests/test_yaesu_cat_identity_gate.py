@@ -31,6 +31,7 @@ from rigplane.core.radio_protocol import (
 )
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.rig_loader import load_rig
+from _timing import await_until
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 # Bench-measured FTX-1 IF; frame (see tests/test_ftx1_radio.py,
@@ -125,16 +126,6 @@ def make_radio(
 def _fast_reread(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(YaesuCatRadio, "_IDENTITY_REREAD_BACKOFF_S", (0.01,))
     monkeypatch.setattr(YaesuCatRadio, "_IDENTITY_REREAD_STEADY_S", 0.01)
-
-
-async def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> bool:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() > deadline:
-            return False
-        await asyncio.sleep(0.005)
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -322,7 +313,7 @@ async def test_connect_resets_identity_to_checking_with_fresh_generation() -> No
     generation_before = radio._identity_generation
 
     task = asyncio.create_task(radio.connect())
-    assert await _wait_until(lambda: transport.queries == ["ID;"])
+    assert await await_until(lambda: transport.queries == ["ID;"])
 
     assert radio._identity_generation == generation_before + 1
     gate_identity = radio.connection_identity
@@ -346,7 +337,7 @@ async def test_reread_reprobes_the_held_port_and_seeds_state_exactly_once(
     assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
 
     transport.answers.append("ID0840")
-    assert await _wait_until(
+    assert await await_until(
         lambda: (
             radio.connection_identity is not None
             and radio.connection_identity.status is RadioIdentityStatus.VERIFIED
@@ -375,7 +366,7 @@ async def test_mismatch_hold_reread_picks_up_the_expected_radio(
     assert radio.connection_identity.status is RadioIdentityStatus.IDENTITY_MISMATCH
 
     transport.answers.append("ID0840")
-    assert await _wait_until(
+    assert await await_until(
         lambda: (
             radio.connection_identity is not None
             and radio.connection_identity.status is RadioIdentityStatus.VERIFIED
@@ -420,7 +411,7 @@ async def test_stale_generation_task_exits_without_probing(
     radio._identity_generation = 6
     transport.answers.append("ID0840")
 
-    assert await _wait_until(lambda: task.done())
+    assert await await_until(lambda: task.done())
     assert radio.connection_identity is not None
     assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
     assert transport.queries == []
@@ -445,7 +436,7 @@ async def test_answer_that_outlives_its_generation_is_discarded(
     task = radio._identity_reread_task
     assert task is not None
 
-    assert await _wait_until(lambda: task.done())
+    assert await await_until(lambda: task.done())
     assert radio.connection_identity is not None
     assert radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
     # The stale answer never seeded state on the new generation.
@@ -532,7 +523,7 @@ async def test_serial_identity_hold_predicate_reads_the_yaesu_hold(
     assert serial_identity_hold(radio) is RadioIdentityStatus.NO_RESPONSE
 
     _transport.answers.append("ID0840")
-    assert await _wait_until(
+    assert await await_until(
         lambda: (
             radio.connection_identity is not None
             and radio.connection_identity.status is RadioIdentityStatus.VERIFIED

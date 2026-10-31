@@ -72,7 +72,11 @@ from ..core.command_dispatch import (
     command_descriptor,
     prepare_command_intent,
 )
-from ..core.exceptions import CommandError, CommandRejectedError
+from ..core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ReceiverNotSelectedError,
+)
 from ..core.exceptions import ConnectionError as RadioConnectionError
 from ..profiles import MemoryWriteUnverifiedError
 from ..core.state_pipeline_contracts import (
@@ -482,8 +486,8 @@ class _HttpCommandCollector:
 
 
 def _command_error_code(exc: BaseException) -> str:
-    if isinstance(exc, MemoryWriteUnverifiedError):
-        # MOR-3644: stable refusal code carried on the exception.
+    if isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
+        # MOR-3644 / MOR-3591: stable refusal code carried on the exception.
         return str(exc.reason_code)
     if isinstance(exc, CommandUnsupportedError):
         return "unsupported_command"
@@ -3141,6 +3145,12 @@ class WebServer:
                 }
             else:
                 return False
+        elif event.state == "failed" and set(details) == {"session_id", "reason"}:
+            # MOR-3591: a queued command refused because its receiver is not
+            # the selected one. Rebuilt from the literal, never passed through.
+            if details.get("reason") != "receiver_not_selected":
+                return False
+            public_details = {"reason": "receiver_not_selected"}
         elif event.state == "failed" and set(details) == {
             "session_id",
             "outcome",
@@ -6230,6 +6240,7 @@ class WebServer:
                 "unsupported_command",
                 "radio_nak",
                 "memory_write_unverified",
+                "receiver_not_selected",
             }:
                 status, reason = 409, "Conflict"
             else:

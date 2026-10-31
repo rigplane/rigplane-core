@@ -20,9 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any
 
 from _order_sensitive_radios import LanLikeRadio
 
@@ -36,6 +35,7 @@ from rigplane.audio.session import (
 )
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.web.server import WebConfig, WebServer
+from _timing import await_until
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 
@@ -49,15 +49,6 @@ def _fast_session(radio: Any) -> AudioSession:
     return AudioSession(
         radio, watchdog_interval=_INTERVAL, rx_liveness_timeout=_TIMEOUT
     )
-
-
-async def _wait_for(predicate: Callable[[], bool], deadline_s: float = 2.0) -> bool:
-    deadline = time.monotonic() + deadline_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.005)
-    return predicate()
 
 
 class _ManualClock:
@@ -151,7 +142,7 @@ async def test_silent_rx_after_start_surfaces_recovering_and_event() -> None:
     session.add_listener(events.append)
     sub = await session.subscribe_rx("a")
     # RX armed but no frame EVER arrives — the silent -50 death shape.
-    assert await _wait_for(lambda: session.state is AudioSessionState.RECOVERING)
+    assert await await_until(lambda: session.state is AudioSessionState.RECOVERING)
     assert events, "RECOVERING transition must publish an event"
     event = events[-1]
     assert event.state is AudioSessionState.RECOVERING
@@ -175,10 +166,10 @@ async def test_frames_resuming_returns_to_demand_state() -> None:
     sub = await session.subscribe_rx("a")
     # No frame ever lands; jump the clock past the timeout → rx_silent.
     clock.advance(2 * _TIMEOUT)
-    assert await _wait_for(lambda: session.state is AudioSessionState.RECOVERING)
+    assert await await_until(lambda: session.state is AudioSessionState.RECOVERING)
     # Frames resume — one fresh same-clock heartbeat is enough.
     _stamp_heartbeat(radio, session, clock)
-    assert await _wait_for(lambda: session.state is AudioSessionState.RX_ONLY)
+    assert await await_until(lambda: session.state is AudioSessionState.RX_ONLY)
     # The clock no longer moves, so no further event can possibly fire.
     assert [e.reason for e in events] == ["rx_silent", "rx_resumed"]
     await sub.release()
@@ -211,7 +202,7 @@ async def test_healthy_heartbeat_never_false_positives() -> None:
         _stamp_heartbeat(radio, session, clock)
         reads = clock.calls
         # ≥1 watchdog liveness check at exactly this clock state.
-        assert await _wait_for(lambda: clock.calls > reads)
+        assert await await_until(lambda: clock.calls > reads)
         assert session.state is AudioSessionState.RX_ONLY
     assert events == []
     await sub.release()
@@ -231,7 +222,7 @@ async def test_watchdog_overrun_with_fresh_heartbeat_does_not_misfire() -> None:
     clock.advance(10 * _TIMEOUT)  # one giant scheduling-jitter jump
     _stamp_heartbeat(radio, session, clock)
     reads = clock.calls
-    assert await _wait_for(lambda: clock.calls > reads)
+    assert await await_until(lambda: clock.calls > reads)
     assert session.state is AudioSessionState.RX_ONLY
     assert events == []
     await sub.release()
@@ -246,7 +237,7 @@ async def test_runtime_payload_exposes_session_state_and_last_event() -> None:
     radio = LanLikeRadio()
     session = _fast_session(radio)
     sub = await session.subscribe_rx("a")
-    assert await _wait_for(lambda: session.state is AudioSessionState.RECOVERING)
+    assert await await_until(lambda: session.state is AudioSessionState.RECOVERING)
 
     web_radio = SimpleNamespace(
         model="IC-7610",
@@ -301,7 +292,7 @@ async def test_session_events_forwarded_on_control_ws_queues() -> None:
     q: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=16)
     srv.register_control_event_queue(q)
     sub = await session.subscribe_rx("a")
-    assert await _wait_for(lambda: not q.empty())
+    assert await await_until(lambda: not q.empty())
     msg = q.get_nowait()
     assert msg["type"] == "event"
     assert msg["name"] == "audio_session"

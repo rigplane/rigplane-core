@@ -603,6 +603,63 @@ async def test_disconnect_cancel_then_timeout_still_finalizes() -> None:
                 pass
 
 
+async def test_cancelled_finish_with_blocked_callback_retains_and_releases() -> None:
+    """MOR-3932: cancel during ``on_disconnect`` plus a timeout must not escape.
+
+    ``finish()`` is cancelled after ``on_disconnect`` entered and the callback
+    stays blocked past ``TEARDOWN_TIMEOUT_S``: no ``TimeoutError`` may escape
+    the finish, transport release / registry removal / ``_finished.set()``
+    still happen, the callback stays owned in ``_unsettled`` until the gate
+    opens, and exactly one ``on_disconnect`` runs.
+    """
+    from rigplane.tci.server import TEARDOWN_TIMEOUT_S
+
+    clock = FakeClock()
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    completed = asyncio.Event()
+    calls = 0
+
+    async def _gated_disconnect() -> None:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        try:
+            await gate.wait()
+        finally:
+            # Cleanup itself stays gated: a cancel does not release the
+            # callback, so the bounded waits must retain it, not drop it.
+            await gate.wait()
+            completed.set()
+
+    handler = FakeHandler()
+    handler.on_disconnect = _gated_disconnect  # type: ignore[method-assign]
+    server = make_server(handler, clock)
+    session, _writer, _reader = await open_session(server, handler)
+    task = asyncio.create_task(session.finish())
+    async with asyncio.timeout(2.0):
+        await entered.wait()
+    await asyncio.sleep(0)
+    task.cancel()
+    # The callback stays blocked past both bounded waits: the finish must
+    # still complete (a TimeoutError escaping here is the MOR-3932 defect)
+    # with the unfinished callback retained, not dropped.
+    async with asyncio.timeout(TEARDOWN_TIMEOUT_S * 2 + 10.0):
+        await task
+    assert calls == 1
+    assert not completed.is_set()
+    assert session not in server.sessions
+    assert session._finished.is_set()
+    retained = [item for item in server._unsettled if not item.done()]
+    assert len(retained) == 1
+    gate.set()
+    async with asyncio.timeout(5.0):
+        await completed.wait()
+        while server._unsettled:
+            await asyncio.sleep(0.005)
+    assert calls == 1
+
+
 async def test_connect_failure_closes_and_releases_once() -> None:
     clock = FakeClock()
     handler = FakeHandler()

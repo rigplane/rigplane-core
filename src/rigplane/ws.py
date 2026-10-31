@@ -9,9 +9,11 @@ Provides:
 - HTTP Upgrade handshake key computation
 - Server-side upgrade check (injected Origin/Host policy, key check,
   accept header, 101 response bytes)
-- Frame serialization (server→client, unmasked)
-- Frame parsing (client→server, masked)
-- WebSocketConnection class for full-duplex messaging
+- Frame serialization (server→client unmasked by default, masked with
+  ``mask=True`` for the client role)
+- Frame parsing (masked or unmasked)
+- WebSocketConnection class for full-duplex messaging (server role by
+  default, client role with ``mask_outgoing=True``)
 - Optional per-message deflate compression
 """
 
@@ -20,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import os
 import struct
 import time
 import zlib
@@ -127,14 +130,20 @@ def make_frame(
     *,
     fin: bool = True,
     rsv1: bool = False,
+    mask: bool = False,
 ) -> bytes:
-    """Serialize a WebSocket frame (server→client, no masking).
+    """Serialize a WebSocket frame.
+
+    Unmasked by default (server→client); ``mask=True`` serializes a
+    masked client→server frame per RFC 6455 §5.3 (mask bit set, random
+    4-byte key, XORed payload).
 
     Args:
         opcode: Frame opcode (WS_OP_TEXT, WS_OP_BINARY, etc.).
         payload: Frame payload bytes.
         fin: Whether this is the final fragment.
         rsv1: Set RSV1 bit (used for permessage-deflate).
+        mask: Mask the payload (client role).
 
     Returns:
         Serialized frame bytes.
@@ -144,14 +153,24 @@ def make_frame(
         first_byte |= _RSV1
     length = len(payload)
 
-    if length <= 125:
-        header = bytes([first_byte, length])
-    elif length <= 65535:
-        header = struct.pack("!BBH", first_byte, 126, length)
-    else:
-        header = struct.pack("!BBQ", first_byte, 127, length)
+    if not mask:
+        if length <= 125:
+            header = bytes([first_byte, length])
+        elif length <= 65535:
+            header = struct.pack("!BBH", first_byte, 126, length)
+        else:
+            header = struct.pack("!BBQ", first_byte, 127, length)
+        return header + payload
 
-    return header + payload
+    mask_key = os.urandom(4)
+    if length <= 125:
+        header = bytes([first_byte, 0x80 | length])
+    elif length <= 65535:
+        header = struct.pack("!BBH", first_byte, 0x80 | 126, length)
+    else:
+        header = struct.pack("!BBQ", first_byte, 0x80 | 127, length)
+    masked = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+    return header + mask_key + masked
 
 
 async def _read_one_frame(
@@ -217,6 +236,9 @@ class WebSocketConnection:
         deflate: Enable permessage-deflate compression.
         clock: Monotonic clock for the pong-freshness liveness decision;
             defaults to ``time.monotonic``.
+        mask_outgoing: Mask every frame this connection builds
+            (client role per RFC 6455 §5.1; default False keeps the
+            server-role unmasked wire).
     """
 
     def __init__(
@@ -226,11 +248,13 @@ class WebSocketConnection:
         *,
         deflate: bool = False,
         clock: Callable[[], float] = time.monotonic,
+        mask_outgoing: bool = False,
     ) -> None:
         self._reader = reader
         self._writer = writer
         self._closed = False
         self._deflate = deflate
+        self._mask_outgoing = mask_outgoing
         self._fragmented_opcode: int = 0
         self._fragmented_rsv1 = False
         self._fragments: list[bytes] = []
@@ -283,7 +307,9 @@ class WebSocketConnection:
 
             self._last_frame = self._clock()
             if opcode == WS_OP_PING:
-                await self._send_raw(make_frame(WS_OP_PONG, payload))
+                await self._send_raw(
+                    make_frame(WS_OP_PONG, payload, mask=self._mask_outgoing)
+                )
                 continue
 
             if opcode == WS_OP_PONG:
@@ -294,7 +320,9 @@ class WebSocketConnection:
                 self._closed = True
                 if not self._writer.is_closing():
                     try:
-                        self._writer.write(make_frame(WS_OP_CLOSE, payload))
+                        self._writer.write(
+                            make_frame(WS_OP_CLOSE, payload, mask=self._mask_outgoing)
+                        )
                         await self._writer.drain()
                     except OSError:
                         pass
@@ -350,9 +378,16 @@ class WebSocketConnection:
         data = text.encode("utf-8")
         if self._deflate:
             compressed = self._compress(data)
-            await self._send_raw(make_frame(WS_OP_TEXT, compressed, rsv1=True))
+            await self._send_raw(
+                make_frame(
+                    WS_OP_TEXT,
+                    compressed,
+                    rsv1=True,
+                    mask=self._mask_outgoing,
+                )
+            )
         else:
-            await self._send_raw(make_frame(WS_OP_TEXT, data))
+            await self._send_raw(make_frame(WS_OP_TEXT, data, mask=self._mask_outgoing))
 
     async def send_binary(self, data: bytes) -> None:
         """Send a binary frame, compressed if deflate is enabled."""
@@ -360,9 +395,16 @@ class WebSocketConnection:
             compressed = self._compress(data)
             # Only compress if it actually saves space
             if len(compressed) < len(data):
-                await self._send_raw(make_frame(WS_OP_BINARY, compressed, rsv1=True))
+                await self._send_raw(
+                    make_frame(
+                        WS_OP_BINARY,
+                        compressed,
+                        rsv1=True,
+                        mask=self._mask_outgoing,
+                    )
+                )
                 return
-        await self._send_raw(make_frame(WS_OP_BINARY, data))
+        await self._send_raw(make_frame(WS_OP_BINARY, data, mask=self._mask_outgoing))
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
         """Send a WebSocket close frame (never compressed) and tear down
@@ -380,7 +422,9 @@ class WebSocketConnection:
         if not self._closed:
             payload = struct.pack("!H", code) + reason.encode("utf-8")
             try:
-                await self._send_raw(make_frame(WS_OP_CLOSE, payload))
+                await self._send_raw(
+                    make_frame(WS_OP_CLOSE, payload, mask=self._mask_outgoing)
+                )
             except OSError:
                 pass
             self._closed = True
@@ -429,7 +473,7 @@ class WebSocketConnection:
 
     async def send_ping(self, payload: bytes = b"") -> None:
         """Send one ping frame (the caller bounds the write)."""
-        await self._send_raw(make_frame(WS_OP_PING, payload))
+        await self._send_raw(make_frame(WS_OP_PING, payload, mask=self._mask_outgoing))
 
     async def keepalive_loop(self, interval: float = 20.0) -> None:
         """Send periodic ping frames to detect dead connections."""
@@ -440,7 +484,9 @@ class WebSocketConnection:
                     if not self.is_alive():
                         await self.close(1001, "pong timeout")
                         break
-                    await self._send_raw(make_frame(WS_OP_PING, b"ka"))
+                    await self._send_raw(
+                        make_frame(WS_OP_PING, b"ka", mask=self._mask_outgoing)
+                    )
                     # DO NOT reset _last_pong here — only on actual PONG receipt
         except asyncio.CancelledError:
             pass

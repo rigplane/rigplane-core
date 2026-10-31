@@ -103,6 +103,7 @@ from rigplane.commands import (
     RECEIVER_MAIN,
     _level_bcd_decode,
     build_civ_frame,
+    parse_civ_frame,
     filter_index_to_hz,
     get_acc1_mod_level,
     get_af_mute,
@@ -167,6 +168,7 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_level_response,
     parse_meter_response,
+    parse_mode_response,
     parse_repeater_shift_response,
     parse_rit_frequency_response,
     parse_system_date_response,
@@ -184,7 +186,13 @@ from rigplane.core.exceptions import (
     CommandError,
     CommandRejectedError,
     ConnectionError,
+    ReceiverNotSelectedError,
+    StaleBeforeWireError,
     TimeoutError,
+)
+from rigplane.runtime._dual_rx_runtime import (
+    RECEIVER_ADMISSION,
+    receiver_not_selected,
 )
 from rigplane.core.radio_protocol import (
     ManagedTxSupervisor,
@@ -260,9 +268,10 @@ _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 
 
 # Threshold for ``Radio.connected`` to treat a UDP transport as unhealthy.
 # A single transient ``error_received`` (e.g. EAGAIN/EWOULDBLOCK/Broken pipe)
-# should not latch the socket into a disconnected state — the counter is
-# cumulative and only the 30s watchdog resets it via ``soft_reconnect``.
-# Require >=3 accumulated errors before reporting ``connected = False``.
+# should not latch the socket into a disconnected state — the counter counts
+# consecutive errors (any inbound datagram resets it) and ``soft_reconnect``
+# zeroes it for a fresh session.
+# Require >=3 consecutive errors before reporting ``connected = False``.
 _UDP_ERROR_THRESHOLD: int = 3
 
 # Deadline for the managed-TX arming probe (MOR-1016).  Deliberately shorter
@@ -435,8 +444,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
                 return True
             return self._level_command29(command, receiver=receiver) is not None
+        except ReceiverNotSelectedError:
+            # Admission stays the static, route-based answer: MAIN is
+            # admitted and the call itself refuses with the stable reason
+            # code while MAIN is not selected; SUB without a route is not
+            # admitted (MOR-3591).
+            return receiver == RECEIVER_MAIN
         except CommandError:
             return False
+        finally:
+            # A capability query sends nothing: leave no wire admission.
+            RECEIVER_ADMISSION.set(None)
 
     def _level_command29(self, command: str, *, receiver: int) -> bool | None:
         """Resolve the wrapper flag; leave missing-command refusal to the builder."""
@@ -537,6 +555,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._preamp_level: int | None = None
         self._last_split: bool | None = None
         self._last_vfo: str | None = None
+        # MOR-3591: receiver selects in flight (their outcome is unknown, so
+        # the selection is too), and when the selection first became known
+        # in this CI-V generation (receiver-owned observations start there).
+        self._receiver_select_inflight: int = 0
+        self._selection_known_since: float | None = None
         self._vfo_selection_epoch: int = 1
         self._token_task: asyncio.Task[None] | None = None
         self._auto_reconnect = auto_reconnect
@@ -896,8 +919,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Check for UDP errors (only on real IcomTransport, not mocks).
         # A single transient EAGAIN/EWOULDBLOCK should not latch the socket
         # into a "disconnected" state — only treat the transport as unhealthy
-        # after repeated errors.  The counter is reset on soft_reconnect and
-        # on reset_udp_error_count() after sustained healthy packet receipt.
+        # after repeated errors.  The counter counts consecutive errors;
+        # IcomTransport._handle_packet zeroes it on every inbound datagram,
+        # and soft_reconnect zeroes it for a fresh session.
         error_count = getattr(civ, "_udp_error_count", None)
         if isinstance(error_count, int) and error_count >= _UDP_ERROR_THRESHOLD:
             return False
@@ -951,7 +975,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ICMP at all — sends simply time out and the error counter stays at 0.
 
         This property is therefore True when the control transport socket is
-        open (so the host route exists) and has accumulated port-unreachable
+        open (so the host route exists) and has consecutive port-unreachable
         errors while the session is not established — i.e. the remote-control
         server is refusing/ignoring us rather than the network being gone.
         """
@@ -2536,17 +2560,65 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         wait_dispatch: bool = True,
         is_current: "Callable[[], bool] | None" = None,
     ) -> CivFrame | None:
-        """Delegate to CI-V runtime (keeps existing call sites unchanged)."""
-        return await self._civ_runtime.send_civ_raw(
-            civ_frame,
-            priority=priority,
-            key=key,
-            dedupe=dedupe,
-            wait_response=wait_response,
-            timeout=timeout,
-            wait_dispatch=wait_dispatch,
-            is_current=is_current,
-        )
+        """Delegate to CI-V runtime (keeps existing call sites unchanged).
+
+        A receiver admission recorded by ``_require_cmd29_route`` for this
+        task is consumed here: when the frame is that admitted plain command,
+        the selection is re-checked at wire dispatch inside the serialized
+        send, and a selection that changed meanwhile refuses the frame with
+        :class:`ReceiverNotSelectedError` instead of reaching the other
+        receiver (MOR-3591).
+        """
+        admission = RECEIVER_ADMISSION.get()
+        if admission is not None:
+            RECEIVER_ADMISSION.set(None)
+            frame = parse_civ_frame(civ_frame)
+            if frame.receiver is not None or not admission.matches(
+                frame.command, frame.sub
+            ):
+                admission = None
+        if admission is None:
+            return await self._civ_runtime.send_civ_raw(
+                civ_frame,
+                priority=priority,
+                key=key,
+                dedupe=dedupe,
+                wait_response=wait_response,
+                timeout=timeout,
+                wait_dispatch=wait_dispatch,
+                is_current=is_current,
+            )
+        receiver = admission.receiver
+
+        def still_selected() -> bool:
+            return self._selected_receiver() == receiver
+
+        def admitted_is_current() -> bool:
+            return still_selected() and (is_current is None or is_current())
+
+        try:
+            return await self._civ_runtime.send_civ_raw(
+                civ_frame,
+                priority=priority,
+                key=key,
+                dedupe=dedupe,
+                wait_response=wait_response,
+                timeout=timeout,
+                wait_dispatch=wait_dispatch,
+                is_current=admitted_is_current,
+            )
+        except StaleBeforeWireError as exc:
+            # Only a refusal proven before the wire is a receiver refusal; a
+            # currency failure after the send keeps its ConnectionError (the
+            # frame may already be applied).
+            if still_selected():
+                raise
+            raise receiver_not_selected(
+                admission.operation,
+                receiver,
+                self._profile.model,
+                "the selection changed before the command reached the wire; ",
+            ) from exc
 
     async def _send_civ_expect(
         self,
@@ -2812,14 +2884,61 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         On timeout falls back to the state cache (if populated) rather than
         raising immediately, allowing callers to remain responsive while the
         radio is busy streaming scope data.
+
+        A read never switches the selection (MOR-3591). SUB is read through
+        selector 01 where profile data make that the physical SUB. Otherwise
+        the plain command is used only while ``receiver`` is the selected
+        receiver; for a receiver that is not selected (or while the
+        selection is unknown) the value last observed while it was selected
+        is returned, and with none :class:`ReceiverNotSelectedError` is
+        raised.
         """
         self._check_connected()
         self._require_receiver(receiver, operation="get_freq")
-        if receiver == RECEIVER_MAIN:
-            return await self._get_frequency_main(bypass_cache=bypass_cache)
+        if self._sub_direct_route(receiver, "get_unselected_freq"):
+            return await self._get_unselected_freq()
+        if await self._establish_receiver_selection() == receiver:
+            # The plain read answers for the selected receiver: admitted for
+            # it and re-checked at wire dispatch like a guarded write.
+            self._require_cmd29_route(
+                0x03, None, receiver=receiver, operation="get_freq"
+            )
+            if receiver == RECEIVER_MAIN:
+                return await self._get_frequency_main(bypass_cache=bypass_cache)
+            civ = self._commands.get_freq(to_addr=self._radio_addr)
+            resp = await self._send_civ_expect(civ, label="get_frequency_selected")
+            return parse_frequency_response(resp)
+        return int(cast(int, self._observed_freq_mode(receiver, "freq_hz", "get_freq")))
 
-        # Use 0x25 0x01 (unselected receiver freq) — no VFO swap needed.
-        return await self._get_unselected_freq()
+    def _observed_freq_mode(self, receiver: int, name: str, operation: str) -> object:
+        """Last observed ``freq_mode`` value of a receiver that is not selected.
+
+        Plain frequency/mode answers are filed under the receiver selected
+        when they arrived. Only answers that arrived after the selection was
+        first known in this CI-V generation are owned by a known receiver;
+        earlier ones (e.g. right after a reconnect, filed under a stale
+        selection) are not trusted. Nothing trusted:
+        :class:`ReceiverNotSelectedError`.
+        """
+        known_since = self._selection_known_since
+        try:
+            field = self._state_store.snapshot().field(
+                FieldPath.active(str(receiver), "freq_mode", name)
+            )
+        except KeyError:
+            field = None
+        if (
+            field is None
+            or field.value is None
+            or known_since is None
+            or field.last_observed_monotonic < known_since
+        ):
+            raise ReceiverNotSelectedError(
+                f"{operation} receiver={receiver}: profile {self._profile.model} "
+                "cannot address that receiver while it is not selected, and its "
+                "value was never observed; select that receiver first"
+            )
+        return field.value
 
     async def set_freq(self, freq_hz: int, receiver: int = 0) -> None:
         """Set the operating frequency.
@@ -2827,26 +2946,43 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Args:
             freq_hz: Frequency in Hz.
             receiver: 0=MAIN, 1=SUB.
+
+        A receiver is reached by its cmd29 route, by the selector-01 SET
+        where profile data make that the physical SUB, or by the plain
+        command while it is the selected receiver; otherwise
+        :class:`ReceiverNotSelectedError` is raised and nothing is sent.
+        The selection is never switched to reach it (MOR-3591).
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_freq")
-        if receiver == RECEIVER_MAIN:
-            await self._set_frequency_main(freq_hz)
+        await self._establish_receiver_selection()
+        if self._sub_direct_route(
+            receiver, "set_unselected_freq", "get_unselected_freq"
+        ):
+            observed = await self.write_relative_vfo_frequency(freq_hz, selected=False)
+            # The verified readback is the radio's state, not the request.
+            self._radio_state.receiver("SUB").freq = observed
+            if observed != freq_hz:
+                raise CommandError(
+                    f"set_freq receiver={receiver}: readback {observed} Hz "
+                    f"contradicts the requested {freq_hz} Hz"
+                )
             return
-
-        if self._profile.supports_cmd29(0x05):
-            civ = self._commands.set_freq(
-                freq_hz, to_addr=self._radio_addr, receiver=receiver
-            )
-            await self._send_civ_raw(civ, wait_response=False)
         else:
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_freq",
-                action=lambda: self._set_frequency_main(freq_hz, update_cache=False),
+            self._require_cmd29_route(
+                0x05, None, receiver=receiver, operation="set_freq"
             )
-
-        self._radio_state.receiver("SUB").freq = freq_hz
+            if receiver != RECEIVER_MAIN and self._profile.supports_cmd29(0x05):
+                civ = self._commands.set_freq(
+                    freq_hz, to_addr=self._radio_addr, receiver=receiver
+                )
+                await self._send_civ_raw(civ, wait_response=False)
+            else:
+                await self._set_frequency_main(
+                    freq_hz, update_cache=receiver == RECEIVER_MAIN
+                )
+        if receiver != RECEIVER_MAIN:
+            self._radio_state.receiver("SUB").freq = freq_hz
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         """Get current mode as (name, filter) — Protocol-compatible.
@@ -2876,14 +3012,29 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Get current mode and filter number (if reported by radio).
 
         On timeout falls back to the state cache when populated.
+        Receivers are read exactly like :meth:`get_freq` (MOR-3591).
         """
         self._check_connected()
         self._require_receiver(receiver, operation="get_mode_info")
-        if receiver == RECEIVER_MAIN:
-            return await self._get_mode_info_main(update_cache=True)
-
-        # Use 0x26 0x01 (unselected receiver mode) — no VFO swap needed.
-        return await self._get_unselected_mode()
+        if self._sub_direct_route(receiver, "get_unselected_mode"):
+            return await self._get_unselected_mode()
+        if await self._establish_receiver_selection() == receiver:
+            # As in get_freq: admitted for the selected receiver and
+            # re-checked at wire dispatch.
+            self._require_cmd29_route(
+                0x04, None, receiver=receiver, operation="get_mode_info"
+            )
+            if receiver == RECEIVER_MAIN:
+                return await self._get_mode_info_main(update_cache=True)
+            civ = self._commands.get_mode(to_addr=self._radio_addr)
+            resp = await self._send_civ_expect(civ, label="get_mode_info_selected")
+            return parse_mode_response(resp)
+        mode_name = str(self._observed_freq_mode(receiver, "mode", "get_mode_info"))
+        try:
+            filt = self._observed_freq_mode(receiver, "filter_num", "get_mode_info")
+        except ReceiverNotSelectedError:
+            return Mode[mode_name], None
+        return Mode[mode_name], cast("int | None", filt)
 
     async def get_filter(self, receiver: int = 0) -> int | None:
         """Get current mode filter number (1-3) when available.
@@ -2911,13 +3062,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         Hz is translated to a profile-defined index and wrapped via cmd29 only
         when the profile lists ``[0x1A, 0x03]`` in its cmd29 routes
         (IC-7610). The profile must declare a ``set_filter_width`` command
-        before the runtime sends a write. On dual-RX profiles that do not
-        list the cmd29 route but do declare VFO select codes (IC-9700),
-        ``receiver=1`` (SUB) is reached by temporarily selecting SUB via
-        CI-V 0x07, sending the plain (non-cmd29) frame, then restoring the
-        previously active receiver — mirroring :meth:`set_freq`. Profiles
-        with neither a cmd29 route nor VFO select codes still raise
-        ``CommandError`` instead of silently writing MAIN.
+        before the runtime sends a write. Without the route the plain frame
+        is sent only to the selected receiver; any other receiver raises
+        :class:`ReceiverNotSelectedError` (MOR-3591).
 
         Args:
             width_hz: Filter width in Hz. Bounds and step depend on the
@@ -2938,21 +3085,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             width_hz, mode_name, data_mode=data_mode
         )
         # CI-V 1A 03: 1-byte BCD index (wfview-confirmed). cmd29-wrapped
-        # for receiver routing on dual-RX rigs (IC-7610), direct on single-RX
-        # (IC-705) and on MAIN for dual-RX rigs without cmd29 support
-        # (IC-9700). SUB on a dual-RX rig without cmd29 support but with VFO
-        # select codes (IC-9700) is reached via the VFO-select fallback
-        # instead of sent to MAIN; SUB with neither raises below.
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1A, 0x03):
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_filter_width",
-                action=lambda: self.send_civ(
-                    0x1A, sub=0x03, data=bcd_index_byte, wait_response=False
-                ),
-            )
-            return
-
+        # where the profile routes it, else plain to the selected receiver.
         self._require_cmd29_route(
             0x1A,
             0x03,
@@ -2976,12 +3109,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         The response encoding is profile-driven. Icom profiles use a 1-byte
         BCD segmented index; Xiegu X6200 uses a single raw byte index. The
         request is cmd29-wrapped only when the profile lists ``[0x1A, 0x03]``
-        in its cmd29 routes. On dual-RX profiles that do not list the
-        route but do declare VFO select codes (IC-9700), ``receiver=1``
-        (SUB) is reached via the VFO-select fallback (mirroring
-        :meth:`set_freq`) instead of silently reading MAIN. Profiles with
-        neither a cmd29 route nor VFO select codes still raise
-        ``CommandError``.
+        in its cmd29 routes; without the route the plain request is sent
+        only for the selected receiver, any other raises
+        :class:`ReceiverNotSelectedError` (MOR-3591).
 
         Args:
             receiver: 0=MAIN, 1=SUB.
@@ -2993,46 +3123,27 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_receiver(receiver, operation="get_filter_width")
 
         # CI-V 1A 03: 1-byte BCD index for every Icom rig (wfview-confirmed).
-        # cmd29-wrapped only for receiver routing on dual-RX rigs that list
-        # the route (IC-7610). IC-705/IC-9700 send the request directly on
-        # MAIN; SUB without a cmd29 route uses the VFO-select fallback when
-        # available, else is rejected below.
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1A, 0x03):
-
-            async def _action() -> CivFrame:
-                civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
-                return await self._send_civ_expect(
-                    civ,
-                    key=f"get_filter_width:{receiver}",
-                    dedupe=True,
-                    label="get_filter_width",
-                )
-
-            resp = await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="get_filter_width",
-                action=_action,
+        # cmd29-wrapped where the profile routes it, else plain for the
+        # selected receiver only.
+        self._require_cmd29_route(
+            0x1A,
+            0x03,
+            receiver=receiver,
+            operation="get_filter_width",
+        )
+        if self._profile.supports_cmd29(0x1A, 0x03):
+            civ = self._commands.get_filter_width(
+                to_addr=self._radio_addr, receiver=receiver
             )
         else:
-            self._require_cmd29_route(
-                0x1A,
-                0x03,
-                receiver=receiver,
-                operation="get_filter_width",
-            )
-            if self._profile.supports_cmd29(0x1A, 0x03):
-                civ = self._commands.get_filter_width(
-                    to_addr=self._radio_addr, receiver=receiver
-                )
-            else:
-                civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
+            civ = build_civ_frame(self._radio_addr, CONTROLLER_ADDR, 0x1A, sub=0x03)
 
-            resp = await self._send_civ_expect(
-                civ,
-                key=f"get_filter_width:{receiver}",
-                dedupe=True,
-                label="get_filter_width",
-            )
+        resp = await self._send_civ_expect(
+            civ,
+            key=f"get_filter_width:{receiver}",
+            dedupe=True,
+            label="get_filter_width",
+        )
         if resp.command != 0x1A or resp.sub != 0x03:
             raise ValueError(
                 f"Not a filter-width response: command 0x{resp.command:02x} "
@@ -3072,31 +3183,45 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             mode: Mode enum or string name (e.g. "USB", "LSB").
             filter_width: Optional filter number (1-3).
             receiver: 0=MAIN, 1=SUB.
+
+        Receiver addressing follows :meth:`set_freq` (MOR-3591): the
+        selector-01 SET keeps the receiver's DATA setting and, when
+        ``filter_width`` is omitted, its filter.
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_mode")
         parsed_mode = self._coerce_mode(mode)
+        await self._establish_receiver_selection()
 
-        if receiver == RECEIVER_MAIN:
-            await self._set_mode_main(parsed_mode, filter_width=filter_width)
-            return
-
-        if self._profile.supports_cmd29(0x06):
-            civ = self._commands.set_mode(
-                parsed_mode,
-                filter_width=filter_width,
-                to_addr=self._radio_addr,
-                receiver=receiver,
+        if self._sub_direct_route(
+            receiver,
+            "set_unselected_mode",
+            "get_unselected_mode",
+            "get_unselected_freq",
+        ):
+            await self.write_relative_vfo_mode(
+                int(parsed_mode), selected=False, filter_width=filter_width
             )
-            await self._send_civ_raw(civ, wait_response=False)
         else:
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_mode",
-                action=lambda: self._set_mode_main(
-                    parsed_mode, filter_width=filter_width, update_cache=False
-                ),
+            self._require_cmd29_route(
+                0x06, None, receiver=receiver, operation="set_mode"
             )
+            if receiver != RECEIVER_MAIN and self._profile.supports_cmd29(0x06):
+                civ = self._commands.set_mode(
+                    parsed_mode,
+                    filter_width=filter_width,
+                    to_addr=self._radio_addr,
+                    receiver=receiver,
+                )
+                await self._send_civ_raw(civ, wait_response=False)
+            else:
+                await self._set_mode_main(
+                    parsed_mode,
+                    filter_width=filter_width,
+                    update_cache=receiver == RECEIVER_MAIN,
+                )
+            if receiver == RECEIVER_MAIN:
+                return
 
         sub = self._radio_state.receiver("SUB")
         sub.mode = parsed_mode.name
@@ -3134,37 +3259,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_capability("data_mode", operation="set_data_mode")
         self._require_receiver(receiver, operation="set_data_mode")
 
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1A, 0x06):
-
-            async def _action() -> None:
-                civ = self._commands.set_data_mode(
-                    on,
-                    to_addr=self._radio_addr,
-                    receiver=RECEIVER_MAIN,
-                    filter_width=filter_width,
-                )
-                resp = await self._send_civ_expect(civ, label="action")
-                ack = parse_ack_nak(resp)
-                if ack is False:
-                    raise CommandError(
-                        f"Radio rejected set_data_mode({on}, receiver={receiver})"
-                    )
-
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_data_mode",
-                action=_action,
-            )
-            return
-
         self._require_cmd29_route(
             0x1A,
             0x06,
             receiver=receiver,
             operation="set_data_mode",
         )
+        # The builder cmd29-wraps any non-MAIN receiver: without a route the
+        # admitted (selected) receiver takes the plain frame.
+        wire_receiver = (
+            receiver if self._profile.supports_cmd29(0x1A, 0x06) else RECEIVER_MAIN
+        )
         civ = self._commands.set_data_mode(
-            on, to_addr=self._radio_addr, receiver=receiver, filter_width=filter_width
+            on,
+            to_addr=self._radio_addr,
+            receiver=wire_receiver,
+            filter_width=filter_width,
         )
         resp = await self._send_civ_expect(civ, label="action")
         ack = parse_ack_nak(resp)
@@ -4840,9 +4950,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def _set_vfo_wire(self, vfo: str) -> None:
         """Wire-level CI-V VFO select.
 
-        Internal helper used by capability-protocol implementations
-        (:meth:`select_receiver`, :meth:`_run_with_receiver_vfo_fallback`,
-        :meth:`swap_vfo_ab`, :meth:`equalize_vfo_ab`).  The legacy public
+        Internal helper behind the explicit, operator-requested
+        :meth:`select_receiver`; nothing else switches the selection
+        (MOR-3591).  The legacy public
         ``set_vfo("A"/"B"/"MAIN"/"SUB")`` overload was removed in v0.20
         (#1206); external code must use
         :class:`~rigplane.radio_protocol.ReceiverBankCapable` /
@@ -4872,12 +4982,24 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"profile {self._profile.model} declares no VFO select code for {name}"
             )
         civ = self._commands.set_vfo(code, to_addr=self._radio_addr)
-        with self._vfo_selection_change():
-            resp = await self._send_civ_expect(civ, label="set_vfo")
-            ack = parse_ack_nak(resp)
-            if ack is False:
-                raise CommandError(f"Radio rejected VFO select {vfo}")
-            self._last_vfo = vfo.upper()
+        # Fail closed (MOR-3591): while the select is in flight, and after
+        # it fails, times out or is cancelled (it may still have switched),
+        # the selection is unknown and receiver-scoped plain commands are
+        # refused; a 0x07 0xD2 answer arriving meanwhile is not trusted.
+        self._receiver_select_inflight += 1
+        self._last_vfo = None
+        try:
+            with self._vfo_selection_change():
+                resp = await self._send_civ_expect(civ, label="set_vfo")
+                ack = parse_ack_nak(resp)
+                if ack is False:
+                    raise CommandError(f"Radio rejected VFO select {vfo}")
+        except BaseException:
+            self._last_vfo = None
+            raise
+        finally:
+            self._receiver_select_inflight -= 1
+        self._record_selection(vfo.upper())
 
     async def set_split(self, on: bool) -> None:
         """Enable or disable split mode (CI-V ``0x0F``)."""
@@ -5349,8 +5471,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """Read DIGI-SEL status (IC-7610 frontend selector).
 
         Wrapping is gated purely on ``self._profile.supports_cmd29(0x16,
-        0x4E)`` via ``_require_cmd29_route`` (a no-op for receiver=MAIN,
-        which raises for receiver!=MAIN without a route) — matching every
+        0x4E)`` via ``_require_cmd29_route`` (without a route only the
+        selected receiver is admitted, MOR-3591) — matching every
         other command in this family. Previously this also hard-raised
         ``CommandError`` for receiver=MAIN when the profile lacked the
         route, instead of unwrapping like the rest of the family (MOR-1537).
@@ -5486,29 +5608,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_receiver(receiver, operation="get_repeater_tone")
         command, sub, _ = self._expect_shape(_get_repeater_tone_cmd)
 
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
-            0x16, _SUB_REPEATER_TONE
-        ):
-
-            async def _action() -> bool:
-                civ = self._commands.get_repeater_tone(
-                    to_addr=self._radio_addr,
-                    receiver=RECEIVER_MAIN,
-                    command29=False,
-                )
-                return await self._get_bool_value(
-                    civ,
-                    key=f"get_repeater_tone:{receiver}",
-                    command=command,
-                    sub=sub,
-                )
-
-            return await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="get_repeater_tone",
-                action=_action,
-            )
-
         self._require_cmd29_route(
             0x16, _SUB_REPEATER_TONE, receiver=receiver, operation="get_repeater_tone"
         )
@@ -5528,27 +5627,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="set_repeater_tone")
 
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
-            0x16, _SUB_REPEATER_TONE
-        ):
-
-            async def _action() -> None:
-                await self._send_fire_and_forget(
-                    self._commands.set_repeater_tone(
-                        on,
-                        to_addr=self._radio_addr,
-                        receiver=RECEIVER_MAIN,
-                        command29=False,
-                    )
-                )
-
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_repeater_tone",
-                action=_action,
-            )
-            return
-
         self._require_cmd29_route(
             0x16, _SUB_REPEATER_TONE, receiver=receiver, operation="set_repeater_tone"
         )
@@ -5564,29 +5642,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="get_repeater_tsql")
         command, sub, _ = self._expect_shape(_get_repeater_tsql_cmd)
-
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
-            0x16, _SUB_REPEATER_TSQL
-        ):
-
-            async def _action() -> bool:
-                civ = self._commands.get_repeater_tsql(
-                    to_addr=self._radio_addr,
-                    receiver=RECEIVER_MAIN,
-                    command29=False,
-                )
-                return await self._get_bool_value(
-                    civ,
-                    key=f"get_repeater_tsql:{receiver}",
-                    command=command,
-                    sub=sub,
-                )
-
-            return await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="get_repeater_tsql",
-                action=_action,
-            )
 
         self._require_cmd29_route(
             0x16, _SUB_REPEATER_TSQL, receiver=receiver, operation="get_repeater_tsql"
@@ -5607,27 +5662,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="set_repeater_tsql")
 
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(
-            0x16, _SUB_REPEATER_TSQL
-        ):
-
-            async def _action() -> None:
-                await self._send_fire_and_forget(
-                    self._commands.set_repeater_tsql(
-                        on,
-                        to_addr=self._radio_addr,
-                        receiver=RECEIVER_MAIN,
-                        command29=False,
-                    )
-                )
-
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_repeater_tsql",
-                action=_action,
-            )
-            return
-
         self._require_cmd29_route(
             0x16, _SUB_REPEATER_TSQL, receiver=receiver, operation="set_repeater_tsql"
         )
@@ -5643,25 +5677,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="get_tone_freq")
         domain = self._profile.ctcss_tones_centihz
-
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x00):
-            civ = self._commands.get_tone_freq(
-                to_addr=self._radio_addr,
-                receiver=RECEIVER_MAIN,
-                command29=False,
-                ctcss_tones_centihz=domain,
-            )
-
-            async def _action() -> int:
-                resp = await self._send_civ_expect(civ, label="get_tone_freq")
-                _, freq = parse_tone_freq_response(resp, ctcss_tones_centihz=domain)
-                return freq
-
-            return await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="get_tone_freq",
-                action=_action,
-            )
 
         self._require_cmd29_route(
             0x1B, 0x00, receiver=receiver, operation="get_tone_freq"
@@ -5696,25 +5711,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._require_receiver(receiver, operation="set_tone_freq")
         domain = self._profile.ctcss_tones_centihz
 
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x00):
-            civ = self._commands.set_tone_freq(
-                freq_hz,
-                to_addr=self._radio_addr,
-                receiver=RECEIVER_MAIN,
-                command29=False,
-                ctcss_tones_centihz=domain,
-            )
-
-            async def _action() -> None:
-                await self._send_fire_and_forget(civ)
-
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_tone_freq",
-                action=_action,
-            )
-            return
-
         self._require_cmd29_route(
             0x1B, 0x00, receiver=receiver, operation="set_tone_freq"
         )
@@ -5734,25 +5730,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="get_tsql_freq")
         domain = self._profile.ctcss_tones_centihz
-
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x01):
-            civ = self._commands.get_tsql_freq(
-                to_addr=self._radio_addr,
-                receiver=RECEIVER_MAIN,
-                command29=False,
-                ctcss_tones_centihz=domain,
-            )
-
-            async def _action() -> int:
-                resp = await self._send_civ_expect(civ, label="get_tsql_freq")
-                _, freq = parse_tsql_freq_response(resp, ctcss_tones_centihz=domain)
-                return freq
-
-            return await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="get_tsql_freq",
-                action=_action,
-            )
 
         self._require_cmd29_route(
             0x1B, 0x01, receiver=receiver, operation="get_tsql_freq"
@@ -5786,25 +5763,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         self._require_receiver(receiver, operation="set_tsql_freq")
         domain = self._profile.ctcss_tones_centihz
-
-        if receiver != RECEIVER_MAIN and not self._profile.supports_cmd29(0x1B, 0x01):
-            civ = self._commands.set_tsql_freq(
-                freq_hz,
-                to_addr=self._radio_addr,
-                receiver=RECEIVER_MAIN,
-                command29=False,
-                ctcss_tones_centihz=domain,
-            )
-
-            async def _action() -> None:
-                await self._send_fire_and_forget(civ)
-
-            await self._run_with_receiver_vfo_fallback(
-                receiver=receiver,
-                operation="set_tsql_freq",
-                action=_action,
-            )
-            return
 
         self._require_cmd29_route(
             0x1B, 0x01, receiver=receiver, operation="set_tsql_freq"
