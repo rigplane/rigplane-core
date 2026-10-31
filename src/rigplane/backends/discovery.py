@@ -66,6 +66,26 @@ _VIRTUAL_KEYWORDS = ("debug", "wlan", "spi")
 _BLUETOOTH_KEYWORDS = ("bluetooth",)
 
 
+async def _finish_close(close: Awaitable[Any]) -> None:
+    """Await a port-close step to completion even when this task is cancelled meanwhile.
+
+    A cancelled scan (or a sibling probe failing) must not abandon a half-closed serial
+    port: the close runs to its end, then the cancellation is re-raised.
+    """
+    closing = asyncio.ensure_future(close)
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(closing)
+            break
+        except asyncio.CancelledError:
+            if closing.cancelled():
+                raise
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 @dataclass
 class SerialPortCandidate:
     """A USB serial port that may be connected to an Icom radio.
@@ -372,7 +392,7 @@ async def _try_baud(
         logger.debug("probe_serial_civ: closing %s", port)
         try:
             writer.close()
-            await writer.wait_closed()
+            await _finish_close(writer.wait_closed())
         except BaseException:
             if diagnostics is not None:
                 diagnostics.status = "probe_error"
@@ -508,7 +528,7 @@ async def probe_xiegu_model_id(
     finally:
         logger.debug("probe_xiegu_model_id: closing %s", port)
         writer.close()
-        await writer.wait_closed()
+        await _finish_close(writer.wait_closed())
         logger.debug("probe_xiegu_model_id: closed %s", port)
 
 
@@ -634,7 +654,7 @@ async def _try_yaesu_baud(
     finally:
         logger.debug("probe_serial_yaesu_cat: closing %s", port)
         try:
-            await transport.close()
+            await _finish_close(transport.close())
         except Exception:
             pass
         logger.debug("probe_serial_yaesu_cat: closed %s", port)
@@ -1035,6 +1055,85 @@ async def resolve_civ_radio_identity(
     return model, profile_id
 
 
+async def _discover_one_port(
+    port: SerialPortCandidate,
+    *,
+    _open_serial: _OpenSerial | None = None,
+    _yaesu_transport_factory: _YaesuTransportFactory | None = None,
+) -> RadioDiscoveryResult | None:
+    """Probe a single candidate port: CI-V → Yaesu CAT → Kenwood CAT.
+
+    Stops after the first successful match for the port.
+
+    Args:
+        port: The candidate port to probe.
+        _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`,
+            passed through to :func:`probe_serial_civ` (used in tests).
+        _yaesu_transport_factory: Override for ``YaesuCatTransport`` constructor
+            passed through to :func:`probe_serial_yaesu_cat` (used in tests).
+
+    Returns:
+        :class:`RadioDiscoveryResult` on success, or ``None`` if no radio answered.
+    """
+    # --- CI-V probe ---
+    civ = await probe_serial_civ(port.device, _open_serial=_open_serial)
+    if civ:
+        model, profile_id = await resolve_civ_radio_identity(
+            civ, port, _open_serial=_open_serial
+        )
+        return RadioDiscoveryResult(
+            port=civ.port,
+            protocol="civ",
+            model=model,
+            profile_id=profile_id,
+            baudrate=civ.baud,
+            address=civ.address,
+            description=port.description,
+            hwid=port.hwid,
+            vid=port.vid,
+            pid=port.pid,
+            manufacturer=port.manufacturer,
+            product=port.product,
+            serial_number=port.serial_number,
+            usb_audio=await _resolve_profile_usb_audio_metadata(civ.port, profile_id),
+        )
+
+    # --- Yaesu CAT probe ---
+    yaesu = await probe_serial_yaesu_cat(
+        port.device,
+        _transport_factory=_yaesu_transport_factory,
+    )
+    if yaesu:
+        yaesu.description = port.description
+        yaesu.hwid = port.hwid
+        yaesu.vid = port.vid
+        yaesu.pid = port.pid
+        yaesu.manufacturer = port.manufacturer
+        yaesu.product = port.product
+        yaesu.serial_number = port.serial_number
+        yaesu.usb_audio = await _resolve_profile_usb_audio_metadata(
+            yaesu.port, yaesu.profile_id
+        )
+        return yaesu
+
+    # --- Kenwood CAT probe ---
+    kenwood = await probe_serial_kenwood_cat(port.device)
+    if kenwood:
+        kenwood.description = port.description
+        kenwood.hwid = port.hwid
+        kenwood.vid = port.vid
+        kenwood.pid = port.pid
+        kenwood.manufacturer = port.manufacturer
+        kenwood.product = port.product
+        kenwood.serial_number = port.serial_number
+        kenwood.usb_audio = await _resolve_profile_usb_audio_metadata(
+            kenwood.port, kenwood.profile_id
+        )
+        return kenwood
+
+    return None
+
+
 async def discover_serial_radios(
     *,
     _open_serial: _OpenSerial | None = None,
@@ -1042,8 +1141,9 @@ async def discover_serial_radios(
 ) -> list[RadioDiscoveryResult]:
     """Discover radios connected via USB serial (CI-V, Yaesu CAT, Kenwood CAT).
 
-    Probes each candidate port in sequence: CI-V → Yaesu CAT → Kenwood CAT.
-    Stops after the first successful match for each port.
+    Probes all candidate ports concurrently, so the wall time is that of the
+    slowest single port rather than the sum. Each port is probed in order:
+    CI-V → Yaesu CAT → Kenwood CAT, stopping after the first match.
 
     Args:
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`,
@@ -1052,74 +1152,32 @@ async def discover_serial_radios(
             passed through to :func:`probe_serial_yaesu_cat` (used in tests).
 
     Returns:
-        List of :class:`RadioDiscoveryResult` for all detected radios.
+        List of :class:`RadioDiscoveryResult` for all detected radios, in
+        candidate enumeration order.
     """
     candidates = enumerate_serial_ports()
-    results: list[RadioDiscoveryResult] = []
-    for port in candidates:
-        # --- CI-V probe ---
-        civ = await probe_serial_civ(port.device, _open_serial=_open_serial)
-        if civ:
-            model, profile_id = await resolve_civ_radio_identity(
-                civ, port, _open_serial=_open_serial
+    tasks = [
+        asyncio.ensure_future(
+            _discover_one_port(
+                port,
+                _open_serial=_open_serial,
+                _yaesu_transport_factory=_yaesu_transport_factory,
             )
-            results.append(
-                RadioDiscoveryResult(
-                    port=civ.port,
-                    protocol="civ",
-                    model=model,
-                    profile_id=profile_id,
-                    baudrate=civ.baud,
-                    address=civ.address,
-                    description=port.description,
-                    hwid=port.hwid,
-                    vid=port.vid,
-                    pid=port.pid,
-                    manufacturer=port.manufacturer,
-                    product=port.product,
-                    serial_number=port.serial_number,
-                    usb_audio=await _resolve_profile_usb_audio_metadata(
-                        civ.port, profile_id
-                    ),
-                )
-            )
-            continue
-
-        # --- Yaesu CAT probe ---
-        yaesu = await probe_serial_yaesu_cat(
-            port.device,
-            _transport_factory=_yaesu_transport_factory,
         )
-        if yaesu:
-            yaesu.description = port.description
-            yaesu.hwid = port.hwid
-            yaesu.vid = port.vid
-            yaesu.pid = port.pid
-            yaesu.manufacturer = port.manufacturer
-            yaesu.product = port.product
-            yaesu.serial_number = port.serial_number
-            yaesu.usb_audio = await _resolve_profile_usb_audio_metadata(
-                yaesu.port, yaesu.profile_id
-            )
-            results.append(yaesu)
-            continue
-
-        # --- Kenwood CAT probe ---
-        kenwood = await probe_serial_kenwood_cat(port.device)
-        if kenwood:
-            kenwood.description = port.description
-            kenwood.hwid = port.hwid
-            kenwood.vid = port.vid
-            kenwood.pid = port.pid
-            kenwood.manufacturer = port.manufacturer
-            kenwood.product = port.product
-            kenwood.serial_number = port.serial_number
-            kenwood.usb_audio = await _resolve_profile_usb_audio_metadata(
-                kenwood.port, kenwood.profile_id
-            )
-            results.append(kenwood)
-
-    return results
+        for port in candidates
+    ]
+    try:
+        probed = await asyncio.gather(*tasks)
+    except BaseException:
+        # A failed or cancelled scan must not leave sibling probes holding serial ports.
+        for task in tasks:
+            # A task already cancelling (scan cancellation reached it through gather) is
+            # finishing its port close; a second cancel would interrupt that.
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+    return [result for result in probed if result is not None]
 
 
 async def _resolve_profile_usb_audio_metadata(
