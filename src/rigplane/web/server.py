@@ -935,6 +935,9 @@ class WebConfig:
     scope_source: str = "auto"
     sdr_config: SdrConfig | None = None
     sdr_source_factory: Callable[[SdrConfig], IqSource] | None = None
+    # Band plan data directory (also holds the persisted ``_config.toml``);
+    # None = the bundled ``band-plans/`` (``bundled_band_plans_dir``). Tests inject a copy.
+    band_plans_dir: pathlib.Path | None = None
 
     def __post_init__(self) -> None:
         if self.auth_token:
@@ -1387,9 +1390,11 @@ class WebServer:
         self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
         self._scope_health_max_retries: int = 3  # give up after N failed re-enables
         # Band plan registry
-        from .band_plan import BandPlanRegistry  # noqa: TID251
+        from .band_plan import DEFAULT_BAND_PLANS_DIR, BandPlanRegistry  # noqa: TID251
 
-        self._band_plan = BandPlanRegistry()
+        self._band_plan = BandPlanRegistry(
+            self._config.band_plans_dir or DEFAULT_BAND_PLANS_DIR
+        )
         # EiBi broadcast database
         from .eibi import EiBiProvider  # noqa: TID251
 
@@ -5049,7 +5054,13 @@ class WebServer:
         # Sort by start freq (stable for overlay rendering)
         segments.sort(key=lambda s: s.get("start", 0))
 
-        body = json.dumps({"segments": segments}, separators=(",", ":")).encode()
+        # ``plansLoaded`` tells the overlay whether an empty list is the
+        # authoritative answer for this window (plans loaded, nothing in it)
+        # or just "no plan data on this install" (it then uses its own copy).
+        body = json.dumps(
+            {"segments": segments, "plansLoaded": self._band_plan.segment_count > 0},
+            separators=(",", ":"),
+        ).encode()
         await _send_response(
             writer, 200, "OK", body, {"Content-Type": "application/json"}
         )
@@ -5149,6 +5160,8 @@ class WebServer:
         body = json.dumps(
             {
                 "region": self._band_plan.region,
+                "requestedRegion": self._band_plan.requested_region,
+                "fallbackReason": self._band_plan.region_fallback_reason,
                 "availableRegions": ["US", "IARU-R1", "IARU-R2", "IARU-R3"],
             },
             separators=(",", ":"),
@@ -5216,10 +5229,11 @@ class WebServer:
                 )
                 return
 
-            # Write config and reload
-            from pathlib import Path as _Path
-
-            project_bp = _Path(__file__).resolve().parents[3] / "band-plans"
+            # Write config and reload (the registry's own directory: the one
+            # production startup loaded from, so the two cannot disagree).
+            project_bp = self._band_plan.directory
+            if project_bp is None:
+                raise RuntimeError("band-plan directory is not configured")
             config_path = project_bp / "_config.toml"
             existing: dict[str, Any] = {}
             if config_path.is_file():

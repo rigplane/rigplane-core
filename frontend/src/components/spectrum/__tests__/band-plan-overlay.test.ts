@@ -8,6 +8,8 @@ import {
   computePosition,
   filterOverlapping,
   shouldSkipFetch,
+  parseSegmentsResponse,
+  localCopyServesRegion,
   type RemoteSegment,
 } from '../band-plan-logic';
 
@@ -157,5 +159,98 @@ describe('shouldSkipFetch (containment)', () => {
 
   it('viewport past the right fetch edge triggers fetch', () => {
     expect(shouldSkipFetch(14_000_000, 14_550_000, 13_825_000, 14_525_000)).toBe(false);
+  });
+
+  it('same region and contained viewport is skipped', () => {
+    expect(shouldSkipFetch(14_000_000, 14_350_000, 13_825_000, 14_525_000, 'US', 'US')).toBe(true);
+  });
+
+  it('region switch at an unchanged viewport triggers fetch', () => {
+    expect(shouldSkipFetch(14_000_000, 14_350_000, 13_825_000, 14_525_000, 'IARU-R1', 'US')).toBe(false);
+  });
+
+  it('callers without a region keep the viewport-only behavior', () => {
+    expect(shouldSkipFetch(14_000_000, 14_350_000, 13_825_000, 14_525_000)).toBe(true);
+  });
+});
+
+describe('VHF/UHF overlay (MOR-3631)', () => {
+  it('formats GHz for 23 cm with 1 kHz resolution', () => {
+    expect(formatFreq(1_296_100_000)).toBe('1.296100 GHz');
+    expect(formatFreq(1_240_000_000)).toBe('1.240000 GHz');
+  });
+
+  it('renders both ends of a narrow 23 cm segment distinctly', () => {
+    // The 1296.000–1296.050 MHz EME segment must not collapse to one label.
+    expect(formatFreq(1_296_000_000)).toBe('1.296000 GHz');
+    expect(formatFreq(1_296_050_000)).toBe('1.296050 GHz');
+    expect(formatFreq(1_296_000_000)).not.toBe(formatFreq(1_296_050_000));
+  });
+
+  it('positions a 2 m simplex segment inside a 2 m span', () => {
+    const pos = computePosition(146_400_000, 146_580_000, 144_000_000, 148_000_000);
+    expect(pos.leftPct).toBeCloseTo(60, 0);
+    expect(pos.widthPct).toBeCloseTo(4.5, 1);
+  });
+
+  it('positions a 70 cm calling point inside a 70 cm span', () => {
+    const pos = computePosition(446_000_000, 446_000_000, 430_000_000, 450_000_000);
+    expect(pos.leftPct).toBeCloseTo(80, 0);
+    expect(pos.widthPct).toBe(0);
+  });
+
+  it('keeps ham VHF segments and suppresses overlapping utility', () => {
+    const ham: RemoteSegment = {
+      start: 144_000_000, end: 148_000_000, mode: 'phone', label: 'FM',
+      color: '#60A5FA', opacity: 0.2, band: '2m', layer: 'ham', priority: 10,
+    };
+    const utility: RemoteSegment = {
+      start: 145_000_000, end: 147_000_000, mode: 'utility', label: 'UTIL',
+      color: '#F97316', opacity: 0.2, band: 'UTIL', layer: 'utility', priority: 3,
+    };
+    const result = filterOverlapping([ham, utility], 144_000_000, 148_000_000);
+    expect(result).toHaveLength(1);
+    expect(result[0].layer).toBe('ham');
+  });
+});
+
+describe('parseSegmentsResponse', () => {
+  const seg = { start: 1, end: 2, mode: 'cw', label: 'X', color: '#000000', opacity: 0.2, band: '', layer: 'ham', priority: 1 };
+
+  it('returns the segments of a non-empty answer', () => {
+    expect(parseSegmentsResponse({ segments: [seg], plansLoaded: true })).toEqual([seg]);
+    // A server that predates plansLoaded still answers with segments.
+    expect(parseSegmentsResponse({ segments: [seg] })).toEqual([seg]);
+  });
+
+  it('keeps a successful empty answer authoritative (plans loaded, nothing in the window)', () => {
+    expect(parseSegmentsResponse({ segments: [], plansLoaded: true })).toEqual([]);
+    expect(parseSegmentsResponse({ segments: [] })).toEqual([]);
+  });
+
+  it('treats an empty answer from an install without band-plan data as unavailable', () => {
+    expect(parseSegmentsResponse({ segments: [], plansLoaded: false })).toBeNull();
+  });
+
+  it('treats a malformed body as unavailable', () => {
+    expect(parseSegmentsResponse(null)).toBeNull();
+    expect(parseSegmentsResponse('nope')).toBeNull();
+    expect(parseSegmentsResponse({})).toBeNull();
+    expect(parseSegmentsResponse({ segments: 'x' })).toBeNull();
+  });
+});
+
+describe('localCopyServesRegion', () => {
+  it('serves the legacy no-region caller, the US plan and IARU Region 2 (same ARRL file)', () => {
+    expect(localCopyServesRegion(undefined)).toBe(true);
+    expect(localCopyServesRegion('US')).toBe(true);
+    expect(localCopyServesRegion('IARU-R2')).toBe(true);
+  });
+
+  it('never serves another region, nor a region that is not known yet', () => {
+    expect(localCopyServesRegion(null)).toBe(false);
+    expect(localCopyServesRegion('IARU-R1')).toBe(false);
+    expect(localCopyServesRegion('IARU-R3')).toBe(false);
+    expect(localCopyServesRegion('')).toBe(false);
   });
 });

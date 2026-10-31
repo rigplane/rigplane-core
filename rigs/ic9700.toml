@@ -596,8 +596,12 @@ equal_main_sub = [0xB1]
 # (command 1A 01), Frequency band codes: 01=VHF 144.000000~148.000000,
 # 02=UHF 430.000000~450.000000, 03=1.2GHz 1240.000000~1300.000000.
 # default_hz: the manuals state no per-band default tuning frequency,
-# and _schema.md makes the key required, so each band carries its
-# manual-given start edge as the BSR-recall fallback frequency.
+# and _schema.md makes the key required, so each band carries a
+# BSR-recall fallback frequency chosen as a suitable in-band FM
+# operating frequency with bandwidth clearance from the band edges
+# (MOR-4373): 2m/70cm mirror the US national FM simplex calling
+# frequencies also used by the IC-705 profile; 23cm uses the ARRL
+# 23 cm national FM simplex calling frequency.
 
 [[freq_ranges.ranges]]
 label = "2m"
@@ -609,8 +613,9 @@ repeater = true
 name = "2m"
 start_hz = 144_000_000
 end_hz = 148_000_000
-default_hz = 144_000_000
+default_hz = 146_520_000
 bsr_code = 0x01
+default_mode = "FM"
 
 [[freq_ranges.ranges]]
 label = "70cm"
@@ -622,8 +627,9 @@ repeater = true
 name = "70cm"
 start_hz = 430_000_000
 end_hz = 450_000_000
-default_hz = 430_000_000
+default_hz = 446_000_000
 bsr_code = 0x02
+default_mode = "FM"
 
 [[freq_ranges.ranges]]
 # The CI-V guide names this band "1.2GHz".
@@ -636,8 +642,9 @@ repeater = true
 name = "23cm"
 start_hz = 1_240_000_000
 end_hz = 1_300_000_000
-default_hz = 1_240_000_000
+default_hz = 1_294_500_000
 bsr_code = 0x03
+default_mode = "FM"
 
 # ── Command 29 Routes ───────────────────────────────────────────
 # The IC-9700 uses the MAIN/SUB receiver-select scheme (0x07 0xD0/0xD1)

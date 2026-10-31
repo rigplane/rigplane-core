@@ -537,13 +537,14 @@ Array of tables, each defining a frequency coverage range.
 
 ### `[[freq_ranges.ranges.bands]]` — Band Definitions
 
-| Field        | Type   | Required | Description                                 |
-|--------------|--------|----------|---------------------------------------------|
-| `name`       | string | yes      | Band name (e.g. `"20m"`, `"70cm"`)          |
-| `start_hz`   | int    | yes      | Band start frequency in Hz                  |
-| `end_hz`     | int    | yes      | Band end frequency in Hz                    |
-| `default_hz` | int    | yes      | Default tuning frequency in Hz (within band)|
-| `bsr_code`   | int    | no       | Band Stack Register code for CI-V 0x1A 0x01 |
+| Field          | Type   | Required | Description                                                          |
+|----------------|--------|----------|----------------------------------------------------------------------|
+| `name`         | string | yes      | Band name (e.g. `"20m"`, `"70cm"`)                                   |
+| `start_hz`     | int    | yes      | Band start frequency in Hz                                           |
+| `end_hz`       | int    | yes      | Band end frequency in Hz                                             |
+| `default_hz`   | int    | yes      | Default tuning frequency in Hz (within band)                         |
+| `bsr_code`     | int    | no       | Band Stack Register code for CI-V 0x1A 0x01                          |
+| `default_mode` | string | no       | Mode tuned with `default_hz` when a band change has no band-stack readback (MOR-3631). Must name a mode from `[modes].list` exactly. Omitted = freq-only fallback, unchanged. Read only by the Icom band-stack fallback; a backend that recalls bands natively (Yaesu `BS`) never consumes it, so do not set it there. |
 | `rx_only`    | bool   | no       | This band row is receive-only (MOR-3632): tunable in the band selector but excluded from the capabilities `txBands` payload, so it never grants transmit permission. Optional, default `false`; a non-boolean value is a load error naming the band. |
 
 ## `[cmd29]` — Command 29 Routes
