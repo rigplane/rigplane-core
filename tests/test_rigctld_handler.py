@@ -3347,6 +3347,49 @@ async def test_set_level_att_ic7300_snaps_to_0() -> None:
     assert radio.att_calls == [0]
 
 
+def _real_att_radio(model: str) -> tuple[IcomRadio, MockTransport]:
+    """A real IcomRadio on a silent transport, for profile-driven ATT tests."""
+    transport = MockTransport()
+    radio = IcomRadio("192.168.1.100", timeout=0.05, model=model)
+    radio._civ_transport = transport
+    radio._ctrl_transport = transport
+    radio._connected = True
+    return radio, transport
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300", "IC-705"])
+async def test_set_level_att_real_radio_sends_declared_20db(
+    model: str,
+) -> None:
+    """MOR-2100: ``L ATT 20`` on a single-step profile sends the 20 dB frame."""
+    radio, transport = _real_att_radio(model)
+    try:
+        resp = await RigctldHandler(radio, RigctldConfig()).execute(
+            set_cmd("set_level", "ATT", "20")
+        )
+        assert resp.ok
+        assert any(b"\x11\x20\xfd" in pkt for pkt in transport.sent_packets)
+    finally:
+        radio._connected = False
+
+
+@pytest.mark.asyncio
+async def test_set_level_att_real_radio_ic7610_exact_and_snap() -> None:
+    """MOR-2100: IC-7610 sends 18 dB as-is; 20 dB snaps to the declared 21."""
+    radio, transport = _real_att_radio("IC-7610")
+    try:
+        handler = RigctldHandler(radio, RigctldConfig())
+        assert (await handler.execute(set_cmd("set_level", "ATT", "18"))).ok
+        assert any(b"\x11\x18\xfd" in pkt for pkt in transport.sent_packets)
+        transport.sent_packets.clear()
+        assert (await handler.execute(set_cmd("set_level", "ATT", "20"))).ok
+        assert any(b"\x11\x21\xfd" in pkt for pkt in transport.sent_packets)
+        assert all(b"\x11\x20\xfd" not in pkt for pkt in transport.sent_packets)
+    finally:
+        radio._connected = False
+
+
 @pytest.mark.asyncio
 async def test_get_level_att_profile_radio_passes_db_through() -> None:
     radio = _IcomProfileAttRadio("IC-7610")
