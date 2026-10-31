@@ -20,7 +20,7 @@ import pytest
 
 from rigplane.web.handlers.scope import ScopeHandler
 from rigplane.web.transport import Connection
-from rigplane.web.websocket import WS_OP_TEXT, WebSocketConnection
+from rigplane.ws import WS_OP_TEXT, WebSocketConnection
 
 
 class FakeConnection:

@@ -553,7 +553,6 @@ _YAESU_CAT_MODEL_MAP: dict[str, tuple[str, str]] = {
 }
 
 _YAESU_CAT_PROBE_BAUDS = [38400, 9600, 115200]
-_KENWOOD_CAT_PROBE_BAUDS = [9600, 38400, 115200]
 
 _YaesuTransportFactory = Callable[..., Any]
 

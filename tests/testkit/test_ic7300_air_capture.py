@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import importlib.util
 import json
 import sys
@@ -125,7 +125,27 @@ async def test_clip_on_the_fake_tunes_records_and_restores(tmp_path) -> None:
 async def test_start_at_overrides_the_slot_wait_and_is_recorded(tmp_path) -> None:
     """``--start-at`` must set the audio start, not the next 15 s slot boundary."""
     fake = CivSerialFake(echo=False, frequency_hz=7_100_000, mode=0x00)
-    target = datetime.now(timezone.utc) + timedelta(seconds=2.5)
+
+    # MOR-3920: run_clip used to sleep a fixed 0.5 s + 1.0 s while tuning
+    # before reaching _wait_until, so any tight budget raced the wall clock
+    # (the committed 2.5 s lost it on loaded CI runners; even with instant
+    # settle sleeps ~0.33 s of real pre-work remained against a 0.5 s
+    # budget). The test now drives time itself: the injected `clock` starts
+    # at the anchor below and advances 1 ms per read, so the boundary poll
+    # loop in _wait_until reaches the 0.5 s target after ~500 instant
+    # iterations. Real elapsed time no longer matters, and 0.5 s still
+    # proves the 15 s slot wait was overridden.
+    async def instant_settle(_: float) -> None:
+        return None
+
+    anchor = datetime.now(timezone.utc).timestamp()
+    state = {"now": anchor}
+
+    def clock() -> float:
+        state["now"] += 0.001
+        return state["now"]
+
+    target = datetime.fromtimestamp(anchor + 0.5, tz=timezone.utc)
     args = argparse.Namespace(
         clip="ft8",
         device="fake-tty",
@@ -150,7 +170,16 @@ async def test_start_at_overrides_the_slot_wait_and_is_recorded(tmp_path) -> Non
         audios.append(_StubAudio(path))
         return audios[-1]
 
-    assert await air.run_clip(args, opener=fake.opener, audio_factory=factory) == 0
+    assert (
+        await air.run_clip(
+            args,
+            opener=fake.opener,
+            audio_factory=factory,
+            sleep=instant_settle,
+            clock=clock,
+        )
+        == 0
+    )
     manifest = json.loads(next(tmp_path.glob("*.manifest.json")).read_text())
     started = datetime.fromisoformat(manifest["slot_start_wall_utc"])
     assert abs((started - target).total_seconds()) < 0.01

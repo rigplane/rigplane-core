@@ -198,9 +198,13 @@ never because `visual.yml` itself changed.
 
 When every changed path is documentation or documentation metadata — including
 `docs/**` except data files, Markdown/RST anywhere in the tree, `.claude/**`, and
-the doc-citation baseline files — only the GitHub-hosted classifier runs. The
-required `quick` job reports a server-side skipped/neutral context and never
-allocates the Mac mini. Do not run citation, link, Markdown, product, visual,
+the doc-citation baseline files — no test job runs. `docs-only-quick.yml`
+(`pull_request_target`, `ubuntu-latest`) publishes the required `quick` status
+as success without a checkout; `quick.yml`'s `paths-ignore` skips such a head,
+and for a docs-only head that still reaches it, the `classify` job
+(`ubuntu-latest`) sets `docs=true` and the `quick` job is skipped by its `if:`
+(`needs.classify.outputs.docs != 'true'`). No self-hosted runner is allocated.
+Do not run citation, link, Markdown, product, visual,
 or full automation; the exact-head independent review is the substantive gate.
 Documentation mixed with code follows the normal checks selected by the code
 paths. Data files under `docs/` (`*.json`, `*.toml`, `*.yaml`, `*.yml`) and the
@@ -297,16 +301,16 @@ implementation agent may not be the review agent.
   checks are actually green at the exact head is a separate step the
   coordinator takes immediately before merging — both conditions still gate
   the merge, just held by two roles instead of one.
-- That split exists because CI is a shared, limited resource: `quick.yml`,
-  `full.yml`, and `visual.yml` all set `runs-on: [self-hosted, linux, build]`,
-  while everything else under `.github/workflows/` runs on `ubuntu-latest`.
-  `gh api repos/rigplane/rigplane-core/actions/runners` currently lists
-  exactly one registered runner carrying those labels, scoped to this
-  repository alone — `rigplane-pro`'s runners are separate registrations
-  and cannot pick up this repository's jobs. The contention is narrower
-  than a shared queue: this repository's three self-hosted workflows
-  serialize behind a single runner of its own, and a review session that
-  waits on that queue can still lose an hour or more for nothing.
+- That split exists because CI is a shared, limited resource: the
+  self-hosted workflows queue behind a small shared pool of this
+  repository's own `[self-hosted, linux, build]` runners — see the runner
+  labels in `.github/workflows/` and
+  [`docs/development/release-gates.md`](docs/development/release-gates.md);
+  the labels, not a count, are the contract, and the pool changes over
+  time. The macOS bench/platform workflows use their own labels.
+  `rigplane-pro`'s runners are separate registrations and cannot pick up
+  this repository's jobs. A review session that waits on that queue can
+  still lose an hour or more for nothing.
 - Do not rerun an entire suite merely to classify a failure. Diagnose it from
   the existing artifact and a focused reproduction on the Mac mini. A repaired
   final head receives its natural required workflow run; a full-suite rerun is
@@ -361,26 +365,19 @@ implementation agent may not be the review agent.
   `Tests (quick)` run was cancelled each carry an overall `FAILURE` state.
   A red commit on `main` from a cancelled run needs a person to look at
   it, because nothing else will.
-- `quick.yml` keys its `concurrency.group` on the workflow name plus
-  `github.ref`, so every push to `main` shares one group with every other
-  push to `main`. Within one group, GitHub keeps at most one *queued*
-  (not-yet-started) run: a push that arrives while the previous push's run
-  is still waiting for a runner cancels that waiting run outright — it
-  never reaches a runner (empty `runner_name`, no steps recorded). This
-  happens regardless of the group's `cancel-in-progress` setting, which
-  only governs whether an *already-started* run is cancelled by a later
-  push, not whether a *queued* one is. All four cancelled `main` runs
-  sampled on 2026-08-30 died this way — queued, not mid-run. Measured and
-  tracked as MOR-2048; see that ticket rather than re-deriving the counts.
+- `quick.yml` has no `push` trigger (MOR-3878): the merge queue's `merge_group`
+  run tests the tree that lands on `main` (a squash keeps the tree), so no
+  `quick` run follows the merge. The queued-run cancellation on `main`
+  measured in MOR-2048 cannot happen to it any more. The scheduled
+  `full.yml` run (every 3 hours on weekdays, skipped when that commit
+  already passed) and `docs.yml` are what runs on `main` itself.
 - The merge operator may train-merge file-disjoint PRs whose immutable heads
   each have an exact-head PASS and every required PR check green. Guard every
-  merge with `--match-head-commit`. Do not wait for or rerun intermediate
-  `main` quick runs: queued intermediate runs may be displaced by the next
-  train merge and are not acceptance evidence. After the final merge, require
-  one aggregate `main` quick on the final batch head. An actual conflict,
-  proven interaction between train members, or failure on that final aggregate
-  head stops the train for diagnosis. This keeps exact-head protection while
-  avoiding the queued-run churn tracked in MOR-2048.
+  merge with `--match-head-commit`. The merge queue's `merge_group` `quick`
+  run on the batch head is the aggregate run; there is no `main` quick run to
+  wait for or rerun after the merge. An actual conflict, proven interaction
+  between train members, or failure on that queue run stops the train for
+  diagnosis.
 - After a merge, if a run on `main` looks cancelled or otherwise
   unverified and you want to know whether an earlier PR run already
   covered the code that landed, compare

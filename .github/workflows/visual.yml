@@ -9,13 +9,13 @@ name: Visual regression (pixel-diff)
 # MOR-1396: browser system dependencies are installed explicitly and the
 # approved baselines were re-pinned from real Linux runner output.
 #
-# `push` to `main` runs the same pixel-diff under the
-# same paths filter as `pull_request`, so two individually-green PRs that
-# jointly redden the approved set are still caught on `main`. The
-# concurrency group is keyed on the workflow, the event name and
-# github.ref, so a push run on main and a workflow_dispatch run on main
-# are in different groups. Push runs are informational: their failure
-# annotation asks for a ticket, not a revert.
+# The scheduled full.yml run calls this workflow on `main` without a paths
+# filter, so two individually-green PRs that jointly redden the approved set
+# are still caught on `main` (MOR-3878: there is no push run, because the
+# merge queue already tested the tree that lands). The concurrency group is
+# keyed on the workflow, the event name and github.ref, so a run on main and a
+# workflow_dispatch run on main are in different groups. Runs on main are
+# informational: their failure annotation asks for a ticket, not a revert.
 
 on:
   pull_request:
@@ -47,34 +47,10 @@ on:
       - "!frontend/**/*.Rst"
       - "!frontend/**/*.RSt"
       - "!frontend/**/*.RST"
-  push:
-    branches: [main]
-    paths:
-      - "frontend/**"
-      - "!frontend/*.md"
-      - "!frontend/*.mD"
-      - "!frontend/*.Md"
-      - "!frontend/*.MD"
-      - "!frontend/*.rst"
-      - "!frontend/*.rsT"
-      - "!frontend/*.rSt"
-      - "!frontend/*.rST"
-      - "!frontend/*.RsT"
-      - "!frontend/*.Rst"
-      - "!frontend/*.RSt"
-      - "!frontend/*.RST"
-      - "!frontend/**/*.md"
-      - "!frontend/**/*.mD"
-      - "!frontend/**/*.Md"
-      - "!frontend/**/*.MD"
-      - "!frontend/**/*.rst"
-      - "!frontend/**/*.rsT"
-      - "!frontend/**/*.rSt"
-      - "!frontend/**/*.rST"
-      - "!frontend/**/*.RsT"
-      - "!frontend/**/*.Rst"
-      - "!frontend/**/*.RSt"
-      - "!frontend/**/*.RST"
+  # Also called by full.yml for the scheduled run on main (MOR-3878): the merge
+  # queue does not run this informational gate, so the merged tree gets its
+  # signal from there with this same job definition.
+  workflow_call:
   workflow_dispatch:
     inputs:
       regenerate:
@@ -94,7 +70,7 @@ jobs:
   changes:
     runs-on: ubuntu-latest
     outputs:
-      frontend: ${{ steps.filter.outputs.frontend || steps.manual.outputs.frontend || steps.push.outputs.frontend }}
+      frontend: ${{ steps.filter.outputs.frontend || steps.manual.outputs.frontend }}
     steps:
       - name: Select product frontend changes
         id: filter
@@ -117,15 +93,10 @@ jobs:
               - '!frontend/**/*.RSt'
               - '!frontend/**/*.RST'
 
-      - name: Select manual visual run
+      - name: Select unfiltered visual run
         id: manual
-        if: github.event_name == 'workflow_dispatch'
-        run: echo "frontend=true" >> "$GITHUB_OUTPUT"
-
-      - name: Select push main run
-        id: push
-        # The push trigger's own paths filter already gated this run.
-        if: github.event_name == 'push'
+        # A manual dispatch, or full.yml calling this workflow on main.
+        if: github.event_name != 'pull_request'
         run: echo "frontend=true" >> "$GITHUB_OUTPUT"
 
   visual:
@@ -135,8 +106,7 @@ jobs:
     # still available through workflow_dispatch.
     if: >-
       needs.changes.outputs.frontend == 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
+      (github.event_name != 'pull_request' ||
       github.event.pull_request.draft == false)
     runs-on: [self-hosted, linux, build]
     timeout-minutes: 10
@@ -179,8 +149,8 @@ jobs:
       - name: Annotate failure
         if: always() && steps.visual.outcome == 'failure'
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "::error::Visual pixel-diff failed on main. This push run is informational; open a ticket for the baseline drift instead of reverting the merge. See the Pixel-diff vs approved baselines step log."
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "::error::Visual pixel-diff failed on main. This run is informational; open a ticket for the baseline drift instead of reverting the merge. See the Pixel-diff vs approved baselines step log."
           else
             echo "::error::Visual pixel-diff failed. See the Pixel-diff vs approved baselines step log."
           fi

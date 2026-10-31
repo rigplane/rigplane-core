@@ -315,52 +315,11 @@ class TestRadioSelectedMode:
 # ---------------------------------------------------------------------------
 
 
-class TestVfoSlotOverrideCivRx:
-    """CivRuntime routes 0x03/0x04 responses to vfo_a or vfo_b when the
-    poller has installed a ``_vfo_slot_override`` entry for the target
-    receiver."""
+class TestActiveSlotCivRx:
+    """CivRuntime writes 0x03 responses to the active slot."""
 
-    def test_cmd03_routes_to_vfo_b_when_override_set(self, radio: IcomRadio) -> None:
-        from rigplane.radio_state import RadioState
-        from rigplane.types import bcd_encode
-
-        radio._radio_state = RadioState()
-        rs = radio._radio_state
-        rs.main.active_slot = "A"
-        rs.main.vfo_a = rs.main.vfo_a.__class__(freq_hz=14_000_000, mode="USB")
-        radio._vfo_slot_override = {"MAIN": "B"}
-        frame = CivFrame(
-            to_addr=CONTROLLER_ADDR,
-            from_addr=IC_7610_ADDR,
-            command=0x03,
-            sub=None,
-            data=bcd_encode(21_000_000),
-        )
-        radio._civ_runtime._update_radio_state_from_frame(frame)
-        assert rs.main.vfo_a.freq_hz == 14_000_000  # active slot unchanged
-        assert rs.main.vfo_b.freq_hz == 21_000_000  # unselected slot populated
-
-    def test_cmd04_routes_to_vfo_b_when_override_set(self, radio: IcomRadio) -> None:
-        from rigplane.radio_state import RadioState
-
-        radio._radio_state = RadioState()
-        rs = radio._radio_state
-        rs.main.active_slot = "A"
-        radio._vfo_slot_override = {"MAIN": "B"}
-        frame = CivFrame(
-            to_addr=CONTROLLER_ADDR,
-            from_addr=IC_7610_ADDR,
-            command=0x04,
-            sub=None,
-            data=bytes([Mode.LSB, 2]),
-        )
-        radio._civ_runtime._update_radio_state_from_frame(frame)
-        assert rs.main.vfo_a.mode == "USB"  # default, unchanged
-        assert rs.main.vfo_b.mode == "LSB"
-        assert rs.main.vfo_b.filter_num == 2
-
-    def test_override_absent_falls_back_to_active_slot(self, radio: IcomRadio) -> None:
-        """Without the override flag, 0x03 writes to the active slot as before."""
+    def test_cmd03_writes_to_active_slot(self, radio: IcomRadio) -> None:
+        """0x03 writes to the active slot."""
         from rigplane.radio_state import RadioState
         from rigplane.types import bcd_encode
 
@@ -377,24 +336,3 @@ class TestVfoSlotOverrideCivRx:
         radio._civ_runtime._update_radio_state_from_frame(frame)
         assert rs.main.vfo_a.freq_hz == 14_074_000
         assert rs.main.vfo_b.freq_hz == 0
-
-    def test_override_targets_sub_receiver(self, radio: IcomRadio) -> None:
-        """Override for SUB routes cmd29-wrapped responses to sub.vfo_b."""
-        from rigplane.radio_state import RadioState
-        from rigplane.types import bcd_encode
-
-        radio._radio_state = RadioState()
-        rs = radio._radio_state
-        rs.sub.active_slot = "A"
-        radio._vfo_slot_override = {"SUB": "B"}
-        frame = CivFrame(
-            to_addr=CONTROLLER_ADDR,
-            from_addr=IC_7610_ADDR,
-            command=0x03,
-            sub=None,
-            data=bcd_encode(7_074_000),
-            receiver=0x01,  # cmd29-wrapped response from SUB
-        )
-        radio._civ_runtime._update_radio_state_from_frame(frame)
-        assert rs.sub.vfo_a.freq_hz == 0
-        assert rs.sub.vfo_b.freq_hz == 7_074_000

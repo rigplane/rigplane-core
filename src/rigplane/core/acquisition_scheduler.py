@@ -151,6 +151,14 @@ class AcquisitionPriority(StrEnum):
     USER = "user"
 
 
+#: Priorities of requests the scheduler raises itself (cadence and priming
+#: reads, reconciliation hints), the only ones the conditional-availability
+#: gate withholds at dispatch (MOR-3630).
+_AUTOMATIC_PRIORITIES = frozenset(
+    {AcquisitionPriority.BACKGROUND, AcquisitionPriority.RECONCILIATION}
+)
+
+
 class AcquisitionStatus(StrEnum):
     """Result of an ensure-fresh request."""
 
@@ -489,6 +497,7 @@ class AcquisitionScheduler:
     """Minimal priority/dedupe queue for backend-neutral acquisition reads."""
 
     __slots__ = (
+        "_availability",
         "_budget_fit",
         "_clock",
         "_cadence_by_key",
@@ -575,6 +584,13 @@ class AcquisitionScheduler:
         # calls either update method keeps its pre-existing, unfiltered
         # reconciliation behavior.
         self._tx_active = True
+        # MOR-3630: the conditional-availability resolution last reported to
+        # ``due_requests`` or ``note_availability``. ``dispatchable_requests``
+        # reads it to withhold automatic requests whose every path the
+        # current state contradicts -- see that method's docstring. Defaults
+        # to nothing resolved (no gating), like ``_tx_active`` defaulting to
+        # True.
+        self._availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY
         # MOR-2599: the demotation map from the last ``due_requests``
         # computation (key -> (cadence, TTL)); empty otherwise — the demoted
         # cadence clock and queue TTL read it.
@@ -1042,14 +1058,23 @@ class AcquisitionScheduler:
 
         MOR-2586: execution order is priority, then the highest-ranked
         acquisition class among the request's paths, then deadline.
+
+        MOR-3630: an automatic request (``BACKGROUND`` cadence and priming,
+        ``RECONCILIATION`` hints) whose every path the last reported
+        availability resolution contradicts is withheld the same way: a
+        read queued while the radio's mode allowed it and drained after the
+        mode changed (the IC-705 PBT read once MAIN reads FM) is not sent
+        into a NAK. It stays pending -- withheld, not deleted -- so it goes
+        out the first drain that observes the clause set holding again.
+        Requests a caller asked for by name (``NORMAL``/``COMMAND``/
+        ``USER``) are never gated here. Requests re-queued by
+        :meth:`resume_external_cat` pass through the same gate.
         """
 
         eligible = (
             request
             for request in self._requests_by_key.values()
-            if self._tx_active
-            or request.priority is not AcquisitionPriority.RECONCILIATION
-            or not request.policy.tx_only
+            if self.is_dispatchable(request)
         )
         return tuple(
             sorted(
@@ -1067,6 +1092,22 @@ class AcquisitionScheduler:
             )
         )
 
+    def is_dispatchable(self, request: AcquisitionRequest) -> bool:
+        """Return whether ``request`` passes the dispatch gates right now.
+
+        The per-request form of :meth:`dispatchable_requests`' filter (the
+        ``tx_only`` and conditional-availability gates), for a drain that
+        awaits between sends: the tuple it took at the start of the pass can
+        go stale while an earlier read is in flight, so it asks again, after
+        :meth:`note_availability`, before each send (MOR-3630).
+        """
+
+        return (
+            self._tx_active
+            or request.priority is not AcquisitionPriority.RECONCILIATION
+            or not request.policy.tx_only
+        ) and not self._contradicted_automatic_request(request)
+
     def note_tx_active(self, tx_active: bool) -> None:
         """Update the cached ``tx_active`` gate without driving cadence polling.
 
@@ -1078,6 +1119,26 @@ class AcquisitionScheduler:
         """
 
         self._tx_active = tx_active
+
+    def note_availability(self, snapshot: StateSnapshot) -> None:
+        """Update the cached conditional availability from ``snapshot``.
+
+        The dispatching seats' drains call this every pass, with the same
+        canonical store snapshot the freshness tick resolves against, so
+        :meth:`dispatchable_requests` gates on the state as of the drain
+        rather than as of the last tick -- the availability twin of
+        :meth:`note_tx_active`. :meth:`due_requests` records what its
+        caller resolved the same way; the later writer wins.
+        """
+
+        self._availability = resolve_available_when(self._profile, snapshot)
+
+    def _contradicted_automatic_request(self, request: AcquisitionRequest) -> bool:
+        """Whether ``request`` is automatic and every path is contradicted."""
+
+        return request.priority in _AUTOMATIC_PRIORITIES and all(
+            self._availability.get(path, True) is False for path in request.paths
+        )
 
     def due_requests(
         self,
@@ -1131,6 +1192,8 @@ class AcquisitionScheduler:
         # second writer with a different value wins -- see
         # note_tx_active()'s docstring.
         self._tx_active = tx_active
+        # MOR-3630: and the availability, for the same reason.
+        self._availability = availability
         # MOR-2599: the demotion map for THIS computation (and the
         # ``record_acquisition_result`` that answers its requests): demote
         # the CADENCE of the non-selected receiver's class-derived groups
@@ -1221,6 +1284,7 @@ class AcquisitionScheduler:
         *,
         reason: str = "prime-unobserved",
         limit: int = _PRIME_UNOBSERVED_BURST_LIMIT,
+        availability: Mapping[FieldPath, bool | None] = _NO_RESOLVED_AVAILABILITY,
     ) -> tuple[AcquisitionRequest, ...]:
         """Queue BACKGROUND reads for never-observed fields with a policy.
 
@@ -1274,6 +1338,23 @@ class AcquisitionScheduler:
         RIT/XIT enables, CW keyer setpoints, twin-peak filter, tone/TSQL
         frequency). The panel knobs that were also in this group until
         MOR-2425 are cadence-polled now, so this method skips them.
+
+        **Conditionally absent paths are skipped while contradicted**
+        (MOR-3630): ``availability`` carries what
+        :func:`resolve_available_when` made of each conditional field's
+        declared ``available_when`` clauses against the caller's current
+        snapshot — the same map :meth:`due_requests` takes. A path it maps
+        to ``False`` is not queued and consumes no burst budget, exactly
+        like the cadence-owned skip above, so a prime re-derived after the
+        freshness tick discarded the field (e.g. the IC-705 filter-shape
+        read once MAIN leaves USB for FM) sends nothing while the clause
+        set stays contradicted. A ``None`` resolution (a clause source
+        nobody has observed) and any path absent from the map keep their
+        previous membership — unknown counts as available, the MOR-2748
+        rule. The skip is state-dependent, not a change of responsibility:
+        the contradicted path stays unobserved, so the adaptive re-prime
+        cadence keeps re-deriving and the read goes out again the first
+        pass the clause set holds.
 
         Two further guards keep one call from flooding the transport:
 
@@ -1343,6 +1424,14 @@ class AcquisitionScheduler:
                 # group; priming it here would collide with that group's
                 # request key and starve due_requests()'s t0 poll for every
                 # other path sharing the group (MOR-1490 review R3).
+                continue
+            if availability.get(path) is False:
+                # MOR-3630: the caller's snapshot contradicts this path's
+                # declared available_when clauses (e.g. an FM-NAKed read
+                # while the mode reads FM). Queue nothing and consume no
+                # burst budget; the path stays unobserved, so the next
+                # re-derivation re-primes it the moment the clause set
+                # holds again. None/absent keeps the path (MOR-2748).
                 continue
             max_age = policy.freshness_ttl_seconds
             if max_age is None or max_age <= 0:
@@ -2450,6 +2539,24 @@ def availability_clause_holds(clause: AvailabilityClause, value: Any) -> bool:
     return float(value) <= float(clause.value)
 
 
+def _clause_source(snapshot: StateSnapshot, path: FieldPath) -> FieldSnapshot | None:
+    """The stored field a clause reads, under either spelling of its receiver.
+
+    CI-V ingress stores MAIN as ``receiver.0`` while profiles spell clause
+    sources ``receiver.main`` (:data:`RECEIVER_ID_ALIASES`); the spelling
+    the clause names wins when both are stored.
+    """
+
+    for candidate in (path, path.receiver_alias()):
+        if candidate is None:
+            continue
+        try:
+            return snapshot.field(candidate)
+        except KeyError:
+            continue
+    return None
+
+
 def resolve_available_when(
     profile: RadioAcquisitionProfile,
     snapshot: StateSnapshot,
@@ -2469,9 +2576,8 @@ def resolve_available_when(
             continue
         state: bool | None = True
         for clause in policy.available_when:
-            try:
-                source = snapshot.field(clause.field)
-            except KeyError:
+            source = _clause_source(snapshot, clause.field)
+            if source is None:
                 state = None
                 continue
             if not availability_clause_holds(clause, source.value):
@@ -2613,12 +2719,16 @@ class StateFreshnessService:
             return
         snapshot = self._store.snapshot()
         stored = {field.path for field in snapshot.fields}
+        # The profile spells a receiver ``main``/``sub``, CI-V ingress stores
+        # it ``0``/``1``: discard whichever spelling holds the value.
         absent = tuple(
-            path
+            candidate
             for path, available in resolve_available_when(
                 scheduler._profile, snapshot
             ).items()
-            if available is False and path in stored
+            if available is False
+            for candidate in (path, path.receiver_alias())
+            if candidate is not None and candidate in stored
         )
         if absent:
             self._store.discard(absent)
@@ -2702,8 +2812,16 @@ class StateFreshnessService:
             return
         if now < self._next_prime_monotonic:
             return
-        observed = tuple(field.path for field in self._store.snapshot().fields)
-        scheduler.prime_unobserved(observed)
+        snapshot = self._store.snapshot()
+        observed = tuple(field.path for field in snapshot.fields)
+        # MOR-3630: resolve the conditional availability against the same
+        # snapshot the never-observed set is derived from, so the prime
+        # skips contradicted fields (no FM-NAKed re-reads) while still
+        # re-deriving — and re-acquiring — once the clause set holds again.
+        scheduler.prime_unobserved(
+            observed,
+            availability=resolve_available_when(scheduler._profile, snapshot),
+        )
         still_unobserved = scheduler.has_unobserved_policy_fields(observed)
         interval = (
             self.PRIME_ADAPTIVE_INTERVAL_SECONDS

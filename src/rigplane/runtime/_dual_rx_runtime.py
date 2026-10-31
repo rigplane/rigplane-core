@@ -231,7 +231,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             )
             freq = parse_frequency_response(resp)
             if update_cache:
-                self._last_freq_hz = freq
                 self._state_cache.update_freq(freq)
             return freq
         except TimeoutError:
@@ -255,8 +254,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         resp = await self._send_civ_expect(civ, label="set_frequency_main")
         if parse_ack_nak(resp) is False:
             raise CommandRejectedError(f"Radio rejected MAIN set_frequency({freq_hz})")
-        if update_cache:
-            self._last_freq_hz = freq_hz
 
     async def _get_mode_info_main(
         self, *, update_cache: bool = True
@@ -267,7 +264,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             resp = await self._send_civ_expect(civ, label="get_mode_info_main")
             mode, filt = parse_mode_response(resp)
             if update_cache:
-                self._last_mode = mode
                 if filt is not None:
                     self._filter_width = filt
                 self._state_cache.update_mode(mode.name, filt)
@@ -314,7 +310,6 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 receiver=RECEIVER_MAIN,
             )
         await self._send_civ_raw(civ, wait_response=False)
-        self._last_mode = mode
         if update_cache:
             if filter_width is not None:
                 self._filter_width = filter_width

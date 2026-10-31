@@ -10,19 +10,6 @@ name: Consumer contracts gate
 # staleness-gate pattern.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "src/rigplane/web/server.py"
-      - "src/rigplane/web/discovery.py"
-      - "src/rigplane/web/api_contract.py"
-      - "src/rigplane/web/handlers/control.py"
-      - "src/rigplane/core/command_dispatch.py"
-      - "contracts/consumer-expectations/**"
-      - "scripts/run_consumer_contracts.py"
-      - "tests/contracts/test_consumer_contracts.py"
-      - "pyproject.toml"
-      - ".github/workflows/consumer-contracts-gate.yml"
   pull_request:
     branches: [main]
     paths:
@@ -36,6 +23,10 @@ on:
       - "tests/contracts/test_consumer_contracts.py"
       - "pyproject.toml"
       - ".github/workflows/consumer-contracts-gate.yml"
+  # Also called by full.yml for the scheduled run on main (MOR-3878): the merge
+  # queue does not run this informational gate, so the merged tree gets its
+  # signal from there with this same job definition.
+  workflow_call:
 
 concurrency:
   group: consumer-contracts-gate-${{ github.workflow }}-${{ github.ref }}
