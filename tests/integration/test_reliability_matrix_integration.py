@@ -22,6 +22,7 @@ from rigplane.exceptions import (
     ConnectionError,
     TimeoutError as IcomTimeoutError,
 )
+from _timing import await_until
 
 
 pytestmark = pytest.mark.integration
@@ -36,15 +37,6 @@ def _env_int(name: str, default: int = 0) -> int:
         return int(os.environ.get(name, str(default)))
     except ValueError:
         return default
-
-
-async def _wait_until_true(check, timeout_s: float, step_s: float = 0.1) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if check():
-            return True
-        await asyncio.sleep(step_s)
-    return bool(check())
 
 
 async def _read_freq_with_retries(
@@ -193,7 +185,7 @@ class TestReliabilityMatrix:
                 await asyncio.sleep(0.2)
 
             assert r.connected
-            assert await _wait_until_true(lambda: r.radio_ready, timeout_s=3.0)
+            assert await await_until(lambda: r.radio_ready, timeout=3.0)
             if soak_s >= 70:
                 assert r._ctrl_transport.send_seq != ctrl_seq0, (  # type: ignore[attr-defined]
                     "Expected control tracked seq to advance (token renewal/keepalive)"
@@ -299,7 +291,7 @@ class TestReliabilityMatrix:
 
         try:
             await r.get_frequency()
-            assert await _wait_until_true(lambda: r.radio_ready, timeout_s=5.0)
+            assert await await_until(lambda: r.radio_ready, timeout=5.0)
 
             civ_t = r._civ_transport  # type: ignore[attr-defined]
             if civ_t is None:
@@ -307,10 +299,12 @@ class TestReliabilityMatrix:
 
             await civ_t.disconnect()
             # radio_ready is idle-time based; allow timeout window to expire.
-            became_not_ready = await _wait_until_true(
-                lambda: not r.radio_ready, timeout_s=7.0, step_s=0.2
+            await await_until(
+                lambda: not r.radio_ready,
+                timeout=7.0,
+                interval=0.2,
+                description="radio_ready to drop after the CI-V drop",
             )
-            assert became_not_ready, "radio_ready stayed True after CI-V drop"
 
             recovered = False
             for attempt in range(1, 9):
@@ -326,9 +320,11 @@ class TestReliabilityMatrix:
                 except Exception:
                     await asyncio.sleep(min(1.5 * attempt, 10.0))
             assert recovered, "Failed to recover frequency read after CI-V drop"
-            became_ready = await _wait_until_true(
-                lambda: r.radio_ready, timeout_s=40.0, step_s=0.2
-            )
+            try:
+                await await_until(lambda: r.radio_ready, timeout=40.0, interval=0.2)
+                became_ready = True
+            except AssertionError:
+                became_ready = False
             if not became_ready:
                 # Some firmware/build combinations recover command path before
                 # radio_ready catches up via CI-V stream watchdog bookkeeping.

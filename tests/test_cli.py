@@ -41,6 +41,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxState,
     ReleasePlan,
 )
+from _timing import await_until
 
 
 class TestParseFrequency:
@@ -3109,16 +3110,6 @@ class TestStartupBusyHoldOrdering:
             patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
         )
 
-    @staticmethod
-    async def _wait_for(predicate: Any, *, timeout: float = 2.0) -> None:
-        import asyncio
-
-        async def _poll() -> None:
-            while not predicate():
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(_poll(), timeout=timeout)
-
     @pytest.mark.asyncio
     async def test_normal_first_connect_is_awaited_before_cmd_web(self) -> None:
         """Without a busy hold the first connect still completes first."""
@@ -3134,11 +3125,11 @@ class TestStartupBusyHoldOrdering:
         p1, p2, p3, p4 = self._patches(radio, composition)
         with p1, p2, p3, p4:
             run_task = asyncio.ensure_future(_run(args))
-            await self._wait_for(lambda: radio.enter_calls == 1, timeout=2.0)
+            await await_until(lambda: radio.enter_calls == 1, timeout=2.0)
             await asyncio.sleep(0.2)
             assert _BusyHoldWebServer.instances == []
             radio._grant.set()
-            await self._wait_for(
+            await await_until(
                 lambda: (
                     bool(_BusyHoldWebServer.instances)
                     and "serve-start" in _BusyHoldWebServer.instances[-1].events
@@ -3173,7 +3164,7 @@ class TestStartupBusyHoldOrdering:
             radio.startup_busy_hold_event.set()
             run_task = asyncio.ensure_future(_run(args))
             try:
-                await self._wait_for(
+                await await_until(
                     lambda: (
                         bool(_BusyHoldWebServer.instances)
                         and "serve-start" in _BusyHoldWebServer.instances[-1].events
@@ -3189,7 +3180,7 @@ class TestStartupBusyHoldOrdering:
             assert server.finish_calls == 0
 
             radio._grant.set()
-            await self._wait_for(lambda: server.finish_calls == 1, timeout=5.0)
+            await await_until(lambda: server.finish_calls == 1, timeout=5.0)
             composition.transport_ready.assert_awaited_once_with(radio)
             server._serve_done.set()
             result = await asyncio.wait_for(run_task, timeout=10.0)
@@ -3240,7 +3231,7 @@ class TestStartupBusyHoldOrdering:
             )
             run_task = asyncio.ensure_future(_run(args))
             try:
-                await self._wait_for(
+                await await_until(
                     lambda: (
                         bool(_BusyHoldWebServer.instances)
                         and "serve-start" in _BusyHoldWebServer.instances[-1].events
@@ -3289,7 +3280,7 @@ class TestStartupBusyHoldOrdering:
             radio.startup_busy_hold_event.set()
             run_task = asyncio.ensure_future(_run(args))
             try:
-                await self._wait_for(
+                await await_until(
                     lambda: (
                         bool(_BusyHoldWebServer.instances)
                         and "serve-start" in _BusyHoldWebServer.instances[-1].events
@@ -3460,16 +3451,6 @@ class TestDisconnectDuringStartupBusyHold:
             patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
         )
 
-    @staticmethod
-    async def _wait_for(predicate: Any, *, timeout: float = 2.0) -> None:
-        import asyncio
-
-        async def _poll() -> None:
-            while not predicate():
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(_poll(), timeout=timeout)
-
     @pytest.mark.asyncio
     async def test_disconnect_during_busy_hold_keeps_serving(self) -> None:
         """The cancelled background enter ends serving only at shutdown."""
@@ -3485,7 +3466,7 @@ class TestDisconnectDuringStartupBusyHold:
         with p1, p2, p3, p4:
             run_task = asyncio.ensure_future(_run(args))
             try:
-                await self._wait_for(
+                await await_until(
                     lambda: (
                         bool(_BusyHoldWebServer.instances)
                         and "serve-start" in _BusyHoldWebServer.instances[-1].events
@@ -3502,7 +3483,7 @@ class TestDisconnectDuringStartupBusyHold:
             # even when not connected: the background enter ends
             # cancelled here.
             await radio.disconnect()
-            await self._wait_for(
+            await await_until(
                 lambda: (
                     lifecycle.state is not None
                     and lifecycle.state.name == "DISCONNECTED"
@@ -3542,7 +3523,7 @@ class TestDisconnectDuringStartupBusyHold:
         with p1, p2, p3, p4:
             run_task = asyncio.ensure_future(_run(args))
             try:
-                await self._wait_for(
+                await await_until(
                     lambda: (
                         bool(_BusyHoldWebServer.instances)
                         and "serve-start" in _BusyHoldWebServer.instances[-1].events
@@ -4223,16 +4204,6 @@ class TestLiveOwnerExitCode:
             patch("rigplane.web.server.WebServer", _BusyHoldWebServer),
         )
 
-    @staticmethod
-    async def _wait_for(predicate: Any, *, timeout: float = 10.0) -> None:
-        import asyncio
-
-        async def _poll() -> None:
-            while not predicate():
-                await asyncio.sleep(0.01)
-
-        await asyncio.wait_for(_poll(), timeout=timeout)
-
     @pytest.mark.asyncio
     async def test_awaited_live_owner_stop_exits_three(self, capsys: Any) -> None:
         """The awaited first connect maps the live-owner stop to 3."""
@@ -4267,7 +4238,7 @@ class TestLiveOwnerExitCode:
         with p1, p2, p3, p4:
             run_task = asyncio.ensure_future(_run(args))
             try:
-                await self._wait_for(
+                await await_until(
                     lambda: (
                         bool(_BusyHoldWebServer.instances)
                         and "serve-start" in _BusyHoldWebServer.instances[-1].events

@@ -63,12 +63,9 @@ from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.types import AudioCodec
 from rigplane_testkit.yaesu import FakeCatRadio
 
-from test_icom7610_serial_radio import (
-    _FakeSerialCivLink,
-    _FakeUsbAudioDriver,
-    _wait_until,
-)
+from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 from test_yaesu_audio import FakeAudioDriver
+from _timing import await_until
 
 _PCM_FRAME = b"\x01\x02\x03\x04"
 
@@ -265,8 +262,8 @@ async def test_icom_serial_identity_hold_reestablishes_once_after_completion() -
         assert _recovery_events(recovery_cb) == []
 
         link.answer_identity = True  # the re-read gets its answer
-        assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
-        assert await _wait_until(lambda: driver.rx_running, timeout_s=5.0)
+        assert await await_until(lambda: radio.connected, timeout=5.0)
+        assert await await_until(lambda: driver.rx_running, timeout=5.0)
         assert driver.rx_starts == 2  # re-established exactly once, after
         assert radio._serial_deferred_audio is None
         assert _recovery_events(recovery_cb) == [

@@ -268,9 +268,10 @@ _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 
 
 # Threshold for ``Radio.connected`` to treat a UDP transport as unhealthy.
 # A single transient ``error_received`` (e.g. EAGAIN/EWOULDBLOCK/Broken pipe)
-# should not latch the socket into a disconnected state — the counter is
-# cumulative and only the 30s watchdog resets it via ``soft_reconnect``.
-# Require >=3 accumulated errors before reporting ``connected = False``.
+# should not latch the socket into a disconnected state — the counter counts
+# consecutive errors (any inbound datagram resets it) and ``soft_reconnect``
+# zeroes it for a fresh session.
+# Require >=3 consecutive errors before reporting ``connected = False``.
 _UDP_ERROR_THRESHOLD: int = 3
 
 # Deadline for the managed-TX arming probe (MOR-1016).  Deliberately shorter
@@ -913,8 +914,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # Check for UDP errors (only on real IcomTransport, not mocks).
         # A single transient EAGAIN/EWOULDBLOCK should not latch the socket
         # into a "disconnected" state — only treat the transport as unhealthy
-        # after repeated errors.  The counter is reset on soft_reconnect and
-        # on reset_udp_error_count() after sustained healthy packet receipt.
+        # after repeated errors.  The counter counts consecutive errors;
+        # IcomTransport._handle_packet zeroes it on every inbound datagram,
+        # and soft_reconnect zeroes it for a fresh session.
         error_count = getattr(civ, "_udp_error_count", None)
         if isinstance(error_count, int) and error_count >= _UDP_ERROR_THRESHOLD:
             return False
@@ -968,7 +970,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         ICMP at all — sends simply time out and the error counter stays at 0.
 
         This property is therefore True when the control transport socket is
-        open (so the host route exists) and has accumulated port-unreachable
+        open (so the host route exists) and has consecutive port-unreachable
         errors while the session is not established — i.e. the remote-control
         server is refusing/ignoring us rather than the network being gone.
         """
