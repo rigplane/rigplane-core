@@ -139,6 +139,12 @@ features = [
     "system_settings",
 ]
 
+# 27 13 is documented "Single (fixed)" (p.15): the validation harness would flip
+# a value the radio can never report back. 27 12 (Main fixed) stays derived from
+# receiver_count, as on the IC-7300MK2 profile.
+[validation.fixed_value]
+"scope_dual.set" = "IC-905 CI-V guide p.15: 27 13 data column = 00 (Single (fixed))"
+
 # MOR-1983: initial and legacy periodic state acquisition is declared here,
 # using getters already sourced to the IC-905 CI-V Reference Guide below.
 # The runtime resolves these semantic paths through this profile's CommandMap;

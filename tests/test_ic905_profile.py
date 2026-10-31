@@ -422,3 +422,11 @@ def test_lan_scope_is_fully_declared_for_the_prospect_use_case() -> None:
     assert wires == sub_commands
     assert lan._profile.scope_span_presets_hz[0] == 2500
     assert lan._profile.scope_ref_min_db == -20.0
+
+
+def test_single_scope_is_a_declared_fixed_value() -> None:
+    """27 13 is "Single (fixed)" (p.15): the validation harness must skip the
+    dual-scope toggle instead of failing a conforming radio."""
+    profile = get_radio_profile("IC-905")
+
+    assert set(profile.fixed_value_checks) == {"scope_dual.set"}
