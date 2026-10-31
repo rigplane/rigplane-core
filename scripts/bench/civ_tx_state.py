@@ -57,11 +57,17 @@ def _exchange(port, addr, baud, frame):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True, help="serial port, e.g. COM3")
-    parser.add_argument("--addr", required=True,
-                        help="CI-V controller address, hex without 0x (e.g. 94)")
+    parser.add_argument(
+        "--addr",
+        required=True,
+        help="CI-V controller address, hex without 0x (e.g. 94)",
+    )
     parser.add_argument("--baud", type=int, default=115200)
-    parser.add_argument("--unkey-if-keyed", action="store_true",
-                        help="send a raw unkey and re-read when the radio reads TX")
+    parser.add_argument(
+        "--unkey-if-keyed",
+        action="store_true",
+        help="send a raw unkey and re-read when the radio reads TX",
+    )
     args = parser.parse_args(argv)
     try:
         addr = int(args.addr, 16)
@@ -70,8 +76,9 @@ def main(argv=None):
     if not 0 <= addr <= 0xFF:
         parser.error("--addr must fit in one byte")
     try:
-        state = parse_tx_state(_exchange(args.port, addr, args.baud,
-                                         read_frame(addr)), addr)
+        state = parse_tx_state(
+            _exchange(args.port, addr, args.baud, read_frame(addr)), addr
+        )
     except Exception as exc:
         print(f"raw CI-V read failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
@@ -79,11 +86,13 @@ def main(argv=None):
     if state == 1 and args.unkey_if_keyed:
         try:
             _exchange(args.port, addr, args.baud, unkey_frame(addr))
-            state = parse_tx_state(_exchange(args.port, addr, args.baud,
-                                             read_frame(addr)), addr)
+            state = parse_tx_state(
+                _exchange(args.port, addr, args.baud, read_frame(addr)), addr
+            )
         except Exception as exc:
-            print(f"raw CI-V unkey failed: {type(exc).__name__}: {exc}",
-                  file=sys.stderr)
+            print(
+                f"raw CI-V unkey failed: {type(exc).__name__}: {exc}", file=sys.stderr
+            )
             return 1
         print(f"after raw unkey, state byte: {state}")
     return 0 if state == 0 else 1

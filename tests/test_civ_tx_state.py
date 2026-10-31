@@ -24,9 +24,7 @@ def load_helper():
 
 def test_read_frame_format():
     helper = load_helper()
-    assert helper.read_frame(0x94) == bytes(
-        (0xFE, 0xFE, 0x94, 0xE0, 0x1C, 0x00, 0xFD)
-    )
+    assert helper.read_frame(0x94) == bytes((0xFE, 0xFE, 0x94, 0xE0, 0x1C, 0x00, 0xFD))
 
 
 def test_unkey_frame_format():
@@ -69,9 +67,7 @@ def test_unkey_if_keyed_unkeys_and_rereads(monkeypatch, capsys):
         return replies.pop(0)
 
     monkeypatch.setattr(helper, "_exchange", fake_exchange)
-    assert (
-        helper.main(["--port", "COM3", "--addr", "94", "--unkey-if-keyed"]) == 0
-    )
+    assert helper.main(["--port", "COM3", "--addr", "94", "--unkey-if-keyed"]) == 0
     assert written == [
         helper.read_frame(0x94),
         helper.unkey_frame(0x94),
@@ -83,9 +79,7 @@ def test_unkey_if_keyed_unkeys_and_rereads(monkeypatch, capsys):
 def test_tx_without_unkey_flag_is_failure(monkeypatch):
     helper = load_helper()
     tx = bytes((0xFE, 0xFE, 0xE0, 0x94, 0x1C, 0x00, 0x01, 0xFD))
-    monkeypatch.setattr(
-        helper, "_exchange", lambda port, addr, baud, frame: tx
-    )
+    monkeypatch.setattr(helper, "_exchange", lambda port, addr, baud, frame: tx)
     assert helper.main(["--port", "COM3", "--addr", "94"]) == 1
 
 
