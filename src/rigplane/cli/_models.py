@@ -89,17 +89,26 @@ def connect_command(
     return " ".join(parts)
 
 
-def backend_for_protocol(protocol_type: str | None, *, serial_port: bool) -> str | None:
-    """Infer the backend name from a profile protocol type.
+def backend_for_protocol(
+    protocol_type: str | None,
+    *,
+    serial_port: bool,
+    host: bool,
+    has_lan: bool,
+) -> str | None:
+    """Infer the backend name from a profile protocol type and its transports.
 
-    ``yaesu_cat`` always routes to ``yaesu-cat``; ``civ`` routes to
-    ``serial`` when a serial port is given and to ``lan`` otherwise;
-    anything else has no backend.
+    ``yaesu_cat`` always routes to ``yaesu-cat``. ``civ`` routes to ``serial``
+    when a serial port is given; otherwise to ``lan`` when a host is given or
+    the profile has a LAN interface (``has_lan``), and to ``serial`` (USB
+    discovery) for a profile without one. Anything else has no backend.
     """
     if protocol_type == "yaesu_cat":
         return "yaesu-cat"
     if protocol_type == "civ":
-        return "serial" if serial_port else "lan"
+        if serial_port:
+            return "serial"
+        return "lan" if host or has_lan else "serial"
     return None
 
 
@@ -114,8 +123,12 @@ def describe_rig(rig: RigConfig) -> dict[str, Any]:
     if usb_label is not None:
         transports.append(usb_label)
     candidates = (
-        backend_for_protocol(protocol, serial_port=False),
-        backend_for_protocol(protocol, serial_port=True),
+        backend_for_protocol(
+            protocol, serial_port=False, host=True, has_lan=rig.has_lan
+        ),
+        backend_for_protocol(
+            protocol, serial_port=True, host=False, has_lan=rig.has_lan
+        ),
     )
     backends: list[str] = []
     for candidate in candidates:
