@@ -123,8 +123,8 @@ class TestIdentifyRadio:
         assert "model id" in caplog.text.lower()
 
     def test_all_map_entries_covered(self) -> None:
-        # 7 since MOR-3792: the IC-7300MK2 (0xB6) row joined the table.
-        assert len(SERIAL_RADIO_MAP) == 7
+        # 8 since MOR-3984: the IC-905 (0xAC) row joined the table.
+        assert len(SERIAL_RADIO_MAP) == 8
 
 
 class TestCivIdentityDataConsistency:

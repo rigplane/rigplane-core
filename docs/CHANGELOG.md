@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **IC-905 profile (144/430/1200/2400/5600 MHz).** A new `IC-905` profile
+  (CI-V `0xAC`, single receiver with VFO A/B, LAN and USB CI-V) sourced from
+  the official IC-905 CI-V Reference Guide, with per-band rated power and the
+  guide's scope spans. Support tier: documented; no IC-905 hardware has
+  been tested. The 10 GHz band, the DD/ATV modes and memory-channel
+  read/write are not part of this profile yet.
+
 ## [3.1.0rc1] — 2026-10-31
 
 This is the first release candidate of 3.1. It adds a TCI listener for
