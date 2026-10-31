@@ -100,8 +100,18 @@ def _ctcss_index_to_centihz(index: int, *, domain: tuple[int, ...] | None) -> in
 # a non-digit answer is simply not credited as liveness evidence.
 _DIGIT_REPLY_FIELDS = frozenset(
     {
-        "state", "value", "vfo", "head", "rx", "tx", "type", "src", "func",
-        "val", "tone", "shift",
+        "state",
+        "value",
+        "vfo",
+        "head",
+        "rx",
+        "tx",
+        "type",
+        "src",
+        "func",
+        "val",
+        "tone",
+        "shift",
     }
 )
 

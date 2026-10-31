@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,7 +17,16 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.radio import IcomRadio
 from rigplane.web import runtime_helpers
 from rigplane.web.server import WebConfig, WebServer
-from test_web_server import (
+
+ROOT = Path(__file__).resolve().parents[1]
+# test_web_server pulls in tests/_timing.py, which imports the non-shipping
+# rigplane_testkit package from the repository root. Under pytest that root
+# is importable via pythonpath=["."]; when this file runs as a script
+# (vitest, via `uv run python tests/liveness_ws_trace.py`) only tests/ is
+# on sys.path, so add the root the same way tests/e2e/*_web_server.py do.
+sys.path.insert(0, str(ROOT))
+
+from test_web_server import (  # noqa: E402
     _close_ws,
     _http_get,
     _ws_connect,
