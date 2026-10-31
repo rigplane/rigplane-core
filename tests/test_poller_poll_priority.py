@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
-from unittest.mock import call as mock_call
 
 import pytest
 
@@ -52,29 +51,16 @@ def _make_radio(*, model: str = "IC-7610", active: str = "MAIN") -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_user_command_vfo_switch_routes_through_select_receiver() -> None:
-    """The receiver=0-while-SUB-active in-command VFO switch goes through
-    ``radio.select_receiver`` (a public API with no priority/wait_dispatch
-    parameters of its own) instead of a hand-built ``_civ(0x07, ...)``
-    frame — this checks the ``select_receiver`` calls the poller makes and
-    that no raw ``send_civ`` is used for this path.
-
-    This does NOT check what priority or dispatch mode the CI-V frame
-    ``select_receiver`` emits under the hood — a bare poller-level mock
-    replaces ``select_receiver`` entirely, so it cannot observe that. The
-    MOR-497(i)/(ii) NORMAL-priority/blocking-dispatch guarantee for that
-    frame is pinned at
-    ``tests/test_radio_coverage.py::test_select_receiver_vfo_switch_stays_normal_priority_and_blocking``
-    instead, against a real ``CoreRadio.select_receiver`` and a mocked
-    commander.
-    """
-    # active="SUB" so SetFreq(receiver=0) triggers the in-command
-    # select_receiver(MAIN) switch and its select_receiver(SUB) restore.
+async def test_user_command_main_write_while_sub_active_never_switches() -> None:
+    """A receiver=0 write while SUB is active is delegated unchanged: the
+    poller sends no receiver select before or after it and no raw
+    ``send_civ`` (MOR-3591). Whether MAIN may take it is the backend's
+    decision (``CoreRadio`` refuses it while SUB is selected)."""
     radio = _make_radio(active="SUB")
     poller = RadioPoller(radio, CommandQueue(), radio_state=RadioState())
 
     await poller._execute(SetFreq(14_074_000, receiver=0))  # noqa: SLF001
 
-    assert radio.select_receiver.await_args_list == [mock_call(0), mock_call(1)]
+    radio.select_receiver.assert_not_awaited()
     radio.set_freq.assert_awaited_once_with(14_074_000)
     radio.send_civ.assert_not_awaited()

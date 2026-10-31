@@ -2,16 +2,17 @@
 single-flight dedupe key.
 
 ``radio.py: IcomRadio.get_filter_width`` registers its in-flight read under
-``key=f"get_filter_width:{receiver}"`` at two call sites -- the VFO-select
-fallback branch (``receiver != MAIN`` on a profile with no cmd29 route for
-0x1A/0x03) and the direct branch. ``commander.py: IcomCommander.send``
+``key=f"get_filter_width:{receiver}"``. On a profile with no cmd29 route
+for 0x1A/0x03 only the selected receiver is read; the other is refused and
+the selection is never switched to reach it (MOR-3591).
+``commander.py: IcomCommander.send``
 coalesces a caller onto an already-registered not-done future for the same
 key and sends nothing, so a bare ``key="get_filter_width"`` would hand a
 concurrent SUB reader MAIN's answer.
 
 The sibling dedupe-key tests for the repeater-tone family cite
 ``get_filter_width`` as the precedent their own receiver-scoped keys were
-modelled on. These tests pin that precedent itself, one class per call site.
+modelled on. These tests pin that precedent itself.
 """
 
 from __future__ import annotations
@@ -22,7 +23,13 @@ from collections.abc import Iterator
 import pytest
 
 from rigplane import IC_7610_ADDR
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, build_cmd29_frame
+from rigplane.commands import (
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    build_cmd29_frame,
+    parse_civ_frame,
+)
+from rigplane.core.exceptions import ReceiverNotSelectedError
 from rigplane.radio import IcomRadio
 
 from _helpers import wrap_civ_in_udp
@@ -65,9 +72,7 @@ def _cmd29_filter_width_response(payload: bytes, *, receiver: int) -> bytes:
 def _plain_filter_width_response(payload: bytes) -> bytes:
     """A plain 0x1A/0x03 answer, as an IC-9700 sends it.
 
-    Carries no receiver tag: on this profile the MAIN read and the SUB
-    fallback read put byte-identical requests on the wire, so nothing but
-    the dedupe key distinguishes the two in-flight reads.
+    Carries no receiver tag: it answers for the selected receiver.
     """
     return wrap_civ_in_udp(
         build_civ_frame(CONTROLLER_ADDR, _IC9700_ADDR, 0x1A, sub=0x03, data=payload)
@@ -93,19 +98,19 @@ def ic7610_radio(mock_transport: MockTransport) -> Iterator[IcomRadio]:
 
 @pytest.fixture
 def ic9700_radio(mock_transport: MockTransport) -> Iterator[IcomRadio]:
-    """Dual-RX profile with VFO select codes but an empty cmd29 route list,
-    so SUB takes the VFO-select fallback branch."""
+    """Dual-RX profile with an empty cmd29 route list; the radio has
+    answered 0x07 0xD2 with SUB selected."""
     r = IcomRadio("192.168.1.102", timeout=_CIV_TIMEOUT_S, model="IC-9700")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
-
-    async def instant_select(vfo: str) -> None:
-        """No-op VFO swap: keeps the fallback path's own dedupe check inside
-        the window where MAIN's read is still in flight."""
-        return None
-
-    r._set_vfo_wire = instant_select  # type: ignore[method-assign]
+    r._update_state_cache_from_frame(
+        parse_civ_frame(
+            build_civ_frame(
+                CONTROLLER_ADDR, _IC9700_ADDR, 0x07, data=bytes([0xD2, 0x01])
+            )
+        )
+    )
     yield r
     r._connected = False
 
@@ -186,56 +191,27 @@ class TestFilterWidthDirectBranchDedupeKeyReceiverScoped:
             await ic7610_radio._civ_runtime.stop_worker()
 
 
-class TestFilterWidthVfoFallbackDedupeKeyReceiverScoped:
-    """The VFO-select fallback branch of ``radio.py:
-    IcomRadio.get_filter_width`` on IC-9700, where SUB registers under the
-    fallback site's key and MAIN under the direct site's.
-
-    Because the two receivers reach two different call sites here, the two
-    keys collide whenever the two sites evaluate to the same string -- which
-    an edit to a single site can cause, not only a literal shared by both.
-    Measured on this tree: reverting both keys to a bare
-    ``key="get_filter_width"`` coalesces the pair; reverting either one
-    alone does not, because the remaining site still interpolates. What
-    this class pins that the direct-branch class cannot is the fallback
-    site's own ``{receiver}`` interpolation -- replacing it with a
-    hard-coded ``get_filter_width:0`` was measured to coalesce here and to
-    leave IC-7610 untouched.
-
-    The same three load-bearing choices as the direct-branch class apply
-    (worker started, both gather orders, both values asserted alongside the
-    frame count), each measured on this profile too.
-    """
+class TestFilterWidthSelectedOnlyProfile:
+    """IC-9700 (no cmd29 route for 0x1A/0x03), SUB selected: only SUB is
+    read, MAIN is refused before the wire (MOR-3591)."""
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("main_first", [True, False], ids=["main-1st", "sub-1st"])
-    async def test_concurrent_main_direct_and_sub_fallback_reads_do_not_coalesce(
-        self,
-        ic9700_radio: IcomRadio,
-        mock_transport: MockTransport,
-        main_first: bool,
+    async def test_unselected_main_read_refused_while_sub_is_read(
+        self, ic9700_radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        main_response = _plain_filter_width_response(_INDEX_MAIN)
-        sub_response = _plain_filter_width_response(_INDEX_SUB)
         ic9700_radio._civ_runtime.start_worker()
         try:
-            if main_first:
-                mock_transport.queue_response_on_send(1, main_response)
-                mock_transport.queue_response_on_send(2, sub_response)
-                main_width, sub_width = await asyncio.gather(
-                    ic9700_radio.get_filter_width(receiver=0),
-                    ic9700_radio.get_filter_width(receiver=1),
-                )
-            else:
-                mock_transport.queue_response_on_send(1, sub_response)
-                mock_transport.queue_response_on_send(2, main_response)
-                sub_width, main_width = await asyncio.gather(
-                    ic9700_radio.get_filter_width(receiver=1),
-                    ic9700_radio.get_filter_width(receiver=0),
-                )
-            assert main_width == _WIDTH_MAIN_HZ
+            mock_transport.queue_response_on_send(
+                1, _plain_filter_width_response(_INDEX_SUB)
+            )
+            main_result, sub_width = await asyncio.gather(
+                ic9700_radio.get_filter_width(receiver=0),
+                ic9700_radio.get_filter_width(receiver=1),
+                return_exceptions=True,
+            )
+            assert isinstance(main_result, ReceiverNotSelectedError)
             assert sub_width == _WIDTH_SUB_HZ
-            assert len(mock_transport.sent_packets) == 2
+            assert len(mock_transport.sent_packets) == 1
         finally:
             await ic9700_radio._civ_runtime.stop_worker()
 
@@ -243,16 +219,8 @@ class TestFilterWidthVfoFallbackDedupeKeyReceiverScoped:
     async def test_concurrent_same_receiver_reads_still_dedupe(
         self, ic9700_radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        """Control: the fallback branch's dedupe mechanism is intact, so a
-        change that stopped deduping at the fallback site would not go
-        unnoticed -- this test would redden (the cross-receiver test above
-        would not).
-
-        Both reads use ``receiver=1`` (SUB), the only receiver that reaches
-        the fallback call site on this profile -- ``receiver=0`` (MAIN)
-        takes the direct branch, already covered by the direct-branch
-        class's own control.
-        """
+        """Control: two reads of the selected receiver still share one
+        wire read."""
         ic9700_radio._civ_runtime.start_worker()
         try:
             mock_transport.queue_response_on_send(
