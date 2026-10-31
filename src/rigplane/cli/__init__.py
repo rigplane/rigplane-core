@@ -5192,6 +5192,7 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
         discover_lan_radios,
         discover_serial_radios,
         HamlibProbeTarget,
+        LAN_DISCOVERY_PORT,
         ProbeOptions,
         probe_hamlib_rigctld_targets,
     )
@@ -5325,7 +5326,13 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
             used_placeholder = True
         for lan in radio["lan"]:
             print(f"  \u2022 LAN: {lan['host']}")
-            print(f"    {_connect_command(model_arg, host=lan['host'], backend='lan')}")
+            command = _connect_command(
+                model_arg,
+                host=lan["host"],
+                backend="lan",
+                control_port=LAN_DISCOVERY_PORT,
+            )
+            print(f"    {command}")
         for serial in radio["serial"]:
             baud = serial.get("baudrate") or serial.get("baud", "?")
             print(f"  \u2022 Serial: {serial['port']} ({baud} baud)")

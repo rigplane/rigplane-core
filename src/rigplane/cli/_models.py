@@ -63,6 +63,7 @@ def connect_command(
     model_arg: str,
     *,
     host: str | None = None,
+    control_port: int | None = None,
     serial_port: str | None = None,
     serial_baud: int | None = None,
     radio_addr: int | None = None,
@@ -70,10 +71,15 @@ def connect_command(
 ) -> str:
     """Format a ready-to-copy ``rigplane ... status`` command line."""
     if host is not None:
-        # LAN lines always pin the backend so replaying the command never
-        # depends on inference or environment variables.
+        # LAN lines always pin the backend and the observed control port so
+        # replaying the command never depends on inference or on environment
+        # variables such as ICOM_PORT.
         lan = backend if backend is not None else "lan"
-        return f"rigplane --model {model_arg} --backend {lan} --host {host} status"
+        parts = [f"rigplane --model {model_arg} --backend {lan} --host {host}"]
+        if control_port is not None:
+            parts.append(f"--control-port {control_port}")
+        parts.append("status")
+        return " ".join(parts)
     parts = [f"rigplane --model {model_arg} --serial-port {serial_port}"]
     if serial_baud is not None:
         parts.append(f"--serial-baud {serial_baud}")
