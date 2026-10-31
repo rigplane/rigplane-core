@@ -777,6 +777,8 @@ class RigConfig:
                         default=b["default_hz"],
                         bsr_code=b.get("bsr_code"),
                         rx_only=b.get("rx_only", False),
+                        default_mode=b.get("default_mode"),
+                        max_power_w=b.get("max_power_w"),
                     )
                     for b in r.get("bands", ())
                 ),
@@ -2614,6 +2616,40 @@ def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
     return tuple(ids)
 
 
+def _validate_band_max_power(
+    filename: str, freq_ranges_data: list[Any], max_watts: int | None
+) -> None:
+    """Validate the optional per-band ``max_power_w`` rows (MOR-3634).
+
+    A row is a positive integer no larger than the flat ``[power].max_watts``
+    (the scale the normalized power level is a fraction of), so a band can
+    only narrow the slider, never widen it. A row without the flat maximum
+    has nothing to be a fraction of and is a load error. The row is data for
+    the power slider's scale only; no value that is written depends on it.
+    """
+    for index, rng in enumerate(freq_ranges_data):
+        if not isinstance(rng, dict):
+            continue
+        for band_index, band in enumerate(rng.get("bands", ())):
+            if not isinstance(band, dict) or "max_power_w" not in band:
+                continue
+            where = (
+                f"{filename}: freq_ranges.ranges[{index}].bands[{band_index}]"
+                f".max_power_w"
+            )
+            band_name = f" (band {band.get('name', band_index)!r})"
+            watts = band["max_power_w"]
+            if not isinstance(watts, int) or isinstance(watts, bool) or watts <= 0:
+                raise RigLoadError(f"{where} must be a positive integer{band_name}")
+            if max_watts is None:
+                raise RigLoadError(f"{where} requires [power].max_watts{band_name}")
+            if watts > max_watts:
+                raise RigLoadError(
+                    f"{where} must not exceed [power].max_watts ({max_watts})"
+                    f"{band_name}"
+                )
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -2930,6 +2966,28 @@ def load_rig(path: Path) -> RigConfig:
                     f"{filename}: freq_ranges.ranges[{index}].bands[{band_index}]"
                     f".rx_only must be a boolean"
                     f" (band {band.get('name', band_index)!r})"
+                )
+
+    # MOR-3631: the optional per-band ``default_mode`` is the mode the
+    # SetBand BSR-miss fallback tunes alongside default_hz. It must name
+    # a mode from [modes].list exactly as written there.
+    for range_index, rng in enumerate(freq_ranges_data):
+        if not isinstance(rng, dict):
+            continue
+        for band_index, band in enumerate(rng.get("bands", [])):
+            if not isinstance(band, dict) or "default_mode" not in band:
+                continue
+            mode_value = band["default_mode"]
+            if not isinstance(mode_value, str):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{range_index}]."
+                    f"bands[{band_index}].default_mode must be a string"
+                )
+            if mode_value not in modes:
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{range_index}]."
+                    f"bands[{band_index}].default_mode {mode_value!r} "
+                    "must name a mode from [modes].list"
                 )
 
     # Parse VFO bytes — explicit split (issue #710)
@@ -3498,6 +3556,7 @@ def load_rig(path: Path) -> RigConfig:
             min_watts = min_watts_raw
         if min_watts is not None and max_watts is not None and min_watts > max_watts:
             raise RigLoadError(f"{filename}: [power].min_watts must be <= max_watts")
+    _validate_band_max_power(filename, freq_ranges_data, max_watts)
 
     state_acquisition = _parse_state_acquisition(
         filename,

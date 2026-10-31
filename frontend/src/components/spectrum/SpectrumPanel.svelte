@@ -36,6 +36,7 @@
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
+  import { getBandPlanRegion, loadBandPlanConfig } from '$lib/stores/band-plan-region.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
   import EiBiBrowser from './EiBiBrowser.svelte';
   import { t } from '$lib/i18n';
@@ -273,6 +274,13 @@
   let frameScopeMode = $state(0);  // scope mode from binary frame header (authoritative)
   let fullscreen = $state(false);
   let showEiBi = $state(false);
+  // Effective band-plan region: one shared state (band-plan-region store, read
+  // from /api/v1/band-plan/config), loaded here so it exists even when the
+  // toolbar is hidden (portrait layout). The SpectrumToolbar region selector
+  // reads and changes the same state; the overlay gets it so a region switch
+  // refetches segments even when the viewport did not move. `null` = unknown.
+  let bandPlanRegion = $derived(getBandPlanRegion());
+  void loadBandPlanConfig();
   let hiddenLayers = $state<string[]>(
     typeof localStorage !== 'undefined'
       ? JSON.parse(localStorage.getItem('rigplane-hidden-layers') || '[]')
@@ -1238,7 +1246,7 @@
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {/if}
-      {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} />{/if}
+      {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
       {#if scopeTraceLive}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}

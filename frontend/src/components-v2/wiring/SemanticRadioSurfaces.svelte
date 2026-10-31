@@ -70,7 +70,7 @@
     getFilterShapeControlFeedback,
     deriveMemoryPanelProps, getMemoryHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
-  import { toRitXitProps } from '$lib/runtime/props/panel-props';
+  import { rfPowerScale, toRitXitProps } from '$lib/runtime/props/panel-props';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
   import {
     compositionSurfaces, useSurfacePlan, zoneShowsSurface,
@@ -726,6 +726,10 @@
    * keeps legacy servers compatible; `null` is the adapter's fail-closed
    * result for present-but-unusable metadata. */
   let ritDomain = $derived(toRitXitProps(runtime.state, runtime.caps).ritDomain);
+  /** MOR-3634: range and watts label of the RF power slider for the band the
+   * active receiver is on. The slider's scale only: the value the user sets is
+   * sent as chosen. */
+  let rfPowerBandScale = $derived(rfPowerScale(runtime.state, runtime.caps));
   /**
    * MOR-2425 (Memory lane, phase B2). Memory channels are not in the
    * MOR-1262 RadioViewModel vocabulary (the local catalogue is browser-side;
@@ -3271,6 +3275,7 @@
   {/snippet}
   <TxAuxScalarHost
     {view} levelFeedback={txAuxLevelFeedback} rfPowerFeedback={rfPowerFeedback}
+    rfPowerScale={rfPowerBandScale}
     onLevelChange={(field, value) => TX_AUX_LEVEL_INTENT[field](value)}
     scalarAppearance={externalPresentation?.record.appearances.scalar}
     presentationIsCurrent={externalPresentation?.isCurrent}

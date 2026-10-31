@@ -2059,6 +2059,107 @@ class TestToProfile:
         profile = load_rig(p).to_profile()
         assert profile.freq_ranges[0].bands[0].rx_only is True
 
+    # ── per-band rated maximum power (MOR-3634) ──────────────────────────
+
+    @staticmethod
+    def _toml_with_band_power(band_power: str, power: str = "[power]\nmax_watts = 100"):
+        """Minimal rig with one HF band row carrying ``band_power`` and a power section."""
+        return (
+            _MINIMAL_TOML.replace(
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000',
+                'label = "HF"\nstart_hz = 30000\nend_hz = 60000000\n\n'
+                "[[freq_ranges.ranges.bands]]\n"
+                'name = "160m"\n'
+                "start_hz = 1800000\n"
+                "end_hz = 2000000\n"
+                "default_hz = 1825000\n" + band_power,
+            )
+            + "\n"
+            + power
+            + "\n"
+        )
+
+    def test_band_max_power_w_defaults_none(self):
+        profile = load_rig(TEMPLATE_PATH).to_profile()
+        assert all(
+            band.max_power_w is None
+            for freq_range in profile.freq_ranges
+            for band in freq_range.bands
+        )
+
+    def test_band_max_power_w_loads(self, tmp_path):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 75"))
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].bands[0].max_power_w == 75
+
+    def test_band_max_power_w_may_equal_flat_maximum(self, tmp_path):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 100"))
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].bands[0].max_power_w == 100
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "max_power_w = 0",
+            "max_power_w = -5",
+            "max_power_w = 7.5",
+            "max_power_w = true",
+        ],
+    )
+    def test_band_max_power_w_rejects_non_positive_or_non_integer(self, tmp_path, bad):
+        p = _write_toml(tmp_path, self._toml_with_band_power(bad))
+        with pytest.raises(
+            RigLoadError,
+            match=(
+                r"freq_ranges\.ranges\[0\]\.bands\[0\]\.max_power_w must be a "
+                r"positive integer \(band '160m'\)"
+            ),
+        ):
+            load_rig(p)
+
+    def test_band_max_power_w_rejects_value_above_flat_maximum(self, tmp_path):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 101"))
+        with pytest.raises(
+            RigLoadError,
+            match=(
+                r"bands\[0\]\.max_power_w must not exceed \[power\]\.max_watts "
+                r"\(100\) \(band '160m'\)"
+            ),
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize("power", ["", "[power]\nmin_watts = 5"])
+    def test_band_max_power_w_requires_flat_maximum(self, tmp_path, power):
+        p = _write_toml(tmp_path, self._toml_with_band_power("max_power_w = 50", power))
+        with pytest.raises(
+            RigLoadError, match=r"max_power_w requires \[power\]\.max_watts"
+        ):
+            load_rig(p)
+
+    @pytest.mark.parametrize(
+        ("filename", "expected"),
+        [
+            # IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W.
+            ("ic9700.toml", {"2m": 100, "70cm": 75, "23cm": 10}),
+            # Flat-maximum radios declare no per-band row.
+            ("ic7300.toml", {}),
+            ("ic705.toml", {}),
+            ("ftx1.toml", {}),
+        ],
+    )
+    def test_shipped_profiles_band_max_power_w(self, filename, expected):
+        profile = load_rig(RIGS_DIR / filename).to_profile()
+        declared = {
+            band.name: band.max_power_w
+            for freq_range in profile.freq_ranges
+            for band in freq_range.bands
+            if band.max_power_w is not None
+        }
+        assert declared == expected
+        if expected:
+            assert profile.max_watts is not None
+            assert max(expected.values()) <= profile.max_watts
+
     def test_modes(self):
         profile = load_rig(TEMPLATE_PATH).to_profile()
         assert profile.modes == (
@@ -2259,6 +2360,56 @@ class TestToProfile:
         assert any(
             binding.action == "toggle_help" for binding in profile.keyboard.bindings
         )
+
+
+class TestBandDefaultMode:
+    """Optional per-band ``default_mode`` validated through load_rig().
+
+    Failing-first: deleting either rejection branch in
+    ``src/rigplane/profiles/rig_loader.py`` (non-string values, unknown
+    mode names) must turn the matching rejection test red. The valid and
+    omitted cases below pin the behaviour that must keep loading.
+    """
+
+    _BAND = """
+[[freq_ranges.ranges.bands]]
+name = "20m"
+start_hz = 14000000
+end_hz = 14350000
+default_hz = 14200000
+bsr_code = 5
+default_mode = "USB"
+"""
+
+    def _with_mode_line(self, tmp_path, declaration: str):
+        body = _MINIMAL_TOML + self._BAND.replace('default_mode = "USB"', declaration)
+        return _write_toml(tmp_path, body)
+
+    def test_default_mode_non_string_rejected(self, tmp_path):
+        """Red mutation: accept ``default_mode = 42`` (drop the isinstance
+        check) and this passes a non-string into the profile."""
+        p = self._with_mode_line(tmp_path, "default_mode = 42")
+        with pytest.raises(RigLoadError, match=r"default_mode must be a string"):
+            load_rig(p)
+
+    def test_default_mode_unknown_name_rejected(self, tmp_path):
+        """Red mutation: accept ``default_mode = "FM"`` although "FM" is
+        not in this file's [modes].list (drop the membership check)."""
+        p = self._with_mode_line(tmp_path, 'default_mode = "FM"')
+        with pytest.raises(RigLoadError, match=r"must name a mode"):
+            load_rig(p)
+
+    def test_default_mode_valid_value_loads(self, tmp_path):
+        """A shipped mode name keeps loading and reaches the profile."""
+        p = self._with_mode_line(tmp_path, 'default_mode = "USB"')
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].bands[0].default_mode == "USB"
+
+    def test_default_mode_omitted_is_none(self, tmp_path):
+        """Bands without the key (e.g. IC-7300 HF) carry None, unchanged."""
+        body = _MINIMAL_TOML + self._BAND.replace('default_mode = "USB"\n', "")
+        profile = load_rig(_write_toml(tmp_path, body)).to_profile()
+        assert profile.freq_ranges[0].bands[0].default_mode is None
 
 
 # ── VFO scheme split (issue #710) ────────────────────────────────

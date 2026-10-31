@@ -47,6 +47,7 @@ import type {
   TxAuxScalarPresentation,
 } from '../tx-aux-scalar';
 import { TX_AUX_LEVELS } from '../tx-aux-scalar';
+import type { RfPowerScale } from '../../primitives/scalar/value-control-core';
 
 const RX_IDLE: TxAuthoritySnapshot = {
   phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
@@ -84,6 +85,7 @@ type Props = {
   presentation: 'grouped' | 'independent';
   scalarPresentation?: Readonly<TxAuxScalarPresentation>;
   levelFeedback?: TxAuxLevelFeedback;
+  rfPowerScale?: RfPowerScale;
   onLevelChange?: (field: TxAuxLevelField, value: number) => void;
 };
 
@@ -151,6 +153,53 @@ describe('TxAuxScalarHost independent composition', () => {
     expect(r.scalar('micGain')?.dataset.compact).toBe('true');
     expect(scalarCapture.bindings).toHaveLength(8);
     r.dispose();
+  });
+
+  it('scales the watts-native RF power range to the band and leaves other levels alone (MOR-3634)', () => {
+    const domainMax = (r: ReturnType<typeof render>, field: TxAuxLevelField) =>
+      r.scalar(field)!.rendererLease.view.domain.max;
+    const r = render();
+    expect(domainMax(r, 'rfPower')).toBe(1);
+    expect(r.row('rfPower').dataset.max).toBe('1');
+
+    r.props.rfPowerScale = { max: 0.75, wattsAtFull: null };
+    flushSync();
+    expect(domainMax(r, 'rfPower')).toBe(0.75);
+    expect(r.row('rfPower').dataset.max).toBe('0.75');
+    expect(domainMax(r, 'micGain')).toBe(255);
+
+    r.props.rfPowerScale = { max: 0.1, wattsAtFull: null };
+    flushSync();
+    expect(domainMax(r, 'rfPower')).toBe(0.1);
+    r.dispose();
+  });
+
+  it('labels the raw-percent RF power in watts of the band, keeping the full range', () => {
+    const canonical = (r: ReturnType<typeof render>) =>
+      r.row('rfPower').querySelector('[data-canonical-value]')?.textContent;
+    const r = render();
+    expect(canonical(r)).toBe('80%');
+    r.props.rfPowerScale = { max: 1, wattsAtFull: 75 };
+    flushSync();
+    expect(canonical(r)).toBe('60W');
+    expect(r.scalar('rfPower')!.rendererLease.view.domain.max).toBe(1);
+    r.props.rfPowerScale = { max: 1, wattsAtFull: 10 };
+    flushSync();
+    expect(canonical(r)).toBe('8W');
+    r.dispose();
+  });
+
+  it('keeps the unchanged RF power scale when the surface gives none or a malformed one', () => {
+    const bad: Array<RfPowerScale | undefined> = [
+      undefined, { max: 0, wattsAtFull: null }, { max: -1, wattsAtFull: null },
+      { max: Number.NaN, wattsAtFull: null }, { max: 1.5, wattsAtFull: null },
+      { max: 1, wattsAtFull: 0 }, { max: 1, wattsAtFull: Number.NaN },
+    ];
+    for (const rfPowerScale of bad) {
+      const r = render({ rfPowerScale });
+      expect(r.scalar('rfPower')!.rendererLease.view.domain.max, JSON.stringify(rfPowerScale)).toBe(1);
+      r.dispose();
+    }
   });
 
   it('keeps the same host bindings across keyed grouped/independent composition swaps', () => {

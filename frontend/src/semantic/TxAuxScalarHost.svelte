@@ -15,7 +15,9 @@
     type ContinuousScalarPolicy,
     type ScalarDomain,
   } from '../primitives/scalar/continuous-scalar.svelte';
-  import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
+  import {
+    rawToPercentDisplay, rfPowerDisplay, validRfPowerScale, type RfPowerScale,
+  } from '../primitives/scalar/value-control-core';
   import { disabledReasonText } from './disabled-reason';
   import { finiteValue, valueText } from '../primitives/reading-text';
   import type { RadioViewModel, TxAuxField } from './radio-view-model';
@@ -33,6 +35,10 @@
     view: RadioViewModel | null;
     levelFeedback?: TxAuxLevelFeedback;
     rfPowerFeedback?: Readonly<CommandScalarFeedback>;
+    /** MOR-3634: range and watts label of the RF power slider for the band
+     *  the radio is on (`rfPowerScale`). The scale only; the value requested
+     *  is sent as chosen. */
+    rfPowerScale?: RfPowerScale;
     onLevelChange?: (field: TxAuxLevelField, value: number) => void;
     scalarAppearance?: ScalarAppearance;
     presentationIsCurrent?: () => boolean;
@@ -40,8 +46,8 @@
   }
 
   let {
-    view, levelFeedback, rfPowerFeedback, onLevelChange, scalarAppearance, presentationIsCurrent,
-    children,
+    view, levelFeedback, rfPowerFeedback, rfPowerScale, onLevelChange, scalarAppearance,
+    presentationIsCurrent, children,
   }: Props = $props();
   let txAux = $derived(view?.txAux);
 
@@ -65,9 +71,16 @@
     const [, , min, max, , format] = row(field);
     return valueText(
       finiteValue(value),
-      format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)),
+      field === 'rfPower'
+        ? (raw: number) => rfPowerDisplay(raw, rfScale)
+        : format ?? ((raw: number) => rawToPercentDisplay(raw, min, max)),
     );
   };
+
+  // MOR-3634: a malformed or missing scale leaves the unchanged one.
+  let rfScale = $derived(validRfPowerScale(rfPowerScale));
+  const levelMax = (field: TxAuxLevelField): number =>
+    field === 'rfPower' ? rfScale.max : row(field)[3];
 
   function request(field: TxAuxLevelField, value: number): void {
     const current = txAux?.[field];
@@ -76,9 +89,9 @@
 
   function input(field: TxAuxLevelField): Readonly<ContinuousScalarInput> {
     const current = txAux?.[field];
-    const [, , min, max, step] = row(field);
+    const [, , min, , step] = row(field);
     const common = {
-      domain: { min, max, step, defaultValue: null, fineStepDivisor: 1 },
+      domain: { min, max: levelMax(field), step, defaultValue: null, fineStepDivisor: 1 },
       enabled: current !== undefined && usable(current),
       request: (value: number) => request(field, value),
     } as const;
@@ -206,7 +219,8 @@
   {#if current?.availability.structural}
     {@const explicitPresentation = presentation !== undefined}
     {@const form = presentation?.form ?? 'hbar'}
-    {@const [, label, min, max, step] = row(field)}
+    {@const [, label, min, , step] = row(field)}
+    {@const max = levelMax(field)}
     {@const currentStatus = status(field)}
     {@const currentFeedback = feedbackOf(field)}
     {@const disabledReason = reason(field)}

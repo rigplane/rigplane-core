@@ -4,6 +4,7 @@
  * from the merged spectrum selector while actions use the bound scope family.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte';
 import { createRawSnippet, mount, unmount, flushSync, tick } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -263,6 +264,7 @@ afterEach(() => {
   components.forEach((component) => unmount(component));
   document.body.innerHTML = '';
   localStorage.clear();
+  resetBandPlanRegionForTests();
 });
 
 // ── Canonical selector and one-time binder ─────────────────────────────────

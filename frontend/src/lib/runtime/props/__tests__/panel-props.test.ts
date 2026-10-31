@@ -16,6 +16,7 @@ import {
   toRitXitProps,
   toRxAudioProps,
   toScanProps,
+  rfPowerScale,
   toTxProps,
   toVfoControlProps,
   toVfoProps,
@@ -1415,6 +1416,94 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       });
       const caps = { capabilities: [], receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected' } as any;
       expect(toMemoryPanelProps(state, caps).vfoIdentityKnown).toBe(true);
+    });
+  });
+
+  describe('RF power scale follows the band (MOR-3634)', () => {
+    // IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W; flat maximum 100 W.
+    const BANDS = [
+      { name: '2m', start: 144_000_000, end: 148_000_000, maxPowerW: 100 },
+      { name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: 75 },
+      { name: '23cm', start: 1_240_000_000, end: 1_300_000_000, maxPowerW: 10 },
+    ];
+    // Icom: the level is a percentage of the CURRENT band's rated maximum.
+    const RAW_PERCENT_CAPS = {
+      tx: true, capabilities: [], maxPowerW: 100, powerUnit: 'raw_255', txBands: BANDS,
+    } as any;
+    // Watts-native radio (Yaesu CAT): the level is a fraction of the flat maximum.
+    const WATTS_CAPS = { ...RAW_PERCENT_CAPS, powerUnit: 'watts' } as any;
+    // Flat-maximum radios: no band row carries a maximum.
+    const FLAT_BANDS = [{ name: '20m', start: 14_000_000, end: 14_350_000 }];
+    const FULL = { max: 1, wattsAtFull: null };
+    const onFreq = (freqHz: number, extra: Record<string, unknown> = {}) =>
+      makeState({ main: { ...makeState().main, freqHz }, ...extra });
+
+    it.each([
+      [145_000_000, 100],
+      [435_000_000, 75],
+      [1_296_000_000, 10],
+    ])('raw-percent radio at %i Hz keeps the full range and labels in watts of %i W', (freqHz, watts) => {
+      const expected = { max: 1, wattsAtFull: watts };
+      expect(rfPowerScale(onFreq(freqHz), RAW_PERCENT_CAPS)).toEqual(expected);
+      expect(toTxProps(onFreq(freqHz), RAW_PERCENT_CAPS).rfPowerScale).toEqual(expected);
+    });
+
+    it.each([
+      [145_000_000, 1],
+      [435_000_000, 0.75],
+      [1_296_000_000, 0.1],
+    ])('watts-native radio at %i Hz scales the range to %f and keeps the percent label', (freqHz, max) => {
+      const expected = { max, wattsAtFull: null };
+      expect(rfPowerScale(onFreq(freqHz), WATTS_CAPS)).toEqual(expected);
+      expect(toTxProps(onFreq(freqHz), WATTS_CAPS).rfPowerScale).toEqual(expected);
+    });
+
+    it('keeps the unchanged scale when the frequency is unknown or outside every band', () => {
+      for (const caps of [RAW_PERCENT_CAPS, WATTS_CAPS]) {
+        expect(rfPowerScale(null, caps)).toEqual(FULL);
+        expect(rfPowerScale(onFreq(100_000_000), caps)).toEqual(FULL);
+        expect(rfPowerScale(onFreq(435_000_000, {
+          fieldStatus: { 'main.freqHz': fieldStatus('missing', false) },
+        }), caps)).toEqual(FULL);
+      }
+    });
+
+    it('follows the active receiver on a dual-receiver radio', () => {
+      const dual = makeState({
+        active: 'SUB',
+        main: { ...makeState().main, freqHz: 145_000_000 },
+        sub: { ...makeState().sub, freqHz: 435_000_000 },
+      });
+      expect(rfPowerScale(dual, RAW_PERCENT_CAPS)).toEqual({ max: 1, wattsAtFull: 75 });
+      expect(rfPowerScale(dual, WATTS_CAPS)).toEqual({ max: 0.75, wattsAtFull: null });
+    });
+
+    it('leaves flat-maximum radios unchanged, raw-percent and watts-native alike', () => {
+      for (const powerUnit of ['raw_255', 'watts']) {
+        const caps = { tx: true, capabilities: [], maxPowerW: 100, powerUnit, txBands: FLAT_BANDS } as any;
+        expect(rfPowerScale(onFreq(14_074_000), caps)).toEqual(FULL);
+      }
+      expect(rfPowerScale(onFreq(14_074_000), { tx: true, capabilities: [] } as any)).toEqual(FULL);
+      expect(rfPowerScale(onFreq(14_074_000), null)).toEqual(FULL);
+    });
+
+    it('does not guess the scale when the radio did not say how its level is scaled', () => {
+      const { powerUnit: _unit, ...undeclared } = RAW_PERCENT_CAPS;
+      expect(rfPowerScale(onFreq(435_000_000), undeclared as any)).toEqual(FULL);
+    });
+
+    it('ignores a malformed band maximum instead of changing the scale', () => {
+      for (const bad of [0, -5, Number.NaN, '75', null]) {
+        for (const caps of [RAW_PERCENT_CAPS, WATTS_CAPS]) {
+          const broken = {
+            ...caps,
+            txBands: [{ name: '70cm', start: 430_000_000, end: 450_000_000, maxPowerW: bad }],
+          };
+          expect(rfPowerScale(onFreq(435_000_000), broken)).toEqual(FULL);
+        }
+      }
+      expect(rfPowerScale(onFreq(435_000_000), { ...WATTS_CAPS, maxPowerW: undefined })).toEqual(FULL);
+      expect(rfPowerScale(onFreq(435_000_000), { ...WATTS_CAPS, maxPowerW: 50 })).toEqual(FULL);
     });
   });
 
