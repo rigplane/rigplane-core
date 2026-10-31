@@ -6,7 +6,9 @@ the same codes as the IC-705, MOR-2930), the ``16 5D`` tone squelch selector
 and its ``[tone_squelch_types]`` table (guide p.5, the IC-705's codes,
 MOR-2955), and the fixed-width DV filter row. Everything here reads the
 shipped ``rigs/ic9700.toml`` through the existing loader, command map and
-state-acquisition projection; no runtime behaviour is exercised or added.
+state-acquisition projection, plus the shared 16 5D builders both profiles
+resolve through the map. The receiver guard itself is pinned at the wire
+level by ``tests/test_mor3591_no_hidden_receiver_switch.py``.
 
 Tier B-: no IC-9700 has been on the bench.
 """
@@ -19,12 +21,15 @@ import pytest
 
 from rigplane.commands import (
     get_repeater_shift,
+    get_tone_squelch_type,
     parse_civ_frame,
+    parse_tone_squelch_type_response,
     set_repeater_shift,
+    set_tone_squelch_type,
 )
 from rigplane.core.command_dispatch import command_descriptor
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.types import Mode, RepeaterShiftDirection
+from rigplane.core.types import Mode, RepeaterShiftDirection, ToneSquelchType
 from rigplane.rig_loader import load_rig
 from rigplane.runtime._state_queries import acquisition_query_resolver_for_profile
 
@@ -149,6 +154,48 @@ def test_type_and_tone_booleans_ride_one_16_5d_query(ic9700_profile) -> None:
         query = resolve(path)
         assert query is not None, path
         assert (query.command, query.sub, query.data) == (0x16, 0x5D, b""), path
+
+
+_TYPE_SET_CODES = [
+    pytest.param(ToneSquelchType.OFF, 0x00, id="off-00"),
+    pytest.param(ToneSquelchType.TONE, 0x01, id="tone-01"),
+    pytest.param(ToneSquelchType.TSQL, 0x02, id="tsql-02"),
+    pytest.param(ToneSquelchType.DTCS, 0x03, id="dtcs-03"),
+    pytest.param(ToneSquelchType.DTCS_T, 0x06, id="dtcs-t-06"),
+    pytest.param("tone", 0x01, id="str-tone-01"),
+]
+
+
+def test_type_read_frame_is_bare_16_5d(ic9700_map) -> None:
+    frame = parse_civ_frame(
+        get_tone_squelch_type(to_addr=IC9700_ADDR, cmd_map=ic9700_map)
+    )
+    assert (frame.command, frame.sub, frame.data) == (0x16, 0x5D, b"")
+
+
+@pytest.mark.parametrize(("kind", "code"), _TYPE_SET_CODES)
+def test_type_set_frame_carries_the_table_code(ic9700_map, kind, code) -> None:
+    """The builder takes the raw table code; ``kind`` names its meaning."""
+    frame = parse_civ_frame(
+        set_tone_squelch_type(code, to_addr=IC9700_ADDR, cmd_map=ic9700_map)
+    )
+    assert (frame.command, frame.sub, frame.data) == (0x16, 0x5D, bytes([code]))
+
+
+@pytest.mark.parametrize("code", [True, 0x100, -1, "01"])
+def test_type_set_refuses_a_non_byte_code(ic9700_map, code) -> None:
+    with pytest.raises(ValueError):
+        set_tone_squelch_type(code, to_addr=IC9700_ADDR, cmd_map=ic9700_map)
+
+
+def test_type_parse_names_the_table_kind(ic9700_profile) -> None:
+    table = ic9700_profile.tone_squelch_types
+    assert table is not None
+    assert (
+        parse_tone_squelch_type_response(bytes([0x02]), table) is ToneSquelchType.TSQL
+    )
+    assert parse_tone_squelch_type_response(bytes([0x05]), table) is None
+    assert parse_tone_squelch_type_response(b"", table) is None
 
 
 # ── Modes: DV in, DD out ─────────────────────────────────────────────
