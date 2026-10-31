@@ -35,6 +35,7 @@ from rigplane.audio.backend import (
 )
 from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
 from rigplane.audio_bridge import AudioBridge
+from _timing import await_until
 
 DUPLEX_DEVICE = AudioDeviceInfo(
     id=AudioDeviceId(0),
@@ -975,7 +976,7 @@ class TestIcomSerialExclusiveDuplexTx:
     async def test_ic7300_exclusive_tx_arm_uses_one_duplex_stream(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+        from test_icom7610_serial_radio import _FakeSerialCivLink
 
         from rigplane.audio.usb_driver import UsbAudioDriver
         from rigplane.backends.ic7300 import Ic7300SerialRadio
@@ -1007,7 +1008,7 @@ class TestIcomSerialExclusiveDuplexTx:
             )
             assert len(backend.rx_streams) == 1
             backend.rx_streams[0].inject_frame(b"\x01\x02")
-            assert await _wait_until(lambda: len(received) >= 1)
+            assert await await_until(lambda: len(received) >= 1)
             assert received == [b"\x01\x02"]
 
             await radio.start_tx()
@@ -1016,7 +1017,7 @@ class TestIcomSerialExclusiveDuplexTx:
             assert backend.tx_streams == []
             # RX frames keep flowing DURING the TX arm.
             backend.duplex_streams[0].inject_frame(b"\x03\x04")
-            assert await _wait_until(lambda: len(received) >= 2)
+            assert await await_until(lambda: len(received) >= 2)
             assert received[-1] == b"\x03\x04"
             await radio.push_tx(b"\x05\x06")
             assert backend.duplex_streams[0].written_frames == [b"\x05\x06"]
@@ -1026,7 +1027,7 @@ class TestIcomSerialExclusiveDuplexTx:
             running_rx = [s for s in backend.rx_streams if s.running]
             assert len(running_rx) == 1
             running_rx[0].inject_frame(b"\x07\x08")
-            assert await _wait_until(lambda: len(received) >= 3)
+            assert await await_until(lambda: len(received) >= 3)
             assert received[-1] == b"\x07\x08"
         finally:
             await radio.disconnect()

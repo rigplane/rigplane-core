@@ -392,179 +392,227 @@ describe('the meters surface mounts only when the view model carries the group',
     expect(q('[data-testid="meter-drainVoltage"]')!.dataset.observed).toBe('false');
   });
 
-  it('re-seeds the mounted S-meter immediately at source, session, provider, and disconnect boundaries', () => {
-    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
-      matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
-      addEventListener: vi.fn(), removeEventListener: vi.fn(),
-      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
-    }));
-    const signalState = (
-      active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
-    ): ServerState => {
-      const state = liveState(true);
-      const key = active === 'MAIN' ? 'main' : 'sub';
-      return {
-        ...state, active, providerGeneration,
-        [key]: { ...state[key], sMeter },
-      } as ServerState;
-    };
-    const setSignal = (
-      active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
-    ): void => {
-      h.state = signalState(active, sMeter, providerGeneration);
-      h.caps = { ...liveCaps(true), providerGeneration };
-      expect(setCapabilities(h.caps as Capabilities)).toBe(true);
-      push({});
-    };
-    const signalObserved = (): string | undefined =>
-      q('[data-testid="meter-signal"]')!.dataset.observed;
-    const armPeak = (active: 'MAIN' | 'SUB', providerGeneration = 1): number => {
-      setSignal(active, 40, providerGeneration);
-      setSignal(active, -30, providerGeneration);
+  // The S-meter lifecycle, one context boundary per test: the five boundaries
+  // in one test re-render the whole surface tree on every push, ~1.1 s on an
+  // idle host and several times that on a loaded runner. They do not depend
+  // on each other, so each runs from its own mount.
+  describe('the mounted S-meter re-seeds immediately across real context boundaries', () => {
+    function mountSignalMeter() {
+      vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+        matches: query === '(prefers-reduced-motion: reduce)', media: query, onchange: null,
+        addEventListener: vi.fn(), removeEventListener: vi.fn(),
+        addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+      }));
+      const signalState = (
+        active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
+      ): ServerState => {
+        const state = liveState(true);
+        const key = active === 'MAIN' ? 'main' : 'sub';
+        return {
+          ...state, active, providerGeneration,
+          [key]: { ...state[key], sMeter },
+        } as ServerState;
+      };
+      const setSignal = (
+        active: 'MAIN' | 'SUB', sMeter: number, providerGeneration = 1,
+      ): void => {
+        h.state = signalState(active, sMeter, providerGeneration);
+        h.caps = { ...liveCaps(true), providerGeneration };
+        expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+        push({});
+      };
+      const signalObserved = (): string | undefined =>
+        q('[data-testid="meter-signal"]')!.dataset.observed;
+      const armPeak = (active: 'MAIN' | 'SUB', providerGeneration = 1): number => {
+        setSignal(active, 40, providerGeneration);
+        setSignal(active, -30, providerGeneration);
+        expect(signalObserved()).toBe('true');
+        expect(signalHasPeak()).toBe(true);
+        return signalFillCount();
+      };
+
+      h.state = signalState('MAIN', 40);
+      render();
+      return { setSignal, signalObserved, armPeak };
+    }
+
+    it('at a receiver change', () => {
+      const { setSignal, signalObserved, armPeak } = mountSignalMeter();
+      const receiverFill = armPeak('MAIN');
+      setSignal('SUB', -30);
       expect(signalObserved()).toBe('true');
-      expect(signalHasPeak()).toBe(true);
-      return signalFillCount();
-    };
+      expect(signalFillCount()).toBe(receiverFill);
+      expect(signalHasPeak()).toBe(false);
+    });
 
-    h.state = signalState('MAIN', 40);
-    render();
-    const receiverFill = armPeak('MAIN');
-    setSignal('SUB', -30);
-    expect(signalObserved()).toBe('true');
-    expect(signalFillCount()).toBe(receiverFill);
-    expect(signalHasPeak()).toBe(false);
+    it('at a new session epoch', () => {
+      const { signalObserved, armPeak } = mountSignalMeter();
+      const sessionFill = armPeak('SUB');
+      pushSession({ state: 'connected', epoch: 2 });
+      expect(signalObserved()).toBe('true');
+      expect(signalFillCount()).toBe(sessionFill);
+      expect(signalHasPeak()).toBe(false);
+    });
 
-    const sessionFill = armPeak('SUB');
-    pushSession({ state: 'connected', epoch: 2 });
-    expect(signalObserved()).toBe('true');
-    expect(signalFillCount()).toBe(sessionFill);
-    expect(signalHasPeak()).toBe(false);
+    it('at a new provider generation', () => {
+      const { setSignal, signalObserved, armPeak } = mountSignalMeter();
+      const providerFill = armPeak('SUB');
+      setSignal('SUB', -30, 2);
+      expect(signalObserved()).toBe('true');
+      expect(signalFillCount()).toBe(providerFill);
+      expect(signalHasPeak()).toBe(false);
+    });
 
-    const providerFill = armPeak('SUB');
-    setSignal('SUB', -30, 2);
-    expect(signalObserved()).toBe('true');
-    expect(signalFillCount()).toBe(providerFill);
-    expect(signalHasPeak()).toBe(false);
-
-    const reconnectFill = armPeak('SUB', 2);
-    pushSession({ state: 'disconnected', epoch: 3 });
-    expect(signalFillCount()).toBe(0);
-    expect(signalHasPeak()).toBe(false);
-    pushSession({ state: 'connected', epoch: 4 });
-    expect(signalObserved()).toBe('true');
-    expect(signalFillCount()).toBe(reconnectFill);
-    expect(signalHasPeak()).toBe(false);
+    it('at a disconnect and the reconnect after it', () => {
+      const { signalObserved, armPeak } = mountSignalMeter();
+      const reconnectFill = armPeak('SUB', 2);
+      pushSession({ state: 'disconnected', epoch: 3 });
+      expect(signalFillCount()).toBe(0);
+      expect(signalHasPeak()).toBe(false);
+      pushSession({ state: 'connected', epoch: 4 });
+      expect(signalObserved()).toBe('true');
+      expect(signalFillCount()).toBe(reconnectFill);
+      expect(signalHasPeak()).toBe(false);
+    });
   });
 
-  it('re-seeds and clears a mounted radio-wide BarGauge across real context boundaries', () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(0);
-    vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
-      matches: false, media: query, onchange: null,
-      addEventListener: vi.fn(), removeEventListener: vi.fn(),
-      addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
-    }));
-    h.session = { state: 'disconnected', epoch: 0 };
-    const initial = liveState(true, { powerMeter: 255 });
-    h.state = {
-      ...initial,
-      fieldStatus: {
-        ...initial.fieldStatus,
-        powerMeter: { ...fresh, quality: ['calibrated'] },
-      },
-    };
-    // This lifecycle test needs known physics to witness a retained peak:
-    // state values are already watts and this synthetic scale supplies only
-    // the display-axis maximum. Raw and unknown domains intentionally do not peak.
-    h.caps = {
-      ...(h.caps as Capabilities),
-      meterCalibrations: {
-        ...(h.caps as Capabilities).meterCalibrations,
-        power: [
-          { raw: 0, actual: 0, label: '0' },
-          { raw: 255, actual: 255, label: '255' },
-        ],
-      },
-    };
-    expect(setCapabilities(h.caps as Capabilities)).toBe(true);
-    render();
-    push({ intent: 'transmit', observedPtt: 'on' });
+  // The radio-wide BarGauge lifecycle, one context boundary per test. Each
+  // test mounts the whole surface tree and re-renders it on every push, which
+  // costs ~1.4 s for the five boundaries together and 5 s+ on a loaded runner
+  // (the single test timed out in quick run 40984435987). The boundaries do
+  // not depend on each other, so each runs from its own mount.
+  describe('a mounted radio-wide BarGauge across real context boundaries', () => {
+    interface PowerGauge {
+      setPower(value: number, providerGeneration: number): void;
+      armRetainedPeak(epoch: number, providerGeneration: number): void;
+    }
 
-    const setPower = (value: number, providerGeneration: number): void => {
-      h.state = { ...(h.state as ServerState), powerMeter: value, providerGeneration };
-      h.caps = { ...(h.caps as Capabilities), providerGeneration };
+    function mountPowerGauge(): PowerGauge {
+      vi.useFakeTimers();
+      vi.setSystemTime(0);
+      vi.stubGlobal('matchMedia', (query: string): MediaQueryList => ({
+        matches: false, media: query, onchange: null,
+        addEventListener: vi.fn(), removeEventListener: vi.fn(),
+        addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(() => false),
+      }));
+      h.session = { state: 'disconnected', epoch: 0 };
+      const initial = liveState(true, { powerMeter: 255 });
+      h.state = {
+        ...initial,
+        fieldStatus: {
+          ...initial.fieldStatus,
+          powerMeter: { ...fresh, quality: ['calibrated'] },
+        },
+      };
+      // These lifecycle tests need known physics to witness a retained peak:
+      // state values are already watts and this synthetic scale supplies only
+      // the display-axis maximum. Raw and unknown domains intentionally do not peak.
+      h.caps = {
+        ...(h.caps as Capabilities),
+        meterCalibrations: {
+          ...(h.caps as Capabilities).meterCalibrations,
+          power: [
+            { raw: 0, actual: 0, label: '0' },
+            { raw: 255, actual: 255, label: '255' },
+          ],
+        },
+      };
+      expect(setCapabilities(h.caps as Capabilities)).toBe(true);
+      render();
       push({ intent: 'transmit', observedPtt: 'on' });
-    };
-    const armRetainedPeak = (epoch: number, providerGeneration: number): void => {
-      setPower(255, providerGeneration);
-      pushSession({ state: 'connected', epoch });
-      vi.advanceTimersByTime(600);
+
+      const setPower = (value: number, providerGeneration: number): void => {
+        h.state = { ...(h.state as ServerState), powerMeter: value, providerGeneration };
+        h.caps = { ...(h.caps as Capabilities), providerGeneration };
+        push({ intent: 'transmit', observedPtt: 'on' });
+      };
+      const armRetainedPeak = (epoch: number, providerGeneration: number): void => {
+        setPower(255, providerGeneration);
+        pushSession({ state: 'connected', epoch });
+        vi.advanceTimersByTime(600);
+        flushSync();
+        const retainedFill = barFillCount('power');
+        expect(retainedFill).toBeGreaterThan(5);
+        setPower(25.5, providerGeneration);
+        expect(barFillCount('power')).toBe(retainedFill);
+        expect(barPeakX('power')).toBeGreaterThan(64);
+      };
+      return { setPower, armRetainedPeak };
+    }
+
+    it('keeps the mounted gauge through same-turn authority snapshots', () => {
+      const { armRetainedPeak } = mountPowerGauge();
+      armRetainedPeak(1, 1);
+      const sameTurnPower = barSvg('power');
+      const subscribers = h.authoritySubscribers.size;
+      txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+      txHarness.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
+      txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
+      vi.advanceTimersByTime(100);
       flushSync();
-      const retainedFill = barFillCount('power');
-      expect(retainedFill).toBeGreaterThan(5);
-      setPower(25.5, providerGeneration);
-      expect(barFillCount('power')).toBe(retainedFill);
-      expect(barPeakX('power')).toBeGreaterThan(64);
-    };
+      expect(h.authoritySubscribers.size).toBe(subscribers);
+      expect(barSvg('power')).toBe(sameTurnPower);
+      expect(barFillCount('power')).toBe(1);
+      expect(barPeakX('power')).toBe(64);
+    });
 
-    armRetainedPeak(1, 1);
-    const sameTurnPower = barSvg('power');
-    const subscribers = h.authoritySubscribers.size;
-    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
-    txHarness.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
-    txHarness.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on' });
-    vi.advanceTimersByTime(100);
-    flushSync();
-    expect(h.authoritySubscribers.size).toBe(subscribers);
-    expect(barSvg('power')).toBe(sameTurnPower);
-    expect(barFillCount('power')).toBe(1);
-    expect(barPeakX('power')).toBe(64);
+    it('re-seeds at a new session epoch', () => {
+      const { armRetainedPeak } = mountPowerGauge();
+      armRetainedPeak(1, 1);
+      pushSession({ state: 'connected', epoch: 2 });
+      expect(barFillCount('power')).toBe(1);
+      expect(barPeakX('power')).toBe(64);
+    });
 
-    armRetainedPeak(1, 1);
-    pushSession({ state: 'connected', epoch: 2 });
-    expect(barFillCount('power')).toBe(1);
-    expect(barPeakX('power')).toBe(64);
+    it('re-seeds at a new provider generation', () => {
+      const { armRetainedPeak, setPower } = mountPowerGauge();
+      armRetainedPeak(3, 1);
+      setPower(25.5, 2);
+      expect(barFillCount('power')).toBe(1);
+      expect(barPeakX('power')).toBe(64);
+    });
 
-    armRetainedPeak(3, 1);
-    setPower(25.5, 2);
-    expect(barFillCount('power')).toBe(1);
-    expect(barPeakX('power')).toBe(64);
+    it('clears on disconnect and re-seeds on reconnect', () => {
+      const { armRetainedPeak } = mountPowerGauge();
+      armRetainedPeak(4, 2);
+      pushSession({ state: 'disconnected', epoch: 5 });
+      expect(barFillCount('power')).toBe(0);
+      expect(barPeakX('power')).toBeNull();
+      pushSession({ state: 'connected', epoch: 6 });
+      expect(barFillCount('power')).toBe(1);
+      expect(barPeakX('power')).toBe(64);
+    });
 
-    armRetainedPeak(4, 2);
-    pushSession({ state: 'disconnected', epoch: 5 });
-    expect(barFillCount('power')).toBe(0);
-    expect(barPeakX('power')).toBeNull();
-    pushSession({ state: 'connected', epoch: 6 });
-    expect(barFillCount('power')).toBe(1);
-    expect(barPeakX('power')).toBe(64);
-
-    armRetainedPeak(7, 2);
-    const mountedPower = barSvg('power');
-    const preStaleFill = barFillCount('power');
-    const preStalePeakX = barPeakX('power');
-    const state = h.state as ServerState;
-    h.state = {
-      ...state,
-      fieldStatus: {
-        ...state.fieldStatus,
-        // Keep the same calibration quality the meter already had — only
-        // freshness flips. Dropping `quality` here would hide the R29 bug
-        // this test exists to witness behind an unrelated "no calibration
-        // evidence" gap.
-        powerMeter: { ...state.fieldStatus!.powerMeter, freshness: 'stale' },
-      },
-    };
-    push({ intent: 'transmit', observedPtt: 'on' });
-    // R29 (MOR-2425): a stale reading stays observed and keeps its value —
-    // it greys out only on a real disconnect or structural absence, neither
-    // of which applies here. The meter stays operational, so its DOM node
-    // is never torn down, and `meterField`'s calibrated domain (fixed
-    // alongside `bar-meter-projector.ts`'s own R29 fix) keeps the gauge
-    // fill and peak marker exactly where they were the instant before.
-    expect(barSvg('power')).toBe(mountedPower);
-    expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('true');
-    expect(barFillCount('power')).toBe(preStaleFill);
-    expect(barPeakX('power')).toBe(preStalePeakX);
+    it('keeps the gauge mounted and in place while its reading goes stale', () => {
+      const { armRetainedPeak } = mountPowerGauge();
+      armRetainedPeak(7, 2);
+      const mountedPower = barSvg('power');
+      const preStaleFill = barFillCount('power');
+      const preStalePeakX = barPeakX('power');
+      const state = h.state as ServerState;
+      h.state = {
+        ...state,
+        fieldStatus: {
+          ...state.fieldStatus,
+          // Keep the same calibration quality the meter already had — only
+          // freshness flips. Dropping `quality` here would hide the R29 bug
+          // this test exists to witness behind an unrelated "no calibration
+          // evidence" gap.
+          powerMeter: { ...state.fieldStatus!.powerMeter, freshness: 'stale' },
+        },
+      };
+      push({ intent: 'transmit', observedPtt: 'on' });
+      // R29 (MOR-2425): a stale reading stays observed and keeps its value —
+      // it greys out only on a real disconnect or structural absence, neither
+      // of which applies here. The meter stays operational, so its DOM node
+      // is never torn down, and `meterField`'s calibrated domain (fixed
+      // alongside `bar-meter-projector.ts`'s own R29 fix) keeps the gauge
+      // fill and peak marker exactly where they were the instant before.
+      expect(barSvg('power')).toBe(mountedPower);
+      expect(q('[data-testid="meter-power"]')!.dataset.observed).toBe('true');
+      expect(barFillCount('power')).toBe(preStaleFill);
+      expect(barPeakX('power')).toBe(preStalePeakX);
+    });
   });
 
   // MUTATION KILLED: giving the meters surface a `data-zone-id` of its own.
