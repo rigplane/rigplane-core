@@ -101,7 +101,7 @@ from rigplane.web.radio_poller import (
 )
 from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebServer
-from rigplane.web.websocket import WS_OP_BINARY, WS_OP_TEXT
+from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
 
 
 def _normalized_level_wire_vectors() -> list[str]:

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ..transport import Connection  # noqa: TID251
-from ..websocket import WS_OP_TEXT, WebSocketError  # noqa: TID251
+from ...ws import WS_OP_TEXT, WebSocketError  # noqa: TID251
 
 __all__ = ["OpenRigctlChannel", "RigctlChannelHandler"]
 

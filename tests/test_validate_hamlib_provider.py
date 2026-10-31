@@ -1096,3 +1096,70 @@ def _build_level_results(
             )
         )
     return [LevelResult(level=ValidationLevel.DISCOVERY, checks=results)]
+
+
+async def test_hamlib_provider_native_backend_refusal_is_reported(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    """The factory refusing the native leg is an artifact + exit 3, no raise."""
+    _FakeBridge.instances.clear()
+    native_config = RigctldBackendConfig(host="127.0.0.1", port=4532, model="X6200")
+
+    async def fake_build_backend_config(_args: Any) -> Any:
+        return native_config
+
+    def refusing_create_radio(config: Any) -> Any:
+        raise ValueError("Unsupported serial model 'X6200'")
+
+    monkeypatch.setattr("rigplane.cli._build_backend_config", fake_build_backend_config)
+    monkeypatch.setattr("rigplane.backends.factory.create_radio", refusing_create_radio)
+    monkeypatch.setattr("rigplane.hamlib_bridge.HamlibBridge", _FakeBridge)
+
+    exit_code, artifact = await _validate._run_hardware_hamlib(
+        _base_args(), _identify_template(), OperatorSafetyBlock()
+    )
+
+    assert exit_code == 3
+    assert _FakeBridge.instances == []  # nothing was started
+    err = capsys.readouterr().err
+    assert "Error: cannot create the native radio backend: Unsupported" in err
+    assert "bridge client" not in err
+    check = artifact.levels[0].checks[0]
+    assert check.check_id == "discovery.identify"
+    assert check.failure_domain is not None
+    assert check.failure_domain.value == "transport"
+    assert "Unsupported serial model" in (check.error or "")
+    assert artifact.metadata["provider"] == "hamlib"
+
+
+async def test_hamlib_provider_bridge_client_config_refusal_is_distinct(
+    monkeypatch: Any, capsys: Any
+) -> None:
+    """A bad --timeout is the bridge client config failing, not the native radio."""
+    _FakeBridge.instances.clear()
+    native_config = RigctldBackendConfig(host="127.0.0.1", port=4532, model="X6200")
+    created: list[Any] = []
+
+    async def fake_build_backend_config(_args: Any) -> Any:
+        return native_config
+
+    def fake_create_radio(config: Any) -> Any:
+        created.append(config)
+        return _FakeNativeRadio()
+
+    monkeypatch.setattr("rigplane.cli._build_backend_config", fake_build_backend_config)
+    monkeypatch.setattr("rigplane.backends.factory.create_radio", fake_create_radio)
+    monkeypatch.setattr("rigplane.hamlib_bridge.HamlibBridge", _FakeBridge)
+
+    exit_code, artifact = await _validate._run_hardware_hamlib(
+        _base_args(timeout=-1.0), _identify_template(), OperatorSafetyBlock()
+    )
+
+    assert exit_code == 3
+    assert created == []
+    assert _FakeBridge.instances == []
+    err = capsys.readouterr().err
+    assert "Error: cannot build the Hamlib bridge client config:" in err
+    assert "native radio backend" not in err
+    check = artifact.levels[0].checks[0]
+    assert "timeout must be > 0" in (check.error or "")

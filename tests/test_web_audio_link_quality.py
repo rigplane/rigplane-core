@@ -23,7 +23,7 @@ from rigplane.radio_protocol import AudioCapable
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import AudioBroadcaster, AudioHandler
 from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
-from rigplane.web.websocket import WebSocketConnection
+from rigplane.ws import WebSocketConnection
 
 # 20 ms @ 48 kHz mono s16le.
 PCM_PAYLOAD = b"\x01\x02" * 960
@@ -93,7 +93,9 @@ class TestAudioStatsUplink:
 
     async def test_invalid_or_unbounded_playback_is_not_retained(self):
         radio, _ = _make_radio()
-        handler = AudioHandler(_make_ws(), radio, AudioBroadcaster(radio))
+        broadcaster = AudioBroadcaster(radio)
+        handler = AudioHandler(_make_ws(), radio, broadcaster)
+        await handler._start_rx()
         for key, value in [
             ("contextState", "private text"),
             ("sampleRate", math.inf),
@@ -107,25 +109,29 @@ class TestAudioStatsUplink:
             await handler._handle_control(
                 {**STATS_MSG, "playback": {**PLAYBACK, key: value}, "unknown_number": 7}
             )
-            assert handler._link_quality == {
+            assert broadcaster.client_link_quality(handler._frame_queue) == {
                 "underruns": 3,
                 "buffer_depth_ms": 140,
                 "dropped_frames": 2,
+                "ws_queue_drops": 0,
             }
 
     async def test_numeric_signals_are_finite_bounded_and_allowlisted(self):
         radio, _ = _make_radio()
-        handler = AudioHandler(_make_ws(), radio, AudioBroadcaster(radio))
+        broadcaster = AudioBroadcaster(radio)
+        handler = AudioHandler(_make_ws(), radio, broadcaster)
+        await handler._start_rx()
         for value in (True, -1, math.nan, math.inf, 10**1000, 2**32):
             await handler._handle_control(
                 {"type": "audio_stats", "underruns": value, "unknown": 7}
             )
-            assert handler._link_quality == {}
+            assert broadcaster.client_link_quality(handler._frame_queue) == {
+                "ws_queue_drops": 0
+            }
 
     async def test_audio_stats_records_per_client_link_quality(self) -> None:
-        """An inbound audio_stats message must update both the handler's
-        snapshot and the broadcaster's per-client map (the structure the
-        step-19 controller reads)."""
+        """An inbound audio_stats message must update the broadcaster's
+        per-client map (the structure the step-19 controller reads)."""
         radio, _bus = _make_radio()
         broadcaster = AudioBroadcaster(radio)
         handler = AudioHandler(_make_ws(), radio, broadcaster)
@@ -134,7 +140,6 @@ class TestAudioStatsUplink:
         await handler._handle_control(dict(STATS_MSG))
 
         expected = {"underruns": 3, "buffer_depth_ms": 140, "dropped_frames": 2}
-        assert handler._link_quality == expected
         snapshot = broadcaster.client_link_quality(handler._frame_queue)
         assert snapshot == {**expected, "ws_queue_drops": 0}
 
@@ -189,7 +194,6 @@ class TestAudioStatsUplink:
 
         await handler._handle_control(dict(STATS_MSG))
 
-        assert handler._link_quality["underruns"] == 3
         assert broadcaster._client_link_quality == {}
 
 

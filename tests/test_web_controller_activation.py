@@ -28,7 +28,7 @@ from rigplane.web.web_startup import (
     _validate_managed_tx,
     attach_managed_tx_composition,
 )
-from rigplane.web.websocket import make_accept_key
+from rigplane.ws import make_accept_key
 
 
 def observe_ptt(server: WebServer, value: ObservedPtt) -> None:

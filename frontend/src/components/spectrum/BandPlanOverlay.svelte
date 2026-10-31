@@ -197,6 +197,8 @@
 
   function handleSegmentClick(seg: typeof segments extends () => (infer T)[] ? T : never, e: MouseEvent) {
     e.stopPropagation();
+    const anchor = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const keyboard = e.detail === 0;
     popupSegment = {
       label: seg.label,
       band: seg.band,
@@ -210,8 +212,9 @@
       language: seg.language,
       schedule: seg.schedule,
       license: seg.license,
-      x: e.clientX,
-      y: e.clientY,
+      // Keyboard activation reports clientX/Y = 0: anchor to the trigger instead.
+      x: keyboard ? anchor.left : e.clientX,
+      y: keyboard ? anchor.bottom : e.clientY,
     };
   }
 </script>
@@ -250,7 +253,7 @@
     class="segment-popup"
     role="dialog"
     aria-label="Band segment details"
-    style="left:{Math.min(popupSegment.x, window.innerWidth - 260)}px;top:{popupSegment.y + 8}px"
+    style="left:{Math.min(popupSegment.x, window.innerWidth - 260)}px;top:max(calc(var(--rp-chrome-top, 0px) + 8px), {popupSegment.y + 8}px)"
   >
       <div class="popup-header">
         <span class="popup-label">{popupSegment.label}</span>
@@ -373,6 +376,7 @@
   .popup-backdrop {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 200;
     background: none;
     border: none;

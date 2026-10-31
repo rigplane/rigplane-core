@@ -69,7 +69,6 @@ docs/architecture/2026-06-22-radio-session-lifecycle-PLAN.md	radio.py:903-912
 docs/architecture/2026-06-22-radio-session-lifecycle-PLAN.md	radio_session.py:341
 docs/architecture/2026-06-22-radio-session-lifecycle-PLAN.md	station_runtime.py:663
 docs/architecture/2026-06-22-radio-session-lifecycle-PLAN.md	test_mock_integration.py:26-84
-docs/architecture/2026-06-22-radio-session-lifecycle-PLAN.md	tests/mock_server.py:143-786
 docs/architecture/2026-06-22-radio-session-lifecycle-PLAN.md	transport.py:216
 docs/architecture/2026-06-22-radio-session-lifecycle.md	_civ_rx.py:2680-2751
 docs/architecture/2026-06-22-radio-session-lifecycle.md	_civ_rx.py:515-516
@@ -103,7 +102,6 @@ docs/architecture/2026-06-22-radio-session-lifecycle.md	station_runtime.py:712
 docs/architecture/2026-06-22-radio-session-lifecycle.md	station_runtime.py:730-756
 docs/architecture/2026-06-22-radio-session-lifecycle.md	station_runtime.py:867-883
 docs/architecture/2026-06-22-radio-session-lifecycle.md	test_mock_integration.py:26-84
-docs/architecture/2026-06-22-radio-session-lifecycle.md	tests/mock_server.py:143-786
 docs/architecture/2026-06-22-radio-session-lifecycle.md	transport.py:216
 docs/architecture/2026-06-22-radio-session-lifecycle.md	transport.py:285
 docs/architecture/2026-06-22-radio-session-lifecycle.md	transport.py:301
@@ -123,7 +121,6 @@ docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/LeftSidebar
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/MobileNav.svelte:10
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/RadioLayout.svelte:320
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/RightSidebar.svelte:33
-docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/VfoHeader.svelte:172
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/mobile-chip-bar.svelte:17
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/layout/mobile-nav-utils.ts:10
 docs/i18n/core-string-inventory.md	frontend/src/components-v2/panels/AntennaPanel.svelte:20
@@ -725,9 +722,6 @@ docs/validation/cat-audits/tx500.md	factory.py:100-107
 docs/validation/cat-audits/tx500.md	test_backend_factory.py:143
 docs/validation/cat-audits/tx500.md	tests/test_backend_factory.py:143
 docs/validation/cat-audits/x6200.md	backends/factory.py:85
-docs/validation/desktop-v2-v3-parity.md	AntennaSurface.svelte:169
-docs/validation/desktop-v2-v3-parity.md	AntennaSurface.svelte:181
-docs/validation/desktop-v2-v3-parity.md	AntennaSurface.svelte:75-77
 docs/validation/desktop-v2-v3-parity.md	AntennaSurface.test.ts:221
 docs/validation/desktop-v2-v3-parity.md	AntennaSurface.test.ts:303
 docs/validation/desktop-v2-v3-parity.md	BandSelector.svelte:18-19
@@ -741,7 +735,6 @@ docs/validation/desktop-v2-v3-parity.md	CwKeyerSurface.svelte:171
 docs/validation/desktop-v2-v3-parity.md	CwKeyerSurface.svelte:181
 docs/validation/desktop-v2-v3-parity.md	CwKeyerSurface.test.ts:345
 docs/validation/desktop-v2-v3-parity.md	DspSurface.svelte:165
-docs/validation/desktop-v2-v3-parity.md	DualVfoDisplay.svelte:54
 docs/validation/desktop-v2-v3-parity.md	FilterSurface.svelte:114
 docs/validation/desktop-v2-v3-parity.md	FilterSurface.svelte:129
 docs/validation/desktop-v2-v3-parity.md	FilterSurface.test.ts:188
@@ -769,7 +762,6 @@ docs/validation/desktop-v2-v3-parity.md	RadioLayout.svelte:425-434
 docs/validation/desktop-v2-v3-parity.md	RadioLayout.svelte:509-511
 docs/validation/desktop-v2-v3-parity.md	RadioLayout.svelte:90
 docs/validation/desktop-v2-v3-parity.md	ReferenceLayout.svelte:32
-docs/validation/desktop-v2-v3-parity.md	RfFrontEndSurface.svelte:130
 docs/validation/desktop-v2-v3-parity.md	RightSidebar.svelte:38
 docs/validation/desktop-v2-v3-parity.md	RightSidebar.svelte:51
 docs/validation/desktop-v2-v3-parity.md	RightSidebar.svelte:75
@@ -780,7 +772,6 @@ docs/validation/desktop-v2-v3-parity.md	RxAudioPanel.svelte:53-54
 docs/validation/desktop-v2-v3-parity.md	RxAudioPanel.svelte:54
 docs/validation/desktop-v2-v3-parity.md	RxAudioSurface.svelte:123
 docs/validation/desktop-v2-v3-parity.md	RxAudioSurface.svelte:124
-docs/validation/desktop-v2-v3-parity.md	RxAudioSurface.svelte:188
 docs/validation/desktop-v2-v3-parity.md	RxAudioSurface.svelte:73
 docs/validation/desktop-v2-v3-parity.md	RxAudioSurface.test.ts:197
 docs/validation/desktop-v2-v3-parity.md	ScanPanel.svelte:17-23

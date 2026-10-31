@@ -903,9 +903,6 @@ async def test_snapshot_state_omits_keys_when_reads_fail(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """Failed freq/mode/power reads record nothing, never the mirrors."""
-    radio._last_freq_hz = 7_074_000
-    radio._last_mode = Mode.LSB
-    radio._last_power = 100
     radio.get_freq = AsyncMock(side_effect=TimeoutError("no response"))
     radio.get_mode_info = AsyncMock(side_effect=TimeoutError("no response"))
     radio.get_rf_power = AsyncMock(side_effect=TimeoutError("no response"))
@@ -2245,7 +2242,6 @@ async def test_snapshot_state_omits_filter_when_mode_read_fails(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
     """A failed mode read omits mode/filter, never the mirrors."""
-    radio._last_mode = Mode.USB
     radio._filter_width = 2  # cached filter
     radio.get_mode_info = AsyncMock(side_effect=TimeoutError("no response"))
 
