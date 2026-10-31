@@ -29,34 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # Full history with tags: the radio-smoke receipt gate (next
-          # step) resolves the rc tag named by the receipts and walks the
-          # candidate's ancestry to prove a version-only rc-to-final diff
-          # (MOR-3998). The test matrix below needs only the parent commit
-          # for its monotonic comparison; quick.yml and full.yml still
-          # check out depth 2.
+          # Full history with tags: the radio-smoke receipt gate below
+          # (after the matrix interpreter is installed) resolves the rc tag
+          # named by the receipts and walks the candidate's ancestry to
+          # prove a version-only rc-to-final diff (MOR-3998). The test
+          # matrix below needs only the parent commit for its monotonic
+          # comparison; quick.yml and full.yml still check out depth 2.
           fetch-depth: 0
-
-      - name: Verify radio smoke receipts
-        # MOR-3839: live radio smoke is a mechanical condition of a PyPI
-        # publish. Both receipts must be attached to the triggering release
-        # and validate against the tag and the tagged commit; a missing asset
-        # fails the download, a red receipt fails the checker — either way
-        # this job is red and the needs chain keeps PyPI from starting.
-        # GITHUB_SHA of a release event is the tagged commit.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
-        run: |
-          set -euo pipefail
-          smoke_dir="$(mktemp -d)"
-          gh release download "$TAG" -p 'radio-smoke-*.json' --dir "$smoke_dir"
-          python3 scripts/release/check_radio_smoke.py check \
-            --tag "$TAG" \
-            --git-sha "$GITHUB_SHA" \
-            --rx "$smoke_dir/radio-smoke-rx.json" \
-            --tx "$smoke_dir/radio-smoke-tx.json" \
-            --repo "$GITHUB_WORKSPACE"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
@@ -68,6 +47,31 @@ jobs:
 
       - name: Set up Python ${{ matrix.python-version }}
         run: uv python install ${{ matrix.python-version }}
+
+      - name: Verify radio smoke receipts
+        # MOR-3839: live radio smoke is a mechanical condition of a PyPI
+        # publish. Both receipts must be attached to the triggering release
+        # and validate against the tag and the tagged commit; a missing asset
+        # fails the download, a red receipt fails the checker — either way
+        # this job is red and the needs chain keeps PyPI from starting.
+        # GITHUB_SHA of a release event is the tagged commit.
+        # MOR-3998: this step runs on the matrix interpreter via
+        # `uv run --no-project python` (job-level UV_PYTHON pins it),
+        # because the runners' system python3 is 3.10 with no tomllib and
+        # the checker needs Python >= 3.11.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          gh release download "$TAG" -p 'radio-smoke-*.json' --dir "$smoke_dir"
+          uv run --no-project python scripts/release/check_radio_smoke.py check \
+            --tag "$TAG" \
+            --git-sha "$GITHUB_SHA" \
+            --rx "$smoke_dir/radio-smoke-rx.json" \
+            --tx "$smoke_dir/radio-smoke-tx.json" \
+            --repo "$GITHUB_WORKSPACE"
 
       - name: Install dependencies
         # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`

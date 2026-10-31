@@ -15,8 +15,10 @@ sequences PASS with no stuck TX, no release debt and the radio back in RX,
 and for the RX fragment a non-empty all-PASS ``radios`` map. Every violation
 prints one line to stderr; the exit status is non-zero if any exist.
 
-Stdlib only. Fragment format contract: ``docs/development/release-gates.md``,
-section "Radio-smoke receipts".
+Stdlib only; needs Python >= 3.11 (tomllib). In CI it runs through
+``uv run --no-project python`` on the matrix interpreter because the
+runners' system python3 is 3.10. Fragment format contract:
+``docs/development/release-gates.md``, section "Radio-smoke receipts".
 
 MOR-3998: receipts naming a candidate also validate for the final when checks 0-4
 all hold — one ``rc:`` line each, any git/parse error fails closed: (0) same candidate;
@@ -31,10 +33,31 @@ import argparse
 import json
 import subprocess
 import sys
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_REQUIREMENT_MESSAGE = (
+    "check_radio_smoke.py needs Python 3.11+ (tomllib); "
+    "run it with `uv run --no-project python`"
+)
+
+
+def _check_python_version(version: tuple[int, ...] = sys.version_info) -> int | None:
+    """Return exit code 2 when ``version`` is too old, else None.
+
+    Factored out so the guard is unit-testable without a subprocess.
+    """
+    if version < (3, 11):
+        print(_REQUIREMENT_MESSAGE, file=sys.stderr)
+        return 2
+    return None
+
+
+if _check_python_version() is not None:
+    sys.exit(2)
+
+import tomllib  # noqa: E402 — after the version guard so a wrong interpreter fails clearly
 
 SCHEMA = 1
 

@@ -268,7 +268,7 @@ Both receipts must be produced against the tagged commit before the draft is pub
 4. **Local pre-check** (same checker the workflow runs):
 
 ```bash
-python3 scripts/release/check_radio_smoke.py check \
+uv run --no-project python scripts/release/check_radio_smoke.py check \
   --tag vNEW --git-sha "$SHA" \
   --rx radio-smoke-rx.json --tx radio-smoke-tx.json \
   --repo .

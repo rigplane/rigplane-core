@@ -174,6 +174,23 @@ def test_stdlib_only() -> None:
     )
 
 
+def test_old_interpreter_fails_clearly_without_a_traceback(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A pre-3.11 interpreter exits 2 with one line, before tomllib loads.
+
+    The runners' system python3 is 3.10, so a wrong interpreter must fail
+    clearly instead of with a ModuleNotFoundError traceback (MOR-3998).
+    """
+    assert checker._check_python_version((3, 10, 12)) == 2
+    err = capsys.readouterr().err
+    assert "needs Python 3.11+" in err, f"one clear line on stderr; got: {err!r}"
+    assert "uv run --no-project python" in err
+    assert checker._check_python_version((3, 11, 0)) is None
+    assert checker._check_python_version(tuple(sys.version_info)) is None
+    assert capsys.readouterr().err == ""
+
+
 Mutator = Callable[[dict[str, Any], dict[str, Any]], None]
 
 
