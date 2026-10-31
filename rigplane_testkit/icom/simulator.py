@@ -32,6 +32,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
+from rigplane.core.types import bcd_decode, bcd_encode
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
@@ -197,17 +198,6 @@ def _level_bcd_encode(value: int) -> bytes:
     return bytes([(int(d[0]) << 4) | int(d[1]), (int(d[2]) << 4) | int(d[3])])
 
 
-def _bcd_encode_freq(freq_hz: int) -> bytes:
-    """Encode frequency in Hz to Icom 5-byte BCD (little-endian)."""
-    digits = f"{freq_hz:010d}"
-    result = bytearray(5)
-    for i in range(5):
-        low = int(digits[9 - 2 * i])
-        high = int(digits[9 - 2 * i - 1])
-        result[i] = (high << 4) | low
-    return bytes(result)
-
-
 def _bcd_decode_value(data: bytes) -> int:
     """Decode packed BCD digits, most significant pair first (120 → b'\\x01\\x20').
 
@@ -218,16 +208,6 @@ def _bcd_decode_value(data: bytes) -> int:
     for byte in data:
         value = value * 100 + (byte >> 4) * 10 + (byte & 0x0F)
     return value
-
-
-def _bcd_decode_freq(data: bytes) -> int:
-    """Decode Icom 5-byte BCD frequency to Hz."""
-    freq = 0
-    for i in range(len(data)):
-        high = (data[i] >> 4) & 0x0F
-        low = data[i] & 0x0F
-        freq += low * (10 ** (2 * i)) + high * (10 ** (2 * i + 1))
-    return freq
 
 
 def _status_accepted(reply: bytes) -> bool:
@@ -2268,7 +2248,7 @@ class MockIcomRadio(AudioPortMixin):
                     to=0x00,
                     frm=self._radio_addr,
                     cmd=_CMD_FREQ_GET,
-                    data=_bcd_encode_freq(self._frequency),
+                    data=bcd_encode(self._frequency),
                 )
                 pkt = self._wrap_civ(civ, self._civ_owner_id)
                 if self.drop_rate > 0.0 and self._rng.random() < self.drop_rate:
@@ -2337,12 +2317,12 @@ class MockIcomRadio(AudioPortMixin):
         # --- Frequency ---
         if cmd == _CMD_FREQ_GET:  # 0x03 get
             return self._civ_frame(
-                to, frm, _CMD_FREQ_GET, data=_bcd_encode_freq(self._frequency)
+                to, frm, _CMD_FREQ_GET, data=bcd_encode(self._frequency)
             )
 
         if cmd == _CMD_FREQ_SET:  # 0x05 set
             if len(payload) == 5:
-                self._frequency = _bcd_decode_freq(payload)
+                self._frequency = bcd_decode(payload)
             return self._civ_ack(to, frm)
 
         # --- Mode ---
@@ -2430,10 +2410,10 @@ class MockIcomRadio(AudioPortMixin):
                     to,
                     frm,
                     _CMD_SELECTED_FREQ,
-                    data=bytes([selector]) + _bcd_encode_freq(freq),
+                    data=bytes([selector]) + bcd_encode(freq),
                 )
             if len(payload) == 6 and payload[0] in (0x00, 0x01):  # SET
-                freq = _bcd_decode_freq(payload[1:6])
+                freq = bcd_decode(payload[1:6])
                 if payload[0] == 0x00:
                     self._frequency = freq  # shared with 0x03/0x05
                 else:

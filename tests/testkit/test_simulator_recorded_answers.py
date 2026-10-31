@@ -14,7 +14,7 @@ measurement of the same order is the conformance answer-class replay
 
 from __future__ import annotations
 
-from rigplane_testkit.icom import _bcd_encode_freq
+from rigplane.core.types import bcd_encode
 from rigplane_testkit.icom.replay import extract_civ_frame
 
 from testkit.ic7610_fakes import ic7610_lan_fake
@@ -36,8 +36,8 @@ _FREQ_GET = b"\xfe\xfe\x98\xe0\x03\xfd"
 # The recording answers ``03`` with 14,280,600 Hz (probe window,
 # civ_pairs.jsonl) — distinct from any frequency written below, so a reply
 # from the table can never satisfy the native-state assertion.
-_FREQ_SET = b"\xfe\xfe\x98\xe0\x05" + _bcd_encode_freq(7_100_000) + b"\xfd"
-_FREQ_SET_REPLY = _bcd_encode_freq(7_100_000)
+_FREQ_SET = b"\xfe\xfe\x98\xe0\x05" + bcd_encode(7_100_000) + b"\xfd"
+_FREQ_SET_REPLY = bcd_encode(7_100_000)
 # Cmd 0x22 appears in no recorded row and has no native handler.
 _UNRECORDED = bytes.fromhex("fefe98e02200fd")
 

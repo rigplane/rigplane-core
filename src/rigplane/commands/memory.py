@@ -45,6 +45,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..core.types import (
+    FREQUENCY_BCD_MAX_100MHZ_DIGIT,
+    FREQUENCY_BCD_MAX_GHZ_DIGIT,
     MemoryEntry,
     MemoryProfile,
     MemoryWriteField,
@@ -367,23 +369,50 @@ def _check_duplex_nibble(duplex: int, dd: bool, memory: MemoryProfile) -> None:
         raise ValueError(f"duplex nibble {duplex} does not fit the mode")
 
 
-def _check_frequency_digits(hi_byte: int, memory: MemoryProfile) -> None:
+def _ghz_digit_ceiling(memory: MemoryProfile) -> int:
+    """The highest GHz digit a stored frequency may carry, from profile data.
+
+    Profiles declaring ``frequency_ranges`` take it from the highest band
+    top (IC-9700: 1.3 GHz -> 1); otherwise the write layout's frequency
+    ``max_hz`` (IC-705: 999_999_999 -> 0); profiles declaring neither keep
+    the codec's shared default. Every existing radio resolves exactly as
+    the old addressing-string branch did.
+    """
+    if memory.frequency_ranges:
+        return max(high // 1_000_000_000 for _, _, high in memory.frequency_ranges)
+    if memory.write_layout is not None:
+        for field in memory.write_layout.fields:
+            if field.encoding == "frequency" and field.max_hz is not None:
+                return field.max_hz // 1_000_000_000
+    return FREQUENCY_BCD_MAX_GHZ_DIGIT
+
+
+def _check_frequency_digits(frequency_hz: int, memory: MemoryProfile) -> None:
     """The GHz and 100 MHz digit rules, shared by the read parser and the
     write encoder so a record the write builds is always one the read
-    side accepts back: the GHz digit is fixed 0 on a group/channel radio
-    (MOR-3650) and at most 1 elsewhere; the 100 MHz digit is
-    0-4 (both radios' guides)."""
-    ghz, hundred_mhz = hi_byte >> 4, hi_byte & 0x0F
-    if memory.addressing == "group_channel" and ghz:
-        raise ValueError("frequency GHz digit is fixed 0")
-    if ghz > 1 or hundred_mhz > 4:
+    side accepts back. The GHz ceiling comes from the profile's
+    ``frequency_ranges`` (or the write layout's ``max_hz``), the 100 MHz
+    ceiling (0-4, both radios' guides) from the codec -- never from the
+    addressing string."""
+    ghz = frequency_hz // 1_000_000_000
+    hundred_mhz = (frequency_hz % 1_000_000_000) // 100_000_000
+    ceiling = _ghz_digit_ceiling(memory)
+    if ghz > ceiling:
+        if ceiling == 0:
+            raise ValueError("frequency GHz digit is fixed 0")
+        raise ValueError("frequency 100 MHz or GHz digit out of range")
+    if hundred_mhz > FREQUENCY_BCD_MAX_100MHZ_DIGIT:
         raise ValueError("frequency 100 MHz or GHz digit out of range")
 
 
 def _encode_record_frequency(
-    frequency_hz: int, memory: MemoryProfile, max_hz: int | None, group: int
+    frequency_hz: int,
+    memory: MemoryProfile,
+    max_hz: int | None,
+    group: int,
+    width: int,
 ) -> bytes:
-    """The 5-byte LE BCD frequency, digit-checked and ceiling-checked."""
+    """The LE BCD frequency field, digit-checked and ceiling-checked."""
     if isinstance(frequency_hz, bool) or not isinstance(frequency_hz, int):
         raise ValueError(f"frequency must be an int in Hz, got {frequency_hz!r}")
     if frequency_hz <= 0:
@@ -397,9 +426,8 @@ def _encode_record_frequency(
         raise ValueError(
             f"frequency {frequency_hz} is outside memory group {group} ranges"
         )
-    encoded = bcd_encode(frequency_hz)  # raises past 10 digits on its own
-    _check_frequency_digits(encoded[4], memory)
-    return encoded
+    _check_frequency_digits(frequency_hz, memory)
+    return bcd_encode(frequency_hz, width=width)  # raises past the width on its own
 
 
 def _encode_record_name(name: str, length: int, pad: bytes) -> bytes:
@@ -510,7 +538,7 @@ def _encode_write_field(
             return bytes([mem.scan])
         case "frequency":
             return _encode_record_frequency(
-                mem.frequency_hz, memory, field.max_hz, mem.group or 0
+                mem.frequency_hz, memory, field.max_hz, mem.group or 0, field.length
             )
         case "mode":
             # The raw CI-V mode code of the read block; DD (0x22) only in
@@ -759,14 +787,6 @@ _TONE_MODE_BY_NIBBLE = {
 }
 
 
-def _bcd_int(raw: bytes) -> int:
-    """Strict packed-BCD to int; a non-decimal nibble is a corrupt reply."""
-    digits = raw.hex()
-    if not digits.isdigit():
-        raise ValueError(f"not packed BCD: {digits}")
-    return int(digits)
-
-
 def _encode_memory_address(memory: MemoryProfile, group: int, channel: int) -> bytes:
     """The ``1A 00`` address bytes for one slot, bounds-checked by the profile.
 
@@ -842,8 +862,9 @@ def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, A
     # write encoder applies to the value before a byte is built).
     _check_duplex_nibble(duplex_nibble, dd, memory)
     # The shared GHz/100 MHz digit rules (MOR-3644): the write encoder
-    # checks the same byte, so a record it builds always reads back.
-    _check_frequency_digits(block[4], memory)
+    # checks the same value, so a record it builds always reads back.
+    frequency_hz = bcd_decode(block[0:5])
+    _check_frequency_digits(frequency_hz, memory)
     if block[22] >> 4 and group not in memory.offset_10mhz_groups:
         raise ValueError(f"offset 10 MHz digit is not valid for memory group {group}")
     # tone and TSQL frequencies: a fixed 00 byte, then a 100 Hz digit of 0-2
@@ -857,15 +878,15 @@ def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, A
     except ValueError:
         mode = "DD" if dd else f"0x{mode_code:02X}"
     return {
-        "frequency_hz": _bcd_int(block[4::-1]),
+        "frequency_hz": frequency_hz,
         "mode": mode,
         "data_mode": block[7] == 1,
         "duplex": _DUPLEX_BY_NIBBLE.get(duplex_nibble),
-        # [10 MHz|1 MHz][100 kHz|10 kHz][1 kHz|100 Hz], most significant first
-        "offset_hz": _bcd_int(block[22:19:-1]) * 100,
+        # [10 MHz|1 MHz][100 kHz|10 kHz][1 kHz|100 Hz], least significant first
+        "offset_hz": _bcd_decode_value(block[22:19:-1]) * 100,
         "tone_mode": tone_mode,
-        "tone_centihz": _bcd_int(block[10:13]) * 10,
-        "tsql_centihz": _bcd_int(block[13:16]) * 10,
+        "tone_centihz": _bcd_decode_value(block[10:13]) * 10,
+        "tsql_centihz": _bcd_decode_value(block[13:16]) * 10,
         "dtcs_code": int(dtcs_digits),
     }
 
@@ -878,8 +899,8 @@ def parse_memory_entry(data: bytes, memory: MemoryProfile) -> MemoryEntry:
     group_len = address_len - 2
     if len(data) < address_len + 1:
         raise ValueError(f"memory reply too short: {len(data)} bytes")
-    group = _bcd_int(data[:group_len])
-    channel = _bcd_int(data[group_len:address_len])
+    group = _bcd_decode_value(data[:group_len])
+    channel = _bcd_decode_value(data[group_len:address_len])
     if not (
         memory.first_group <= group <= memory.last_group
         and memory.first_channel <= channel <= memory.last_channel

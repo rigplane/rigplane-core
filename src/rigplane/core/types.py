@@ -28,6 +28,9 @@ __all__ = [
     "AUDIO_HEADER_SIZE",
     "bcd_encode",
     "bcd_decode",
+    "FREQUENCY_BCD_MAX_100MHZ_DIGIT",
+    "FREQUENCY_BCD_MAX_GHZ_DIGIT",
+    "FREQUENCY_BCD_WIDTHS",
     "MemoryChannel",
     "MemoryEntry",
     "MemoryProfile",
@@ -354,20 +357,38 @@ class CivFrame:
     receiver: int | None = None
 
 
-def bcd_encode(freq_hz: int) -> bytes:
-    """Encode a frequency in Hz to Icom BCD format (5 bytes).
+# CI-V frequency-field widths in bytes, from the Icom CI-V guide digit
+# diagrams: the standard field holds 10 digits in 5 bytes; microwave
+# bands extend it to 12 digits in 6 bytes (e.g. 10.368 GHz).
+FREQUENCY_BCD_WIDTHS = (5, 6)
+
+# Shared CI-V frequency top-digit limits from the Icom guides (IC-705
+# p.17, IC-9700 p.14): the GHz digit runs 0-1, the 100 MHz digit 0-4.
+# Profiles recording wider band data narrow the GHz digit through their
+# ``frequency_ranges`` (or the write layout's ``max_hz``); the default
+# below covers profiles that declare neither.
+FREQUENCY_BCD_MAX_GHZ_DIGIT = 1
+FREQUENCY_BCD_MAX_100MHZ_DIGIT = 4
+
+
+def bcd_encode(freq_hz: int, *, width: int = 5) -> bytes:
+    """Encode a frequency in Hz to Icom BCD format (little-endian BCD).
 
     BCD encoding stores pairs of decimal digits in each byte,
-    least-significant digits first (little-endian BCD).
+    least-significant digits first.
 
     Args:
         freq_hz: Frequency in Hz (e.g. 14074000).
+        width: Field width in bytes (5 standard, 6 for SHF). The caller
+            takes it from profile data (e.g. the memory write layout's
+            field length); the default covers every shipped profile.
 
     Returns:
-        5 bytes of BCD-encoded frequency.
+        ``width`` bytes of BCD-encoded frequency.
 
     Raises:
-        ValueError: If frequency is negative or exceeds 10 digits.
+        ValueError: If frequency is negative, the width is not 5 or 6,
+            or the frequency exceeds the width's digit count.
 
     Examples:
         >>> bcd_encode(14074000).hex()
@@ -375,19 +396,21 @@ def bcd_encode(freq_hz: int) -> bytes:
     """
     if freq_hz < 0:
         raise ValueError(f"Frequency must be non-negative, got {freq_hz}")
+    if width not in FREQUENCY_BCD_WIDTHS:
+        raise ValueError(f"Frequency BCD width must be 5 or 6 bytes, got {width}")
 
-    digits = f"{freq_hz:010d}"
-    if len(digits) > 10:
-        raise ValueError(f"Frequency {freq_hz} exceeds 10 digits")
+    digits = f"{freq_hz:0{width * 2}d}"
+    if len(digits) > width * 2:
+        raise ValueError(f"Frequency {freq_hz} exceeds {width * 2} digits")
 
     # BCD little-endian: byte[i] stores digit pair for positions 2i and 2i+1.
     # Low nibble = digit at position 2i (even power of 10).
     # High nibble = digit at position 2i+1 (odd power of 10).
-    # Digits string is big-endian: digits[0]=most significant, digits[9]=units.
-    result = bytearray(5)
-    for i in range(5):
-        low = int(digits[9 - 2 * i])  # position 2i
-        high = int(digits[9 - 2 * i - 1])  # position 2i+1
+    # Digits string is big-endian: digits[0]=most significant.
+    result = bytearray(width)
+    for i in range(width):
+        low = int(digits[width * 2 - 1 - 2 * i])  # position 2i
+        high = int(digits[width * 2 - 1 - 2 * i - 1])  # position 2i+1
         result[i] = (high << 4) | low
     return bytes(result)
 
@@ -395,21 +418,26 @@ def bcd_encode(freq_hz: int) -> bytes:
 def bcd_decode(data: bytes) -> int:
     """Decode Icom BCD-encoded frequency bytes to Hz.
 
+    The width comes from the payload length (5 bytes standard, 6 for SHF
+    fields), little-endian BCD, Icom order.
+
     Args:
-        data: 5 bytes of BCD-encoded frequency.
+        data: 5 or 6 bytes of BCD-encoded frequency.
 
     Returns:
         Frequency in Hz.
 
     Raises:
-        ValueError: If data is not exactly 5 bytes or contains invalid BCD.
+        ValueError: If data is neither 5 nor 6 bytes, or contains invalid BCD.
 
     Examples:
         >>> bcd_decode(bytes.fromhex('0040071400'))
         14074000
     """
-    if len(data) != 5:
-        raise ValueError(f"BCD data must be exactly 5 bytes, got {len(data)}")
+    if len(data) not in FREQUENCY_BCD_WIDTHS:
+        raise ValueError(
+            f"BCD frequency data must be 5 bytes (6 for SHF fields), got {len(data)}"
+        )
 
     freq = 0
     for i in range(len(data)):

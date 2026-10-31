@@ -88,11 +88,9 @@ from typing import Any
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import load_rig
-from rigplane.types import CivFrame
+from rigplane.types import CivFrame, bcd_decode, bcd_encode
 
 from rigplane_testkit.icom import (
-    _bcd_decode_freq,
-    _bcd_encode_freq,
     _level_bcd_encode,
 )
 from rigplane_testkit.icom.replay import RecordedAnswerTable
@@ -723,14 +721,14 @@ class CivSerialFake:
                 CONTROLLER_ADDR,
                 self._civ_addr,
                 _CMD_FREQ_GET,
-                data=_bcd_encode_freq(self._frequency_hz),
+                data=bcd_encode(self._frequency_hz),
             )
         if cmd == _CMD_SEL_FREQ_GET and parsed.data == b"\x00":
             return build_civ_frame(
                 CONTROLLER_ADDR,
                 self._civ_addr,
                 _CMD_SEL_FREQ_GET,
-                data=b"\x00" + _bcd_encode_freq(self._frequency_hz),
+                data=b"\x00" + bcd_encode(self._frequency_hz),
             )
         if cmd == _CMD_SEL_MODE_GET and parsed.data == b"\x00":
             # Data mode is not modelled: the recorded radio had it off (00).
@@ -742,7 +740,7 @@ class CivSerialFake:
             )
         if cmd == _CMD_FREQ_SET:
             if len(parsed.data) == 5:
-                self._frequency_hz = _bcd_decode_freq(parsed.data)
+                self._frequency_hz = bcd_decode(parsed.data)
                 return self._ack()
             return self._nak()
         if cmd == _CMD_MODE_GET and not parsed.data:
