@@ -21,4 +21,4 @@ class UsbFunctionId:
 @dataclass(frozen=True, slots=True)
 class UsbAudioIdentity:
     audio_codec: frozenset[UsbFunctionId]
-    serial_functions: frozenset[UsbFunctionId] = frozenset()
+    serial_functions: tuple[UsbFunctionId, ...] = ()

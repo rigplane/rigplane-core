@@ -74,7 +74,9 @@ only a server-to-browser transport policy after radio-native audio is received.
 `audio_codec` and `serial_functions` are optional lists of
 `{ vid = "XXXX", pid = "YYYY" }` tables. Both identifiers must be strings of
 four uppercase hexadecimal digits. Unknown keys in `[usb]` or its function
-entries are rejected; duplicate entries are deduplicated. See
+entries are rejected; duplicate `audio_codec` entries are deduplicated while
+duplicate `serial_functions` entries are kept — each list entry is one serial
+function, so the same VID:PID may appear more than once. See
 `src/rigplane/profiles/rig_loader.py: load_rig` and
 `src/rigplane/core/usb_identity.py: UsbFunctionId`.
 
@@ -88,13 +90,18 @@ serial_functions = [{ vid = "10C4", pid = "EA70" }, { vid = "26AA", pid = "0030"
 Populate these lists only from our own USB recordings; the example matches
 `rigs/ftx1.toml`. `audio_codec` constrains the codec chosen by the shared pairing
 rule; it does not establish containment by itself. `serial_functions` identifies
-the radio's own serial USB functions: distinct declared VID:PID devices directly
-under the requested serial device's hub may count as one radio. An undeclared
-serial device, a repeated serial VID:PID, or an additional serial device under a
-nested hub still refuses with `serial_ambiguous`.
+the radio's own serial USB functions: declared VID:PID devices directly
+under the requested serial device's hub may count as one radio. Each declared
+entry covers one observed device, so the serial devices under the hub are
+accepted when the multiset of their VID:PID is contained in the declared
+multiset (observed count per VID:PID at most the declared count). An undeclared
+serial device, a repeated serial VID:PID beyond the declared count, or an
+additional serial device under a nested hub still refuses with
+`serial_ambiguous`.
 
 An omitted `[usb]` gives `usb_identity = None`. Omitted or empty lists default
-to empty sets: no codec filter for `audio_codec`, and the strict single-serial
+to empty (an empty set for `audio_codec`, an empty tuple for `serial_functions`):
+no codec filter for `audio_codec`, and the strict single-serial
 rule for `serial_functions`. Either list may be supplied alone.
 `RigConfig.to_profile` copies the identity to `RadioProfile`.
 See `docs/internals/usb-audio-pairing.md` for the complete rule.

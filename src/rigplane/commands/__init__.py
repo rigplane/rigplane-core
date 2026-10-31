@@ -333,20 +333,24 @@ from .system import (
 )
 
 # --- tone.py ---
-from .tone import (  # type: ignore[attr-defined]  # _SUB_REPEATER_TONE/TSQL are private re-exports
+from .tone import (  # type: ignore[attr-defined]  # _SUB_* are private re-exports
     _decode_tone_freq,
     _encode_tone_freq,
     _SUB_REPEATER_TONE,
     _SUB_REPEATER_TSQL,
+    _SUB_TONE_SQUELCH_TYPE,
     get_repeater_tone,
     get_repeater_tsql,
     get_tone_freq,
+    get_tone_squelch_type,
     get_tsql_freq,
     parse_tone_freq_response,
+    parse_tone_squelch_type_response,
     parse_tsql_freq_response,
     set_repeater_tone,
     set_repeater_tsql,
     set_tone_freq,
+    set_tone_squelch_type,
     set_tsql_freq,
 )
 
@@ -427,6 +431,7 @@ __all__ = [
     "_encode_tone_freq",
     "_SUB_REPEATER_TONE",
     "_SUB_REPEATER_TSQL",
+    "_SUB_TONE_SQUELCH_TYPE",
     "_CMD_ACK",
     "_CMD_FREQ_GET",
     "_CMD_FREQ_SET",
@@ -691,9 +696,12 @@ __all__ = [
     "set_repeater_tsql",
     "get_tone_freq",
     "set_tone_freq",
+    "get_tone_squelch_type",
+    "set_tone_squelch_type",
     "get_tsql_freq",
     "set_tsql_freq",
     "parse_tone_freq_response",
+    "parse_tone_squelch_type_response",
     "parse_tsql_freq_response",
     # System/Config commands (#135)
     "get_antenna_1",

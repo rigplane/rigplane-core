@@ -8,7 +8,7 @@ from unittest.mock import Mock
 
 import pytest
 from test_icom7610_serial_radio import _FakeSerialCivLink
-from test_usb_pairing_windows import _inject_windows, _w1_session
+from test_usb_pairing_windows import _inject_windows, _w1_session, _w3_session
 from test_usb_pairing_macos import (
     MAC_PORT,
     MAC_RX_ID,
@@ -28,6 +28,7 @@ from test_web_server import (
 from rigplane.audio import usb_driver
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.ic705 import Ic705SerialRadio
+from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.core.types import AudioCodec
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.profiles import get_radio_profile
@@ -301,6 +302,120 @@ async def test_w1_serial_ambiguous_refusal_reaches_ws_client_as_category_only(
         failure = json.loads(body)["audioReceive"]["failure"]
         assert failure["reason"] == "usb_ambiguous"
         assert radio.audio_session.rx_demand == 0
+    finally:
+        try:
+            if writer is not None:
+                await _close_ws(writer)
+        finally:
+            try:
+                await server.stop()
+            finally:
+                await radio.disconnect()
+
+
+def _w3_padded_session():
+    """W3 with PortAudio list positions matching its indices.
+
+    The runtime enumeration path (``read_portaudio_enumeration``) numbers
+    devices by list position, so the four-entry W3 fixture (indices 1, 2, 5,
+    6) is padded here with silent entries until position ``i`` carries index
+    ``i`` — the same shape the W1 recording already has.
+    """
+    session = _w3_session()
+    by_index = {
+        device["index"]: dict(device)
+        for device in session["raw"]["portaudio"]["devices"]
+    }
+    devices = []
+    for index in range(7):
+        if index in by_index:
+            devices.append({**by_index[index], "index": index})
+        else:
+            devices.append(
+                {
+                    "index": index,
+                    "name": f"Unrelated device {index}",
+                    "hostapi": 0,
+                    "max_input_channels": 0,
+                    "max_output_channels": 0,
+                    "default_samplerate": 44100.0,
+                    "default_low_input_latency": 0.09,
+                    "default_low_output_latency": 0.09,
+                    "default_high_input_latency": 0.18,
+                    "default_high_output_latency": 0.18,
+                }
+            )
+    session["raw"]["portaudio"]["devices"] = devices
+    return session
+
+
+async def test_w3_dual_cp210x_browser_audio_start_selects_ic7610_codec(monkeypatch):
+    """MOR-3885 seam test: the dual-CP210x topology plus the real IC-7610
+    serial backend starts RX through the product ``audio_start`` path.
+
+    Profile loading, pairing, driver selection, and web handling stay real.
+    With the old S3 implementation (one serial function per VID:PID) the
+    second CP210x refuses pairing and this test fails at ``audio_format``.
+    """
+    from rigplane import IC_7610_ADDR
+
+    session = _w3_padded_session()
+    backend, _ = _inject_windows(monkeypatch, session)
+    monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
+    radio = Icom7610SerialRadio(
+        device="COM5",
+        profile=get_radio_profile("IC-7610"),
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        civ_link=_FakeSerialCivLink(model_id=IC_7610_ADDR),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    writer = None
+    try:
+        await radio.connect()
+        # Bind the real HTTP/WS dispatcher without the unrelated CAT poller.
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/audio")
+        await _ws_send_text(
+            writer,
+            json.dumps(
+                {
+                    "type": "audio_start",
+                    "direction": "rx",
+                    "preferred_rx_codec": "pcm16",
+                }
+            ),
+        )
+        messages = []
+        async with asyncio.timeout(5):
+            while True:
+                opcode, payload = await _ws_recv_frame(reader)
+                assert opcode == WS_OP_TEXT
+                message = json.loads(payload)
+                messages.append(message)
+                if message["type"] == "audio_format":
+                    break
+
+        status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
+        assert status == 200
+        assert json.loads(body)["audioReceive"] == {"schemaVersion": 1, "failure": None}
+        assert not any(message["type"] == "error" for message in messages)
+        assert radio.audio_session.rx_demand == 1
+        driver = radio._serial_audio_driver
+        assert (
+            driver.selected_rx_device.index,
+            driver.selected_tx_device.index,
+        ) == (1, 5)
+        assert len(backend.rx_streams) == 1
+        assert backend.rx_streams[0].running
+        pcm = b"\x01\x00" * 960
+        backend.rx_streams[0].inject_frame(pcm)
+        opcode, frame = await _ws_recv_frame(reader, timeout=5)
+        assert opcode == WS_OP_BINARY
+        assert frame[:2] == bytes([MSG_TYPE_AUDIO_RX, AUDIO_CODEC_PCM16])
+        assert frame[AUDIO_HEADER_SIZE:] == pcm
     finally:
         try:
             if writer is not None:

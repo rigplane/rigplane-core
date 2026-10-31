@@ -188,22 +188,38 @@ def test_match_rig_unknown_returns_none() -> None:
 
 
 @pytest.mark.parametrize(
-    ("protocol", "serial_port", "expected"),
+    ("protocol", "serial_port", "host", "has_lan", "expected"),
     [
-        ("yaesu_cat", False, "yaesu-cat"),
-        ("yaesu_cat", True, "yaesu-cat"),
-        ("civ", False, "lan"),
-        ("civ", True, "serial"),
-        ("kenwood_cat", False, None),
-        ("kenwood_cat", True, None),
-        (None, False, None),
-        (None, True, None),
+        ("yaesu_cat", False, False, False, "yaesu-cat"),
+        ("yaesu_cat", True, False, False, "yaesu-cat"),
+        # CI-V: a serial port always means serial.
+        ("civ", True, False, True, "serial"),
+        ("civ", True, False, False, "serial"),
+        # CI-V with LAN in the profile and no port: LAN, as before.
+        ("civ", False, False, True, "lan"),
+        ("civ", False, True, True, "lan"),
+        # CI-V without LAN in the profile: serial unless a host was given.
+        ("civ", False, False, False, "serial"),
+        ("civ", False, True, False, "lan"),
+        ("kenwood_cat", False, False, False, None),
+        ("kenwood_cat", True, False, False, None),
+        (None, False, False, False, None),
+        (None, True, False, False, None),
     ],
 )
 def test_backend_for_protocol(
-    protocol: str | None, serial_port: bool, expected: str | None
+    protocol: str | None,
+    serial_port: bool,
+    host: bool,
+    has_lan: bool,
+    expected: str | None,
 ) -> None:
-    assert _models.backend_for_protocol(protocol, serial_port=serial_port) == expected
+    assert (
+        _models.backend_for_protocol(
+            protocol, serial_port=serial_port, host=host, has_lan=has_lan
+        )
+        == expected
+    )
 
 
 # ---------------------------------------------------------------------------

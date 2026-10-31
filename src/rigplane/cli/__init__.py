@@ -821,7 +821,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Backend type: lan, serial, yaesu-cat, or rigctld. "
             "Inferred from the model when omitted "
-            "(civ: serial with --serial-port else lan; "
+            "(civ: serial with --serial-port, lan with --host or when the "
+            "profile has a LAN interface, else serial; "
             "yaesu_cat: yaesu-cat); without --model, "
             "inferred from --serial-port."
         ),
@@ -2026,11 +2027,12 @@ def _rigs_dir() -> Path:
 
 def _resolve_model(
     args: argparse.Namespace,
-) -> tuple[int | None, str | None, int | None, str | None]:
+) -> tuple[int | None, str | None, int | None, str | None, bool]:
     """Resolve radio_addr and model name from --model / --radio-addr flags.
 
     Returns:
-        (radio_addr, model_name, default_baud, protocol_type) — each may be None.
+        (radio_addr, model_name, default_baud, protocol_type, has_lan) — all
+        but ``has_lan`` may be None; ``has_lan`` is False without a model.
     """
     from rigplane.rig_loader import discover_available_rigs
 
@@ -2038,7 +2040,7 @@ def _resolve_model(
     radio_addr: int | None = getattr(args, "radio_addr", None)
 
     if model_name is None:
-        return radio_addr, None, None, None
+        return radio_addr, None, None, None, False
 
     rigs = discover_available_rigs(_rigs_dir())
 
@@ -2060,6 +2062,7 @@ def _resolve_model(
         matched.model,
         matched.default_baud,
         getattr(matched, "protocol_type", None),
+        matched.has_lan,
     )
 
 
@@ -2131,7 +2134,9 @@ async def _build_backend_config(
     Runs auto-discovery when host / serial-port is not provided.
     Infers backend type from the model's protocol when --backend is not set.
     """
-    radio_addr, model_name, model_default_baud, protocol_type = _resolve_model(args)
+    radio_addr, model_name, model_default_baud, protocol_type, has_lan = _resolve_model(
+        args
+    )
 
     # Infer backend from context when not explicitly set.
     backend = getattr(args, "backend", None)
@@ -2140,8 +2145,12 @@ async def _build_backend_config(
         if model_name is None:
             backend = "serial" if serial_port else "lan"
         else:
+            given_host = getattr(args, "host", _HOST_NOT_SET)
             inferred = _backend_for_protocol(
-                protocol_type, serial_port=bool(serial_port)
+                protocol_type,
+                serial_port=bool(serial_port),
+                host=bool(given_host) and given_host != _HOST_NOT_SET,
+                has_lan=has_lan,
             )
             if inferred is None:
                 raise ValueError(
@@ -4088,8 +4097,29 @@ async def _cmd_att(radio: Radio, args: argparse.Namespace) -> int:
     if args.value is not None:
         val = args.value.strip().lower()
         if val == "on":
-            await radio.set_attenuator(True)
-            print("Attenuator: ON (18 dB)")
+            profile = getattr(radio, "profile", None)
+            if profile is None:
+                await radio.set_attenuator(True)
+                print("Attenuator: ON")
+            else:
+                db = profile.attenuator_on_db()
+                if db is None:
+                    declared = ", ".join(
+                        str(step) for step in (profile.att_values or ())
+                    )
+                    print(
+                        "Error: attenuator 'on' is ambiguous for this "
+                        f"radio (declared values: {declared}); pass a dB "
+                        "value (`rigplane att <dB>`).",
+                        file=sys.stderr,
+                    )
+                    return 1
+                await radio.set_attenuator_level(db)
+                att_labels = getattr(profile, "att_labels", None) or {}
+                if str(db) in att_labels:
+                    print("Attenuator: ON")
+                else:
+                    print(f"Attenuator: ON ({db} dB)")
         elif val == "off":
             await radio.set_attenuator_level(0)
             print("Attenuator: OFF (0 dB)")
@@ -4097,9 +4127,26 @@ async def _cmd_att(radio: Radio, args: argparse.Namespace) -> int:
             try:
                 db = int(val)
             except ValueError:
+                profile = getattr(radio, "profile", None)
+                att_labels = (
+                    getattr(profile, "att_labels", None)
+                    if profile is not None
+                    else None
+                )
+                att_values = (
+                    getattr(profile, "att_values", None)
+                    if profile is not None
+                    else None
+                )
+                if att_labels:
+                    hint = "Use 'on' or 'off'."
+                elif isinstance(att_values, (tuple, list)) and att_values:
+                    declared = ", ".join(str(step) for step in att_values)
+                    hint = f"Use 'on', 'off', or a declared dB value: {declared}."
+                else:
+                    hint = "Use 'on', 'off', or a dB value."
                 print(
-                    f"Error: invalid attenuator value {val!r}. "
-                    "Use 'on', 'off', or a dB value (e.g. 0, 6, 12, 18).",
+                    f"Error: invalid attenuator value {val!r}. {hint}",
                     file=sys.stderr,
                 )
                 return 1

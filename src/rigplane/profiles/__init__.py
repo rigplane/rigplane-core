@@ -625,6 +625,20 @@ class RadioProfile:
             None,
         ) in self.cmd29_routes
 
+    def attenuator_on_db(self) -> int | None:
+        """The dB a boolean attenuator "on" resolves to, if unambiguous.
+
+        Returns the single non-zero value in ``att_values`` when exactly
+        one is declared, otherwise ``None`` (no values declared, or
+        several non-zero steps, so a boolean "on" is ambiguous).
+        """
+        if not self.att_values:
+            return None
+        non_zero = sorted({v for v in self.att_values if v != 0})
+        if len(non_zero) != 1:
+            return None
+        return non_zero[0]
+
     def supports_command(self, command_name: str) -> bool:
         """Whether ``command_name`` is declared (with bytes or a CAT
         template) by this profile.

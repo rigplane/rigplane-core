@@ -21,7 +21,7 @@ All commands accept these options:
 | `--pass-file` | — | — | Read the password from the first line of a file |
 | `--timeout` | — | `5.0` | Timeout in seconds |
 | `--json` | — | `false` | Emit JSON when supported by the selected command |
-| `--backend` | — | from the model | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. When omitted it follows the model's profile: a CI-V radio uses `serial` with `--serial-port` and `lan` without it; the FTX-1 uses `yaesu-cat`; a profile with another protocol is refused. Without `--model`: `serial` with `--serial-port`, else `lan`. `rigctld` must be named. |
+| `--backend` | — | from the model | Backend type: `lan`, `serial`, `yaesu-cat`, or `rigctld`. When omitted it follows the model's profile: a CI-V radio uses `serial` with `--serial-port`, `lan` with `--host` or when its profile has a LAN interface, and `serial` (USB scan) otherwise, e.g. IC-7300 and X6200; the FTX-1 uses `yaesu-cat`; a profile with another protocol is refused. Without `--model`: `serial` with `--serial-port`, else `lan`. `rigctld` must be named. |
 | `--serial-port` | `ICOM_SERIAL_DEVICE` | auto-discover | Serial device path. If omitted with the `serial` or `yaesu-cat` backend, discovers via USB scan. |
 | `--serial-baud` | `ICOM_SERIAL_BAUDRATE` | env or backend default | Serial baud. When the env var is unset, a port found by the USB scan keeps the rate the scan found; with `--serial-port`, `serial` uses the model profile's `default_baud` (`115200` without a model) and `yaesu-cat` uses `38400` |
 | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT mode (`civ` currently supported) |
@@ -73,7 +73,8 @@ When `--backend` is omitted, it is inferred. A serial port counts as given
 when `--serial-port` or `ICOM_SERIAL_DEVICE` is set.
 
 - With `--model`, from the model's profile: a CI-V radio gets `serial` when a
-  serial port is given and `lan` otherwise; the FTX-1 gets `yaesu-cat`; a
+  serial port is given, `lan` when `--host` is given or its profile has a LAN
+  interface, and `serial` otherwise (IC-7300, X6200: USB scan); the FTX-1 gets `yaesu-cat`; a
   profile with another protocol is refused.
 - Without `--model`: `serial` when a serial port is given, `lan` otherwise.
 - `rigctld` is never inferred.
@@ -103,7 +104,8 @@ rigplane supports four backends: **LAN**, **serial** (USB CI-V),
 
 Without `--backend`, the backend follows the model's profile, as the
 `--backend` option above describes; for a CI-V radio without `--serial-port`
-that is LAN.
+or `--host` that is LAN only if the profile has a LAN interface (IC-7610,
+IC-705), otherwise serial.
 
 ### LAN backend
 
