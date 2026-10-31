@@ -302,7 +302,7 @@ test('every workflow job runs on self-hosted runners', () => {
 
 test('migrated light jobs carry their explicit tool setup', () => {
   const jobs = workflowJobs(TARGET_ROOT);
-  const byName = new Map(jobs.map(({file, job, runsOn, text}) => [`${file}:${job}`, {runsOn, text}]));
+  const byName = new Map(jobs.map(({file, job, runsOn, text}) => [`.github/workflows/${file}:${job}`, {runsOn, text}]));
   const problems = [];
   const requireIn = (key, needle, why) => {
     const entry = byName.get(key);
