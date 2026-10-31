@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import type { ReceiverState, ServerState } from '../../types/state';
 import type { Capabilities } from '../../types/capabilities';
@@ -196,6 +198,22 @@ describe('ws-client → real radio store gate (integration)', () => {
     globalThis.WebSocket = originalWebSocket;
     vi.resetModules();
   });
+
+  it('ingests aged liveness from real HTTP-prewarmed WS subscription baselines', async () => {
+    const events = JSON.parse(execFileSync('uv', ['run', 'python', 'tests/liveness_ws_trace.py'], {
+      cwd: resolve(import.meta.dirname, '../../../../..'), encoding: 'utf8', timeout: 20_000,
+    })) as { type: string; data: Record<string, unknown> }[];
+    const first = events[0].data;
+    expect((first.data as Record<string, unknown>).publicStateSeq).toBeGreaterThan(first.transportSeq as number);
+    const { wsClient, store, capabilities } = await loadModules();
+    capabilities.setCapabilities(makeCapabilities(0, { receivers: 2, vfoScheme: 'main_sub' }));
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    for (const [index, event] of events.entries()) {
+      instances[0].simulateMessage(JSON.stringify(event));
+      expect(store.getRadioState()?.connection.liveness?.lastFrameAgeMs).toBe(index * 500);
+    }
+  }, 30_000);
 
   it('applies a full envelope through the real store', async () => {
     const { wsClient, store, capabilities } = await loadModules();

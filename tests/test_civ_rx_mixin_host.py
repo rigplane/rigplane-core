@@ -29,6 +29,11 @@ class _DummyTracker:
         return self.generation
 
 
+class _DummyScopeAssembler:
+    def shed_incomplete(self) -> int:
+        return 0
+
+
 class _FakeCivHost:
     """Minimal host implementing just enough for targeted CivRuntime tests."""
 
@@ -37,6 +42,7 @@ class _FakeCivHost:
         self._civ_epoch = self._civ_request_tracker.generation
         self._civ_transport = object()
         self._state_store = StateStore()
+        self._scope_assembler = _DummyScopeAssembler()
         self.selection_forgotten = 0
 
     def _forget_selection(self) -> None:

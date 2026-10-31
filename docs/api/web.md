@@ -1073,6 +1073,30 @@ line as the startup contract instead of parsing the human-readable banner:
 
 Version, model, capability summary, and connection metadata.
 
+`connection.liveness` is also carried by HTTP state and WebSocket state updates.
+It contains `lastFrameAgeMs` (response-time age, or `null` without qualified
+radio evidence), `staleAfterMs` (backend cadence threshold), and `source`
+(`radio`, `simulator`, or `daemon`). Without a radio, the object is `null`.
+Identity replies can establish liveness without establishing readiness or
+power state. See `runtime_helpers.py: connection_liveness_payload` and
+`tests/test_radio_liveness.py`.
+
+For an external rigctld backend, `source` is `daemon` and `lastFrameAgeMs`
+remains `null`, including after a successful frequency read. Standard rigctld
+returns only values or `RPRT` status; its extended response adds command and
+field labels, not physical-read provenance. `get_cache` returns the configured
+cache timeout, not evidence of a physical read. Setting that timeout to zero
+is insufficient: Hamlib's `rig_get_freq` has unconditional cache paths during
+Morse activity and uplink suppression, plus a fallback when a backend returns
+zero. This conclusion follows from the
+[rigctld protocol and cache commands](https://hamlib.sourceforge.net/snapshots/man1/rigctld.1.html)
+and [Hamlib `src/rig.c`: `rig_get_freq`](https://github.com/Hamlib/Hamlib/blob/master/src/rig.c).
+`test_rigctld_physical_and_cached_frequency_are_indistinguishable` exercises a
+simulated physical read and a byte-identical cached answer; neither carries
+client-verifiable freshness. Positive liveness needs a daemon contract binding
+a physical-read result to this request and connection generation; this client
+has no such supported contract.
+
 `audioReceive` retains the latest RX-start failure in schema version 1.
 Its `failure` is `null` when clear; otherwise it has `stage` (`rx_start`),
 `code` (`core_rx_start_failed`) and `reason`. Pairing refusals with candidates

@@ -584,6 +584,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_stream_ready: bool = False
         self._civ_recovering: bool = False
         self._last_civ_data_received: float | None = None
+        # MOR-3845: decode-point liveness stamp (Radio protocol member). Only
+        # a CI-V frame the RX pump parsed AND accepted as radio-originated
+        # may stamp it (``CivRuntime._route_civ_frame``); every connection
+        # generation resets it (``CivRuntime.advance_generation``).
+        self.last_valid_frame_monotonic: float | None = None
         self._civ_recovery_lock = asyncio.Lock()
         # All memory-slot CI-V operations share one lock (MOR-3768).
         self._memory_select_lock = asyncio.Lock()
@@ -1000,6 +1005,21 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if not isinstance(last, (int, float)):
             return False
         return (time.monotonic() - float(last)) <= self._civ_ready_idle_timeout
+
+    #: MOR-3845: liveness source label for the ``connection.liveness`` web
+    #: field — this backend family talks to the radio directly.
+    liveness_source = "radio"
+
+    @property
+    def liveness_stale_after_ms(self) -> int:
+        """MOR-3845: age at which ``last_valid_frame_monotonic`` is stale.
+
+        Derived from the backend's own ready/idle timeout
+        (``_civ_ready_idle_timeout``): the same window ``radio_ready``
+        grants a quiet but healthy CI-V stream, so quiet RX and sustained
+        TX (meters keep flowing) stay below it.
+        """
+        return int(self._civ_ready_idle_timeout * 1000)
 
     @property
     def managed_tx(self) -> ManagedTxSupervisor | None:

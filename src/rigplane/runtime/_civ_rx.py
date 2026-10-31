@@ -69,7 +69,11 @@ from rigplane.core.tx_target import (
     TxTargetUnknownReason,
     UnknownTxTarget,
 )
-from rigplane.core.tx_observation import OBSERVED_PTT_PATH, normalize_observed_ptt
+from rigplane.core.tx_observation import (
+    OBSERVED_PTT_PATH,
+    ObservedPtt,
+    normalize_observed_ptt,
+)
 from rigplane.core.state_pipeline_contracts import (
     RECEIVER_ID_ALIASES,
     ChangeSet,
@@ -504,8 +508,10 @@ _OBSERVABLE_CMD16_VALUE_FIELDS = {
 
 
 def _decode_bcd_nibble(value: int) -> int:
-    """Decode a single BCD-nibble byte (matches ``_handle_16``/``_handle_11``)."""
-    return ((value >> 4) & 0x0F) * 10 + (value & 0x0F)
+    """Decode a single packed BCD byte with the shared strict decoder."""
+    from rigplane.commands import _bcd_decode_value
+
+    return _bcd_decode_value(bytes([value]))
 
 
 def _frame_native_id(frame: CivFrame) -> str:
@@ -1165,6 +1171,8 @@ class CivRuntime:
     def advance_generation(self, reason: str) -> None:
         """Advance CI-V request generation and fail stale waiters."""
         source_generation = self._host._civ_epoch
+        self._host.last_valid_frame_monotonic = None
+        self._host._scope_assembler.shed_incomplete()
         self._host._civ_epoch = self._host._civ_request_tracker.advance_generation(
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
@@ -2050,7 +2058,11 @@ class CivRuntime:
     ) -> None:
         """Route one parsed CI-V frame into command/scope event paths."""
         if is_directed_ptt_reply(frame, self._host._radio_addr):
+            # Owed-reply accounting is generation-independent (a stale-generation
+            # answer still settles its debt); liveness below is not.
             self._ptt_reply_ledger.note_reply(frame)
+        if generation != self._host._civ_epoch:
+            return
         if frame.from_addr != self._host._radio_addr:
             return
         if frame.to_addr not in (CONTROLLER_ADDR, 0x00):
@@ -2076,6 +2088,7 @@ class CivRuntime:
             )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
+                self._stamp_liveness(notify=True)
                 self._publish_scope_mode_observation(
                     scope_frame, receiver=receiver, frame=frame
                 )
@@ -2091,8 +2104,6 @@ class CivRuntime:
             event = CivEvent(type=CivEventType.NAK, frame=frame)
         else:
             event = CivEvent(type=CivEventType.RESPONSE, frame=frame)
-            if generation != self._host._civ_epoch:
-                return
             self._update_state_cache_from_frame(
                 frame,
                 source_generation=generation,
@@ -2360,15 +2371,20 @@ class CivRuntime:
     ) -> None:
         """Project supported CI-V ingress fields into the runtime StateStore."""
 
+        store_provider_generation = (
+            self._host._state_store.provider_generation
+            if generation is None
+            else generation
+        )
         if frame.command == 0x19 and frame.sub == 0x00:
-            # MOR-3071: a transceiver-ID reply (19 00) answers the
-            # connect-time identity probe, not a state query. It must not
-            # become store evidence — publishing it would count as the
-            # liveness-derived power_on observation (MOR-2544) and break
-            # the startup gate's "the link answers nothing" predicate, so
-            # a present-but-silent radio would read as answering. This
-            # layer cannot tell the probe's reply from any other 19 00
-            # reply, so every 19 00 frame is skipped; other subs project.
+            # Identity answers establish link liveness, but remain excluded
+            # from StateStore startup/power inference (MOR-3071).
+            if (
+                len(frame.data) in (1, 2)
+                and store_provider_generation
+                == self._host._state_store.provider_generation
+            ):
+                self._stamp_liveness(notify=True)
             return
         try:
             observations = self._observations_from_frame(frame)
@@ -2389,11 +2405,26 @@ class CivRuntime:
             )
             return
 
-        store_provider_generation = (
-            self._host._state_store.provider_generation
-            if generation is None
-            else generation
+        # A PTT readback is a single 0x00/0x01 byte; the projection above keeps
+        # its legacy tolerance for longer payloads, but they carry no
+        # radio-originated information to credit.
+        malformed_ptt = (
+            frame.command == 0x1C
+            and frame.sub == 0x00
+            and frame.data not in (b"\x00", b"\x01")
         )
+        qualifies_liveness = (
+            not malformed_ptt
+            and any(
+                observation.value is not None
+                and observation.value is not ObservedPtt.UNKNOWN
+                and not isinstance(observation.value, UnknownTxTarget)
+                for observation in observations
+            )
+            and store_provider_generation == self._host._state_store.provider_generation
+        )
+        if qualifies_liveness:
+            self._stamp_liveness()
         observations = tuple(
             _replace_dataclass(
                 observation,
@@ -2412,7 +2443,9 @@ class CivRuntime:
                 generation=store_provider_generation,
             )
             self._record_scheduler_results_for_changeset(changeset)
-            self._notify_state_store_changed(changeset)
+            notified = self._notify_state_store_changed(changeset)
+            if qualifies_liveness and not notified:
+                self._notify_change("liveness", {})
             return
 
         if frame.command == 0x18 and len(frame.data) == 1:
@@ -2634,12 +2667,12 @@ class CivRuntime:
             )
             self._record_scheduler_result_for_observation(observation, changeset)
 
-    def _notify_state_store_changed(self, changeset: ChangeSet) -> None:
+    def _notify_state_store_changed(self, changeset: ChangeSet) -> bool:
         paths = {change.path for change in changeset.changes}
         paths.update(changeset.freshness_paths)
         paths.update(changeset.observed_paths)
         if not paths:
-            return
+            return False
         self._notify_change(
             "state_store_changed",
             {
@@ -2647,6 +2680,7 @@ class CivRuntime:
                 "paths": sorted(str(path) for path in paths),
             },
         )
+        return True
 
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""
@@ -3178,11 +3212,10 @@ class CivRuntime:
             # Reuse the exact decode of ``_handle_10`` / ``get_tuning_step``;
             # the value is a device step code, not Hz (MOR-461). Promoted to a
             # neutral global slow-state int; Hz mapping is deferred to MOR-453.
-            b = frame.data[0]
             observations.append(
                 self._observation(
                     FieldPath.global_("slow_state", "tuning_step"),
-                    ((b >> 4) & 0x0F) * 10 + (b & 0x0F),
+                    _decode_bcd_nibble(frame.data[0]),
                     frame=frame,
                 )
             )
@@ -3334,8 +3367,9 @@ class CivRuntime:
 
     @staticmethod
     def _decode_level(data: bytes) -> int:
-        b0, b1 = data[0], data[1]
-        return (b0 >> 4) * 1000 + (b0 & 0x0F) * 100 + (b1 >> 4) * 10 + (b1 & 0x0F)
+        from rigplane.commands import _level_bcd_decode
+
+        return _level_bcd_decode(data)
 
     def _decode_filter_width(self, frame: CivFrame) -> int:
         """Decode a 0x1A/0x03 filter-width frame to Hz.
@@ -3959,6 +3993,11 @@ class CivRuntime:
         0x26: _handle_26,
         0x27: _handle_27,
     }
+
+    def _stamp_liveness(self, *, notify: bool = False) -> None:
+        self._host.last_valid_frame_monotonic = time.monotonic()
+        if notify:
+            self._notify_change("liveness", {})
 
     def _notify_change(self, event_name: str, data: dict[str, Any]) -> None:
         """Notify server of state change (best-effort)."""

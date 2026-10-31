@@ -56,6 +56,9 @@ class FakeCatTransport:
         open_port: bool = True,
     ) -> None:
         self.connected = False
+        self._writer: object | None = None
+        self.stats = SimpleNamespace(reconnects=0)
+        self.last_valid_frame_monotonic: float | None = None
         self.open_port = open_port
         self.connect_calls = 0
         self.close_calls = 0
@@ -69,10 +72,13 @@ class FakeCatTransport:
         self.connect_calls += 1
         if self.open_port:
             self.connected = True
+            self._writer = object()
 
     async def close(self) -> None:
         self.close_calls += 1
         self.connected = False
+        self._writer = None
+        self.last_valid_frame_monotonic = None
 
     async def query(self, command: str, **_: object) -> str:
         self.queries.append(command)

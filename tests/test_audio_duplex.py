@@ -1111,13 +1111,26 @@ class TestExclusiveFailedDuplexOpen:
     async def test_open_timeout_restores_rx_after_native_settlement(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        driver, backend = _exclusive_driver(monkeypatch, capture_open_timeout=0.05)
+        driver, backend = _exclusive_driver(monkeypatch)
+        open_stream = driver._open_stream
+
+        async def open_with_duplex_timeout(stream, start_coro, *, direction, resources):
+            with monkeypatch.context() as patch:
+                if direction == "duplex":
+                    patch.setattr(driver, "_capture_open_timeout", 0.05)
+                await open_stream(
+                    stream, start_coro, direction=direction, resources=resources
+                )
+
+        monkeypatch.setattr(driver, "_open_stream", open_with_duplex_timeout)
         received: list[bytes] = []
         await driver.start_rx(received.append)
         gate = threading.Event()
         backend.block_duplex_open = gate.wait  # stuck duplex open
         try:
-            with pytest.raises(AudioCaptureOpenTimeoutError):
+            with pytest.raises(
+                AudioCaptureOpenTimeoutError, match="DUPLEX capture open timed out"
+            ):
                 await driver.start_tx()
             old = backend.duplex_streams[0]
             assert not driver.rx_running

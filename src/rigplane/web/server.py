@@ -159,6 +159,7 @@ from .runtime_helpers import (  # noqa: TID251
     VFO_CAPABILITY_TAGS,
     build_public_state_payload_from_snapshot,
     classify_radio_health,
+    connection_liveness_payload,
     primary_receiver_snapshot_ids,
     projected_af_level_sub_tag,
     projected_receiver_control_tags,
@@ -2461,6 +2462,18 @@ class WebServer:
         *,
         health_revision: int,
     ) -> tuple[object, ...]:
+        liveness = connection_liveness_payload(self._radio)
+        evidence = (
+            (
+                getattr(self._radio, "last_valid_frame_monotonic", None)
+                if liveness["lastFrameAgeMs"] is not None
+                else None,
+                liveness["staleAfterMs"],
+                liveness["source"],
+            )
+            if liveness is not None
+            else None
+        )
         return (
             self.monitor_mute.on,
             tuple(sorted(self.monitor_mute.saved_af.items())),
@@ -2469,6 +2482,7 @@ class WebServer:
             snapshot.observation_seq,
             snapshot.provider_generation,
             health_revision,
+            evidence,
             len(self._scope_handlers),
             len(self._control_event_queues),
             len(self._audio_broadcaster._clients),
@@ -2481,6 +2495,7 @@ class WebServer:
         *,
         health_revision: int,
         public_state_seq: int,
+        liveness: Mapping[str, object] | None,
     ) -> str:
         def _etag_component(value: object) -> str:
             if isinstance(value, bool):
@@ -2496,7 +2511,12 @@ class WebServer:
                     snapshot,
                     health_revision=health_revision,
                 )
-                + (public_state_seq,)
+                + (
+                    public_state_seq,
+                    liveness.get("lastFrameAgeMs") if liveness else None,
+                    liveness.get("staleAfterMs") if liveness else None,
+                    liveness.get("source") if liveness else None,
+                )
             )
         )
 
@@ -2517,13 +2537,27 @@ class WebServer:
             snapshot,
             health_revision=self._health_revision,
         )
+        liveness = connection_liveness_payload(self._radio)
+        public_state_seq = self._public_state_seq_for_key(
+            cache_key
+            + (
+                liveness.get("lastFrameAgeMs") if liveness else None,
+                liveness.get("staleAfterMs") if liveness else None,
+                liveness.get("source") if liveness else None,
+            )
+        )
         if (
             updated_at is None
             and cache_key == self._cached_public_state_key
             and self._cached_public_state_payload is not None
         ):
-            return copy.deepcopy(self._cached_public_state_payload)
-        public_state_seq = self._public_state_seq_for_key(cache_key)
+            payload = copy.deepcopy(self._cached_public_state_payload)
+            # MOR-3845: the liveness frame age is wall-clock dependent — a
+            # cache hit must still serve the age at response time, not the
+            # value frozen when the payload was built.
+            payload["connection"]["liveness"] = liveness
+            payload["publicStateSeq"] = public_state_seq
+            return payload
         profile = self._get_profile_unless_provider_owned()
         # A profile with no ``[state_acquisition]`` block (``rigs/tx500.toml``)
         # passes neither, and every unobserved entry stays ``missing``. A
@@ -2556,6 +2590,7 @@ class WebServer:
             monitor_mute=self.monitor_mute.public(receiver_count),
         )
         payload["publicStateSeq"] = public_state_seq
+        payload["connection"]["liveness"] = liveness
         payload["stateContractVersion"] = 1
         payload["providerGeneration"] = snapshot.provider_generation
         # Live SDR status (MOR-3201); the delivery key carries it (cache hit = no-op).
@@ -4337,6 +4372,8 @@ class WebServer:
                         *self._startup_busy_hold()
                     ),
                     "wsClients": len(self._client_tasks),
+                    # MOR-3845: additive; computed at request time.
+                    "liveness": connection_liveness_payload(self._radio),
                 },
             },
             separators=(",", ":"),
@@ -4798,6 +4835,7 @@ class WebServer:
                 snapshot,
                 health_revision=health_revision,
                 public_state_seq=public_state_seq,
+                liveness=body_dict["connection"]["liveness"],
             ),
         )
 

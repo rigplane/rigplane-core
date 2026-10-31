@@ -114,6 +114,9 @@ _REQUIRED_BY_MODEL: dict[str, set[str]] = {
     # Only ``observed=true`` entries carry the extras; the bare missing-entry is
     # {storePath, observed, freshness, availability}.
     "FieldStatusPublic": {"storePath", "observed", "freshness", "availability"},
+    # MOR-3845: ``liveness`` is additive — present in freshly built payloads
+    # but consumers must treat it as optional (older Cores omit it).
+    "ConnectionPublic": {"rigConnected", "radioReady", "controlConnected"},
     # Envelope framing is always present; ``data`` (full) vs ``changed`` +
     # ``removed`` (delta) and the echoed revisions are frame-conditional.
     "StateUpdateEnvelope": {"type", "revision", "transportSeq"},
