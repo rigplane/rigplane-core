@@ -127,6 +127,23 @@ def test_receipt_step_uses_the_job_github_token_and_release_tag() -> None:
     )
 
 
+def test_receipt_step_passes_the_repo_to_the_checker() -> None:
+    step = _receipt_step()
+    assert '--repo "$GITHUB_WORKSPACE"' in step, (
+        "the checker proves a version-only rc-to-final diff inside the "
+        f"checked-out repo; step:\n{step}"
+    )
+
+
+def test_validate_checkout_has_full_history_with_tags() -> None:
+    body = _validate_job()
+    assert "fetch-depth: 0" in body, (
+        "the receipt gate resolves the rc tag and walks the candidate's "
+        "ancestry, so the validate checkout needs full history with tags, "
+        "not the depth-2 checkout the test matrix needs"
+    )
+
+
 def test_receipt_step_runs_before_the_test_suite() -> None:
     body = _validate_job()
     assert "check_radio_smoke.py" in body and "name: Run tests" in body
@@ -266,6 +283,9 @@ def _run_receipt_step(
             "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
             "TAG": TAG,
             "GITHUB_SHA": SHA,
+            # The runner always sets GITHUB_WORKSPACE; the receipt step
+            # passes it as --repo, so the harness mirrors it (MOR-3998).
+            "GITHUB_WORKSPACE": str(_REPO_ROOT),
             "GH_TOKEN": "stub-token",
             "STUB_RECEIPTS_DIR": str(receipts_dir),
             "STUB_GH_DOWNLOAD_FAILS": "1" if download_fails else "0",

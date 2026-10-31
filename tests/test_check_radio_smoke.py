@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -87,7 +88,7 @@ def _tx_payload() -> dict[str, Any]:
     }
 
 
-def _run(
+def _write_and_check(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     *,
@@ -95,8 +96,9 @@ def _run(
     tx: dict[str, Any] | str | bytes | None,
     tag: str = TAG,
     sha: str = SHA,
-) -> tuple[int, str]:
-    """Write the fragments, run ``check``, return (exit code, stderr)."""
+    repo: Path | None = None,
+) -> tuple[int, str, str]:
+    """Write the fragments, run ``check``, return (exit, stdout, stderr)."""
     rx_path = tmp_path / "radio-smoke-rx.json"
     tx_path = tmp_path / "radio-smoke-tx.json"
     for path, payload in ((rx_path, rx), (tx_path, tx)):
@@ -107,20 +109,38 @@ def _run(
         else:
             text = payload if isinstance(payload, str) else json.dumps(payload)
             path.write_text(text, encoding="utf-8")
-    rc = checker.main(
-        [
-            "check",
-            "--tag",
-            tag,
-            "--git-sha",
-            sha,
-            "--rx",
-            str(rx_path),
-            "--tx",
-            str(tx_path),
-        ]
+    argv = [
+        "check",
+        "--tag",
+        tag,
+        "--git-sha",
+        sha,
+        "--rx",
+        str(rx_path),
+        "--tx",
+        str(tx_path),
+    ]
+    if repo is not None:
+        argv += ["--repo", str(repo)]
+    rc = checker.main(argv)
+    captured = capsys.readouterr()
+    return rc, captured.out, captured.err
+
+
+def _run(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    rx: dict[str, Any] | str | bytes | None,
+    tx: dict[str, Any] | str | bytes | None,
+    tag: str = TAG,
+    sha: str = SHA,
+) -> tuple[int, str]:
+    """Write the fragments, run ``check``, return (exit code, stderr)."""
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=tag, sha=sha
     )
-    return rc, capsys.readouterr().err
+    return rc, stderr
 
 
 def _stderr_lines(stderr: str) -> list[str]:
@@ -353,3 +373,358 @@ def test_top_level_must_be_an_object(
     assert any("rx:" in line and "object" in line for line in _stderr_lines(stderr)), (
         stderr
     )
+
+
+# --- MOR-3998: rc receipts for a version-only final ---
+#
+# A receipt pair produced against a release candidate (``core_version``
+# ``X.Y.ZrcN``, ``git_sha`` the candidate commit) validates for the final
+# tag ``vX.Y.Z`` when the final commit differs from the candidate only in
+# the version: the ``version`` line in ``pyproject.toml``, the project's
+# own ``version`` line in ``uv.lock``, and the changelog
+# heading/link lines. Everything is built on real temporary git repos
+# (``git init``, commits, annotated tags) — git is never mocked.
+
+
+RC_VERSION = "3.1.0rc1"
+RC_TAG = "v3.1.0rc1"
+
+
+def _git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=False
+    )
+    assert completed.returncode == 0, (
+        f"git {' '.join(args)} failed:\n{completed.stderr}"
+    )
+    return completed.stdout.strip()
+
+
+def _rc_pyproject(version: str) -> str:
+    return (
+        "[build-system]\n"
+        'requires = ["hatchling"]\n'
+        'build-backend = "hatchling.build"\n'
+        "\n"
+        "[project]\n"
+        'name = "rigplane"\n'
+        f'version = "{version}"\n'
+        'description = "test fixture"\n'
+        'requires-python = ">=3.11"\n'
+    )
+
+
+def _rc_uv_lock(version: str) -> str:
+    return (
+        "version = 1\n"
+        'requires-python = ">=3.11"\n'
+        "\n"
+        "[[package]]\n"
+        'name = "rigplane"\n'
+        f'version = "{version}"\n'
+        'source = { editable = "." }\n'
+        "\n"
+        "[[package]]\n"
+        'name = "dep-one"\n'
+        'version = "1.2.3"\n'
+        'source = { registry = "https://pypi.org/simple" }\n'
+    )
+
+
+def _rc_changelog(version: str) -> str:
+    return (
+        "# Changelog\n"
+        "\n"
+        "## [Unreleased]\n"
+        "\n"
+        f"## [{version}] — 2026-10-31\n"
+        "\n"
+        "- Test entry one.\n"
+        "\n"
+        f"[Unreleased]: https://github.com/rigplane/rigplane-core"
+        f"/compare/v{version}...HEAD\n"
+        f"[{version}]: https://github.com/rigplane/rigplane-core"
+        f"/compare/v0.0.0...v{version}\n"
+    )
+
+
+def _build_rc_repo(
+    tmp_path: Path,
+    *,
+    final_extra: Callable[[Path], None] | None = None,
+) -> tuple[Path, str, str]:
+    """Real git repo: rc commit tagged ``v3.1.0rc1``, then the final commit.
+
+    The final commit rewrites only the version (the pyproject version
+    line, the rigplane uv.lock version line, the changelog
+    heading/links) unless ``final_extra`` mutates the tree further
+    before the final commit. Returns ``(repo, candidate_sha, final_sha)``.
+    """
+    repo = tmp_path / "rc-repo"
+    repo.mkdir()
+    (repo / "docs").mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "rc-test")
+    _git(repo, "config", "user.email", "rc-test@example.com")
+    (repo / "pyproject.toml").write_text(
+        _rc_pyproject(RC_VERSION), encoding="utf-8"
+    )
+    (repo / "uv.lock").write_text(_rc_uv_lock(RC_VERSION), encoding="utf-8")
+    (repo / "docs" / "CHANGELOG.md").write_text(
+        _rc_changelog(RC_VERSION), encoding="utf-8"
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "chore(release): bump to 3.1.0rc1")
+    _git(repo, "tag", "-a", RC_TAG, "-m", "Release 3.1.0rc1")
+    candidate = _git(repo, "rev-parse", "HEAD")
+    (repo / "pyproject.toml").write_text(_rc_pyproject(VERSION), encoding="utf-8")
+    (repo / "uv.lock").write_text(_rc_uv_lock(VERSION), encoding="utf-8")
+    (repo / "docs" / "CHANGELOG.md").write_text(
+        _rc_changelog(VERSION), encoding="utf-8"
+    )
+    if final_extra is not None:
+        final_extra(repo)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "chore(release): bump to 3.1.0")
+    return repo, candidate, _git(repo, "rev-parse", "HEAD")
+
+
+def _rc_pair(candidate: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A valid RX/TX pair naming the candidate commit, as really tested."""
+    rx, tx = _rx_payload(), _tx_payload()
+    rx["core_version"] = RC_VERSION
+    rx["git_sha"] = candidate
+    tx["core_version"] = RC_VERSION
+    tx["git_sha"] = candidate
+    return rx, tx
+
+
+def test_rc_receipts_pass_for_a_version_only_final(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, candidate, final = _build_rc_repo(tmp_path)
+    rx, tx = _rc_pair(candidate)
+    rc, stdout, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc == 0, f"a version-only final must pass; stderr:\n{stderr}"
+    assert stderr == "", f"a passing check stays quiet on stderr: {stderr!r}"
+    assert f"for {TAG} @ {final}" in stdout, stdout
+    assert (
+        f"(tested candidate v{RC_VERSION} @ {candidate}, "
+        "version-only diff proven)" in stdout
+    ), stdout
+
+
+def test_rc_receipts_fail_when_code_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def extra(repo: Path) -> None:
+        src = repo / "src"
+        src.mkdir()
+        (src / "extra.py").write_text("EXTRA = 1\n", encoding="utf-8")
+
+    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a code change beyond the version must fail"
+    assert any("src/extra.py" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_a_dependency_version_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def extra(repo: Path) -> None:
+        text = (repo / "uv.lock").read_text(encoding="utf-8")
+        (repo / "uv.lock").write_text(
+            text.replace('version = "1.2.3"', 'version = "1.2.4"'),
+            encoding="utf-8",
+        )
+
+    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a dependency change must fail"
+    assert any("uv.lock" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_a_package_is_added(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def extra(repo: Path) -> None:
+        with (repo / "uv.lock").open("a", encoding="utf-8") as handle:
+            handle.write(
+                '\n[[package]]\nname = "dep-two"\nversion = "0.1.0"\n'
+            )
+
+    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "an added package must fail"
+    assert any("uv.lock" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_pyproject_changes_beyond_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def extra(repo: Path) -> None:
+        text = (repo / "pyproject.toml").read_text(encoding="utf-8")
+        (repo / "pyproject.toml").write_text(
+            text.replace('description = "test fixture"',
+                         'description = "changed"'),
+            encoding="utf-8",
+        )
+
+    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a non-version pyproject change must fail"
+    assert any("pyproject.toml" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_changelog_body_changes(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def extra(repo: Path) -> None:
+        changelog = repo / "docs" / "CHANGELOG.md"
+        changelog.write_text(
+            changelog.read_text(encoding="utf-8").replace(
+                "- Test entry one.", "- Test entry two."
+            ),
+            encoding="utf-8",
+        )
+
+    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a changelog body change must fail"
+    assert any("docs/CHANGELOG.md" in line for line in _stderr_lines(stderr)), (
+        stderr
+    )
+
+
+def test_rc_receipts_fail_for_a_different_series(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An rc of another X.Y.Z (3.2.0rc1 for tag v3.1.0) never validates."""
+    repo, candidate, final = _build_rc_repo(tmp_path)
+    rx, tx = _rc_pair(candidate)
+    rx["core_version"] = "3.2.0rc1"
+    tx["core_version"] = "3.2.0rc1"
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a candidate of a different series must fail"
+    assert any("3.2.0rc1" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_a_final_and_an_rc_receipt_mix(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One receipt naming the final commit, one naming the rc: a mix fails."""
+    repo, candidate, final = _build_rc_repo(tmp_path)
+    rx, _ = _rc_pair(candidate)
+    tx = _tx_payload()
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a final/rc mix must fail"
+    assert _stderr_lines(stderr), "a mix must print at least one line"
+
+
+def test_rc_receipts_fail_when_rx_and_tx_name_different_candidates(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, candidate, final = _build_rc_repo(tmp_path)
+    rx, tx = _rc_pair(candidate)
+    tx["git_sha"] = "f" * 40
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "two different candidates must fail"
+    assert any(
+        "different candidates" in line for line in _stderr_lines(stderr)
+    ), stderr
+
+
+def test_rc_receipts_fail_when_the_tag_points_elsewhere(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The ``vX.Y.ZrcN`` tag must resolve to the receipt's ``git_sha``."""
+    repo, candidate, final = _build_rc_repo(tmp_path)
+    _git(repo, "tag", "-f", "-a", RC_TAG, "-m", "moved", final)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a tag that does not resolve to the receipt sha must fail"
+    assert any(RC_TAG in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_the_candidate_is_not_an_ancestor(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The candidate must be an ancestor of the final commit."""
+    repo, candidate, _ = _build_rc_repo(tmp_path)
+    _git(repo, "checkout", "-q", "--orphan", "detached")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "detached final")
+    detached = _git(repo, "rev-parse", "HEAD")
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=detached, repo=repo
+    )
+    assert rc != 0, "a candidate that is no ancestor of FINAL must fail"
+    assert any("ancestor" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_for_a_malformed_sha(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, candidate, final = _build_rc_repo(tmp_path)
+    rx, tx = _rc_pair(candidate)
+    rx["git_sha"] = "not-a-sha"
+    tx["git_sha"] = "not-a-sha"
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "a malformed sha must fail closed"
+    assert any("git_sha" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_the_repo_is_missing(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo, candidate, final = _build_rc_repo(tmp_path)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final,
+        repo=tmp_path / "no-such-repo",
+    )
+    assert rc != 0, "a missing repo must fail closed"
+    assert _stderr_lines(stderr), "a missing repo must print a line"
+
+
+def test_exact_match_receipts_need_no_repo(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Final receipts pass even when ``--repo`` points at thin air."""
+    rc, stdout, stderr = _write_and_check(
+        tmp_path,
+        capsys,
+        rx=_rx_payload(),
+        tx=_tx_payload(),
+        repo=tmp_path / "no-such-repo",
+    )
+    assert rc == 0, f"exact final receipts must pass; stderr:\n{stderr}"
+    assert f"for {TAG} @ {SHA}" in stdout, stdout
