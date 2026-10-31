@@ -98,6 +98,8 @@ scripts/*
 !scripts/ic7300_capture/
 # And the FTX-1 capture probe driver is tracked (MOR-3596).
 !scripts/ftx1_capture/
+# And the TCI recording proxy is tracked (MOR-3821).
+!scripts/tci_capture/
 # And the versioned docs site builder is tracked (MOR-2914).
 !scripts/build_versioned_docs.py
 # And the weekly mutation-testing summarizer is tracked.

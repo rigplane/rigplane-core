@@ -9,11 +9,10 @@ import importlib
 import logging
 import sys
 import threading
-import time
 import types
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pytest
@@ -21,6 +20,7 @@ import pytest
 from rigplane.sdr import IqBlock, IqSource
 from rigplane.sdr.soapy_source import SoapyIqSource
 from rigplane.sdr.types import SdrConfig
+from _timing import wait_until
 
 _FIXED_CLOCK_S = 4242.0
 
@@ -206,15 +206,6 @@ def soapy() -> Iterator[_FakeSoapyHarness]:
         yield harness
 
 
-def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.002)
-    raise AssertionError(f"condition not met within {timeout:.1f}s")
-
-
 class _Collector:
     def __init__(self) -> None:
         self.blocks: list[IqBlock] = []
@@ -227,7 +218,7 @@ class _Collector:
             self.threads.append(threading.current_thread().name)
 
     def wait_for(self, n_blocks: int) -> list[IqBlock]:
-        _wait_until(lambda: len(self.blocks) >= n_blocks)
+        wait_until(lambda: len(self.blocks) >= n_blocks)
         with self._lock:
             return list(self.blocks)
 
@@ -331,7 +322,7 @@ def test_no_tune_before_center_requested(soapy: _FakeSoapyHarness) -> None:
     try:
         blocks = collector.wait_for(1)
         source.set_center_freq(7_100_000)
-        _wait_until(lambda: bool(soapy.named("setFrequency")))
+        wait_until(lambda: bool(soapy.named("setFrequency")))
     finally:
         source.close()
 
@@ -404,7 +395,7 @@ def test_stream_error_reconnects_without_leaking_threads(
     with caplog.at_level(logging.WARNING, logger="rigplane.sdr.soapy_source"):
         source.open()
         try:
-            _wait_until(lambda: soapy.device_count() == 2)
+            wait_until(lambda: soapy.device_count() == 2)
         finally:
             source.close()
 
@@ -480,7 +471,7 @@ def test_live_retune_and_gain_apply_to_device(soapy: _FakeSoapyHarness) -> None:
         source.set_gain(29.0)
         source.set_center_freq(14_074_000)
         last = ("setFrequency", 1, 0, 14_074_000)
-        _wait_until(lambda: soapy.named("setFrequency")[-1:] == [last])
+        wait_until(lambda: soapy.named("setFrequency")[-1:] == [last])
         blocks = collector.wait_for(2)
     finally:
         source.close()
@@ -526,7 +517,7 @@ def test_frequency_range_default_then_device(soapy: _FakeSoapyHarness) -> None:
 
     source.open()
     try:
-        _wait_until(lambda: source.frequency_range_hz() == (24_000_000, 2_400_000_000))
+        wait_until(lambda: source.frequency_range_hz() == (24_000_000, 2_400_000_000))
     finally:
         source.close()
 
@@ -568,7 +559,7 @@ def test_callback_exception_does_not_kill_reader(
     with caplog.at_level(logging.ERROR, logger="rigplane.sdr.soapy_source"):
         source.open()
         try:
-            _wait_until(lambda: len(blocks) >= 2)
+            wait_until(lambda: len(blocks) >= 2)
         finally:
             source.close()
 

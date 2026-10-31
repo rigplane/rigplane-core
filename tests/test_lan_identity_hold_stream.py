@@ -42,6 +42,7 @@ from rigplane.runtime._control_phase import ControlPhaseRuntime, OPENCLOSE_SIZE
 from _helpers import freq_response, wrap_civ_in_udp
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _build_conninfo, _ConnectOnceStubs
+from _timing import await_until
 
 _TOKEN = 0x5EC0DE01
 _RENEWAL_OK = 0x00000000
@@ -126,16 +127,6 @@ def _fast_reread(radio: IcomRadio) -> None:
     radio._LAN_IDENTITY_REREAD_STEADY_S = 0.01
 
 
-async def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> bool:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() > deadline:
-            return False
-        await asyncio.sleep(0.005)
-    return True
-
-
 async def _stop_reread(radio: IcomRadio) -> None:
     task = radio._lan_identity_reread_task
     radio._cancel_lan_identity_reread()
@@ -164,7 +155,7 @@ async def test_hold_re_requests_stream_before_every_reread() -> None:
     radio._read_lan_identity_payload = AsyncMock(side_effect=read)
     radio._start_lan_identity_reread()
     try:
-        assert await _wait_until(lambda: len(order) >= 6)
+        assert await await_until(lambda: len(order) >= 6)
     finally:
         await _stop_reread(radio)
     assert order[:6] == ["open", "read", "open", "read", "open", "read"]
@@ -205,7 +196,7 @@ async def test_payload_since_hold_start_stops_the_stream_nudge() -> None:
         # loop start, so the next re-read must not re-request the stream.
         radio._last_civ_data_received = time.monotonic()
         release_first_read.set()
-        assert await _wait_until(lambda: reads >= 2)
+        assert await await_until(lambda: reads >= 2)
     finally:
         await _stop_reread(radio)
     assert reads >= 2
@@ -227,7 +218,7 @@ async def test_failing_stream_nudge_does_not_end_the_hold() -> None:
     radio._read_lan_identity_payload = AsyncMock(side_effect=read)
     radio._start_lan_identity_reread()
     try:
-        assert await _wait_until(lambda: reads >= 2)
+        assert await await_until(lambda: reads >= 2)
         task = radio._lan_identity_reread_task
         assert task is not None and not task.done()
     finally:
@@ -246,7 +237,7 @@ async def test_acceptable_answer_completes_the_hold() -> None:
     radio._finish_lan_identity_completion = finish
     radio._start_lan_identity_reread()
     try:
-        assert await _wait_until(lambda: finish.await_count >= 1)
+        assert await await_until(lambda: finish.await_count >= 1)
     finally:
         await _stop_reread(radio)
     finish.assert_awaited_once()
@@ -295,7 +286,7 @@ async def test_rejected_renewal_escalates_at_once_and_ends_the_hold() -> None:
     radio, answers, reads, requests = _held_radio(_RENEWAL_REJECT)
     task = _reread_task(radio)
     try:
-        assert await _wait_until(task.done)
+        assert await await_until(task.done)
     finally:
         await _stop_reread(radio)
     assert requests == ["control session dead: reject"]
@@ -309,7 +300,7 @@ async def test_three_silent_renewals_one_second_apart_escalate() -> None:
     radio, answers, reads, requests = _held_radio(None, probe_timeout=None)
     task = _reread_task(radio)
     try:
-        assert await _wait_until(task.done, timeout=6.0)
+        assert await await_until(task.done, timeout=6.0)
     finally:
         await _stop_reread(radio)
     assert requests == ["control session dead: no renewal answer"]
@@ -325,7 +316,7 @@ async def test_answered_renewal_keeps_the_hold_and_is_probed_once() -> None:
     radio, answers, reads, requests = _held_radio(_RENEWAL_OK)
     task = _reread_task(radio)
     try:
-        assert await _wait_until(lambda: len(reads) >= 5)
+        assert await await_until(lambda: len(reads) >= 5)
         assert not task.done()
     finally:
         await _stop_reread(radio)
@@ -337,12 +328,12 @@ async def test_unanswered_periodic_renewal_probes_again_on_a_later_turn() -> Non
     radio, answers, reads, requests = _held_radio(_RENEWAL_OK)
     task = _reread_task(radio)
     try:
-        assert await _wait_until(lambda: len(reads) >= 2)
+        assert await await_until(lambda: len(reads) >= 2)
         assert len(answers.sent_at) == 1
         # The radio stops answering; the periodic renewal goes out once.
         answers.result = None
         await radio._control_phase._send_token(0x05)
-        assert await _wait_until(task.done)
+        assert await await_until(task.done)
     finally:
         await _stop_reread(radio)
     assert requests == ["control session dead: no renewal answer"]
@@ -362,7 +353,7 @@ async def test_hold_lost_during_the_probe_requests_nothing(change: str) -> None:
     answers.on_renewal = lose_the_hold
     task = _reread_task(radio)
     try:
-        assert await _wait_until(task.done)
+        assert await await_until(task.done)
     finally:
         await _stop_reread(radio)
     assert len(answers.sent_at) == 1
@@ -376,11 +367,11 @@ async def test_second_escalation_waits_out_the_spacing() -> None:
     radio._lan_identity_escalated_at = time.monotonic() - 59.0
     task = _reread_task(radio)
     try:
-        assert await _wait_until(lambda: len(reads) >= 3)
+        assert await await_until(lambda: len(reads) >= 3)
         assert requests == []
         assert not task.done()
         radio._lan_identity_escalated_at = time.monotonic() - 61.0
-        assert await _wait_until(task.done)
+        assert await await_until(task.done)
     finally:
         await _stop_reread(radio)
     assert requests == ["control session dead: reject"]
@@ -394,7 +385,7 @@ async def test_acceptance_resets_the_escalation_spacing() -> None:
     radio._arm_managed_tx = AsyncMock()
     task = _reread_task(radio)
     try:
-        assert await _wait_until(task.done)
+        assert await await_until(task.done)
     finally:
         await _stop_reread(radio)
         await radio._civ_runtime.stop_data_watchdog()
@@ -688,7 +679,7 @@ async def test_high_seq_idle_then_identity_reply_completes_same_hold() -> None:
         try:
             for seq in (0, 0, 8534, 8535):
                 transport._handle_packet(_idle_control_packet(seq))
-            assert await _wait_until(lambda: transport._packet_queue.empty())
+            assert await await_until(lambda: transport._packet_queue.empty())
             await asyncio.sleep(0)
             assert transport.rx_last_seq == 8535
             assert not transport.rx_missing
@@ -697,7 +688,7 @@ async def test_high_seq_idle_then_identity_reply_completes_same_hold() -> None:
             assert radio._civ_stream_ready is False
 
             radio._start_lan_identity_reread()
-            assert await _wait_until(
+            assert await await_until(
                 lambda: any(len(pkt) > 27 and pkt[25:27] == b"\x19\x00" for pkt in sent)
             )
             assert any(len(pkt) == OPENCLOSE_SIZE and pkt[0x15] == 0x04 for pkt in sent)
@@ -714,7 +705,7 @@ async def test_high_seq_idle_then_identity_reply_completes_same_hold() -> None:
                 seq=8536,
             )
             transport._handle_packet(reply)
-            assert await _wait_until(
+            assert await await_until(
                 lambda: radio.connection_identity.status is RadioIdentityStatus.VERIFIED
             )
             assert route.await_count == 1

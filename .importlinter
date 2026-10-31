@@ -7,7 +7,7 @@ name = rigplane layered architecture
 type = layers
 layers =
     rigplane.cli
-    rigplane.web | rigplane.rigctld
+    rigplane.web | rigplane.rigctld | rigplane.tci_adapter
     rigplane.backends
     rigplane.runtime
     rigplane.profiles | rigplane.audio | rigplane.sdr
@@ -26,6 +26,7 @@ type = independence
 modules =
     rigplane.web
     rigplane.rigctld
+    rigplane.tci_adapter
 ignore_imports =
     rigplane.backends.yaesu_cat.radio -> rigplane.rigctld.routing
 
@@ -72,6 +73,7 @@ type = forbidden
 source_modules =
     rigplane.web
     rigplane.rigctld
+    rigplane.tci_adapter
     rigplane.backends
     rigplane.runtime
     rigplane.profiles

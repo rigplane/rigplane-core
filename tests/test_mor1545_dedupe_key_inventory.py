@@ -31,9 +31,9 @@ What is pinned here, and what is not:
 
 * :func:`test_no_receiver_scoped_read_authors_a_bare_dedupe_key` covers all
   27 sites at once -- it fails on any one of them reverting to a bare key.
-* The race table now executes all 27 sites. Some families have both a direct
-  and VFO-fallback call site, so the source-derived inventory assertion remains
-  necessary alongside the wire races. ``get_manual_notch_width`` is raced on
+* The race table executes the IC-7610 sites; the IC-9700 rows pin that a
+  profile without cmd29 routes reads only the selected receiver (MOR-3591),
+  so the source-derived inventory assertion remains necessary alongside. ``get_manual_notch_width`` is raced on
   IC-7610 because its official guide marks 0x16/0x57 as Command 29 supported.
 * That ``IcomCommander.send`` coalesces at all is *not* pinned here; the
   same-receiver control tests only keep a change that stopped deduping
@@ -54,8 +54,13 @@ import pytest
 
 import rigplane.runtime.radio as radio_module
 from rigplane import IC_7610_ADDR
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, build_cmd29_frame
-from rigplane.core.exceptions import CommandError
+from rigplane.commands import (
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    build_cmd29_frame,
+    parse_civ_frame,
+)
+from rigplane.core.exceptions import CommandError, ReceiverNotSelectedError
 from rigplane.core.types import AudioPeakFilter, FilterShape
 from rigplane.radio import IcomRadio
 
@@ -115,12 +120,9 @@ def _receiver_in_scope(
 
     A parameter, specifically: a ``receiver`` introduced by assignment inside
     the function is not seen. Walking the whole chain rather than only the
-    innermost function is load-bearing:
-    the VFO-select fallbacks of ``get_filter_width``, ``get_repeater_tone`` and
-    ``get_repeater_tsql`` author their key inside a nested ``_action()``
-    closure that takes no arguments and captures ``receiver`` from the getter
-    around it. Checking only the innermost function would drop those three
-    sites -- precisely the ones a fallback-branch regression would hit.
+    innermost function is load-bearing: a key authored inside a nested
+    closure that takes no arguments but captures ``receiver`` from the getter
+    around it would otherwise be dropped.
     """
     owner = "<module>"
     for index, function in enumerate(_enclosing_functions(node, parents)):
@@ -321,17 +323,18 @@ _IC7610_ROWS = [
     _byte("get_filter_width", 0x1A, 0x03, main=(b"\x01", 100), sub_rx=(b"\x02", 150)),
 ]
 
-# IC-9700 declares ``routes = []``, so MAIN takes the direct branch and SUB the
-# VFO-select fallback: the two *different* call sites whose keys must not
-# collide. Its replies carry no receiver tag, so on this profile nothing but
-# the dedupe key distinguishes the two in-flight reads.
+# IC-9700 declares ``routes = []``: a read reaches only the selected receiver
+# and the other one is refused (MOR-3591), so a MAIN-against-SUB race cannot
+# happen there. These rows pin that instead (``test_selected_only_profile_*``)
+# and keep the same-receiver dedupe control; they are the only dual-RX hosts
+# of the repeater-tone/TSQL families (IC-7610 declares them absent).
 _IC9700_ROWS = [
     _Race("get_filter_width", "IC-9700", 0x1A, 0x03, b"\x01", b"\x02", 100, 150),
     _Race("get_repeater_tone", "IC-9700", 0x16, 0x42, b"\x01", b"\x00", True, False),
     _Race("get_repeater_tsql", "IC-9700", 0x16, 0x43, b"\x01", b"\x00", True, False),
 ]
 
-_RACE_TABLE = [*_IC7610_ROWS, *_IC9700_ROWS]
+_RACE_TABLE = [*_IC7610_ROWS]
 
 _NO_DUAL_RX_HOST: set[str] = set()
 
@@ -384,13 +387,14 @@ async def _reader(row: _Race) -> AsyncIterator[tuple[IcomRadio, MockTransport]]:
         radio = _build_radio(_IC7610_HOST, transport, model="IC-7610")
     else:
         radio = _build_radio(_IC9700_HOST, transport, model="IC-9700")
-
-        async def _instant_select(vfo: str) -> None:
-            """No-op VFO swap, so the fallback branch's own dedupe check
-            happens while MAIN's read is still in flight."""
-            return None
-
-        radio._set_vfo_wire = _instant_select  # type: ignore[method-assign]
+        # The radio answered 0x07 0xD2: SUB is the selected receiver.
+        radio._update_state_cache_from_frame(
+            parse_civ_frame(
+                build_civ_frame(
+                    CONTROLLER_ADDR, _IC9700_ADDR, 0x07, data=bytes([0xD2, 0x01])
+                )
+            )
+        )
     radio._civ_runtime.start_worker()
     try:
         yield radio, transport
@@ -445,7 +449,11 @@ def test_race_table_matches_the_derived_inventory() -> None:
     :func:`test_declared_exception_cannot_host_a_dual_receiver_race`.
     """
     inventory = {site.family for site in _scoped_key_sites()}
-    covered = {row.family for row in _RACE_TABLE} | _NO_DUAL_RX_HOST
+    covered = (
+        {row.family for row in _RACE_TABLE}
+        | {row.family for row in _IC9700_ROWS}
+        | _NO_DUAL_RX_HOST
+    )
     assert covered == inventory
 
 
@@ -480,7 +488,7 @@ async def test_declared_exception_cannot_host_a_dual_receiver_race(
 
 
 # ---------------------------------------------------------------------------
-# The races themselves -- executing 26 of the 27 sites
+# The races themselves
 # ---------------------------------------------------------------------------
 
 
@@ -521,13 +529,31 @@ async def test_concurrent_main_and_sub_reads_do_not_coalesce(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("row", _RACE_TABLE, ids=lambda r: r.label)
+@pytest.mark.parametrize("row", _IC9700_ROWS, ids=lambda r: r.label)
+async def test_selected_only_profile_reads_only_the_selected_receiver(
+    row: _Race,
+) -> None:
+    """IC-9700, SUB selected: the MAIN read is refused before the wire, the
+    SUB read gets SUB's answer, and nothing switches the selection."""
+    async with _reader(row) as (radio, transport):
+        read = getattr(radio, row.family)
+        transport.queue_response_on_send(1, _reply(row, row.sub_payload, receiver=1))
+        main_result, sub_value = await asyncio.gather(
+            read(receiver=0), read(receiver=1), return_exceptions=True
+        )
+        assert isinstance(main_result, ReceiverNotSelectedError)
+        assert sub_value == row.sub_value
+        assert len(transport.sent_packets) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("row", [*_RACE_TABLE, *_IC9700_ROWS], ids=lambda r: r.label)
 async def test_concurrent_same_receiver_reads_still_dedupe(row: _Race) -> None:
     """Control: the dedupe mechanism is intact, so a change that merely
     stopped deduping could not keep the race tests above green.
 
-    Both reads use SUB, the receiver that reaches the VFO-select fallback on
-    IC-9700; on IC-7610 both receivers share the one direct call site anyway.
+    Both reads use SUB (the selected receiver on the IC-9700 rows); on
+    IC-7610 both receivers share the one cmd29 call site anyway.
     """
     async with _reader(row) as (radio, transport):
         read = getattr(radio, row.family)
