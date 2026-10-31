@@ -18,7 +18,6 @@ Presets for known native radio models with CI-V addresses and capabilities.
 | IC-7300 | 0x94 | 1 | ✅ | ❌ |
 | IC-705 | 0xA4 | 1 | ✅ | ✅ |
 | IC-9700 | 0xA2 | 2 | ✅ | ❌ |
-| IC-905 | 0xAC | 1 | ✅ | ❌ |
 | IC-R8600 | 0x96 | 1 | ✅ | ❌ |
 | IC-7851 | 0x8E | 2 | ✅ | ❌ |
 | X6200 | 0xA4 | 1 | ❌ | ✅ |

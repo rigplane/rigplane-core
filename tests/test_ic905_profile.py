@@ -398,9 +398,9 @@ def test_tx_policy_is_declared_and_claims_no_measurement() -> None:
     assert raw["tx_policy"]["tx_state_map"] == {"0": "rx"}
 
 
-def test_lan_scope_is_fully_declared_for_the_prospect_use_case() -> None:
-    """LB6B wants the spectrum over LAN: the LAN radio must carry the whole
-    guide 0x27 table (p.15) plus the scope declarations, as data.
+def test_lan_scope_is_fully_declared_as_data() -> None:
+    """Spectrum over LAN: the LAN radio must carry the whole guide 0x27 table
+    (p.15) plus the scope declarations, as data.
 
     The radio's own network control (Basic manual: Network Control, UDP ports
     50001-50003, user ID/password) is not verifiable without hardware; the
