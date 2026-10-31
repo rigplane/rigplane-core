@@ -69,10 +69,11 @@ only. A refused PTT is `trx:0,false;` to the requester only.
 | `tx_enable:0` | Server only: true when the managed composition is present; a client set is answered with the current value |
 | `tx_frequency` | Effective TX frequency: channel 1 while split is on, else channel 0, plus XIT when enabled |
 | `dds`, `if` | Read-only; all three re-sent together |
+| `cw_keyer_speed`, `cw_macros_speed` | Reads; sets are honoured when the radio implements key-speed control, otherwise answered with the current value |
 | `start` / `stop` | Echoed, no radio action |
 | `spot`, `spot_delete`, `spot_clear` | Accepted and dropped |
 | `tune` | Not honoured: always `tune:0,false;`. `tune_drive` reads as `drive` and ignores sets |
-| `vfo_limits`, `modulations_list`, `trx_count`, `channels_count`, `device`, `protocol`, `receive_only`, `cw_keyer_speed`, `cw_macros_speed` | Reads / init-only |
+| `vfo_limits`, `modulations_list`, `trx_count`, `channels_count`, `device`, `protocol`, `receive_only` | Reads / init-only |
 | Everything else | Ignored without a reply, logged once per connection with the name only |
 
 `modulation` also keeps channel B's mode tuple equal to channel A's
@@ -106,7 +107,11 @@ over; with TOT disabled an over holds until unkey.
 - The TX input chosen for an over is not restored afterwards.
 - `tune` and `tune_drive` are not honoured (see table).
 - No IQ, no spots on a panorama, no CW over TCI, no second receiver.
-- Client behaviour above is reported, not captured: the C0 recording
-  has not been done, so client expectations come from the TCI spec and
-  second-hand client notes, and the server implements the spec text
-  where they disagree.
+- No live-client C0 recording has been done, so client expectations
+  above come from the TCI spec and second-hand client notes, and the
+  server implements the spec text where they disagree. Exercised
+  instead: the `eesdr-tci` 0.1.0 Listener in tests (init-burst
+  conformance, full `web` wiring with a frequency set/readback, DIGU
+  programming, and a managed key/unkey on a simulator). The two
+  `tests/fixtures/tci/*.tci` streams are extraction-format examples;
+  no test replays them against the server.
