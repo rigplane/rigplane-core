@@ -19,6 +19,7 @@ import re
 import shlex
 import signal
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -31,11 +32,12 @@ from rigplane.backends.config import (
     SerialBackendConfig,
     YaesuCatBackendConfig,
 )
+from rigplane.backends.factory import create_radio
 from rigplane.backends.ic7300.serial import Ic7300SerialRadio
 from rigplane.cli import _build_backend_config, _build_parser
 from rigplane.cli._models import match_rig
 from rigplane.discovery import RadioDiscoveryResult
-from rigplane.rig_loader import RigLoadError, discover_available_rigs
+from rigplane.rig_loader import RigLoadError, discover_available_rigs, discover_rigs
 
 
 @pytest.fixture()
@@ -86,15 +88,24 @@ async def test_radio_addr_lan_keeps_working(parser: argparse.ArgumentParser) -> 
     assert config.radio_addr == 0x94
 
 
-async def test_radio_addr_serial_keeps_working(
+async def test_radio_addr_serial_without_model_is_refused_by_the_factory(
     parser: argparse.ArgumentParser,
 ) -> None:
+    """--radio-addr alone builds a serial config, but no radio is created.
+
+    The CI-V address is not a model: ``create_radio`` refuses a serial
+    radio without ``--model`` rather than guessing one (R59/MOR-2425), so
+    a command line that stops at ``--radio-addr`` cannot reach a radio.
+    """
     args = parser.parse_args(
         ["--serial-port", "/dev/ttyUSB0", "--radio-addr", "0x94", "status"]
     )
     config = await _build_backend_config(args)
     assert isinstance(config, SerialBackendConfig)
     assert config.radio_addr == 0x94
+    assert config.model is None
+    with pytest.raises(ValueError, match="needs an explicit radio model"):
+        create_radio(config)
 
 
 async def test_rigctld_without_model_keeps_working(
@@ -270,7 +281,10 @@ async def test_discover_lan_unknown_model_prints_placeholder_and_models_hint(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model <MODEL> --backend lan --host 192.168.1.60 status" in out
+    assert (
+        "rigplane --model <MODEL> --backend lan --host 192.168.1.60"
+        " --control-port 50001 status" in out
+    )
     assert "rigplane models" in out
 
 
@@ -294,7 +308,10 @@ async def test_discover_lan_known_model_prints_command(
     ):
         assert await cli._cmd_discover(None, args) == 0
     out = capsys.readouterr().out
-    assert "rigplane --model IC-7610 --backend lan --host 192.168.1.50 status" in out
+    assert (
+        "rigplane --model IC-7610 --backend lan --host 192.168.1.50"
+        " --control-port 50001 status" in out
+    )
 
 
 @pytest.mark.asyncio
@@ -794,3 +811,57 @@ def test_discover_line_replays_through_main_into_status(
     status_out = capsys.readouterr().out
     assert "14,074,000" in status_out
     assert "USB" in status_out
+
+
+_BAD_ID_PROFILE = (
+    (Path(__file__).resolve().parent.parent / "rigs" / "ic7300.toml")
+    .read_text()
+    .replace('id = "icom_ic7300"', "id = 123", 1)
+)
+
+
+def _rigs_dir_with_bad_id(tmp_path: Path) -> Path:
+    (tmp_path / "bad.toml").write_text(_BAD_ID_PROFILE)
+    return tmp_path
+
+
+def test_models_with_non_string_profile_id_is_a_clean_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`models` reports the bad field instead of crashing in describe_rig."""
+    rigs_dir = _rigs_dir_with_bad_id(tmp_path)
+    monkeypatch.setattr(
+        "rigplane.cli._models.discover_available_rigs",
+        lambda _fallback=None: discover_rigs(rigs_dir),
+    )
+    assert cli._run_models(SimpleNamespace(json=False)) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ")
+    assert "[radio].id must be a" in err
+
+
+@pytest.mark.asyncio
+async def test_discover_with_non_string_profile_id_is_a_clean_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`discover` reports the bad field instead of crashing in match_rig."""
+    rigs_dir = _rigs_dir_with_bad_id(tmp_path)
+    monkeypatch.setattr(
+        "rigplane.rig_loader.discover_available_rigs",
+        lambda _fallback=None: discover_rigs(rigs_dir),
+    )
+    lan = [
+        {"host": "192.168.1.50", "remote_id": 2, "model": "IC-7610", "address": 0x98}
+    ]
+    with (
+        patch("rigplane.discovery.discover_lan_radios", AsyncMock(return_value=lan)),
+        patch("rigplane.discovery.discover_serial_radios", AsyncMock(return_value=[])),
+    ):
+        assert await cli._cmd_discover(None, _human_args()) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("Error: ")
+    assert "[radio].id must be a" in err

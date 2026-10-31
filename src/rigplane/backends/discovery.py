@@ -25,6 +25,7 @@ from .hamlib_probe import (
 )
 
 __all__ = [
+    "LAN_DISCOVERY_PORT",
     "build_hamlib_discovery_payload",
     "build_setup_discovery_payload",
     "CivProbeResult",
@@ -49,6 +50,11 @@ __all__ = [
     "rank_hamlib_probe",
     "resolve_civ_radio_identity",
 ]
+
+#: UDP port the LAN "Are You There" probe is broadcast to: the Icom control
+#: port. A radio found by :func:`discover_lan_radios` answered on it, so
+#: ``discover`` pins it in the commands it prints (MOR-3859).
+LAN_DISCOVERY_PORT = 50001
 
 _CIV_PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
 # Minimum valid response: FE FE E0 <addr> 19 00 <model_id_byte> FD = 8 bytes
@@ -886,7 +892,7 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
                 sent_any = False
                 for sock in sockets:
                     try:
-                        sock.sendto(bytes(pkt), ("255.255.255.255", 50001))
+                        sock.sendto(bytes(pkt), ("255.255.255.255", LAN_DISCOVERY_PORT))
                         sent_any = True
                     except OSError as exc:
                         if sock in send_failed:
