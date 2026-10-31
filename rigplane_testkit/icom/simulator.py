@@ -149,6 +149,7 @@ _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
+_SUB_SQL_STATUS = 0x01
 _SUB_S_METER = 0x02
 _SUB_SWR_METER = 0x12
 _SUB_ALC_METER = 0x13
@@ -521,6 +522,9 @@ class MockIcomRadio(AudioPortMixin):
         self._filter: int = 1
         self._power: int = 100  # 0-255 level
         self._s_meter: int = 120  # 0-255
+        # MOR-3630: squelch-open (RX-busy) readback for the 0x15 0x01 poll.
+        # Idle means closed: no signal, squelch shut.
+        self._squelch_open: bool = False
         self._swr: int = 10  # 0-255
         self._alc: int = 0
         self._attenuator: int = 0  # dB (0, 3, 6, ... 45)
@@ -1346,6 +1350,10 @@ class MockIcomRadio(AudioPortMixin):
     def set_s_meter(self, value: int) -> None:
         """Set S-meter readback value (0-255)."""
         self._s_meter = value
+
+    def set_squelch_open(self, on: bool) -> None:
+        """Set squelch-open (RX-busy) readback for the 0x15 0x01 poll."""
+        self._squelch_open = on
 
     def set_swr(self, value: int) -> None:
         """Set SWR meter readback value (0-255)."""
@@ -2375,6 +2383,8 @@ class MockIcomRadio(AudioPortMixin):
             if not payload:
                 return self._civ_nak(to, frm)
             sub = payload[0]
+            if sub == _SUB_SQL_STATUS:  # 0x01
+                return self._squelch_status_reply(to, frm)
             if sub == _SUB_S_METER:  # 0x02
                 return self._civ_frame(
                     to,
@@ -2790,6 +2800,11 @@ class MockIcomRadio(AudioPortMixin):
                 to, frm, _CMD_CMD29, data=bytes([receiver, _CMD_ATT, bcd])
             )
 
+        # S-meter squelch status (0x15 0x01): dual-receiver Icoms route the
+        # read through Command29, the reply comes back wrapped (MOR-3630).
+        if real_cmd == _CMD_METER and inner[:1] == bytes([_SUB_SQL_STATUS]):
+            return self._squelch_status_reply(to, frm, receiver=receiver)
+
         # PREAMP / DIGI-SEL (0x16)
         if real_cmd == _CMD_PREAMP:
             if not inner:
@@ -2832,6 +2847,25 @@ class MockIcomRadio(AudioPortMixin):
     # ------------------------------------------------------------------
     # CI-V frame builders
     # ------------------------------------------------------------------
+
+    def _squelch_status_reply(
+        self, to: int, frm: int, *, receiver: int | None = None
+    ) -> bytes:
+        """The single-byte squelch-open readback to a 0x15 0x01 poll (MOR-3630).
+
+        The polled counterpart of the spontaneous 0x15 frames real Icoms
+        emit. ``receiver`` is None for the plain frame and the Command29
+        receiver byte when the radio routes the read through Command29.
+        """
+        state = bytes([0x01 if self._squelch_open else 0x00])
+        if receiver is None:
+            return self._civ_frame(to, frm, _CMD_METER, sub=_SUB_SQL_STATUS, data=state)
+        return self._civ_frame(
+            to,
+            frm,
+            _CMD_CMD29,
+            data=bytes([receiver, _CMD_METER, _SUB_SQL_STATUS]) + state,
+        )
 
     def _civ_refused(self, cmd: int, payload: bytes) -> bool:
         """True when the refusal hook matches this (cmd, payload).

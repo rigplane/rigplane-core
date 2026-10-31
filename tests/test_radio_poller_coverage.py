@@ -3510,9 +3510,12 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
         acquisition_query(0x16, sub=0x56, receiver=0x01),
         acquisition_query(0x1A, sub=0x04, receiver=0x00),
         acquisition_query(0x1A, sub=0x04, receiver=0x01),
+        # MOR-3630: squelch-open (dcd) status, one cmd29-routed read per
+        # receiver, for the BUSY lamp.
+        acquisition_query(0x15, sub=0x01, receiver=0x00),
+        acquisition_query(0x15, sub=0x01, receiver=0x01),
     }.issubset(queries)
     assert {
-        acquisition_query(0x15, sub=0x01, receiver=0x00),
         acquisition_query(0x15, sub=0x07),
         acquisition_query(0x16, sub=0x50),
         acquisition_query(0x16, sub=0x58),
@@ -6822,7 +6825,9 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 # setting group dispatches by its cadence deadline instead of its old TTL
 # deadline: the same 52 frames, with the AGC read (0x16 0x12, the only
 # class-resolved setting in this cycle) moving ahead of the monitor/vox
-# reads it used to follow.
+# reads it used to follow. MOR-3630 polls the squelch-open (dcd) status on
+# polling-only links: one more 0x15 0x01 read, in the control group, so
+# 52 -> 53 frames.
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
     (0x25, None, b"\x00"),
@@ -6833,6 +6838,7 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x14, 0x01, b""),
     (0x14, 0x02, b""),
     (0x14, 0x03, b""),
+    (0x15, 0x01, b""),
     (0x25, None, b"\x01"),
     (0x26, None, b"\x01"),
     (0x14, 0x0A, b""),

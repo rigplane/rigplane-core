@@ -35,6 +35,7 @@ import tempfile
 import time
 import weakref
 from collections import Counter
+from collections.abc import Iterable
 from contextvars import Context, ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1184,6 +1185,7 @@ async def _start_simulator_stack(
     dual_receiver: bool = False,
     enable_audio: bool = True,
     capture_civ_frames: bool = False,
+    refused_civ_commands: Iterable[tuple[int, int | None]] = (),
 ) -> _SimulatorStack:
     """The `rigplane web` stack against the simulator.
 
@@ -1207,6 +1209,8 @@ async def _start_simulator_stack(
     )
     if profile.expected_identity_ids:
         sim.model_id = bytes.fromhex(profile.expected_identity_ids[0])
+    # Set before the first poll, so a refused read is never answered at all.
+    sim.refused_civ_commands.update(refused_civ_commands)
     await sim.start()
     # timeout=1.0: the simulator does not answer a few menu reads the
     # poller seeds at connect (NB depth/width, DATA MOD inputs); at the

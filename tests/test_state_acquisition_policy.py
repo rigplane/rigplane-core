@@ -1179,7 +1179,8 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
         pytest.approx(10.0)
     )
-    assert fit.demand_hz == pytest.approx(23.7)
+    # MOR-3630: +2 CONTROL dcd polls (main+sub 0x15 0x01 at 2.0 s) = +1.0 q/s.
+    assert fit.demand_hz == pytest.approx(24.7)
 
 
 # --- MOR-2574 step 2: the loader-era class fallback --------------------------
@@ -1465,6 +1466,8 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.receiver("main", "operator_toggles", "nb"),
         FieldPath.receiver("main", "operator_toggles", "nr"),
         FieldPath.receiver("main", "operator_toggles", "ipplus"),
+        # MOR-3630: squelch-open (RX-busy) for the BUSY lamp.
+        FieldPath.receiver("main", "operator_toggles", "dcd"),
         FieldPath.global_("operator_controls", "power_level"),
         FieldPath.global_("tx_state", "compressor_on"),
         FieldPath.global_("operator_controls", "compressor_level"),
@@ -1535,6 +1538,9 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.receiver("main", "operator_controls", "att"),
         FieldPath.receiver("main", "operator_controls", "preamp"),
         FieldPath.receiver("main", "operator_toggles", "ipplus"),
+        # MOR-3630: dcd carries no field_policies entry of its own, so it
+        # takes the CONTROL class policy (2.0 s / 5.0 s) like tuner_status.
+        FieldPath.receiver("main", "operator_toggles", "dcd"),
         FieldPath.global_("meters", "vd"),
     ):
         assert path not in acquisition.field_policies, path

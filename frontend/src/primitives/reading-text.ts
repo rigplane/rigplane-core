@@ -97,3 +97,17 @@ export function observationValue<T>(
 export function finiteValue(value: number | null | undefined): number | null {
   return value !== null && value !== undefined && Number.isFinite(value) ? value : null;
 }
+
+/**
+ * MOR-3630: the BUSY lamp's accessible state sentence, shared by every
+ * surface that draws the lamp (desktop row, phone chip, standard
+ * annunciator). A lamp is a state, not a label: the sentence exists only
+ * while the squelch reading is known; an unread lamp shows its dimmed
+ * label and says nothing.
+ */
+export function squelchStateLabel(
+  field: { readonly reading: InstrumentReading<boolean> } | undefined,
+): string | undefined {
+  const open = readingValue(field);
+  return open === null ? undefined : (open ? 'Squelch open' : 'Squelch closed');
+}

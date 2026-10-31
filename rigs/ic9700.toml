@@ -150,6 +150,9 @@ polling_only = [
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
     "receiver.main.operator_controls.tone_squelch_type",
+    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp — the 0x15 0x01
+    # single-byte SQL-status read, same cadence class as the sibling toggles.
+    "receiver.main.operator_toggles.dcd",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",

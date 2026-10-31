@@ -139,6 +139,9 @@ polling_only = [
     "receiver.main.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
+    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp — the 0x15 0x01
+    # single-byte SQL-status read, same cadence class as the sibling toggles.
+    "receiver.main.operator_toggles.dcd",
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
     # MOR-2131: read by the same 16 5D query as the two booleans above.

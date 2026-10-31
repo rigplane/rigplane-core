@@ -23,7 +23,8 @@ function indicator(overrides: Partial<ReceiverIndicatorViewModel> = {}): Receive
     sMeter: known(0), bandwidthHz: known(2400), agcMode: known(0),
     nbActive: known(false), nrActive: known(true), notchMode: known('off'),
     attenuator: known(0), preamp: known(0), rfGain: known(0),
-    digiSel: known(false), ipPlus: known(true), ...overrides,
+    digiSel: known(false), ipPlus: known(true), squelchOpen: known(false),
+    ...overrides,
   };
 }
 
@@ -113,6 +114,39 @@ describe('VfoIndicatorRow', () => {
     expect(root.querySelector('[data-indicator-fact="agc"]')?.textContent).toContain('AGC SLOW');
   });
 
+  it('lights the BUSY lamp first after the S-meter while the squelch reads open (MOR-3630)', () => {
+    const root = render({ indicator: indicator({ squelchOpen: known(true) }) });
+    const lamp = root.querySelector('[data-indicator-fact="busy"]');
+    expect(lamp?.getAttribute('data-state')).toBe('on');
+    expect(lamp?.textContent).toBe('BUSY');
+    expect(lamp?.getAttribute('aria-label')).toBe('Squelch open');
+    expect(lamp?.parentElement?.getAttribute('aria-label')).toBe('MAIN receiver facts');
+    expect(lamp?.parentElement?.firstElementChild).toBe(lamp);
+    expect(lamp?.parentElement?.previousElementSibling?.getAttribute('data-testid'))
+      .toBe('receiver-s-meter');
+  });
+
+  it('darkens the BUSY lamp while the squelch reads closed, keeping the label (MOR-3630)', () => {
+    const root = render({ indicator: indicator({ squelchOpen: known(false) }) });
+    const lamp = root.querySelector('[data-indicator-fact="busy"]');
+    expect(lamp?.getAttribute('data-state')).toBe('off');
+    expect(lamp?.textContent).toBe('BUSY');
+    expect(lamp?.getAttribute('aria-label')).toBe('Squelch closed');
+  });
+
+  it('dims the BUSY lamp with no state sentence while the squelch is unread (MOR-3630)', () => {
+    const root = render({ indicator: indicator({ squelchOpen: unknown() }) });
+    const lamp = root.querySelector('[data-indicator-fact="busy"]');
+    expect(lamp?.getAttribute('data-state')).toBe('unknown');
+    expect(lamp?.textContent).toBe('BUSY');
+    expect(lamp?.getAttribute('aria-label')).toBeNull();
+  });
+
+  it('draws no BUSY lamp when the radio declares no squelch fact (MOR-3630)', () => {
+    const root = render({ indicator: indicator({ squelchOpen: undefined }) });
+    expect(root.querySelector('[data-indicator-fact="busy"]')).toBeNull();
+  });
+
   it('shows a label with no value text for unread facts, never a dash (MOR-2644)', () => {
     const root = render({ indicator: indicator({
       bandwidthHz: unknown(), agcMode: unknown(), nbActive: unknown(),
@@ -153,7 +187,7 @@ describe('VfoIndicatorRow', () => {
       bandwidthHz: unknown(false), agcMode: unknown(false), nbActive: unknown(false),
       nrActive: unknown(false), notchMode: unknown(false), attenuator: unknown(false),
       preamp: unknown(false), rfGain: unknown(false), digiSel: unknown(false),
-      ipPlus: unknown(false),
+      ipPlus: unknown(false), squelchOpen: unknown(false),
     }) });
     expect(root.querySelectorAll('[data-indicator-fact]')).toHaveLength(0);
     expect(root.querySelector('[data-testid="receiver-s-meter"]')).not.toBeNull();
@@ -457,6 +491,7 @@ describe('RF gain display observation', () => {
     ['preamp', 'P.AMP 3'], ['ip-plus', 'IP+ OFF'], ['digi-sel', 'DIGI-SEL OFF'],
     ['rf-gain', 'RFG 99%'], ['antenna', 'ANT 2'], ['atu', 'TUNE TUNING'],
     ['rit', 'RIT OFF −9999 Hz'], ['xit', 'XIT OFF −9999 Hz'],
+    ['busy', 'BUSY'],
   ] as const)('fact %s reserves at least its widest lit text', (fact, widest) => {
     const reserved = FACT_SLOT_RESERVATIONS[fact as keyof typeof FACT_SLOT_RESERVATIONS];
     expect(reserved, `missing reservation for ${fact}`).toBeDefined();
@@ -561,6 +596,48 @@ describe('chips appearance (MOR-2852) — the phone meta facts', () => {
       expect(node.textContent).toBe(fact.toUpperCase());
       expect(node.textContent).not.toContain('—');
     }
+  });
+
+  // MOR-3630 — the BUSY chip on the phone: label only, lit state in
+  // data-state like the NB/NR chips, first when listed first.
+  it('draws the BUSY chip first, lit while the squelch reads open', () => {
+    const root = render({ indicator: indicator({ squelchOpen: known(true) }),
+      appearance: 'chips', facts: ['busy', 'bandwidth', 'agc', 'nb', 'nr'] });
+    const facts = [...root.querySelectorAll('[data-indicator-fact]')];
+    expect(facts.map((node) => node.getAttribute('data-indicator-fact'))[0]).toBe('busy');
+    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
+    expect(busy.getAttribute('data-state')).toBe('on');
+    expect(busy.textContent).toBe('BUSY');
+    expect(busy.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.busy}ch`);
+    expect(busy.getAttribute('role')).toBe('img');
+    expect(busy.getAttribute('aria-label')).toBe('Squelch open');
+  });
+
+  it('darkens the BUSY chip while the squelch reads closed, keeping the label', () => {
+    const root = render({ indicator: indicator({ squelchOpen: known(false) }),
+      appearance: 'chips', facts: ['busy', 'nb'] });
+    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
+    expect(busy.getAttribute('data-state')).toBe('off');
+    expect(busy.textContent).toBe('BUSY');
+    expect(busy.getAttribute('role')).toBe('img');
+    expect(busy.getAttribute('aria-label')).toBe('Squelch closed');
+  });
+
+  it('dims the BUSY chip while the squelch is unread', () => {
+    const root = render({ indicator: indicator({ squelchOpen: unknown<boolean>() }),
+      appearance: 'chips', facts: ['busy', 'nb'] });
+    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
+    expect(busy.getAttribute('data-state')).toBe('unknown');
+    expect(busy.textContent).toBe('BUSY');
+    // Unread: the dimmed label only, no state sentence (same as the desktop lamp).
+    expect(busy.getAttribute('aria-label')).toBeNull();
+  });
+
+  it('omits the BUSY chip when the radio declares no squelch fact', () => {
+    const root = render({ indicator: indicator({ squelchOpen: undefined }),
+      appearance: 'chips', facts: ['busy', 'nb'] });
+    expect(root.querySelector('[data-indicator-fact="busy"]')).toBeNull();
+    expect(root.querySelector('[data-indicator-fact="nb"]')).not.toBeNull();
   });
 
   it('keeps BW and AGC texts/rules identical to the existing appearances', () => {

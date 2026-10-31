@@ -106,6 +106,9 @@ def _profile_resolver_cases() -> list[tuple[FieldPath, str]]:
             "twin_peak_filter": "get_twin_peak_filter",
             "repeater_tone": "get_repeater_tone",
             "repeater_tsql": "get_repeater_tsql",
+            # MOR-3630: the squelch-open status reads through the S-meter
+            # SQL-status getter on the four Icom profiles declaring it.
+            "dcd": "get_s_meter_sql_status",
         }.items()
     )
     cases.extend(
@@ -176,7 +179,8 @@ def _profile_resolver_cases() -> list[tuple[FieldPath, str]]:
             "anti_vox_gain": "get_anti_vox_gain",
         }.items()
     )
-    assert len(cases) == 66
+    # MOR-3630: +1 for the receiver dcd case (get_s_meter_sql_status).
+    assert len(cases) == 67
     return cases
 
 
@@ -235,7 +239,10 @@ def test_acquisition_profile_resolver_six_profile_census_and_exact_declared_byte
     # MOR-2917: the IC-705 declares apf_type_level, digisel_shift,
     # audio_peak_filter and drive_gain absent (no row in its CI-V guide),
     # moving four cases from agree to absent (303/16 -> 299/20).
-    assert census == Counter(agree=299, diverge=4, absent=20, missing=73)
+    # MOR-3630: the dcd case agrees on the four Icom profiles declaring
+    # get_s_meter_sql_status (705/7300/7610/9700) and misses on X6100/X6200,
+    # which declare neither the getter nor an absent row (299/73 -> 303/75).
+    assert census == Counter(agree=303, diverge=4, absent=20, missing=75)
 
 
 def test_acquisition_profile_resolver_relative_vfo_and_refusal_rules() -> None:
@@ -890,8 +897,10 @@ class TestBuildStateQueries:
         # tone_squelch_type, repeater_shift); the first three collapse into
         # one 16 5D query and repeater_shift into split's existing bare 0F
         # read, so 39 paths resolve to 36 distinct queries.
-        assert len(pollable) == 39
-        assert len(queries) == 36
+        # MOR-3630 adds receiver.main.operator_toggles.dcd (0x15 0x01) as
+        # one more path with its own query: 40 paths, 37 queries.
+        assert len(pollable) == 40
+        assert len(queries) == 37
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries

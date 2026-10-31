@@ -10,6 +10,19 @@ For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
 - ``allObserved``: the same call after every field path the profile's
   ``[state_acquisition]`` declares has been observed once. A profile with no
   ``[state_acquisition]`` block declares nothing, so it has no ``allObserved``.
+- ``polledDcd*`` (MOR-3630): for every Icom CI-V profile that polls the
+  receiver ``dcd`` leaf, the capabilities body and the ``full`` envelope the
+  web server builds around a real ``IcomRadio`` after one polled CI-V
+  0x15 0x01 SQL-status reply ("Open": 0x01, "Closed": 0x00) or none at all
+  ("Unanswered"). ``polledDcdDeltaOpen``/``polledDcdDeltaClosed`` are the
+  live ``delta`` envelopes the same server builds when a reply flips the
+  squelch after a full baseline built from the opposite one. The radio
+  ingests the reply through its own CI-V state-cache path, so the BUSY
+  lamp's wire inputs (the ``dcd`` value, its ``fieldStatus`` row, the
+  ``squelch`` capability tag only a radio-backed server publishes) come
+  from the producers, not from this script.
+  ``tests/test_dcd_busy_wire_e2e.py`` proves the same fields arrive over
+  the real HTTP and WebSocket API from a polled simulator stack.
 
 ``_EXCLUDED_MODELS`` profiles contribute a ``capabilities`` entry only: their
 state payloads are left out to keep the committed file small.
@@ -17,7 +30,8 @@ state payloads are left out to keep the committed file small.
 Observed values are fixed per field type, not calibrated readings. A declared
 str or object field this script has no value for raises instead of getting a
 placeholder. ``updatedAt``, every ``lastObservedMonotonic``,
-``radioHealth.sinceMs``, ``webrtc.available`` and the audio-jitter environment
+``radioHealth.sinceMs``, ``connection.liveness.lastFrameAgeMs``,
+``webrtc.available`` and the audio-jitter environment
 variables are pinned, so a run does not vary with the clock, with aiortc being
 installed, or with those variables.
 
@@ -31,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import functools
 import json
 import os
 import sys
@@ -42,6 +57,11 @@ from unittest import mock
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+from rigplane.commands._frame import (  # noqa: E402
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    parse_civ_frame,
+)
 from rigplane.core.state_pipeline_contracts import (  # noqa: E402
     DEFAULT_FIELD_REGISTRY,
     FieldFamily,
@@ -52,7 +72,13 @@ from rigplane.core.state_pipeline_contracts import (  # noqa: E402
 from rigplane.core.types import ToneSquelchType  # noqa: E402
 from rigplane.profiles import RadioProfile, get_radio_profile  # noqa: E402
 from rigplane.profiles.rig_loader import discover_rigs  # noqa: E402
+from rigplane.radio import IcomRadio  # noqa: E402
+from rigplane.runtime._state_queries import (  # noqa: E402
+    build_state_queries,
+    wire_parts_for_query,
+)
 from rigplane.web.runtime_helpers import declared_field_paths  # noqa: E402
+from rigplane.web import server as _server_module  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 
 GOLDEN_PATH = (
@@ -69,6 +95,9 @@ GOLDEN_PATH = (
 _PINNED_UPDATED_AT = "2026-01-01T00:00:00+00:00"
 _PINNED_MONOTONIC = 1000.0
 _PINNED_SINCE_MS = 0
+# MOR-3630/MOR-3845: radio-backed envelopes carry the live
+# ``connection.liveness`` block whose frame age is wall-clock dependent.
+_PINNED_LAST_FRAME_AGE_MS = 0
 # Read by ``get_audio_rx_jitter_floor_ms`` / ``get_audio_rx_jitter_ceiling_ms``.
 _JITTER_ENV_VARS = (
     "ICOM_AUDIO_RX_JITTER_FLOOR_MS",
@@ -78,6 +107,24 @@ _JITTER_ENV_VARS = (
 # State payloads for these models stay out of the golden to keep the committed
 # file small; their capabilities entries are still written.
 _EXCLUDED_MODELS = frozenset({"IC-7300MK2", "X6100"})
+
+# RFC 5737 documentation address: the radios below are never connected.
+_UNCONNECTED_RADIO_HOST = "192.0.2.1"
+# The single-byte CI-V 0x15 0x01 SQL-status payload of a polled reply.
+_SQL_OPEN = 0x01
+_SQL_CLOSED = 0x00
+_POLLED_DCD_CASES = (
+    ("polledDcdOpen", _SQL_OPEN),
+    ("polledDcdClosed", _SQL_CLOSED),
+    ("polledDcdUnanswered", None),
+)
+# (case, squelch byte of the full baseline, squelch byte of the reply that
+# flips it): the live delta a connected client receives on the transition.
+_POLLED_DCD_DELTAS = (
+    ("polledDcdDeltaOpen", _SQL_CLOSED, _SQL_OPEN),
+    ("polledDcdDeltaClosed", _SQL_OPEN, _SQL_CLOSED),
+)
+_DCD_PATH = FieldPath.receiver("main", "operator_toggles", "dcd")
 
 _INT_BY_NAME = {"filter_width": 2400, "receiver": 0}
 _BOOL_BY_NAME = {"ptt": False}
@@ -160,18 +207,40 @@ def _observe_declared(server: WebServer, profile: RadioProfile) -> None:
         )
 
 
-def _full_envelope(server: WebServer) -> dict[str, Any]:
-    envelope = server.build_state_update_envelope(force_full=True)
-    data = envelope["data"]
-    data["updatedAt"] = _PINNED_UPDATED_AT
+def _pin_volatile(payload: dict[str, Any]) -> None:
+    """Pin the clock-derived fields of a public-state body or a delta's changes.
+
+    A delta carries only the top-level keys that changed, so each pin applies
+    only to a key the payload actually has.
+    """
+    if "updatedAt" in payload:
+        payload["updatedAt"] = _PINNED_UPDATED_AT
     # The server derives the health age from the monotonic clock on every
     # build, so pin it or the golden varies with machine speed.
-    radio_health = data.get("radioHealth")
+    radio_health = payload.get("radioHealth")
     if radio_health is not None and "sinceMs" in radio_health:
         radio_health["sinceMs"] = _PINNED_SINCE_MS
-    for status in data["fieldStatus"].values():
+    # NOTE: the MOR-3845 ``connection.liveness.lastFrameAgeMs`` is pinned at
+    # the source (``_pinned_liveness`` freezes ``connection_liveness_payload``
+    # for the whole render), because pinning it here would be too late: the
+    # delta change-detection already ran on the unpinned ages.
+    for status in payload.get("fieldStatus", {}).values():
         if "lastObservedMonotonic" in status:
             status["lastObservedMonotonic"] = _PINNED_MONOTONIC
+
+
+def _full_envelope(server: WebServer) -> dict[str, Any]:
+    envelope = server.build_state_update_envelope(force_full=True)
+    _pin_volatile(envelope["data"])
+    return cast("dict[str, Any]", envelope)
+
+
+def _delta_envelope(server: WebServer) -> dict[str, Any]:
+    """The next envelope after a full one: a ``delta`` of what changed."""
+    envelope = server.build_state_update_envelope()
+    if envelope["type"] != "delta":
+        raise RuntimeError(f"expected a delta envelope, got {envelope['type']!r}")
+    _pin_volatile(envelope["changed"])
     return cast("dict[str, Any]", envelope)
 
 
@@ -185,6 +254,87 @@ def _capabilities(server: WebServer) -> dict[str, Any]:
     capabilities = cast("dict[str, Any]", json.loads(body))
     capabilities["webrtc"]["available"] = False
     return capabilities
+
+
+@functools.cache
+def polled_dcd_models() -> tuple[str, ...]:
+    """The golden models whose profile polls the main receiver ``dcd`` leaf.
+
+    Icom CI-V profiles only: the polled reply is a CI-V frame. The
+    capabilities-only ``_EXCLUDED_MODELS`` contribute no state payloads.
+    """
+    models = []
+    for model in sorted(discover_rigs(_REPO_ROOT / "rigs")):
+        acquisition = get_radio_profile(model).state_acquisition
+        if (
+            model not in _EXCLUDED_MODELS
+            and acquisition is not None
+            and acquisition.provider == "icom_civ"
+            and _DCD_PATH in acquisition.pollable_paths()
+        ):
+            models.append(model)
+    return tuple(models)
+
+
+def _polled_dcd_reply(profile: RadioProfile, sql_byte: int) -> bytes:
+    """The radio's answer to the profile's own polled main-receiver 0x15 0x01.
+
+    The wire form (plain, or cmd29-wrapped on dual-receiver Icoms) comes from
+    the profile's built state queries, the same ones the scheduler sends.
+    """
+    query = next(
+        query
+        for query in build_state_queries(profile)
+        if query.command == 0x15 and query.sub == 0x01 and query.receiver in (None, 0)
+    )
+    command, sub, data = wire_parts_for_query(query, 0)
+    return build_civ_frame(
+        CONTROLLER_ADDR,
+        profile.civ_addr,
+        command,
+        sub=sub,
+        data=data + bytes([sql_byte]),
+    )
+
+
+def _ingest_polled_reply(radio: IcomRadio, model: str, sql_byte: int) -> None:
+    reply = _polled_dcd_reply(get_radio_profile(model), sql_byte)
+    radio._update_state_cache_from_frame(parse_civ_frame(reply))
+
+
+def _polled_dcd_radio(model: str, sql_byte: int | None) -> IcomRadio:
+    """A real, never-connected radio after one polled reply (or none)."""
+    radio = IcomRadio(_UNCONNECTED_RADIO_HOST, model=model)
+    if sql_byte is not None:
+        _ingest_polled_reply(radio, model, sql_byte)
+    return radio
+
+
+def _polled_dcd_server(model: str, sql_byte: int | None) -> WebServer:
+    """A web server around that radio."""
+    return WebServer(_polled_dcd_radio(model, sql_byte), WebConfig(radio_model=model))
+
+
+def _polled_dcd_delta(
+    model: str, baseline_byte: int, reply_byte: int
+) -> dict[str, Any]:
+    """The live delta after a polled reply flips the squelch from the baseline."""
+    radio = _polled_dcd_radio(model, baseline_byte)
+    server = WebServer(radio, WebConfig(radio_model=model))
+    server.build_state_update_envelope(force_full=True)
+    _ingest_polled_reply(radio, model, reply_byte)
+    return _delta_envelope(server)
+
+
+def _build_polled_dcd_goldens(model: str) -> dict[str, Any]:
+    golden: dict[str, Any] = {
+        case: _full_envelope(_polled_dcd_server(model, sql_byte))
+        for case, sql_byte in _POLLED_DCD_CASES
+    }
+    for case, baseline_byte, reply_byte in _POLLED_DCD_DELTAS:
+        golden[case] = _polled_dcd_delta(model, baseline_byte, reply_byte)
+    golden["polledDcdCapabilities"] = _capabilities(_polled_dcd_server(model, None))
+    return golden
 
 
 def _build_profile_goldens(model: str) -> dict[str, Any]:
@@ -201,12 +351,39 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
         observed = WebServer(None, config)
         _observe_declared(observed, profile)
         golden["allObserved"] = _full_envelope(observed)
+    if model in polled_dcd_models():
+        golden.update(_build_polled_dcd_goldens(model))
     return golden
+
+
+def _pinned_liveness() -> Any:
+    """Freeze the MOR-3845 liveness frame age for one golden render.
+
+    ``connection_liveness_payload`` measures ``lastFrameAgeMs`` at response
+    time, so two envelope builds of the same radio-backed server see different
+    ages: the value drifts run to run, and the delta change-detection
+    spuriously carries ``connection`` when a millisecond boundary falls
+    between the baseline and the delta build. Freezing the age at the source
+    keeps radio-backed full envelopes byte-stable and deltas limited to the
+    squelch flip. Pinned after the fact (``_pin_volatile``) would be too late
+    for the deltas.
+    """
+    original = _server_module.connection_liveness_payload
+
+    @functools.wraps(original)
+    def wrapper(radio: Any, **kwargs: Any) -> Any:
+        payload = original(radio, **kwargs)
+        if isinstance(payload, dict) and payload.get("lastFrameAgeMs") is not None:
+            payload = dict(payload)
+            payload["lastFrameAgeMs"] = _PINNED_LAST_FRAME_AGE_MS
+        return payload
+
+    return mock.patch.object(_server_module, "connection_liveness_payload", wrapper)
 
 
 def _build_goldens() -> dict[str, dict[str, Any]]:
     models = sorted(discover_rigs(_REPO_ROOT / "rigs"))
-    with mock.patch.dict(os.environ):
+    with mock.patch.dict(os.environ), _pinned_liveness():
         for name in _JITTER_ENV_VARS:
             os.environ.pop(name, None)
         return {model: _build_profile_goldens(model) for model in models}
