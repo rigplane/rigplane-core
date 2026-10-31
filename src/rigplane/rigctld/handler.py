@@ -31,7 +31,11 @@ from ..core.command_service import (
     PendingOverlay,
     command_intent_from_request,
 )
-from ..core.exceptions import CommandError, CommandRejectedError
+from ..core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ReceiverNotSelectedError,
+)
 from ..runtime.controller_authority import ControllerAuthority, ControllerError
 from ..core.radio_protocol import (
     AttenuatorStepsCapable,
@@ -1599,6 +1603,15 @@ class RigctldHandler:
                 # narrowly: other CommandError subclasses (e.g.
                 # BackgroundSendDropped, a local cap) stay on EINTERNAL.
                 logger.warning("rigctld: %s refused by the radio", cmd.long_cmd)
+                return _err(HamlibError.ERJCTED)
+            except ReceiverNotSelectedError:
+                # MOR-3591: the target receiver is not the selected one and
+                # has no per-receiver address, so Core refused it before the
+                # wire (never switching the selection) — a refusal, not an
+                # internal error.
+                logger.warning(
+                    "rigctld: %s refused: receiver not selected", cmd.long_cmd
+                )
                 return _err(HamlibError.ERJCTED)
             except Exception:
                 logger.exception("Internal error executing %s", cmd.long_cmd)

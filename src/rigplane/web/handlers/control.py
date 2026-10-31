@@ -28,7 +28,11 @@ from ...core.command_dispatch import (
     enqueue_command_intent,
     prepare_command_intent,
 )
-from ...core.exceptions import CommandError, CommandRejectedError
+from ...core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ReceiverNotSelectedError,
+)
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.types import MemoryProfile
@@ -188,7 +192,7 @@ from ..runtime_helpers import (  # noqa: TID251
     runtime_capabilities,
 )
 from ..transport import Connection  # noqa: TID251
-from ..websocket import WS_OP_TEXT  # noqa: TID251
+from ...ws import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio
@@ -1622,8 +1626,8 @@ class ControlHandler:
         if isinstance(exc, CwTextSendCancelledError):
             # MOR-3700: a CW stop or a transmit abort ended the send.
             error = "command_cancelled"
-        elif isinstance(exc, MemoryWriteUnverifiedError):
-            # MOR-3644: stable refusal code, not English prose matching.
+        elif isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
+            # MOR-3644 / MOR-3591: stable refusal code, not prose matching.
             error = exc.reason_code
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"
@@ -1726,9 +1730,8 @@ class ControlHandler:
             and isinstance(authority, ManagedTxAuthority)
             and (refusal := authority.radio_tx_refusal_nowait()) is not None
         ):
-            # MOR-3537: the radio transmits while no owner holds TX (the
-            # operator's own mic or PTT, or Core's own TX the radio did not
-            # release); nothing keys over it. Checked on admission and again
+            # MOR-3537: the radio transmits while no owner holds TX, whoever
+            # keyed it (MOR-3921); nothing keys over it. Checked on admission and again
             # when the command runs, for every owner.
             raise ControllerError(refusal, 409)
         if (

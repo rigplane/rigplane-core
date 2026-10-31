@@ -52,7 +52,7 @@ from rigplane.web.protocol import (
 )
 from rigplane.web.api_contract import RESPONSE_FIELD_CONTRACTS
 from rigplane.web.server import _DEFAULT_STATIC_DIR, WebConfig, WebServer
-from rigplane.web.websocket import (
+from rigplane.ws import (
     WS_MAGIC,
     WS_OP_BINARY,
     WS_OP_PING,
@@ -1371,7 +1371,7 @@ class TestBackpressure:
     def test_scope_frame_queue_drops_when_full(self) -> None:
         """When queue is full, old frames are dropped, not blocked."""
         from rigplane.web.handlers import HIGH_WATERMARK, ScopeHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         # Mock WebSocket that never sends (simulates slow client)
         mock_ws = MagicMock(spec=WebSocketConnection)
@@ -1392,7 +1392,7 @@ class TestBackpressure:
     def test_scope_sequence_increments(self) -> None:
         """Sequence numbers increment with each frame."""
         from rigplane.web.handlers import ScopeHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         handler = ScopeHandler(mock_ws, None)
@@ -1407,7 +1407,7 @@ class TestBackpressure:
     def test_scope_sequence_wraps_at_65536(self) -> None:
         """Sequence counter wraps at 16-bit boundary."""
         from rigplane.web.handlers import ScopeHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         handler = ScopeHandler(mock_ws, None)
@@ -1757,7 +1757,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.audio_bus import AudioBus
         from rigplane.radio_protocol import AudioCapable
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
@@ -1832,7 +1832,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.types import AudioCodec
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.web.protocol import AUDIO_CODEC_OPUS, AUDIO_HEADER_SIZE
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
@@ -1888,7 +1888,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.types import AudioCodec
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
@@ -1926,7 +1926,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.types import AudioCodec
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
@@ -1984,7 +1984,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.types import AudioCodec
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
@@ -2030,7 +2030,7 @@ class TestBroadcasterFrameMsInvariant:
         from rigplane.audio_bus import AudioBus
         from rigplane.radio_protocol import AudioCapable
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
@@ -2117,7 +2117,7 @@ class TestBroadcasterCodecInvalidation:
         from rigplane.audio_bus import AudioBus
         from rigplane.radio_protocol import AudioCapable
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_ws.send_text = AsyncMock()
@@ -2298,7 +2298,7 @@ class TestAudioHandlerTxTranscoderRate:
         from rigplane.radio_protocol import AudioCapable
         from rigplane.types import AudioCodec
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_radio = MagicMock(spec=AudioCapable)
@@ -2398,7 +2398,7 @@ class TestAudioConfigRouting:
 
         from rigplane.radio_protocol import AudioCapable
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         mock_ws.send_text = AsyncMock()
@@ -3092,7 +3092,7 @@ class TestScopeHandlerPushFrame:
     def test_push_frame_does_not_raise(self) -> None:
         """push_frame() was calling self._on_scope_frame which doesn't exist."""
         from rigplane.web.handlers import ScopeHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         handler = ScopeHandler(mock_ws, None)
@@ -3105,7 +3105,7 @@ class TestScopeHandlerPushFrame:
     def test_push_frame_not_running_is_noop(self) -> None:
         """push_frame() when not running must be a no-op."""
         from rigplane.web.handlers import ScopeHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         handler = ScopeHandler(mock_ws, None)
@@ -3117,7 +3117,7 @@ class TestScopeHandlerPushFrame:
 
     def test_push_frame_increments_sequence(self) -> None:
         from rigplane.web.handlers import ScopeHandler
-        from rigplane.web.websocket import WebSocketConnection
+        from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
         handler = ScopeHandler(mock_ws, None)
@@ -3138,7 +3138,7 @@ class TestConfigurableKeepalive:
     """WebConfig.keepalive_interval is honoured by the server (#45)."""
 
     def test_webconfig_has_keepalive_interval(self) -> None:
-        from rigplane.web.websocket import WS_KEEPALIVE_INTERVAL
+        from rigplane.ws import WS_KEEPALIVE_INTERVAL
 
         cfg = WebConfig()
         assert hasattr(cfg, "keepalive_interval")

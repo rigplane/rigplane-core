@@ -57,7 +57,9 @@ emits a `web` output for non-documentation changes under `frontend/`, which `qui
 the earlier rules only; it does not implement these two additions.
 
 The trusted base classifier predicts whether substantive `quick` must run. Workflow-level success with that job skipped
-is unknown/failure. Stale head/base, fork, cancellation, changed control, incomplete pagination, ambiguous association,
+is unknown/failure. The legacy run has exactly four jobs: `classify`, the build-tier halves `quick-frontend` and `quick-python`, and the
+`quick` aggregator on the light pool. A base `frontend` route requires `quick-frontend` to have run, and a base `ci` route
+requires `quick-python`; a base `core` route pins neither, because it also covers unknown roots that select no half. Stale head/base, fork, cancellation, changed control, incomplete pagination, ambiguous association,
 non-current attempt, or route/job disagreement cannot publish success.
 
 The observation logs these metrics from the independently bound assessment:

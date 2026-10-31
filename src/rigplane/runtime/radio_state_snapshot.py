@@ -2,15 +2,15 @@
 
 Extracted from ``radio.py`` (issue #1258, Tier 3 wave 3 of #1063) to slim down
 the god-object module. The two functions here read from / write to a radio
-instance using its public ``get_*``/``set_*`` API (plus ``_check_connected``
-and the wire-level helper ``_set_vfo_wire``).
+instance using its public ``get_*``/``set_*`` API (plus ``_check_connected``).
 
 Snapshots record only confirmed readings: each key comes from a successful
 public-getter read, and a failed read omits the key. Split, attenuator and
 preamp are read strictly (``strict=True``), so a failed read raises instead
 of returning a setter-written mirror. The VFO slot is not snapshotted
-(``get_vfo_slot`` reads no radio). Restore applies only the keys present in
-the snapshot (it still applies a ``vfo`` key when a snapshot carries one).
+(``get_vfo_slot`` reads no radio), and restore never changes the selected
+VFO or receiver (MOR-3591). Restore applies only the keys present in the
+snapshot.
 All per-field failures are best-effort, swallowed and logged at DEBUG level.
 The public ``IcomRadio.snapshot_state`` / ``IcomRadio.restore_state``
 methods delegate here.
@@ -106,15 +106,6 @@ async def restore_state(radio: IcomRadio, state: dict[str, object]) -> None:
             await radio.set_split(bool(state["split"]))
         except Exception:
             logger.debug("restore_state: set_split failed", exc_info=True)
-    if "vfo" in state:
-        try:
-            # Internal: ``_set_vfo_wire`` accepts the full
-            # "A"/"B"/"MAIN"/"SUB" alphabet that snapshots may carry
-            # (the public ``set_vfo`` overload was removed in v0.20,
-            # see #1206 — ``set_vfo_slot`` only accepts A/B).
-            await radio._set_vfo_wire(str(state["vfo"]))
-        except Exception:
-            logger.debug("restore_state: set_vfo failed", exc_info=True)
 
     if "power" in state:
         try:
