@@ -40,7 +40,7 @@ from ..core.acquisition_scheduler import (
 from ..audio.route import apply_wsjtx_data_mod_input, profile_data_mode_count
 from ..profiles import RadioProfile
 from ..core.state_diagnostics import StateDiagnosticsRecorder
-from ..core.state_pipeline_contracts import FieldPath
+from ..core.state_pipeline_contracts import AcquisitionClass, FieldPath
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_store import StateStore
 from ..radio_protocol import (
@@ -554,8 +554,13 @@ class RigctldServer:
         self,
         query: AcquisitionQuery,
         priority: AcquisitionPriority = AcquisitionPriority.BACKGROUND,
+        acquisition_class: AcquisitionClass | None = None,
     ) -> None:
         """Send a single acquisition-scheduler CI-V state query.
+
+        This seat sends every read on the radio's default lane, in order, so
+        the class that lets the web seat lift KEYING reads ahead of its
+        background lane (MOR-3863) has nothing to change here.
 
         Wire-frame assembly (cmd29 wrap, 0x27 scope-receiver substitution)
         is shared with the other two acquisition senders via

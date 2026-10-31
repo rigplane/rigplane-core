@@ -91,6 +91,7 @@ from ..core.acquisition_scheduler import (
     civ_acquisition_executor_for_provider,
 )
 from ..core.state_pipeline_contracts import (
+    AcquisitionClass,
     CommandIntent,
     CommandSource,
     FieldPath,
@@ -1167,12 +1168,16 @@ class RadioPoller:
         self,
         query: AcquisitionQuery,
         priority: AcquisitionPriority = AcquisitionPriority.BACKGROUND,
+        acquisition_class: AcquisitionClass | None = None,
     ) -> None:
         """Send a single state query
 
         A ``COMMAND`` or ``USER`` request goes out at ``Priority.NORMAL`` so
-        a post-write confirmation does not wait behind the poll burst;
-        everything else stays ``Priority.BACKGROUND``. All sends here are
+        a post-write confirmation does not wait behind the poll burst; a
+        ``KEYING``-class read (the PTT read-back) goes out at
+        ``Priority.KEYING``, ahead of the FIFO background lane, so a burst of
+        queued polls cannot delay it (MOR-3863); everything else stays
+        ``Priority.BACKGROUND``. All sends here are
         fire-and-forget (``wait_dispatch=False``) so the response still
         arrives via the CI-V RX path.
 
@@ -1190,11 +1195,12 @@ class RadioPoller:
         if self._radio_state:
             scope_rx = self._radio_state.scope_controls.receiver
         command, sub, data = wire_parts_for_query(query, scope_rx)
-        lane = (
-            Priority.NORMAL
-            if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER)
-            else Priority.BACKGROUND
-        )
+        if priority in (AcquisitionPriority.COMMAND, AcquisitionPriority.USER):
+            lane = Priority.NORMAL
+        elif acquisition_class is AcquisitionClass.KEYING:
+            lane = Priority.KEYING
+        else:
+            lane = Priority.BACKGROUND
         await self._civ(
             command,
             sub=sub,

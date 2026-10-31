@@ -622,7 +622,12 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
             sub=sub,
             data=b"",
             wait_response=False,
-            priority=Priority.BACKGROUND,
+            # MOR-3863: the PTT read-back rides the KEYING lane.
+            priority=(
+                Priority.KEYING
+                if (command, sub) == (0x1C, 0x00)
+                else Priority.BACKGROUND
+            ),
             wait_dispatch=False,
         )
     assert scheduler.pending_requests()
@@ -1648,7 +1653,8 @@ async def test_scheduler_ptt_request_uses_ic705_declared_getter() -> None:
         sub=0x00,
         data=b"",
         wait_response=False,
-        priority=Priority.BACKGROUND,
+        # MOR-3863: the PTT read-back rides the KEYING lane.
+        priority=Priority.KEYING,
         wait_dispatch=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
@@ -6910,7 +6916,11 @@ async def test_web_cadence_wire_frames_unchanged_when_due_requests_moves_to_the_
     # The dispatch envelope is uniform across the cycle, so it is asserted
     # once per frame rather than repeated in the table above.
     for call_ in radio.send_civ.await_args_list:
-        assert call_.kwargs["priority"] is Priority.BACKGROUND
+        # MOR-3863: only the PTT read-back (1C 00) rides the KEYING lane.
+        is_ptt = (call_.args[0], call_.kwargs.get("sub")) == (0x1C, 0x00)
+        assert call_.kwargs["priority"] is (
+            Priority.KEYING if is_ptt else Priority.BACKGROUND
+        )
         assert call_.kwargs["wait_response"] is False
         assert call_.kwargs["wait_dispatch"] is False
 
