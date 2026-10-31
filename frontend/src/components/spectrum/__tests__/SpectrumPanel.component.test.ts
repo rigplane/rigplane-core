@@ -413,10 +413,6 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasDualReceiver: vi.fn(() => false),
 }));
 
-vi.mock('$lib/utils/filter-width', () => ({
-  getFilterWidthHz: vi.fn(() => 2400),
-}));
-
 vi.mock('../passband-geometry', () => ({
   canResizeFromRightEdge: vi.fn((mode: string) => mode.toUpperCase() !== 'LSB'),
   getFilterWidthFromRightEdgePx: passbandHarness.getFilterWidthFromRightEdgePx,
@@ -2894,6 +2890,21 @@ describe('center panorama motion (MOR-2464)', () => {
   }
   const recordedShifts = (): number[] =>
     spectrumRendererHarness.render.mock.calls.map((call) => call[4]?.panoramaShiftHz ?? 0);
+  // An intermediate shift exists only inside the real 0-100 ms PANORAMA_SETTLE_MS
+  // band, and the rAF-as-setTimeout frame that renders it can miss that band on
+  // a loaded machine (quick run 36308962513 lost it; the same flake hit
+  // `does not bounce ...` in full run 40803166710). Drive the panorama clock from a
+  // stubbed performance.now stepped per tick instead, so the asserted state no
+  // longer depends on real elapsed time or on how many frames ran. The caller
+  // owns `vi.unstubAllGlobals()`.
+  const stubPanoramaClock = (): ((ms: number) => Promise<void>) => {
+    let panoramaNow = 0;
+    vi.stubGlobal('performance', { now: () => panoramaNow });
+    return async (ms) => {
+      panoramaNow += ms;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+  };
   const bindingOrders = (
     updateSpy: { mock: { calls: unknown[][]; invocationCallOrder: number[] } },
     center: number, shift: number,
@@ -3096,31 +3107,29 @@ describe('center panorama motion (MOR-2464)', () => {
   // of waiting for the confirmed tuple to move. Display-only.
   describe('optimistic pending target', () => {
     it('starts gliding toward a pending set_freq target before the confirmed frequency moves', async () => {
-      const initial = panoramaProjection();
-      const { target, props } = mountPanorama(initial);
-      setPendingFrequency(0, 14_051_000);
-      flushSync();
-      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
-      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
-      expect(props.get('projection')).toBe(initial);
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
-      expect(mockRuntime.send).not.toHaveBeenCalled();
+      const advancePanorama = stubPanoramaClock();
+      try {
+        const initial = panoramaProjection();
+        const { target, props } = mountPanorama(initial);
+        setPendingFrequency(0, 14_051_000);
+        flushSync();
+        expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+        // 40 ms into the 100 ms settle band — the deterministic intermediate.
+        await advancePanorama(40);
+        await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+        await advancePanorama(100);
+        await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+        expect(props.get('projection')).toBe(initial);
+        expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+        expect(mockRuntime.send).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it('retargets a rapid pending reversal while the observed frequency stays stale', async () => {
-      // MOR-2714: an intermediate shift exists only inside the real 0–100 ms
-      // PANORAMA_SETTLE_MS band, and the rAF-as-setTimeout frame that renders
-      // it may miss that band under machine load (quick run 36308962513 lost
-      // it once). Drive the panorama clock from a stubbed performance.now
-      // stepped per tick — the asserted state no longer depends on real
-      // elapsed time or on how many frames ran.
-      let panoramaNow = 0;
-      const advancePanorama = async (ms: number): Promise<void> => {
-        panoramaNow += ms;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      };
-      vi.stubGlobal('performance', { now: () => panoramaNow });
+      // MOR-2714: see `stubPanoramaClock`.
+      const advancePanorama = stubPanoramaClock();
       try {
         const { target } = mountPanorama(panoramaProjection());
         setPendingFrequency(0, 14_051_000);
@@ -3141,20 +3150,28 @@ describe('center panorama motion (MOR-2464)', () => {
     });
 
     it('does not bounce toward the stale confirmed value while the pending target survives an ack', async () => {
-      const { target, props } = mountPanorama(panoramaProjection());
-      setPendingFrequency(0, 14_051_000);
-      flushSync();
-      await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
-      // A late frame still observes the pre-tune frequency while the command
-      // is only acknowledged — the accessor keeps returning the pending
-      // target, so the viewport must keep gliding, never fall back.
-      props.set('projection', panoramaProjection(14_050_000, 50_000, 2));
-      flushSync();
-      await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
-      const shifts = recordedShifts();
-      const firstMoving = shifts.findIndex((v) => v > 0);
-      expect(shifts.slice(firstMoving).every((v) => v > 0)).toBe(true);
-      expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      const advancePanorama = stubPanoramaClock();
+      try {
+        const { target, props } = mountPanorama(panoramaProjection());
+        setPendingFrequency(0, 14_051_000);
+        flushSync();
+        // 40 ms into the 100 ms settle band — the deterministic intermediate.
+        await advancePanorama(40);
+        await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0 && v < 1_000)).toBe(true));
+        // A late frame still observes the pre-tune frequency while the command
+        // is only acknowledged — the accessor keeps returning the pending
+        // target, so the viewport must keep gliding, never fall back.
+        props.set('projection', panoramaProjection(14_050_000, 50_000, 2));
+        flushSync();
+        await advancePanorama(100);
+        await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
+        const shifts = recordedShifts();
+        const firstMoving = shifts.findIndex((v) => v > 0);
+        expect(shifts.slice(firstMoving).every((v) => v > 0)).toBe(true);
+        expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
+      } finally {
+        vi.unstubAllGlobals();
+      }
     });
 
     it('falls back to the observed frequency when the pending target clears', async () => {
@@ -3219,18 +3236,9 @@ describe('center panorama motion (MOR-2464)', () => {
     });
 
     it('prefers the paced-unsent burst target over the older emitted pending value', async () => {
-      // MOR-2743: the intermediate shift exists only inside the real 0–100 ms
-      // PANORAMA_SETTLE_MS band, and the rAF frame that renders it can miss
-      // that band on a loaded runner (quick run 36340105991 lost it once).
-      // Same treatment as the MOR-2714 pin above the file: drive the
-      // panorama clock from a stubbed performance.now stepped per tick, so
-      // the intermediate and the settled value are both deterministic.
-      let panoramaNow = 0;
-      const advancePanorama = async (ms: number): Promise<void> => {
-        panoramaNow += ms;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      };
-      vi.stubGlobal('performance', { now: () => panoramaNow });
+      // MOR-2743: see `stubPanoramaClock` (quick run 36340105991 lost the
+      // intermediate frame once).
+      const advancePanorama = stubPanoramaClock();
       try {
         const { target } = mountPanorama(panoramaProjection());
         setPendingFrequency(0, 14_051_000);

@@ -71,6 +71,7 @@ from rigplane.web.web_startup import (
     _await_initial_state_acquisition,
     _observed_paths,
 )
+from _timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 
 FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -286,8 +287,11 @@ class _PacingScheduler(AcquisitionScheduler):
         *,
         reason: str = "prime-unobserved",
         limit: int = 5,
+        availability: Mapping[FieldPath, bool | None] = MappingProxyType({}),
     ) -> tuple[AcquisitionRequest, ...]:
-        queued = super().prime_unobserved(observed_paths, reason=reason, limit=limit)
+        queued = super().prime_unobserved(
+            observed_paths, reason=reason, limit=limit, availability=availability
+        )
         for request in queued:
             self.primes.append((self._gate_clock.now, request.paths))
         return queued
@@ -501,6 +505,7 @@ class _RecordingScheduler:
         *,
         reason: str = "prime-unobserved",
         limit: int | None = 5,
+        availability: Mapping[FieldPath, bool | None] = MappingProxyType({}),
     ) -> tuple[object, ...]:
         self.prime_limits.append(limit)
         if self.on_prime is not None:
@@ -1200,7 +1205,13 @@ async def test_rigctld_connection_drop_never_builds_a_declared_defect() -> None:
     )
     try:
         await poller.start()
-        await asyncio.sleep(0.5)
+        # Several failing cycles, each reconnecting: wait for the event (three
+        # connections reached the dropping server), not for a stretch of time.
+        await await_until(
+            lambda: fake.connections >= 3,
+            timeout=30.0,
+            description="the poller's failing cycles to reconnect three times",
+        )
     finally:
         await poller.stop()
         await radio.disconnect()
@@ -1238,21 +1249,42 @@ async def test_rigctld_operator_disconnect_is_not_undone_by_the_poller() -> None
         medium_interval=0.05,
         slow_interval=1.0,
     )
+    cycles = 0
+    real_poll_medium = poller._poll_medium
+
+    async def counted_poll_medium() -> None:
+        nonlocal cycles
+        try:
+            await real_poll_medium()
+        finally:
+            cycles += 1
+
+    poller._poll_medium = counted_poll_medium  # type: ignore[method-assign]
+
+    async def cycles_after(count: int, seen: int, what: str) -> None:
+        await await_until(
+            lambda: cycles >= seen + count, timeout=30.0, description=what
+        )
+
     try:
         await poller.start()
-        await asyncio.sleep(0.2)
+        await await_until(
+            lambda: fake.connections >= 1 and cycles >= 1,
+            timeout=30.0,
+            description="the poller's first cycle",
+        )
         connections_before_disconnect = fake.connections
-        assert fake.connections >= 1
 
         await radio.disconnect()
-        # More than two medium intervals: enough for a failed cycle and
-        # a reconnect attempt the old head performed.
-        await asyncio.sleep(0.5)
+        # Four more medium cycles: each starts only after the previous cycle's
+        # failed poll and reconnect attempt (the old head's reopen) finished,
+        # so at least three reconnect attempts have had their chance.
+        await cycles_after(4, cycles, "four medium cycles after the disconnect")
         assert radio.connected is False
         assert fake.connections == connections_before_disconnect
 
         await radio.connect()
-        await asyncio.sleep(0.2)
+        await cycles_after(2, cycles, "polling to resume after connect()")
         assert radio.connected is True
         assert fake.connections > connections_before_disconnect
     finally:
@@ -2190,11 +2222,7 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
     from rigplane.commands import _CMD_FREQ_GET
     from rigplane.exceptions import TimeoutError as RigplaneTimeoutError
     from rigplane.runtime._connection_state import RadioConnectionState
-    from test_icom7610_serial_radio import (
-        _FakeSerialCivLink,
-        _silence_clock_reset_gap,
-        _wait_until,
-    )
+    from test_icom7610_serial_radio import _FakeSerialCivLink, _silence_clock_reset_gap
 
     # Phase A — the stand sequence through the real backend: silent link,
     # link-down fires, and the reconnect REOPENS the silent port.
@@ -2228,12 +2256,12 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
         # decides. (The transient RECONNECTING window lasts one watchdog
         # tick ~5 ms — too short to poll for; the link-down ERROR record
         # below is its durable witness.)
-        assert await _wait_until(
+        assert await await_until(
             lambda: (
                 link.connect_calls >= 2
                 and radio.conn_state == RadioConnectionState.CONNECTED
             ),
-            timeout_s=2.0,
+            timeout=2.0,
         )
     link_down_errors = [
         r
@@ -2699,7 +2727,6 @@ async def _served_through_cli(
     """
 
     from rigplane.cli import _build_parser, _run
-    from test_icom7610_serial_radio import _wait_until
 
     served: list[WebServer] = []
     release = asyncio.Event()
@@ -2739,7 +2766,7 @@ async def _served_through_cli(
     ):
         run = asyncio.create_task(_run(args))
         try:
-            await _wait_until(lambda: bool(served) or run.done(), timeout_s=10.0)
+            await await_until(lambda: bool(served) or run.done(), timeout=10.0)
             if expect_rc == 0:
                 assert served, (
                     f"rigplane web exited with {run.result()} instead of serving"
@@ -2783,11 +2810,7 @@ async def test_missing_serial_port_serves_not_connected_instead_of_exiting(
 
     from rigplane.runtime.managed_tx_state import ManagedTxOutcome
     from rigplane.web.runtime_helpers import store_has_radio_observation
-    from test_icom7610_serial_radio import (
-        _FakeSerialCivLink,
-        _freq_response_frame,
-        _wait_until,
-    )
+    from test_icom7610_serial_radio import _FakeSerialCivLink, _freq_response_frame
 
     device = str(tmp_path / "cu.usbserial-1420")
     link = _FakeSerialCivLink(fail_connect=_port_missing_error(device))
@@ -2798,7 +2821,7 @@ async def test_missing_serial_port_serves_not_connected_instead_of_exiting(
             composition = radio._managed_tx_composition
             assert composition is not None
             # The port keeps being retried by the backend's own watchdog.
-            assert await _wait_until(lambda: link.connect_calls >= 3, timeout_s=5.0)
+            assert await await_until(lambda: link.connect_calls >= 3, timeout=5.0)
 
             warnings = _startup_warnings(caplog)
             assert len(warnings) == 1
@@ -2820,17 +2843,17 @@ async def test_missing_serial_port_serves_not_connected_instead_of_exiting(
 
             # The port appears; the radio behind it stays silent for now.
             link._fail_connect = None
-            assert await _wait_until(
-                lambda: composition._active_provider is not None, timeout_s=5.0
+            assert await await_until(
+                lambda: composition._active_provider is not None, timeout=5.0
             )
             assert radio.connected is True
             health = server._build_radio_health()
             assert health["likelyCause"] == "radio_powered_off_likely"
 
             link.queue_response(_freq_response_frame(14_074_000))
-            assert await _wait_until(
+            assert await await_until(
                 lambda: store_has_radio_observation(server.command_state_store),
-                timeout_s=5.0,
+                timeout=5.0,
             )
             health = server._build_radio_health()
             assert health["readiness"] == "ready"
@@ -2916,7 +2939,6 @@ async def test_http_connect_and_power_on_leave_the_port_retry_running(
     receive, queue depths, gate/epoch state — instead of only the timeout.
     """
 
-    from test_icom7610_serial_radio import _wait_until
     from test_web_server_coverage import _FakeWriter, _reader_with, _response_json
 
     device = str(tmp_path / "cu.usbserial-1420")
@@ -2936,11 +2958,11 @@ async def test_http_connect_and_power_on_leave_the_port_retry_running(
         )
 
         calls = link.connect_calls
-        assert await _wait_until(lambda: link.connect_calls > calls, timeout_s=5.0), (
+        assert await await_until(lambda: link.connect_calls > calls, timeout=5.0), (
             link.trace_text()
         )
         link._fail_connect = None
-        assert await _wait_until(lambda: radio.connected, timeout_s=5.0), (
+        assert await await_until(lambda: radio.connected, timeout=5.0), (
             link.trace_text()
         )
 
@@ -2963,7 +2985,7 @@ async def test_a_missed_first_identity_read_still_connects_within_the_test_budge
     """
 
     from rigplane.core.radio_protocol import RadioIdentityStatus
-    from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+    from test_icom7610_serial_radio import _FakeSerialCivLink
 
     class _AnswersFromQueryLink(_FakeSerialCivLink):
         """Answers ``19 00`` for real, but only from the Nth query on."""
@@ -2995,26 +3017,26 @@ async def test_a_missed_first_identity_read_still_connects_within_the_test_budge
 
     async with _served_through_cli(radio) as server:
         assert server._served_without_port is True
-        assert await _wait_until(lambda: link.connect_calls >= 2, timeout_s=5.0)
+        assert await await_until(lambda: link.connect_calls >= 2, timeout=5.0)
         link._fail_connect = None  # the port appears
 
         # The gate misses and the re-read owns the open link — the state
         # the Linux quick run's logs point at (NO_RESPONSE with the
         # re-read task running), whatever lost the replies there.
-        assert await _wait_until(
+        assert await await_until(
             lambda: (
                 radio.connection_identity is not None
                 and radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
                 and radio._serial_identity_reread_task is not None
             ),
-            timeout_s=5.0,
+            timeout=5.0,
         )
 
         missed_reads = link.answer_from_query - 1
         answer_budget = missed_reads * radio._civ_get_timeout
         retry_budget = sum(radio._SERIAL_IDENTITY_REREAD_BACKOFF_S[:missed_reads])
-        assert await _wait_until(
-            lambda: radio.connected, timeout_s=answer_budget + retry_budget + 2.0
+        assert await await_until(
+            lambda: radio.connected, timeout=answer_budget + retry_budget + 2.0
         )
         assert link.identity_queries == link.answer_from_query
 
@@ -3050,7 +3072,6 @@ async def test_duplicate_soft_reconnect_cannot_retire_the_inflight_identity_read
 
     from rigplane.backends.icom7610 import Icom7610SerialRadio
     from rigplane.core.radio_protocol import RadioIdentityStatus
-    from test_icom7610_serial_radio import _wait_until
 
     link = _FakeSerialCivLink(answer_identity=False)
     radio = Icom7610SerialRadio(
@@ -3078,14 +3099,14 @@ async def test_duplicate_soft_reconnect_cannot_retire_the_inflight_identity_read
     try:
         # The first owner holds the open link: its gate sent ``19 00`` and
         # is awaiting the answer the link will not give yet.
-        assert await _wait_until(
+        assert await await_until(
             lambda: (
                 link.identity_queries >= 1
                 and radio._serial_session.ready
                 and radio.connection_identity is not None
                 and radio.connection_identity.status is RadioIdentityStatus.CHECKING
             ),
-            timeout_s=5.0,
+            timeout=5.0,
         ), "the first soft_reconnect never reached its in-flight identity read"
 
         epoch_when_owned = radio._civ_epoch
@@ -3107,7 +3128,7 @@ async def test_duplicate_soft_reconnect_cannot_retire_the_inflight_identity_read
         link.answer_identity = True
         await asyncio.wait_for(owner, timeout=5.0)
         assert owner.exception() is None
-        assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
+        assert await await_until(lambda: radio.connected, timeout=5.0)
         identity = radio.connection_identity
         assert identity is not None
         assert identity.status is RadioIdentityStatus.UNVERIFIED
@@ -3308,7 +3329,7 @@ async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
         install_managed_tx_composition,
     )
     from rigplane.runtime.managed_tx_state import ManagedTxOutcome
-    from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+    from test_icom7610_serial_radio import _FakeSerialCivLink
 
     device = str(tmp_path / "cu.usbserial-1420")
     link = _FakeSerialCivLink(fail_connect=_port_missing_error(device))
@@ -3327,8 +3348,8 @@ async def test_tx_returns_after_the_late_first_open(tmp_path: Path) -> None:
         assert await composition.authority.transmit_on() is ManagedTxOutcome.REJECTED
 
         link._fail_connect = None
-        assert await _wait_until(
-            lambda: composition._active_provider is not None, timeout_s=5.0
+        assert await await_until(
+            lambda: composition._active_provider is not None, timeout=5.0
         )
         assert composition._active_provider.transport_identity is radio._civ_transport
         keyed = await composition.authority.submit_ptt(True, "late-open-owner")
@@ -3536,7 +3557,6 @@ async def test_identity_hold_serves_then_latches_and_arms_when_the_radio_answers
 
     from rigplane.core.radio_protocol import RadioIdentityStatus
     from rigplane.runtime.managed_tx_state import ManagedTxOutcome
-    from test_icom7610_serial_radio import _wait_until
     from test_web_server_coverage import _FakeWriter, _response_json
 
     link, radio = _identity_held_gate_radio()
@@ -3574,9 +3594,9 @@ async def test_identity_hold_serves_then_latches_and_arms_when_the_radio_answers
 
             # The radio answers: CONNECTED latches and managed TX arms.
             link.policy_answer = True
-            assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
-            assert await _wait_until(
-                lambda: composition._active_provider is not None, timeout_s=5.0
+            assert await await_until(lambda: radio.connected, timeout=5.0)
+            assert await await_until(
+                lambda: composition._active_provider is not None, timeout=5.0
             )
             identity = radio.connection_identity
             assert identity is not None
@@ -3678,8 +3698,6 @@ async def test_audio_auto_start_defers_then_starts_exactly_once(
     the server has stopped.
     """
 
-    from test_icom7610_serial_radio import _wait_until
-
     link, radio = _identity_held_gate_radio()
     bridge_start = AsyncMock()
     with (
@@ -3696,10 +3714,8 @@ async def test_audio_auto_start_defers_then_starts_exactly_once(
             )
 
             link.policy_answer = True
-            assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
-            assert await _wait_until(
-                lambda: bridge_start.await_count == 1, timeout_s=5.0
-            )
+            assert await await_until(lambda: radio.connected, timeout=5.0)
+            assert await await_until(lambda: bridge_start.await_count == 1, timeout=5.0)
             await asyncio.sleep(0.5)  # a duplicate trigger would land here
             assert bridge_start.await_count == 1
             assert bridge_start.await_args is not None

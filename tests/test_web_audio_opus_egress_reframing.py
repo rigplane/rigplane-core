@@ -28,7 +28,7 @@ from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
 )
-from rigplane.web.websocket import WebSocketConnection
+from rigplane.ws import WebSocketConnection
 
 # IC-7610 LAN-like RX packet: 1280 B @ 48 kHz stereo s16le ≈ 6.67 ms.
 PACKET_BYTES = 1280

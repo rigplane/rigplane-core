@@ -33,8 +33,9 @@ from rigplane.web.radio_poller import (
     ScanStop,
 )
 
-from test_icom7610_serial_radio import _FakeSerialCivLink, _wait_until
+from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_radio_poller_coverage import _make_radio
+from _timing import await_until
 
 _FORBIDDEN_SOURCES = frozenset({"command_response", "poll_response"})
 
@@ -148,7 +149,7 @@ async def test_answering_link_power_off_ack_records_command_response() -> None:
     link = _PowerOffAckCivLink()
     radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link, timeout=0.1)
     await radio.connect()
-    assert await _wait_until(lambda: radio.connected, timeout_s=5.0)
+    assert await await_until(lambda: radio.connected, timeout=5.0)
 
     await radio.set_powerstat(False)
 

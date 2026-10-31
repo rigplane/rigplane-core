@@ -2646,10 +2646,21 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [radio]
     radio = data["radio"]
+    if not isinstance(radio, dict):
+        raise RigLoadError(f"{filename}: [radio] must be a table")
     for field_name in _REQUIRED_RADIO_FIELDS:
         if field_name not in radio:
             raise RigLoadError(
                 f"{filename}: missing required field [radio].{field_name}"
+            )
+    # ``id`` and ``model`` name the profile everywhere downstream (CLI
+    # ``models``/``discover``, ``--model`` matching): reject other types here,
+    # once, instead of crashing in each consumer (MOR-3859).
+    for field_name in ("id", "model"):
+        value = radio[field_name]
+        if not isinstance(value, str) or not value.strip():
+            raise RigLoadError(
+                f"{filename}: [radio].{field_name} must be a non-empty string"
             )
 
     # civ_addr is optional (default 0 for non-civ radios); validate range if present

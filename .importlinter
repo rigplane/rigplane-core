@@ -7,12 +7,13 @@ name = rigplane layered architecture
 type = layers
 layers =
     rigplane.cli
-    rigplane.web | rigplane.rigctld
+    rigplane.web | rigplane.rigctld | rigplane.tci_adapter
     rigplane.backends
     rigplane.runtime
     rigplane.profiles | rigplane.audio | rigplane.sdr
     rigplane.commands | rigplane.scope | rigplane.dsp
-    rigplane.core
+    rigplane.core | rigplane.tci
+    rigplane.ws
 ignore_imports =
     rigplane.core.radio_protocol -> rigplane.audio_bus
     rigplane.core.radio_protocol -> rigplane.scope
@@ -25,6 +26,7 @@ type = independence
 modules =
     rigplane.web
     rigplane.rigctld
+    rigplane.tci_adapter
 ignore_imports =
     rigplane.backends.yaesu_cat.radio -> rigplane.rigctld.routing
 
@@ -44,12 +46,34 @@ modules =
     rigplane.scope
     rigplane.dsp
 
+[importlinter:contract:tci-is-a-leaf]
+name = rigplane.tci imports nothing outside stdlib and itself
+type = forbidden
+source_modules =
+    rigplane.tci
+forbidden_modules =
+    rigplane.core
+    rigplane.commands
+    rigplane.runtime
+    rigplane.audio
+    rigplane.profiles
+    rigplane.scope
+    rigplane.dsp
+    rigplane.backends
+    rigplane.web
+    rigplane.rigctld
+    rigplane.tci_adapter
+    rigplane.cli
+    rigplane.diagnostics
+    rigplane.validation
+
 [importlinter:contract:validation-leaf]
 name = validation is a leaf consumer — no lower layer may import it
 type = forbidden
 source_modules =
     rigplane.web
     rigplane.rigctld
+    rigplane.tci_adapter
     rigplane.backends
     rigplane.runtime
     rigplane.profiles

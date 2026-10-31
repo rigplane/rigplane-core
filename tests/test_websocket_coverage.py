@@ -1,4 +1,4 @@
-"""Extra coverage tests for web/websocket.py.
+"""Extra coverage tests for the shared `rigplane.ws` module, as `web` uses it.
 
 Covers:
 - _read_one_frame: non-zero RSV bits → WebSocketError (line 110)
@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from rigplane.web.websocket import (
+from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
     WS_OP_CONTINUATION,
@@ -37,6 +37,7 @@ from rigplane.web.websocket import (
     WebSocketConnection,
     WebSocketError,
     _read_one_frame,
+    make_frame,
 )
 
 
@@ -416,7 +417,7 @@ async def test_keepalive_loop_sends_ping() -> None:
         if call_count >= 2:
             ws._closed = True  # stop loop after 2 pings
 
-    with patch("rigplane.web.websocket.asyncio.sleep", fast_sleep):
+    with patch("rigplane.ws.asyncio.sleep", fast_sleep):
         await ws.keepalive_loop(interval=0.001)
 
     assert writer.write.call_count >= 1
@@ -452,6 +453,107 @@ async def test_keepalive_loop_suppresses_non_cancelled_exception() -> None:
         ws._closed = False
         raise OSError("pipe broken")
 
-    with patch("rigplane.web.websocket.asyncio.sleep", raise_once):
+    with patch("rigplane.ws.asyncio.sleep", raise_once):
         # Must not propagate
         await ws.keepalive_loop(interval=0.001)
+
+
+# ---------------------------------------------------------------------------
+# Client role (MOR-3821 P1): mask_outgoing=True masks every frame built here
+# ---------------------------------------------------------------------------
+
+
+def _parse_server_frame(frame: bytes) -> tuple[int, bytes, bool]:
+    """Split raw bytes into (opcode, unmasked payload, mask-bit set)."""
+    byte0, byte1 = frame[0], frame[1]
+    opcode = byte0 & 0x0F
+    masked = bool(byte1 & 0x80)
+    length = byte1 & 0x7F
+    offset = 2
+    if length == 126:
+        length = struct.unpack("!H", frame[offset : offset + 2])[0]
+        offset += 2
+    elif length == 127:
+        length = struct.unpack("!Q", frame[offset : offset + 8])[0]
+        offset += 8
+    if masked:
+        key = frame[offset : offset + 4]
+        offset += 4
+        raw = frame[offset : offset + length]
+        payload = bytes(b ^ key[i % 4] for i, b in enumerate(raw))
+    else:
+        payload = frame[offset : offset + length]
+    return opcode, payload, masked
+
+
+async def test_make_frame_masked_round_trips_through_reader() -> None:
+    """make_frame(mask=True) output parses back to the payload."""
+    payload = b"hello-mask"
+    frame = make_frame(WS_OP_TEXT, payload, mask=True)
+    assert frame[1] & 0x80  # mask bit set
+    opcode, data, fin, _ = await _read_one_frame(_make_reader(frame))
+    assert opcode == WS_OP_TEXT
+    assert data == payload
+    assert fin is True
+
+
+async def test_client_connection_masks_pong_reply() -> None:
+    """Client-role recv() answers PING with a masked PONG."""
+    ping_frame = _client_frame(WS_OP_PING, b"probe")
+    text_frame = _client_frame(WS_OP_TEXT, b"hello")
+    reader = _make_reader(ping_frame + text_frame)
+    writer = _make_writer()
+    ws = WebSocketConnection(reader, writer, mask_outgoing=True)
+    opcode, payload = await ws.recv()
+    assert (opcode, payload) == (WS_OP_TEXT, b"hello")
+    writer.write.assert_called_once()
+    op, data, masked = _parse_server_frame(writer.write.call_args[0][0])
+    assert op == WS_OP_PONG
+    assert masked is True
+    assert data == b"probe"
+
+
+async def test_client_connection_masks_close_reply() -> None:
+    """Client-role recv() answers CLOSE with a masked CLOSE echo."""
+    close_payload = struct.pack("!H", 1000) + b"normal"
+    reader = _make_reader(_client_frame(WS_OP_CLOSE, close_payload))
+    writer = _make_writer(is_closing=False)
+    ws = WebSocketConnection(reader, writer, mask_outgoing=True)
+    with pytest.raises(EOFError, match="WebSocket closed"):
+        await ws.recv()
+    writer.write.assert_called_once()
+    op, data, masked = _parse_server_frame(writer.write.call_args[0][0])
+    assert op == WS_OP_CLOSE
+    assert masked is True
+    assert data == close_payload
+
+
+async def test_client_connection_masks_sends() -> None:
+    """Client-role send_text/send_binary/send_ping/close mask their frames."""
+    ws = WebSocketConnection(asyncio.StreamReader(), _make_writer(), mask_outgoing=True)
+    await ws.send_text("hi")
+    await ws.send_binary(b"\x01\x02")
+    await ws.send_ping(b"ka")
+    await ws.close(code=1000, reason="")
+    assert ws._writer.write.call_count == 4
+    for call, expected_op in zip(
+        ws._writer.write.call_args_list,
+        (WS_OP_TEXT, WS_OP_BINARY, WS_OP_PING, WS_OP_CLOSE),
+    ):
+        op, _, masked = _parse_server_frame(call[0][0])
+        assert op == expected_op
+        assert masked is True
+
+
+async def test_server_connection_replies_stay_unmasked() -> None:
+    """Default role keeps the historical unmasked server behaviour."""
+    ping_frame = _client_frame(WS_OP_PING, b"probe")
+    text_frame = _client_frame(WS_OP_TEXT, b"hello")
+    reader = _make_reader(ping_frame + text_frame)
+    writer = _make_writer()
+    ws = WebSocketConnection(reader, writer)
+    await ws.recv()
+    op, data, masked = _parse_server_frame(writer.write.call_args[0][0])
+    assert op == WS_OP_PONG
+    assert masked is False
+    assert data == b"probe"

@@ -20,7 +20,7 @@ from rigplane.rigctld.contract import RigctldCommand, RigctldConfig, RigctldResp
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.handlers.rigctl import RigctlChannelHandler, _LineReader
 from rigplane.web.transport import Connection
-from rigplane.web.websocket import WS_OP_BINARY, WS_OP_TEXT
+from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
 
 _OWNER = "controller-session-0123456789abcdef"
 _PEER = ("203.0.113.5", 40000)

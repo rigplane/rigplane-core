@@ -105,6 +105,7 @@ nav:
           - opuslib macOS Fix: opuslib-macos-fix.md
       - Radio Profiles: guide/profiles.md
       - WSJT-X / Digital Modes: guide/wsjtx-setup.md
+      - TCI Setup (Control Phase): guide/tci-setup.md
       - Audio Recipes: guide/audio-recipes.md
       - Web UI: guide/web-ui.md
       - Operating Away From Home: guide/remote-operation.md
@@ -133,6 +134,7 @@ nav:
       - Icom 7610 Drivers: api/backends-icom7610-drivers.md
       - Rig Loader: api/rig-loader.md
       - rigctld: api/rigctld.md
+      - TCI: api/tci.md
       - Scope: api/scope.md
       - Web: api/web.md
       - Command Catalog: api/command-catalog.md

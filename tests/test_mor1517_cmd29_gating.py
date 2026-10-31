@@ -65,6 +65,8 @@ from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.types import AudioPeakFilter, CivFrame, FilterShape
 
+from _helpers import observe_selected_receiver
+
 _IC7300_ADDR = 0x94
 _IC7610_ADDR = 0x98
 
@@ -91,6 +93,8 @@ def _connected_icom(*, model: str) -> IcomRadio:
     radio = IcomRadio(host="127.0.0.1", username="x", password="y", model=model)
     radio._civ_runtime._check_connected = lambda: None  # type: ignore[method-assign]
     radio._civ_runtime._connected = True  # type: ignore[attr-defined]
+    # The connect flow's 0x07 0xD2 answer: MAIN is selected (MOR-3591).
+    observe_selected_receiver(radio, 0)
     return radio
 
 
