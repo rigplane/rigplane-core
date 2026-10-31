@@ -113,14 +113,13 @@ Release candidates keep the rc version in the version file (e.g. `3.1.0rc1` in `
 
 So a receipt pair produced against the candidate (`core_version` `X.Y.ZrcN`, `git_sha` the candidate commit, tag `vX.Y.ZrcN` on it) also validates for the final tag `vX.Y.Z` — the receipts keep naming what was really tested, and the checker (`scripts/release/check_radio_smoke.py check --tag vX.Y.Z --git-sha FINAL --rx … --tx … --repo …`) proves the version-only diff in the checked-out repo. `publish.yml`'s `validate` job checks out full history with tags (`fetch-depth: 0`) and passes `--repo "$GITHUB_WORKSPACE"` for exactly this. A receipt pair naming the final tag version and commit validates exactly as before, without touching the repo. A mix of one final-matching and one candidate receipt fails.
 
-The candidate path requires all of the following; each failure prints one `rc:`-prefixed line and fails the gate:
+The candidate path requires all of the following; each failure prints one `rc:`-prefixed line and fails the gate (any git or parse error fails closed):
 
-- both receipts name the same candidate (`core_version` and `git_sha` equal; the version is `X.Y.ZrcN` with the same `X.Y.Z` as the tag, `N >= 1`, and the sha is 40 hex);
-- tag `vX.Y.ZrcN` resolves through `refs/tags/` to the receipt `git_sha` (a same-named branch is not a tag);
-- the candidate commit is an ancestor of the final commit;
-- `git diff-tree -r --raw --no-renames --no-abbrev -z` candidate-to-final lists only identical-mode (`100644`) modifications of exactly `pyproject.toml`, `uv.lock` and `docs/CHANGELOG.md` — any other path, status, mode change, symlink, or rename fails;
-- both revisions of each file are read as raw bytes and must be byte-identical once the single permitted version assignment is normalized away: the `[project]` `version = "..."` line in `pyproject.toml`, the project's own `[[package]]` `version = "..."` line in `uv.lock` (the project name is read from the final `pyproject.toml`, never hard-coded), the `## [` headings and `[name]: http(s)://…` link reference definitions in `docs/CHANGELOG.md` — any other byte difference fails, including comments, whitespace, and binary bodies;
-- both sides carry the claimed versions (candidate files say `X.Y.ZrcN`, final files say `X.Y.Z`).
+0. rx and tx name the same candidate (`core_version` and `git_sha` equal; the version is `X.Y.ZrcN` with the same `X.Y.Z` as the tag, `N >= 1`, and the sha is 40 hex) — a mix of one final-matching and one candidate receipt fails;
+1. tag `vX.Y.ZrcN` resolves through `refs/tags/` to the receipt `git_sha` (a same-named branch is not a tag), and the candidate commit is an ancestor of the final commit;
+2. `git diff-tree -r --raw --no-renames --no-abbrev -z` candidate-to-final lists only identical-mode (`100644`) modifications of exactly `pyproject.toml`, `uv.lock` and `docs/CHANGELOG.md` — any other path, status, mode change, symlink, or rename fails and prints path and status;
+3. both revisions of `pyproject.toml` and `uv.lock` parse with `tomllib`: `project.version` must be the candidate version in the candidate revision and the tag version in the final revision, and the project's own `[[package]]` `version` in `uv.lock` likewise (the project name is read from `pyproject.toml`, never hard-coded); after deleting that one version key the two parsed documents must be equal — top-level fields and every other package included. A file the tree diff skips must still carry the claimed version (e.g. an unchanged lock still saying the rc version fails);
+4. `docs/CHANGELOG.md` at the final commit carries a line starting with `## [X.Y.Z]` and no line starting with `## [X.Y.ZrcN]`, while the candidate revision carries the latter. Nothing else about the changelog is checked: changelog body integrity is not checked.
 
 A candidate of a different `X.Y.Z`, a malformed sha, a missing repo/commit/tag, or any git error fails closed. Verdict, timestamps and the per-kind rules are unchanged in both modes.
 

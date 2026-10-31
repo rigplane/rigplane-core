@@ -306,22 +306,29 @@ smoke counts for the final with no re-smoke, while `publish.yml`'s
 `validate` job still runs its own checks on the final commit:
 
 1. Cut `vNEWrc1` through the normal flow above, with the rc version in
-   the version file (`pyproject.toml` says `NEWrc1`). Smoke the rc; the
+   the version files: `project.version` in `pyproject.toml` AND the
+   project's own `version` in `uv.lock` say `NEWrc1`; stage `uv.lock`
+   together with `pyproject.toml` and the changelog. Smoke the rc; the
    receipts name the rc tag and the rc commit. Publish as a pre-release —
    `publish.yml` validates the receipts against the rc tag itself.
 2. The final is one separate commit on top that differs from the
-   candidate **only** in the version: the `version =` line in
-   `pyproject.toml`, the project's own entry in `uv.lock`, and the
-   heading/compare links of `docs/CHANGELOG.md`. Tag it `vNEW`.
+   candidate **only** in the version: the `version` in `pyproject.toml`
+   AND the project's own `version` in `uv.lock` (staged together again),
+   and the changelog headings. Tag it `vNEW`.
 3. Create the draft `vNEW` release, upload the **rc's** receipts to it
    (no re-smoke — the receipts keep naming what was really tested), and
    publish. `publish.yml`'s receipt gate accepts them: it checks out full
    history with tags and the checker proves the version-only rc-to-final
    diff (`docs/development/release-gates.md`, "rc receipts for a
-   version-only final"). A mix of rc and final receipts fails.
+   version-only final"). The proof is four checks: both receipts name the
+   same candidate; the tag resolves via `refs/tags/` and the candidate is
+   an ancestor of the final; only identical-mode edits of the three
+   version files; TOML documents match past the claimed versions; the
+   final changelog carries the final heading and no rc heading. A mix of
+   rc and final receipts fails. Changelog body integrity is not checked.
 4. Any other difference between candidate and final — a code change, a
-   dependency change, a changelog body change — means a new rc
-   (`vNEWrc2`) through the full flow, not a final.
+   dependency change — means a new rc (`vNEWrc2`) through the full flow,
+   not a final.
 
 ## Step 10 — Post-release housekeeping
 

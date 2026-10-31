@@ -466,9 +466,7 @@ def _build_rc_repo(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.name", "rc-test")
     _git(repo, "config", "user.email", "rc-test@example.com")
-    (repo / "pyproject.toml").write_text(
-        render_pyproject(RC_VERSION), encoding="utf-8"
-    )
+    (repo / "pyproject.toml").write_text(render_pyproject(RC_VERSION), encoding="utf-8")
     (repo / "uv.lock").write_text(_rc_uv_lock(RC_VERSION), encoding="utf-8")
     (repo / "docs" / "CHANGELOG.md").write_text(
         _rc_changelog(RC_VERSION), encoding="utf-8"
@@ -813,9 +811,7 @@ def test_rc_receipts_fail_when_the_final_changelog_has_no_final_heading(
     def extra(repo: Path) -> None:
         path = repo / "docs" / "CHANGELOG.md"
         path.write_text(
-            path.read_text(encoding="utf-8").replace(
-                f"## [{VERSION}]", "## [Next]", 1
-            ),
+            path.read_text(encoding="utf-8").replace(f"## [{VERSION}]", "## [Next]", 1),
             encoding="utf-8",
         )
 
