@@ -63,23 +63,27 @@ class StubHandler(BaseHTTPRequestHandler):
             self._send({"radio": {"model": "IC-705", "connected": True}})
         elif self.path == "/api/v1/state":
             minimum = self.server.minimum
-            self._send({
-                "ptt": False,
-                "powerLevel": minimum,
-                "fieldStatus": {
-                    "ptt": field_status(False, when=when),
-                    "powerLevel": field_status(minimum, when=when),
-                },
-            })
+            self._send(
+                {
+                    "ptt": False,
+                    "powerLevel": minimum,
+                    "fieldStatus": {
+                        "ptt": field_status(False, when=when),
+                        "powerLevel": field_status(minimum, when=when),
+                    },
+                }
+            )
         elif self.path == "/api/v1/managed-transmit":
-            self._send({
-                "managedTransmit": {
-                    "status": "available",
-                    "releaseRequired": False,
-                    "intent": {"kind": "rx"},
-                },
-                "txObservation": {"observedPtt": "off"},
-            })
+            self._send(
+                {
+                    "managedTransmit": {
+                        "status": "available",
+                        "releaseRequired": False,
+                        "intent": {"kind": "rx"},
+                    },
+                    "txObservation": {"observedPtt": "off"},
+                }
+            )
         else:
             self._send({"error": "not found"}, status=404)
 
@@ -137,17 +141,26 @@ def test_run_5_rejected_at_parse_time(tmp_path):
 def test_run_4_accepted_at_parse_time(tmp_path):
     """--run 4 passes argparse; without a server it fails later, not with exit 2."""
     proc = run_tool(
-        "--url", "http://127.0.0.1:1", "--label", "x", "--run", "4",
-        "--profile", "ic705", cwd=tmp_path,
+        "--url",
+        "http://127.0.0.1:1",
+        "--label",
+        "x",
+        "--run",
+        "4",
+        "--profile",
+        "ic705",
+        cwd=tmp_path,
     )
     assert proc.returncode == 1
-    assert "BENCH FAILED" in proc.stderr
+    assert "invalid choice" not in proc.stderr
+    assert "DRY / READ ONLY" not in proc.stdout
 
 
 def test_dry_without_owner_gates_writes_nothing(tmp_path, stub_server):
     url = f"http://127.0.0.1:{stub_server.server_port}"
-    proc = run_tool("--url", url, "--label", "dry", "--run", "1",
-                    "--profile", "ic705", cwd=tmp_path)
+    proc = run_tool(
+        "--url", url, "--label", "dry", "--run", "1", "--profile", "ic705", cwd=tmp_path
+    )
     assert proc.returncode == 0
     assert "DRY / READ ONLY" in proc.stdout
     assert stub_server.posts == []
@@ -155,10 +168,20 @@ def test_dry_without_owner_gates_writes_nothing(tmp_path, stub_server):
 
 def test_armed_flags_without_owner_env_stay_dry(tmp_path, stub_server):
     url = f"http://127.0.0.1:{stub_server.server_port}"
-    proc = run_tool("--url", url, "--label", "dry", "--run", "1",
-                    "--profile", "ic705", "--tx-armed",
-                    "--checklist-confirmed", "--no-clients-confirmed",
-                    cwd=tmp_path)
+    proc = run_tool(
+        "--url",
+        url,
+        "--label",
+        "dry",
+        "--run",
+        "1",
+        "--profile",
+        "ic705",
+        "--tx-armed",
+        "--checklist-confirmed",
+        "--no-clients-confirmed",
+        cwd=tmp_path,
+    )
     assert proc.returncode == 0
     assert "DRY / READ ONLY" in proc.stdout
     assert stub_server.posts == []
@@ -168,17 +191,37 @@ def test_rigs_dir_override_is_honoured(tmp_path, stub_server):
     url = f"http://127.0.0.1:{stub_server.server_port}"
     empty = tmp_path / "empty-rigs"
     empty.mkdir()
-    missing = run_tool("--url", url, "--label", "dry", "--run", "1",
-                       "--profile", "ic705", "--rigs-dir", str(empty),
-                       cwd=tmp_path)
+    missing = run_tool(
+        "--url",
+        url,
+        "--label",
+        "dry",
+        "--run",
+        "1",
+        "--profile",
+        "ic705",
+        "--rigs-dir",
+        str(empty),
+        cwd=tmp_path,
+    )
     assert missing.returncode == 1
 
     override = tmp_path / "rigs"
     override.mkdir()
     shutil.copy(RIGS_DIR / "ic705.toml", override / "ic705.toml")
-    found = run_tool("--url", url, "--label", "dry", "--run", "1",
-                     "--profile", "ic705", "--rigs-dir", str(override),
-                     cwd=tmp_path)
+    found = run_tool(
+        "--url",
+        url,
+        "--label",
+        "dry",
+        "--run",
+        "1",
+        "--profile",
+        "ic705",
+        "--rigs-dir",
+        str(override),
+        cwd=tmp_path,
+    )
     assert found.returncode == 0
     assert "DRY / READ ONLY" in found.stdout
 
@@ -188,8 +231,9 @@ def test_default_rigs_dir_works_from_any_directory(tmp_path, stub_server):
     url = f"http://127.0.0.1:{stub_server.server_port}"
     far = tmp_path / "some" / "nested" / "cwd"
     far.mkdir(parents=True)
-    proc = run_tool("--url", url, "--label", "dry", "--run", "1",
-                    "--profile", "ic705", cwd=far)
+    proc = run_tool(
+        "--url", url, "--label", "dry", "--run", "1", "--profile", "ic705", cwd=far
+    )
     assert proc.returncode == 0
     assert "DRY / READ ONLY" in proc.stdout
 
@@ -209,9 +253,19 @@ def journal_summary(cwd):
 
 @pytest.mark.slow
 def test_sim_run_1_unchanged(tmp_path):
-    proc = run_tool("--sim", "--label", "simrun1", "--run", "1",
-                    "--profile", "ic705", "--cycle-gap", "1.0", cwd=tmp_path,
-                    env_extra={"PATH": os.environ["PATH"]})
+    proc = run_tool(
+        "--sim",
+        "--label",
+        "simrun1",
+        "--run",
+        "1",
+        "--profile",
+        "ic705",
+        "--cycle-gap",
+        "1.0",
+        cwd=tmp_path,
+        env_extra={"PATH": os.environ["PATH"]},
+    )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     summary = journal_summary(tmp_path)
     assert summary["completed_cycles"] == 10
@@ -221,9 +275,19 @@ def test_sim_run_1_unchanged(tmp_path):
 
 @pytest.mark.slow
 def test_sim_run_4_inflight_force_off(tmp_path):
-    proc = run_tool("--sim", "--label", "simrun4", "--run", "4",
-                    "--profile", "ic705", "--cycle-gap", "1.0", cwd=tmp_path,
-                    env_extra={"PATH": os.environ["PATH"]})
+    proc = run_tool(
+        "--sim",
+        "--label",
+        "simrun4",
+        "--run",
+        "4",
+        "--profile",
+        "ic705",
+        "--cycle-gap",
+        "1.0",
+        cwd=tmp_path,
+        env_extra={"PATH": os.environ["PATH"]},
+    )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     summary = journal_summary(tmp_path)
     assert summary["completed_cycles"] == 10

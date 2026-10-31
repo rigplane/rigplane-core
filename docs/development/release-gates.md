@@ -107,6 +107,20 @@ Both receipts are JSON objects written before the release is published and uploa
 | `release_debt` | `tx` | boolean | `false` — no undrained TX-side work remained |
 | `ended_rx` | `tx` | boolean | `true` — a fresh radio-sourced RX observation closed the run |
 
+### TX bench tools
+
+Two TX tools exist for different jobs. The owner-present tool
+`scripts/bench/bench_tx_check.py` is what produces the live-TX evidence above:
+runs 1–4 (key/rekey holds, same-power write, in-flight force_off), stdlib-only
+and cross-platform, runnable from any directory with the journal in
+`./bench-out`. Every armed run needs `--tx-armed --checklist-confirmed
+--no-clients-confirmed` plus a non-empty `BENCH_OWNER_YES` note; `--sim` is the
+only unarmed-safe self-run against Core's simulator stack, and
+`scripts/bench/tx_bench_windows.ps1` is the parameterized Windows recipe
+(serial port, model, profile, venv, CI-V address). The Pro `tx_smoke.py`
+(POSIX, unattended nightly) is being reworked alongside it. Unifying the two
+into one tool is a follow-up, not part of this gate.
+
 ## Outside the tiers
 
 `docs.yml` and `dispatch-downstream.yml` publish rather than check; the other three start only from a manual or reusable trigger.
