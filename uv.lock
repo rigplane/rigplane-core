@@ -2349,7 +2349,7 @@ wheels = [
 
 [[package]]
 name = "rigplane"
-version = "3.0.1"
+version = "3.1.0rc1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },

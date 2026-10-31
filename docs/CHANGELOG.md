@@ -11,25 +11,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0rc1] — 2026-10-31
+
+This is the first release candidate of 3.1. It adds a TCI listener for
+loggers that speak TCI, a `rigplane models` command, per-band power limits
+and region-aware VHF/UHF handling, a universal radio liveness signal, faster
+and more robust rigctld and PTT behaviour, a USB audio-pairing fix for
+repeated serial ports, and more. Details by area below.
+
 ### Added
 
-- **IC-9700 repeater shift and tone-squelch type declarations (MOR-3623).**
+- **IC-9700 repeater shift and tone-squelch type declarations.**
   The IC-9700 profile declares the repeater shift direction (CI-V `0F`:
   10 simplex, 11 DUP−, 12 DUP+, the same codes as the IC-705) and the
   `16 5D` tone-squelch type read with its type table, and polls the shift,
   the type and the two CTCSS booleans beside split. The D-STAR DV mode
   gets its fixed-width filter row. DD stays undeclared until mode selection
-  can be limited to the 1.2 GHz band. Tier B-, not hardware-verified: no
-  IC-9700 has been on the bench.
-- TCI listener (phase control): `rigplane web --tci` and `rigplane station --tci` serve frequency, mode, split and PTT over TCI (default port `50001`, loopback bind) with `--tci-port` and the shared `--ingress-host` setting also read by the `rigctld` listener; off by default, no `serve` support. See the TCI API page and the TCI setup guide.
+  can be limited to the 1.2 GHz band.
+- TCI listener: `rigplane web --tci` and `rigplane station --tci` serve frequency, mode, split and PTT over TCI (default port `50001`, loopback bind) with `--tci-port` and the shared `--ingress-host` setting also read by the `rigctld` listener; off by default, no `serve` support. TCI clients can read and change frequency, mode and split, and key the radio through the managed transmit authority. See the TCI API page and the TCI setup guide.
 - Added `rigplane models`: list supported radio profiles with the exact `--model` value for each, as a plain table or `rigplane models --json`.
 - `rigplane discover` prints a ready-to-copy `rigplane --model ... status` command after each radio connection line (a `<MODEL>` placeholder with a pointer to `rigplane models` when LAN discovery cannot tell the model).
-- The RF power slider follows the rated maximum of the band the radio is on (MOR-3634). A band row in a radio profile can declare `max_power_w`, published as `txBands[].maxPowerW` next to the flat `maxPowerW` and a `powerUnit`. On an Icom (level is a percentage of the current band's maximum) the slider keeps its full range and shows watts: the IC-9700 declares 100 W on 2 m, 75 W on 70 cm and 10 W on 23 cm (from the manuals, not yet verified on hardware). On a watts-based radio the slider range is the band maximum. Radios without per-band data keep the unchanged slider. Nothing changes the power value you set: it is sent exactly as chosen.
+- The RF power slider follows the rated maximum of the band the radio is on. A band row in a radio profile can declare `max_power_w`, published as `txBands[].maxPowerW` next to the flat `maxPowerW` and a `powerUnit`. On an Icom (level is a percentage of the current band's maximum) the slider keeps its full range and shows watts: the IC-9700 declares 100 W on 2 m, 75 W on 70 cm and 10 W on 23 cm (from the manuals, not yet verified on hardware). On a watts-based radio the slider range is the band maximum. Radios without per-band data keep the unchanged slider. Nothing changes the power value you set: it is sent exactly as chosen.
+- Region-aware VHF/UHF band plans with per-band mode defaults. Band edges and default modes for the VHF/UHF bands follow the profile data for your region instead of one hard-coded table, so tuning steps onto 2 m, 70 cm and 23 cm with the mode the band plan expects.
+- A BUSY lamp next to the S-meter. The lamp lights from the radio's squelch state, so you can see at a glance whether the channel is busy before calling.
+- A universal radio liveness signal. Every radio now reports `connection.liveness`, one field that tells clients whether the radio link is alive, degrading or down, regardless of backend.
+- The embedded page accepts an `--rp-chrome-top` inset contract, so a host page can reserve space for its own top chrome without overlapping the RigPlane UI.
 
 ### Changed
 
 - Without `--backend`, `--host` or `--serial-port`, a CI-V radio whose profile has no LAN interface (IC-7300, X6200) now scans USB for the radio instead of the network; LAN-capable profiles (IC-7610, IC-705) still use LAN, and an explicit `--host` still means LAN.
-- **Dual-receiver radios: no hidden receiver switching (MOR-3591).** A
+- **Dual-receiver radios: no hidden receiver switching.** A
   receiver-scoped command for a receiver the radio cannot address directly
   (no cmd29 route, no profile-declared selector) now goes only to the
   receiver you have selected. A command for the other receiver -- or for
@@ -45,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value last observed while it was selected (refused if never observed)
   instead of reading the other receiver.
 - Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
+- Transmit audio always follows the radio: the separate outside-TX audio path is removed, so audio sent while transmitting goes to the radio the radio is keyed on, with no alternate route to configure or misroute.
+- On FM, controls the radio refuses and the offered filter widths come from profile data, so the UI disables what the radio cannot do instead of sending commands the radio rejects.
+- IC-705 receive-only band rows are marked `rx_only` and excluded from the transmit bands, so the UI no longer offers transmit where the radio cannot transmit.
+- LAN discovery connects to the radio's pinned control port, so finding a networked radio no longer depends on which port answers first.
+- The frequency-change glow uses a single token with a tighter default, so rapid tuning shows one calm highlight instead of stacked flashes.
 - **Core 3.0 is marked stable.** The package declares
   `Development Status :: 5 - Production/Stable`. The README, installation
   guide, migration guide, What's New and known limitations no longer call 3.0
@@ -52,6 +68,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer lists which radios were tested; the docs site opens on 3.0 by
   default; and the beta report form is now the 3.0 radio report form. The
   PyPI project page shows the new README and classifier from the next upload.
+
+### Fixed
+
+- rigctld acquisition polls now run on the background lane, so periodic polling no longer holds up your commands.
+- The PTT release read-back has its own commander lane ahead of background polls, so confirming an unkey is not stuck behind routine polling traffic.
+- USB audio pairing accepts repeated serial functions of one VID:PID, so stations with several identical USB radios pair each radio with its own audio devices.
+- Serial radio candidates are probed concurrently, so the Add-radio scan fits its time budget even with many ports attached.
+- LAN UDP failures are counted as consecutive errors and any inbound datagram resets the run, so a brief burst of errors no longer trips recovery while a truly silent link still does.
+- The control watchdog no longer mistakes its own event-loop stall for a dead radio link, so a busy UI thread stops raising false "link down" alarms.
+- The attenuator on-level and its timeout fallback come from the radio profile, so attenuator behaviour matches each radio's documented step.
+- `rigplane validate` reports a refused model or a bad bridge config as a readable refusal instead of a Python traceback.
+- A notice that arrives with no session during a recovery's tail restarts the recovery instead of being dropped, so late notices no longer leave recovery stalled.
 
 ## [3.0.1] — 2026-10-28
 
@@ -5030,7 +5058,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.0rc1...HEAD
+[3.1.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...v3.1.0rc1
 [3.0.1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/rigplane/rigplane-core/compare/v3.0.0rc1...v3.0.0
 [3.0.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b21...v3.0.0rc1
