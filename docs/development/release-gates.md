@@ -97,8 +97,8 @@ Both receipts are JSON objects written before the release is published and uploa
 |---|---|---|---|
 | `schema` | both | number | exactly `1` |
 | `kind` | both | string | `"rx"` in the RX fragment, `"tx"` in the TX fragment |
-| `core_version` | both | string | the tag version without its leading `v` |
-| `git_sha` | both | string | the tagged commit (`GITHUB_SHA` of the release event) |
+| `core_version` | both | string | the tag version without its leading `v` — or, for a version-only final (see below), the candidate version `X.Y.ZrcN` with the same `X.Y.Z` |
+| `git_sha` | both | string | the tagged commit (`GITHUB_SHA` of the release event) — or, for a version-only final, the candidate commit, with both receipts naming the same one |
 | `verdict` | both | string | `"PASS"` |
 | `generated_at` | both | string | ISO 8601 timestamp, parseable and not in the future |
 | `radios` | `rx` | object | non-empty map of radio name to `"PASS"` |
@@ -106,6 +106,24 @@ Both receipts are JSON objects written before the release is published and uploa
 | `stuck_tx` | `tx` | boolean | `false` — no wedged transmitter was observed |
 | `release_debt` | `tx` | boolean | `false` — no undrained TX-side work remained |
 | `ended_rx` | `tx` | boolean | `true` — a fresh radio-sourced RX observation closed the run |
+
+### rc receipts for a version-only final
+
+Release candidates keep the rc version in the version file (e.g. `3.1.0rc1` in `pyproject.toml`). The final is a separate commit that differs from the candidate only in the version: the `version =` line in `pyproject.toml`, the project's own entry in `uv.lock`, and the heading/compare links of `docs/CHANGELOG.md`. That candidate's tests and radio smoke count for the final with no re-run; any other difference means a new rc.
+
+So a receipt pair produced against the candidate (`core_version` `X.Y.ZrcN`, `git_sha` the candidate commit, tag `vX.Y.ZrcN` on it) also validates for the final tag `vX.Y.Z` — the receipts keep naming what was really tested, and the checker (`scripts/release/check_radio_smoke.py check --tag vX.Y.Z --git-sha FINAL --rx … --tx … --repo …`) proves the version-only diff in the checked-out repo. `publish.yml`'s `validate` job checks out full history with tags (`fetch-depth: 0`) and passes `--repo "$GITHUB_WORKSPACE"` for exactly this. A receipt pair naming the final tag version and commit validates exactly as before, without touching the repo. A mix of one final-matching and one candidate receipt fails.
+
+The candidate path requires all of the following; each failure prints one `rc:`-prefixed line and fails the gate:
+
+- both receipts name the same candidate (`core_version` and `git_sha` equal; the version is `X.Y.ZrcN` with the same `X.Y.Z` as the tag, `N >= 1`, and the sha is 40 hex);
+- tag `vX.Y.ZrcN` exists in the repo and resolves to the receipt `git_sha`;
+- the candidate commit is an ancestor of the final commit;
+- `git diff --name-only` candidate-to-final touches only `pyproject.toml`, `uv.lock` and `docs/CHANGELOG.md` — any other path fails;
+- `pyproject.toml` matches after removing the `project.version` line, and both sides carry the claimed versions (candidate file says `X.Y.ZrcN`, final file says `X.Y.Z`);
+- `uv.lock` matches after removing the `version` of the `[[package]]` entry named by the project's `name` in `pyproject.toml` (read from the file, never hard-coded), with the same version cross-check — a changed dependency line or an added/removed package fails;
+- in the candidate-to-final `docs/CHANGELOG.md` diff every added/removed line is a `## [` heading or a `[name]: http(s)://…` link reference — any other changed line fails.
+
+A candidate of a different `X.Y.Z`, a malformed sha, a missing repo/commit/tag, or any git error fails closed. Verdict, timestamps and the per-kind rules are unchanged in both modes.
 
 ## Outside the tiers
 

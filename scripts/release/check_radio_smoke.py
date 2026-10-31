@@ -17,18 +17,35 @@ prints one line to stderr; the exit status is non-zero if any exist.
 
 Stdlib only. Fragment format contract: ``docs/development/release-gates.md``,
 section "Radio-smoke receipts".
+
+MOR-3998: a receipt pair produced against a release candidate
+(``core_version`` ``X.Y.ZrcN``, ``git_sha`` the candidate commit) also
+validates for the final tag ``vX.Y.Z`` when the final commit is proven to
+differ from the candidate only in the version. The receipts keep naming
+what was really tested — no rewriting. Parsing below is line-based on
+purpose: this step runs on the runner's system ``python3``, whose version
+is not pinned, so ``tomllib`` (Python 3.11+) is not assumed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 SCHEMA = 1
+
+_RC_VERSION_RE = re.compile(r"^(\d+\.\d+\.\d+)rc(\d+)$")
+_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+_LINK_REF_RE = re.compile(r"^\[[^\]]+\]: https?://")
+
+# The only paths a version-only rc-to-final commit may touch (MOR-3998).
+_ALLOWED_RC_DIFF = frozenset({"pyproject.toml", "uv.lock", "docs/CHANGELOG.md"})
 
 TX_SEQUENCE_KEYS = (
     "single",
@@ -95,16 +112,8 @@ def _validate_rx(payload: dict[str, Any]) -> list[str]:
     ]
 
 
-def _validate(
-    payload: Any,
-    *,
-    kind: str,
-    expected_version: str,
-    expected_sha: str,
-    now: datetime,
-) -> list[str]:
-    if not isinstance(payload, dict):
-        return ["top level is not a JSON object"]
+def _validate_head(payload: dict[str, Any], *, kind: str) -> list[str]:
+    """Schema and kind lines, in the legacy order."""
     violations: list[str] = []
     schema = payload.get("schema")
     if isinstance(schema, bool) or schema != SCHEMA:
@@ -112,14 +121,12 @@ def _validate(
     actual_kind = payload.get("kind")
     if actual_kind != kind:
         violations.append(f"kind must be {kind!r}, got {actual_kind!r}")
-    version = payload.get("core_version")
-    if version != expected_version:
-        violations.append(
-            f"core_version must be {expected_version!r} (the tag version), got {version!r}"
-        )
-    sha = payload.get("git_sha")
-    if sha != expected_sha:
-        violations.append(f"git_sha must be {expected_sha!r}, got {sha!r}")
+    return violations
+
+
+def _validate_tail(payload: dict[str, Any], *, kind: str, now: datetime) -> list[str]:
+    """Verdict, timestamp and per-kind lines, in the legacy order."""
+    violations: list[str] = []
     verdict = payload.get("verdict")
     if verdict != "PASS":
         violations.append(f'verdict must be "PASS", got {verdict!r}')
@@ -134,6 +141,51 @@ def _validate(
     return violations
 
 
+def _validate(
+    payload: Any,
+    *,
+    kind: str,
+    expected_version: str,
+    expected_sha: str,
+    now: datetime,
+) -> list[str]:
+    if not isinstance(payload, dict):
+        return ["top level is not a JSON object"]
+    violations = _validate_head(payload, kind=kind)
+    version = payload.get("core_version")
+    if version != expected_version:
+        violations.append(
+            f"core_version must be {expected_version!r} (the tag version), got {version!r}"
+        )
+    sha = payload.get("git_sha")
+    if sha != expected_sha:
+        violations.append(f"git_sha must be {expected_sha!r}, got {sha!r}")
+    violations.extend(_validate_tail(payload, kind=kind, now=now))
+    return violations
+
+
+def _read_fragment(path: Path) -> tuple[Any, str | None]:
+    """Read and JSON-parse one receipt file.
+
+    Returns ``(payload, None)`` on success, ``(None, error)`` otherwise —
+    the caller adds the kind prefix.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None, f"file not found: {path}"
+    except UnicodeDecodeError as exc:
+        # A ValueError, not an OSError: without this case an undecodable
+        # receipt crashed the checker with an uncaught UnicodeDecodeError.
+        return None, f"invalid UTF-8 in {path}: {exc}"
+    except OSError as exc:
+        return None, f"cannot read {path}: {exc}"
+    try:
+        return json.loads(text), None
+    except json.JSONDecodeError as exc:
+        return None, f"malformed JSON in {path}: {exc}"
+
+
 def _check_file(
     path: Path,
     *,
@@ -143,20 +195,9 @@ def _check_file(
     now: datetime,
 ) -> list[str]:
     """All violations of one fragment, each line prefixed with its kind."""
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return [f"{kind}: file not found: {path}"]
-    except UnicodeDecodeError as exc:
-        # A ValueError, not an OSError: without this case an undecodable
-        # receipt crashed the checker with an uncaught UnicodeDecodeError.
-        return [f"{kind}: invalid UTF-8 in {path}: {exc}"]
-    except OSError as exc:
-        return [f"{kind}: cannot read {path}: {exc}"]
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return [f"{kind}: malformed JSON in {path}: {exc}"]
+    payload, error = _read_fragment(path)
+    if error is not None:
+        return [f"{kind}: {error}"]
     return [
         f"{kind}: {violation}"
         for violation in _validate(
@@ -167,6 +208,436 @@ def _check_file(
             now=now,
         )
     ]
+
+
+def _classify_identity(
+    kind: str,
+    version: Any,
+    sha: Any,
+    *,
+    expected_version: str,
+    expected_sha: str,
+) -> tuple[str, str | None]:
+    """Classify one fragment's ``(core_version, git_sha)``.
+
+    Returns ``("exact", None)`` for the final tag version and commit,
+    ``("candidate", None)`` for a well-formed same-series ``X.Y.ZrcN``
+    claim, else ``(status, line)`` with one violation line that keeps the
+    kind prefix and the offending value.
+    """
+    if version == expected_version and sha == expected_sha:
+        return "exact", None
+    if version == expected_version:
+        return "none", (
+            f"{kind}: git_sha {sha!r} does not match the final commit "
+            f"{expected_sha!r} and names no release candidate"
+        )
+    match = _RC_VERSION_RE.match(version) if isinstance(version, str) else None
+    if match is None or match.group(1) != expected_version:
+        return "none", (
+            f"{kind}: core_version {version!r} is neither the final version "
+            f"{expected_version!r} nor a {expected_version!r}rcN candidate"
+        )
+    if int(match.group(2)) < 1:
+        return "none", (
+            f"{kind}: core_version {version!r} is not a release candidate "
+            "(rcN needs N >= 1)"
+        )
+    if not isinstance(sha, str) or _SHA_RE.match(sha) is None:
+        return "none", (f"{kind}: git_sha {sha!r} is not a 40-character hex commit")
+    return "candidate", None
+
+
+def _resolve_candidate(
+    rx_id: tuple[Any, Any],
+    tx_id: tuple[Any, Any],
+    *,
+    expected_version: str,
+    expected_sha: str,
+) -> tuple[tuple[str, str] | None, list[str]]:
+    """Agree on one candidate from both fragments, or fail with one line."""
+    rx_status, rx_line = _classify_identity(
+        "rx",
+        rx_id[0],
+        rx_id[1],
+        expected_version=expected_version,
+        expected_sha=expected_sha,
+    )
+    tx_status, tx_line = _classify_identity(
+        "tx",
+        tx_id[0],
+        tx_id[1],
+        expected_version=expected_version,
+        expected_sha=expected_sha,
+    )
+    lines = [line for line in (rx_line, tx_line) if line is not None]
+    if lines:
+        return None, lines
+    if rx_status == "candidate" and tx_status == "candidate":
+        if rx_id != tx_id:
+            return None, [
+                "rc: rx and tx name different candidates: "
+                f"rx {rx_id[0]!r} @ {rx_id[1]!r}, "
+                f"tx {tx_id[0]!r} @ {tx_id[1]!r} — "
+                "both receipts must name the same commit"
+            ]
+        assert isinstance(rx_id[0], str) and isinstance(rx_id[1], str)
+        return (rx_id[0], rx_id[1]), []
+    return None, [
+        "rc: rx and tx must name the same commit: "
+        f"rx {rx_id[0]!r} @ {rx_id[1]!r}, tx {tx_id[0]!r} @ {tx_id[1]!r} — "
+        "a mix of a final-matching and a candidate receipt fails"
+    ]
+
+
+def _git(repo: str, *args: str) -> tuple[int, str, str]:
+    """Run git in ``repo``; never raise — failures are fail-closed lines."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return 127, "", f"cannot run git: {exc}"
+    return (
+        completed.returncode,
+        completed.stdout.strip(),
+        completed.stderr.strip(),
+    )
+
+
+def _unquote(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def _strip_project_version(
+    text: str, path: str, rev: str
+) -> tuple[list[str], str | None, str | None]:
+    """Split a ``pyproject.toml`` revision into comparable lines.
+
+    Returns ``(lines_without_the_project_version, project_name,
+    project_version)``. Only the ``version`` assignment inside the
+    ``[project]`` table is removed; names are read, not hard-coded, so a
+    renamed project keeps working. Raises ``ValueError`` fail-closed.
+    """
+    lines = text.splitlines()
+    section: str | None = None
+    version_idx: int | None = None
+    version: str | None = None
+    name: str | None = None
+    for pos, line in enumerate(lines):
+        stripped = line.strip()
+        section_match = re.match(r"^\[([^\[\]]+)\]\s*$", stripped)
+        if section_match is not None:
+            section = section_match.group(1)
+            continue
+        if section != "project":
+            continue
+        if re.match(r"^version\s*=", stripped):
+            if version_idx is None:
+                version_idx = pos
+                version = _unquote(stripped.split("=", 1)[1])
+            continue
+        if re.match(r"^name\s*=", stripped) and name is None:
+            name = _unquote(stripped.split("=", 1)[1])
+    if version_idx is None:
+        raise ValueError(f"{path} at {rev} has no project version line")
+    del lines[version_idx]
+    return lines, name, version
+
+
+def _strip_package_version(
+    text: str, path: str, rev: str, project: str
+) -> tuple[list[str], str | None]:
+    """Split a ``uv.lock`` revision into comparable lines.
+
+    Returns ``(lines_without_the_project_package_version, version)``:
+    everything is compared, except the ``version`` line of the
+    ``[[package]]`` block whose ``name`` is the project name. A changed
+    dependency line or an added/removed package fails the comparison.
+    Raises ``ValueError`` fail-closed.
+    """
+    header: list[str] = []
+    blocks: list[list[str]] = []
+    for line in text.splitlines():
+        if line.strip() == "[[package]]":
+            blocks.append([line])
+        elif not blocks:
+            header.append(line)
+        else:
+            blocks[-1].append(line)
+    target: list[str] | None = None
+    for block in blocks:
+        for line in block[1:]:
+            name_match = re.match(r"^name\s*=\s*(.+)$", line.strip())
+            if name_match is not None and _unquote(name_match.group(1)) == project:
+                target = block
+                break
+        if target is not None:
+            break
+    if target is None:
+        raise ValueError(f"{path} at {rev} has no {project!r} package block")
+    version: str | None = None
+    for pos in range(1, len(target)):
+        version_match = re.match(r"^version\s*=\s*(.+)$", target[pos].strip())
+        if version_match is not None:
+            version = _unquote(version_match.group(1))
+            del target[pos]
+            break
+    if version is None:
+        raise ValueError(
+            f"{path} at {rev} has no version line in the {project!r} block"
+        )
+    return header + [line for block in blocks for line in block], version
+
+
+def _git_show(repo: str, rev: str, path: str) -> tuple[str | None, str | None]:
+    """Return ``(content, None)`` or ``(None, one fail-closed rc: line)``."""
+    code, out, err = _git(repo, "show", f"{rev}:{path}")
+    if code != 0:
+        detail = err.splitlines()[0] if err else f"exit {code}"
+        return None, f"rc: cannot read {path} at {rev} in {repo}: {detail}"
+    return out, None
+
+
+def _prove_version_only(
+    repo: str,
+    *,
+    candidate_version: str,
+    candidate_sha: str,
+    final_sha: str,
+    final_version: str,
+) -> list[str]:
+    """Prove FINAL differs from the candidate only in the version.
+
+    Every failure is one ``rc:``-prefixed line; fail closed on any git
+    error, missing repo or missing commit.
+    """
+    lines: list[str] = []
+    if _SHA_RE.match(final_sha) is None:
+        return [f"rc: --git-sha {final_sha!r} is not a 40-character hex commit"]
+    code, _, err = _git(repo, "cat-file", "-e", f"{final_sha}^{{commit}}")
+    if code != 0:
+        detail = err.splitlines()[0] if err else f"exit {code}"
+        return [f"rc: final commit {final_sha} not found in {repo}: {detail}"]
+    tag = f"v{candidate_version}"
+    code, resolved, err = _git(repo, "rev-parse", "--verify", f"{tag}^{{commit}}")
+    if code != 0 or _SHA_RE.match(resolved) is None:
+        detail = err.splitlines()[0] if err else f"exit {code}"
+        return [f"rc: tag {tag!r} does not resolve to a commit in {repo}: {detail}"]
+    if resolved != candidate_sha:
+        return [
+            f"rc: tag {tag!r} resolves to {resolved}, "
+            f"not the receipt git_sha {candidate_sha}"
+        ]
+    code, _, _ = _git(repo, "merge-base", "--is-ancestor", candidate_sha, final_sha)
+    if code != 0:
+        return [
+            f"rc: candidate {candidate_sha} ({tag}) is not an ancestor "
+            f"of the final commit {final_sha}"
+        ]
+    code, out, err = _git(repo, "diff", "--name-only", candidate_sha, final_sha, "--")
+    if code != 0:
+        detail = err.splitlines()[0] if err else f"exit {code}"
+        return [f"rc: cannot diff {candidate_sha}..{final_sha} in {repo}: {detail}"]
+    for path in sorted(set(out.splitlines()) - _ALLOWED_RC_DIFF):
+        lines.append(
+            f"rc: {path} changed between {tag} and the final commit — "
+            "only pyproject.toml, uv.lock and docs/CHANGELOG.md may change"
+        )
+    if lines:
+        return lines
+    try:
+        lines.extend(
+            _prove_pyproject_and_lock(
+                repo,
+                candidate_version=candidate_version,
+                candidate_sha=candidate_sha,
+                final_sha=final_sha,
+                expected_version=final_version,
+            )
+        )
+        lines.extend(_prove_changelog(repo, candidate_sha, final_sha))
+    except ValueError as exc:
+        lines.append(f"rc: {exc}")
+    return lines
+
+
+def _prove_pyproject_and_lock(
+    repo: str,
+    *,
+    candidate_version: str,
+    candidate_sha: str,
+    final_sha: str,
+    expected_version: str,
+) -> list[str]:
+    """pyproject.toml and uv.lock must match except the version lines."""
+    lines: list[str] = []
+    cand_text, error = _git_show(repo, candidate_sha, "pyproject.toml")
+    if error is not None:
+        return [error]
+    final_text, error = _git_show(repo, final_sha, "pyproject.toml")
+    if error is not None:
+        return [error]
+    assert cand_text is not None and final_text is not None
+    cand_lines, cand_name, cand_version = _strip_project_version(
+        cand_text, "pyproject.toml", candidate_sha
+    )
+    final_lines, final_name, final_version = _strip_project_version(
+        final_text, "pyproject.toml", final_sha
+    )
+    project = final_name or cand_name
+    if project is None:
+        raise ValueError("pyproject.toml has no project name line")
+    if cand_version != candidate_version:
+        lines.append(
+            f"rc: pyproject.toml at {candidate_sha} says version "
+            f"{cand_version!r}, not the receipt core_version "
+            f"{candidate_version!r}"
+        )
+    if final_version != expected_version:
+        lines.append(
+            f"rc: pyproject.toml at the final commit says version "
+            f"{final_version!r}, not the tag version {expected_version!r}"
+        )
+    if cand_lines != final_lines:
+        lines.append(
+            f"rc: pyproject.toml differs between {candidate_sha} and "
+            f"{final_sha} beyond the version line"
+        )
+    cand_lock, error = _git_show(repo, candidate_sha, "uv.lock")
+    if error is not None:
+        lines.append(error)
+        return lines
+    final_lock, error = _git_show(repo, final_sha, "uv.lock")
+    if error is not None:
+        lines.append(error)
+        return lines
+    assert cand_lock is not None and final_lock is not None
+    cand_lock_lines, cand_lock_version = _strip_package_version(
+        cand_lock, "uv.lock", candidate_sha, project
+    )
+    final_lock_lines, final_lock_version = _strip_package_version(
+        final_lock, "uv.lock", final_sha, project
+    )
+    if cand_lock_version != cand_version:
+        lines.append(
+            f"rc: uv.lock at {candidate_sha} says {project} version "
+            f"{cand_lock_version!r}, not the pyproject version {cand_version!r}"
+        )
+    if final_lock_version != final_version:
+        lines.append(
+            f"rc: uv.lock at the final commit says {project} version "
+            f"{final_lock_version!r}, not the pyproject version "
+            f"{final_version!r}"
+        )
+    if cand_lock_lines != final_lock_lines:
+        lines.append(
+            f"rc: uv.lock differs between {candidate_sha} and {final_sha} "
+            f"beyond the {project} package version"
+        )
+    return lines
+
+
+def _prove_changelog(repo: str, candidate_sha: str, final_sha: str) -> list[str]:
+    """Only changelog headings and link refs may change rc-to-final."""
+    code, out, err = _git(
+        repo, "diff", "-U0", candidate_sha, final_sha, "--", "docs/CHANGELOG.md"
+    )
+    if code != 0:
+        detail = err.splitlines()[0] if err else f"exit {code}"
+        return [f"rc: cannot diff docs/CHANGELOG.md in {repo}: {detail}"]
+    lines: list[str] = []
+    for line in out.splitlines():
+        if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
+            continue
+        body = line[1:]
+        if body.startswith("## ["):
+            continue
+        if _LINK_REF_RE.match(body) is not None:
+            continue
+        lines.append(
+            f"rc: docs/CHANGELOG.md changes more than headings and link refs: {body!r}"
+        )
+    return lines
+
+
+def _check_pair(
+    rx: dict[str, Any],
+    tx: dict[str, Any],
+    *,
+    tag: str,
+    expected_version: str,
+    expected_sha: str,
+    repo: str,
+    rx_name: str,
+    tx_name: str,
+    now: datetime,
+) -> tuple[list[str], str | None]:
+    """Validate one RX/TX pair; return ``(violations, success_message)``.
+
+    The success message is ``None`` when violations is non-empty. When
+    both receipts name the final tag version and commit, the violations
+    and the success text are byte-for-byte what the legacy check
+    produced — the repo is never touched on that path.
+    """
+    violations: list[str] = []
+    # One fragment at a time, head then tail: on the exact-match path the
+    # version/sha checks below add no lines, so this order is the legacy
+    # order line-for-line.
+    for kind, payload in (("rx", rx), ("tx", tx)):
+        violations.extend(
+            f"{kind}: {line}" for line in _validate_head(payload, kind=kind)
+        )
+        violations.extend(
+            f"{kind}: {line}" for line in _validate_tail(payload, kind=kind, now=now)
+        )
+    rx_id = (rx.get("core_version"), rx.get("git_sha"))
+    tx_id = (tx.get("core_version"), tx.get("git_sha"))
+    if rx_id == (expected_version, expected_sha) and tx_id == (
+        expected_version,
+        expected_sha,
+    ):
+        if violations:
+            return violations, None
+        return (
+            [],
+            f"radio smoke receipts OK: {rx_name} + {tx_name} "
+            f"for {tag} @ {expected_sha}",
+        )
+    candidate, candidate_lines = _resolve_candidate(
+        rx_id,
+        tx_id,
+        expected_version=expected_version,
+        expected_sha=expected_sha,
+    )
+    violations.extend(candidate_lines)
+    if candidate is None:
+        return violations, None
+    candidate_version, candidate_sha = candidate
+    violations.extend(
+        _prove_version_only(
+            repo,
+            candidate_version=candidate_version,
+            candidate_sha=candidate_sha,
+            final_sha=expected_sha,
+            final_version=expected_version,
+        )
+    )
+    if violations:
+        return violations, None
+    return (
+        [],
+        f"radio smoke receipts OK: {rx_name} + {tx_name} "
+        f"for {tag} @ {expected_sha} "
+        f"(tested candidate v{candidate_version} @ {candidate_sha}, "
+        "version-only diff proven)",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -182,20 +653,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("--git-sha", required=True, help="the tagged commit SHA")
     check.add_argument("--rx", required=True, type=Path, help="radio-smoke-rx.json")
     check.add_argument("--tx", required=True, type=Path, help="radio-smoke-tx.json")
+    check.add_argument(
+        "--repo",
+        default=".",
+        help="repo checkout used to prove a version-only rc-to-final "
+        "diff (MOR-3998); unneeded when both receipts name the final "
+        "tag version and commit",
+    )
     args = parser.parse_args(argv)
 
     expected_version = args.tag.removeprefix("v")
     now = datetime.now(timezone.utc)
-    violations: list[str] = []
-    for kind, path in (("rx", args.rx), ("tx", args.tx)):
-        violations.extend(
-            _check_file(
-                path,
-                kind=kind,
-                expected_version=expected_version,
-                expected_sha=args.git_sha,
-                now=now,
+    rx_payload, _ = _read_fragment(args.rx)
+    tx_payload, _ = _read_fragment(args.tx)
+    if not isinstance(rx_payload, dict) or not isinstance(tx_payload, dict):
+        # Unreadable or non-object fragments: the legacy per-fragment
+        # report, byte-for-byte.
+        violations: list[str] = []
+        for kind, path in (("rx", args.rx), ("tx", args.tx)):
+            violations.extend(
+                _check_file(
+                    path,
+                    kind=kind,
+                    expected_version=expected_version,
+                    expected_sha=args.git_sha,
+                    now=now,
+                )
             )
+        message: str | None = None
+    else:
+        violations, message = _check_pair(
+            rx_payload,
+            tx_payload,
+            tag=args.tag,
+            expected_version=expected_version,
+            expected_sha=args.git_sha,
+            repo=args.repo,
+            rx_name=args.rx.name,
+            tx_name=args.tx.name,
+            now=now,
         )
     for line in violations:
         print(line, file=sys.stderr)
@@ -204,10 +700,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"radio smoke check FAILED: {len(violations)} violation(s)", file=sys.stderr
         )
         return 1
-    print(
-        f"radio smoke receipts OK: {args.rx.name} + {args.tx.name} "
-        f"for {args.tag} @ {args.git_sha}"
-    )
+    assert message is not None
+    print(message)
     return 0
 
 
