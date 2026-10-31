@@ -35,7 +35,6 @@ The sync wrapper (`sync.py`) uses a single operation timeout when running async 
 
 - `ICOM_CIV_RECOVERY_WAIT_TIMEOUT_S` — max wait for CI-V transport recovery (default `12.0`).
 - `ICOM_CIV_READY_IDLE_TIMEOUT_S` — max idle time since last CI-V data for `radio_ready` to stay true (default `5.0`).
-- `ICOM_CIV_RETRY_SLICE_MS` — slice used for retry/backoff (default `150` ms).
 - `ICOM_CIV_ACK_SINK_GRACE_MS` — grace time for ACK sink (default `120` ms).
 
 ---

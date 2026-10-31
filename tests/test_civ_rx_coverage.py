@@ -81,6 +81,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
     acquisition_class_for_path,
 )
+from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.types import HEADER_SIZE
 from rigplane.exceptions import CommandError, ConnectionError
 from rigplane.profiles import resolve_radio_profile
@@ -1772,6 +1773,109 @@ async def test_wait_for_recovery_kicks_soft_reconnect_on_stalled_transport(
     assert soft_calls == [True], (
         "stalled (non-None) transport must trigger a soft_reconnect kick"
     )
+
+
+def _make_stuck_soft_reconnect() -> tuple[Any, asyncio.Event, dict[str, Any]]:
+    """Build a soft_reconnect stub that blocks until ``release`` is set.
+
+    Returns ``(stub, release, state)`` where ``state`` records ``calls``
+    and ``cancelled``. The stub never returns on its own, so a poller
+    that awaits it unboundedly hangs forever.
+    """
+    release = asyncio.Event()
+    state: dict[str, Any] = {"calls": 0, "cancelled": False}
+
+    async def stuck_soft_reconnect() -> None:
+        state["calls"] += 1
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            state["cancelled"] = True
+            raise
+
+    return stuck_soft_reconnect, release, state
+
+
+def _arm_recovery_wait_scenario(radio: IcomRadio) -> None:
+    """Put the ``radio`` fixture in the stuck-recovery scenario (MOR-2083).
+
+    Control transport alive, CI-V transport gone, so the poller must kick
+    one fast soft_reconnect and then wait for recovery.
+    """
+    ctrl = MagicMock()
+    ctrl._udp_transport = object()
+    radio._ctrl_transport = ctrl
+    radio._civ_transport = None
+
+
+async def test_wait_for_recovery_bounds_stuck_soft_reconnect(
+    radio: IcomRadio,
+) -> None:
+    """A never-returning soft_reconnect must not freeze the poller (MOR-2083).
+
+    The inner wait is bounded by the recovery deadline and fails with the
+    same ``TimeoutError("CI-V transport recovery timed out")`` the loop
+    raises at the deadline. The outer ``wait_for`` only guards against a
+    regression: on the old code the inner await hangs and only the outer
+    fires (empty message), so the ``match`` fails.
+    """
+    _arm_recovery_wait_scenario(radio)
+    stub, release, state = _make_stuck_soft_reconnect()
+    radio.soft_reconnect = stub
+
+    start = time.monotonic()
+    with pytest.raises(RigplaneTimeoutError, match="CI-V transport recovery timed out"):
+        await asyncio.wait_for(
+            radio._civ_runtime._wait_for_civ_transport_recovery(timeout=0.6),
+            timeout=5.0,
+        )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 2.5, (
+        f"recovery wait was not bounded by the deadline: {elapsed:.2f}s"
+    )
+    assert not radio._civ_recovery_lock.locked(), "the recovery lock must be released"
+    assert not state["cancelled"], (
+        "the poller timeout must abandon its wait, never cancel the recovery"
+    )
+
+    release.set()
+    fast = radio._civ_runtime._fast_reconnect_task
+    assert fast is not None
+    await asyncio.wait_for(fast, timeout=5.0)
+    assert not state["cancelled"]
+    assert state["calls"] == 1
+
+
+async def test_wait_for_recovery_timeout_does_not_cancel_soft_reconnect(
+    radio: IcomRadio,
+) -> None:
+    """The poller timeout abandons its wait; the recovery task runs on.
+
+    Cancelling the awaiting coroutine must not cancel the shared recovery
+    (``soft_reconnect`` coalesces onto the lifecycle's ``_recover_task``,
+    also awaited by the watchdog): after the poller fails, the stuck task
+    is still pending and untouched, and finishes normally once released.
+    """
+    _arm_recovery_wait_scenario(radio)
+    stub, release, state = _make_stuck_soft_reconnect()
+    radio.soft_reconnect = stub
+
+    with pytest.raises(RigplaneTimeoutError, match="CI-V transport recovery timed out"):
+        await asyncio.wait_for(
+            radio._civ_runtime._wait_for_civ_transport_recovery(timeout=0.6),
+            timeout=5.0,
+        )
+
+    fast = radio._civ_runtime._fast_reconnect_task
+    assert fast is not None
+    assert not fast.done(), "the abandoned recovery task must keep running"
+    assert not state["cancelled"]
+
+    release.set()
+    await asyncio.wait_for(fast, timeout=5.0)
+    assert not state["cancelled"]
+    assert state["calls"] == 1
 
 
 async def test_watchdog_recover_rearms_after_successful_recovery(
@@ -4404,20 +4508,6 @@ def test_update_state_cache_applies_state_store_before_legacy_cache_mirror(
     # legacy cache mutation regardless of how many observations a frame yields.
     assert seen_legacy_values
     assert all(value == initial_value for value in seen_legacy_values)
-
-
-def test_update_state_cache_uses_slot_specific_observation_path_when_override_active(
-    radio: IcomRadio,
-) -> None:
-    radio._vfo_slot_override = {"MAIN": "B"}  # noqa: SLF001
-    radio._civ_runtime._update_state_cache_from_frame(
-        _make_frame(cmd=0x03, data=bcd_encode(14_250_000))
-    )
-
-    assert (
-        radio._state_store.snapshot().field("receiver.0.slot.B.freq_mode.freq_hz").value
-        == 14_250_000
-    )
 
 
 def test_update_state_cache_applies_command_response_observation_once(

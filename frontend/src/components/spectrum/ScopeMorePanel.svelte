@@ -38,10 +38,12 @@
   let { onClose, anchor, radioHeld }: Props = $props();
 
   let panel: HTMLElement | undefined = $state();
+  let backdrop: HTMLElement | undefined = $state();
 
   /** Leftward from the key's right edge, shifted right at the left margin, never past the right one. */
   function place() {
     if (!panel || !anchor) return;
+    const topLimit = (backdrop?.getBoundingClientRect().top ?? 0) + 8;
     // The bottom boundary MEASURES the fixed bottom chrome instead of
     // assuming the viewport edge. Any layout bar that owns the screen's
     // bottom declares itself with `data-bottom-bar` (the phone's tuning
@@ -61,10 +63,9 @@
     // the margins (landscape, the phone's 44px rows) must still end above
     // the strip — cap its height at the MEASURED gap before measuring, so
     // the fit arithmetic below works on the rendered box and the panel
-    // scrolls inside instead of spilling under the bar. The stylesheet's
-    // `calc(100vh - 16px)` stays as the no-bar fallback only.
+    // scrolls inside instead of spilling under the bar.
     if (barTops.length) {
-      panel.style.maxHeight = `${Math.max(0, bottomLimit - 8)}px`;
+      panel.style.maxHeight = `${Math.max(0, bottomLimit - topLimit)}px`;
     } else {
       panel.style.maxHeight = '';
     }
@@ -82,13 +83,13 @@
     // to fit. The up-flip belongs to the phone's bottom bar.
     let top: number;
     if (!barTops.length) {
-      top = Math.max(8, Math.min(rect.bottom, window.innerHeight - 8 - h));
-    } else if (rect.bottom <= bottomLimit - h) {
-      top = rect.bottom;
-    } else if (rect.top - 8 - h >= 8) {
+      top = Math.max(topLimit, Math.min(rect.bottom, window.innerHeight - 8 - h));
+    } else if (Math.max(topLimit, rect.bottom) <= bottomLimit - h) {
+      top = Math.max(topLimit, rect.bottom);
+    } else if (rect.top - 8 - h >= topLimit) {
       top = rect.top - 8 - h;
     } else {
-      top = 8;
+      top = topLimit;
     }
     Object.assign(panel.style, { left: `${left}px`, top: `${top}px` });
   }
@@ -110,7 +111,7 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="scope-more-backdrop" data-testid="scope-more-backdrop" role="presentation" onclick={onClose}></div>
+<div class="scope-more-backdrop" bind:this={backdrop} data-testid="scope-more-backdrop" role="presentation" onclick={onClose}></div>
 <div
   class="scope-more-panel"
   role="dialog"
@@ -128,6 +129,7 @@
   .scope-more-backdrop {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 999;
   }
 
@@ -142,7 +144,7 @@
     /* MOR-2895: a panel taller than the viewport (short desktop windows)
        scrolls instead of spilling past either margin. With a declared
        bottom bar place() overwrites this with the measured gap inline. */
-    max-height: calc(100vh - 16px);
+    max-height: calc(100vh - var(--rp-chrome-top, 0px) - 16px);
     overflow-y: auto;
     padding: 8px;
     background: var(--v2-bg-darkest, #0a0a0f);

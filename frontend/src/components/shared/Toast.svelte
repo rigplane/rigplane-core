@@ -154,7 +154,7 @@
 <style>
   .toast-container {
     position: fixed;
-    top: var(--space-4);
+    top: calc(var(--rp-chrome-top, 0px) + var(--space-4)); /* MOR-3845 */
     right: var(--space-4);
     z-index: 9999;
     display: flex;

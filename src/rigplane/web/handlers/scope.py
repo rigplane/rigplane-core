@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from ..protocol import decode_json, encode_json, encode_scope_frame  # noqa: TID251
 from ..transport import Connection  # noqa: TID251
-from ..websocket import WS_OP_TEXT  # noqa: TID251
+from ...ws import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...scope import ScopeFrame

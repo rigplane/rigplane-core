@@ -1,6 +1,6 @@
 name: Rebrand grep gate
 
-# Wave 2 final gate: fail any push or PR that introduces an `icom-lan` /
+# Wave 2 final gate: fail any PR that introduces an `icom-lan` /
 # `icom_lan` / `IcomLanError` reference outside the preserved-by-design
 # allow-list. See .github/scripts/check-rebrand-allowlist.sh for the
 # rationale and the allow-list.
@@ -10,39 +10,6 @@ name: Rebrand grep gate
 # product changes selected, then re-include this gate's own checker/workflow.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "**"
-      - "!docs/**"
-      - "!*.md"
-      - "!*.rst"
-      - "!**/*.md"
-      - "!**/*.mD"
-      - "!**/*.Md"
-      - "!**/*.MD"
-      - "!**/*.rst"
-      - "!**/*.rsT"
-      - "!**/*.rSt"
-      - "!**/*.rST"
-      - "!**/*.RsT"
-      - "!**/*.Rst"
-      - "!**/*.RSt"
-      - "!**/*.RST"
-      - "!.claude/**"
-      - "!.github/**"
-      - "!tests/test_ci_path_filters.py"
-      - "!mkdocs.yml"
-      - "!AUTHORS"
-      - "!COPYING"
-      - "!LICENSE"
-      - "!LICENSE.txt"
-      - "!NOTICE"
-      - "!.github/scripts/doc-citation-baseline.txt"
-      - "!.github/scripts/doc-citation-dangling-baseline.txt"
-      - "!.github/scripts/doc-link-baseline.txt"
-      - ".github/scripts/check-rebrand-allowlist.sh"
-      - ".github/workflows/rebrand-gate.yml"
   pull_request:
     branches: [main]
     paths:
@@ -76,6 +43,10 @@ on:
       - "!.github/scripts/doc-link-baseline.txt"
       - ".github/scripts/check-rebrand-allowlist.sh"
       - ".github/workflows/rebrand-gate.yml"
+  # Also called by full.yml for the scheduled run on main (MOR-3878): the merge
+  # queue does not run this informational gate, so the merged tree gets its
+  # signal from there with this same job definition.
+  workflow_call:
 
 concurrency:
   group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}
