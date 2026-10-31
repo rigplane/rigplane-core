@@ -117,7 +117,11 @@ and cross-platform, runnable from any directory with the journal in
 --no-clients-confirmed` plus a non-empty `BENCH_OWNER_YES` note; `--sim` is the
 only unarmed-safe self-run against Core's simulator stack, and
 `scripts/bench/tx_bench_windows.ps1` is the parameterized Windows recipe
-(serial port, model, profile, venv, CI-V address). The Pro `tx_smoke.py`
+(serial port, model, profile, venv and bench pythons, rigs dir, CI-V address);
+its final raw CI-V 1C 00 read/unkey step lives in
+`scripts/bench/civ_tx_state.py`. On Windows the tool itself raises the
+multimedia timer to 1 ms (plus above-normal priority) so the ±25 ms send
+windows hold. The Pro `tx_smoke.py`
 (POSIX, unattended nightly) is being reworked alongside it. Unifying the two
 into one tool is a follow-up, not part of this gate.
 

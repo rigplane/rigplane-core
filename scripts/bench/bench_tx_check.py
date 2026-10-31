@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import concurrent.futures
+import ctypes
 import datetime as dt
 import http.client
 import json
@@ -1081,6 +1082,26 @@ class Bench:
             print(f"JSONL: {self.log.path}")
 
 
+def _raise_windows_timer_resolution():
+    # Windows runs the default timer quantum at ~15.6 ms, so the tool's +-25 ms
+    # send windows slip: on an IC-7300 bench host the 300 ms holds read back as
+    # 297/313/328/141/172/78 ms with 3 of 10 cycles invalid, and one more
+    # occasionally even with a 1 ms timer. Request the 1 ms multimedia quantum
+    # for this process and lift it above normal priority (was winwrap.py, now
+    # in-tool so the bench recipe needs no wrapper). Unit-tested with a fake
+    # ctypes.windll by patching sys.platform and the module attribute; real
+    # ctypes has no windll off Windows, so this returns before touching it.
+    # Best effort: one stderr line on failure, never fatal.
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.winmm.timeBeginPeriod(1)
+        ctypes.windll.kernel32.SetPriorityClass(
+            ctypes.windll.kernel32.GetCurrentProcess(), 0x8000)
+    except Exception as exc:
+        print(f"windows timer setup failed (continuing): {exc}", file=sys.stderr)
+
+
 def simulated(args, journal):
     # Exactly the production-stack helpers used by the API regression. No
     # test-local shortened deadlines, fake clocks, or forged minimum evidence.
@@ -1131,6 +1152,7 @@ def run_bench(args, journal):
 
 
 def main():
+    _raise_windows_timer_resolution()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8080")
     parser.add_argument("--label", required=True)
