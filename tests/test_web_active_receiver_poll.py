@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from typing import Any
 
 import aiohttp
@@ -13,12 +12,7 @@ from rigplane.core.state_store import FreshnessState
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from scripts.soak import soak_driver
-
-
-async def _wait_until(predicate: Callable[[], bool]) -> None:
-    async with asyncio.timeout(10):
-        while not predicate():
-            await asyncio.sleep(0.01)
+from _timing import await_until
 
 
 async def _get(session: aiohttp.ClientSession, base: str, path: str) -> dict[str, Any]:
@@ -49,7 +43,7 @@ async def test_cold_poll_enables_web_mode_filter_and_readback(model: str) -> Non
             timeout=aiohttp.ClientTimeout(total=15),
             headers={"X-RigPlane-Controller": client.key},
         ) as session:
-            await _wait_until(
+            await await_until(
                 lambda: (
                     stack.radio.state_store.snapshot()
                     .field("global.slow_state.active")
@@ -82,7 +76,7 @@ async def test_cold_poll_enables_web_mode_filter_and_readback(model: str) -> Non
                 assert response.status == 200, body
                 assert body["ok"] is True, body
 
-            await _wait_until(lambda: _observed_mode_filter(stack) == ("LSB", 2))
+            await await_until(lambda: _observed_mode_filter(stack) == ("LSB", 2))
             mode_state = await _get(session, base, "/api/v1/state")
             assert (mode_state["main"]["mode"], mode_state["main"]["filter"]) == (
                 "LSB",
@@ -96,7 +90,7 @@ async def test_cold_poll_enables_web_mode_filter_and_readback(model: str) -> Non
             assert await client.command(
                 "set_filter", params={"filter": "FIL3", "receiver": 0}
             )
-            await _wait_until(lambda: _observed_mode_filter(stack) == ("LSB", 3))
+            await await_until(lambda: _observed_mode_filter(stack) == ("LSB", 3))
             filtered = await _get(session, base, "/api/v1/state")
             assert (filtered["main"]["mode"], filtered["main"]["filter"]) == (
                 "LSB",
@@ -191,7 +185,7 @@ async def test_poll_then_web_ptt_unkey_allows_rekey_without_fault(model: str) ->
             for _ in range(2):
                 await _poll_active_and_check_sink(stack)
                 assert await client.command("ptt_on")
-                await _wait_until(lambda: stack.sim.ptt_on)
+                await await_until(lambda: stack.sim.ptt_on)
                 async with asyncio.timeout(10):
                     while True:
                         keyed = (await stack.composition.authority.snapshot()).state

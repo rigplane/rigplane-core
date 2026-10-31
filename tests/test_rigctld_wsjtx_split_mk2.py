@@ -18,6 +18,8 @@ from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.types import Mode, bcd_encode
 
+from _helpers import observe_selected_receiver
+
 MODELS = ["IC-7300", "IC-7300MK2", "IC-705"]
 
 
@@ -59,6 +61,8 @@ async def _peer(model: str, *, selected: str = "A", profile=None, configure=None
     radio._civ_transport = transport
     radio._ctrl_transport = transport
     radio._connected = True
+    # The connect flow's 0x07 0xD2 answer: MAIN is selected (MOR-3591).
+    observe_selected_receiver(radio, 0)
     radio._civ_min_interval = 0
     config = RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2)
     kwargs = configure(radio) if configure is not None else {}

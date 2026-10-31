@@ -24,6 +24,7 @@ from rigplane.radio import IcomRadio
 from rigplane.types import Mode, bcd_encode
 
 from test_radio import MockTransport, _wrap_civ_in_udp
+from _helpers import observe_selected_receiver
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ def ic7610(mock_transport: MockTransport):
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    observe_selected_receiver(r, 0)
     yield r
     r._connected = False  # reset _conn_state so __del__ stays quiet
 
@@ -52,6 +54,7 @@ def ic7300(mock_transport: MockTransport):
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    observe_selected_receiver(r, 0)
     yield r
     r._connected = False
 
@@ -110,37 +113,24 @@ class TestPerReceiverFreq:
         )
 
     @pytest.mark.asyncio
-    async def test_ic7610_set_freq_sub_uses_fallback_select_restore(
+    async def test_ic7610_set_freq_sub_uses_selector_01(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # Fallback path: set_vfo("SUB") → set_freq → set_vfo("MAIN").
-        # Release each ACK only after its own send (1=select SUB, 2=set-freq
-        # (waits for its answer), 3=restore MAIN). Pre-queueing ACKs upfront lets
-        # the rx pump race them into the wrong consumer; the race winner differs
-        # between 3.11 and 3.12+ because pre-3.12 asyncio.wait_for wraps the
-        # awaitable in an extra Task (gh-96764), changing scheduling order.
+        # MOR-3591: selector 01 is the physical SUB (profile data): 0x25 0x01
+        # SET, then its readback; the selection is never switched. Release
+        # each answer only after its own send.
         mock_transport.queue_response_on_send(1, ACK_IC7610)
-        mock_transport.queue_response_on_send(2, ACK_IC7610)
-        mock_transport.queue_response_on_send(3, ACK_IC7610)
+        mock_transport.queue_response_on_send(
+            2,
+            _wrap_civ_in_udp(
+                b"\xfe\xfe\xe0\x98\x25\x01" + bcd_encode(7_074_000) + b"\xfd"
+            ),
+        )
         await ic7610.set_freq(7_074_000, receiver=1)
         frames = _civ_bytes(mock_transport.sent_packets)
-        # Expect: select SUB → 0x05 set-freq → restore MAIN.
-        first_select = next((i for i, f in enumerate(frames) if f == SEL_SUB), None)
-        set_freq_idx = next(
-            (i for i, f in enumerate(frames) if f[4:5] == b"\x05"), None
-        )
-        assert first_select is not None, "expected 0x07 0xD1 (select SUB)"
-        assert set_freq_idx is not None and set_freq_idx > first_select
-        # Restore step: a SEL_MAIN must appear AFTER the set-freq frame.
-        restore_idx = next(
-            (i for i, f in enumerate(frames) if f == SEL_MAIN and i > set_freq_idx),
-            None,
-        )
-        assert restore_idx is not None, (
-            "expected 0x07 0xD0 (restore MAIN) after set-freq"
-        )
-        # BCD payload correctness.
-        assert frames[set_freq_idx][5:-1] == bcd_encode(7_074_000)
+        assert [f[4:6] for f in frames] == [b"\x25\x01", b"\x25\x01"]
+        assert frames[0][6:-1] == bcd_encode(7_074_000)
+        assert not any(f == SEL_MAIN or f == SEL_SUB for f in frames)
 
     @pytest.mark.asyncio
     async def test_ic7300_set_freq_direct(
@@ -178,28 +168,22 @@ class TestPerReceiverMode:
         assert not any(f == SEL_MAIN or f == SEL_SUB for f in frames)
 
     @pytest.mark.asyncio
-    async def test_ic7610_set_mode_sub_uses_fallback(
+    async def test_ic7610_set_mode_sub_uses_selector_01(
         self, ic7610: IcomRadio, mock_transport: MockTransport
     ) -> None:
-        # Per-send ACK release — see test_ic7610_set_freq_sub_uses_fallback_
-        # select_restore for the 3.11-vs-3.12+ scheduling rationale.
-        mock_transport.queue_response_on_send(1, ACK_IC7610)
-        mock_transport.queue_response_on_send(2, ACK_IC7610)
-        mock_transport.queue_response_on_send(3, ACK_IC7610)
+        # Preservation read (0x25/0x26 01), SET 0x26 01, readback -- no select.
+        freq = _wrap_civ_in_udp(
+            b"\xfe\xfe\xe0\x98\x25\x01" + bcd_encode(7_074_000) + b"\xfd"
+        )
+        usb = _wrap_civ_in_udp(b"\xfe\xfe\xe0\x98\x26\x01\x01\x00\x01\xfd")
+        lsb = _wrap_civ_in_udp(b"\xfe\xfe\xe0\x98\x26\x01\x00\x00\x01\xfd")
+        for index, answer in enumerate((freq, usb, ACK_IC7610, freq, lsb), start=1):
+            mock_transport.queue_response_on_send(index, answer)
         await ic7610.set_mode(Mode.LSB, receiver=1)
         frames = _civ_bytes(mock_transport.sent_packets)
-        sel_idx = next((i for i, f in enumerate(frames) if f == SEL_SUB), None)
-        mode_idx = next((i for i, f in enumerate(frames) if f[4:5] == b"\x06"), None)
-        assert sel_idx is not None, "expected 0x07 0xD1 (select SUB)"
-        assert mode_idx is not None and mode_idx > sel_idx
-        # Restore step: a SEL_MAIN must appear AFTER the set-mode frame.
-        restore_idx = next(
-            (i for i, f in enumerate(frames) if f == SEL_MAIN and i > mode_idx),
-            None,
-        )
-        assert restore_idx is not None, (
-            "expected 0x07 0xD0 (restore MAIN) after set-mode"
-        )
+        assert frames[2][4:-1] == b"\x26\x01\x00\x00\x01"  # LSB, DATA off, FIL1
+        assert all(f[4:6] in (b"\x25\x01", b"\x26\x01") for f in frames)
+        assert not any(f == SEL_MAIN or f == SEL_SUB for f in frames)
 
     @pytest.mark.asyncio
     async def test_ic7300_set_mode_direct(
