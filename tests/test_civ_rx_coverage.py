@@ -40,6 +40,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from _timing import await_until
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
@@ -1322,13 +1323,21 @@ async def test_preempted_recovery_tail_does_not_cancel_coalesced_waiter(
                 radio._civ_runtime._wait_for_civ_transport_recovery(timeout=5.0)
             )
             # The waiter kicked its fast soft_reconnect and coalesced onto
-            # the first recovery's tail.
-            for _ in range(1000):
-                if waiter in radio._session_lifecycle._recovery_waiters:
-                    break
-                await asyncio.sleep(0)
-            else:
-                pytest.fail("the waiter never joined the recovery tail")
+            # the first recovery's tail (MOR-2083: the kick runs as its own
+            # task, so the registered waiter is the fast-reconnect task,
+            # not the polling waiter itself).
+            tail = radio._session_lifecycle._recover_task
+            assert tail is not None
+            await await_until(
+                lambda: (
+                    radio._session_lifecycle._recovery_waiters.get(
+                        radio._civ_runtime._fast_reconnect_task
+                    )
+                    is tail
+                ),
+                timeout=10.0,
+                description="the waiter joining the recovery tail",
+            )
             radio._civ_runtime.request_recovery_now("busy=0 (second)")
             second = radio._civ_runtime._reconnect_task
             assert second is not None and second is not first
