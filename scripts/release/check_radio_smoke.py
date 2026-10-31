@@ -22,9 +22,10 @@ MOR-3998: a receipt pair produced against a release candidate
 (``core_version`` ``X.Y.ZrcN``, ``git_sha`` the candidate commit) also
 validates for the final tag ``vX.Y.Z`` when the final commit is proven to
 differ from the candidate only in the version. The receipts keep naming
-what was really tested — no rewriting. Parsing below is line-based on
-purpose: this step runs on the runner's system ``python3``, whose version
-is not pinned, so ``tomllib`` (Python 3.11+) is not assumed.
+what was really tested — no rewriting. ``pyproject.toml`` and ``uv.lock``
+below are parsed with ``tomllib``: the project requires Python >= 3.11
+(``requires-python = ">=3.11"``), and CI already runs sibling scripts
+that import ``tomllib`` under the same system ``python3``.
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -308,94 +310,6 @@ def _git(repo: str, *args: str) -> tuple[int, str, str]:
     )
 
 
-def _unquote(value: str) -> str:
-    value = value.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-        return value[1:-1]
-    return value
-
-
-def _strip_project_version(
-    text: str, path: str, rev: str
-) -> tuple[list[str], str | None, str | None]:
-    """Split a ``pyproject.toml`` revision into comparable lines.
-
-    Returns ``(lines_without_the_project_version, project_name,
-    project_version)``. Only the ``version`` assignment inside the
-    ``[project]`` table is removed; names are read, not hard-coded, so a
-    renamed project keeps working. Raises ``ValueError`` fail-closed.
-    """
-    lines = text.splitlines()
-    section: str | None = None
-    version_idx: int | None = None
-    version: str | None = None
-    name: str | None = None
-    for pos, line in enumerate(lines):
-        stripped = line.strip()
-        section_match = re.match(r"^\[([^\[\]]+)\]\s*$", stripped)
-        if section_match is not None:
-            section = section_match.group(1)
-            continue
-        if section != "project":
-            continue
-        if re.match(r"^version\s*=", stripped):
-            if version_idx is None:
-                version_idx = pos
-                version = _unquote(stripped.split("=", 1)[1])
-            continue
-        if re.match(r"^name\s*=", stripped) and name is None:
-            name = _unquote(stripped.split("=", 1)[1])
-    if version_idx is None:
-        raise ValueError(f"{path} at {rev} has no project version line")
-    del lines[version_idx]
-    return lines, name, version
-
-
-def _strip_package_version(
-    text: str, path: str, rev: str, project: str
-) -> tuple[list[str], str | None]:
-    """Split a ``uv.lock`` revision into comparable lines.
-
-    Returns ``(lines_without_the_project_package_version, version)``:
-    everything is compared, except the ``version`` line of the
-    ``[[package]]`` block whose ``name`` is the project name. A changed
-    dependency line or an added/removed package fails the comparison.
-    Raises ``ValueError`` fail-closed.
-    """
-    header: list[str] = []
-    blocks: list[list[str]] = []
-    for line in text.splitlines():
-        if line.strip() == "[[package]]":
-            blocks.append([line])
-        elif not blocks:
-            header.append(line)
-        else:
-            blocks[-1].append(line)
-    target: list[str] | None = None
-    for block in blocks:
-        for line in block[1:]:
-            name_match = re.match(r"^name\s*=\s*(.+)$", line.strip())
-            if name_match is not None and _unquote(name_match.group(1)) == project:
-                target = block
-                break
-        if target is not None:
-            break
-    if target is None:
-        raise ValueError(f"{path} at {rev} has no {project!r} package block")
-    version: str | None = None
-    for pos in range(1, len(target)):
-        version_match = re.match(r"^version\s*=\s*(.+)$", target[pos].strip())
-        if version_match is not None:
-            version = _unquote(version_match.group(1))
-            del target[pos]
-            break
-    if version is None:
-        raise ValueError(
-            f"{path} at {rev} has no version line in the {project!r} block"
-        )
-    return header + [line for block in blocks for line in block], version
-
-
 def _git_show(repo: str, rev: str, path: str) -> tuple[str | None, str | None]:
     """Return ``(content, None)`` or ``(None, one fail-closed rc: line)``."""
     code, out, err = _git(repo, "show", f"{rev}:{path}")
@@ -452,20 +366,60 @@ def _prove_version_only(
         )
     if lines:
         return lines
-    try:
-        lines.extend(
-            _prove_pyproject_and_lock(
-                repo,
-                candidate_version=candidate_version,
-                candidate_sha=candidate_sha,
-                final_sha=final_sha,
-                expected_version=final_version,
-            )
+    lines.extend(
+        _prove_pyproject_and_lock(
+            repo,
+            candidate_version=candidate_version,
+            candidate_sha=candidate_sha,
+            final_sha=final_sha,
+            expected_version=final_version,
         )
-        lines.extend(_prove_changelog(repo, candidate_sha, final_sha))
-    except ValueError as exc:
-        lines.append(f"rc: {exc}")
+    )
+    lines.extend(_prove_changelog(repo, candidate_sha, final_sha))
     return lines
+
+
+def _load_toml(
+    repo: str, rev: str, path: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Return ``(parsed, None)`` or ``(None, one fail-closed rc: line)``."""
+    content, error = _git_show(repo, rev, path)
+    if error is not None:
+        return None, error
+    assert content is not None
+    try:
+        return tomllib.loads(content), None
+    except tomllib.TOMLDecodeError as exc:
+        return None, f"rc: cannot parse {path} at {rev}: {exc}"
+
+
+def _packages_without_project_version(
+    packages: Any, project: str
+) -> tuple[list[dict[str, Any]] | None, Any]:
+    """Drop the project entry's ``version`` from a ``[[package]]`` list.
+
+    Returns ``(normalized, version)`` or ``(None, None)`` when the
+    project entry is missing or malformed.
+    """
+    if not isinstance(packages, list):
+        return None, None
+    normalized: list[dict[str, Any]] = []
+    version: Any = None
+    found = False
+    for entry in packages:
+        if not isinstance(entry, dict):
+            return None, None
+        if not found and entry.get("name") == project:
+            found = True
+            version = entry.get("version")
+            normalized.append(
+                {key: value for key, value in entry.items() if key != "version"}
+            )
+        else:
+            normalized.append(dict(entry))
+    if not found:
+        return None, None
+    return normalized, version
 
 
 def _prove_pyproject_and_lock(
@@ -476,24 +430,26 @@ def _prove_pyproject_and_lock(
     final_sha: str,
     expected_version: str,
 ) -> list[str]:
-    """pyproject.toml and uv.lock must match except the version lines."""
+    """pyproject.toml and uv.lock must match except the project version."""
     lines: list[str] = []
-    cand_text, error = _git_show(repo, candidate_sha, "pyproject.toml")
+    cand_py, error = _load_toml(repo, candidate_sha, "pyproject.toml")
     if error is not None:
         return [error]
-    final_text, error = _git_show(repo, final_sha, "pyproject.toml")
+    final_py, error = _load_toml(repo, final_sha, "pyproject.toml")
     if error is not None:
         return [error]
-    assert cand_text is not None and final_text is not None
-    cand_lines, cand_name, cand_version = _strip_project_version(
-        cand_text, "pyproject.toml", candidate_sha
-    )
-    final_lines, final_name, final_version = _strip_project_version(
-        final_text, "pyproject.toml", final_sha
-    )
-    project = final_name or cand_name
-    if project is None:
-        raise ValueError("pyproject.toml has no project name line")
+    assert cand_py is not None and final_py is not None
+    cand_project = cand_py.get("project")
+    final_project = final_py.get("project")
+    if not isinstance(cand_project, dict):
+        return [f"rc: pyproject.toml at {candidate_sha} has no [project] table"]
+    if not isinstance(final_project, dict):
+        return [f"rc: pyproject.toml at {final_sha} has no [project] table"]
+    project = final_project.get("name") or cand_project.get("name")
+    if not isinstance(project, str) or not project:
+        return ["rc: pyproject.toml has no project name line"]
+    cand_version = cand_project.get("version")
+    final_version = final_project.get("version")
     if cand_version != candidate_version:
         lines.append(
             f"rc: pyproject.toml at {candidate_sha} says version "
@@ -505,26 +461,34 @@ def _prove_pyproject_and_lock(
             f"rc: pyproject.toml at the final commit says version "
             f"{final_version!r}, not the tag version {expected_version!r}"
         )
-    if cand_lines != final_lines:
+    if {key: value for key, value in cand_project.items() if key != "version"} != {
+        key: value for key, value in final_project.items() if key != "version"
+    }:
         lines.append(
             f"rc: pyproject.toml differs between {candidate_sha} and "
-            f"{final_sha} beyond the version line"
+            f"{final_sha} beyond the project version"
         )
-    cand_lock, error = _git_show(repo, candidate_sha, "uv.lock")
+    cand_lock, error = _load_toml(repo, candidate_sha, "uv.lock")
     if error is not None:
         lines.append(error)
         return lines
-    final_lock, error = _git_show(repo, final_sha, "uv.lock")
+    final_lock, error = _load_toml(repo, final_sha, "uv.lock")
     if error is not None:
         lines.append(error)
         return lines
     assert cand_lock is not None and final_lock is not None
-    cand_lock_lines, cand_lock_version = _strip_package_version(
-        cand_lock, "uv.lock", candidate_sha, project
+    cand_packages, cand_lock_version = _packages_without_project_version(
+        cand_lock.get("package"), project
     )
-    final_lock_lines, final_lock_version = _strip_package_version(
-        final_lock, "uv.lock", final_sha, project
+    if cand_packages is None:
+        lines.append(f"rc: uv.lock at {candidate_sha} has no {project!r} package entry")
+        return lines
+    final_packages, final_lock_version = _packages_without_project_version(
+        final_lock.get("package"), project
     )
+    if final_packages is None:
+        lines.append(f"rc: uv.lock at {final_sha} has no {project!r} package entry")
+        return lines
     if cand_lock_version != cand_version:
         lines.append(
             f"rc: uv.lock at {candidate_sha} says {project} version "
@@ -536,7 +500,7 @@ def _prove_pyproject_and_lock(
             f"{final_lock_version!r}, not the pyproject version "
             f"{final_version!r}"
         )
-    if cand_lock_lines != final_lock_lines:
+    if cand_packages != final_packages:
         lines.append(
             f"rc: uv.lock differs between {candidate_sha} and {final_sha} "
             f"beyond the {project} package version"
