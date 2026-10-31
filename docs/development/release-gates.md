@@ -75,7 +75,7 @@ The RC tier is `full.yml` on a release-candidate tag (`vX.Y.ZrcN`, pattern `v*rc
 gh workflow run full.yml --ref main -f rc=true
 ```
 
-`rc` is a boolean `workflow_dispatch` input, default false. When it is true, or the run is on a tag, the `Run tests` step passes `-m "not benchmark"`, which replaces the `addopts` selection, so the `slow`-marked tests run as well. Everything else is the scheduled `full.yml` run described above: the `test` job on Python 3.11, 3.12 and 3.13 and the `capture-harness` job, on `[self-hosted, linux, build]`. `tests/test_ci_pytest_invocation.py: test_full_runs_the_slow_tests_only_for_an_rc_dispatch_or_rc_tag` pins the selection for `rc` true, false and unset, and for a tag. The final tag goes on the same commit as the candidate, so the candidate run is the one test of that tree.
+`rc` is a boolean `workflow_dispatch` input, default false. When it is true, or the run is on a tag, the `Run tests` step passes `-m "not benchmark"`, which replaces the `addopts` selection, so the `slow`-marked tests run as well. Everything else is the scheduled `full.yml` run described above: the `test` job on Python 3.11, 3.12 and 3.13 and the `capture-harness` job, on `[self-hosted, linux, build]`. `tests/test_ci_pytest_invocation.py: test_full_runs_the_slow_tests_only_for_an_rc_dispatch_or_rc_tag` pins the selection for `rc` true, false and unset, and for a tag. The final is a separate version-only commit on top of the candidate (see "rc receipts for a version-only final" below), so the candidate run plus the checker's version-only proof cover the final tree.
 
 The run is a workflow run on `main` or on the tag, not a status on any pull request, and it is informational: no workflow reads its result, and `publish.yml` does not depend on it.
 
@@ -109,19 +109,18 @@ Both receipts are JSON objects written before the release is published and uploa
 
 ### rc receipts for a version-only final
 
-Release candidates keep the rc version in the version file (e.g. `3.1.0rc1` in `pyproject.toml`). The final is a separate commit that differs from the candidate only in the version: the `version =` line in `pyproject.toml`, the project's own entry in `uv.lock`, and the heading/compare links of `docs/CHANGELOG.md`. That candidate's tests and radio smoke count for the final with no re-run; any other difference means a new rc.
+Release candidates keep the rc version in the version file (e.g. `3.1.0rc1` in `pyproject.toml`). The final is a separate commit that differs from the candidate only in the version: the `version =` line in `pyproject.toml`, the project's own entry in `uv.lock`, and the heading/compare links of `docs/CHANGELOG.md`. The candidate's radio smoke (the RX+TX receipts) is not re-run for such a version-only final, while `publish.yml`'s `validate` job still runs its own checks (frontend, Ruff, mypy, import-linter, the pytest matrix) on the final commit; any other difference means a new rc.
 
 So a receipt pair produced against the candidate (`core_version` `X.Y.ZrcN`, `git_sha` the candidate commit, tag `vX.Y.ZrcN` on it) also validates for the final tag `vX.Y.Z` — the receipts keep naming what was really tested, and the checker (`scripts/release/check_radio_smoke.py check --tag vX.Y.Z --git-sha FINAL --rx … --tx … --repo …`) proves the version-only diff in the checked-out repo. `publish.yml`'s `validate` job checks out full history with tags (`fetch-depth: 0`) and passes `--repo "$GITHUB_WORKSPACE"` for exactly this. A receipt pair naming the final tag version and commit validates exactly as before, without touching the repo. A mix of one final-matching and one candidate receipt fails.
 
 The candidate path requires all of the following; each failure prints one `rc:`-prefixed line and fails the gate:
 
 - both receipts name the same candidate (`core_version` and `git_sha` equal; the version is `X.Y.ZrcN` with the same `X.Y.Z` as the tag, `N >= 1`, and the sha is 40 hex);
-- tag `vX.Y.ZrcN` exists in the repo and resolves to the receipt `git_sha`;
+- tag `vX.Y.ZrcN` resolves through `refs/tags/` to the receipt `git_sha` (a same-named branch is not a tag);
 - the candidate commit is an ancestor of the final commit;
-- `git diff --name-only` candidate-to-final touches only `pyproject.toml`, `uv.lock` and `docs/CHANGELOG.md` — any other path fails;
-- `pyproject.toml` matches after removing the `project.version` line, and both sides carry the claimed versions (candidate file says `X.Y.ZrcN`, final file says `X.Y.Z`);
-- `uv.lock` matches after removing the `version` of the `[[package]]` entry named by the project's `name` in `pyproject.toml` (read from the file, never hard-coded), with the same version cross-check — a changed dependency line or an added/removed package fails;
-- in the candidate-to-final `docs/CHANGELOG.md` diff every added/removed line is a `## [` heading or a `[name]: http(s)://…` link reference — any other changed line fails.
+- `git diff-tree -r --raw --no-renames --no-abbrev -z` candidate-to-final lists only identical-mode (`100644`) modifications of exactly `pyproject.toml`, `uv.lock` and `docs/CHANGELOG.md` — any other path, status, mode change, symlink, or rename fails;
+- both revisions of each file are read as raw bytes and must be byte-identical once the single permitted version assignment is normalized away: the `[project]` `version = "..."` line in `pyproject.toml`, the project's own `[[package]]` `version = "..."` line in `uv.lock` (the project name is read from the final `pyproject.toml`, never hard-coded), the `## [` headings and `[name]: http(s)://…` link reference definitions in `docs/CHANGELOG.md` — any other byte difference fails, including comments, whitespace, and binary bodies;
+- both sides carry the claimed versions (candidate files say `X.Y.ZrcN`, final files say `X.Y.Z`).
 
 A candidate of a different `X.Y.Z`, a malformed sha, a missing repo/commit/tag, or any git error fails closed. Verdict, timestamps and the per-kind rules are unchanged in both modes.
 

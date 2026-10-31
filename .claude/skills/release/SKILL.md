@@ -301,8 +301,9 @@ Print release URL.
 
 ## Release candidates (rc → version-only final)
 
-A stable release goes through a candidate first; the candidate's tests
-and radio smoke count for the final with no re-run:
+A stable release goes through a candidate first; the candidate's radio
+smoke counts for the final with no re-smoke, while `publish.yml`'s
+`validate` job still runs its own checks on the final commit:
 
 1. Cut `vNEWrc1` through the normal flow above, with the rc version in
    the version file (`pyproject.toml` says `NEWrc1`). Smoke the rc; the

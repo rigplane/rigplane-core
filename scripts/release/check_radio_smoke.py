@@ -22,10 +22,14 @@ MOR-3998: a receipt pair produced against a release candidate
 (``core_version`` ``X.Y.ZrcN``, ``git_sha`` the candidate commit) also
 validates for the final tag ``vX.Y.Z`` when the final commit is proven to
 differ from the candidate only in the version. The receipts keep naming
-what was really tested — no rewriting. ``pyproject.toml`` and ``uv.lock``
-below are parsed with ``tomllib``: the project requires Python >= 3.11
-(``requires-python = ">=3.11"``), and CI already runs sibling scripts
-that import ``tomllib`` under the same system ``python3``.
+what was really tested — no rewriting. The proof is byte-exact and uses
+neither TOML parsing nor ``git diff`` text: a ``git diff-tree --raw``
+plumbing check allows only identical-mode modifications of exactly
+``pyproject.toml``, ``uv.lock`` and ``docs/CHANGELOG.md``, then both
+revisions of each file are read as raw bytes and must be identical once
+the single permitted version assignment is normalized away (the
+``[project]`` version line, the project's own ``uv.lock`` version line,
+the changelog headings and link reference definitions).
 """
 
 from __future__ import annotations
@@ -35,7 +39,6 @@ import json
 import re
 import subprocess
 import sys
-import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -44,10 +47,23 @@ SCHEMA = 1
 
 _RC_VERSION_RE = re.compile(r"^(\d+\.\d+\.\d+)rc(\d+)$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
-_LINK_REF_RE = re.compile(r"^\[[^\]]+\]: https?://")
 
-# The only paths a version-only rc-to-final commit may touch (MOR-3998).
-_ALLOWED_RC_DIFF = frozenset({"pyproject.toml", "uv.lock", "docs/CHANGELOG.md"})
+# The only paths a version-only rc-to-final commit may touch (MOR-3998),
+# as raw diff-tree path bytes.
+_ALLOWED_RC_PATHS = frozenset({b"pyproject.toml", b"uv.lock", b"docs/CHANGELOG.md"})
+
+# One strict reader for version assignments: a bare ``version = "..."``
+# or ``name = "..."`` line — no leading whitespace, no trailing comment.
+# Both the normalizers and the version-match checks below use these two
+# patterns through ``_scan_project_table``/``_scan_lock_package``; there
+# is no second reader.
+_VERSION_LINE_RE = re.compile(rb'^version = "([^"\n]*)"$')
+_NAME_LINE_RE = re.compile(rb'^name = "([^"\n]*)"$')
+_LINK_REF_LINE_RE = re.compile(rb"^\[[^\]]+\]: https?://\S+$")
+
+# The fixed placeholder a permitted version line is replaced with before
+# the byte comparison.
+_NORMALIZED_VERSION_LINE = b'version = "0.0.0-mor3998-normalized"'
 
 TX_SEQUENCE_KEYS = (
     "single",
@@ -310,9 +326,31 @@ def _git(repo: str, *args: str) -> tuple[int, str, str]:
     )
 
 
-def _git_show(repo: str, rev: str, path: str) -> tuple[str | None, str | None]:
-    """Return ``(content, None)`` or ``(None, one fail-closed rc: line)``."""
-    code, out, err = _git(repo, "show", f"{rev}:{path}")
+def _git_bytes(repo: str, *args: str) -> tuple[int, bytes, str]:
+    """Run git in ``repo`` capturing stdout as bytes; never raise."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        return 127, b"", f"cannot run git: {exc}"
+    return (
+        completed.returncode,
+        completed.stdout,
+        completed.stderr.decode("utf-8", errors="replace").strip(),
+    )
+
+
+def _git_blob(repo: str, rev: str, path: str) -> tuple[bytes | None, str | None]:
+    """Return ``(raw blob bytes, None)`` or ``(None, one fail-closed rc: line)``.
+
+    No decoding, no stripping, no textconv: the caller compares bytes.
+    """
+    code, out, err = _git_bytes(
+        repo, "-c", "core.autocrlf=false", "show", f"{rev}:{path}"
+    )
     if code != 0:
         detail = err.splitlines()[0] if err else f"exit {code}"
         return None, f"rc: cannot read {path} at {rev} in {repo}: {detail}"
@@ -340,7 +378,9 @@ def _prove_version_only(
         detail = err.splitlines()[0] if err else f"exit {code}"
         return [f"rc: final commit {final_sha} not found in {repo}: {detail}"]
     tag = f"v{candidate_version}"
-    code, resolved, err = _git(repo, "rev-parse", "--verify", f"{tag}^{{commit}}")
+    code, resolved, err = _git(
+        repo, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}"
+    )
     if code != 0 or _SHA_RE.match(resolved) is None:
         detail = err.splitlines()[0] if err else f"exit {code}"
         return [f"rc: tag {tag!r} does not resolve to a commit in {repo}: {detail}"]
@@ -355,179 +395,325 @@ def _prove_version_only(
             f"rc: candidate {candidate_sha} ({tag}) is not an ancestor "
             f"of the final commit {final_sha}"
         ]
-    code, out, err = _git(repo, "diff", "--name-only", candidate_sha, final_sha, "--")
-    if code != 0:
-        detail = err.splitlines()[0] if err else f"exit {code}"
-        return [f"rc: cannot diff {candidate_sha}..{final_sha} in {repo}: {detail}"]
-    for path in sorted(set(out.splitlines()) - _ALLOWED_RC_DIFF):
-        lines.append(
-            f"rc: {path} changed between {tag} and the final commit — "
-            "only pyproject.toml, uv.lock and docs/CHANGELOG.md may change"
-        )
+    listed, tree_errors = _prove_tree(
+        repo, candidate_sha=candidate_sha, final_sha=final_sha, tag=tag
+    )
+    lines.extend(tree_errors)
     if lines:
         return lines
+    assert listed is not None
     lines.extend(
-        _prove_pyproject_and_lock(
+        _prove_blobs(
             repo,
             candidate_version=candidate_version,
             candidate_sha=candidate_sha,
             final_sha=final_sha,
-            expected_version=final_version,
+            final_version=final_version,
+            listed=listed,
         )
     )
-    lines.extend(_prove_changelog(repo, candidate_sha, final_sha))
     return lines
 
 
-def _load_toml(
-    repo: str, rev: str, path: str
-) -> tuple[dict[str, Any] | None, str | None]:
-    """Return ``(parsed, None)`` or ``(None, one fail-closed rc: line)``."""
-    content, error = _git_show(repo, rev, path)
-    if error is not None:
-        return None, error
-    assert content is not None
-    try:
-        return tomllib.loads(content), None
-    except tomllib.TOMLDecodeError as exc:
-        return None, f"rc: cannot parse {path} at {rev}: {exc}"
+def _prove_tree(
+    repo: str, *, candidate_sha: str, final_sha: str, tag: str
+) -> tuple[set[bytes] | None, list[str]]:
+    """Allow only identical-mode modifications of the version files.
 
-
-def _packages_without_project_version(
-    packages: Any, project: str
-) -> tuple[list[dict[str, Any]] | None, Any]:
-    """Drop the project entry's ``version`` from a ``[[package]]`` list.
-
-    Returns ``(normalized, version)`` or ``(None, None)`` when the
-    project entry is missing or malformed.
+    Runs the ``git diff-tree`` plumbing (no colour or config dependence)
+    and returns the listed paths, or ``(None, lines)`` on any failure. An
+    unchanged file is simply not listed.
     """
-    if not isinstance(packages, list):
-        return None, None
-    normalized: list[dict[str, Any]] = []
-    version: Any = None
-    found = False
-    for entry in packages:
-        if not isinstance(entry, dict):
-            return None, None
-        if not found and entry.get("name") == project:
-            found = True
-            version = entry.get("version")
-            normalized.append(
-                {key: value for key, value in entry.items() if key != "version"}
+    code, out, err = _git_bytes(
+        repo,
+        "-c",
+        "core.quotepath=off",
+        "diff-tree",
+        "-r",
+        "--raw",
+        "--no-renames",
+        "--no-abbrev",
+        "--no-commit-id",
+        "-z",
+        candidate_sha,
+        final_sha,
+        "--",
+    )
+    if code != 0:
+        detail = err.splitlines()[0] if err else f"exit {code}"
+        return None, [
+            f"rc: cannot diff {candidate_sha}..{final_sha} in {repo}: {detail}"
+        ]
+    if out == b"":
+        return set(), []
+    entries = out.split(b"\x00")
+    if entries[-1:] != [b""] or len(entries) % 2 != 1:
+        return None, [
+            f"rc: cannot parse diff-tree output between {candidate_sha} and {final_sha}"
+        ]
+    listed: set[bytes] = set()
+    lines: list[str] = []
+    for index in range(0, len(entries) - 1, 2):
+        info, path = entries[index], entries[index + 1]
+        fields = info.split(b" ")
+        if len(fields) != 5 or not fields[0].startswith(b":") or path == b"":
+            return None, [
+                f"rc: cannot parse a diff-tree entry between {candidate_sha} "
+                f"and {final_sha}"
+            ]
+        old_mode, new_mode, status = fields[0][1:], fields[1], fields[4]
+        listed.add(path)
+        if (
+            status != b"M"
+            or old_mode != b"100644"
+            or new_mode != b"100644"
+            or path not in _ALLOWED_RC_PATHS
+        ):
+            display = path.decode("utf-8", errors="replace")
+            change = (
+                f"{status.decode('ascii', errors='replace')} "
+                f"{old_mode.decode('ascii', errors='replace')}"
+                f"->{new_mode.decode('ascii', errors='replace')}"
             )
-        else:
-            normalized.append(dict(entry))
-    if not found:
-        return None, None
-    return normalized, version
+            lines.append(
+                f"rc: {display} ({change}) changed between {tag} and the "
+                "final commit — only pyproject.toml, uv.lock and "
+                "docs/CHANGELOG.md may change as identical-mode modifications"
+            )
+    if lines:
+        return None, lines
+    return listed, []
 
 
-def _prove_pyproject_and_lock(
+def _scan_project_table(
+    blob: bytes,
+) -> tuple[list[tuple[int, bytes]], list[tuple[int, bytes]]]:
+    """Find the bare ``name``/``version`` lines inside ``[project]``.
+
+    Returns ``(names, versions)`` as ``(line_index, value)`` pairs. The
+    scan itself never fails; callers require exactly one of each. Any line
+    starting with ``[`` ends the table.
+    """
+    names: list[tuple[int, bytes]] = []
+    versions: list[tuple[int, bytes]] = []
+    in_project = False
+    for index, line in enumerate(blob.split(b"\n")):
+        if line.strip().startswith(b"["):
+            in_project = line.strip() == b"[project]"
+            continue
+        if not in_project:
+            continue
+        match = _NAME_LINE_RE.match(line)
+        if match is not None:
+            names.append((index, match.group(1)))
+            continue
+        match = _VERSION_LINE_RE.match(line)
+        if match is not None:
+            versions.append((index, match.group(1)))
+    return names, versions
+
+
+def _scan_lock_package(
+    blob: bytes, project: bytes
+) -> tuple[int | None, bytes | None, str | None]:
+    """Locate the ``[[package]]`` block named ``project`` in uv.lock bytes.
+
+    Returns ``(version_line_index, version_value, error)`` — the single
+    reader used by both the normalizer and the version-match check.
+    """
+    block_names: list[bytes | None] = []
+    block_versions: list[list[tuple[int, bytes]]] = []
+    for index, line in enumerate(blob.split(b"\n")):
+        if line.strip() == b"[[package]]":
+            block_names.append(None)
+            block_versions.append([])
+            continue
+        if not block_names:
+            continue
+        match = _NAME_LINE_RE.match(line)
+        if match is not None:
+            if block_names[-1] is None:
+                block_names[-1] = match.group(1)
+            continue
+        match = _VERSION_LINE_RE.match(line)
+        if match is not None:
+            block_versions[-1].append((index, match.group(1)))
+    hits = [block for block, name in enumerate(block_names) if name == project]
+    if len(hits) != 1:
+        return (
+            None,
+            None,
+            (
+                f"expected exactly one [[package]] block named {project!r}, "
+                f"found {len(hits)}"
+            ),
+        )
+    found = block_versions[hits[0]]
+    if len(found) != 1:
+        return (
+            None,
+            None,
+            (
+                f"expected exactly one version line in the {project!r} "
+                f"package block, found {len(found)}"
+            ),
+        )
+    return found[0][0], found[0][1], None
+
+
+# A normalized file side: ``(normalized_bytes, version_value, error)``.
+# Exactly one of the first and the last is set; ``version_value`` is the
+# single permitted version assignment the scan found.
+_Normalized = tuple[bytes | None, bytes | None, str | None]
+
+
+def _normalize_pyproject(blob: bytes) -> _Normalized:
+    """Replace the single ``[project]`` version line with a placeholder."""
+    _, versions = _scan_project_table(blob)
+    if len(versions) != 1:
+        return (
+            None,
+            None,
+            f"expected exactly one version line in [project], found {len(versions)}",
+        )
+    lines = blob.split(b"\n")
+    lines[versions[0][0]] = _NORMALIZED_VERSION_LINE
+    return b"\n".join(lines), versions[0][1], None
+
+
+def _normalize_lock(blob: bytes, project: bytes) -> _Normalized:
+    """Replace the project package version line with a placeholder."""
+    index, value, error = _scan_lock_package(blob, project)
+    if error is not None:
+        return None, None, error
+    assert index is not None and value is not None
+    lines = blob.split(b"\n")
+    lines[index] = _NORMALIZED_VERSION_LINE
+    return b"\n".join(lines), value, None
+
+
+def _normalize_changelog(blob: bytes) -> bytes:
+    """Drop changelog headings and link reference definitions."""
+    return b"\n".join(
+        line
+        for line in blob.split(b"\n")
+        if not line.startswith(b"## [") and _LINK_REF_LINE_RE.match(line) is None
+    )
+
+
+def _prove_blobs(
     repo: str,
     *,
     candidate_version: str,
     candidate_sha: str,
     final_sha: str,
-    expected_version: str,
+    final_version: str,
+    listed: set[bytes],
 ) -> list[str]:
-    """pyproject.toml and uv.lock must match except the project version."""
-    lines: list[str] = []
-    cand_py, error = _load_toml(repo, candidate_sha, "pyproject.toml")
+    """Byte-compare each version file with only its version line normalized.
+
+    ``listed`` holds the diff-tree paths; the changelog is only compared
+    when listed (an unlisted file is identical by construction), while
+    ``pyproject.toml`` and ``uv.lock`` are always read: their claimed
+    versions must match the receipt and the tag even when the tree lists
+    nothing.
+    """
+    cand_py, error = _git_blob(repo, candidate_sha, "pyproject.toml")
     if error is not None:
         return [error]
-    final_py, error = _load_toml(repo, final_sha, "pyproject.toml")
+    final_py, error = _git_blob(repo, final_sha, "pyproject.toml")
     if error is not None:
         return [error]
     assert cand_py is not None and final_py is not None
-    cand_project = cand_py.get("project")
-    final_project = final_py.get("project")
-    if not isinstance(cand_project, dict):
-        return [f"rc: pyproject.toml at {candidate_sha} has no [project] table"]
-    if not isinstance(final_project, dict):
-        return [f"rc: pyproject.toml at {final_sha} has no [project] table"]
-    project = final_project.get("name") or cand_project.get("name")
-    if not isinstance(project, str) or not project:
-        return ["rc: pyproject.toml has no project name line"]
-    cand_version = cand_project.get("version")
-    final_version = final_project.get("version")
-    if cand_version != candidate_version:
+    cand_names, _ = _scan_project_table(cand_py)
+    final_names, _ = _scan_project_table(final_py)
+    if len(final_names) != 1:
+        return ["rc: pyproject.toml at the final commit has no [project] name line"]
+    project = final_names[0][1]
+    if len(cand_names) != 1 or cand_names[0][1] != project:
+        return [
+            f"rc: pyproject.toml at {candidate_sha} has no matching [project] name line"
+        ]
+    cand_claimed = candidate_version.encode("ascii")
+    final_claimed = final_version.encode("ascii")
+    project_text = project.decode("ascii", errors="replace")
+    lines: list[str] = []
+    cand_norm, cand_value, cand_error = _normalize_pyproject(cand_py)
+    final_norm, final_value, final_error = _normalize_pyproject(final_py)
+    if cand_error is not None:
+        lines.append(f"rc: pyproject.toml at {candidate_sha}: {cand_error}")
+    elif cand_value != cand_claimed:
         lines.append(
             f"rc: pyproject.toml at {candidate_sha} says version "
-            f"{cand_version!r}, not the receipt core_version "
+            f"{cand_value!r}, not the receipt core_version "
             f"{candidate_version!r}"
         )
-    if final_version != expected_version:
+    if final_error is not None:
+        lines.append(f"rc: pyproject.toml at the final commit: {final_error}")
+    elif final_value != final_claimed:
         lines.append(
             f"rc: pyproject.toml at the final commit says version "
-            f"{final_version!r}, not the tag version {expected_version!r}"
+            f"{final_value!r}, not the tag version {final_version!r}"
         )
-    if {key: value for key, value in cand_project.items() if key != "version"} != {
-        key: value for key, value in final_project.items() if key != "version"
-    }:
+    if cand_norm is not None and final_norm is not None and cand_norm != final_norm:
         lines.append(
             f"rc: pyproject.toml differs between {candidate_sha} and "
             f"{final_sha} beyond the project version"
         )
-    cand_lock, error = _load_toml(repo, candidate_sha, "uv.lock")
+    cand_lock, error = _git_blob(repo, candidate_sha, "uv.lock")
     if error is not None:
         lines.append(error)
         return lines
-    final_lock, error = _load_toml(repo, final_sha, "uv.lock")
+    final_lock, error = _git_blob(repo, final_sha, "uv.lock")
     if error is not None:
         lines.append(error)
         return lines
     assert cand_lock is not None and final_lock is not None
-    cand_packages, cand_lock_version = _packages_without_project_version(
-        cand_lock.get("package"), project
+    cand_lock_norm, cand_lock_value, cand_lock_error = _normalize_lock(
+        cand_lock, project
     )
-    if cand_packages is None:
-        lines.append(f"rc: uv.lock at {candidate_sha} has no {project!r} package entry")
-        return lines
-    final_packages, final_lock_version = _packages_without_project_version(
-        final_lock.get("package"), project
+    final_lock_norm, final_lock_value, final_lock_error = _normalize_lock(
+        final_lock, project
     )
-    if final_packages is None:
-        lines.append(f"rc: uv.lock at {final_sha} has no {project!r} package entry")
-        return lines
-    if cand_lock_version != cand_version:
+    if cand_lock_error is not None:
+        lines.append(f"rc: uv.lock at {candidate_sha}: {cand_lock_error}")
+    elif cand_lock_value != cand_claimed:
         lines.append(
-            f"rc: uv.lock at {candidate_sha} says {project} version "
-            f"{cand_lock_version!r}, not the pyproject version {cand_version!r}"
+            f"rc: uv.lock at {candidate_sha} says {project_text} version "
+            f"{cand_lock_value!r}, not the receipt core_version "
+            f"{candidate_version!r}"
         )
-    if final_lock_version != final_version:
+    if final_lock_error is not None:
+        lines.append(f"rc: uv.lock at the final commit: {final_lock_error}")
+    elif final_lock_value != final_claimed:
         lines.append(
-            f"rc: uv.lock at the final commit says {project} version "
-            f"{final_lock_version!r}, not the pyproject version "
-            f"{final_version!r}"
+            f"rc: uv.lock at the final commit says {project_text} version "
+            f"{final_lock_value!r}, not the tag version {final_version!r}"
         )
-    if cand_packages != final_packages:
+    if (
+        cand_lock_norm is not None
+        and final_lock_norm is not None
+        and cand_lock_norm != final_lock_norm
+    ):
         lines.append(
             f"rc: uv.lock differs between {candidate_sha} and {final_sha} "
-            f"beyond the {project} package version"
+            f"beyond the {project_text} package version"
         )
-    return lines
-
-
-def _prove_changelog(repo: str, candidate_sha: str, final_sha: str) -> list[str]:
-    """Only changelog headings and link refs may change rc-to-final."""
-    code, out, err = _git(
-        repo, "diff", "-U0", candidate_sha, final_sha, "--", "docs/CHANGELOG.md"
-    )
-    if code != 0:
-        detail = err.splitlines()[0] if err else f"exit {code}"
-        return [f"rc: cannot diff docs/CHANGELOG.md in {repo}: {detail}"]
-    lines: list[str] = []
-    for line in out.splitlines():
-        if line.startswith(("+++", "---")) or not line.startswith(("+", "-")):
-            continue
-        body = line[1:]
-        if body.startswith("## ["):
-            continue
-        if _LINK_REF_RE.match(body) is not None:
-            continue
-        lines.append(
-            f"rc: docs/CHANGELOG.md changes more than headings and link refs: {body!r}"
-        )
+    if b"docs/CHANGELOG.md" in listed:
+        cand_cl, error = _git_blob(repo, candidate_sha, "docs/CHANGELOG.md")
+        if error is not None:
+            lines.append(error)
+            return lines
+        final_cl, error = _git_blob(repo, final_sha, "docs/CHANGELOG.md")
+        if error is not None:
+            lines.append(error)
+            return lines
+        assert cand_cl is not None and final_cl is not None
+        if _normalize_changelog(cand_cl) != _normalize_changelog(final_cl):
+            lines.append(
+                "rc: docs/CHANGELOG.md changes more than headings and "
+                f"link refs between {candidate_sha} and {final_sha}"
+            )
     return lines
 
 
