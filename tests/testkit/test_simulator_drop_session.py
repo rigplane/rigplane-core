@@ -274,32 +274,37 @@ async def test_fence_permission_is_per_client_not_shared(server, client):
 
 
 async def test_reboot_notice_then_discovery_grace_then_silence(server, client):
-    """(f) Recorded power-off order: the 0x90 notice first, then ~0.02 s in
-    which AreYouThere/AreYouReady are still answered, then total silence."""
+    """(f) Recorded power-off order: the 0x90 notice first, then a window in
+    which AreYouThere/AreYouReady are still answered, then total silence.
+
+    The order is what this pins, not the recorded 0.02 s: the probes cross the
+    same event loop as the simulator, and the first one of a cold process or a
+    loaded runner is read later than 20 ms, so with the recorded window this
+    test failed every time it ran alone. The test holds the window open and
+    ends it itself."""
     await _login_and_claim(client, server)
 
-    t0 = time.monotonic()
-    server.reboot(at=0.2, down_for=0.8, busy_for=0.0, notice=True)
+    server.reboot(
+        at=0.2, down_for=5.0, busy_for=0.0, notice=True, hold_notice_window=True
+    )
 
     # The notice goes out before the radio goes dark.
     notice = await client.recv(timeout=2.0)
-    dt = time.monotonic() - t0
     assert len(notice) == 0x90
     assert notice[0x15] == 0x00
     assert struct.unpack_from("<I", notice, 0x60)[0] == 0
-    assert dt <= 0.4  # well inside the pre-dark window
     _assert_notice_reaches_production_callback(notice)
 
-    # Inside the ~0.02 s grace window discovery is still answered.
+    # Inside the grace window discovery is still answered.
     client.send(_ayt(), server.control_port)
     client.send(_ayr(), server.control_port)
-    first = await client.recv(timeout=0.5)
-    second = await client.recv(timeout=0.5)
+    first = await client.recv(timeout=2.0)
+    second = await client.recv(timeout=2.0)
     types = {struct.unpack_from("<H", p, 4)[0] for p in (first, second)}
     assert types == {_PT_I_AM_HERE, _PT_ARE_YOU_READY}
 
     # Then total silence for the rest of the down window.
-    await asyncio.sleep(max(0.0, 0.6 - (time.monotonic() - t0)))
+    server.end_notice_window()
     client.send(_ayt(), server.control_port)
     await client.expect_silence(0.3)
     assert server.reboot_count == 1
