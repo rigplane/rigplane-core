@@ -30,7 +30,8 @@ state payloads are left out to keep the committed file small.
 Observed values are fixed per field type, not calibrated readings. A declared
 str or object field this script has no value for raises instead of getting a
 placeholder. ``updatedAt``, every ``lastObservedMonotonic``,
-``radioHealth.sinceMs``, ``webrtc.available`` and the audio-jitter environment
+``radioHealth.sinceMs``, ``connection.liveness.lastFrameAgeMs``,
+``webrtc.available`` and the audio-jitter environment
 variables are pinned, so a run does not vary with the clock, with aiortc being
 installed, or with those variables.
 
@@ -77,6 +78,7 @@ from rigplane.runtime._state_queries import (  # noqa: E402
     wire_parts_for_query,
 )
 from rigplane.web.runtime_helpers import declared_field_paths  # noqa: E402
+from rigplane.web import server as _server_module  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 
 GOLDEN_PATH = (
@@ -93,6 +95,9 @@ GOLDEN_PATH = (
 _PINNED_UPDATED_AT = "2026-01-01T00:00:00+00:00"
 _PINNED_MONOTONIC = 1000.0
 _PINNED_SINCE_MS = 0
+# MOR-3630/MOR-3845: radio-backed envelopes carry the live
+# ``connection.liveness`` block whose frame age is wall-clock dependent.
+_PINNED_LAST_FRAME_AGE_MS = 0
 # Read by ``get_audio_rx_jitter_floor_ms`` / ``get_audio_rx_jitter_ceiling_ms``.
 _JITTER_ENV_VARS = (
     "ICOM_AUDIO_RX_JITTER_FLOOR_MS",
@@ -215,6 +220,10 @@ def _pin_volatile(payload: dict[str, Any]) -> None:
     radio_health = payload.get("radioHealth")
     if radio_health is not None and "sinceMs" in radio_health:
         radio_health["sinceMs"] = _PINNED_SINCE_MS
+    # NOTE: the MOR-3845 ``connection.liveness.lastFrameAgeMs`` is pinned at
+    # the source (``_pinned_liveness`` freezes ``connection_liveness_payload``
+    # for the whole render), because pinning it here would be too late: the
+    # delta change-detection already ran on the unpinned ages.
     for status in payload.get("fieldStatus", {}).values():
         if "lastObservedMonotonic" in status:
             status["lastObservedMonotonic"] = _PINNED_MONOTONIC
@@ -347,9 +356,34 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
     return golden
 
 
+def _pinned_liveness() -> Any:
+    """Freeze the MOR-3845 liveness frame age for one golden render.
+
+    ``connection_liveness_payload`` measures ``lastFrameAgeMs`` at response
+    time, so two envelope builds of the same radio-backed server see different
+    ages: the value drifts run to run, and the delta change-detection
+    spuriously carries ``connection`` when a millisecond boundary falls
+    between the baseline and the delta build. Freezing the age at the source
+    keeps radio-backed full envelopes byte-stable and deltas limited to the
+    squelch flip. Pinned after the fact (``_pin_volatile``) would be too late
+    for the deltas.
+    """
+    original = _server_module.connection_liveness_payload
+
+    @functools.wraps(original)
+    def wrapper(radio: Any, **kwargs: Any) -> Any:
+        payload = original(radio, **kwargs)
+        if isinstance(payload, dict) and payload.get("lastFrameAgeMs") is not None:
+            payload = dict(payload)
+            payload["lastFrameAgeMs"] = _PINNED_LAST_FRAME_AGE_MS
+        return payload
+
+    return mock.patch.object(_server_module, "connection_liveness_payload", wrapper)
+
+
 def _build_goldens() -> dict[str, dict[str, Any]]:
     models = sorted(discover_rigs(_REPO_ROOT / "rigs"))
-    with mock.patch.dict(os.environ):
+    with mock.patch.dict(os.environ), _pinned_liveness():
         for name in _JITTER_ENV_VARS:
             os.environ.pop(name, None)
         return {model: _build_profile_goldens(model) for model in models}
