@@ -31,7 +31,12 @@ from rigplane.core.exceptions import (
     TimeoutError,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.types import CivFrame, bcd_encode
+from rigplane.core.types import (
+    CivFrame,
+    RepeaterShiftDirection,
+    ToneSquelchType,
+    bcd_encode,
+)
 from rigplane.radio import IcomRadio
 from rigplane.runtime.callable_support import unselected_selector_is_sub
 
@@ -51,8 +56,10 @@ _READ_REPLY: dict[tuple[int, ...], bytes] = {
     (0x1A, 0x03): bytes([0x10]),
     (0x16, 0x42): bytes([0x01]),
     (0x16, 0x43): bytes([0x01]),
+    (0x16, 0x5D): bytes([0x01]),
     (0x1B, 0x00): bytes([0x00, 0x08, 0x85]),
     (0x1B, 0x01): bytes([0x00, 0x08, 0x85]),
+    (0x0F,): bytes([0x11]),
 }
 
 
@@ -230,6 +237,34 @@ OPS: tuple[Op, ...] = (
         lambda r, rx: r.get_tsql_freq(receiver=rx),
         (0x1B, 0x01),
         ("get_tsql_freq",),
+    ),
+    # MOR-3623: the IC-9700/IC-705 repeater shift (0x0F) and tone squelch
+    # selector (0x16 0x5D) declarations ride this same backbone -- plain
+    # command for the selected receiver, ``receiver_not_selected`` refusal
+    # otherwise, never a 0x07 0xD0/0xD1 selection frame.
+    Op(
+        "set_repeater_shift",
+        lambda r, rx: r.set_repeater_shift(RepeaterShiftDirection.MINUS, receiver=rx),
+        (0x0F, None),
+        ("set_repeater_shift",),
+    ),
+    Op(
+        "get_repeater_shift",
+        lambda r, rx: r.get_repeater_shift(receiver=rx),
+        (0x0F, None),
+        ("get_repeater_shift",),
+    ),
+    Op(
+        "set_tone_squelch_type",
+        lambda r, rx: r.set_tone_squelch_type(ToneSquelchType.TONE, receiver=rx),
+        (0x16, 0x5D),
+        ("set_tone_squelch_type",),
+    ),
+    Op(
+        "get_tone_squelch_type",
+        lambda r, rx: r.get_tone_squelch_type(receiver=rx),
+        (0x16, 0x5D),
+        ("get_tone_squelch_type",),
     ),
     Op("set_vfo_slot", lambda r, rx: r.set_vfo_slot("A", receiver=rx), (0x07, None)),
     Op(

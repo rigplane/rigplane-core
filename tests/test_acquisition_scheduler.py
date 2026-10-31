@@ -3670,11 +3670,14 @@ def test_ic9700_real_profile_tone_tuner_query_for_path() -> None:
     # never used by polling, so a poll cannot turn the tuner on or start a tune.
     tuner_status = FieldPath.global_("operator_controls", "tuner_status")
 
+    # MOR-3623: the IC-9700 declares get_tone_squelch_type, so the shared
+    # resolver rides the one 16 5D selector read for both booleans — the
+    # same preference the IC-705 profile gets from the same declaration.
     assert executor.query_for_path(repeater_tone) == acquisition_query(
-        0x16, sub=0x42, receiver=0
+        0x16, sub=0x5D, receiver=0
     )
     assert executor.query_for_path(repeater_tsql) == acquisition_query(
-        0x16, sub=0x43, receiver=0
+        0x16, sub=0x5D, receiver=0
     )
     assert executor.query_for_path(tone_freq) == acquisition_query(
         0x1B, sub=0x00, receiver=0
@@ -3690,10 +3693,10 @@ def test_ic9700_real_profile_tone_tuner_query_for_path() -> None:
     tone_freq_sub = FieldPath.receiver("sub", "operator_controls", "tone_freq")
     tsql_freq_sub = FieldPath.receiver("sub", "operator_controls", "tsql_freq")
     assert executor.query_for_path(repeater_tone_sub) == acquisition_query(
-        0x16, sub=0x42, receiver=1
+        0x16, sub=0x5D, receiver=1
     )
     assert executor.query_for_path(repeater_tsql_sub) == acquisition_query(
-        0x16, sub=0x43, receiver=1
+        0x16, sub=0x5D, receiver=1
     )
     assert executor.query_for_path(tone_freq_sub) == acquisition_query(
         0x1B, sub=0x00, receiver=1
