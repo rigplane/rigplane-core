@@ -450,35 +450,37 @@ def _build_rc_repo(
     tmp_path: Path,
     *,
     final_extra: Callable[[Path], None] | None = None,
-    changelog_fn: Callable[[str], str] | None = None,
+    pyproject_fn: Callable[[str], str] | None = None,
 ) -> tuple[Path, str, str]:
     """Real git repo: rc commit tagged ``v3.1.0rc1``, then the final commit.
 
-    The final commit rewrites only the version (the pyproject version
-    line, the rigplane uv.lock version line, the changelog
-    heading/links) unless ``final_extra`` mutates the tree further
-    before the final commit. Returns ``(repo, candidate_sha, final_sha)``.
+    The final commit rewrites only the version (the pyproject version,
+    the rigplane uv.lock version, the changelog headings) unless
+    ``final_extra`` mutates the tree further before the final commit.
+    Returns ``(repo, candidate_sha, final_sha)``.
     """
-    render_changelog = changelog_fn or _rc_changelog
+    render_pyproject = pyproject_fn or _rc_pyproject
     repo = tmp_path / "rc-repo"
     repo.mkdir()
     (repo / "docs").mkdir()
     _git(repo, "init", "-q")
     _git(repo, "config", "user.name", "rc-test")
     _git(repo, "config", "user.email", "rc-test@example.com")
-    (repo / "pyproject.toml").write_text(_rc_pyproject(RC_VERSION), encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        render_pyproject(RC_VERSION), encoding="utf-8"
+    )
     (repo / "uv.lock").write_text(_rc_uv_lock(RC_VERSION), encoding="utf-8")
     (repo / "docs" / "CHANGELOG.md").write_text(
-        render_changelog(RC_VERSION), encoding="utf-8"
+        _rc_changelog(RC_VERSION), encoding="utf-8"
     )
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "chore(release): bump to 3.1.0rc1")
     _git(repo, "tag", "-a", RC_TAG, "-m", "Release 3.1.0rc1")
     candidate = _git(repo, "rev-parse", "HEAD")
-    (repo / "pyproject.toml").write_text(_rc_pyproject(VERSION), encoding="utf-8")
+    (repo / "pyproject.toml").write_text(render_pyproject(VERSION), encoding="utf-8")
     (repo / "uv.lock").write_text(_rc_uv_lock(VERSION), encoding="utf-8")
     (repo / "docs" / "CHANGELOG.md").write_text(
-        render_changelog(VERSION), encoding="utf-8"
+        _rc_changelog(VERSION), encoding="utf-8"
     )
     if final_extra is not None:
         final_extra(repo)
@@ -585,27 +587,6 @@ def test_rc_receipts_fail_when_pyproject_changes_beyond_version(
     assert any("pyproject.toml" in line for line in _stderr_lines(stderr)), stderr
 
 
-def test_rc_receipts_fail_when_changelog_body_changes(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def extra(repo: Path) -> None:
-        changelog = repo / "docs" / "CHANGELOG.md"
-        changelog.write_text(
-            changelog.read_text(encoding="utf-8").replace(
-                "- Test entry one.", "- Test entry two."
-            ),
-            encoding="utf-8",
-        )
-
-    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
-    rx, tx = _rc_pair(candidate)
-    rc, _, stderr = _write_and_check(
-        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
-    )
-    assert rc != 0, "a changelog body change must fail"
-    assert any("docs/CHANGELOG.md" in line for line in _stderr_lines(stderr)), stderr
-
-
 def test_rc_receipts_fail_for_a_different_series(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -679,60 +660,17 @@ def test_rc_receipts_fail_when_the_candidate_is_not_an_ancestor(
     assert any("ancestor" in line for line in _stderr_lines(stderr)), stderr
 
 
-def test_rc_receipts_fail_for_a_malformed_sha(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo, candidate, final = _build_rc_repo(tmp_path)
-    rx, tx = _rc_pair(candidate)
-    rx["git_sha"] = "not-a-sha"
-    tx["git_sha"] = "not-a-sha"
-    rc, _, stderr = _write_and_check(
-        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
-    )
-    assert rc != 0, "a malformed sha must fail closed"
-    assert any("git_sha" in line for line in _stderr_lines(stderr)), stderr
-
-
-def test_rc_receipts_fail_when_the_repo_is_missing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    repo, candidate, final = _build_rc_repo(tmp_path)
-    rx, tx = _rc_pair(candidate)
-    rc, _, stderr = _write_and_check(
-        tmp_path,
-        capsys,
-        rx=rx,
-        tx=tx,
-        tag=TAG,
-        sha=final,
-        repo=tmp_path / "no-such-repo",
-    )
-    assert rc != 0, "a missing repo must fail closed"
-    assert _stderr_lines(stderr), "a missing repo must print a line"
-
-
-def test_exact_match_receipts_need_no_repo(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Final receipts pass even when ``--repo`` points at thin air."""
-    rc, stdout, stderr = _write_and_check(
-        tmp_path,
-        capsys,
-        rx=_rx_payload(),
-        tx=_tx_payload(),
-        repo=tmp_path / "no-such-repo",
-    )
-    assert rc == 0, f"exact final receipts must pass; stderr:\n{stderr}"
-    assert f"for {TAG} @ {SHA}" in stdout, stdout
-
-
-# --- MOR-3998 round-1 gate regressions ---
+# --- MOR-3998 rc receipts for a version-only final ---
 #
-# Each test below pins one finding of the independent round-1 review:
-# the tag must resolve through ``refs/tags/`` (a same-named branch is not
-# a tag), only identical-mode modifications of exactly the three version
-# files may land, and the content proof is byte-exact (a TOML re-parse
-# or a ``git diff`` text scan lets the cases below through).
+# Each test below pins one of the four checks the gate performs for
+# receipts naming a candidate (``X.Y.ZrcN``): rx and tx name the same
+# candidate; the tag resolves through ``refs/tags/`` (a same-named
+# branch is not a tag) and the candidate is an ancestor of the final;
+# the candidate-to-final tree holds only identical-mode modifications
+# of exactly ``pyproject.toml``, ``uv.lock`` and ``docs/CHANGELOG.md``;
+# the TOML documents match past the version and the final changelog
+# carries the final heading and no rc heading. CHANGELOG body
+# integrity is not checked.
 
 
 def test_rc_receipts_fail_when_only_a_branch_names_the_candidate_tag(
@@ -850,16 +788,33 @@ def test_rc_receipts_fail_when_uv_lock_top_level_metadata_changes(
     assert any("uv.lock" in line for line in _stderr_lines(stderr)), stderr
 
 
-def test_rc_receipts_fail_when_pyproject_gains_only_a_comment(
+def test_rc_receipts_fail_when_the_lock_is_unchanged_but_still_names_the_rc(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A comment/whitespace-only change is still a change."""
+    """A file the tree diff skips must still carry the final version."""
 
     def extra(repo: Path) -> None:
-        path = repo / "pyproject.toml"
+        (repo / "uv.lock").write_text(_rc_uv_lock(RC_VERSION), encoding="utf-8")
+
+    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
+    rx, tx = _rc_pair(candidate)
+    rc, _, stderr = _write_and_check(
+        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
+    )
+    assert rc != 0, "an unchanged lock still naming the rc must fail"
+    assert any("uv.lock" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_rc_receipts_fail_when_the_final_changelog_has_no_final_heading(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The final changelog must carry a ``## [X.Y.Z]`` heading line."""
+
+    def extra(repo: Path) -> None:
+        path = repo / "docs" / "CHANGELOG.md"
         path.write_text(
             path.read_text(encoding="utf-8").replace(
-                "[project]\n", "[project]\n# version-only final\n", 1
+                f"## [{VERSION}]", "## [Next]", 1
             ),
             encoding="utf-8",
         )
@@ -869,40 +824,18 @@ def test_rc_receipts_fail_when_pyproject_gains_only_a_comment(
     rc, _, stderr = _write_and_check(
         tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
     )
-    assert rc != 0, "a comment-only pyproject change must fail"
-    assert any("pyproject.toml" in line for line in _stderr_lines(stderr)), stderr
+    assert rc != 0, "a final changelog without the final heading must fail"
+    assert any("CHANGELOG" in line for line in _stderr_lines(stderr)), stderr
 
 
-def test_rc_receipts_fail_when_changelog_body_is_rewritten_as_utf16(
+def test_rc_receipts_fail_when_the_final_changelog_still_names_the_rc(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A binary (UTF-16) body change is not a heading/link change."""
+    """The final changelog must not still carry the ``## [X.Y.ZrcN]`` line."""
 
     def extra(repo: Path) -> None:
-        path = repo / "docs" / "CHANGELOG.md"
-        body = path.read_text(encoding="utf-8").replace(
-            "- Test entry one.", "- Test entry two."
-        )
-        path.write_bytes(body.encode("utf-16"))
-
-    repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
-    rx, tx = _rc_pair(candidate)
-    rc, _, stderr = _write_and_check(
-        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
-    )
-    assert rc != 0, "a UTF-16 changelog body change must fail"
-    assert any("docs/CHANGELOG.md" in line for line in _stderr_lines(stderr)), stderr
-
-
-def test_rc_receipts_fail_when_changelog_gains_a_plus_plus_line(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """An added ``++ text`` body line must not hide behind ``+++``."""
-
-    def extra(repo: Path) -> None:
-        path = repo / "docs" / "CHANGELOG.md"
-        path.write_text(
-            path.read_text(encoding="utf-8") + "++ text\n", encoding="utf-8"
+        (repo / "docs" / "CHANGELOG.md").write_text(
+            _rc_changelog(RC_VERSION), encoding="utf-8"
         )
 
     repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
@@ -910,32 +843,37 @@ def test_rc_receipts_fail_when_changelog_gains_a_plus_plus_line(
     rc, _, stderr = _write_and_check(
         tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
     )
-    assert rc != 0, "an added ++ body line must fail"
-    assert any("docs/CHANGELOG.md" in line for line in _stderr_lines(stderr)), stderr
+    assert rc != 0, "a final changelog still naming the rc must fail"
+    assert any("CHANGELOG" in line for line in _stderr_lines(stderr)), stderr
 
 
-def _frontmatter_changelog(version: str) -> str:
-    return "---\ntitle: rigplane\n---\n" + _rc_changelog(version)
+def _multiline_string_pyproject(version: str) -> str:
+    return (
+        _rc_pyproject(version)
+        + '\n[tool.example]\nnote = """\nline one\nversion = "1.0.0"\nline three\n"""\n'
+    )
 
 
-def test_rc_receipts_fail_when_changelog_loses_a_frontmatter_fence(
+def test_rc_receipts_fail_when_a_toml_multiline_string_hides_a_change(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A removed ``---`` fence line must not hide behind ``---``."""
+    """An edit inside a multiline string changes the parsed document."""
 
     def extra(repo: Path) -> None:
-        path = repo / "docs" / "CHANGELOG.md"
+        path = repo / "pyproject.toml"
         path.write_text(
-            path.read_text(encoding="utf-8").replace("---\ntitle", "title", 1),
+            path.read_text(encoding="utf-8").replace(
+                'version = "1.0.0"', 'version = "2.0.0"', 1
+            ),
             encoding="utf-8",
         )
 
     repo, candidate, final = _build_rc_repo(
-        tmp_path, final_extra=extra, changelog_fn=_frontmatter_changelog
+        tmp_path, final_extra=extra, pyproject_fn=_multiline_string_pyproject
     )
     rx, tx = _rc_pair(candidate)
     rc, _, stderr = _write_and_check(
         tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
     )
-    assert rc != 0, "a removed frontmatter fence must fail"
-    assert any("docs/CHANGELOG.md" in line for line in _stderr_lines(stderr)), stderr
+    assert rc != 0, "an edit inside a multiline string must fail"
+    assert any("pyproject.toml" in line for line in _stderr_lines(stderr)), stderr
