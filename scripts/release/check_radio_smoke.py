@@ -101,11 +101,7 @@ def _validate_rx(payload: dict[str, Any]) -> list[str]:
 
 
 def _validate(
-    payload: Any,
-    kind: str,
-    expected_version: str,
-    expected_sha: str,
-    now: datetime,
+    payload: Any, kind: str, expected_version: str, expected_sha: str, now: datetime
 ) -> list[str]:
     if not isinstance(payload, dict):
         return ["top level is not a JSON object"]
