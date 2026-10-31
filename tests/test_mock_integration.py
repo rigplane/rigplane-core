@@ -21,6 +21,7 @@ from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import parse_line
 from rigplane.types import Mode
 
+from _helpers import observe_selected_receiver
 from _perf_helpers import fast_connect
 from mock_server import MockIcomRadio
 
@@ -218,6 +219,29 @@ class TestMeters:
         assert value == 255
 
 
+class TestSquelchStatus:
+    """MOR-3630: the 0x15 0x01 squelch-open poll the scheduler now sends."""
+
+    async def test_sql_status_default_closed(
+        self, connected_radio: IcomRadio, mock_radio: MockIcomRadio
+    ) -> None:
+        assert await connected_radio.get_s_meter_sql_status() is False
+
+    async def test_sql_status_open(
+        self, connected_radio: IcomRadio, mock_radio: MockIcomRadio
+    ) -> None:
+        mock_radio.set_squelch_open(True)
+        assert await connected_radio.get_s_meter_sql_status() is True
+
+    async def test_sql_status_closed(
+        self, connected_radio: IcomRadio, mock_radio: MockIcomRadio
+    ) -> None:
+        mock_radio.set_squelch_open(True)
+        assert await connected_radio.get_s_meter_sql_status() is True
+        mock_radio.set_squelch_open(False)
+        assert await connected_radio.get_s_meter_sql_status() is False
+
+
 # ---------------------------------------------------------------------------
 # ATT / PREAMP (Command29)
 # ---------------------------------------------------------------------------
@@ -319,6 +343,8 @@ class TestRefusedReadsDoNotBlockTheQueue:
             with fast_connect():
                 await radio.connect()
             assert radio.connected
+            # fast_connect skips the 0x07 0xD2 query: MAIN is selected.
+            observe_selected_receiver(radio, 0)
             frames = [
                 build_civ_frame(
                     IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x05, data=b"\x99\x99"

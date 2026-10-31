@@ -22,7 +22,6 @@ import asyncio
 import contextlib
 import logging
 import time
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -40,6 +39,7 @@ from rigplane.runtime.managed_tx_composition import (
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 
 from rigplane_testkit.serial import CivSerialFake
+from _timing import await_until
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 
@@ -71,15 +71,6 @@ _SHUTDOWN_TERMINATED_LOG = (
     "managed TX shutdown: terminated before an accepted force_receive "
     "drained the release"
 )
-
-
-async def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 3.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.01)
-    return predicate()
 
 
 async def _poll_loop(radio: Ic7300SerialRadio, stop: asyncio.Event) -> None:
@@ -151,9 +142,8 @@ async def test_silent_link_declares_link_down_in_budget_and_parks_tx(
     poller = asyncio.create_task(_poll_loop(radio, stop))
     budget_s = _LINK_DOWN_BUDGET_S
     try:
-        assert await _wait_until(
-            lambda: any(frame.command == 0x03 for frame in fake.commands),
-            timeout_s=2.0,
+        assert await await_until(
+            lambda: any(frame.command == 0x03 for frame in fake.commands), timeout=2.0
         ), "the poller never reached the wire"
 
         with caplog.at_level(
@@ -161,9 +151,9 @@ async def test_silent_link_declares_link_down_in_budget_and_parks_tx(
         ):
             fake.silence(30.0)  # monotonic window; costs no real time
             started = time.monotonic()
-            assert await _wait_until(
+            assert await await_until(
                 lambda: radio.conn_state is not RadioConnectionState.CONNECTED,
-                timeout_s=budget_s + 0.5,
+                timeout=budget_s + 0.5,
             ), "silent link with polls outstanding never declared link-down"
             elapsed_s = time.monotonic() - started
 
@@ -185,8 +175,8 @@ async def test_silent_link_declares_link_down_in_budget_and_parks_tx(
 
         # Link-down parks TX itself: by the time it tears down audio the
         # provider is retired.
-        assert await _wait_until(
-            lambda: bool(generation_at_audio_teardown), timeout_s=_PARK_SETTLE_S
+        assert await await_until(
+            lambda: bool(generation_at_audio_teardown), timeout=_PARK_SETTLE_S
         ), "link-down never reached audio teardown"
         assert generation_at_audio_teardown[0] is None, (
             "link-down tore down audio with managed TX still provided "

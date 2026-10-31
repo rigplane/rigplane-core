@@ -83,6 +83,20 @@ describe('validateRadioViewModel', () => {
     expect(model.receiverIndicators?.[0].digiSel.reading).toEqual({ status: 'known', value: false });
   });
 
+  it('round-trips the optional squelch-open lamp fact and rejects a non-boolean (MOR-3630)', () => {
+    const open = validateRadioViewModel({ ...valid(), receiverIndicators: [{
+      ...receiverIndicator(),
+      squelchOpen: { reading: { status: 'known' as const, value: true }, availability: { structural: true, operational: true } },
+    }] });
+    expect(open.receiverIndicators?.[0].squelchOpen?.reading).toEqual({ status: 'known', value: true });
+    expect(validateRadioViewModel({ ...valid(), receiverIndicators: [receiverIndicator()] })
+      .receiverIndicators?.[0]).not.toHaveProperty('squelchOpen');
+    expect(() => validateRadioViewModel({ ...valid(), receiverIndicators: [{
+      ...receiverIndicator(),
+      squelchOpen: { reading: { status: 'known' as const, value: 1 }, availability: { structural: true, operational: true } },
+    }] })).toThrow(TypeError);
+  });
+
   const MAIN_S_SOURCE = {
     providerGeneration: 7, scope: 'receiver' as const, receiver: 'MAIN' as const, path: 'main.sMeter' as const,
   };

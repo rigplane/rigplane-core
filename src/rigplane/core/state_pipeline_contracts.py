@@ -528,7 +528,11 @@ TX_METER_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 #: ``split`` are here, which is why they are control rather than panel
 #: despite being operator-adjustable. ``tuner_status`` is here: the end of
 #: a tune is radio-driven, so the TUNE badge follows the poll cadence, and
-#: the setting class would clear it up to 30 s late.
+#: the setting class would clear it up to 30 s late. ``dcd`` is here for
+#: the same reason (MOR-3630): the squelch-open BUSY lamp is radio-driven
+#: RX status, and the setting class would move it up to 30 s late on a
+#: stretched serial fit. A 2 s cadence costs one cheap single-byte read
+#: per receiver per 2 s — 0.5 q/s, inside every shipped transport budget.
 CONTROL_FIELD_NAMES: Final[frozenset[str]] = frozenset(
     {
         "af_level",
@@ -541,6 +545,7 @@ CONTROL_FIELD_NAMES: Final[frozenset[str]] = frozenset(
         "power_level",
         "dual_watch",
         "tuner_status",
+        "dcd",
     }
 )
 #: Everything the operator reaches by turning a knob or opening a menu —

@@ -275,6 +275,22 @@ class Radio(Protocol):
         """
         ...
 
+    # -- Liveness (MOR-3845) -------------------------------------------------
+
+    last_valid_frame_monotonic: float | None = None
+    """Monotonic time of the last valid radio-originated frame, else ``None``.
+
+    Every backend stamps this at its decode point ONLY after a frame decodes
+    successfully AND carries radio-originated information (a response or an
+    unsolicited message from the radio). Not qualifying: raw bytes,
+    malformed/undecodable traffic, receiver start-up, a reconnect without an
+    answer, and — for daemon-backed clients — a daemon ack/error not backed
+    by a fresh read of a radio value. Reset to ``None`` on every connection
+    generation. Declared with a ``None`` default so implementers only ever
+    assign the stamp; consumers read it duck-typed (``getattr``) and treat
+    ``None`` as "never answered".
+    """
+
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Check if this radio supports a specific command.
 

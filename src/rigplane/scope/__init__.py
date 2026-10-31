@@ -65,6 +65,8 @@ class _ReceiverState:
         "_chunks",
         "_timeout",
         "_start_time",
+        "_next_seq",
+        "_seq_max",
     )
 
     def __init__(self, timeout: float = _DEFAULT_ASSEMBLY_TIMEOUT) -> None:
@@ -75,6 +77,8 @@ class _ReceiverState:
         self._chunks: list[bytes] = []
         self._timeout: float = timeout
         self._start_time: float | None = None
+        self._next_seq = 0
+        self._seq_max = 0
 
     @property
     def has_incomplete(self) -> bool:
@@ -84,6 +88,8 @@ class _ReceiverState:
     def _reset(self) -> None:
         self._chunks = []
         self._start_time = None
+        self._next_seq = 0
+        self._seq_max = 0
 
     def feed(self, raw_payload: bytes, receiver: int) -> ScopeFrame | None:
         """Process one sequence packet.
@@ -118,6 +124,14 @@ class _ReceiverState:
                 self._reset()
                 return None
 
+        if seq != 1 and (
+            self._start_time is None
+            or seq != self._next_seq
+            or seq_max != self._seq_max
+        ):
+            self._reset()
+            return None
+
         if seq == 1:
             self._reset()
             self._start_time = time.monotonic()
@@ -127,9 +141,16 @@ class _ReceiverState:
                 self._start_time = None
                 return None
 
+            self._next_seq = 2
+            self._seq_max = seq_max
+
             self._mode = raw_payload[2]
-            self._start_freq = bcd_decode(bytes(raw_payload[3:8]))
-            self._end_freq = bcd_decode(bytes(raw_payload[8:13]))
+            try:
+                self._start_freq = bcd_decode(bytes(raw_payload[3:8]))
+                self._end_freq = bcd_decode(bytes(raw_payload[8:13]))
+            except ValueError:
+                self._reset()
+                return None
             self._oor = bool(raw_payload[13])
 
             if self._oor:
@@ -160,6 +181,7 @@ class _ReceiverState:
 
         elif 1 < seq < seq_max:
             # Middle sequences: bytes [2:] are pixel amplitude data.
+            self._next_seq += 1
             self._chunks.append(bytes(raw_payload[2:]))
             return None
 

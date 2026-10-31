@@ -1625,6 +1625,394 @@ class TestDiscoverSerialRadios:
         assert protocols == {"civ", "yaesu_cat"}
 
 
+def _per_port_timeout_probe(port: str, **kwargs: object):
+    """CI-V probe whose first port times out fast (then closes) and whose second waits."""
+    timeout = 0.01 if port.endswith("0") else 30.0
+    return probe_serial_civ(port, baud_rates=[19200], timeout=timeout, **kwargs)  # type: ignore[arg-type]
+
+
+class TestDiscoverSerialRadiosConcurrent:
+    """MOR-3682: candidate ports are probed concurrently, not one after another."""
+
+    @pytest.mark.asyncio
+    async def test_silent_ports_are_probed_concurrently(self) -> None:
+        ports = [
+            _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
+            for i in range(4)
+        ]
+        per_open = 0.05
+        active = 0
+        peak = 0
+
+        async def _open(*, url: str, baudrate: int, **_kw: object):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(per_open)
+                raise OSError("silent port")
+            finally:
+                active -= 1
+
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=ports),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_open,
+                _yaesu_transport_factory=_make_yaesu_factory(None),
+            )
+        elapsed = loop.time() - start
+
+        assert results == []
+        assert peak > 1
+        assert elapsed < len(ports) * per_open
+
+    @pytest.mark.asyncio
+    async def test_mixed_results_keep_enumeration_order(self) -> None:
+        """[silent, IC-705, silent, Yaesu FTX-1] yields the two radios in order."""
+        ic705 = _make_port(
+            "/dev/ttyUSB1",
+            "IC-705",
+            "USB VID:PID=0C26:0036",
+            vid=0x0C26,
+            pid=0x0036,
+            manufacturer="Icom Inc.",
+            product="IC-705",
+            serial_number="12003912",
+        )
+        yaesu = _make_port(
+            "/dev/ttyUSB3",
+            "USB Serial",
+            "USB VID:PID=0403:6001",
+            vid=0x0403,
+            pid=0x6001,
+        )
+        ports = [
+            _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=0403:6001"),
+            ic705,
+            _make_port("/dev/ttyUSB2", "USB Serial", "USB VID:PID=0403:6001"),
+            yaesu,
+        ]
+
+        async def _open(*, url: str, baudrate: int, **kw: object):
+            if url == "/dev/ttyUSB1":
+                return await CivSerialPort(CivRadioFake("IC-705")).opener(
+                    url=url, baudrate=baudrate, **kw
+                )
+            return await CivSerialPort(CivRadioFake("IC-7610"), silent=True).opener(
+                url=url, baudrate=baudrate, **kw
+            )
+
+        def _factory(**kwargs: object) -> _FakeCatTransport:
+            if kwargs.get("device") == "/dev/ttyUSB3":
+                return _FakeCatTransport("ID0840")
+            return _FakeCatTransport(None)
+
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=ports),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_open,
+                _yaesu_transport_factory=_factory,
+            )
+
+        assert [r.port for r in results] == ["/dev/ttyUSB1", "/dev/ttyUSB3"]
+        civ, cat = results
+        assert civ.protocol == "civ"
+        assert civ.model == "IC-705"
+        assert civ.profile_id == "icom_ic705"
+        assert civ.address == 0xA4
+        assert cat.protocol == "yaesu_cat"
+        assert cat.model == "FTX-1"
+        assert cat.profile_id == "yaesu_ftx1"
+
+    @pytest.mark.asyncio
+    async def test_failed_probe_cancels_and_awaits_sibling_probes(self) -> None:
+        """One port raising must not leave the other probes running on their ports."""
+        ports = [
+            _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
+            for i in range(2)
+        ]
+        started = asyncio.Event()
+        sibling_cancelled = False
+
+        async def _probe(port: object, **_kw: object) -> None:
+            nonlocal sibling_cancelled
+            if port.device == "/dev/ttyUSB0":  # type: ignore[attr-defined]
+                await started.wait()
+                raise OSError("device unplugged")
+            started.set()
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                sibling_cancelled = True
+                raise
+
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports),
+            patch("rigplane.backends.discovery._discover_one_port", _probe),
+            pytest.raises(OSError, match="device unplugged"),
+        ):
+            await discover_serial_radios()
+
+        assert sibling_cancelled
+
+    @staticmethod
+    def _slow_close_ports() -> tuple[
+        list[SimpleNamespace],
+        asyncio.Event,
+        asyncio.Event,
+        asyncio.Event,
+        dict[str, bool],
+    ]:
+        ports = [
+            _make_port(f"/dev/ttyUSB{i}", "USB Serial", "USB VID:PID=0403:6001")
+            for i in range(2)
+        ]
+        return (
+            ports,
+            asyncio.Event(),  # port 0 started closing
+            asyncio.Event(),  # lets port 0's close finish
+            {"closed": False},
+        )
+
+    def _slow_close_opener(
+        self,
+        closing: asyncio.Event,
+        release: asyncio.Event,
+        state: dict[str, bool],
+        *,
+        fail_sibling: bool,
+    ):
+        class _Reader:
+            def __init__(self, fail: bool) -> None:
+                self._fail = fail
+
+            async def read(self, _n: int) -> bytes:
+                if self._fail:
+                    await closing.wait()  # fail while the other port is mid-close
+                    raise OSError("device unplugged")
+                await (
+                    asyncio.Event().wait()
+                )  # silent port: the probe times out, then closes
+                return b""
+
+        class _Writer:
+            def __init__(self, slow: bool) -> None:
+                self._slow = slow
+
+            def write(self, _data: bytes) -> None:
+                pass
+
+            async def drain(self) -> None:
+                pass
+
+            def close(self) -> None:
+                pass
+
+            async def wait_closed(self) -> None:
+                if self._slow:
+                    closing.set()
+                    await release.wait()
+                    state["closed"] = True
+
+        async def _open(*, url: str, baudrate: int, **_kw: object):
+            first = url == "/dev/ttyUSB0"
+            return _Reader(fail=fail_sibling and not first), _Writer(slow=first)
+
+        return _open
+
+    @pytest.mark.asyncio
+    async def test_sibling_failure_waits_for_the_other_port_to_finish_closing(
+        self,
+    ) -> None:
+        ports, closing, release, state = self._slow_close_ports()
+        opener = self._slow_close_opener(closing, release, state, fail_sibling=True)
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports),
+            patch(
+                "rigplane.discovery.probe_serial_civ",
+                _per_port_timeout_probe,
+            ),
+        ):
+            scan = asyncio.ensure_future(discover_serial_radios(_open_serial=opener))
+            await asyncio.wait_for(closing.wait(), 5)
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not scan.done(), "discovery exited while a port was still closing"
+            release.set()
+            with pytest.raises(OSError, match="device unplugged"):
+                await asyncio.wait_for(scan, 5)
+        assert state["closed"]
+
+    @pytest.mark.asyncio
+    async def test_scan_cancellation_waits_for_ports_to_finish_closing(self) -> None:
+        ports, closing, release, state = self._slow_close_ports()
+        opener = self._slow_close_opener(closing, release, state, fail_sibling=False)
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports[:1]),
+            patch(
+                "rigplane.discovery.probe_serial_civ",
+                partial(probe_serial_civ, baud_rates=[19200], timeout=0.01),
+            ),
+        ):
+            scan = asyncio.ensure_future(discover_serial_radios(_open_serial=opener))
+            await asyncio.wait_for(closing.wait(), 5)
+            scan.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not scan.done(), "discovery exited while a port was still closing"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(scan, 5)
+        assert state["closed"]
+
+    @pytest.mark.asyncio
+    async def test_yaesu_transport_close_finishes_when_the_scan_is_cancelled(
+        self,
+    ) -> None:
+        ports, closing, release, state = self._slow_close_ports()
+
+        class _Transport:
+            async def connect(self) -> None:
+                pass
+
+            async def query(
+                self, _command: str, *, timeout: float | None = None
+            ) -> str:
+                raise TimeoutError("no answer")
+
+            async def close(self) -> None:
+                closing.set()
+                await release.wait()
+                state["closed"] = True
+
+        async def _silent_open(*, url: str, baudrate: int, **_kw: object):
+            raise OSError("not a CI-V radio")
+
+        with (
+            patch("serial.tools.list_ports.comports", return_value=ports[:1]),
+            patch(
+                "rigplane.discovery.probe_serial_civ",
+                partial(probe_serial_civ, baud_rates=[19200], timeout=0.01),
+            ),
+        ):
+            scan = asyncio.ensure_future(
+                discover_serial_radios(
+                    _open_serial=_silent_open,
+                    _yaesu_transport_factory=lambda **_kw: _Transport(),
+                )
+            )
+            await asyncio.wait_for(closing.wait(), 5)
+            scan.cancel()
+            for _ in range(20):
+                await asyncio.sleep(0)
+            assert not scan.done(), (
+                "discovery exited while a transport was still closing"
+            )
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(scan, 5)
+        assert state["closed"]
+
+    @pytest.mark.asyncio
+    async def test_finish_close_completes_the_close_then_reraises_cancellation(
+        self,
+    ) -> None:
+        from rigplane.backends.discovery import _finish_close
+
+        release = asyncio.Event()
+        done: list[bool] = []
+
+        async def _close() -> None:
+            await release.wait()
+            done.append(True)
+
+        task = asyncio.ensure_future(_finish_close(_close()))
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert done == [True]
+
+    def test_recorded_macos_fixture_offers_both_ic705_ports(self) -> None:
+        """Recorded bench entries: both IC-705 usbmodem ports are candidates."""
+        ports = [
+            _make_port(
+                "/dev/cu.usbmodem3122201",
+                "IC-705",
+                "USB VID:PID=0C26:0036 SER=IC-705",
+                vid=0x0C26,
+                pid=0x0036,
+                manufacturer="Icom Inc.",
+                product="IC-705",
+                serial_number="IC-705 12003912",
+            ),
+            _make_port(
+                "/dev/cu.usbmodem3122203",
+                "IC-705",
+                "USB VID:PID=0C26:0036 SER=IC-705",
+                vid=0x0C26,
+                pid=0x0036,
+                manufacturer="Icom Inc.",
+                product="IC-705",
+                serial_number="IC-705 12003912",
+            ),
+            _make_port(
+                "/dev/cu.usbserial-01AE340D0",
+                "CP2105 Dual USB to UART Bridge Controller",
+                "USB VID:PID=10C4:EA70",
+                vid=0x10C4,
+                pid=0xEA70,
+                manufacturer="Silicon Labs",
+                product="CP2105 Dual USB to UART Bridge Controller",
+            ),
+            _make_port(
+                "/dev/cu.usbserial-01AE340D1",
+                "CP2105 Dual USB to UART Bridge Controller",
+                "USB VID:PID=10C4:EA70",
+                vid=0x10C4,
+                pid=0xEA70,
+                manufacturer="Silicon Labs",
+                product="CP2105 Dual USB to UART Bridge Controller",
+            ),
+            _make_port(
+                "/dev/cu.usbmodem00000000000011",
+                "YAESU HRI USB I/F",
+                "USB VID:PID=0B00:3011",
+                vid=0x0B00,
+                pid=0x3011,
+                manufacturer="YAESU",
+                product="HRI USB I/F",
+            ),
+            _make_port("/dev/cu.Bluetooth-Incoming-Port", "Bluetooth-Incoming-Port"),
+            _make_port("/dev/cu.debug-console", "Debug console"),
+        ]
+        with patch("serial.tools.list_ports.comports", return_value=ports):
+            result = enumerate_serial_ports()
+
+        devices = [c.device for c in result]
+        assert devices == [
+            "/dev/cu.usbmodem3122201",
+            "/dev/cu.usbmodem3122203",
+            "/dev/cu.usbserial-01AE340D0",
+            "/dev/cu.usbserial-01AE340D1",
+            "/dev/cu.usbmodem00000000000011",
+        ]
+        first = result[0]
+        assert (first.vid, first.pid) == (0x0C26, 0x0036)
+        assert first.product == "IC-705"
+        assert first.manufacturer == "Icom Inc."
+        assert first.serial_number == "IC-705 12003912"
+
+
 # ---------------------------------------------------------------------------
 # LAN UDP discovery (discover_lan_radios) — probe retransmit / dedup
 # ---------------------------------------------------------------------------

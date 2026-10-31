@@ -4,6 +4,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![CI](https://github.com/rigplane/rigplane-core/actions/workflows/quick.yml/badge.svg)](https://github.com/rigplane/rigplane-core/actions/workflows/quick.yml)
 [![Docs](https://img.shields.io/badge/docs-rigplane.dev-blue.svg)](https://rigplane.dev)
+[![Website](https://img.shields.io/badge/web-rigplane.com-blue.svg)](https://rigplane.com/?utm_source=github&utm_medium=readme&utm_campaign=core-launch&utm_content=readme-home)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/rigplane/rigplane-core/blob/main/LICENSE)
 
 > **RigPlane 3.0 is released.** A plain `pip install rigplane` installs it.
@@ -158,9 +159,10 @@ GPLv3 code. Icom™ and IC-* product names are registered trademarks of
 fair-use compatibility identification only — this project is not affiliated
 with, endorsed by, or sponsored by Icom.
 
-rigplane is the **open-core** half of a planned product split. A
-proprietary commercial layer (`rigplane-pro`) is under active development
-and will integrate with this library through the public `Radio` protocol
+rigplane is the **open-core** half of a planned product split. RigPlane Pro
+(`rigplane-pro`), the commercial desktop app, is in public beta and can be
+downloaded from [rigplane.com/downloads](https://rigplane.com/downloads/?utm_source=github&utm_medium=readme&utm_campaign=core-launch&utm_content=readme-download).
+It integrates with this library through the public `Radio` protocol
 and the `local-extensions/` host API. Open-core constraints — no
 telemetry, headless mode is sacred, no hollowing out — are codified in
 [`docs/architecture/open-core-policy.md`](https://github.com/rigplane/rigplane-core/blob/main/docs/architecture/open-core-policy.md).

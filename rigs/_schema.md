@@ -74,7 +74,9 @@ only a server-to-browser transport policy after radio-native audio is received.
 `audio_codec` and `serial_functions` are optional lists of
 `{ vid = "XXXX", pid = "YYYY" }` tables. Both identifiers must be strings of
 four uppercase hexadecimal digits. Unknown keys in `[usb]` or its function
-entries are rejected; duplicate entries are deduplicated. See
+entries are rejected; duplicate `audio_codec` entries are deduplicated while
+duplicate `serial_functions` entries are kept — each list entry is one serial
+function, so the same VID:PID may appear more than once. See
 `src/rigplane/profiles/rig_loader.py: load_rig` and
 `src/rigplane/core/usb_identity.py: UsbFunctionId`.
 
@@ -88,13 +90,18 @@ serial_functions = [{ vid = "10C4", pid = "EA70" }, { vid = "26AA", pid = "0030"
 Populate these lists only from our own USB recordings; the example matches
 `rigs/ftx1.toml`. `audio_codec` constrains the codec chosen by the shared pairing
 rule; it does not establish containment by itself. `serial_functions` identifies
-the radio's own serial USB functions: distinct declared VID:PID devices directly
-under the requested serial device's hub may count as one radio. An undeclared
-serial device, a repeated serial VID:PID, or an additional serial device under a
-nested hub still refuses with `serial_ambiguous`.
+the radio's own serial USB functions: declared VID:PID devices directly
+under the requested serial device's hub may count as one radio. Each declared
+entry covers one observed device, so the serial devices under the hub are
+accepted when the multiset of their VID:PID is contained in the declared
+multiset (observed count per VID:PID at most the declared count). An undeclared
+serial device, a repeated serial VID:PID beyond the declared count, or an
+additional serial device under a nested hub still refuses with
+`serial_ambiguous`.
 
 An omitted `[usb]` gives `usb_identity = None`. Omitted or empty lists default
-to empty sets: no codec filter for `audio_codec`, and the strict single-serial
+to empty (an empty set for `audio_codec`, an empty tuple for `serial_functions`):
+no codec filter for `audio_codec`, and the strict single-serial
 rule for `serial_functions`. Either list may be supplied alone.
 `RigConfig.to_profile` copies the identity to `RadioProfile`.
 See `docs/internals/usb-audio-pairing.md` for the complete rule.
@@ -530,14 +537,16 @@ Array of tables, each defining a frequency coverage range.
 
 ### `[[freq_ranges.ranges.bands]]` — Band Definitions
 
-| Field        | Type   | Required | Description                                 |
-|--------------|--------|----------|---------------------------------------------|
-| `name`       | string | yes      | Band name (e.g. `"20m"`, `"70cm"`)          |
-| `start_hz`   | int    | yes      | Band start frequency in Hz                  |
-| `end_hz`     | int    | yes      | Band end frequency in Hz                    |
-| `default_hz` | int    | yes      | Default tuning frequency in Hz (within band)|
-| `bsr_code`   | int    | no       | Band Stack Register code for CI-V 0x1A 0x01 |
+| Field          | Type   | Required | Description                                                          |
+|----------------|--------|----------|----------------------------------------------------------------------|
+| `name`         | string | yes      | Band name (e.g. `"20m"`, `"70cm"`)                                   |
+| `start_hz`     | int    | yes      | Band start frequency in Hz                                           |
+| `end_hz`       | int    | yes      | Band end frequency in Hz                                             |
+| `default_hz`   | int    | yes      | Default tuning frequency in Hz (within band)                         |
+| `bsr_code`     | int    | no       | Band Stack Register code for CI-V 0x1A 0x01                          |
+| `default_mode` | string | no       | Mode tuned with `default_hz` when a band change has no band-stack readback (MOR-3631). Must name a mode from `[modes].list` exactly. Omitted = freq-only fallback, unchanged. Read only by the Icom band-stack fallback; a backend that recalls bands natively (Yaesu `BS`) never consumes it, so do not set it there. |
 | `rx_only`    | bool   | no       | This band row is receive-only (MOR-3632): tunable in the band selector but excluded from the capabilities `txBands` payload, so it never grants transmit permission. Optional, default `false`; a non-boolean value is a load error naming the band. |
+| `max_power_w` | int  | no       | Rated maximum TX power of this band in watts (MOR-3634), from the manuals (IC-9700: 2 m 100, 70 cm 75, 23 cm 10; tier B-, not hardware-verified). Published as `txBands[].maxPowerW`. It drives the power slider's scale for the band the radio is on, depending on how the radio scales its level (capabilities `powerUnit`, the backend's `native_power_unit`): a `raw_255` radio (Icom) already reports a percentage of the current band's maximum, so the slider keeps its full range and the label shows watts (level x band maximum); a `watts` radio (Yaesu CAT) reports a fraction of the flat `[power].max_watts`, so the slider range is the band maximum over `max_watts`. Data for the slider's scale and label only: nothing clamps, rescales or refuses a power value that is written. Optional; a band without it uses the flat `max_watts`. A positive integer no larger than `[power].max_watts`, which must be declared; otherwise a load error naming the band. |
 
 ## `[cmd29]` — Command 29 Routes
 

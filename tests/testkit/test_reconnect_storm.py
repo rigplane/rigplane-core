@@ -277,6 +277,133 @@ async def test_session_drop_with_notice_recovers_with_one_login(
     assert run.freq == _FREQ_HZ, run.report()
 
 
+async def test_two_session_drops_with_notices_recover_with_two_logins(
+    sim: MockIcomRadio,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3350: a second busy=0 notice arriving while the first recovery is
+    still in its tail restarts the recovery instead of being dropped silently.
+
+    The recovery tail is parked deterministically: the audio-transport re-arm
+    waits on an event that is only set during teardown, standing in for the
+    ~10 s production tail when the audio port does not answer.
+    """
+    caplog.set_level(logging.INFO, logger="rigplane")
+    radio = _client(sim)
+    drop2_at = 3.1
+    entries: list[float] = []
+    cancels: list[float] = []
+    release_tail = asyncio.Event()
+
+    async def parked_audio_transport() -> None:
+        entries.append(time.monotonic())
+        try:
+            await release_tail.wait()
+        except asyncio.CancelledError:
+            cancels.append(time.monotonic())
+            raise
+
+    with fast_connect():
+        await radio.connect()
+        monkeypatch.setattr(
+            radio,
+            "_ensure_audio_transport",
+            parked_audio_transport,  # type: ignore[method-assign]
+        )
+        poller = asyncio.create_task(_poll(radio))
+        try:
+            old_token = radio._token
+            logins0 = sim.login_count
+            first_record = len(caplog.records)
+            wall0, t0 = time.time(), time.monotonic()
+            states: list[RadioConnectionState] = []
+
+            def report() -> str:
+                head = [
+                    f"{record.created - wall0:6.2f}s {record.levelname} "
+                    f"{record.name}: {record.getMessage()}"
+                    for record in caplog.records[first_record:]
+                    if _is_rigplane(record)
+                ][:30]
+                return "\n".join(
+                    [
+                        f"tokens: old={old_token:#x} "
+                        f"simulator={sim.token:#x} client={radio._token:#x}",
+                        f"states={[s.value for s in states]}",
+                        f"logins={sim.login_count - logins0}",
+                        f"tail_entries={[f'{t - t0:.2f}' for t in entries]}",
+                        f"tail_cancels={[f'{t - t0:.2f}' for t in cancels]}",
+                        *head,
+                    ]
+                )
+
+            async def wait_usable(
+                token_before: int, drop_offset: float, what: str
+            ) -> int:
+                """20 ms sampler: first usable session on a fresh token."""
+                end = t0 + drop_offset + 1.5
+                while True:
+                    state = radio.conn_state
+                    if not states or states[-1] is not state:
+                        states.append(state)
+                    if (
+                        state is _CONNECTED
+                        and radio.connected
+                        and radio._token == sim.token
+                        and sim.token != token_before
+                    ):
+                        break
+                    if time.monotonic() >= end:
+                        pytest.fail(
+                            f"{what} drop not followed by a usable session "
+                            f"within 1.5 s: {report()}"
+                        )
+                    await asyncio.sleep(0.02)
+                recovered_after = time.monotonic() - (t0 + drop_offset)
+                freq = await _ask_freq(radio, 5.0)
+                assert freq == _FREQ_HZ, report()
+                assert recovered_after <= 1.5, report()
+                return sim.token
+
+            sim.drop_session(at=0.1, notice=True)
+            sim.drop_session(at=drop2_at, notice=True)
+
+            token1 = await wait_usable(old_token, 0.1, "first")
+            assert entries, "the first recovery never parked its tail: " + report()
+            assert entries[0] - t0 < drop2_at, (
+                "the first recovery parked its tail only after the second "
+                "drop: " + report()
+            )
+            token2 = await wait_usable(token1, drop2_at, "second")
+            assert token2 != token1, report()
+            assert sim.login_count - logins0 == 2, report()
+            end = time.monotonic() + 5.0
+            while len(entries) < 2:
+                if time.monotonic() >= end:
+                    pytest.fail(
+                        "the second recovery never reached its tail: " + report()
+                    )
+                await asyncio.sleep(0.02)
+            assert cancels, "the first recovery tail was never cancelled: " + report()
+            assert cancels[0] - t0 > drop2_at, (
+                "the first recovery tail was cancelled before the second "
+                "drop: " + report()
+            )
+            ignored = [
+                record.getMessage()
+                for record in caplog.records[first_record:]
+                if _is_rigplane(record) and "notice ignored" in record.getMessage()
+            ]
+            assert ignored == [], report()
+        finally:
+            release_tail.set()
+            poller.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await poller
+            await asyncio.wait_for(radio.disconnect(), 10.0)
+
+
 async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     sim: MockIcomRadio,
     caplog: pytest.LogCaptureFixture,

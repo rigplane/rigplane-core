@@ -149,6 +149,7 @@ _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
+_SUB_SQL_STATUS = 0x01
 _SUB_S_METER = 0x02
 _SUB_SWR_METER = 0x12
 _SUB_ALC_METER = 0x13
@@ -433,12 +434,12 @@ class MockIcomRadio(AudioPortMixin):
             :meth:`_civ_gap_loop`). Default ``time.monotonic``; tests pass
             a hand-advanced clock to pin the round rate without wall time.
         dual_receiver: opt-in native MAIN/SUB receiver select (default
-            False keeps the previous behaviour: ``07 D0``/``D1``/``D2``
-            fall through to ``recorded_answers`` or the final NAK and no
-            selection state is kept). When True, ``07 D0``/``D1`` swap
-            the selected and unselected receiver fields (frequency, mode,
-            DATA-mode flag, filter) and ``07 D2`` reads the selection
-            (recorded IC-7610 ``vfo_select`` window).
+            False: ``07 D0``/``D1`` fall through to ``recorded_answers`` or
+            the final NAK and no selection state is kept; ``07 D2`` still
+            reads MAIN). When True, ``07 D0``/``D1`` swap the selected and
+            unselected receiver fields (frequency, mode, DATA-mode flag,
+            filter) and ``07 D2`` reads the selection (recorded IC-7610
+            ``vfo_select`` window).
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
@@ -521,6 +522,9 @@ class MockIcomRadio(AudioPortMixin):
         self._filter: int = 1
         self._power: int = 100  # 0-255 level
         self._s_meter: int = 120  # 0-255
+        # MOR-3630: squelch-open (RX-busy) readback for the 0x15 0x01 poll.
+        # Idle means closed: no signal, squelch shut.
+        self._squelch_open: bool = False
         self._swr: int = 10  # 0-255
         self._alc: int = 0
         self._attenuator: int = 0  # dB (0, 3, 6, ... 45)
@@ -666,6 +670,9 @@ class MockIcomRadio(AudioPortMixin):
         # Power-off notice window (recording w2): after the 0x90 notice the
         # radio still answers discovery/pings until this deadline, then goes dark.
         self._poweroff_notice_until: float = 0.0
+        # Held-open notice window: the (down_for, busy_for) of the dark phase
+        # that ``end_notice_window`` starts.
+        self._held_notice_dark: tuple[float, float] | None = None
         self.reboot_count: int = 0  # number of simulated reboots started
         # Retransmit-request packets sent on the CI-V port so far (each
         # round sends two while a sequence gap is open).
@@ -959,6 +966,7 @@ class MockIcomRadio(AudioPortMixin):
         down_for: float,
         busy_for: float = 0.5,
         notice: bool = False,
+        hold_notice_window: bool = False,
     ) -> None:
         """Schedule a simulated radio reboot.
 
@@ -991,6 +999,13 @@ class MockIcomRadio(AudioPortMixin):
         its CI-V traffic after a reboot — then total silence. The default
         ``False`` keeps the pre-notice behaviour for existing tests.
 
+        ``hold_notice_window=True`` (with ``notice=True``) keeps that window
+        open until the test calls ``end_notice_window``. A test that asserts
+        the ORDER of the phases, not the recorded 0.02 s, uses it: its probes
+        cross the same event loop as the simulator, and one that is read
+        20 ms late (a cold process, a loaded runner) lands after the radio
+        went dark.
+
         Must be called from inside the running event loop.
         """
         loop = asyncio.get_running_loop()
@@ -1000,10 +1015,24 @@ class MockIcomRadio(AudioPortMixin):
             max(0.0, down_for),
             max(0.0, busy_for),
             notice,
+            hold_notice_window,
         )
 
+    def end_notice_window(self) -> None:
+        """End a window held open by ``reboot(..., hold_notice_window=True)``:
+        the radio goes dark now, for the ``down_for`` of that reboot."""
+        held, self._held_notice_dark = self._held_notice_dark, None
+        if held is None:
+            raise RuntimeError("no held power-off notice window to end")
+        self._poweroff_notice_until = 0.0
+        self._begin_dark(*held)
+
     def _begin_reboot(
-        self, down_for: float, busy_for: float, notice: bool = False
+        self,
+        down_for: float,
+        busy_for: float,
+        notice: bool = False,
+        hold_notice_window: bool = False,
     ) -> None:
         if notice:
             # Recorded power-off order (recording w2): the 0x90 notice goes
@@ -1012,10 +1041,16 @@ class MockIcomRadio(AudioPortMixin):
             target = self._owner or self._last_login
             if target is not None:
                 self._send_conninfo_notice(*target)
-            self._poweroff_notice_until = time.monotonic() + _POWER_OFF_NOTICE_WINDOW_S
-            asyncio.get_running_loop().call_later(
-                _POWER_OFF_NOTICE_WINDOW_S, self._begin_dark, down_for, busy_for
-            )
+            if hold_notice_window:
+                self._poweroff_notice_until = float("inf")
+                self._held_notice_dark = (down_for, busy_for)
+            else:
+                self._poweroff_notice_until = (
+                    time.monotonic() + _POWER_OFF_NOTICE_WINDOW_S
+                )
+                asyncio.get_running_loop().call_later(
+                    _POWER_OFF_NOTICE_WINDOW_S, self._begin_dark, down_for, busy_for
+                )
         else:
             self._begin_dark(down_for, busy_for)
         self._release_session("reboot")
@@ -1315,6 +1350,10 @@ class MockIcomRadio(AudioPortMixin):
     def set_s_meter(self, value: int) -> None:
         """Set S-meter readback value (0-255)."""
         self._s_meter = value
+
+    def set_squelch_open(self, on: bool) -> None:
+        """Set squelch-open (RX-busy) readback for the 0x15 0x01 poll."""
+        self._squelch_open = on
 
     def set_swr(self, value: int) -> None:
         """Set SWR meter readback value (0-255)."""
@@ -2344,6 +2383,8 @@ class MockIcomRadio(AudioPortMixin):
             if not payload:
                 return self._civ_nak(to, frm)
             sub = payload[0]
+            if sub == _SUB_SQL_STATUS:  # 0x01
+                return self._squelch_status_reply(to, frm)
             if sub == _SUB_S_METER:  # 0x02
                 return self._civ_frame(
                     to,
@@ -2459,13 +2500,17 @@ class MockIcomRadio(AudioPortMixin):
                     )
                     self._selected_receiver = target
                 return self._civ_ack(to, frm)
-            if len(payload) == 1 and payload[0] == 0xD2:
-                return self._civ_frame(
-                    to,
-                    frm,
-                    _CMD_VFO_SELECT,
-                    data=bytes((0xD2, self._selected_receiver)),
-                )
+        # The bare D2 read is answered with or without ``dual_receiver``: a
+        # dual-receiver radio always reports its selection, and Core refuses
+        # receiver-scoped plain commands until it has (MOR-3591). Without
+        # ``dual_receiver`` nothing ever selects SUB, so it reads MAIN (00).
+        if cmd == _CMD_VFO_SELECT and payload == b"\xd2":
+            return self._civ_frame(
+                to,
+                frm,
+                _CMD_VFO_SELECT,
+                data=bytes((0xD2, self._selected_receiver)),
+            )
 
         # --- 0x1A 05 menu items (the startup MOD-input and NB reads) ---
         if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x05":
@@ -2755,6 +2800,11 @@ class MockIcomRadio(AudioPortMixin):
                 to, frm, _CMD_CMD29, data=bytes([receiver, _CMD_ATT, bcd])
             )
 
+        # S-meter squelch status (0x15 0x01): dual-receiver Icoms route the
+        # read through Command29, the reply comes back wrapped (MOR-3630).
+        if real_cmd == _CMD_METER and inner[:1] == bytes([_SUB_SQL_STATUS]):
+            return self._squelch_status_reply(to, frm, receiver=receiver)
+
         # PREAMP / DIGI-SEL (0x16)
         if real_cmd == _CMD_PREAMP:
             if not inner:
@@ -2797,6 +2847,25 @@ class MockIcomRadio(AudioPortMixin):
     # ------------------------------------------------------------------
     # CI-V frame builders
     # ------------------------------------------------------------------
+
+    def _squelch_status_reply(
+        self, to: int, frm: int, *, receiver: int | None = None
+    ) -> bytes:
+        """The single-byte squelch-open readback to a 0x15 0x01 poll (MOR-3630).
+
+        The polled counterpart of the spontaneous 0x15 frames real Icoms
+        emit. ``receiver`` is None for the plain frame and the Command29
+        receiver byte when the radio routes the read through Command29.
+        """
+        state = bytes([0x01 if self._squelch_open else 0x00])
+        if receiver is None:
+            return self._civ_frame(to, frm, _CMD_METER, sub=_SUB_SQL_STATUS, data=state)
+        return self._civ_frame(
+            to,
+            frm,
+            _CMD_CMD29,
+            data=bytes([receiver, _CMD_METER, _SUB_SQL_STATUS]) + state,
+        )
 
     def _civ_refused(self, cmd: int, payload: bytes) -> bool:
         """True when the refusal hook matches this (cmd, payload).

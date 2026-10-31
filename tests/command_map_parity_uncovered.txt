@@ -34,7 +34,7 @@ census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
 census	profiles	9
-census	public_builders	245
+census	public_builders	247
 census	sites_compared	0
 cat-only	FTX-1	131
 requires-map	antenna.py:get_antenna_1
@@ -253,10 +253,12 @@ requires-map	system.py:set_xfc_status
 requires-map	tone.py:get_repeater_tone
 requires-map	tone.py:get_repeater_tsql
 requires-map	tone.py:get_tone_freq
+requires-map	tone.py:get_tone_squelch_type
 requires-map	tone.py:get_tsql_freq
 requires-map	tone.py:set_repeater_tone
 requires-map	tone.py:set_repeater_tsql
 requires-map	tone.py:set_tone_freq
+requires-map	tone.py:set_tone_squelch_type
 requires-map	tone.py:set_tsql_freq
 requires-map	tx_band.py:get_tx_band_count
 requires-map	tx_band.py:get_tx_band_edge

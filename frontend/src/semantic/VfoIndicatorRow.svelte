@@ -7,7 +7,7 @@
   /** MOR-2852: the phone meta row's fact vocabulary — the subset the 'chips'
    *  appearance can draw. Exported for the ReceiverInstrumentHost handle
    *  handles, whose `mainFacts`/`subFacts` snippets re-expose this type. */
-  export type VfoFactKind = 'bandwidth' | 'agc' | 'nb' | 'nr';
+  export type VfoFactKind = 'bandwidth' | 'agc' | 'nb' | 'nr' | 'busy';
 
   // MOR-2644 correction 3 (owner rule 2026-09-21: the layout never moves):
   // every fact reserves the width of its widest lit text, the same way RFG
@@ -45,7 +45,10 @@
   //   offset range this surface family renders (RitXitScanSurface
   //   OFFSET_MIN/MAX; the local RIT/XIT panel falls back to the same
   //   -9999..9999 bounds when no domain is present).
+  // - BUSY (MOR-3630): `BUSY` — the lamp prints its label only, in every
+  //   state; the lit state lives in data-state, never in longer text.
   export const FACT_SLOT_RESERVATIONS = {
+    busy: 'BUSY'.length,
     bandwidth: 'BW 9999 Hz'.length,
     agc: 'AGC TUNING'.length,
     nb: 'NB OFF'.length,
@@ -71,7 +74,7 @@
   import { formatKnownLevel, levelFormatsBelowMax } from './format-level';
   import { RF_FRONT_END_LEVELS } from './rf-front-end-instruments';
   import { rfUnconfirmedLabel } from './rx-tx-surface';
-  import { finiteValue, observationValue, readingText, readingValue } from '../primitives/reading-text';
+  import { finiteValue, observationValue, readingText, readingValue, squelchStateLabel } from '../primitives/reading-text';
   import type {
     DisplayObservedField, RadioWideIndicatorsViewModel, ReceiverIndicatorField,
     ReceiverIndicatorViewModel, TxAuxField,
@@ -186,7 +189,14 @@
 
 {#snippet factSpan(fact: VfoFactKind)}
   {#if indicator}
-    {#if fact === 'bandwidth' && indicator.bandwidthHz.availability.structural}
+    {#if fact === 'busy' && indicator.squelchOpen?.availability.structural}
+      <!-- MOR-3630: the BUSY lamp on the phone — label only, the lit
+           state lives in data-state like the NB/NR chips. Nothing renders
+           without the squelch fact. -->
+      <span class="fact" data-indicator-fact="busy" data-state={booleanState(indicator.squelchOpen)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.busy}ch`}
+        role="img" aria-label={squelchStateLabel(indicator.squelchOpen)}>BUSY</span>
+    {:else if fact === 'bandwidth' && indicator.bandwidthHz.availability.structural}
       <span class="fact" data-indicator-fact="bandwidth" data-state={indicator.bandwidthHz.reading.status}
         style:min-inline-size={`${bandwidthReservationCh}ch`}>BW {readingText(indicator.bandwidthHz, (v) => `${String(v)} ${t('core.filter.unit.hz')}`)}</span>
     {:else if fact === 'agc' && indicator.agcMode.availability.structural}
@@ -269,6 +279,17 @@
   {#if children}{@render children()}{/if}
 
   <div class="facts" aria-label={`${indicator.receiver} receiver facts`}>
+    {#if indicator.squelchOpen?.availability.structural}
+      <!-- MOR-3630: the BUSY lamp — first fact, adjacent to the S-meter
+           above. A lamp, not a readout: the label never changes, the lit
+           state lives in data-state (and the state sentence). Deliberately
+           absent from the 'chips' appearance, which draws no S-meter. -->
+      <span class="fact" data-indicator-fact="busy" data-state={booleanState(indicator.squelchOpen)}
+        style:min-inline-size={`${FACT_SLOT_RESERVATIONS.busy}ch`}
+        role="img" aria-label={squelchStateLabel(indicator.squelchOpen)}
+        >BUSY</span
+      >
+    {/if}
     {#if indicator.agcMode.availability.structural}
       <span class="fact" data-indicator-fact="agc" data-state={indicator.agcMode.reading.status}
         style:min-inline-size={`${FACT_SLOT_RESERVATIONS.agc}ch`}
@@ -446,7 +467,8 @@
   .fact[data-indicator-fact='preamp'], .fact[data-indicator-fact='ip-plus'],
   .fact[data-indicator-fact='digi-sel'], .fact[data-indicator-fact='rf-gain'],
   .fact[data-indicator-fact='antenna'], .fact[data-indicator-fact='atu'],
-  .fact[data-indicator-fact='rit'], .fact[data-indicator-fact='xit'] {
+  .fact[data-indicator-fact='rit'], .fact[data-indicator-fact='xit'],
+  .fact[data-indicator-fact='busy'] {
     box-sizing: content-box;
   }
   /* Empty (a displayed 100%, or unread): the slot stays reserved at the same

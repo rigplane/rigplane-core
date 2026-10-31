@@ -2,6 +2,7 @@
   import TxAuxFiniteHost from '../../TxAuxFiniteHost.svelte';
   import TxAuxScalarHost from '../../TxAuxScalarHost.svelte';
   import TxAuxSurface, { type TxAuxToggleField } from '../../TxAuxSurface.svelte';
+  import type { RfPowerScale } from '../../../primitives/scalar/value-control-core';
   import type { TxAuxFiniteHandles } from '../../tx-aux-finite';
   import type {
     TxAuxLevelFeedback,
@@ -21,6 +22,7 @@
     presentation: 'grouped' | 'independent';
     scalarPresentation?: Readonly<TxAuxScalarPresentation>;
     levelFeedback?: TxAuxLevelFeedback;
+    rfPowerScale?: RfPowerScale;
     finiteAppearance?: FiniteControlAppearance;
     rendererContext?: FiniteRendererContext | null;
     onToggle?: (field: TxAuxToggleField) => void;
@@ -29,12 +31,13 @@
   }
 
   let {
-    view, tx, presentation, scalarPresentation, levelFeedback, finiteAppearance, rendererContext,
+    view, tx, presentation, scalarPresentation, levelFeedback, rfPowerScale, finiteAppearance,
+    rendererContext,
     onToggle, onLevelChange, onAtuTune,
   }: Props = $props();
 </script>
 
-<TxAuxScalarHost {view} {levelFeedback} {onLevelChange}>
+<TxAuxScalarHost {view} {levelFeedback} {rfPowerScale} {onLevelChange}>
   {#snippet children(scalars: TxAuxScalarHandles)}
     {#snippet finiteComposition(finite: TxAuxFiniteHandles)}
       {#key presentation}

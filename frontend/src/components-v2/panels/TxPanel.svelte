@@ -2,7 +2,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
-  import { normalizedPercentDisplay, rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
+  import { rawToPercentDisplay, rfPowerDisplay, validRfPowerScale } from '../../primitives/scalar/value-control-core';
   import { finiteValue, valueText } from '../../primitives/reading-text';
   import { txStatusColor } from './tx-utils';
   import {
@@ -94,13 +94,13 @@
   // never the literal `NaN%`. The renderer calls this with Number.NaN for
   // an unread value (MOR-2910 closed the deferred A12 rfPower fix by
   // binding the lane: no confirmed reading claims a slider position).
-  const rfPowerDisplay = (value: number): string =>
-    valueText(finiteValue(value), normalizedPercentDisplay);
+  const rfPowerLabel = (value: number): string =>
+    valueText(finiteValue(value), (level) => rfPowerDisplay(level, p.rfPowerScale));
   const txLevelPolicy = () => createHBarContinuousScalarPolicy({
     preview: 'optimistic', debounceMs: 50, describeTarget: rawToPercentDisplay,
   });
   const rfPowerPolicy = () => createHBarContinuousScalarPolicy({
-    preview: 'optimistic', debounceMs: 50, describeTarget: normalizedPercentDisplay,
+    preview: 'optimistic', debounceMs: 50, describeTarget: (level: number) => rfPowerDisplay(level, p.rfPowerScale),
   });
   const micGainBinding = createContinuousScalar(
     () => ({
@@ -137,7 +137,7 @@
   const rfPowerBinding = createContinuousScalar(
     () => ({
       evidence: 'command-feedback', feedback: rfPowerFeedback, command: 'set_rf_power',
-      domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
+      domain: { min: 0, max: validRfPowerScale(p.rfPowerScale).max, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
       enabled: rfPowerAvailable, request: onRfPowerChange,
     }),
     rfPowerPolicy(),
@@ -388,7 +388,7 @@
     <div class="modal-body">
       <div class="tx-level-slot">
         <ValueControl {...feedbackIntegratedControl} label="RF Power" binding={rfPowerBinding}
-          renderer="hbar" displayFn={rfPowerDisplay} accentColor="var(--v2-accent-red)"
+          renderer="hbar" displayFn={rfPowerLabel} accentColor="var(--v2-accent-red)"
           issuedStatusPresentation={rfPowerStatus} variant="hardware-illuminated" />
       </div>
       <!-- MOR-2658: each level value keeps its own reserved slot (`4ch`

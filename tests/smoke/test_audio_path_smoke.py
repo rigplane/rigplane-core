@@ -71,6 +71,7 @@ from rigplane.web.protocol import (
     encode_audio_frame,
 )
 from rigplane.web.server import WebConfig, WebServer
+from _timing import await_until
 
 # ── Devices ──────────────────────────────────────────────────────────────────
 
@@ -98,16 +99,6 @@ _WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 # ── Polling / WS helpers ─────────────────────────────────────────────────────
-
-
-async def _wait_for(predicate: Callable[[], bool], deadline_s: float = 3.0) -> bool:
-    """Await *predicate* with a bounded poll — never a fixed long sleep."""
-    deadline = time.monotonic() + deadline_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.005)
-    return predicate()
 
 
 def _addr(server: WebServer) -> tuple[str, int]:
@@ -299,8 +290,8 @@ async def _wait_for_identity_hold_clear(radio: Icom7610SerialRadio) -> None:
             return False
         return True
 
-    cleared = await _wait_for(
-        _commands_accepted, deadline_s=_IDENTITY_HOLD_CLEAR_TIMEOUT_S
+    cleared = await await_until(
+        _commands_accepted, timeout=_IDENTITY_HOLD_CLEAR_TIMEOUT_S
     )
     assert cleared, (
         "radio identity hold still active "
@@ -430,7 +421,7 @@ async def test_web_audio_ws_relays_nonsilent_rx_frames(usb_rig: _UsbSerialRig) -
                 writer, json.dumps({"type": "audio_start", "direction": "rx"})
             )
             # First bus subscriber arms radio RX → the fake capture stream opens.
-            assert await _wait_for(
+            assert await await_until(
                 lambda: any(s.running for s in usb_rig.backend.rx_streams)
             ), "audio_start(rx) never armed the radio RX capture"
 
@@ -469,8 +460,8 @@ async def test_web_audio_ws_relays_nonsilent_rx_frames(usb_rig: _UsbSerialRig) -
 
     # Server stopped → relay torn down → zero bus subscribers and the radio
     # RX capture stream closed: nothing leaked (MOR-560 class).
-    assert await _wait_for(lambda: usb_rig.radio.audio_bus.subscriber_count == 0)
-    assert await _wait_for(lambda: usb_rig.open_streams() == 0)
+    assert await await_until(lambda: usb_rig.radio.audio_bus.subscriber_count == 0)
+    assert await await_until(lambda: usb_rig.open_streams() == 0)
 
 
 # ── (b) FFT scope WS receives frames from the same RX spine ─────────────────
@@ -489,7 +480,7 @@ async def test_audio_scope_ws_receives_fft_frames(
     reader, writer = await _ws_connect(host, port, "/api/v1/audio-scope")
     try:
         # ensure_relay (first scope client) arms radio RX via the bus.
-        assert await _wait_for(
+        assert await await_until(
             lambda: any(s.running for s in usb_rig.backend.rx_streams)
         ), "audio-scope connect never armed the RX relay"
 
@@ -554,7 +545,7 @@ async def test_bridge_end_to_end_roundtrip_and_clean_stop(case: str) -> None:
 
         # RX: radio-native frame → bus → bridge RX loop → loopback playback.
         shape.inject_rx(_NONSILENT_PCM)
-        assert await _wait_for(
+        assert await await_until(
             lambda: any(
                 any(frame)
                 for s in bridge_backend.tx_streams + bridge_backend.duplex_streams
@@ -564,7 +555,7 @@ async def test_bridge_end_to_end_roundtrip_and_clean_stop(case: str) -> None:
 
         # TX: loopback capture → bridge TX loop → session lease → radio.
         bridge_backend.rx_streams[0].inject_frame(_LOUD_PCM)
-        assert await _wait_for(lambda: shape.radio_tx_frames() > 0), (
+        assert await await_until(lambda: shape.radio_tx_frames() > 0), (
             "captured loopback frame never reached the radio TX path"
         )
 
@@ -632,10 +623,10 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
                 writer, json.dumps({"type": "audio_start", "direction": "tx"})
             )
             # Web TX lease on the SHARED session → RX_TX.
-            assert await _wait_for(lambda: session.tx_demand == 1), (
+            assert await await_until(lambda: session.tx_demand == 1), (
                 "web TX start never acquired a lease on the shared session"
             )
-            assert await _wait_for(lambda: session.state is AudioSessionState.RX_TX)
+            assert await await_until(lambda: session.state is AudioSessionState.RX_TX)
 
             # Key the managed authority the way production does (the web
             # browser's own PTT press) — only then may a browser TX frame
@@ -645,7 +636,7 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
                 MSG_TYPE_AUDIO_TX, AUDIO_CODEC_PCM16, 0, 480, 1, 20, _LOUD_PCM
             )
             await _ws_send_binary(writer, tx_frame)
-            assert await _wait_for(lambda: usb_rig.radio_tx_frames() > 0), (
+            assert await await_until(lambda: usb_rig.radio_tx_frames() > 0), (
                 "web TX audio never reached the radio TX stream"
             )
             await managed.ptt_up("web")
@@ -654,8 +645,8 @@ async def test_session_lifecycle_via_bridge_and_web_tx_lease(
                 writer, json.dumps({"type": "audio_stop", "direction": "tx"})
             )
             # Lease released → TX disarmed, RX demand (bridge) keeps RX alive.
-            assert await _wait_for(lambda: session.tx_demand == 0)
-            assert await _wait_for(lambda: session.state is AudioSessionState.RX_ONLY)
+            assert await await_until(lambda: session.tx_demand == 0)
+            assert await await_until(lambda: session.state is AudioSessionState.RX_ONLY)
             assert radio.audio_bus.rx_active, "TX stop killed the bridge RX"
         finally:
             await _close_writer(writer)
@@ -705,9 +696,9 @@ async def test_watchdog_recovering_surfaces_in_runtime_payload() -> None:
 
         # No RX frame ever arrives — the silent-death shape (AUHAL -50
         # class): the watchdog must surface RECOVERING, not stay silent.
-        assert await _wait_for(lambda: session.state is AudioSessionState.RECOVERING), (
-            "watchdog never surfaced the silent RX death"
-        )
+        assert await await_until(
+            lambda: session.state is AudioSessionState.RECOVERING
+        ), "watchdog never surfaced the silent RX death"
 
         host, port = _addr(server)
         runtime = await _http_get_json(host, port, "/api/v1/runtime")

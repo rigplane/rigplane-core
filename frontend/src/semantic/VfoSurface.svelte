@@ -60,7 +60,7 @@
   import type { ReceiverInstrumentHandles } from './ReceiverInstrumentHost.svelte';
   import { splitFrequencyToDigits, groupDigitsForDisplay } from '../primitives/frequency/frequency-tuning';
   import { renderSlot } from './design-language-renderers';
-  import { observationValue, readingValue } from '../primitives/reading-text';
+  import { observationValue, readingValue, squelchStateLabel } from '../primitives/reading-text';
   import type { MeterContinuitySession } from '../primitives/meters/meter-ballistics.svelte';
   import type {
     BooleanFact, DisplayObservation, DspField, TxAuxField,
@@ -686,8 +686,8 @@
           lit: reading.status === 'known',
         });
       }
-      const frontLamp = (key: string, text: string, lit: boolean) => {
-        sections.annunciators.push({ key, group: 'front', family: 'red', text, lit });
+      const frontLamp = (key: string, text: string, lit: boolean, label?: string) => {
+        sections.annunciators.push({ key, group: 'front', family: 'red', text, lit, label });
       };
       const levelLamp = (key: string, label: string, field: ReceiverIndicatorViewModel['preamp']) => {
         if (!field.availability.structural) return;
@@ -698,6 +698,14 @@
           frontLamp(key, label, false);
         }
       };
+      // MOR-3630: the BUSY lamp — the receiver's own squelch-open reading
+      // as a front lamp, first of the group so it sits nearest the meter
+      // row above. Unlit while closed or unread (the lamp keeps its slot
+      // with the label in both states); absent without the squelch fact.
+      if (indicator.squelchOpen?.availability.structural) {
+        frontLamp('busy', 'BUSY', readingValue(indicator.squelchOpen) === true,
+          squelchStateLabel(indicator.squelchOpen));
+      }
       levelLamp('preamp', 'P.AMP', indicator.preamp);
       levelLamp('att', 'ATT', indicator.attenuator);
       const frontToggle = (key: string, field: ReceiverIndicatorViewModel['ipPlus']) => {

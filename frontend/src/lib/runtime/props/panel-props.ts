@@ -28,6 +28,7 @@ import type { NrLevelProjection, ControlDisplayDomain, PbtRange } from '$lib/rad
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
 import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
 import { finiteValue } from '../../../primitives/reading-text';
+import { FULL_RF_POWER_SCALE, type RfPowerScale } from '../../../primitives/scalar/value-control-core';
 import { modInputStateKey } from '$lib/radio/mod-input';
 
 /* ── Private helpers ─────────────────────────────────────────── */
@@ -903,6 +904,9 @@ export function toDspProps(
 
 export interface TxProps {
   rfPower: number;
+  /** Scale of the RF power slider (MOR-3634): range and watts label for the
+   *  band the active receiver is on; the unchanged scale when unknown. */
+  rfPowerScale: RfPowerScale;
   atuActive: boolean;
   atuTuning: boolean;
   voxActive: boolean;
@@ -929,6 +933,47 @@ export interface TxProps {
   driveGainAvailable: boolean;
 }
 
+const isPositiveNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+/**
+ * Scale of the RF power slider (MOR-3634) from the band the active receiver is
+ * on (`caps.txBands[].maxPowerW`) and how the radio scales its level
+ * (`caps.powerUnit`, the radio's `native_power_unit`):
+ *
+ * - `watts` (Yaesu CAT): the level is a fraction of the flat maximum, so the
+ *   band maximum IS the slider range: `max = bandMax / flat` (needs `maxPowerW`).
+ *   The label stays a percentage.
+ * - `raw_255` (Icom): the level is already a percentage of the CURRENT band's
+ *   rated maximum, so the range stays full and the band maximum is the label:
+ *   watts shown = level x band maximum.
+ *
+ * The unchanged scale (full range, percent label) when no band declares a
+ * maximum, the radio did not say how its level is scaled, or the active
+ * receiver's frequency is unobserved or outside every band.
+ *
+ * This is the slider's scale only. The value the user sets is sent as chosen
+ * (`makeTxHandlers().onRfPowerChange`): nothing here clamps or rescales it.
+ */
+export function rfPowerScale(
+  state: ServerState | null,
+  caps: Capabilities | null,
+): RfPowerScale {
+  if (!state || !caps?.txBands || !activeFieldAvailable(state, 'freqHz')) {
+    return FULL_RF_POWER_SCALE;
+  }
+  const freqHz = activeRx(state)?.freqHz;
+  if (typeof freqHz !== 'number' || !Number.isFinite(freqHz)) return FULL_RF_POWER_SCALE;
+  const band = caps.txBands.find(({ start, end }) => freqHz >= start && freqHz <= end);
+  const bandMax = band?.maxPowerW;
+  if (!isPositiveNumber(bandMax)) return FULL_RF_POWER_SCALE;
+  if (caps.powerUnit === 'raw_255') return { max: 1, wattsAtFull: bandMax };
+  if (caps.powerUnit === 'watts' && isPositiveNumber(caps.maxPowerW)) {
+    return { max: Math.min(1, bandMax / caps.maxPowerW), wattsAtFull: null };
+  }
+  return FULL_RF_POWER_SCALE;
+}
+
 export function toTxProps(
   state: ServerState | null,
   caps: Capabilities | null,
@@ -950,6 +995,7 @@ export function toTxProps(
     // level is `NaN` (this file's non-fabricating sentinel), never the
     // plausible-looking 0.5 the TxPanel/mobile consumers printed as 50%.
     rfPower: state?.powerLevel ?? Number.NaN,
+    rfPowerScale: rfPowerScale(state, caps),
     atuActive: (state?.tunerStatus ?? 0) > 0,
     atuTuning: (state?.tunerStatus ?? 0) === 2,
     voxActive: state?.voxOn ?? false,

@@ -263,12 +263,27 @@ TxTargetPublic = Annotated[
 ]
 
 
+class ConnectionLivenessPublic(_Strict):
+    """MOR-3845: decode-point radio liveness (additive).
+
+    ``lastFrameAgeMs`` is computed server-side at payload-build time from
+    the backend's ``last_valid_frame_monotonic`` stamp; ``None`` when the
+    radio has never answered on this connection generation.
+    """
+
+    lastFrameAgeMs: int | None
+    staleAfterMs: int
+    source: Literal["radio", "daemon", "simulator"]
+
+
 class ConnectionPublic(_Strict):
     """Synthetic connection object injected from the backend connection scalars."""
 
     rigConnected: bool = False
     radioReady: bool = False
     controlConnected: bool = False
+    # MOR-3845: additive; ``None`` when no radio is attached.
+    liveness: ConnectionLivenessPublic | None = None
 
 
 class RadioHealthPublic(_Strict):

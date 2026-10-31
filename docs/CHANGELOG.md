@@ -13,11 +13,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **IC-9700 repeater shift and tone-squelch type declarations (MOR-3623).**
+  The IC-9700 profile declares the repeater shift direction (CI-V `0F`:
+  10 simplex, 11 DUP−, 12 DUP+, the same codes as the IC-705) and the
+  `16 5D` tone-squelch type read with its type table, and polls the shift,
+  the type and the two CTCSS booleans beside split. The D-STAR DV mode
+  gets its fixed-width filter row. DD stays undeclared until mode selection
+  can be limited to the 1.2 GHz band. Tier B-, not hardware-verified: no
+  IC-9700 has been on the bench.
+- TCI listener (phase control): `rigplane web --tci` and `rigplane station --tci` serve frequency, mode, split and PTT over TCI (default port `50001`, loopback bind) with `--tci-port` and the shared `--ingress-host` setting also read by the `rigctld` listener; off by default, no `serve` support. See the TCI API page and the TCI setup guide.
 - Added `rigplane models`: list supported radio profiles with the exact `--model` value for each, as a plain table or `rigplane models --json`.
 - `rigplane discover` prints a ready-to-copy `rigplane --model ... status` command after each radio connection line (a `<MODEL>` placeholder with a pointer to `rigplane models` when LAN discovery cannot tell the model).
+- The RF power slider follows the rated maximum of the band the radio is on (MOR-3634). A band row in a radio profile can declare `max_power_w`, published as `txBands[].maxPowerW` next to the flat `maxPowerW` and a `powerUnit`. On an Icom (level is a percentage of the current band's maximum) the slider keeps its full range and shows watts: the IC-9700 declares 100 W on 2 m, 75 W on 70 cm and 10 W on 23 cm (from the manuals, not yet verified on hardware). On a watts-based radio the slider range is the band maximum. Radios without per-band data keep the unchanged slider. Nothing changes the power value you set: it is sent exactly as chosen.
 
 ### Changed
 
+- Without `--backend`, `--host` or `--serial-port`, a CI-V radio whose profile has no LAN interface (IC-7300, X6200) now scans USB for the radio instead of the network; LAN-capable profiles (IC-7610, IC-705) still use LAN, and an explicit `--host` still means LAN.
+- **Dual-receiver radios: no hidden receiver switching (MOR-3591).** A
+  receiver-scoped command for a receiver the radio cannot address directly
+  (no cmd29 route, no profile-declared selector) now goes only to the
+  receiver you have selected. A command for the other receiver -- or for
+  either receiver before the radio has reported which one is selected -- is
+  refused with the stable reason code `receiver_not_selected` ("select that
+  receiver first"; HTTP 409, rigctld `RPRT -9`) instead of RigPlane briefly
+  selecting the other receiver, writing, and selecting back. Select the
+  receiver first, then change its settings. On the IC-9700 this covers SUB
+  frequency, mode, DATA, filter width, tone/TSQL and VFO A/B, and MAIN
+  writes while SUB is selected; on the IC-7610 the SUB frequency and mode
+  are written directly through CI-V 0x25/0x26 selector 01. A frequency or
+  mode read of a receiver that is not selected (MAIN or SUB) returns the
+  value last observed while it was selected (refused if never observed)
+  instead of reading the other receiver.
 - Commands that connect to a radio without `--model` (and without a matching `--radio-addr`) are refused with the list of supported models instead of connecting without one; rigplane never picks a model.
 - **Core 3.0 is marked stable.** The package declares
   `Development Status :: 5 - Production/Stable`. The README, installation

@@ -1,10 +1,10 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-09-29T12:53:56.273Z",
-  "commit": "3653da0880d1f39b027e12898401a048f0049431",
-  "commitShort": "3653da08",
-  "branch": "codex/mor-3008-repin-drifted-baselines",
-  "platform": "linux-arm64",
+  "generatedAt": "2026-10-29T22:05:52.816Z",
+  "commit": "560a3aff8f3cb7eb8ff9bd9df0524a4783db02b1",
+  "commitShort": "560a3aff",
+  "branch": "codex/mor-3630-busy-lamp",
+  "platform": "linux-x64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
   "comparator": {

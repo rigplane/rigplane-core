@@ -46,7 +46,7 @@ from rigplane.core.command_service import (
     CommandService,
     command_intent_from_request,
 )
-from rigplane.core.exceptions import CommandRejectedError
+from rigplane.core.exceptions import ReceiverNotSelectedError
 from rigplane.core.exceptions import TimeoutError as RigplaneTimeoutError
 from rigplane.core.state_pipeline_contracts import CommandIntent
 from rigplane.exceptions import CommandError
@@ -622,7 +622,12 @@ async def test_x6200_scheduler_due_request_sends_civ_query_from_profile() -> Non
             sub=sub,
             data=b"",
             wait_response=False,
-            priority=Priority.BACKGROUND,
+            # MOR-3863: the PTT read-back rides the KEYING lane.
+            priority=(
+                Priority.KEYING
+                if (command, sub) == (0x1C, 0x00)
+                else Priority.BACKGROUND
+            ),
             wait_dispatch=False,
         )
     assert scheduler.pending_requests()
@@ -1648,7 +1653,8 @@ async def test_scheduler_ptt_request_uses_ic705_declared_getter() -> None:
         sub=0x00,
         data=b"",
         wait_response=False,
-        priority=Priority.BACKGROUND,
+        # MOR-3863: the PTT read-back rides the KEYING lane.
+        priority=Priority.KEYING,
         wait_dispatch=False,
     )
     assert scheduler.pending_requests()[0].paths == (path,)
@@ -2441,51 +2447,48 @@ async def test_current_active_defaults_and_setfreq_setmode_branches() -> None:
 
     radio2 = _make_radio(active="SUB")
     poller2 = RadioPoller(radio2, StateCache(), CommandQueue())
-    # receiver=0 (MAIN) while SUB is active still switches-and-restores in
-    # the poller, via select_receiver — and in the right order: MAIN before
-    # the write, SUB after. select_receiver/set_freq are re-mocked here (own
-    # side effects, not the fixture's) so the interleaved `order` list below
-    # can pin that sequence, mirroring the SetMode ordering pin in
-    # test_profiles_routing.py::test_dual_profile_poller_routes_main_mode_via_select_receiver_when_active_sub;
-    # that test's freq counterpart was the one direction left unpinned for
-    # this ordering (PR #2803 review).
-    order: list[str] = []
-    radio2.select_receiver = AsyncMock(
-        side_effect=lambda which: order.append(f"select_receiver({which})")
-    )
-    radio2.set_freq = AsyncMock(side_effect=lambda *a, **k: order.append("set_freq"))
+    # receiver=0 (MAIN) while SUB is active: the poller delegates the write
+    # unchanged and never switches the selection (MOR-3591); the backend
+    # admits or refuses it.
+    radio2.select_receiver = AsyncMock()
     await poller2._execute(SetFreq(7_074_000, receiver=0))  # noqa: SLF001
-    assert order == ["select_receiver(0)", "set_freq", "select_receiver(1)"]
+    await poller2._execute(SetMode("FM", filter_width=1, receiver=0))  # noqa: SLF001
     radio2.set_freq.assert_awaited_once_with(7_074_000)
-    radio2.set_freq.assert_awaited_once_with(7_074_000)
+    radio2.set_mode.assert_awaited_once_with("FM", 1)
+    radio2.select_receiver.assert_not_awaited()
 
     await poller._execute(SetMode("USB", filter_width=2, receiver=1))  # noqa: SLF001
     radio.set_mode.assert_awaited_once_with("USB", 2, receiver=1)
 
 
 @pytest.mark.asyncio
-async def test_setfreq_main_write_rejection_while_sub_active_restores_sub() -> None:
-    """A refused MAIN 0x05 while SUB is active must still restore SUB.
+@pytest.mark.parametrize(
+    "command",
+    [SetFreq(7_074_000, receiver=0), SetMode("USB", filter_width=1, receiver=0)],
+    ids=["SetFreq", "SetMode"],
+)
+async def test_main_write_refused_while_sub_selected_never_switches(
+    command: SetFreq | SetMode,
+) -> None:
+    """MAIN write while SUB is selected: the backend's refusal propagates and
+    the poller sends no selection command before or after it (MOR-3591).
 
-    The MAIN frequency write waits for the radio's answer
-    (``DualRxRuntimeMixin._set_frequency_main``), so it can raise — a NAK
-    maps to ``CommandRejectedError``. The restore of the SUB selection runs
-    on that exit too, and the error still propagates to the caller.
+    The old poller selected MAIN, wrote, and selected SUB again.
     """
     radio = _make_radio(active="SUB")
     poller = RadioPoller(radio, StateCache(), CommandQueue())
-    order: list[str] = []
-    radio.select_receiver = AsyncMock(
-        side_effect=lambda which: order.append(f"select_receiver({which})")
+    radio.select_receiver = AsyncMock()
+    refusal = ReceiverNotSelectedError(
+        "MAIN is not the selected receiver; select that receiver first"
     )
-    radio.set_freq = AsyncMock(
-        side_effect=CommandRejectedError("radio NAKed the MAIN 0x05")
-    )
+    radio.set_freq = AsyncMock(side_effect=refusal)
+    radio.set_mode = AsyncMock(side_effect=refusal)
 
-    with pytest.raises(CommandRejectedError, match="radio NAKed the MAIN 0x05"):
-        await poller._execute(SetFreq(7_074_000, receiver=0))  # noqa: SLF001
+    with pytest.raises(ReceiverNotSelectedError, match="select that receiver"):
+        await poller._execute(command)  # noqa: SLF001
 
-    assert order == ["select_receiver(0)", "select_receiver(1)"]
+    radio.select_receiver.assert_not_awaited()
+    radio.send_civ.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -3507,9 +3510,12 @@ def test_state_queries_include_operator_toggle_reads_for_ic7610() -> None:
         acquisition_query(0x16, sub=0x56, receiver=0x01),
         acquisition_query(0x1A, sub=0x04, receiver=0x00),
         acquisition_query(0x1A, sub=0x04, receiver=0x01),
+        # MOR-3630: squelch-open (dcd) status, one cmd29-routed read per
+        # receiver, for the BUSY lamp.
+        acquisition_query(0x15, sub=0x01, receiver=0x00),
+        acquisition_query(0x15, sub=0x01, receiver=0x01),
     }.issubset(queries)
     assert {
-        acquisition_query(0x15, sub=0x01, receiver=0x00),
         acquisition_query(0x15, sub=0x07),
         acquisition_query(0x16, sub=0x50),
         acquisition_query(0x16, sub=0x58),
@@ -6819,7 +6825,9 @@ def test_scan_facts_seed_labelled_command_response_not_poll_response() -> None:
 # setting group dispatches by its cadence deadline instead of its old TTL
 # deadline: the same 52 frames, with the AGC read (0x16 0x12, the only
 # class-resolved setting in this cycle) moving ahead of the monitor/vox
-# reads it used to follow.
+# reads it used to follow. MOR-3630 polls the squelch-open (dcd) status on
+# polling-only links: one more 0x15 0x01 read, in the control group, so
+# 52 -> 53 frames.
 _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x1C, 0x00, b""),
     (0x25, None, b"\x00"),
@@ -6830,6 +6838,7 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x14, 0x01, b""),
     (0x14, 0x02, b""),
     (0x14, 0x03, b""),
+    (0x15, 0x01, b""),
     (0x25, None, b"\x01"),
     (0x26, None, b"\x01"),
     (0x14, 0x0A, b""),
@@ -6913,7 +6922,11 @@ async def test_web_cadence_wire_frames_unchanged_when_due_requests_moves_to_the_
     # The dispatch envelope is uniform across the cycle, so it is asserted
     # once per frame rather than repeated in the table above.
     for call_ in radio.send_civ.await_args_list:
-        assert call_.kwargs["priority"] is Priority.BACKGROUND
+        # MOR-3863: only the PTT read-back (1C 00) rides the KEYING lane.
+        is_ptt = (call_.args[0], call_.kwargs.get("sub")) == (0x1C, 0x00)
+        assert call_.kwargs["priority"] is (
+            Priority.KEYING if is_ptt else Priority.BACKGROUND
+        )
         assert call_.kwargs["wait_response"] is False
         assert call_.kwargs["wait_dispatch"] is False
 

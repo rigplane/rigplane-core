@@ -295,7 +295,9 @@ def test_ic7610_serial_receive_explicit_demand_under_the_budget_does_not_stretch
     demand = sum(1.0 / cadence for cadence in cadences.values())
     # MOR-2748: the two filter_shape reads went 10 s -> 5 s, +2*(1/5-1/10)
     # = +0.2 q/s.
-    assert demand == pytest.approx(26.1)
+    # MOR-3630: the two dcd reads poll at the CONTROL 2.0 s cadence,
+    # +2*(1/2) = +1.0 q/s, still under the 30 q/s limit unstretched.
+    assert demand == pytest.approx(27.1)
     assert demand < ACQUISITION_BUDGET_MARGIN * _SERIAL_BUDGET_HZ
 
 
