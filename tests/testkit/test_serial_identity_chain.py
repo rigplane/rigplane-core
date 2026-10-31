@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
 
 import pytest
 
@@ -32,6 +31,7 @@ from rigplane.exceptions import ConnectionError as RigplaneConnectionError
 from rigplane.profiles import resolve_radio_profile
 
 from rigplane_testkit.serial import CivSerialFake
+from _timing import await_until
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 _PROFILE = resolve_radio_profile(model="IC-7300")
@@ -54,15 +54,6 @@ def _radio_for(fake: CivSerialFake) -> Ic7300SerialRadio:
         civ_link=link,
         _enumerate_serial_ports_fn=lambda: [],
     )
-
-
-async def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 3.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        await asyncio.sleep(0.01)
-    return predicate()
 
 
 def _identity(radio: Ic7300SerialRadio) -> RadioIdentity:
@@ -225,15 +216,15 @@ async def test_usb_vanish_reappear_maps_the_error_and_repeats_the_gate() -> None
 
     fake.usb_vanish()
     try:
-        assert await _wait_until(
+        assert await await_until(
             lambda: (radio.serial_open_error or "").startswith("serial_not_found"),
-            timeout_s=3.0,
+            timeout=3.0,
         ), "the vanished device never surfaced as serial_not_found"
         assert not radio.connected
         assert radio.conn_state is RadioConnectionState.RECONNECTING
 
         fake.usb_reappear()
-        assert await _wait_until(lambda: radio.connected, timeout_s=3.0), (
+        assert await await_until(lambda: radio.connected, timeout=3.0), (
             "the watchdog never recovered the reappeared device"
         )
         assert radio.conn_state is RadioConnectionState.CONNECTED

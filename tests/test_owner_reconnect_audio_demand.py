@@ -42,7 +42,8 @@ from rigplane.runtime.radio import IcomRadio
 
 from test_audio_recovery_session import _StatefulFakeStream
 from test_hard_reconnect_hold_audio import _complete_hold
-from test_icom_lan_identity_gate import _LiveControlTransport, _fast_reread, _wait_until
+from test_icom_lan_identity_gate import _LiveControlTransport, _fast_reread
+from _timing import await_until
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 
@@ -219,7 +220,7 @@ async def test_owner_connect_into_identity_hold_reestablishes_after_completion()
 
     gate_open.set()  # the radio answers its 19 00 on the held link
     try:
-        assert await _wait_until(reread_task.done, timeout=5.0)
+        assert await await_until(reread_task.done, timeout=5.0)
         assert radio.connected  # the hold completed on the same epoch
         await _assert_rx_reestablished_once(radio, session, sub, recovery_cb)
     finally:
@@ -321,7 +322,7 @@ async def test_hard_reconnect_loop_into_hold_recovers_once_after_completion() ->
 
     gate_open.set()  # the radio answers its 19 00 on the held link
     try:
-        assert await _wait_until(reread_task.done, timeout=5.0)
+        assert await await_until(reread_task.done, timeout=5.0)
         assert radio.connected
         await _assert_rx_reestablished_once(radio, session, sub, recovery_cb)
     finally:

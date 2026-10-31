@@ -23,6 +23,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from serial_stub import SerialMockRadio
+from _timing import VirtualClock, await_until
 from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,
     AcquisitionPriority,
@@ -367,15 +368,6 @@ def _apply_store_value(
             max_age=max_age,
         )
     )
-
-
-async def _wait_for(predicate: object, *, timeout: float = 1.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if cast(Any, predicate)():
-            return
-        await asyncio.sleep(0.01)
-    assert cast(Any, predicate)()
 
 
 # ---------------------------------------------------------------------------
@@ -1192,7 +1184,7 @@ class TestLifecycle:
                 resp = await srv._rig_handler.execute(_FREQ_CMD)
 
                 assert resp.values == ["14090000"]
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 assert executor.calls
@@ -1403,7 +1395,7 @@ class TestLifecycle:
 
                 await srv._rig_handler.execute(_FREQ_CMD)
 
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
@@ -1458,7 +1450,7 @@ class TestLifecycle:
 
                 await srv._rig_handler.execute(_FREQ_CMD)
 
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 assert executor.calls
@@ -1520,7 +1512,7 @@ class TestLifecycle:
 
                 await srv._rig_handler.execute(_FREQ_CMD)
 
-                await _wait_for(
+                await await_until(
                     lambda: srv._acquisition_scheduler.pending_requests() == ()
                 )
                 scheduler_diagnostics = srv._acquisition_scheduler.diagnostics()
@@ -1577,7 +1569,7 @@ class TestLifecycle:
                 resp = await srv._rig_handler.execute(_FREQ_CMD)
 
                 assert resp.values == ["14090000"]
-                await _wait_for(lambda: bool(radio.send_civ_calls))
+                await await_until(lambda: bool(radio.send_civ_calls))
                 assert radio.send_civ_calls == [
                     {
                         "command": 0x25,
@@ -2053,10 +2045,24 @@ class TestErrorHandling:
 
 
 class TestCommandTimeout:
+    """The command timeout (0.3 s) runs on the test loop's virtual clock.
+
+    The sockets are real; only time is controlled, and it moves when the test
+    says so, after the event that proves the server is waiting on the handler.
+    """
+
+    @pytest.mark.timeout(30)
     async def test_slow_handler_gets_etimeout(
-        self, server: RigctldServer, handler: MagicMock, proto: MagicMock
+        self,
+        server: RigctldServer,
+        handler: MagicMock,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
+        entered = asyncio.Event()
+
         async def slow(cmd: RigctldCommand) -> RigctldResponse:
+            entered.set()
             await asyncio.sleep(10)  # > command_timeout=0.3
             return _FREQ_RESP  # pragma: no cover
 
@@ -2066,23 +2072,34 @@ class TestCommandTimeout:
         r, w = await _connect(server)
         w.write(b"f\n")
         await w.drain()
+        reply = asyncio.ensure_future(r.read(4096))
 
-        # Should receive timeout error within 1s (command_timeout=0.3)
-        data = await asyncio.wait_for(r.read(4096), timeout=1.0)
-        assert data == _TIMEOUT_BYTES
+        await entered.wait()  # the server is now waiting on the handler
+        await virtual_clock.elapse(0.29)  # just inside command_timeout=0.3
+        assert not reply.done()
+        await virtual_clock.elapse(0.02)  # past it
+        await await_until(reply.done, timeout=10.0, description="the ETIMEOUT reply")
+        assert reply.result() == _TIMEOUT_BYTES
         proto.format_error.assert_called_with(HamlibError.ETIMEOUT)
         await _close(w)
 
+    @pytest.mark.timeout(30)
     async def test_connection_still_usable_after_timeout(
-        self, server: RigctldServer, handler: MagicMock, proto: MagicMock
+        self,
+        server: RigctldServer,
+        handler: MagicMock,
+        proto: MagicMock,
+        virtual_clock: VirtualClock,
     ) -> None:
         """After a command timeout the client can send another command."""
         call_count = 0
+        entered = asyncio.Event()
 
         async def sometimes_slow(cmd: RigctldCommand) -> RigctldResponse:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
+                entered.set()
                 await asyncio.sleep(10)  # first: timeout
             return _FREQ_RESP
 
@@ -2094,14 +2111,18 @@ class TestCommandTimeout:
         # First command times out
         w.write(b"f\n")
         await w.drain()
-        err_data = await asyncio.wait_for(r.read(4096), timeout=1.0)
-        assert err_data == _TIMEOUT_BYTES
+        err_reply = asyncio.ensure_future(r.read(4096))
+        await entered.wait()
+        await virtual_clock.elapse(0.31)
+        await await_until(
+            err_reply.done, timeout=10.0, description="the ETIMEOUT reply"
+        )
+        assert err_reply.result() == _TIMEOUT_BYTES
 
         # Second command succeeds
         w.write(b"f\n")
         await w.drain()
-        ok_data = await asyncio.wait_for(r.read(4096), timeout=1.0)
-        assert ok_data == _RESPONSE_BYTES
+        assert await r.read(4096) == _RESPONSE_BYTES
 
         await _close(w)
 

@@ -61,6 +61,7 @@ from rigplane.ws import (
     make_accept_key,
     make_frame,
 )
+from _timing import await_until
 
 # ---------------------------------------------------------------------------
 # Frontend static build guard
@@ -2671,15 +2672,6 @@ class TestHalfOpenWsReaper:
         assert len(conns) == 1, f"expected exactly one tracked ws, got {len(conns)}"
         return conns[0]
 
-    @staticmethod
-    async def _wait_until(predicate: Any, timeout: float = 2.0) -> None:
-        deadline = asyncio.get_running_loop().time() + timeout
-        while asyncio.get_running_loop().time() < deadline:
-            if predicate():
-                return
-            await asyncio.sleep(0.01)
-        raise AssertionError("condition not met within timeout")
-
     async def test_half_open_peer_reaped_by_zombie_reaper(
         self,
         server: WebServer,
@@ -2709,8 +2701,8 @@ class TestHalfOpenWsReaper:
             try:
                 with caplog.at_level(logging.INFO):
                     await asyncio.wait_for(
-                        self._wait_until(
-                            lambda: len(server._client_tasks) < before  # noqa: SLF001
+                        await_until(
+                            lambda: len(server._client_tasks) < before,  # noqa: SLF001
                         ),
                         timeout=2.0,
                     )
@@ -2745,8 +2737,8 @@ class TestHalfOpenWsReaper:
         before = len(server._client_tasks)  # noqa: SLF001
         with caplog.at_level(logging.INFO):
             await _close_ws(writer)
-            await self._wait_until(
-                lambda: len(server._client_tasks) < before  # noqa: SLF001
+            await await_until(
+                lambda: len(server._client_tasks) < before,  # noqa: SLF001
             )
 
         assert len(server._client_tasks) == before - 1  # noqa: SLF001
@@ -2897,8 +2889,8 @@ class TestHalfOpenWsReaper:
                     # minutes/TCP-RTO) if the reaper's close() is not
                     # bounded with an abort() fallback.
                     await asyncio.wait_for(
-                        self._wait_until(
-                            lambda: len(server._client_tasks) < before  # noqa: SLF001
+                        await_until(
+                            lambda: len(server._client_tasks) < before,  # noqa: SLF001
                         ),
                         timeout=5.0,
                     )
