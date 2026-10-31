@@ -459,7 +459,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
         self.assertIn(event_types, quick)
         self.assertIn(event_types, visual)
-        self.assertIn("runs-on: ubuntu-latest", quick)
+        self.assertIn("runs-on: [self-hosted, linux, light]", quick)
         self.assertIn("needs: classify", quick)
         self.assertIn("needs.classify.outputs.docs != 'true'", quick)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)

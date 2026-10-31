@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     steps:
       - uses: actions/checkout@v6
 
@@ -69,7 +69,7 @@ jobs:
     # inspection, and publishes nothing.
     if: github.ref == 'refs/heads/main'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -80,8 +80,12 @@ jobs:
 
   indexnow:
     needs: deploy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Wait for Pages CDN to settle
         run: sleep 30
 

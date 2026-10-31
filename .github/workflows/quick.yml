@@ -70,7 +70,7 @@ concurrency:
 
 jobs:
   classify:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     outputs:
       core: ${{ steps.paths.outputs.core }}
       frontend: ${{ steps.paths.outputs.frontend }}
@@ -84,6 +84,11 @@ jobs:
           # Pull-request merge checkouts include both parents at this depth.
           # The classifier fetches an exact missing endpoint when necessary.
           fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Classify exact changed paths
         id: paths

@@ -26,7 +26,7 @@ permissions:
 jobs:
   agent-review-gate:
     name: Agent Review Gate on the merge group
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v6
@@ -45,7 +45,7 @@ jobs:
 
   freeze-gate:
     name: Evaluate stabilization-freeze PR contract
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v6

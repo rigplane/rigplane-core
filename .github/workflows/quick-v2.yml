@@ -19,7 +19,7 @@ concurrency:
 jobs:
   observe:
     name: Read-only legacy quick metadata observer
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 5
     permissions:
       actions: read
@@ -80,13 +80,14 @@ jobs:
             const result = await observer.assess({github, context, liveBaseSha});
             core.setOutput('assessment', observer.stableAssessment(result));
             core.info(`observation_metrics=${JSON.stringify(result.metrics)}`);
-            if (result.state === 'failure') { core.setFailed(result.description);
+            if (result.code === 'stale_base') { core.notice(result.description);
+            } else if (result.state === 'failure') { core.setFailed(result.description);
             }
   publish:
     name: Exact-head metadata observation publisher
     needs: observe
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 5
     permissions:
       actions: read
@@ -154,5 +155,6 @@ jobs:
               }
               await github.request( 'POST /repos/{owner}/{repo}/statuses/{sha}', { owner, repo, sha: result.targetSha, state: result.state, context: observer.OBSERVATION_CONTEXT, description: result.description, target_url: `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`, }, );
             }
-            if (result.state === 'failure') { core.setFailed(result.description);
+            if (result.code === 'stale_base') { core.notice(result.description);
+            } else if (result.state === 'failure') { core.setFailed(result.description);
             }

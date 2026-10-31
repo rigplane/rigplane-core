@@ -42,7 +42,7 @@ permissions:
 jobs:
   bump-downstream:
     name: Open downstream bump PRs
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, light]
     # Skip pre-releases (alpha, beta, rc). Only stable releases trigger bumps.
     # Also skip if the release body contains the opt-out marker [no-downstream-bump].
     if: |
@@ -74,6 +74,19 @@ jobs:
           # Grant the token access to both downstream repos.
           repositories: rigplane-pro,rigplane-station
           owner: rigplane
+
+      - name: Set up Python
+        if: steps.secrets-check.outputs.configured == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install GitHub CLI
+        if: steps.secrets-check.outputs.configured == 'true'
+        run: |
+          if ! command -v gh >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y gh
+          fi
 
       - name: Checkout rigplane-core (for bump script)
         if: steps.secrets-check.outputs.configured == 'true'

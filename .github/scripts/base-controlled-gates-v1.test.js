@@ -29,7 +29,7 @@ function topologyErrors({quick, review, migration}) {
   const pins = quick.match(/actions\/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd/gu) ?? [];
   if (statusWrites.length !== 1 || pins.length !== 2) errors.push('publisher permission or action pin count changed');
   for (const forbidden of [
-    'self-hosted', 'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
+    'self-hosted, linux, build', 'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
     '/logs', '/artifacts', '/caches', 'secrets.', 'github.workflow_sha',
   ]) {
     if (quick.includes(forbidden)) errors.push(`quick observer contains forbidden surface: ${forbidden}`);
@@ -38,7 +38,7 @@ function topologyErrors({quick, review, migration}) {
     errors.push('review observation contract changed unexpectedly');
   }
   for (const required of [
-    'must never be configured as required checks', 'metadata-only', 'zero self-hosted',
+    'must never be configured as required checks', 'metadata-only',
     'route_job_concordance', 'terminal_binding_coverage',
     'status POST are not atomic',
     'distinct from GitHub Actions app ID `15368`', '"strict": true',
@@ -79,7 +79,7 @@ test('trusted route policy rejects incomplete and injected path metadata', () =>
   assert.throws(() => routePolicy.classifyPullFiles([{filename: 'docs/a.md'}], 3000));
 });
 
-test('quick v2 topology is hosted, metadata-only, and separately published', () => {
+test('quick v2 topology is light-runner, metadata-only, and separately published', () => {
   assert.deepEqual(topologyErrors(sources()), []);
   assert.equal(observer.LEGACY_WORKFLOW.id, 270532868);
   assert.equal(observer.LEGACY_WORKFLOW.path, '.github/workflows/quick.yml');
@@ -90,7 +90,7 @@ test('workflow-run observation admits feature heads targeting main', () => asser
 test('topology contract catches permission, execution, event, and pin regressions', () => {
   const original = sources();
   const mutations = [
-    ['runs-on: ubuntu-latest', 'runs-on: [self-hosted, linux, build]'],
+    ['runs-on: [self-hosted, linux, light]', 'runs-on: [self-hosted, linux, build]'],
     ['permissions: {}', 'permissions:\n  statuses: write'],
     ['actions: read', 'actions: read\n      statuses: write'],
     ['with:\n          script:', 'uses: actions/upload-artifact@v4\n        with:\n          script:'],
@@ -198,7 +198,7 @@ test('final publication snapshot rejects changed attempt and job topology', () =
   assert.throws(() => observer.assertJobTopologyUnchanged([{...jobs[0], conclusion: 'failure'}], topology, head), /job topology changed/u);
 });
 
-test('final publication rebind turns head or base movement into failure', async () => {
+test('final publication rebind turns head movement into failure and base movement into a pending publication', async () => {
   const base = 'b'.repeat(40); const head = 'a'.repeat(40);
   const result = {kind: 'lifecycle', code: 'admitted', state: 'pending', publish: true, targetSha: head, pullNumber: 41, baseSha: base, headSha: head, runId: null, runAttempt: null, jobTopology: null, metrics: {false_success_publications: 0}};
   const githubFor = (pull, liveMain) => ({request: async (route) => {
@@ -206,10 +206,178 @@ test('final publication rebind turns head or base movement into failure', async 
     if (route.includes('/pulls/')) return {data: pull};
     throw new Error(`unexpected route ${route}`);
   }});
+  // The earlier published observation rebinds cleanly while the base is current.
+  const sameBase = await observer.rebindForPublication({github: githubFor(canonicalPull(41, head, base), base), result});
+  assert.deepEqual([sameBase.code, sameBase.state, sameBase.publish, sameBase.targetSha], ['admitted', 'pending', true, head]);
   const movedHead = await observer.rebindForPublication({github: githubFor(canonicalPull(41, 'd'.repeat(40), base), base), result});
   assert.deepEqual([movedHead.code, movedHead.state, movedHead.targetSha], ['stale_head', 'failure', head]);
+  // After the base moves, the same head republishes as pending (non-success)
+  // instead of leaving the earlier observation in place, while the job stays green.
   const movedBase = await observer.rebindForPublication({github: githubFor(canonicalPull(41, head, 'c'.repeat(40)), 'c'.repeat(40)), result});
-  assert.deepEqual([movedBase.code, movedBase.state, movedBase.targetSha], ['stale_base', 'failure', head]);
+  assert.deepEqual([movedBase.code, movedBase.state, movedBase.publish, movedBase.targetSha], ['stale_base', 'pending', true, head]);
+});
+
+test('stale base republishes the lifecycle observation as pending for the bound head', async () => {
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40); const live = 'c'.repeat(40);
+  const pull = canonicalPull(41, head, base);
+  const github = {request: async (route) => {
+    if (route.includes('/pulls/')) return {data: pull};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'pull_request_target', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {action: 'synchronize', repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, pull_request: {number: 41}}};
+  // The same head and base bind cleanly while the base is current, so an
+  // earlier observation could have published success for this head.
+  assert.deepEqual(observer.bindPull(pull, base, head), {headSha: head, baseSha: base, sameRepository: true});
+  // After the base moves, the bound head republishes as pending (non-success)
+  // instead of leaving the earlier success in place, while the job stays green.
+  const result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['lifecycle', 'stale_base', 'pending', true, head]);
+});
+
+test('stale base republishes the workflow-run observation as pending for the bound head', async () => {
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40); const live = 'c'.repeat(40);
+  const run = {...runPull(41, head, base), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  const github = {request: async (route) => {
+    if (route.includes('/actions/runs/')) return {data: run};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  // The same run binds cleanly while the base is current, so an earlier
+  // observation could have published success for this head.
+  assert.deepEqual(observer.bindRunPullRequest(run, base), {pullNumber: 41, headSha: head, baseSha: base});
+  // After the base moves, the workflow-run leg skips: it publishes nothing for
+  // a head it did not evaluate, and both jobs stay green (MOR-3875).
+  const result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['workflow_run', 'stale_base', 'success', false, head]);
+});
+
+test('stale workflow-run base skips publication end to end without posting a status', async () => {
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40); const live = 'c'.repeat(40);
+  const run = {...runPull(41, head, base), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  const posted = [];
+  const github = {request: async (route) => {
+    if (route.startsWith('POST ')) { posted.push(route); return {data: {}}; }
+    if (route.includes('/actions/runs/')) return {data: run};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  // Same sequence as the quick-v2.yml publish job: assess, rebind, then post
+  // only when the assessment says to publish.
+  let result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish], ['workflow_run', 'stale_base', 'success', false]);
+  result = await observer.rebindForPublication({github, result});
+  assert.deepEqual([result.code, result.state, result.publish], ['stale_base', 'success', false]);
+  if (result.publish) {
+    await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
+  }
+  assert.deepEqual(posted, []);
+});
+
+test('stale live pull base on the workflow-run path also skips without posting', async () => {
+  const head = 'a'.repeat(40); const live = 'c'.repeat(40); const moved = 'd'.repeat(40);
+  const run = {...runPull(41, head, live), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  const posted = [];
+  const github = {
+    paginate: async (route) => {
+      if (route.includes('/commits/')) return [canonicalPull(41, head, live)];
+      throw new Error(`unexpected page ${route}`);
+    },
+    request: async (route) => {
+      if (route.startsWith('POST ')) { posted.push(route); return {data: {}}; }
+      if (route.includes('/actions/runs/')) return {data: run};
+      if (route.includes('/actions/workflows/')) return {data: {id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, state: 'active'}};
+      if (route.includes('/check-suites/')) return {data: {head_sha: head, app: {id: 15368}}};
+      if (route.includes('/pulls/')) return {data: canonicalPull(41, head, moved)};
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  // The run recorded the live base, but the live pull has since moved to
+  // another base: the head was not evaluated against anything current.
+  let result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['workflow_run', 'stale_base', 'success', false, head]);
+  result = await observer.rebindForPublication({github, result});
+  assert.deepEqual([result.code, result.state, result.publish], ['stale_base', 'success', false]);
+  if (result.publish) {
+    await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
+  }
+  assert.deepEqual(posted, []);
+});
+
+test('quick v2 reports no hard-coded self-hosted minutes', async () => {
+  const policySource = fs.readFileSync(path.join(ROOT, '.github/scripts/quick-v2-metadata-policy-v1.js'), 'utf8');
+  assert.doesNotMatch(policySource, /v2_self_hosted_minutes/u);
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40); const live = 'c'.repeat(40);
+  const pull = canonicalPull(41, head, base);
+  const github = {request: async (route) => {
+    if (route.includes('/pulls/')) return {data: pull};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'pull_request_target', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {action: 'synchronize', repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, pull_request: {number: 41}}};
+  const result = await observer.assess({github, context, liveBaseSha: live});
+  assert.equal('v2_self_hosted_minutes' in (result.metrics ?? {}), false);
+});
+
+function workflowJobs(root) {
+  const dir = path.join(root, '.github/workflows');
+  const jobs = [];
+  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.yml')).sort()) {
+    const text = fs.readFileSync(path.join(dir, file), 'utf8');
+    const lines = text.split('\n');
+    let inJobs = false; let current = null; let currentRunsOn = null;
+    const flush = () => {
+      if (inJobs && current !== null && currentRunsOn !== null) jobs.push({file, job: current, runsOn: currentRunsOn, text: jobText});
+      current = null; currentRunsOn = null; jobText = '';
+    };
+    let jobText = '';
+    for (const line of lines) {
+      if (/^jobs:\s*$/.test(line)) { inJobs = true; continue; }
+      if (!inJobs) continue;
+      const jobMatch = /^  ([A-Za-z0-9_-]+):\s*$/.exec(line);
+      if (jobMatch) { flush(); current = jobMatch[1]; continue; }
+      if (current !== null) {
+        jobText += `${line}\n`;
+        const runsMatch = /^\s+runs-on:\s*(.*)\s*$/.exec(line);
+        if (runsMatch) currentRunsOn = runsMatch[1];
+      }
+    }
+    flush();
+  }
+  return jobs;
+}
+
+test('every workflow job runs on self-hosted runners', () => {
+  const jobs = workflowJobs(TARGET_ROOT);
+  assert.ok(jobs.length > 0);
+  const hosted = jobs.filter(({runsOn}) => /ubuntu-|macos-|windows-/iu.test(runsOn) && !/self-hosted/iu.test(runsOn));
+  assert.deepEqual(hosted.map(({file, job, runsOn}) => `${file}:${job}:${runsOn}`), []);
+});
+
+test('migrated light jobs carry their explicit tool setup', () => {
+  const jobs = workflowJobs(TARGET_ROOT);
+  const byName = new Map(jobs.map(({file, job, runsOn, text}) => [`.github/workflows/${file}:${job}`, {runsOn, text}]));
+  const problems = [];
+  const requireIn = (key, needle, why) => {
+    const entry = byName.get(key);
+    if (!entry) { problems.push(`${key} is missing`); return; }
+    if (!entry.text.includes(needle)) problems.push(`${key} lacks ${why}: ${needle}`);
+  };
+  for (const [key, {runsOn, text}] of byName) {
+    if (!/light/.test(runsOn)) continue;
+    if (/(^|\s)python3(\s|$)/.test(text) && !text.includes('actions/setup-python@')) problems.push(`${key} runs python3 without actions/setup-python`);
+    if (/\buv\s+(run|sync)\b/.test(text) && !text.includes('astral-sh/setup-uv@') && !text.includes('uv python install')) problems.push(`${key} runs uv without astral-sh/setup-uv`);
+    const runLines = text.split('\n').filter((line) => /^\s+run:/.test(line));
+    if (runLines.some((line) => /(\s|^)(node\s|npm\s|npx\s)/.test(line)) && !text.includes('actions/setup-node@')) problems.push(`${key} runs node/npm without actions/setup-node`);
+    if (/(^|\s)gh(\s|$)/.test(text) && !text.includes('command -v gh')) problems.push(`${key} uses gh without a command -v gh guard`);
+  }
+  requireIn('.github/workflows/quick.yml:classify', 'actions/setup-python@v5', 'explicit Python setup');
+  requireIn('.github/workflows/freeze-gate.yml:freeze-gate', 'actions/setup-node@v6', 'explicit Node setup');
+  requireIn('.github/workflows/artifact-cleanup.yml:cleanup', 'actions/setup-python@v5', 'explicit Python setup');
+  requireIn('.github/workflows/certification-status.yml:status', 'actions/setup-python@v5', 'explicit Python setup');
+  requireIn('.github/workflows/docs.yml:indexnow', 'actions/setup-python@v5', 'explicit Python setup');
+  requireIn('.github/workflows/dispatch-downstream.yml:bump-downstream', 'actions/setup-python@v5', 'explicit Python setup');
+  requireIn('.github/workflows/dispatch-downstream.yml:bump-downstream', 'command -v gh', 'GitHub CLI guard');
+  assert.deepEqual(problems, []);
 });
 
 function treeGithub(finalEntry, options = {}) {

@@ -80,10 +80,10 @@ concurrency:
 
 jobs:
   citation-gate:
-    # Grep + bash, no toolchain needed. Keep this on a GitHub-hosted runner
-    # so protected-branch merges are not blocked when self-hosted runners
-    # are offline or occupied.
-    runs-on: ubuntu-latest
+    # Grep + bash, no toolchain needed. It runs on the light runners, off the
+    # build pool, so protected-branch merges are not blocked when the
+    # self-hosted build runners are offline or occupied.
+    runs-on: [self-hosted, linux, light]
     timeout-minutes: 3
 
     steps:

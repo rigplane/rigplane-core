@@ -22,7 +22,7 @@ GitHub Actions app ID `15368`. A candidate-controlled workflow can publish eithe
 identity. Context plus app ID does not prove which workflow made the decision. The `*-observe` names make their
 non-authoritative role explicit; no protection-switch command targets them.
 
-The quick v2 workflow is metadata-only and schedules zero self-hosted jobs. It never checks out or executes pull-request
+The quick v2 workflow is metadata-only and runs its two jobs on the self-hosted light pool. It never checks out or executes pull-request
 or fork code and never reads a candidate artifact, log, or cache. Its `pull_request_target` path initializes opened,
 reopened, synchronized, ready, draft, and base-edited pull requests; title- and body-only edits are no-ops. Its
 `workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes.
@@ -35,8 +35,9 @@ base must equal live `main`.
 
 After the assessments match, `.github/scripts/quick-v2-metadata-policy-v1.js: rebindForPublication` rereads the run
 attempt and job topology, verifies the recorded PR association again, and makes the PR plus live `main` its final API
-reads immediately before the status POST. A changed attempt, topology, head, base, or `main` becomes unknown/failure,
-or an incompletely bound result is withheld. The final API reads and the status POST are not atomic because GitHub has
+reads immediately before the status POST. A changed attempt, topology, or head becomes unknown/failure,
+or an incompletely bound result is withheld. A moved base republishes the bound head as pending
+(non-success) while the workflow job stays green, replacing any earlier success for that head. The final API reads and the status POST are not atomic because GitHub has
 no transaction spanning them; keeping those reads last reduces the remaining observation-only race but cannot make
 this context safe for promotion.
 
@@ -66,8 +67,9 @@ The observation logs these metrics from the independently bound assessment:
 
 - `route_job_concordance`: trusted route versus the complete observed job topology;
 - `terminal_binding_coverage`: terminal run ID and attempt bound to exact pull/head/base;
-- zero self-hosted v2 minutes (`v2_self_hosted_minutes: 0`);
 - zero false-success and stale-head publication (`false_success_publications: 0`, `stale_head_publications: 0`).
+
+Self-hosted minutes are not measured: the observer reports no usage metric.
 
 ## Unique authority required before promotion
 
