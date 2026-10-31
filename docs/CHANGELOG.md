@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.1.0] — 2026-10-31
+## [3.1.1] — 2026-10-31
 
-This is the first release candidate of 3.1. It adds a TCI listener for
+This is the first published 3.1 release. Version 3.1.0 was tagged but never
+published to PyPI: a test in the release checks failed intermittently. 3.1.1
+fixes that test and ships the same code. It adds a TCI listener for
 loggers that speak TCI, a `rigplane models` command, per-band power limits
 and region-aware VHF/UHF handling, a universal radio liveness signal, faster
 and more robust rigctld and PTT behaviour, a USB audio-pairing fix for
@@ -5058,8 +5060,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.0...HEAD
-[3.1.0]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...v3.1.0
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...v3.1.1
 [3.0.1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/rigplane/rigplane-core/compare/v3.0.0rc1...v3.0.0
 [3.0.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0b21...v3.0.0rc1
