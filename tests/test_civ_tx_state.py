@@ -62,7 +62,7 @@ def test_unkey_if_keyed_unkeys_and_rereads(monkeypatch, capsys):
     tx = bytes((0xFE, 0xFE, 0xE0, 0x94, 0x1C, 0x00, 0x01, 0xFD))
     rx = bytes((0xFE, 0xFE, 0xE0, 0x94, 0x1C, 0x00, 0x00, 0xFD))
     written = []
-    replies = [tx, rx]
+    replies = [tx, b"", rx]
 
     def fake_exchange(port, addr, baud, frame):
         written.append(bytes(frame))
