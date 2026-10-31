@@ -98,7 +98,7 @@ def test_w3_dual_cp210x_pair_each_radio_by_topology():
     )
     assert isinstance(paired_7610, PairOk), paired_7610
     assert (paired_7610.rx_index, paired_7610.tx_index) == (1, 5)
-    assert paired_7610.codec_node == r"USB\VID_08BB&PID_2901\7610CODECA"
+    assert paired_7610.codec_node == r"USB\VID_08BB&PID_2901\R4S3UJHC5ES"
     standby_7610 = pair(
         adapt_windows(session), "COM6", get_radio_profile("IC-7610").usb_identity
     )
@@ -109,7 +109,7 @@ def test_w3_dual_cp210x_pair_each_radio_by_topology():
     )
     assert isinstance(paired_7300, PairOk), paired_7300
     assert (paired_7300.rx_index, paired_7300.tx_index) == (2, 6)
-    assert paired_7300.codec_node == r"USB\VID_08BB&PID_2901\7300CODECB"
+    assert paired_7300.codec_node == r"USB\VID_08BB&PID_2901\R7PXJWSI2XG"
 
 
 def _inject_windows(monkeypatch, session):

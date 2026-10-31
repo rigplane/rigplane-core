@@ -37,7 +37,7 @@
               "compatible_ids": []
             },
             {
-              "instance_id": "USB\\VID_0451&PID_2046\\H7610SYNTH",
+              "instance_id": "USB\\VID_0451&PID_2046\\R3PE5W5FAEE",
               "parent_id": "USB\\ROOT_HUB30\\5&SYNTHW3&0&0",
               "class_name": "USB",
               "friendly_name": "Generic USB Hub",
@@ -51,7 +51,7 @@
               ]
             },
             {
-              "instance_id": "USB\\VID_0451&PID_2046\\H7300SYNTH",
+              "instance_id": "USB\\VID_0451&PID_2046\\RGHVOPOGOBM",
               "parent_id": "USB\\ROOT_HUB30\\5&SYNTHW3&0&0",
               "class_name": "USB",
               "friendly_name": "Generic USB Hub",
@@ -65,8 +65,8 @@
               ]
             },
             {
-              "instance_id": "USB\\VID_10C4&PID_EA60\\IC-7610_00000000_A",
-              "parent_id": "USB\\VID_0451&PID_2046\\H7610SYNTH",
+              "instance_id": "USB\\VID_10C4&PID_EA60\\ROJR45ZINFO",
+              "parent_id": "USB\\VID_0451&PID_2046\\R3PE5W5FAEE",
               "class_name": "Ports",
               "friendly_name": "Silicon Labs CP210x USB to UART Bridge (COM5)",
               "device_desc": "Silicon Labs CP210x USB to UART Bridge",
@@ -77,8 +77,8 @@
               "compatible_ids": []
             },
             {
-              "instance_id": "USB\\VID_10C4&PID_EA60\\IC-7610_00000000_B",
-              "parent_id": "USB\\VID_0451&PID_2046\\H7610SYNTH",
+              "instance_id": "USB\\VID_10C4&PID_EA60\\RT5WTGNOHNQ",
+              "parent_id": "USB\\VID_0451&PID_2046\\R3PE5W5FAEE",
               "class_name": "Ports",
               "friendly_name": "Silicon Labs CP210x USB to UART Bridge (COM6)",
               "device_desc": "Silicon Labs CP210x USB to UART Bridge",
@@ -89,8 +89,8 @@
               "compatible_ids": []
             },
             {
-              "instance_id": "USB\\VID_08BB&PID_2901\\7610CODECA",
-              "parent_id": "USB\\VID_0451&PID_2046\\H7610SYNTH",
+              "instance_id": "USB\\VID_08BB&PID_2901\\R4S3UJHC5ES",
+              "parent_id": "USB\\VID_0451&PID_2046\\R3PE5W5FAEE",
               "class_name": "USB",
               "friendly_name": "",
               "device_desc": "USB Audio CODEC",
@@ -101,8 +101,8 @@
               "compatible_ids": []
             },
             {
-              "instance_id": "USB\\VID_08BB&PID_2901&MI_00\\7610CODECA&0000",
-              "parent_id": "USB\\VID_08BB&PID_2901\\7610CODECA",
+              "instance_id": "USB\\VID_08BB&PID_2901&MI_00\\R4S3UJHC5ES&0000",
+              "parent_id": "USB\\VID_08BB&PID_2901\\R4S3UJHC5ES",
               "class_name": "MEDIA",
               "friendly_name": "USB Audio CODEC ",
               "device_desc": "USB Audio CODEC ",
@@ -114,7 +114,7 @@
             },
             {
               "instance_id": "SWD\\MMDEVAPI\\{0.0.1.7610AAAA}.{11111111-1111-1111-1111-111111111111}",
-              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\7610CODECA&0000",
+              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\R4S3UJHC5ES&0000",
               "class_name": "AudioEndpoint",
               "friendly_name": "Microphone (USB Audio CODEC )",
               "device_desc": "Microphone (USB Audio CODEC )",
@@ -125,7 +125,7 @@
             },
             {
               "instance_id": "SWD\\MMDEVAPI\\{0.0.0.7610AAAA}.{22222222-2222-2222-2222-222222222222}",
-              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\7610CODECA&0000",
+              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\R4S3UJHC5ES&0000",
               "class_name": "AudioEndpoint",
               "friendly_name": "Speakers (USB Audio CODEC )",
               "device_desc": "Speakers (USB Audio CODEC )",
@@ -135,8 +135,8 @@
               "compatible_ids": []
             },
             {
-              "instance_id": "USB\\VID_10C4&PID_EA60\\IC-7300_00000000",
-              "parent_id": "USB\\VID_0451&PID_2046\\H7300SYNTH",
+              "instance_id": "USB\\VID_10C4&PID_EA60\\RAUPUCDZ75W",
+              "parent_id": "USB\\VID_0451&PID_2046\\RGHVOPOGOBM",
               "class_name": "Ports",
               "friendly_name": "Silicon Labs CP210x USB to UART Bridge (COM3)",
               "device_desc": "Silicon Labs CP210x USB to UART Bridge",
@@ -147,8 +147,8 @@
               "compatible_ids": []
             },
             {
-              "instance_id": "USB\\VID_08BB&PID_2901\\7300CODECB",
-              "parent_id": "USB\\VID_0451&PID_2046\\H7300SYNTH",
+              "instance_id": "USB\\VID_08BB&PID_2901\\R7PXJWSI2XG",
+              "parent_id": "USB\\VID_0451&PID_2046\\RGHVOPOGOBM",
               "class_name": "USB",
               "friendly_name": "",
               "device_desc": "USB Audio CODEC",
@@ -159,8 +159,8 @@
               "compatible_ids": []
             },
             {
-              "instance_id": "USB\\VID_08BB&PID_2901&MI_00\\7300CODECB&0000",
-              "parent_id": "USB\\VID_08BB&PID_2901\\7300CODECB",
+              "instance_id": "USB\\VID_08BB&PID_2901&MI_00\\R7PXJWSI2XG&0000",
+              "parent_id": "USB\\VID_08BB&PID_2901\\R7PXJWSI2XG",
               "class_name": "MEDIA",
               "friendly_name": "USB Audio CODEC ",
               "device_desc": "USB Audio CODEC ",
@@ -172,7 +172,7 @@
             },
             {
               "instance_id": "SWD\\MMDEVAPI\\{0.0.1.7300BBBB}.{33333333-3333-3333-3333-333333333333}",
-              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\7300CODECB&0000",
+              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\R7PXJWSI2XG&0000",
               "class_name": "AudioEndpoint",
               "friendly_name": "Microphone (2- USB Audio CODEC )",
               "device_desc": "Microphone (2- USB Audio CODEC )",
@@ -183,7 +183,7 @@
             },
             {
               "instance_id": "SWD\\MMDEVAPI\\{0.0.0.7300BBBB}.{44444444-4444-4444-4444-444444444444}",
-              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\7300CODECB&0000",
+              "parent_id": "USB\\VID_08BB&PID_2901&MI_00\\R7PXJWSI2XG&0000",
               "class_name": "AudioEndpoint",
               "friendly_name": "Speakers (2- USB Audio CODEC )",
               "device_desc": "Speakers (2- USB Audio CODEC )",
