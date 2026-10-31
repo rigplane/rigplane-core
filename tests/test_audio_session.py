@@ -16,6 +16,9 @@ The session is consumed by NOTHING in src yet (steps 9/11/12 wire it).
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import AsyncIterator
+
 import pytest
 from _order_sensitive_radios import ExclusiveUsbRadio, LanLikeRadio
 
@@ -450,6 +453,37 @@ async def test_tx_start_failure_atomic_rearms_rx() -> None:
 
 
 # ── TX lease push ────────────────────────────────────────────────────────────
+
+
+async def test_lease_push_runs_inside_an_admission_only_while_it_admits() -> None:
+    """``admission`` (kept for owner-specific TX audio, MOR-3821/MOR-3921)."""
+    radio = _StrictExclusiveRadio()
+    session = AudioSession(radio)
+    await session.subscribe_rx("a")
+    lease = await session.acquire_tx("bridge")
+    verdict = {"admit": False}
+    inside: list[bool] = []
+
+    @contextlib.asynccontextmanager
+    async def admission() -> AsyncIterator[bool]:
+        inside.append(True)
+        yield verdict["admit"]
+        inside.append(False)
+
+    await lease.push(b"\x01\x00" * 160, admission=admission)
+    assert radio._duplex is None or radio._duplex.written_frames == []
+    verdict["admit"] = True
+    await lease.push(b"\x02\x00" * 160, admission=admission)
+    assert radio._duplex is not None
+    assert radio._duplex.written_frames == [b"\x02\x00" * 160]
+    assert inside == [True, False, True, False]
+
+    async def guard() -> bool:
+        return True
+
+    with pytest.raises(ValueError):
+        await lease.push(b"\x00\x00", submission_guard=guard, admission=admission)
+    await lease.release()
 
 
 async def test_lease_push_delegates_and_release_guards() -> None:

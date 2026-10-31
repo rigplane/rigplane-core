@@ -18,7 +18,7 @@ BROWSER_ENV = {
     "VK_ICD_FILENAMES": "''",
 }
 EXPECTED_BROWSER_JOBS = {
-    ("quick.yml", "quick"),
+    ("quick.yml", "quick-frontend"),
     ("full.yml", "capture-harness"),
     ("visual.yml", "visual"),
 }
@@ -45,6 +45,11 @@ def _jobs(workflow: str, text: str) -> dict[str, tuple[str, list[str]]]:
         name = header.group(1)
         end = headers[index + 1].start() if index + 1 < len(headers) else len(body)
         block = body[header.end() : end]
+        # A job that calls a workflow of this repository has no steps of its
+        # own; the called file is scanned on its own (MOR-3878).
+        if re.search(r"(?m)^    uses:[ \t]*\./\.github/workflows/[\w.-]+\.ya?ml[ \t]*$", block):
+            jobs[name] = block, []
+            continue
         markers = list(re.finditer(r"(?m)^    steps:[ \t]*(?:#.*)?$", block))
         if len(markers) != 1:
             raise WorkflowFormatError(f"{workflow}:{name}: expected one block steps: sequence")
@@ -182,6 +187,22 @@ class BrowserEnvironmentParserTest(unittest.TestCase):
                 with self.subTest(name=name, replacement=replacement):
                     errors = self.errors(self.workflow().replace(original, replacement))
                     self.assertTrue(any(f"{name} must appear once" in error for error in errors))
+
+    def test_local_reusable_workflow_calls_do_not_hide_browser_jobs(self) -> None:
+        text = (
+            "jobs:\n  call:\n    needs: fresh\n    uses: ./.github/workflows/gate.yml\n"
+            + self.workflow().removeprefix("jobs:\n")
+        )
+        self.assertEqual(self.errors(text), [])
+        # The ordinary job next to the call is still inspected.
+        broken = (
+            "jobs:\n  call:\n    uses: ./.github/workflows/gate.yml\n"
+            + self.workflow(env=False).removeprefix("jobs:\n")
+        )
+        self.assertEqual(
+            self.errors(broken),
+            ["fixture.yml:browser: expected one block job-level env: mapping"],
+        )
 
     def test_missing_jobs_or_steps_fail_with_context(self) -> None:
         for text, message in (

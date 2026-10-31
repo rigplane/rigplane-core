@@ -184,6 +184,7 @@
   .m-sheet-backdrop {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 200;
     background: rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(2px);

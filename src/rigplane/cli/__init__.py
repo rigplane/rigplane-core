@@ -687,7 +687,7 @@ def _trusted_origin_arg(value: str) -> str:
     invalid configuration never reaches the server (the same rule
     ``WebConfig.__post_init__`` enforces for embedders).
     """
-    from rigplane.web.host_guard import validate_trusted_origins
+    from rigplane.core.host_guard import validate_trusted_origins
 
     try:
         validate_trusted_origins((value,))

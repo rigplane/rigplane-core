@@ -600,10 +600,8 @@ class RadioPoller:
         self._fast_interval: float = (
             _FAST_INTERVAL_SERIAL if self._is_serial else _FAST_INTERVAL
         )
-        self._relative_vfo_retention_max_age: float | None = None
         if self._profile.vfo_readback == "selected_unselected":
             retention_age, coherence_window = self._relative_vfo_retention_policy()
-            self._relative_vfo_retention_max_age = retention_age
             self._state_store.configure_relative_vfo_retention(
                 generation=self._provider_generation(),
                 max_age=retention_age,

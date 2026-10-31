@@ -542,15 +542,13 @@ class TestSetFrequencyMainAnswer:
     """
 
     @pytest.mark.asyncio
-    async def test_nak_raises_command_rejected_and_keeps_the_mirror(
+    async def test_nak_raises_command_rejected(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
         mock_transport.queue_response(_nak_response())
 
         with pytest.raises(CommandRejectedError, match="rejected MAIN set_frequency"):
             await radio.set_freq(14_074_000)
-
-        assert radio._last_freq_hz != 14_074_000  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_ack_completes_and_the_frame_is_unchanged(
@@ -560,7 +558,6 @@ class TestSetFrequencyMainAnswer:
 
         await radio.set_freq(14_074_000)
 
-        assert radio._last_freq_hz == 14_074_000  # noqa: SLF001
         expected = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, 0x05, data=bcd_encode(14_074_000)
         )

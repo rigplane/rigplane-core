@@ -1017,6 +1017,7 @@
   .modal-backdrop {
     position: fixed;
     inset: 0;
+    top: var(--rp-chrome-top, 0px); /* MOR-3845 */
     z-index: 10000;
     background: var(--v2-popup-bg);
     border: 0;
@@ -1026,11 +1027,11 @@
 
   .filter-modal {
     position: fixed;
-    top: 50%;
+    top: calc(50% + var(--rp-chrome-top, 0px) / 2);
     left: 50%;
     z-index: 10001;
     width: min(560px, calc(100vw - 24px));
-    max-height: min(88vh, 720px);
+    max-height: min(calc((100vh - var(--rp-chrome-top, 0px)) * 0.88), 720px);
     transform: translate(-50%, -50%);
     display: flex;
     flex-direction: column;

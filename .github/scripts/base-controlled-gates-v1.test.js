@@ -110,15 +110,37 @@ test('edited lifecycle events are no-ops unless base metadata changed', () => {
 test('terminal topology refuses skipped success and injected or incomplete jobs', () => {
   const run = {conclusion: 'success', run_attempt: 2};
   const routes = {core: true, frontend: false, ci: false, docs: false};
+  const build = ['self-hosted', 'linux', 'build'];
+  const light = ['self-hosted', 'linux', 'light'];
   const valid = [
     {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'GitHub Actions 1', labels: ['ubuntu-latest']},
-    {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-build-core-1', labels: ['self-hosted', 'linux', 'build']},
+    {name: 'quick-frontend', status: 'completed', conclusion: 'skipped', run_attempt: 2, runner_name: null, labels: build},
+    {name: 'quick-python', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-build-core-1', labels: build},
+    {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-light-core-1', labels: light},
   ];
-  assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), {ok: true, code: 'terminal_match', routeConcordance: true});
-  const skipped = structuredClone(valid); skipped[1].conclusion = 'skipped'; skipped[1].runner_name = null;
+  const ok = {ok: true, code: 'terminal_match', routeConcordance: true};
+  assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), ok);
+  const both = structuredClone(valid); both[1].conclusion = 'success'; both[1].runner_name = 'mm-build-core-2';
+  assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
+  const lightClassify = structuredClone(valid); lightClassify[0].labels = light; lightClassify[0].runner_name = 'mm-light-core-2';
+  assert.deepEqual(observer.evaluateJobTopology(run, lightClassify, routes, false), ok);
+  const skipped = structuredClone(valid); skipped[3].conclusion = 'skipped'; skipped[3].runner_name = null;
   assert.equal(observer.evaluateJobTopology(run, skipped, routes, false).code, 'skipped_substantive');
-  assert.equal(observer.evaluateJobTopology(run, [...valid, {...valid[1], name: 'quick-shadow'}], routes, false).code, 'route_mismatch');
+  // An unknown root selects base core but no workflow half; the legacy run is
+  // still a match, as it was before the split.
+  const noWork = structuredClone(valid); noWork[2].conclusion = 'skipped'; noWork[2].runner_name = null;
+  assert.deepEqual(observer.evaluateJobTopology(run, noWork, routes, false), ok);
+  assert.equal(observer.evaluateJobTopology(run, noWork, {...routes, ci: true}, false).code, 'skipped_substantive');
+  assert.equal(observer.evaluateJobTopology(run, valid, {...routes, frontend: true}, false).code, 'skipped_substantive');
+  const hostedWorker = structuredClone(valid); hostedWorker[2].labels = ['ubuntu-latest'];
+  assert.equal(observer.evaluateJobTopology(run, hostedWorker, routes, false).code, 'route_mismatch');
+  const buildAggregator = structuredClone(valid); buildAggregator[3].labels = build;
+  assert.equal(observer.evaluateJobTopology(run, buildAggregator, routes, false).code, 'route_mismatch');
+  assert.equal(observer.evaluateJobTopology(run, valid.filter((job) => job.name !== 'quick-frontend'), routes, false).code, 'route_mismatch');
+  assert.equal(observer.evaluateJobTopology(run, [...valid, {...valid[2], name: 'quick-shadow'}], routes, false).code, 'route_mismatch');
   assert.equal(observer.evaluateJobTopology({...run, conclusion: 'cancelled'}, valid, routes, false).code, 'terminal_failure');
+  const failedWorker = structuredClone(valid); failedWorker[2].conclusion = 'failure';
+  assert.equal(observer.evaluateJobTopology({...run, conclusion: 'failure'}, failedWorker, routes, false).code, 'terminal_failure');
   assert.equal(observer.evaluateJobTopology(run, valid, {...routes, docs: true}, false).code, 'route_mismatch');
 });
 
