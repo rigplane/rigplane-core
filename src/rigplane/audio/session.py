@@ -205,9 +205,10 @@ class TxLease:
     ) -> None:
         """Push TX audio (encoded per the radio's ``audio_tx_codec``).
 
-        ``admission`` (MOR-3764) is the outside-only authorization: when
-        given, the push runs INSIDE its critical section and only while it
-        yields True. Mutually exclusive with ``submission_guard``.
+        ``admission`` is an owner-specific authorization such as
+        ``ManagedTxAuthority.owned_tx_submission`` (MOR-3821): when given,
+        the push runs INSIDE its critical section and only while it yields
+        True. Mutually exclusive with ``submission_guard``.
         """
         if submission_guard is not None and admission is not None:
             raise ValueError("TX lease push takes a guard or an admission, not both")

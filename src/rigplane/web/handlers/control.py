@@ -188,7 +188,7 @@ from ..runtime_helpers import (  # noqa: TID251
     runtime_capabilities,
 )
 from ..transport import Connection  # noqa: TID251
-from ..websocket import WS_OP_TEXT  # noqa: TID251
+from ...ws import WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
     from ...radio_protocol import Radio
@@ -1726,9 +1726,8 @@ class ControlHandler:
             and isinstance(authority, ManagedTxAuthority)
             and (refusal := authority.radio_tx_refusal_nowait()) is not None
         ):
-            # MOR-3537: the radio transmits while no owner holds TX (the
-            # operator's own mic or PTT, or Core's own TX the radio did not
-            # release); nothing keys over it. Checked on admission and again
+            # MOR-3537: the radio transmits while no owner holds TX, whoever
+            # keyed it (MOR-3921); nothing keys over it. Checked on admission and again
             # when the command runs, for every owner.
             raise ControllerError(refusal, 409)
         if (

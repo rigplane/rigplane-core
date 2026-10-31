@@ -7,13 +7,15 @@ events. They intentionally do not implement a production StateStore.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from types import MappingProxyType
 from enum import StrEnum
 from typing import Any, Final, Literal, cast, get_args
 
 from rigplane.core.tx_target import tx_target_from_dict, validate_tx_target
 
 __all__ = [
+    "RECEIVER_ID_ALIASES",
     "AcquisitionClass",
     "CapabilityMetadata",
     "ChangeSet",
@@ -219,6 +221,15 @@ def _command_state(value: Any) -> CommandLifecycleState:
     return cast(CommandLifecycleState, text)
 
 
+#: The two spellings of one receiver id. CI-V ingress writes receiver-scoped
+#: fields under ``0``/``1`` (``runtime/_civ_rx.py: CivRuntime._receiver_context``)
+#: while the profiles spell the same receivers ``main``/``sub``; the table is
+#: symmetric so either spelling finds the other.
+RECEIVER_ID_ALIASES: Mapping[str, str] = MappingProxyType(
+    {"0": "main", "main": "0", "1": "sub", "sub": "1"}
+)
+
+
 @dataclass(frozen=True, order=True, slots=True)
 class FieldPath:
     """Stable, serializable path to one radio state field.
@@ -275,6 +286,16 @@ class FieldPath:
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "receiver_id", receiver_id)
         object.__setattr__(self, "slot", slot)
+
+    def receiver_alias(self) -> FieldPath | None:
+        """This path under the other spelling of its receiver id, if it has one."""
+
+        alias = (
+            None
+            if self.receiver_id is None
+            else RECEIVER_ID_ALIASES.get(self.receiver_id)
+        )
+        return None if alias is None else replace(self, receiver_id=alias)
 
     @classmethod
     def parse(cls, value: str) -> FieldPath:

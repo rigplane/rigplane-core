@@ -343,11 +343,14 @@ reconciliation_priority = "command_response"
 adaptive_decay = false
 
 [state_acquisition.field_policies."receiver.main.operator_controls.filter_shape"]
-reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring; available_when: the 16 56 read NAKs in FM (MOR-3630 bench probe), gated on MAIN's own mode"
 cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM"] },
+]
 
 [state_acquisition.field_policies."global.tx_state.rit_on"]
 reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
@@ -411,6 +414,47 @@ cadence_seconds = 25.0
 freshness_ttl_seconds = "never"
 reconciliation_priority = "command_response"
 adaptive_decay = false
+
+# MOR-3630: twin PBT and the manual notch width exist only outside FM. The
+# bench probe NAKed the 14 07, 14 08 and 16 57 reads in FM
+# (tests/fixtures/ic705/README.md; Core #4291), so each entry carries a
+# mode clause the scheduler skips and the freshness tick discards. The
+# filter-width (1A 03) and AGC-time (1A 04) reads NAK in FM too, but the
+# width keeps its declared FM publication (MOR-2503) and the AGC time stays
+# undeclared (MOR-2915). Cadence/TTL/adaptive mirror the PANEL class
+# nominals these paths resolved to without an entry (5.0 s/20.0 s/no
+# decay), so the entries only add the availability clause. The spelled
+# cadences are reserved demand the shared budget fit never stretches
+# (AcquisitionScheduler._fit_transport_budget): nominal traffic is
+# unchanged — the transmit-budget pin still closes on the same limit —
+# while under pressure the remaining class-derived groups absorb the
+# stretch instead.
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_inner"]
+reason = "available_when: the 14 07 read NAKs in FM (MOR-3630 bench probe); gated on MAIN's own mode"
+cadence_seconds = 5.0
+freshness_ttl_seconds = 20.0
+adaptive_decay = false
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM"] },
+]
+
+[state_acquisition.field_policies."receiver.main.operator_controls.pbt_outer"]
+reason = "available_when: the 14 08 read NAKs in FM (MOR-3630 bench probe); gated on MAIN's own mode"
+cadence_seconds = 5.0
+freshness_ttl_seconds = 20.0
+adaptive_decay = false
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM"] },
+]
+
+[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_width"]
+reason = "available_when: the 16 57 read NAKs in FM (MOR-3630 bench probe); gated on MAIN's own mode"
+cadence_seconds = 5.0
+freshness_ttl_seconds = 20.0
+adaptive_decay = false
+available_when = [
+    { field = "receiver.main.active.freq_mode.mode", not_in = ["FM"] },
+]
 
 # ── Parameterized Capabilities ───────────────────────────────────
 

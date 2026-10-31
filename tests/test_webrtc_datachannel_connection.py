@@ -26,7 +26,7 @@ from rigplane.web.transport.webrtc import (
     add_scope_channel,
     webrtc_available,
 )
-from rigplane.web.websocket import WS_OP_BINARY, WS_OP_TEXT
+from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
 
 if TYPE_CHECKING:
     from aiortc import RTCDataChannel

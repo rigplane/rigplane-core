@@ -9,8 +9,10 @@ in ``tests/test_rigctld_server.py``.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Iterable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -23,6 +25,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionRequest,
     AcquisitionScheduler,
     AcquisitionStatus,
+    resolve_available_when,
 )
 from rigplane.core.state_acquisition_policy import (
     AcquisitionPolicy,
@@ -33,11 +36,15 @@ from rigplane.core.state_pipeline_contracts import (
     ChangeSet,
     FieldChange,
     FieldPath,
+    Observation,
     SourceMetadata,
 )
 from rigplane.core.state_store import FreshnessClock, StateStore
+from rigplane.profiles.rig_loader import load_rig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.web.radio_poller import RadioPoller
+
+RIGS_DIR = Path(__file__).parents[1] / "rigs"
 
 _FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
 _MODE = FieldPath.active("main", "freq_mode", "mode")
@@ -315,6 +322,179 @@ class TestAcquisitionDrainExpiry:
         outside = 5.0 + _ACQUISITION_ANSWER_WINDOW_SECONDS + 0.1
         assert rigctld_expired(request, sent_at=5.0, now=outside) is True
         assert web_expired(cast(Any, None), request, sent_at=5.0, now=outside) is True
+
+
+class _SendingExecutor:
+    """Reports every path of the request it is handed as sent."""
+
+    def __init__(self) -> None:
+        self.calls: list[AcquisitionRequest] = []
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        self.calls.append(request)
+        return AcquisitionExecutionResult(sent_paths=request.paths)
+
+
+class TestAcquisitionDrainConditionalAvailability:
+    async def test_a_pass_reads_the_mode_as_of_the_drain_not_as_of_the_last_tick(
+        self,
+    ) -> None:
+        """MOR-3630 round 3 finding 1: the drain gates on the store it drains for.
+
+        The reads are queued while MAIN is USB. The mode changes to FM with
+        no freshness tick in between (the drain runs between ticks), so only
+        the drain itself can see it. It must send none of the contradicted
+        reads, and send them once the mode is USB again.
+        """
+
+        profile = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+        assert profile is not None
+        scheduler = AcquisitionScheduler(profile=profile)
+        store = StateStore()
+        mode = FieldPath.active("main", "freq_mode", "mode")
+        shape = FieldPath.receiver("main", "operator_controls", "filter_shape")
+        pbt = FieldPath.receiver("main", "operator_controls", "pbt_inner")
+
+        def observe(value: str) -> None:
+            store.apply(
+                Observation(
+                    path=mode,
+                    value=value,
+                    source=SourceMetadata(source="test", provider="test"),
+                    timestamp_monotonic=time.monotonic(),
+                )
+            )
+
+        observe("USB")
+        scheduler.due_requests(
+            availability=resolve_available_when(profile, store.snapshot())
+        )
+        scheduler.prime_unobserved((), limit=1000)
+        executor = _SendingExecutor()
+        reports = _Reports()
+        drain = AcquisitionDrain(
+            scheduler=lambda: scheduler,
+            executor=lambda: cast(Any, executor),
+            store=lambda: store,
+            in_flight={},
+            expired=_never_expired,
+            dispatchable=lambda pending: pending,
+            report_failure=reports.failure,
+            report_executor_missing=reports.missing,
+            report_executor_error=reports.error,
+            report_sent=reports.sent_report,
+        )
+
+        observe("FM")
+        await drain.run_once()
+        sent = {path for request in executor.calls for path in request.paths}
+        assert shape not in sent
+        assert pbt not in sent
+
+        observe("USB")
+        await drain.run_once()
+        sent = {path for request in executor.calls for path in request.paths}
+        assert shape in sent
+        assert pbt in sent
+
+
+def _observe_main_mode(store: StateStore, value: str) -> None:
+    store.apply(
+        Observation(
+            path=_MODE,
+            value=value,
+            source=SourceMetadata(source="test", provider="test"),
+            timestamp_monotonic=time.monotonic(),
+        )
+    )
+
+
+class _ModeFlippingExecutor(_SendingExecutor):
+    """Its first send is answered by the radio switching MAIN to FM."""
+
+    def __init__(self, store: StateStore) -> None:
+        super().__init__()
+        self._store = store
+        self.sent_after_flip: list[AcquisitionRequest] = []
+        self._flipped = False
+
+    async def execute(
+        self,
+        request: AcquisitionRequest,
+        *,
+        already_sent_paths: frozenset[FieldPath],
+    ) -> AcquisitionExecutionResult:
+        if self._flipped:
+            self.sent_after_flip.append(request)
+        result = await super().execute(request, already_sent_paths=already_sent_paths)
+        if not self._flipped:
+            self._flipped = True
+            await asyncio.sleep(0)
+            _observe_main_mode(self._store, "FM")
+        return result
+
+
+class TestAcquisitionDrainMidPassAvailability:
+    async def test_a_read_is_rechecked_before_each_send_not_once_per_pass(
+        self,
+    ) -> None:
+        """MOR-3630 round 4 finding 1: availability can flip inside one drain.
+
+        The pass takes its dispatchable view once, while MAIN is USB. The
+        first send is answered by a switch to FM; every read that view still
+        holds and FM contradicts (the IC-705 PBT and notch reads) must be
+        withheld at its own send, and stay pending for a later pass.
+        """
+
+        profile = load_rig(RIGS_DIR / "ic705.toml").to_profile().state_acquisition
+        assert profile is not None
+        pbt = FieldPath.receiver("main", "operator_controls", "pbt_inner")
+        fm_store = StateStore()
+        _observe_main_mode(fm_store, "FM")
+        contradicted = {
+            path
+            for path, ok in resolve_available_when(profile, fm_store.snapshot()).items()
+            if ok is False
+        }
+        assert pbt in contradicted
+
+        scheduler = AcquisitionScheduler(profile=profile)
+        store = StateStore()
+        _observe_main_mode(store, "USB")
+        scheduler.due_requests(
+            availability=resolve_available_when(profile, store.snapshot())
+        )
+        scheduler.prime_unobserved((), limit=1000)
+        executor = _ModeFlippingExecutor(store)
+        reports = _Reports()
+        drain = AcquisitionDrain(
+            scheduler=lambda: scheduler,
+            executor=lambda: cast(Any, executor),
+            store=lambda: store,
+            in_flight={},
+            expired=_never_expired,
+            dispatchable=lambda pending: pending,
+            report_failure=reports.failure,
+            report_executor_missing=reports.missing,
+            report_executor_error=reports.error,
+            report_sent=reports.sent_report,
+        )
+
+        await drain.run_once()
+
+        assert executor.sent_after_flip, "the pass must send more after the flip"
+        sent_after = {path for r in executor.sent_after_flip for path in r.paths}
+        assert sent_after.isdisjoint(contradicted)
+
+        _observe_main_mode(store, "USB")
+        await drain.run_once()
+        sent = {path for request in executor.calls for path in request.paths}
+        assert pbt in sent
 
 
 class TestAcquisitionDrainDispatchEligibility:

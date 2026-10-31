@@ -6,6 +6,7 @@ optional cmd29 receiver route distinct.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 
 from rigplane.commands._frame import decode_wire_tuple, parse_civ_frame
@@ -17,8 +18,10 @@ from rigplane.commands.scope import (
 from rigplane.core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionQueryResolver,
+    resolve_available_when,
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import StateSnapshot
 from rigplane.profiles import RadioProfile
 
 _RECEIVER_IDS = {"0": 0, "main": 0, "1": 1, "sub": 1}
@@ -267,13 +270,25 @@ def acquisition_query_resolver_for_profile(
     return resolve
 
 
-def build_state_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
+def build_state_queries(
+    profile: RadioProfile,
+    *,
+    snapshot: StateSnapshot | None = None,
+) -> list[AcquisitionQuery]:
     """Build the profile-declared list of CI-V state queries.
 
     Parameters
     ----------
     profile:
         Radio profile (model, cmd29 support, receiver count).
+    snapshot:
+        The caller's current state (MOR-3630). A path whose declared
+        ``available_when`` clauses the snapshot contradicts (e.g. the
+        IC-705 PBT read while MAIN reads FM) contributes no query, the
+        same eligibility the scheduler applies to polling, priming and
+        dispatch; a clause source the snapshot has not observed keeps the
+        path (unknown counts as available). Without a snapshot every
+        pollable path contributes.
 
     Returns
     -------
@@ -284,10 +299,51 @@ def build_state_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
     if acquisition is None:
         return []
 
+    availability = (
+        {} if snapshot is None else resolve_available_when(acquisition, snapshot)
+    )
+    return _civ_queries(
+        profile,
+        (
+            path
+            for path in acquisition.pollable_paths()
+            if availability.get(path) is not False
+        ),
+    )
+
+
+def availability_source_queries(profile: RadioProfile) -> list[AcquisitionQuery]:
+    """Build the reads of the fields that ``available_when`` clauses read.
+
+    MOR-3630: :func:`build_state_queries` filters on the caller's snapshot, so
+    a caller that is about to filter on possibly stale state (the initial or
+    reconciliation sweep) reads these first and filters on what they return.
+    Same resolver and cmd29 handling as the sweep itself; empty for a profile
+    with no conditional path.
+    """
+
+    acquisition = profile.state_acquisition
+    if acquisition is None:
+        return []
+    return _civ_queries(
+        profile,
+        dict.fromkeys(
+            clause.field
+            for policy in acquisition.field_policies.values()
+            for clause in policy.available_when
+        ),
+    )
+
+
+def _civ_queries(
+    profile: RadioProfile, paths: Iterable[FieldPath]
+) -> list[AcquisitionQuery]:
+    """Resolve ``paths`` to wire queries: de-duplicated, cmd29-checked, ordered."""
+
     resolve = acquisition_query_resolver_for_profile(profile)
     queries: list[AcquisitionQuery] = []
     seen: set[AcquisitionQuery] = set()
-    for path in acquisition.pollable_paths():
+    for path in paths:
         query = resolve(path)
         if query is None:
             continue

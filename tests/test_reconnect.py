@@ -64,21 +64,117 @@ class TestWatchdog:
         radio._control_phase._stop_reconnect()
         radio._control_phase._stop_watchdog()
 
+    # The three tests below drive ``watchdog_loop`` on a FAKE clock: every
+    # watchdog sleep advances the clock by exactly its interval (plus any
+    # stall the test injects) and yields once. Nothing waits on wall time, so
+    # a loaded runner cannot change the outcome (MOR-3419: the former
+    # wall-clock window, and its "activity" that the watchdog never read).
+
+    @pytest.fixture(params=["IC-7610", "IC-705"])
+    def wd_radio(self, request: pytest.FixtureRequest) -> IcomRadio:
+        """The watchdog is one shared mechanism: every case runs on two models."""
+        r = IcomRadio(
+            "192.168.1.100",
+            auto_reconnect=True,
+            reconnect_delay=0.1,
+            reconnect_max_delay=0.5,
+            watchdog_timeout=1.5,
+            model=request.param,
+        )
+        r._ctrl_transport = MockTransport()
+        r._connected = True
+        r._token = 0x1234
+        return r
+
+    @staticmethod
+    def _fake_clock(
+        radio: IcomRadio, monkeypatch: pytest.MonkeyPatch, *, link_alive: bool
+    ) -> SimpleNamespace:
+        from rigplane.runtime import radio_reconnect
+
+        clock = SimpleNamespace(now=1000.0, stall=0.0, sleeps=0)
+        # The timeout is 3 check intervals, as in the sim-backed integration stack.
+
+        async def fake_sleep(delay: float) -> None:
+            clock.sleeps += 1
+            stalled = clock.stall > 0
+            clock.now += delay + clock.stall
+            clock.stall = 0.0
+            # A live link delivers a ping reply per interval; a loop that
+            # did not run (the stall) delivered nothing.
+            if link_alive and not stalled:
+                radio._ctrl_transport.rx_packet_count += 1
+            await asyncio.sleep(0)
+
+        monkeypatch.setattr(
+            radio_reconnect,
+            "time",
+            SimpleNamespace(monotonic=lambda: clock.now),
+        )
+        monkeypatch.setattr(
+            radio_reconnect,
+            "asyncio",
+            SimpleNamespace(
+                sleep=fake_sleep,
+                create_task=asyncio.create_task,
+                CancelledError=asyncio.CancelledError,
+            ),
+        )
+
+        async def no_reconnect() -> None:
+            return None
+
+        radio._reconnect_loop = no_reconnect  # type: ignore[method-assign]
+        return clock
+
+    @staticmethod
+    async def _spin(clock: SimpleNamespace, until_sleeps: int) -> None:
+        """Yield to the loop until the watchdog has slept ``until_sleeps``
+        times, or until it has stopped sleeping (it fired and returned)."""
+        idle_yields = 0
+        while clock.sleeps < until_sleeps and idle_yields < 50:
+            before = clock.sleeps
+            await asyncio.sleep(0)
+            idle_yields = idle_yields + 1 if clock.sleeps == before else 0
+
     @pytest.mark.asyncio
     async def test_watchdog_does_not_trigger_with_activity(
-        self, radio: IcomRadio
+        self, wd_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Watchdog should not trigger if there's queue activity."""
-        radio._control_phase._start_watchdog()
-        # Simulate activity by putting something in the queue
-        for _ in range(3):
-            radio._ctrl_transport._packet_queue.put_nowait(b"\x00" * 16)
-            await asyncio.sleep(0.15)
-        assert radio._connected
-        radio._control_phase._stop_watchdog()
-        # Drain queue
-        while not radio._ctrl_transport._packet_queue.empty():
-            radio._ctrl_transport._packet_queue.get_nowait()
+        """A packet per interval keeps the watchdog quiet far past its timeout."""
+        clock = self._fake_clock(wd_radio, monkeypatch, link_alive=True)
+        wd_radio._control_phase._start_watchdog()
+        await self._spin(clock, 40)  # 20 s of fake time >> the 1.5 s timeout
+        wd_radio._control_phase._stop_watchdog()
+        assert clock.sleeps >= 40
+        assert wd_radio._reconnect_task is None
+
+    @pytest.mark.asyncio
+    async def test_watchdog_triggers_on_real_silence(
+        self, wd_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No packets for longer than the timeout still starts a reconnect."""
+        clock = self._fake_clock(wd_radio, monkeypatch, link_alive=False)
+        wd_radio._control_phase._start_watchdog()
+        await self._spin(clock, 40)
+        wd_radio._control_phase._stop_watchdog()
+        assert wd_radio._reconnect_task is not None
+
+    @pytest.mark.asyncio
+    async def test_watchdog_ignores_an_event_loop_stall(
+        self, wd_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """MOR-3868: a stall of the loop itself (CPU-starved runner) longer
+        than the timeout, on a healthy link, is not a dead link."""
+        clock = self._fake_clock(wd_radio, monkeypatch, link_alive=True)
+        wd_radio._control_phase._start_watchdog()
+        await self._spin(clock, 4)
+        clock.stall = 1.7  # the CI signature: "no activity for 1.7s"
+        stall_at = clock.sleeps
+        await self._spin(clock, stall_at + 40)
+        wd_radio._control_phase._stop_watchdog()
+        assert clock.sleeps >= stall_at + 40  # the watchdog kept watching
+        assert wd_radio._reconnect_task is None
 
 
 class TestReconnect:
