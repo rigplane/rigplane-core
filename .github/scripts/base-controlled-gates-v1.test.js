@@ -245,10 +245,63 @@ test('stale base republishes the workflow-run observation as pending for the bou
   // The same run binds cleanly while the base is current, so an earlier
   // observation could have published success for this head.
   assert.deepEqual(observer.bindRunPullRequest(run, base), {pullNumber: 41, headSha: head, baseSha: base});
-  // After the base moves, the bound head republishes as pending (non-success)
-  // instead of leaving the earlier success in place, while the job stays green.
+  // After the base moves, the workflow-run leg skips: it publishes nothing for
+  // a head it did not evaluate, and both jobs stay green (MOR-3875).
   const result = await observer.assess({github, context, liveBaseSha: live});
-  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['workflow_run', 'stale_base', 'pending', true, head]);
+  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['workflow_run', 'stale_base', 'success', false, head]);
+});
+
+test('stale workflow-run base skips publication end to end without posting a status', async () => {
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40); const live = 'c'.repeat(40);
+  const run = {...runPull(41, head, base), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  const posted = [];
+  const github = {request: async (route) => {
+    if (route.startsWith('POST ')) { posted.push(route); return {data: {}}; }
+    if (route.includes('/actions/runs/')) return {data: run};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  // Same sequence as the quick-v2.yml publish job: assess, rebind, then post
+  // only when the assessment says to publish.
+  let result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish], ['workflow_run', 'stale_base', 'success', false]);
+  result = await observer.rebindForPublication({github, result});
+  assert.deepEqual([result.code, result.state, result.publish], ['stale_base', 'success', false]);
+  if (result.publish) {
+    await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
+  }
+  assert.deepEqual(posted, []);
+});
+
+test('stale live pull base on the workflow-run path also skips without posting', async () => {
+  const head = 'a'.repeat(40); const live = 'c'.repeat(40); const moved = 'd'.repeat(40);
+  const run = {...runPull(41, head, live), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  const posted = [];
+  const github = {
+    paginate: async (route) => {
+      if (route.includes('/commits/')) return [canonicalPull(41, head, live)];
+      throw new Error(`unexpected page ${route}`);
+    },
+    request: async (route) => {
+      if (route.startsWith('POST ')) { posted.push(route); return {data: {}}; }
+      if (route.includes('/actions/runs/')) return {data: run};
+      if (route.includes('/actions/workflows/')) return {data: {id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, state: 'active'}};
+      if (route.includes('/check-suites/')) return {data: {head_sha: head, app: {id: 15368}}};
+      if (route.includes('/pulls/')) return {data: canonicalPull(41, head, moved)};
+      throw new Error(`unexpected route ${route}`);
+    },
+  };
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  // The run recorded the live base, but the live pull has since moved to
+  // another base: the head was not evaluated against anything current.
+  let result = await observer.assess({github, context, liveBaseSha: live});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['workflow_run', 'stale_base', 'success', false, head]);
+  result = await observer.rebindForPublication({github, result});
+  assert.deepEqual([result.code, result.state, result.publish], ['stale_base', 'success', false]);
+  if (result.publish) {
+    await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
+  }
+  assert.deepEqual(posted, []);
 });
 
 test('quick v2 reports no hard-coded self-hosted minutes', async () => {
