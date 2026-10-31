@@ -137,9 +137,7 @@ def _run(
     sha: str = SHA,
 ) -> tuple[int, str]:
     """Write the fragments, run ``check``, return (exit code, stderr)."""
-    rc, _, stderr = _write_and_check(
-        tmp_path, capsys, rx=rx, tx=tx, tag=tag, sha=sha
-    )
+    rc, _, stderr = _write_and_check(tmp_path, capsys, rx=rx, tx=tx, tag=tag, sha=sha)
     return rc, stderr
 
 
@@ -466,9 +464,7 @@ def _build_rc_repo(
     _git(repo, "init", "-q")
     _git(repo, "config", "user.name", "rc-test")
     _git(repo, "config", "user.email", "rc-test@example.com")
-    (repo / "pyproject.toml").write_text(
-        _rc_pyproject(RC_VERSION), encoding="utf-8"
-    )
+    (repo / "pyproject.toml").write_text(_rc_pyproject(RC_VERSION), encoding="utf-8")
     (repo / "uv.lock").write_text(_rc_uv_lock(RC_VERSION), encoding="utf-8")
     (repo / "docs" / "CHANGELOG.md").write_text(
         _rc_changelog(RC_VERSION), encoding="utf-8"
@@ -557,9 +553,7 @@ def test_rc_receipts_fail_when_a_package_is_added(
 ) -> None:
     def extra(repo: Path) -> None:
         with (repo / "uv.lock").open("a", encoding="utf-8") as handle:
-            handle.write(
-                '\n[[package]]\nname = "dep-two"\nversion = "0.1.0"\n'
-            )
+            handle.write('\n[[package]]\nname = "dep-two"\nversion = "0.1.0"\n')
 
     repo, candidate, final = _build_rc_repo(tmp_path, final_extra=extra)
     rx, tx = _rc_pair(candidate)
@@ -576,8 +570,7 @@ def test_rc_receipts_fail_when_pyproject_changes_beyond_version(
     def extra(repo: Path) -> None:
         text = (repo / "pyproject.toml").read_text(encoding="utf-8")
         (repo / "pyproject.toml").write_text(
-            text.replace('description = "test fixture"',
-                         'description = "changed"'),
+            text.replace('description = "test fixture"', 'description = "changed"'),
             encoding="utf-8",
         )
 
@@ -608,9 +601,7 @@ def test_rc_receipts_fail_when_changelog_body_changes(
         tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
     )
     assert rc != 0, "a changelog body change must fail"
-    assert any("docs/CHANGELOG.md" in line for line in _stderr_lines(stderr)), (
-        stderr
-    )
+    assert any("docs/CHANGELOG.md" in line for line in _stderr_lines(stderr)), stderr
 
 
 def test_rc_receipts_fail_for_a_different_series(
@@ -652,9 +643,7 @@ def test_rc_receipts_fail_when_rx_and_tx_name_different_candidates(
         tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final, repo=repo
     )
     assert rc != 0, "two different candidates must fail"
-    assert any(
-        "different candidates" in line for line in _stderr_lines(stderr)
-    ), stderr
+    assert any("different candidates" in line for line in _stderr_lines(stderr)), stderr
 
 
 def test_rc_receipts_fail_when_the_tag_points_elsewhere(
@@ -708,7 +697,12 @@ def test_rc_receipts_fail_when_the_repo_is_missing(
     repo, candidate, final = _build_rc_repo(tmp_path)
     rx, tx = _rc_pair(candidate)
     rc, _, stderr = _write_and_check(
-        tmp_path, capsys, rx=rx, tx=tx, tag=TAG, sha=final,
+        tmp_path,
+        capsys,
+        rx=rx,
+        tx=tx,
+        tag=TAG,
+        sha=final,
         repo=tmp_path / "no-such-repo",
     )
     assert rc != 0, "a missing repo must fail closed"
