@@ -1,16 +1,42 @@
 # Bench nightly
 
-`.github/workflows/bench-nightly.yml` checks the bench radios every night on the
-macOS bench runner (`[self-hosted, macOS, ARM64, bench]`). It is informational,
-not a required check.
+`.github/workflows/bench-nightly.yml` checks the bench radios every night.
+It is informational, not a required check.
+
+## Runners and radios
+
+Each matrix entry carries its own `runs_on` label list. There are no
+GitHub-hosted runners in this workflow.
+
+| Job label | Runner labels | Connection |
+|---|---|---|
+| FTX-1 | `[self-hosted, macOS, ARM64, bench]` | USB serial (`yaesu-cat`) |
+| IC-705 | `[self-hosted, macOS, ARM64, bench]` | USB serial (`serial`, CI-V `0xA4`) |
+| IC-7610 (simulator) | `[self-hosted, Linux, ARM64, light]` | In-repo IC-7610 LAN simulator on loopback |
+
+The macOS bench runner is `mm-macos-ci-1` (org runner, runner group
+`rigplane-ci`): online with labels exactly `self-hosted`, `macOS`, `ARM64`,
+`platform`, `bench`. Real-radio legs use `[self-hosted, macOS, ARM64, bench]`.
+
+The IC-7610 hardware leg was removed on 2026-10-23: the bench no longer hosts
+an IC-7610. Nightly IC-7610 coverage uses
+`rigplane_testkit/icom/simulator.py` (`MockIcomRadio` with the recorded LAN
+table from `tests/testkit/ic7610_fakes.py: ic7610_lan_fake`), started on
+loopback inside the job via `scripts/bench/ic7610_lan_simulator.py`.
+
+The IC-7300 leg was dropped: that radio moved to the GTR7 Windows host and
+there is no self-hosted Windows runner on GTR7 available to `rigplane-core`
+today. It will not return until such a runner exists.
+
+Light-runner legs use `[self-hosted, Linux, ARM64, light]` (repo runners
+`mm-light-core-1`/`2`/`3` and org runner `mm-light-org-1`).
 
 ## What runs
 
-One matrix job per radio (IC-7610 over LAN, IC-7300 and FTX-1 over USB serial),
-one at a time (`max-parallel: 1`); `fail-fast: false` keeps one radio's
-failure from cancelling the others. There is no job-level
-`continue-on-error`, so a night passes for a radio only when its job
-concludes success (see Outcomes below).
+One matrix job per radio above, one at a time (`max-parallel: 1`);
+`fail-fast: false` keeps one radio's failure from cancelling the others.
+There is no job-level `continue-on-error`, so a night passes for a radio only
+when its job concludes success (see Outcomes below).
 Each job:
 
 1. **Guard.** `scripts/bench/guard.sh check-env` fails the job when any of
@@ -20,30 +46,32 @@ Each job:
    through `guard.sh run --`, which repeats the environment check and refuses
    argv containing `--tx-allowed` or `--tuner-allowed`, including argparse
    abbreviations such as `--tun`. Commands not wrapped this way are not checked.
-2. **Lock.** `scripts/bench/bench-lock.sh acquire <radio>` takes a per-radio
-   `mkdir` lock under `/tmp/rigplane-bench-locks` (`BENCH_LOCK_DIR`). A held lock
-   records `<radio>: skipped: busy`, the radio steps are skipped, and the job
-   fails red in the `Outcome: busy` step. A lock older
-   than two hours (`BENCH_LOCK_STALE_SECONDS`) is taken over. Only processes that
-   use this script see the lock.
+2. **Lock.** For real bench radios, `scripts/bench/bench-lock.sh acquire
+   <radio>` takes a per-radio `mkdir` lock under `/tmp/rigplane-bench-locks`
+   (`BENCH_LOCK_DIR`). A held lock records `<radio>: skipped: busy`, the
+   radio steps are skipped, and the job fails red in the `Outcome: busy`
+   step. A lock older than two hours (`BENCH_LOCK_STALE_SECONDS`) is taken
+   over. Only processes that use this script see the lock. The simulator leg
+   skips the lock (no shared bench hardware) but still runs the guard.
 3. **Validate.** `rigplane validate --hardware --allow-hardware --read-only`
    with `--provider native` (or `both` on manual dispatch).
 4. **Night-to-night diff.** `scripts/bench/night_diff.py` compares tonight's
    normalized artifact with the previous night's of the same radio, mode and
    provider, and lists checks added, removed or changed. The step fails when
    anything changed.
-5. **Hardware pytest** (IC-7610 only; the `tests/integration` LAN fixtures need
-   `ICOM_HOST`). On read-only nights only `TestConnection` runs, because the
+5. **Hardware pytest** (IC-7610 simulator leg only; needs `ICOM_HOST` on
+   loopback). On read-only nights only `TestConnection` runs, because the
    shared `radio` fixture in `tests/integration/conftest.py` writes (split,
-   receiver, power, mode, DIGI-SEL, frequency) on teardown.
+   receiver, power, mode, DIGI-SEL, frequency) on teardown. On rx-write-restore
+   nights the same class list as the former hardware IC-7610 leg runs.
 6. **`rigplane diagnose`**, saved on the runner as `diagnose-latest.zip`.
-7. **Upload.** The normalized validate artifact and the diff, kept 14 days.
+7. **Upload.** The normalized validate artifact and the diff, kept three days.
 
 ## Outcomes
 
 A night passes for a radio only when its job concludes success, which
 requires Validate — and, where they run, the night-to-night diff and the
-IC-7610 hardware subset — to have run and passed. Three endings that used
+hardware pytest subset — to have run and passed. Three endings that used
 to be silent green now fail red with their own step names: `Outcome: not
 configured` (radio secrets missing), `Outcome: busy` (bench lock held by
 another run) and `Outcome: dry run` (a dry run never certifies a radio).
@@ -59,9 +87,10 @@ because a leaked lock matters.
 | Weekend schedule (`30 1 * * 0,6`) | rx-write-restore: validate without `--read-only` (read, change, verify, restore), and pytest adds `TestFrequency`, `TestMode`, `TestMeters`, `TestStatus`, `TestVFO` |
 | `workflow_dispatch` | read-only, unless `rx_write_restore` is ticked |
 
-`dry_run` on manual dispatch runs the guard, the lock and `rigplane diagnose`
-only: no validate, diff or pytest. The job then fails red in the
-`Outcome: dry run` step: a dry run is never a certification night.
+`dry_run` on manual dispatch runs the guard, the lock (when the matrix entry
+uses one) and `rigplane diagnose` only: no validate, diff or pytest. The job
+then fails red in the `Outcome: dry run` step: a dry run is never a
+certification night.
 
 ```bash
 gh workflow run bench-nightly.yml --ref <branch> -f dry_run=true
@@ -69,18 +98,23 @@ gh workflow run bench-nightly.yml --ref <branch> -f dry_run=true
 
 ## Secrets the owner creates
 
-Repository secrets (Settings → Secrets and variables → Actions). A radio whose
-secrets are missing reports `skipped: not configured` and fails red in the
-`Outcome: not configured` step. Serial device paths are
-secrets too, so the runner log masks them.
+Repository secrets (Settings → Secrets and variables → Actions). A serial bench
+radio whose secret is missing reports `skipped: not configured` and fails red
+in the `Outcome: not configured` step. Serial device paths are secrets too, so
+the runner log masks them. The simulator leg needs no secrets.
 
 | Secret | Used as |
 |---|---|
-| `BENCH_IC7610_HOST` | `ICOM_HOST` |
-| `BENCH_IC7610_USER` | `ICOM_USER` |
-| `BENCH_IC7610_PASS` | `ICOM_PASS` |
-| `BENCH_IC7300_SERIAL` | `ICOM_SERIAL_DEVICE` for the IC-7300 |
 | `BENCH_FTX1_SERIAL` | `ICOM_SERIAL_DEVICE` for the FTX-1 |
+| `BENCH_IC705_SERIAL` | `ICOM_SERIAL_DEVICE` for the IC-705 |
+
+The owner must create `BENCH_IC705_SERIAL` with the IC-705 USB serial device
+path on the macOS bench runner. Until it exists, the IC-705 job ends red in
+`Outcome: not configured` (intended).
+
+Removed with the dropped legs (secrets may remain in the repo settings but are
+unused here): `BENCH_IC7610_HOST`, `BENCH_IC7610_USER`, `BENCH_IC7610_PASS`,
+`BENCH_IC7300_SERIAL`.
 
 ## What stays on the runner
 
