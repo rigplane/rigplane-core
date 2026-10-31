@@ -32,6 +32,22 @@ EXPECTED_PROFILES: dict[str, tuple[str, str]] = {
     "x6200.toml": ("xiegu_x6200", "X6200"),
 }
 REQUIRED_RESOURCES = ("_keyboard-default.toml",)
+# Band-plan data the web server serves; shipped next to the profiles.
+REQUIRED_BAND_PLANS = (
+    "_config.toml",
+    "arrl-hf.toml",
+    "broadcast.toml",
+    "iaru-r1.toml",
+    "iaru-r3.toml",
+    "utility.toml",
+)
+# (region, frequency Hz that region's ham plan must cover) - HF, 2 m, 23 cm.
+BAND_PLAN_PROBES: dict[str, tuple[int, ...]] = {
+    "US": (7_100_000, 146_520_000, 1_296_200_000),
+    "IARU-R1": (7_100_000, 145_500_000, 1_296_200_000),
+    "IARU-R2": (7_100_000, 146_520_000, 1_296_200_000),
+    "IARU-R3": (7_100_000, 145_500_000, 1_296_200_000),
+}
 
 
 class SmokeFailure(RuntimeError):
@@ -62,6 +78,60 @@ def validate_catalog(names: Iterable[str]) -> tuple[str, ...]:
 
 def _package_rigs():
     return resources.files("rigplane").joinpath("rigs")
+
+
+def _package_band_plans():
+    return resources.files("rigplane").joinpath("band-plans")
+
+
+def prove_band_plans_installed(
+    band_plans, loader_default: Path, package_root: Path
+) -> dict[str, int]:
+    """Require the packaged band plans to be found and served by the loader."""
+    from rigplane.web.band_plan import BandPlanRegistry  # noqa: TID251
+
+    if not band_plans.is_dir():
+        raise SmokeFailure("installed package resource rigplane/band-plans is missing")
+    present = {entry.name for entry in band_plans.iterdir() if entry.is_file()}
+    missing = sorted(set(REQUIRED_BAND_PLANS) - present)
+    if missing:
+        raise SmokeFailure(f"packaged band plans missing: {missing}")
+    expected_dir = package_root / "band-plans"
+    if loader_default.resolve() != expected_dir.resolve():
+        raise SmokeFailure(
+            f"band-plan loader default {loader_default} is not the packaged "
+            f"directory {expected_dir}"
+        )
+
+    counts: dict[str, int] = {}
+    with tempfile.TemporaryDirectory(prefix="rigplane-band-plans-") as raw_dir:
+        # Work on a copy so the proof never rewrites the installed _config.toml.
+        directory = Path(raw_dir)
+        for entry in band_plans.iterdir():
+            if entry.is_file():
+                (directory / entry.name).write_bytes(entry.read_bytes())
+        for region, probes in BAND_PLAN_PROBES.items():
+            (directory / "_config.toml").write_text(
+                f'[settings]\nregion = "{region}"\n', encoding="utf-8"
+            )
+            registry = BandPlanRegistry(directory)
+            registry.load()
+            if registry.region != region:
+                raise SmokeFailure(
+                    f"band plans: asked for {region}, loader served {registry.region}"
+                )
+            ham = [
+                seg
+                for seg in registry.get_segments(0, 2_000_000_000)
+                if seg["layer"] == "ham"
+            ]
+            for freq in probes:
+                if not any(seg["start"] <= freq <= seg["end"] for seg in ham):
+                    raise SmokeFailure(
+                        f"band plans: {region} has no ham segment at {freq} Hz"
+                    )
+            counts[region] = registry.segment_count
+    return counts
 
 
 def _profile_resource_names(rig_resources) -> tuple[str, ...]:
@@ -221,9 +291,16 @@ def run_smoke(
 
     negative_diagnostic = prove_corrupt_profile_fails_closed(rig_resources)
     ftx1 = exercise_ftx1_construction(rigs)
+
+    from rigplane.web.band_plan import DEFAULT_BAND_PLANS_DIR  # noqa: TID251
+
+    band_plan_segments = prove_band_plans_installed(
+        _package_band_plans(), DEFAULT_BAND_PLANS_DIR, package_root
+    )
     return {
         "artifact": artifact.name,
         "artifact_sha256": _sha256(artifact),
+        "band_plan_segments": band_plan_segments,
         "candidate_sha": candidate_sha,
         "ftx1": ftx1,
         "negative_diagnostic": negative_diagnostic,

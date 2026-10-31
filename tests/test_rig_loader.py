@@ -2362,6 +2362,56 @@ class TestToProfile:
         )
 
 
+class TestBandDefaultMode:
+    """Optional per-band ``default_mode`` validated through load_rig().
+
+    Failing-first: deleting either rejection branch in
+    ``src/rigplane/profiles/rig_loader.py`` (non-string values, unknown
+    mode names) must turn the matching rejection test red. The valid and
+    omitted cases below pin the behaviour that must keep loading.
+    """
+
+    _BAND = """
+[[freq_ranges.ranges.bands]]
+name = "20m"
+start_hz = 14000000
+end_hz = 14350000
+default_hz = 14200000
+bsr_code = 5
+default_mode = "USB"
+"""
+
+    def _with_mode_line(self, tmp_path, declaration: str):
+        body = _MINIMAL_TOML + self._BAND.replace('default_mode = "USB"', declaration)
+        return _write_toml(tmp_path, body)
+
+    def test_default_mode_non_string_rejected(self, tmp_path):
+        """Red mutation: accept ``default_mode = 42`` (drop the isinstance
+        check) and this passes a non-string into the profile."""
+        p = self._with_mode_line(tmp_path, "default_mode = 42")
+        with pytest.raises(RigLoadError, match=r"default_mode must be a string"):
+            load_rig(p)
+
+    def test_default_mode_unknown_name_rejected(self, tmp_path):
+        """Red mutation: accept ``default_mode = "FM"`` although "FM" is
+        not in this file's [modes].list (drop the membership check)."""
+        p = self._with_mode_line(tmp_path, 'default_mode = "FM"')
+        with pytest.raises(RigLoadError, match=r"must name a mode"):
+            load_rig(p)
+
+    def test_default_mode_valid_value_loads(self, tmp_path):
+        """A shipped mode name keeps loading and reaches the profile."""
+        p = self._with_mode_line(tmp_path, 'default_mode = "USB"')
+        profile = load_rig(p).to_profile()
+        assert profile.freq_ranges[0].bands[0].default_mode == "USB"
+
+    def test_default_mode_omitted_is_none(self, tmp_path):
+        """Bands without the key (e.g. IC-7300 HF) carry None, unchanged."""
+        body = _MINIMAL_TOML + self._BAND.replace('default_mode = "USB"\n', "")
+        profile = load_rig(_write_toml(tmp_path, body)).to_profile()
+        assert profile.freq_ranges[0].bands[0].default_mode is None
+
+
 # ── VFO scheme split (issue #710) ────────────────────────────────
 
 

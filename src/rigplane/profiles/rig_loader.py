@@ -777,6 +777,7 @@ class RigConfig:
                         default=b["default_hz"],
                         bsr_code=b.get("bsr_code"),
                         rx_only=b.get("rx_only", False),
+                        default_mode=b.get("default_mode"),
                         max_power_w=b.get("max_power_w"),
                     )
                     for b in r.get("bands", ())
@@ -2965,6 +2966,28 @@ def load_rig(path: Path) -> RigConfig:
                     f"{filename}: freq_ranges.ranges[{index}].bands[{band_index}]"
                     f".rx_only must be a boolean"
                     f" (band {band.get('name', band_index)!r})"
+                )
+
+    # MOR-3631: the optional per-band ``default_mode`` is the mode the
+    # SetBand BSR-miss fallback tunes alongside default_hz. It must name
+    # a mode from [modes].list exactly as written there.
+    for range_index, rng in enumerate(freq_ranges_data):
+        if not isinstance(rng, dict):
+            continue
+        for band_index, band in enumerate(rng.get("bands", [])):
+            if not isinstance(band, dict) or "default_mode" not in band:
+                continue
+            mode_value = band["default_mode"]
+            if not isinstance(mode_value, str):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{range_index}]."
+                    f"bands[{band_index}].default_mode must be a string"
+                )
+            if mode_value not in modes:
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{range_index}]."
+                    f"bands[{band_index}].default_mode {mode_value!r} "
+                    "must name a mode from [modes].list"
                 )
 
     # Parse VFO bytes — explicit split (issue #710)

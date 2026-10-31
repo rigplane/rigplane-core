@@ -1,0 +1,586 @@
+# IARU Region 3 Band Plan (Asia-Pacific; LF to UHF)
+# Provenance: transcribed 2026-10-29 from the primary source
+#   https://www.iaru-r3.org/wp-content/uploads/2025/01/R3-004-Band-Plans-IARU-Region-3.pdf
+#   (IARU Region 3 Document R3-004, Rev. 2, November 2024,
+#   adopted by the 19th IARU Region 3 Conference, Bangkok, 04-08 Nov 2024.)
+# Scope: Part 1 of the document (LF-UHF) only. Part 2 (SHF-EHF, 13cm and
+# above, all >= 2300 MHz) is NOT transcribed: the loader clamps frequencies
+# to 2 GHz (_sanitize_freq in src/rigplane/web/band_plan.py), so those rows
+# cannot be represented without a loader change (integrator decision).
+# National repeater arrangements are deliberately absent: the regional plan
+# defines no regional repeater splits, and its Basic Principles leave
+# repeater planning to member societies (national, not regional data).
+
+[meta]
+name = "IARU Region 3"
+region = "IARU-R3"
+source = "https://www.iaru-r3.org/wp-content/uploads/2025/01/R3-004-Band-Plans-IARU-Region-3.pdf"
+layer = "ham"
+priority = 10
+version = "2024.2"
+updated = "2026-10-29"
+
+# ── 2200m ─────────────────────────────────────────────
+
+[[band]]
+name = "2200m"
+start = 135_700
+end = 137_800
+
+  [[band.segment]]
+  start = 135_700
+  end = 137_800
+  mode = "cw"
+  label = "CW"
+  notes = "CW, QRSS and digimodes; WSPR 136.0 kHz, JT65 136.13 kHz"
+
+# ── 630m ──────────────────────────────────────────────
+
+[[band]]
+name = "630m"
+start = 472_000
+end = 479_000
+
+  [[band.segment]]
+  start = 472_000
+  end = 479_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW and digimodes; WSPR 474.2 kHz"
+
+# ── 160m ──────────────────────────────────────────────
+
+[[band]]
+name = "160m"
+start = 1_800_000
+end = 2_000_000
+
+  [[band.segment]]
+  start = 1_800_000
+  end = 1_830_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW and narrowband modes"
+
+  [[band.segment]]
+  start = 1_830_000
+  end = 1_840_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW and narrowband modes; QRP CoA 1836 kHz"
+
+  [[band.segment]]
+  start = 1_840_000
+  end = 2_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes; WSPR 1836.6 kHz, JT65 1838 kHz, FT8 1840 kHz"
+
+# ── 80m ───────────────────────────────────────────────
+
+[[band]]
+name = "80m"
+start = 3_500_000
+end = 3_900_000
+
+  [[band.segment]]
+  start = 3_500_000
+  end = 3_510_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW, DX"
+
+  [[band.segment]]
+  start = 3_510_000
+  end = 3_535_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 3_535_000
+  end = 3_600_000
+  mode = "phone"
+  label = "ALL"
+  notes = "CW, phone, digimodes; QRP CoA 3560 kHz; WSPR 3568.6 kHz, JT65 3570 kHz, FT8 3573 kHz"
+
+  [[band.segment]]
+  start = 3_600_000
+  end = 3_775_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "CW, digimodes, phone; Emergency CoA 3600 kHz; Digital Voice CoA 3690 kHz; SSB QRP CoA 3690 kHz; Image CoA 3735 kHz"
+
+  [[band.segment]]
+  start = 3_775_000
+  end = 3_800_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "CW, phone, DX"
+
+  [[band.segment]]
+  start = 3_800_000
+  end = 3_900_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "CW, phone, digimodes; DX phone CoA 3795 kHz; Image CoA 3845 kHz"
+
+# ── 60m ───────────────────────────────────────────────
+
+[[band]]
+name = "60m"
+start = 5_351_500
+end = 5_366_500
+
+  [[band.segment]]
+  start = 5_351_500
+  end = 5_354_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband digimodes"
+
+  [[band.segment]]
+  start = 5_354_000
+  end = 5_366_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "All modes, USB for phone"
+
+  [[band.segment]]
+  start = 5_366_000
+  end = 5_366_500
+  mode = "cw"
+  label = "CW"
+  notes = "Weak signal modes"
+
+# ── 40m ───────────────────────────────────────────────
+
+[[band]]
+name = "40m"
+start = 7_000_000
+end = 7_200_000
+
+  [[band.segment]]
+  start = 7_000_000
+  end = 7_030_000
+  mode = "cw"
+  label = "CW"
+
+  [[band.segment]]
+  start = 7_030_000
+  end = 7_040_000
+  mode = "phone"
+  label = "ALL"
+  notes = "CW, narrowband, phone; QRP CoA 7030 kHz; WSPR 7038.6 kHz"
+
+  [[band.segment]]
+  start = 7_040_000
+  end = 7_100_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes, narrowband, phone; Digital Voice CoA 7070 kHz; SSB QRP CoA 7090 kHz; DX phone CoA 7095 kHz; RTTY DX 7040 kHz, FT8 7074 kHz, JT65 7076 kHz"
+
+  [[band.segment]]
+  start = 7_100_000
+  end = 7_200_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "All modes; Emergency CoA 7110 kHz; Image CoA 7165 kHz"
+
+# ── 30m ───────────────────────────────────────────────
+
+[[band]]
+name = "30m"
+start = 10_110_000
+end = 10_150_000
+
+  [[band.segment]]
+  start = 10_110_000
+  end = 10_130_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW; QRP CoA 10116 kHz"
+
+  [[band.segment]]
+  start = 10_130_000
+  end = 10_150_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband digimodes; WSPR 10138.6 kHz, JT65 10138.0 kHz, FT8 10136.0 kHz"
+
+# ── 20m ───────────────────────────────────────────────
+
+[[band]]
+name = "20m"
+start = 14_000_000
+end = 14_350_000
+
+  [[band.segment]]
+  start = 14_000_000
+  end = 14_070_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW; QRS CoA 14055 kHz; QRP CoA 14060 kHz"
+
+  [[band.segment]]
+  start = 14_070_000
+  end = 14_110_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband modes; International Beacon 14100 kHz +/-500 Hz guard; WSPR 14095.6 kHz, JT65 14076.0 kHz, FT8 14074.0 kHz"
+
+  [[band.segment]]
+  start = 14_100_000
+  end = 14_112_000
+  mode = "phone"
+  label = "ALL"
+  notes = "CW, narrowband digimodes, phone"
+
+  [[band.segment]]
+  start = 14_112_000
+  end = 14_350_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "CW, phone; Digital Voice CoA 14130 kHz; DX phone CoA 14195 kHz; Image CoA 14230 kHz; SSB QRP CoA 14285 kHz; Global Emergency CoA 14300 kHz"
+
+# ── 17m ───────────────────────────────────────────────
+
+[[band]]
+name = "17m"
+start = 18_068_000
+end = 18_168_000
+
+  [[band.segment]]
+  start = 18_068_000
+  end = 18_095_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW; QRP CoA 18086 kHz"
+
+  [[band.segment]]
+  start = 18_095_000
+  end = 18_110_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband digimodes; WSPR 18104.6 kHz, JT65 18102.0 kHz, FT8 18100.0 kHz"
+
+  [[band.segment]]
+  start = 18_110_000
+  end = 18_120_000
+  mode = "phone"
+  label = "ALL"
+  notes = "CW, narrowband, phone; International Beacon 18110 kHz +/-500 Hz guard"
+
+  [[band.segment]]
+  start = 18_120_000
+  end = 18_168_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "CW, phone; SSB QRP CoA 18130 kHz; Digital Voice CoA 18160 kHz; Emergency CoA 18160 kHz"
+
+# ── 15m ───────────────────────────────────────────────
+
+[[band]]
+name = "15m"
+start = 21_000_000
+end = 21_450_000
+
+  [[band.segment]]
+  start = 21_000_000
+  end = 21_070_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW; QRS CoA 21055 kHz; QRP CoA 21060 kHz"
+
+  [[band.segment]]
+  start = 21_070_000
+  end = 21_110_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband modes; WSPR 21094.6 kHz, JT65 21076.0 kHz, FT8 21074.0 kHz"
+
+  [[band.segment]]
+  start = 21_110_000
+  end = 21_125_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband digimodes"
+
+  [[band.segment]]
+  start = 21_125_000
+  end = 21_150_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband digimodes; satellite uplink only; International Beacon 21150 kHz +/-500 Hz guard"
+
+  [[band.segment]]
+  start = 21_150_000
+  end = 21_450_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "CW, phone; satellite uplink only; Digital Voice CoA 21180 kHz; DX phone CoA 21295 kHz; Image CoA 21340 kHz; Global Emergency CoA 21360 kHz"
+
+# ── 12m ───────────────────────────────────────────────
+
+[[band]]
+name = "12m"
+start = 24_890_000
+end = 24_990_000
+
+  [[band.segment]]
+  start = 24_890_000
+  end = 24_915_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW; QRP CoA 24906 kHz"
+
+  [[band.segment]]
+  start = 24_915_000
+  end = 24_930_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "CW, narrowband modes; WSPR 24924.6 kHz, JT65 24917.0 kHz, FT8 24915.0 kHz"
+
+  [[band.segment]]
+  start = 24_930_000
+  end = 24_940_000
+  mode = "phone"
+  label = "ALL"
+  notes = "CW, narrowband, DX, phone; International Beacon 24930 kHz +/-500 Hz guard"
+
+  [[band.segment]]
+  start = 24_940_000
+  end = 24_990_000
+  mode = "phone"
+  label = "PHONE"
+  notes = "CW, phone; SSB QRP CoA 24950 kHz; Digital CoA 24960 kHz"
+
+# ── 10m ───────────────────────────────────────────────
+
+[[band]]
+name = "10m"
+start = 28_000_000
+end = 29_700_000
+
+  [[band.segment]]
+  start = 28_000_000
+  end = 28_190_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW, narrowband modes, DX; QRS CoA 28055 kHz; WSPR 28124.6 kHz, JT65 28076.0 kHz, FT8 28074.0 kHz"
+
+  [[band.segment]]
+  start = 28_190_000
+  end = 28_201_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons; International Beacon 28200 kHz +/-500 Hz guard"
+
+  [[band.segment]]
+  start = 28_201_000
+  end = 28_225_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons, continuous duty"
+
+  [[band.segment]]
+  start = 28_225_000
+  end = 29_100_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes; Digital Voice CoA 28330 kHz; QRP CoA 28360 kHz; DX CoA 28495 kHz; Image CoA 28680 kHz"
+
+  [[band.segment]]
+  start = 29_100_000
+  end = 29_300_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"
+
+  [[band.segment]]
+  start = 29_300_000
+  end = 29_510_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellite, uplink and downlink"
+
+  [[band.segment]]
+  start = 29_510_000
+  end = 29_590_000
+  mode = "phone"
+  label = "RPT"
+  notes = "All modes, FM repeater input"
+
+  [[band.segment]]
+  start = 29_520_000
+  end = 29_620_000
+  mode = "phone"
+  label = "FM"
+  notes = "All modes, FM simplex; International Calling Channel 29600 kHz"
+
+  [[band.segment]]
+  start = 29_620_000
+  end = 29_700_000
+  mode = "phone"
+  label = "RPT"
+  notes = "All modes, FM repeater output"
+
+# ── 6m (50-54 MHz, Region 3) ──────────────────────────
+
+[[band]]
+name = "6m"
+start = 50_000_000
+end = 54_000_000
+
+  [[band.segment]]
+  start = 50_000_000
+  end = 50_100_000
+  mode = "cw"
+  label = "CW"
+  notes = "CW; International beacons 50.020-50.080 MHz"
+
+  [[band.segment]]
+  start = 50_020_000
+  end = 50_080_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "International beacons"
+
+  [[band.segment]]
+  start = 50_100_000
+  end = 50_500_000
+  mode = "phone"
+  label = "SSB"
+  notes = "CW, phone, narrowband, digimodes; DX CoA 50.110 MHz; WSPR 50.2937 MHz, JT65 50.2760 MHz, FT8 50.3130 MHz"
+
+  [[band.segment]]
+  start = 50_500_000
+  end = 54_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes, wideband (no bandwidth restriction)"
+
+# ── 2m (144-148 MHz, Region 3) ────────────────────────
+
+[[band]]
+name = "2m"
+start = 144_000_000
+end = 148_000_000
+
+  [[band.segment]]
+  start = 144_000_000
+  end = 144_025_000
+  mode = "digital"
+  label = "DIGI"
+  notes = "Narrowband digimodes, satellite and terrestrial; satellite guard below 144.0025 MHz"
+
+  [[band.segment]]
+  start = 144_025_000
+  end = 144_035_000
+  mode = "cw"
+  label = "EME"
+  notes = "EME, weak signal"
+
+  [[band.segment]]
+  start = 144_035_000
+  end = 145_800_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes; DX CoA 144.1 MHz; APRS 144.390/144.640/144.800 MHz; WSPR 144.489 MHz"
+
+  [[band.segment]]
+  start = 145_800_000
+  end = 146_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "All modes, satellites; satellite APRS 145.825 MHz"
+
+  [[band.segment]]
+  start = 146_000_000
+  end = 148_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"
+
+# ── 70cm (430-440 MHz, Region 3) ─────────────────────
+
+[[band]]
+name = "70cm"
+start = 430_000_000
+end = 440_000_000
+
+  [[band.segment]]
+  start = 430_000_000
+  end = 431_900_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"
+
+  [[band.segment]]
+  start = 431_900_000
+  end = 432_240_000
+  mode = "cw"
+  label = "EME"
+  notes = "EME, weak signal"
+
+  [[band.segment]]
+  start = 432_240_000
+  end = 435_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"
+
+  [[band.segment]]
+  start = 435_000_000
+  end = 438_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellites, all modes"
+
+  [[band.segment]]
+  start = 438_000_000
+  end = 440_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"
+
+# ── 23cm (1240-1300 MHz, Region 3) ───────────────────
+
+[[band]]
+name = "23cm"
+start = 1_240_000_000
+end = 1_300_000_000
+
+  [[band.segment]]
+  start = 1_240_000_000
+  end = 1_260_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"
+
+  [[band.segment]]
+  start = 1_260_000_000
+  end = 1_270_000_000
+  mode = "phone"
+  label = "SAT"
+  notes = "Satellites, all modes, Earth-to-Space only"
+
+  [[band.segment]]
+  start = 1_270_000_000
+  end = 1_296_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"
+
+  [[band.segment]]
+  start = 1_296_000_000
+  end = 1_297_000_000
+  mode = "cw"
+  label = "EME"
+  notes = "EME, weak signal, SSB, digimodes"
+
+  [[band.segment]]
+  start = 1_297_000_000
+  end = 1_300_000_000
+  mode = "phone"
+  label = "ALL"
+  notes = "All modes"

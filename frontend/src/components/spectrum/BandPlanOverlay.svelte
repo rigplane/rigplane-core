@@ -13,6 +13,8 @@
     computePosition,
     filterOverlapping,
     shouldSkipFetch,
+    localCopyServesRegion,
+    parseSegmentsResponse,
     type RemoteSegment,
   } from './band-plan-logic';
   import { getAuthHeaders } from '$lib/auth';
@@ -22,15 +24,35 @@
     endFreq: number;
     visible?: boolean;
     hiddenLayers?: string[];
+    /**
+     * Effective band-plan region (e.g. 'US', 'IARU-R1'). The backend serves
+     * segments for this region; a change invalidates the fetch cache so the
+     * overlay refetches even when the viewport did not move. `null` = the
+     * region is not known yet (the bundled US copy is not shown for it);
+     * omitted keeps the legacy viewport-only behavior.
+     */
+    region?: string | null;
   }
 
-  let { startFreq, endFreq, visible = true, hiddenLayers = [] }: Props = $props();
+  let { startFreq, endFreq, visible = true, hiddenLayers = [], region = undefined }: Props = $props();
 
   let containerWidth = $state(0);
 
-  let remoteSegments = $state<RemoteSegment[]>([]);
+  // null = no authoritative remote answer (never fetched, failed, region just
+  // switched, or the install has no band-plan data): the local copy is shown,
+  // but only when it belongs to the effective region (it is the ARRL/US HF
+  // plan, see localCopyServesRegion); for any other region nothing is shown
+  // until the matching answer arrives.
+  // An empty array is an authoritative "nothing in this window" and renders empty.
+  let remoteSegments = $state<RemoteSegment[] | null>(null);
   let lastFetchRange = $state({ start: 0, end: 0 });
+  let lastFetchRegion = $state<string | null | undefined>(null);
   let fetchTimeout: ReturnType<typeof setTimeout> | null = null;
+  // Single request token. Every viewport or region change takes a new
+  // one, cancelling the pending timer, and a completion applies only while its
+  // token is still the newest, so abandoned work (a pan away and back to the
+  // cached range included) can never overwrite what is displayed.
+  let fetchSeq = 0;
 
   // Popup state
   let popupSegment = $state<{
@@ -52,14 +74,40 @@
 
   // Debounced fetch from REST API
   function fetchSegments(start: number, end: number) {
-    // lastFetchRange is bookkeeping written by this fetch: read it outside
-    // tracking so the store write below does not re-run the effect.
-    if (untrack(() => shouldSkipFetch(start, end, lastFetchRange.start, lastFetchRange.end))) {
+    // `region` is read tracked so the fetch $effect below refires on a
+    // region switch; the cached range/region are bookkeeping written by this
+    // fetch, so read them outside tracking to keep the MOR-2605 no-loop
+    // guarantee (their writes must not re-run the effect).
+    const currentRegion = region;
+    const skip = untrack(() =>
+      shouldSkipFetch(start, end, lastFetchRange.start, lastFetchRange.end, currentRegion, lastFetchRegion),
+    );
+    // Supersede earlier pending work on EVERY state change, a cache hit
+    // included: a timer or request started for an abandoned viewport must not
+    // land after the view returned to the cached one.
+    const seq = ++fetchSeq;
+    if (fetchTimeout) {
+      clearTimeout(fetchTimeout);
+      fetchTimeout = null;
+    }
+    if (skip) {
       return;
     }
 
-    if (fetchTimeout) clearTimeout(fetchTimeout);
+    // Region switched: what is on screen (and cached) belongs to the previous
+    // region. Drop it now (the work for it was superseded above), so neither a
+    // late old response nor a failed refresh can leave the old region's
+    // segments displayed.
+    untrack(() => {
+      if (currentRegion !== lastFetchRegion) {
+        remoteSegments = null;
+        lastFetchRange = { start: 0, end: 0 };
+        lastFetchRegion = currentRegion;
+      }
+    });
+
     fetchTimeout = setTimeout(async () => {
+      fetchTimeout = null;
       try {
         const span = end - start;
         const margin = Math.round(span * 0.5);
@@ -69,10 +117,13 @@
           `/api/v1/band-plan/segments?start=${fetchStart}&end=${fetchEnd}`,
           { headers: getAuthHeaders() },
         );
+        if (seq !== fetchSeq) return;
         if (resp.ok) {
           const data = await resp.json();
-          remoteSegments = data.segments ?? [];
+          if (seq !== fetchSeq) return;
+          remoteSegments = parseSegmentsResponse(data);
           lastFetchRange = { start: fetchStart, end: fetchEnd };
+          lastFetchRegion = currentRegion;
         }
       } catch {
         // Silently fall back to local data
@@ -94,12 +145,12 @@
     popupSegment = null;
   });
 
-  // Use remote segments if available, fall back to local
+  // Use the remote answer when there is one (even an empty one), else local
   let segments = $derived(() => {
     if (!visible || endFreq <= startFreq) return [];
     const span = endFreq - startFreq;
 
-    if (remoteSegments.length > 0) {
+    if (remoteSegments !== null) {
       const filtered = filterOverlapping(remoteSegments, startFreq, endFreq, hiddenLayers);
       return filtered
         .map((s) => {
@@ -128,7 +179,8 @@
         });
     }
 
-    // Fallback to local hardcoded data
+    // Fallback to local hardcoded data, only for the region it describes
+    if (!localCopyServesRegion(region)) return [];
     return getVisibleSegments(startFreq, endFreq).map(({ segment }) => {
       const { leftPct, widthPct } = computePosition(segment.startHz, segment.endHz, startFreq, endFreq);
       const widthPx = (widthPct / 100) * containerWidth;
