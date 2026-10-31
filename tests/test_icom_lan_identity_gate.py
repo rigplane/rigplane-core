@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import struct
-from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import replace
 from types import SimpleNamespace
@@ -24,6 +23,7 @@ from rigplane.runtime.session_lifecycle import LifecycleState
 from _helpers import wrap_civ_in_udp
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _ConnectOnceStubs
+from _timing import await_until
 
 _IDENTITY_CMD = 0x19
 _IDENTITY_SUB = 0x00
@@ -161,16 +161,6 @@ def _fast_reread(radio: IcomRadio) -> None:
     """Collapse the re-read backoff so a late answer lands in one loop turn."""
     radio._LAN_IDENTITY_REREAD_BACKOFF_S = (0.02,)
     radio._LAN_IDENTITY_REREAD_STEADY_S = 0.02
-
-
-async def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> bool:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while not predicate():
-        if loop.time() > deadline:
-            return False
-        await asyncio.sleep(0.005)
-    return True
 
 
 def _status(radio: IcomRadio) -> RadioIdentityStatus | None:
@@ -398,7 +388,7 @@ async def test_late_answer_completes_the_held_connect_then_tears_down() -> None:
     transport.queue_response_on_send(
         len(transport.sent_packets) + 1, _identity_response(b"\x0b\x90")
     )
-    assert await _wait_until(lambda: radio.connected)
+    assert await await_until(lambda: radio.connected)
 
     identity = radio.connection_identity
     assert identity is not None
@@ -491,7 +481,7 @@ async def test_reconnect_tail_gates_then_runs_parts_once(pre_answered: bool) -> 
         transport.queue_response_on_send(
             len(transport.sent_packets) + 1, _identity_response(b"\x0b\x90")
         )
-        assert await _wait_until(lambda: radio.connected)
+        assert await await_until(lambda: radio.connected)
     radio._fetch_initial_state.assert_awaited_once()
     radio.rearm_managed_tx.assert_awaited_once()
     on_reconnect.assert_called_once()
@@ -540,7 +530,7 @@ async def test_stale_epoch_answer_is_fenced_and_never_completes() -> None:
     with pytest.raises(ConnectionError):
         await radio.power_control(True)
     transport.queue_response(_identity_response(b"\x0b\x90"))
-    assert await _wait_until(
+    assert await await_until(
         lambda: (
             radio._lan_identity_reread_task is None
             or radio._lan_identity_reread_task.done()
@@ -710,7 +700,7 @@ async def test_cold_connect_once_gates_identity_before_startup_readiness(
             # The LAN session stays maintained while the hold owns the link.
             assert radio._token_task is not None and not radio._token_task.done()
             renew.reset_mock()
-            assert await _wait_until(lambda: renew.await_count >= 2)
+            assert await await_until(lambda: renew.await_count >= 2)
             assert all(call.args == (0x05,) for call in renew.await_args_list)
         finally:
             await _cold_teardown(radio)
@@ -732,8 +722,8 @@ async def test_cold_late_answer_before_lifecycle_returns_fetches_and_arms_once()
         civ.queue_response_on_send(3, _identity_response(b"\x0b\x90"))
         task = asyncio.create_task(radio.connect())
         try:
-            assert await _wait_until(lambda: radio.connected)
-            assert await _wait_until(lambda: radio._arm_managed_tx.await_count >= 1)
+            assert await await_until(lambda: radio.connected)
+            assert await await_until(lambda: radio._arm_managed_tx.await_count >= 1)
             park.set()  # the accepted read landed before the lifecycle returned
             await asyncio.wait_for(task, 2)
             assert _status(radio) is RadioIdentityStatus.VERIFIED
@@ -869,7 +859,7 @@ async def test_full_control_recovery_snapshots_audio_before_gate_and_runs_one_ta
     async def connect_before_return() -> None:
         await connect_once()
         if before_return:
-            assert await _wait_until(lambda: audio_runtime.recover.await_count == 1)
+            assert await await_until(lambda: audio_runtime.recover.await_count == 1)
 
     with (
         _ColdConnectPatches(radio, civ),
@@ -888,8 +878,8 @@ async def test_full_control_recovery_snapshots_audio_before_gate_and_runs_one_ta
             await radio._control_phase.soft_reconnect()
             if gate_answer is None and not before_return:
                 assert _status(radio) is RadioIdentityStatus.NO_RESPONSE
-            assert await _wait_until(lambda: radio.connected)
-            assert await _wait_until(lambda: audio_runtime.recover.await_count >= 1)
+            assert await await_until(lambda: radio.connected)
+            assert await await_until(lambda: audio_runtime.recover.await_count >= 1)
             assert _status(radio) is RadioIdentityStatus.VERIFIED
             # One gate for the whole recovery: the tail reuses it, no re-gate.
             assert _identity_sends(civ) == (1 if gate_answer is not None else 2)

@@ -1,6 +1,6 @@
 """Extended tests for IcomRadio — VFO, split, attenuator, preamp, CW, power control, audio, disconnected states."""
 
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -17,6 +17,7 @@ from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame, Mode, bcd_encode
 
 # Reuse helpers from test_radio
+from _helpers import observe_selected_receiver
 from test_radio import (
     MockTransport,
     _ack_response,
@@ -47,6 +48,7 @@ def radio(mock_transport: MockTransport) -> IcomRadio:
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    observe_selected_receiver(r, 0)
     return r
 
 
@@ -488,39 +490,60 @@ class TestReceiverAwareContract:
         assert filt == 2
 
     @pytest.mark.asyncio
-    async def test_set_frequency_receiver_sub_uses_vfo_fallback(
+    async def test_set_frequency_receiver_sub_uses_selector_01(
         self, radio: IcomRadio
     ) -> None:
-        # Issue #1172: receiver-VFO fallback now goes through the
-        # internal ``_set_vfo_wire`` so the legacy ``set_vfo`` overload
-        # does not self-trigger its DeprecationWarning. The MAIN write
-        # inside the fallback waits for the radio's answer, so the mock
-        # must hand it an ACK frame.
-        radio._set_vfo_wire = AsyncMock()  # type: ignore[method-assign]
-        radio._send_civ_raw = AsyncMock(  # type: ignore[method-assign]
-            return_value=CivFrame(
+        # MOR-3591: IC-7610 selector 01 is the physical SUB (profile data),
+        # so SUB is written directly (0x25 0x01 SET + readback) and the
+        # selection is never switched.
+        replies = [
+            CivFrame(to_addr=CONTROLLER_ADDR, from_addr=IC_7610_ADDR, command=0xFB),
+            CivFrame(
                 to_addr=CONTROLLER_ADDR,
                 from_addr=IC_7610_ADDR,
-                command=0xFB,
-            )
-        )
+                command=0x25,
+                data=b"\x01" + bcd_encode(14_074_000),
+            ),
+        ]
+        radio._set_vfo_wire = AsyncMock()  # type: ignore[method-assign]
+        radio._send_civ_raw = AsyncMock(side_effect=replies)  # type: ignore[method-assign]
 
         await radio.set_freq(14_074_000, receiver=1)
 
-        radio._set_vfo_wire.assert_has_awaits([call("SUB"), call("MAIN")])
-        radio._send_civ_raw.assert_awaited_once()
+        radio._set_vfo_wire.assert_not_awaited()
+        sent = [c.args[0] for c in radio._send_civ_raw.await_args_list]
+        assert [frame[4:6] for frame in sent] == [b"\x25\x01", b"\x25\x01"]
 
     @pytest.mark.asyncio
-    async def test_set_mode_receiver_sub_uses_vfo_fallback(
+    async def test_set_mode_receiver_sub_uses_selector_01(
         self, radio: IcomRadio
     ) -> None:
+        # Preservation read, SET, readback -- all on selector 01 (MOR-3591).
+        mode_reply = CivFrame(
+            to_addr=CONTROLLER_ADDR,
+            from_addr=IC_7610_ADDR,
+            command=0x26,
+            data=b"\x01\x01\x00\x02",
+        )
+        freq_reply = CivFrame(
+            to_addr=CONTROLLER_ADDR,
+            from_addr=IC_7610_ADDR,
+            command=0x25,
+            data=b"\x01" + bcd_encode(14_074_000),
+        )
+        ack = CivFrame(to_addr=CONTROLLER_ADDR, from_addr=IC_7610_ADDR, command=0xFB)
         radio._set_vfo_wire = AsyncMock()  # type: ignore[method-assign]
-        radio._send_civ_raw = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        radio._send_civ_raw = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[freq_reply, mode_reply, ack, freq_reply, mode_reply]
+        )
 
         await radio.set_mode("USB", receiver=1)
 
-        radio._set_vfo_wire.assert_has_awaits([call("SUB"), call("MAIN")])
-        radio._send_civ_raw.assert_awaited_once()
+        radio._set_vfo_wire.assert_not_awaited()
+        sent = [c.args[0] for c in radio._send_civ_raw.await_args_list]
+        assert {frame[4] for frame in sent} == {0x25, 0x26}
+        assert all(frame[5] == 0x01 for frame in sent)
+        assert sent[2][4:] == b"\x26\x01\x01\x00\x02\xfd"
 
     @pytest.mark.asyncio
     async def test_stop_cw_disconnected(self) -> None:

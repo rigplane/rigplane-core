@@ -619,6 +619,29 @@ def _apply_managed_runtime_defaults(args: argparse.Namespace) -> None:
         args.web_rigctld = True
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Whether a listener bind host is loopback (no LAN exposure)."""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+def _resolve_ingress_hosts(
+    args: argparse.Namespace, *, managed_runtime: bool
+) -> tuple[str, str]:
+    """Bind hosts for the ``rigctld`` and TCI listeners (design 9).
+
+    Both read the ONE shared ``--ingress-host`` setting. When it is
+    absent each keeps its own default: ``rigctld`` stays exactly as
+    before (``127.0.0.1`` managed, else ``0.0.0.0``) and TCI stays on
+    loopback. Returns ``(rigctld_host, tci_host)``.
+    """
+    explicit = getattr(args, "ingress_host", None)
+    if explicit:
+        return str(explicit), str(explicit)
+    if managed_runtime:
+        return "127.0.0.1", "127.0.0.1"
+    return "0.0.0.0", "127.0.0.1"
+
+
 def _bridge_gain_db(raw: str) -> float:
     try:
         gain = float(raw)
@@ -1591,6 +1614,37 @@ def _build_parser() -> argparse.ArgumentParser:
         help="rigctld TCP port (default: 4532)",
     )
     web_p.add_argument(
+        "--tci",
+        dest="web_tci",
+        action="store_true",
+        default=False,
+        help="Enable the TCI server (phase control; default: off)",
+    )
+    web_p.add_argument(
+        "--no-tci",
+        dest="web_tci",
+        action="store_false",
+        help="Disable the TCI server",
+    )
+    web_p.add_argument(
+        "--tci-port",
+        dest="web_tci_port",
+        type=int,
+        default=50001,
+        help="TCI TCP port (default: 50001)",
+    )
+    web_p.add_argument(
+        "--ingress-host",
+        dest="ingress_host",
+        default=None,
+        metavar="HOST",
+        help=(
+            "Bind host shared by the rigctld and TCI listeners "
+            "(default: loopback for TCI; rigctld keeps 127.0.0.1 managed, "
+            "else 0.0.0.0, when the flag is absent)"
+        ),
+    )
+    web_p.add_argument(
         "--wsjtx-compat",
         action="store_true",
         default=False,
@@ -1785,6 +1839,37 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4532,
         help="rigctld TCP port (default: 4532)",
+    )
+    station_p.add_argument(
+        "--tci",
+        dest="web_tci",
+        action="store_true",
+        default=False,
+        help="Enable the TCI server (phase control; default: off)",
+    )
+    station_p.add_argument(
+        "--no-tci",
+        dest="web_tci",
+        action="store_false",
+        help="Disable the TCI server",
+    )
+    station_p.add_argument(
+        "--tci-port",
+        dest="web_tci_port",
+        type=int,
+        default=50001,
+        help="TCI TCP port (default: 50001)",
+    )
+    station_p.add_argument(
+        "--ingress-host",
+        dest="ingress_host",
+        default=None,
+        metavar="HOST",
+        help=(
+            "Bind host shared by the rigctld and TCI listeners "
+            "(default: loopback for TCI; rigctld keeps 127.0.0.1 managed, "
+            "else 0.0.0.0, when the flag is absent)"
+        ),
     )
     station_p.add_argument(
         "--auth-token",
@@ -2737,6 +2822,13 @@ async def _run(args: argparse.Namespace) -> int:
             rigctld_port = getattr(args, "web_rigctld_port", 4532)
             bindings.append(("0.0.0.0", rigctld_port))
             bindings.append(("127.0.0.1", rigctld_port))
+        if getattr(args, "web_tci", False):
+            # TCI resolves one bind host (loopback unless --ingress-host),
+            # but an orphan on either host blocks it, so both are probed
+            # exactly like rigctld above.
+            tci_port = getattr(args, "web_tci_port", 50001)
+            bindings.append(("0.0.0.0", tci_port))
+            bindings.append(("127.0.0.1", tci_port))
         try:
             check_ports_available(bindings)
         except RuntimeError as exc:
@@ -4519,6 +4611,7 @@ def _print_startup_banner(
     radio: Radio,
     web_url: str | None = None,
     rigctld_addr: str | None = None,
+    tci_addr: str | None = None,
     bridge_info: str | None = None,
     loopback_hint: str | None = None,
     dx_cluster: str | None = None,
@@ -4539,6 +4632,8 @@ def _print_startup_banner(
         lines.append(f"  Web UI:   {web_url}")
     if rigctld_addr:
         lines.append(f"  rigctld:  {rigctld_addr}")
+    if tci_addr:
+        lines.append(f"  tci:      {tci_addr}")
     if bridge_info:
         lines.append(f"  Bridge:   {bridge_info}")
     elif loopback_hint:
@@ -4905,6 +5000,21 @@ async def _cmd_web(
     )
     rigctld_server = None
     rigctld_addr: str | None = None
+    tci_server = None
+    tci_addr: str | None = None
+    # One shared setting for both keying ingresses (design 9): each keeps
+    # its own default when the flag is absent, so rigctld behaviour is
+    # unchanged and TCI stays on loopback.
+    rigctld_host, tci_host = _resolve_ingress_hosts(
+        args, managed_runtime=managed_runtime
+    )
+    if getattr(args, "ingress_host", None) and not _is_loopback_host(tci_host):
+        logger.warning(
+            "ingress host %s is non-loopback: the rigctld and TCI "
+            "listeners are reachable from the LAN (remote PTT has "
+            "rigctld parity; TCI has no authentication)",
+            tci_host,
+        )
     if getattr(args, "web_rigctld", False):
         from rigplane.rigctld.contract import RigctldConfig
         from rigplane.rigctld.server import RigctldServer
@@ -4916,7 +5026,6 @@ async def _cmd_web(
         if wsjtx_compat:
             audio_route = resolve_audio_route(radio)
             wsjtx_data_mode, wsjtx_data_mod_input = rigctld_wsjtx_policy(audio_route)
-        rigctld_host = "127.0.0.1" if managed_runtime else "0.0.0.0"
         rigctld_config = RigctldConfig(
             host=rigctld_host,
             port=rigctld_port,
@@ -4980,6 +5089,70 @@ async def _cmd_web(
                 # only the managed authority enforces; unmanaged, it stays off.
                 server.attach_rigctl_channel(candidate.open_channel)
 
+    # Start the TCI listener if requested (design 9). No `serve` support:
+    # TCI starts only inside `web` and `station`, next to the bundled
+    # rigctld above, and receives the same managed composition. Bind
+    # failures abort startup the same way (MOR-1437).
+    if getattr(args, "web_tci", False):
+        from rigplane.tci_adapter.commands import TCI_DEFAULT_PORT
+        from rigplane.tci_adapter.server import TciAdapterServer, tci_allow_predicate
+
+        tci_port = getattr(args, "web_tci_port", TCI_DEFAULT_PORT)
+        tci_kwargs: dict[str, Any] = {
+            "radio": radio,
+            "state_store": server.command_state_store,
+            "host": tci_host,
+            "port": tci_port,
+            "controller_authority": getattr(radio, "_controller_authority", None),
+            # Same allowed-hosts source as the web predicate (pre-review
+            # P2): with --allowed-host X a native TCI connection on X is
+            # admitted exactly like a web one.
+            "allow": tci_allow_predicate(allowed_hosts=tuple(allowed_hosts or ())),
+        }
+        if managed_tx_composition is not None:
+            tci_kwargs["managed_tx_authority"] = managed_tx_composition.authority
+            tci_kwargs["command_queue"] = server.command_queue
+            tci_kwargs["command_service"] = server.command_service
+        candidate_tci = TciAdapterServer(**tci_kwargs)
+        try:
+            await candidate_tci.start()
+        except OSError as exc:
+            server._runtime_last_error = f"tci bind failed: {exc}"
+            if exc.errno == errno.EADDRINUSE:
+                logger.error(
+                    "tci failed to bind %s:%d: %s "
+                    "(another TCI listener — likely an orphaned rigplane "
+                    "instance — is probably already running; run `lsof -i :%d` "
+                    "to find it, or relocate the port with --tci-port). "
+                    "Startup aborted.",
+                    tci_host,
+                    tci_port,
+                    exc,
+                    tci_port,
+                )
+            else:
+                logger.error(
+                    "tci failed to start on port %d: %s (errno=%s)",
+                    tci_port,
+                    exc,
+                    exc.errno,
+                )
+            if rigctld_server is not None:
+                # The TCI bind failed after rigctld bound: release the
+                # earlier listener before aborting startup, or it keeps
+                # the radio session with no web server in front of it.
+                try:
+                    await rigctld_server.stop()
+                except Exception:
+                    logger.debug(
+                        "rigctld stop after tci bind failure failed",
+                        exc_info=True,
+                    )
+            raise
+        else:
+            tci_server = candidate_tci
+            tci_addr = f"{tci_host}:{tci_port}"
+
     scheme = "https" if config_kwargs.get("tls") else "http"
     web_url = f"{scheme}://{args.web_host}:{args.web_port}/"
     dx_info = dx_cluster if dx_cluster else None
@@ -4993,6 +5166,7 @@ async def _cmd_web(
             radio=radio,
             web_url=web_url,
             rigctld_addr=rigctld_addr,
+            tci_addr=tci_addr,
             bridge_info=bridge_info,
             loopback_hint=loopback_hint,
             dx_cluster=dx_info,
@@ -5019,13 +5193,32 @@ async def _cmd_web(
     except asyncio.CancelledError:
         pass
     finally:
+        # Each acquired listener is torn down independently: a failing
+        # rigctld stop must not skip the TCI shutdown (and vice versa).
+        # The first teardown error is re-raised after both have run.
+        teardown_errors: list[BaseException] = []
         if rigctld_server is not None:
             from rigplane.rigctld.server import STOP_TIMEOUT_S
 
             stop = asyncio.ensure_future(rigctld_server.stop())
             if shutdown_backstop is not None:
                 shutdown_backstop.protect(stop, "rigctld stop", STOP_TIMEOUT_S)
-            await stop
+            try:
+                await stop
+            except BaseException as exc:
+                teardown_errors.append(exc)
+        if tci_server is not None:
+            from rigplane.tci.server import STOP_TIMEOUT_S as _TciStopTimeout
+
+            stop_tci = asyncio.ensure_future(tci_server.stop())
+            if shutdown_backstop is not None:
+                shutdown_backstop.protect(stop_tci, "tci stop", _TciStopTimeout)
+            try:
+                await stop_tci
+            except BaseException as exc:
+                teardown_errors.append(exc)
+        if teardown_errors:
+            raise teardown_errors[0]
     return 0
 
 

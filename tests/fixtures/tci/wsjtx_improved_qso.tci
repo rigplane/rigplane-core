@@ -1,0 +1,7 @@
+vfo:0,0,14074000;
+split_enable:0,false;
+vfo:0,1,14074010;
+modulation:0,DIGU;
+audio_start:0;
+trx:0,true;
+trx:0,false;

@@ -17,9 +17,9 @@ from test_icom_lan_identity_gate import (
     _cold_radio,
     _cold_teardown,
     _identity_sends,
-    _wait_until,
 )
 from test_memory_write_layouts import _mem
+from _timing import await_until
 
 
 @pytest.mark.parametrize("model", ["IC-705", "IC-7610"])
@@ -46,7 +46,7 @@ async def test_memory_mutation_refused_while_identity_read_pending(
             else radio._control_phase._connect_once()
         )
         try:
-            assert await _wait_until(lambda: _identity_sends(civ) == 1)
+            assert await await_until(lambda: _identity_sends(civ) == 1)
             assert radio._conn_state is RadioConnectionState.CONNECTED
             assert radio._lan_identity_gate_running
             before = list(civ.sent_packets)
@@ -91,10 +91,10 @@ async def test_memory_mutation_rechecks_identity_after_waiting_for_lock(
     reconnect = None
     with _ColdConnectPatches(radio, civ):
         try:
-            assert await _wait_until(lambda: bool(radio._memory_select_lock._waiters))
+            assert await await_until(lambda: bool(radio._memory_select_lock._waiters))
             radio._civ_transport = None
             reconnect = asyncio.create_task(radio._control_phase.soft_reconnect())
-            assert await _wait_until(lambda: _identity_sends(civ) == 1)
+            assert await await_until(lambda: _identity_sends(civ) == 1)
             assert radio._lan_identity_gate_running
             before = list(civ.sent_packets)
             radio._memory_select_lock.release()

@@ -242,13 +242,13 @@ async def test_restore_skips_absent_keys_and_restores_present_ones() -> None:
     assert not full.called("_set_vfo_wire")
 
 
-async def test_restore_applies_vfo_key_from_older_snapshot() -> None:
-    """Restore keeps its ``vfo`` branch for snapshots that carry the key."""
+async def test_restore_never_changes_the_selection() -> None:
+    """A hand-built ``vfo`` key is ignored: restore never selects (MOR-3591)."""
     radio = _SnapshotFakeRadio()
 
     await restore_state(radio, {"vfo": "B"})  # type: ignore[arg-type]
 
-    assert ("_set_vfo_wire", ("B",)) in radio.calls
+    assert not any(name == "_set_vfo_wire" for name, _ in radio.calls)
 
 
 async def test_snapshot_with_real_radio_omits_unconfirmed_split_attenuator_preamp_and_vfo() -> (

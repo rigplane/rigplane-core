@@ -7,6 +7,7 @@ import os as _os
 _os.environ.setdefault("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", "1")
 del _os
 
+import asyncio  # noqa: E402
 import struct  # noqa: E402
 from collections.abc import AsyncGenerator, Iterator  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -16,10 +17,12 @@ import pytest  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: TID251, E402
 from rigplane.types import HEADER_SIZE, PacketType  # noqa: E402
 
+from _helpers import observe_selected_receiver  # noqa: E402
 from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
 from _caps import FULL_ICOM_CAPS as FULL_ICOM_CAPS  # noqa: F401, E402 — re-export
+from _timing import VirtualClock  # noqa: E402
 
 _HEADER_FMT = "<IHHII"
 
@@ -215,6 +218,9 @@ async def connected_radio(mock_radio: MockIcomRadio) -> AsyncGenerator[IcomRadio
     )
     with fast_connect():
         await radio.connect()
+    # fast_connect skips the initial state fetch, whose 0x07 0xD2 answer
+    # establishes the selected receiver (MOR-3591): deliver MAIN here.
+    observe_selected_receiver(radio, 0)
     yield radio
     await radio.disconnect()
 
@@ -302,3 +308,20 @@ def _reset_shared_portaudio_pool() -> Iterator[None]:
     # _opens, _stops, _cleanup_streams, _stream_resources) is pristine.
     pool._executor.shutdown(wait=False)
     pool.__init__()
+
+
+@pytest.fixture
+async def virtual_clock() -> AsyncGenerator[VirtualClock, None]:
+    """A clock that moves only on ``await virtual_clock.elapse(dt)``.
+
+    Installed as ``loop.time`` of this test's own loop and nowhere else (see
+    ``tests/_timing.py``). Pair it with ``@pytest.mark.timeout``: a test that
+    awaits a timer nobody advances waits forever.
+    """
+    loop = asyncio.get_running_loop()
+    clock = VirtualClock(start=loop.time())
+    clock.install(loop)
+    try:
+        yield clock
+    finally:
+        clock.uninstall(loop)

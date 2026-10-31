@@ -28,7 +28,11 @@ from ...core.command_dispatch import (
     enqueue_command_intent,
     prepare_command_intent,
 )
-from ...core.exceptions import CommandError, CommandRejectedError
+from ...core.exceptions import (
+    CommandError,
+    CommandRejectedError,
+    ReceiverNotSelectedError,
+)
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.types import MemoryProfile
@@ -1622,8 +1626,8 @@ class ControlHandler:
         if isinstance(exc, CwTextSendCancelledError):
             # MOR-3700: a CW stop or a transmit abort ended the send.
             error = "command_cancelled"
-        elif isinstance(exc, MemoryWriteUnverifiedError):
-            # MOR-3644: stable refusal code, not English prose matching.
+        elif isinstance(exc, (MemoryWriteUnverifiedError, ReceiverNotSelectedError)):
+            # MOR-3644 / MOR-3591: stable refusal code, not prose matching.
             error = exc.reason_code
         elif isinstance(exc, CommandUnsupportedError):
             error = "unsupported_command"

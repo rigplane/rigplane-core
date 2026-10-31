@@ -43,6 +43,7 @@ from rigplane.scope import ScopeFrame
 from rigplane.types import Mode
 
 # Re-use the low-level helpers from test_radio
+from _helpers import observe_selected_receiver
 from test_radio import MockTransport, _ack_response, _nak_response, _wrap_civ_in_udp
 
 
@@ -134,6 +135,7 @@ def radio(mock_transport: MockTransport):
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    observe_selected_receiver(r, 0)
     yield r
     r._connected = False  # reset _conn_state so __del__ stays quiet
 
@@ -661,6 +663,7 @@ def ic9700_radio(mock_transport: MockTransport):
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
     r._connected = True
+    observe_selected_receiver(r, 0)
     yield r
     r._connected = False
 
