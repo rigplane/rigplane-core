@@ -91,8 +91,40 @@ def _w3_session():
     )["sessions"][0]
 
 
-def test_w3_dual_cp210x_pair_each_radio_by_topology():
-    session = _w3_session()
+# Endpoint renames on the dual-codec W3 shape. The Windows "2-" duplicate
+# disambiguation prefix moves onto the IC-7610 endpoints (the IC-7300 keeps
+# the plain names), and the user renames the IC-7610 endpoints to Finnish.
+# Pairing must keep following hub topology, never the endpoint names.
+W3_ENDPOINT_RENAMES = {
+    "recorded": {},
+    "duplicate-prefix-on-ic7610": {
+        "Microphone (USB Audio CODEC )": "Microphone (2- USB Audio CODEC )",
+        "Speakers (USB Audio CODEC )": "Speakers (2- USB Audio CODEC )",
+        "Microphone (2- USB Audio CODEC )": "Microphone (USB Audio CODEC )",
+        "Speakers (2- USB Audio CODEC )": "Speakers (USB Audio CODEC )",
+    },
+    "renamed-ic7610-finnish": {
+        "Microphone (USB Audio CODEC )": "Mikrofoni (USB Audio CODEC)",
+        "Speakers (USB Audio CODEC )": "Kaiuttimet (USB Audio CODEC)",
+    },
+}
+
+
+def rename_w3_endpoints(session, renames):
+    """Rename endpoint names on the devnode and PortAudio sides as one."""
+    for row in session["raw"]["windows"]["devnodes"]:
+        if row["class_name"] == "AudioEndpoint":
+            row["friendly_name"] = renames.get(
+                row["friendly_name"], row["friendly_name"]
+            )
+    for device in session["raw"]["portaudio"]["devices"]:
+        device["name"] = renames.get(device["name"], device["name"])
+    return session
+
+
+@pytest.mark.parametrize("variant", W3_ENDPOINT_RENAMES)
+def test_w3_dual_cp210x_pair_each_radio_by_topology(variant):
+    session = rename_w3_endpoints(_w3_session(), W3_ENDPOINT_RENAMES[variant])
     paired_7610 = pair(
         adapt_windows(session), "COM5", get_radio_profile("IC-7610").usb_identity
     )

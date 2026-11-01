@@ -8,7 +8,13 @@ from unittest.mock import Mock
 
 import pytest
 from test_icom7610_serial_radio import _FakeSerialCivLink
-from test_usb_pairing_windows import _inject_windows, _w1_session, _w3_session
+from test_usb_pairing_windows import (
+    W3_ENDPOINT_RENAMES,
+    _inject_windows,
+    _w1_session,
+    _w3_session,
+    rename_w3_endpoints,
+)
 from test_usb_pairing_macos import (
     MAC_PORT,
     MAC_RX_ID,
@@ -349,17 +355,23 @@ def _w3_padded_session():
     return session
 
 
-async def test_w3_dual_cp210x_browser_audio_start_selects_ic7610_codec(monkeypatch):
+@pytest.mark.parametrize("variant", W3_ENDPOINT_RENAMES)
+async def test_w3_dual_cp210x_browser_audio_start_selects_ic7610_codec(
+    monkeypatch, variant
+):
     """MOR-3885 seam test: the dual-CP210x topology plus the real IC-7610
     serial backend starts RX through the product ``audio_start`` path.
 
     Profile loading, pairing, driver selection, and web handling stay real.
     With the old S3 implementation (one serial function per VID:PID) the
     second CP210x refuses pairing and this test fails at ``audio_format``.
+    The renames cover the Windows "2-" duplicate prefix and user-chosen
+    non-English names on the IC-7610 endpoints: selection follows topology,
+    not endpoint names (MOR-3710).
     """
     from rigplane import IC_7610_ADDR
 
-    session = _w3_padded_session()
+    session = rename_w3_endpoints(_w3_padded_session(), W3_ENDPOINT_RENAMES[variant])
     backend, _ = _inject_windows(monkeypatch, session)
     monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
     radio = Icom7610SerialRadio(
