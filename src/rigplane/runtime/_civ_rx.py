@@ -1554,6 +1554,16 @@ class CivRuntime:
         is completely silent hands off after ``_SILENT_OPENCLOSE_DEADLINE``;
         a live port that merely leaves queries unanswered keeps the 60 s
         patience.
+
+        Before that patience window starts, the control session itself is
+        probed once (MOR-3703) — but only while a LAN control session is
+        live; without one there is nothing to ask and the path is the old
+        one, with no extra awaits. A renewal the radio answers with the
+        recorded reject means the LAN session is gone, so recovery is
+        requested immediately instead of after the deadline. An OK answer —
+        a standby radio answers renewals while its CI-V DATA is silent —
+        a late OK, no answer or a probe that cannot be sent keeps the
+        patience.
         """
         recovering = False
         recovery_start: float = 0.0
@@ -1636,9 +1646,31 @@ class CivRuntime:
                             q_size,
                             evidence,
                         )
+                        # The stall may be the radio refusing OUR session, not
+                        # the stream: ask before the patient OpenClose window
+                        # (MOR-3703). A renewal answered with the recorded
+                        # reject means no amount of OpenClose patience will
+                        # restart the CI-V stream — escalate to a re-login
+                        # now. Anything else (OK, a late OK, no answer, a
+                        # probe that could not be sent, or no live control
+                        # session to ask at all) keeps the patience: a
+                        # standby radio answers renewals while CI-V stays
+                        # quiet and must never escalate on this probe.
+                        self._host._civ_stream_ready = False
+                        dead = await self._probe_control_session()
+                        if dead == "reject":
+                            logger.warning(
+                                "civ-data-watchdog: control session dead "
+                                "(reject) before the OpenClose patience, "
+                                "requesting recovery now"
+                            )
+                            self.request_recovery_now("control session dead: reject")
+                            return
                         recovering = True
                         self._host._civ_recovering = True
-                        self._host._civ_stream_ready = False
+                        # The patience window starts at this stall tick's
+                        # ``now``: a probe that ran and said nothing consumes
+                        # part of the window, it never extends it.
                         recovery_start = now
 
                     elapsed_recovery = now - recovery_start
@@ -1686,6 +1718,37 @@ class CivRuntime:
                         self._host._civ_stream_ready = True
         except asyncio.CancelledError:
             pass
+
+    async def _probe_control_session(self) -> str | None:
+        """Ask the radio whether the control session is still ours.
+
+        Thin wrapper over :meth:`ControlPhaseRuntime.probe_control_session`
+        for the data watchdog's stall path (MOR-3703). Without a live LAN
+        control session — the same ``_ctrl_transport._udp_transport`` read
+        the post-recovery re-arm uses — there is nothing to ask, so the
+        verdict is ``None`` without a single await and the caller keeps its
+        OpenClose patience unchanged. A probe that cannot be sent (dead
+        control transport) or fails unexpectedly says nothing about the
+        session either; it maps to ``None`` — the same verdict an
+        unanswered renewal gets.
+        """
+        ctrl = getattr(self._host, "_ctrl_transport", None)
+        if ctrl is None or getattr(ctrl, "_udp_transport", None) is None:
+            return None
+        try:
+            return await self._host._control_phase.probe_control_session()
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.debug(
+                "civ-data-watchdog: control session probe failed: %s",
+                exc,
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "civ-data-watchdog: unexpected error probing the control session",
+                exc_info=True,
+            )
+            return None
 
     def _spawn_recovery_task(
         self,
