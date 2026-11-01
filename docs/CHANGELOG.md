@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `probe_lan_radio` — a public unicast liveness probe for Icom LAN radios: sends the radio's own "Are You There" handshake to one known host and control port (retransmitting through the window) and returns `True` on the first "I Am Here" and `False` on timeout or when the OS reports the host unreachable, never raising for an unreachable host, so callers can give up on an unreachable saved radio in seconds instead of waiting out a full connect cycle. Import it from `rigplane` or `rigplane.backends.discovery`.
+
 ## [3.1.0rc1] — 2026-10-31
 
 This is the first release candidate of 3.1. It adds a TCI listener for

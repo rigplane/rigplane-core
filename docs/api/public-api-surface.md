@@ -41,6 +41,12 @@ This page defines the **officially supported** public API of `rigplane`. Use the
 |--------|-------------|
 | `build_hamlib_discovery_payload` | Build the stable Hamlib-assisted discovery JSON payload (`rigplane.discovery.hamlib.v1` schema). Promoted from internal `rigplane.cli` to public API in MOR-911. Canonical import: `from rigplane.backends.discovery import build_hamlib_discovery_payload` or `from rigplane import build_hamlib_discovery_payload`. |
 
+### LAN radio discovery
+
+| Symbol | Description |
+|--------|-------------|
+| `probe_lan_radio` | Unicast "Are You There" liveness probe for one known Icom LAN radio: retransmits the discovery handshake to one host and UDP control port for up to `timeout` seconds and returns `True` on the first "I Am Here", `False` on timeout or when the OS reports the host unreachable (never raises for an unreachable host). Use it to fail fast on an unreachable saved radio instead of connecting with TCP — the control port is UDP-only and a reachable radio may drop a TCP SYN. Canonical import: `from rigplane.backends.discovery import probe_lan_radio` or `from rigplane import probe_lan_radio`. |
+
 ### Session lifecycle (v2.11+)
 
 Unified radio session lifecycle controller and associated types.  These symbols
@@ -288,6 +294,9 @@ without a major version.
 - Hamlib discovery: `build_hamlib_discovery_payload` (canonical:
   `rigplane.backends.discovery`; also via `from rigplane import
   build_hamlib_discovery_payload`; promoted from internal CLI in MOR-911)
+- LAN radio liveness: `probe_lan_radio` (canonical:
+  `rigplane.backends.discovery`; also via `from rigplane import
+  probe_lan_radio`; unicast "Are You There" for one known host, MOR-3669)
 - Audio primitives: `audio.backend.AudioBackend`,
   `audio.backend.PortAudioBackend`, `audio.backend.FakeAudioBackend`
 - DSP utilities: `audio.dsp.NoiseGate`, `audio.dsp.RmsNormalizer`,

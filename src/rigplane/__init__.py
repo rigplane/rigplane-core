@@ -113,6 +113,8 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "rigplane.backends.discovery",
         "build_hamlib_discovery_payload",
     ),
+    # --- LAN radio liveness probe (MOR-3669) ---
+    "probe_lan_radio": ("rigplane.backends.discovery", "probe_lan_radio"),
     # --- Backward-compat radio facades ---
     "IcomRadio": ("rigplane.runtime.radio", "IcomRadio"),
     "AudioRecoveryState": ("rigplane.runtime.radio", "AudioRecoveryState"),
