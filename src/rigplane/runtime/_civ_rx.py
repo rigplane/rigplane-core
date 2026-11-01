@@ -1556,11 +1556,14 @@ class CivRuntime:
         patience.
 
         Before that patience window starts, the control session itself is
-        probed once (MOR-3703): a renewal the radio answers with the recorded
-        reject means the LAN session is gone, so recovery is requested
-        immediately instead of after the deadline. An OK answer — a standby
-        radio answers renewals while its CI-V DATA is silent — a late OK, no
-        answer or a probe that cannot be sent keeps the patience.
+        probed once (MOR-3703) — but only while a LAN control session is
+        live; without one there is nothing to ask and the path is the old
+        one, with no extra awaits. A renewal the radio answers with the
+        recorded reject means the LAN session is gone, so recovery is
+        requested immediately instead of after the deadline. An OK answer —
+        a standby radio answers renewals while its CI-V DATA is silent —
+        a late OK, no answer or a probe that cannot be sent keeps the
+        patience.
         """
         recovering = False
         recovery_start: float = 0.0
@@ -1649,8 +1652,9 @@ class CivRuntime:
                         # reject means no amount of OpenClose patience will
                         # restart the CI-V stream — escalate to a re-login
                         # now. Anything else (OK, a late OK, no answer, a
-                        # probe that could not be sent) keeps the patience:
-                        # a standby radio answers renewals while CI-V stays
+                        # probe that could not be sent, or no live control
+                        # session to ask at all) keeps the patience: a
+                        # standby radio answers renewals while CI-V stays
                         # quiet and must never escalate on this probe.
                         self._host._civ_stream_ready = False
                         dead = await self._probe_control_session()
@@ -1664,9 +1668,10 @@ class CivRuntime:
                             return
                         recovering = True
                         self._host._civ_recovering = True
-                        # The probe above may have taken up to the renewal
-                        # probe budget; the patience window starts after it.
-                        recovery_start = time.monotonic()
+                        # The patience window starts at this stall tick's
+                        # ``now``: a probe that ran and said nothing consumes
+                        # part of the window, it never extends it.
+                        recovery_start = now
 
                     elapsed_recovery = now - recovery_start
                     deadline = (
@@ -1718,11 +1723,18 @@ class CivRuntime:
         """Ask the radio whether the control session is still ours.
 
         Thin wrapper over :meth:`ControlPhaseRuntime.probe_control_session`
-        for the data watchdog's stall path (MOR-3703): a probe that cannot
-        even be sent (dead control transport) says nothing about the
-        session, so it maps to ``None`` — the same verdict an unanswered
-        renewal gets — and the caller keeps its OpenClose patience.
+        for the data watchdog's stall path (MOR-3703). Without a live LAN
+        control session — the same ``_ctrl_transport._udp_transport`` read
+        the post-recovery re-arm uses — there is nothing to ask, so the
+        verdict is ``None`` without a single await and the caller keeps its
+        OpenClose patience unchanged. A probe that cannot be sent (dead
+        control transport) or fails unexpectedly says nothing about the
+        session either; it maps to ``None`` — the same verdict an
+        unanswered renewal gets.
         """
+        ctrl = getattr(self._host, "_ctrl_transport", None)
+        if ctrl is None or getattr(ctrl, "_udp_transport", None) is None:
+            return None
         try:
             return await self._host._control_phase.probe_control_session()
         except (ConnectionError, TimeoutError, OSError) as exc:
