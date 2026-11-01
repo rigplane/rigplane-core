@@ -787,27 +787,53 @@ class AudioDeviceBusyError(RuntimeError):
         self.holder = holder
 
 
-# paDeviceUnavailable, which PortAudio's WASAPI layer maps AUDCLNT_E_DEVICE_IN_USE to,
-# and that host error (0x8889000A) itself, signed and unsigned.
-_BUSY_CODES = frozenset({-9985, -2004287478, 0x8889000A})
+# How PortAudio reports a codec another program holds exclusively. The real
+# Windows run (MOR-4030) saw paInvalidDevice (-9996) from BOTH the exclusive open
+# and the shared fallback; paDeviceUnavailable (-9985) and the WASAPI host error
+# AUDCLNT_E_DEVICE_IN_USE (0x8889000A, signed and unsigned) are the same fact.
+_IN_USE_CODES = frozenset({-9985, -9996, -2004287478, 0x8889000A})
+_IN_USE_TEXT = (
+    "device unavailable",
+    "invalid device",
+    "device is in use",
+    "device_in_use",
+    "0x8889000a",
+)
+# E_ACCESSDENIED: a privacy or permission refusal, never "in use".
+_ACCESS_DENIED_CODES = frozenset({-2147024891, 0x80070005})
+_ACCESS_DENIED_TEXT = ("0x80070005", "access is denied", "e_accessdenied")
 
 
-def _is_device_busy(error: BaseException) -> bool:
-    """Whether a refused WASAPI open means the device is in use."""
+def _error_values(error: BaseException) -> tuple[list[int], list[str]]:
+    """The integer codes and lower-cased texts in a PortAudio error's args."""
+    codes: list[int] = []
+    texts: list[str] = []
 
-    def walk(value: object) -> bool:
+    def walk(value: object) -> None:
         if isinstance(value, bool):
-            return False
+            return
         if isinstance(value, int):
-            return value in _BUSY_CODES
-        if isinstance(value, str):
-            text = value.lower()
-            return "device unavailable" in text or "device is in use" in text
-        if isinstance(value, (tuple, list)):
-            return any(walk(item) for item in value)
-        return False
+            codes.append(value)
+        elif isinstance(value, str):
+            texts.append(value.lower())
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                walk(item)
 
-    return walk(error.args)
+    walk(error.args)
+    return codes, texts
+
+
+def _is_in_use_refusal(error: BaseException) -> bool:
+    """Whether an open error says the device is held, not denied or malformed."""
+    codes, texts = _error_values(error)
+    if any(code in _ACCESS_DENIED_CODES for code in codes) or any(
+        marker in text for text in texts for marker in _ACCESS_DENIED_TEXT
+    ):
+        return False
+    return any(code in _IN_USE_CODES for code in codes) or any(
+        marker in text for text in texts for marker in _IN_USE_TEXT
+    )
 
 
 class _OpenAttempt(NamedTuple):
@@ -895,22 +921,38 @@ class _CapturePolicy:
         )
 
     def busy_error(
-        self, sd: Any, device_index: int, exclusive_error: BaseException | None
+        self,
+        sd: Any,
+        device_index: int,
+        exclusive_error: BaseException | None,
+        shared_error: BaseException,
+        *,
+        direction: str,
     ) -> AudioDeviceBusyError | None:
-        """The busy refusal when the exclusive open was refused as busy, else None.
+        """The in-use refusal when another program holds the device, else None.
 
-        Called only after the shared fallback failed too. Looks up the holding
-        program's name (bounded, never raising) and logs its executable name.
+        Called only after the shared fallback failed too. It is the case when
+        the exclusive open was refused, the shared failure says the device is
+        held (see ``_is_in_use_refusal``), and the device still enumerates with
+        channels for this direction (so it is not unplugged or missing). Looks
+        up the holder's name (bounded, never raising) and logs its executable
+        name only.
         """
-        if exclusive_error is None or not _is_device_busy(exclusive_error):
+        if exclusive_error is None or not _is_in_use_refusal(shared_error):
             return None
         try:
-            device_name = str(sd.query_devices(device_index)["name"])
+            info = sd.query_devices(device_index)
+            channels = info[
+                "max_input_channels" if direction == "rx" else "max_output_channels"
+            ]
+            if not channels > 0:
+                return None
+            device_name = str(info["name"])
         except Exception:
-            device_name = ""
+            return None
         holder = holder_exe_name(self.holder_lookup, device_name, self.holder_timeout_s)
         logger.warning(
-            "portaudio: device [%d] is in use by %s; RX cannot start until it lets go",
+            "portaudio: device [%d] is in use by %s; audio cannot start until it lets go",
             device_index,
             holder or "another program",
         )
@@ -1044,7 +1086,11 @@ class _PortAudioRxStream:
                 except Exception as exc:
                     if not attempt.exclusive or number == len(attempts):
                         busy = self._capture_policy.busy_error(
-                            self._sd, self._device_index, exclusive_error
+                            self._sd,
+                            self._device_index,
+                            exclusive_error,
+                            exc,
+                            direction="rx",
                         )
                         if busy is not None:
                             raise busy from exc
@@ -1301,7 +1347,11 @@ class _PortAudioTxStream:
                 except Exception as exc:
                     if not attempt.exclusive or number == len(attempts):
                         busy = self._capture_policy.busy_error(
-                            self._sd, self._device_index, exclusive_error
+                            self._sd,
+                            self._device_index,
+                            exclusive_error,
+                            exc,
+                            direction="tx",
                         )
                         if busy is not None:
                             raise busy from exc

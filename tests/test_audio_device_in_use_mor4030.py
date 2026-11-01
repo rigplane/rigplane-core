@@ -367,7 +367,7 @@ async def test_the_lookup_is_not_asked_when_the_open_is_not_a_busy_refusal():
     )
     backend = _backend(sd)
     backend._capture_policy.holder_lookup = lookup
-    with pytest.raises(OSError):
+    with pytest.raises(FakePortAudioError):
         await _start(backend, "rx")
     assert lookup.calls == []
 
