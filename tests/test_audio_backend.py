@@ -1122,10 +1122,10 @@ class TestPortAudioBackendDeps:
 
     @pytest.mark.asyncio()
     async def test_portaudio_tx_write_drops_oldest_when_buffer_full(self) -> None:
-        """Without a fill target (every TX-to-radio caller) the ring stays
+        """``playout="immediate"`` (every TX-to-radio caller) keeps the ring
         free-running at the 1 s capacity and an overflowing write drops the
         oldest queued frames one at a time — the pre-MOR-4013 behaviour,
-        byte-identical (the fill-target policy is opt-in, MOR-4013)."""
+        byte-identical (MOR-4013; the default is the adaptive RX policy)."""
 
         class FakeSd:
             class OutputStream:
@@ -1146,7 +1146,11 @@ class TestPortAudioBackendDeps:
 
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), FakeNp()))
         stream = backend.open_tx(
-            AudioDeviceId(0), sample_rate=48_000, channels=16, frame_ms=20
+            AudioDeviceId(0),
+            sample_rate=48_000,
+            channels=16,
+            frame_ms=20,
+            playout="immediate",
         )
         await stream.start()
 
@@ -1174,9 +1178,9 @@ class TestPortAudioBackendDeps:
         The hard cap is fill target (150 ms) + headroom (100 ms) = 250 ms.
         Each overflowing write drops the stalest audio back down to the 150 ms
         target in ONE trim (MOR-4013) instead of the old per-write frame drop
-        that pinned a free-running 1 s ring at capacity. The opt-in
-        ``fill_target_ms`` kwarg selects the policy: TX-to-radio streams
-        never pass it and keep the free-running ring.
+        that pinned a free-running 1 s ring at capacity. Adaptive is the
+        default; TX-to-radio streams pass ``playout="immediate"`` explicitly
+        and keep the free-running ring.
         """
 
         class FakeSd:
@@ -1202,7 +1206,6 @@ class TestPortAudioBackendDeps:
             sample_rate=48_000,
             channels=16,
             frame_ms=20,
-            fill_target_ms=150,
         )
         await stream.start()
 
@@ -1232,12 +1235,11 @@ class TestPortAudioBackendDeps:
     async def test_portaudio_tx_callback_consumes_realtime_without_blocking_write(
         self,
     ) -> None:
-        """TX-to-radio streams (no fill target) keep the free-running ring:
-        the callback consumes frames in real time with the exact bit-copy
-        path, and a fully queued second drains to empty — the pre-MOR-4013
-        behaviour, byte-identical (MOR-4013 made the fill target opt-in).
-        The fill-target variant of this test lives in
-        TestPortAudioTxFillTargetAndDrift.
+        """TX-to-radio streams (``playout="immediate"``) keep the free-running
+        ring: the callback consumes frames in real time with the exact
+        bit-copy path, and a fully queued second drains to empty — the
+        pre-MOR-4013 behaviour, byte-identical. The adaptive variant of this
+        test lives in TestPortAudioTxFillTargetAndDrift.
         """
         created: list[object] = []
 
@@ -1267,7 +1269,11 @@ class TestPortAudioBackendDeps:
 
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
         stream = backend.open_tx(
-            AudioDeviceId(0), sample_rate=48_000, channels=16, frame_ms=20
+            AudioDeviceId(0),
+            sample_rate=48_000,
+            channels=16,
+            frame_ms=20,
+            playout="immediate",
         )
         await stream.start()
         output = created[0]
@@ -1352,7 +1358,6 @@ class TestPortAudioBackendDeps:
             AudioDeviceId(0),
             sample_rate=48_000,
             channels=2,
-            fill_target_ms=150,
         )
         await stream.start()
         callback = created[0].callback  # type: ignore[attr-defined]
@@ -1407,7 +1412,9 @@ class TestPortAudioBackendDeps:
         self,
     ) -> None:
         backend = PortAudioBackend(dependency_loader=lambda: (object(), object()))
-        stream = backend.open_tx(AudioDeviceId(0), sample_rate=48_000, channels=2)
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=2, playout="immediate"
+        )
         outdata = bytearray(960 * 2 * 2)
 
         stream._output_callback(outdata, 960, None, None)  # type: ignore[attr-defined]
@@ -1464,7 +1471,9 @@ class TestPortAudioBackendDeps:
     @pytest.mark.asyncio()
     async def test_portaudio_tx_callback_preserves_2ch_interleaving(self) -> None:
         backend = PortAudioBackend(dependency_loader=lambda: (object(), object()))
-        stream = backend.open_tx(AudioDeviceId(0), sample_rate=48_000, channels=2)
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=2, playout="immediate"
+        )
         pcm = b"".join(
             value.to_bytes(2, "little", signed=True)
             for value in (100, -100, 200, -200, 300, -300)
@@ -1487,7 +1496,9 @@ class TestPortAudioBackendDeps:
                 return True
 
         backend = PortAudioBackend(dependency_loader=lambda: (object(), object()))
-        stream = backend.open_tx(AudioDeviceId(0), sample_rate=48_000, channels=2)
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=2, playout="immediate"
+        )
         outdata = bytearray(960 * 2 * 2)
 
         stream._output_callback(outdata, 960, None, Status())  # type: ignore[attr-defined]
@@ -1536,13 +1547,14 @@ class TestPortAudioBackendDeps:
 
 
 class TestPortAudioTxFillTargetAndDrift:
-    """A fill-target playback ring (the OPT-IN policy the bridge RX playback
+    """A fill-target playback ring (the DEFAULT policy every RX playback
     sink uses) holds a small fill target and compensates device clock drift
     instead of free-running at the 1 s capacity (MOR-4013).
 
-    Every test in this class opens with ``fill_target_ms=150``; the
-    TX-to-radio streams (no fill target) keep the free-running contract and
-    are pinned in TestPortAudioBackendDeps / TestPortAudioTxDiscardQueued.
+    Every test in this class opens with the default ``playout="adaptive"``;
+    the TX-to-radio streams pass ``playout="immediate"`` explicitly, keep
+    the free-running contract, and are pinned in TestPortAudioBackendDeps /
+    TestPortAudioTxDiscardQueued.
 
     Field evidence (IC-705 over bursty Wi-Fi): the producer delivers 50 Hz
     frames in bursts while the cable device callback runs at 49.1-49.5 Hz
@@ -1585,7 +1597,6 @@ class TestPortAudioTxFillTargetAndDrift:
             sample_rate=48_000,
             channels=1,
             frame_ms=20,
-            fill_target_ms=150,
         )
         return backend, stream, created
 
@@ -1866,11 +1877,11 @@ class TestTxStreamHealthDiscardCounters:
 class TestPortAudioTxDiscardQueued:
     """``discard_queued`` drops queued-but-unplayed playback frames (MOR-3760).
 
-    Pinned on the free-running (no fill target) stream every TX-to-radio
-    caller uses: after a discard, a frame written next plays on the very
-    next callback — the pre-MOR-4013 behaviour, byte-identical (MOR-4013
-    made the fill target opt-in). The fill-target discard contract is
-    pinned in TestPortAudioTxFillTargetAndDrift.
+    Pinned on the free-running ``playout="immediate"`` stream every
+    TX-to-radio caller uses: after a discard, a frame written next plays on
+    the very next callback — the pre-MOR-4013 behaviour, byte-identical.
+    The adaptive discard contract is pinned in
+    TestPortAudioTxFillTargetAndDrift.
     """
 
     @pytest.mark.asyncio()
@@ -1894,7 +1905,11 @@ class TestPortAudioTxDiscardQueued:
 
         backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
         stream = backend.open_tx(
-            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+            AudioDeviceId(0),
+            sample_rate=48_000,
+            channels=1,
+            frame_ms=20,
+            playout="immediate",
         )
         await stream.start()
         callback = created[0].callback  # type: ignore[attr-defined]

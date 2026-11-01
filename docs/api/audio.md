@@ -88,16 +88,17 @@ runtime bridge-status consumers such as the Web server's `audio_bridge_stats`.
 
 These counters live on the writable PortAudio TX stream itself and describe
 playback-side queue pressure after audio has already left the bridge queue.
-Playback policy is opt-in per stream (MOR-4013): the bridge RX playback sink
-(radio → speakers) opens with `open_tx(fill_target_ms=150)` /
-`open_duplex(tx_fill_target_ms=150)` — playback starts once `fill_target_ms`
-of audio is buffered, a drift-compensated read ratio (`playback_read_ratio`)
-absorbs producer/device clock mismatch, a dry ring counts a single refill
-event per stall, and an enqueue above the fill target plus headroom trims
-once back to the target. Every TX-to-radio stream (usb_driver, duplex TX
-leg) omits the fill target and keeps the free-running 1 s ring with
-next-callback promptness; on those streams `fill_target_ms` reads `0.0`,
-`playback_read_ratio` stays `1.0` and `refill_events` stays `0`.
+Playback policy is adaptive by default (MOR-4013): every RX playback sink
+(radio → speakers / virtual cable) opens with plain `open_tx(...)` /
+`open_duplex(...)` — playback starts once 150 ms of audio is buffered, a
+drift-compensated read ratio (`playback_read_ratio`) absorbs producer/device
+clock mismatch, a dry ring counts a single refill event per stall, and an
+enqueue above the fill target plus headroom trims once back to the target.
+Every TX-to-radio stream (usb_driver, duplex TX leg) passes
+`playout="immediate"` / `tx_playout="immediate"` explicitly and keeps the
+free-running 1 s ring with next-callback promptness; on those streams
+`fill_target_ms` reads `0.0`, `playback_read_ratio` stays `1.0` and
+`refill_events` stays `0`.
 
 | Field | Unit | Meaning | Not the same as |
 |------|------|---------|-----------------|
@@ -117,7 +118,7 @@ next-callback promptness; on those streams `fill_target_ms` reads `0.0`,
 | `callback_underrun_audio_ms` | milliseconds | Total input shortfall covered by silence at those dry points | Queue drops on producer overflow |
 | `refill_events` | events | Times fill-target playback re-armed after the ring refilled to the target following a dry stall (0 on free-running TX streams, MOR-4013) | Per-callback silence padding |
 | `playback_read_ratio` | ratio | Current drift-compensated read rate of a fill-target stream (1.0 = exact copy; clamped to ±3%) | Producer write rate |
-| `fill_target_ms` | milliseconds | Fill target the playback ring holds before playback starts/resumes; 0.0 on free-running TX streams (opt-in, MOR-4013) | Hard enqueue cap |
+| `fill_target_ms` | milliseconds | Fill target the playback ring holds before playback starts/resumes; 150.0 on default adaptive streams, 0.0 on `immediate` TX streams (MOR-4013) | Hard enqueue cap |
 | `callback_calls_per_sec_ewma` | callbacks/sec | Smoothed callback cadence estimate for the active PortAudio stream | Producer write rate |
 | `callback_errors` | events | Callback-level errors while filling playback output | Bridge capture callback errors |
 | `callback_status_flags` | map | Per-flag totals such as `output_underflow` from PortAudio status callbacks | Bridge metrics or radio send errors |
