@@ -517,8 +517,16 @@ export class WsChannel {
    * to `core.toast.<code>` by `messageFromReasonCode`; `message` is the
    * English fallback for a caller that never supplied one.
    */
-  emitLocalNotification(level: 'info' | 'warning' | 'error', message: string, code: string): void {
-    const note: WsIncoming = { type: 'notification', level, message, code, category: 'command' };
+  emitLocalNotification(
+    level: 'info' | 'warning' | 'error',
+    message: string,
+    code: string,
+    params?: Record<string, string | number>,
+  ): void {
+    const note: WsIncoming = {
+      type: 'notification', level, message, code, category: 'command',
+      ...(params ? { params } : {}),
+    };
     this.messageHandlers.forEach((h) => h(note));
   }
 
@@ -1209,8 +1217,9 @@ export function emitLocalNotification(
   level: 'info' | 'warning' | 'error',
   message: string,
   code: string,
+  params?: Record<string, string | number>,
 ): void {
-  _ctrl.emitLocalNotification(level, message, code);
+  _ctrl.emitLocalNotification(level, message, code, params);
 }
 
 export function isConnected(): boolean {
