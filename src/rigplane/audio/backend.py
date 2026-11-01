@@ -29,12 +29,6 @@ from typing import (
 )
 
 from ._portaudio_enum import WASAPI_HOST_API
-from ._usb_holder import (
-    HOLDER_LOOKUP_TIMEOUT_S,
-    HolderLookup,
-    find_holder_name,
-    holder_exe_name,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -771,20 +765,12 @@ class AudioDeviceBusyError(RuntimeError):
     and the shared fallback failed too (MOR-4030).
 
     Windows refuses a shared open while an exclusive holder exists, so RX
-    cannot start until the holder lets go. ``holder`` is the holding
-    program's executable name when it could be found, never a path.
+    cannot start until the holder lets go.
     """
 
-    def __init__(
-        self,
-        message: str,
-        *,
-        device_index: int | None = None,
-        holder: str | None = None,
-    ) -> None:
+    def __init__(self, message: str, *, device_index: int | None = None) -> None:
         super().__init__(message)
         self.device_index = device_index
-        self.holder = holder
 
 
 # How PortAudio reports a codec another program holds exclusively. The real
@@ -863,8 +849,6 @@ class _CapturePolicy:
         self.mode: CaptureMode = mode  # type: ignore[assignment]
         self._logged: set[int] = set()
         self._logged_lock = threading.Lock()
-        self.holder_lookup: HolderLookup = find_holder_name
-        self.holder_timeout_s = HOLDER_LOOKUP_TIMEOUT_S
 
     def _is_wasapi(self, sd: Any, device_index: int) -> bool:
         if self.mode != "exclusive-preferred":
@@ -934,9 +918,7 @@ class _CapturePolicy:
         Called only after the shared fallback failed too. It is the case when
         the exclusive open was refused, the shared failure says the device is
         held (see ``_is_in_use_refusal``), and the device still enumerates with
-        channels for this direction (so it is not unplugged or missing). Looks
-        up the holder's name (bounded, never raising) and logs its executable
-        name only.
+        channels for this direction (so it is not unplugged or missing).
         """
         if exclusive_error is None or not _is_in_use_refusal(shared_error):
             return None
@@ -947,19 +929,16 @@ class _CapturePolicy:
             ]
             if not channels > 0:
                 return None
-            device_name = str(info["name"])
         except Exception:
             return None
-        holder = holder_exe_name(self.holder_lookup, device_name, self.holder_timeout_s)
         logger.warning(
-            "portaudio: device [%d] is in use by %s; audio cannot start until it lets go",
+            "portaudio: device [%d] is in use by another program; "
+            "audio cannot start until it lets go",
             device_index,
-            holder or "another program",
         )
         return AudioDeviceBusyError(
             f"Audio device [{device_index}] is in use by another program.",
             device_index=device_index,
-            holder=holder,
         )
 
 
