@@ -388,9 +388,21 @@ ACCESS_DENIED_ERROR = (
 
 
 @pytest.mark.parametrize(
-    "shared_error,reason",
+    "shared_error,reason,lookup_result,holder",
     [
-        (_FakePortAudioError(REAL_INVALID_DEVICE, -9996), "device_in_use"),
+        (
+            _FakePortAudioError(REAL_INVALID_DEVICE, -9996),
+            "device_in_use",
+            "python.exe",
+            "python.exe",
+        ),
+        (
+            _FakePortAudioError(REAL_INVALID_DEVICE, -9996),
+            "device_in_use",
+            r"C:\Users\someone\AppData\Local\Programs\Python\python.exe",
+            "python.exe",
+        ),
+        (_FakePortAudioError(REAL_INVALID_DEVICE, -9996), "device_in_use", None, None),
         (
             _FakePortAudioError(
                 ACCESS_DENIED_ERROR,
@@ -398,12 +410,19 @@ ACCESS_DENIED_ERROR = (
                 ("Windows WASAPI", -2147024891, "Access is denied. (0x80070005)"),
             ),
             "other",
+            "python.exe",
+            None,
         ),
     ],
-    ids=["codec-held-by-another-program", "access-denied"],
+    ids=[
+        "codec-held-by-a-named-program",
+        "holder-path-reduced-to-the-file-name",
+        "codec-held-by-an-unnamed-program",
+        "access-denied-never-names-a-holder",
+    ],
 )
 async def test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client(
-    tmp_path, monkeypatch, shared_error, reason
+    tmp_path, monkeypatch, shared_error, reason, lookup_result, holder
 ):
     """MOR-4030 seam test: browser ``audio_start`` over the REAL ``/api/v1/audio``
     WebSocket against a W1 Windows pairing in ``exclusive-preferred`` mode.
@@ -411,10 +430,12 @@ async def test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client(
     Only ``sounddevice`` is faked. The exclusive open and the shared fallback
     both raise the real run's ``Invalid device [PaErrorCode -9996]`` (the codec
     is held by another program), so the refusal is ``device_in_use``; a shared
-    failure that says access denied keeps the old ``other`` category. The frame
-    below is the exact frame the frontend routes to the in-use toast
-    (``audio-manager-rx-refusal.isolated.test.ts``), and
-    ``/api/v1/info`` publishes the same category.
+    failure that says access denied keeps the old ``other`` category. A fake
+    holder lookup (the only other fake) names the program: the frame and
+    ``/api/v1/info`` carry ``holder`` (the bare file name) for ``device_in_use``
+    only, and no ``holder`` key when the lookup finds nothing. The frame below is
+    the exact frame the frontend routes to the in-use toast
+    (``audio-manager-rx-refusal.isolated.test.ts``).
     """
     session = _w1_session()
     backend, _ = _inject_windows(monkeypatch, session)
@@ -424,13 +445,16 @@ async def test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client(
         shared_error=shared_error,
     )
     real_backend = usb_driver.PortAudioBackend
-    monkeypatch.setattr(
-        usb_driver,
-        "PortAudioBackend",
-        lambda **kwargs: real_backend(
-            dependency_loader=lambda: (sd, object()), **kwargs
-        ),
-    )
+    lookups = []
+
+    def make_backend(**kwargs):
+        made = real_backend(dependency_loader=lambda: (sd, object()), **kwargs)
+        made._capture_policy.holder_lookup = lambda name: (
+            lookups.append(name) or lookup_result
+        )
+        return made
+
+    monkeypatch.setattr(usb_driver, "PortAudioBackend", make_backend)
     radio = Ic7300SerialRadio(
         device="COM3",
         profile=get_radio_profile("IC-7300"),
@@ -472,8 +496,14 @@ async def test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client(
                 "type": "error",
                 "message": f"audio_start: RX audio failed to start: {reason}",
                 "reason": reason,
+                **({"holder": holder} if holder else {}),
             }
         ]
+        # The lookup is asked, with the capture endpoint's name, only for the
+        # in-use refusal.
+        assert lookups == (
+            ["Microphone (USB Audio CODEC )"] if reason == "device_in_use" else []
+        )
         # WASAPI exclusive first, then shared WASAPI with auto-convert.
         assert opened == [True, False]
         status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
@@ -483,6 +513,7 @@ async def test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client(
             "stage": "rx_start",
             "code": "core_rx_start_failed",
             "reason": reason,
+            **({"holder": holder} if holder else {}),
         }
         assert radio.audio_session.rx_demand == 0
     finally:

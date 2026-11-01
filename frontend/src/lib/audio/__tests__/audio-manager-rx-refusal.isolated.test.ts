@@ -583,6 +583,52 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     expect(audio.getAudioState().rxError).toBe(true);
   });
 
+  it('device_in_use with a holder name gets the named toast with the program as a parameter', async () => {
+    const { notify, socket } = await rig('localhost');
+    serverText(socket, {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: device_in_use',
+      reason: 'device_in_use',
+      holder: 'wsjtx.exe',
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      'error',
+      "The radio's audio input is in use by wsjtx.exe. Close it, then turn the audio on again.",
+      'rxAudioDeviceInUseBy',
+      { program: 'wsjtx.exe' },
+    );
+  });
+
+  it.each([
+    ['a path', 'C:\\Users\\someone\\wsjtx.exe'],
+    ['a unix path', '/home/someone/wsjtx'],
+    ['an empty name', ''],
+    ['a non-string', 42],
+    ['a control character', 'ws\u0000jtx.exe'],
+    ['an overlong name', 'a'.repeat(200) + '.exe'],
+  ])('device_in_use with %s as the holder keeps the generic in-use toast', async (_label, holder) => {
+    const { notify, socket } = await rig('localhost');
+    serverText(socket, {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: device_in_use',
+      reason: 'device_in_use',
+      holder,
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      'error',
+      "The radio's audio input is in use by another program. Close it, then turn the audio on again.",
+      'rxAudioDeviceInUse',
+    );
+  });
+
+  it('a holder name never changes the toast of another reason', async () => {
+    const { notify, socket } = await rig('localhost');
+    serverText(socket, { ...RX_REFUSAL_FRAME, reason: 'other', holder: 'wsjtx.exe' });
+    expect(notify).toHaveBeenCalledWith('error', expect.any(String), 'rxAudioStartFailed');
+  });
+
   it('a retry after a device_in_use refusal clears the latch and can fail again', async () => {
     const { audioManager, audio, notify, socket } = await rig('localhost');
     const frame = IN_USE_REFUSAL_FRAME;
@@ -692,6 +738,29 @@ describe('RX refusal toast through the real runtime notification path (MOR-3823)
     const socket = FakeWebSocket.instances[0];
     socket.open();
     serverText(socket, IN_USE_REFUSAL_FRAME);
+    flushSync();
+
+    expect(renderedErrorToasts()).toEqual([text]);
+  });
+
+  it.each([
+    ['en-US', 'The radio\'s audio input is in use by wsjtx.exe. Close it, then turn the audio on again.'],
+    ['ru-RU', 'Звуковой вход радио занят программой wsjtx.exe. Закройте её, затем включите аудио снова.'],
+    ['ja-JP', '無線機の音声入力は wsjtx.exe が使用中です。そのプログラムを閉じてから、オーディオをもう一度オンにしてください。'],
+  ])('renders the named in-use sentence in %s through the real runtime path', (locale, text) => {
+    setLocale(locale as 'en-US' | 'ru-RU' | 'ja-JP');
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    runtimeBoundAudioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: device_in_use',
+      reason: 'device_in_use',
+      holder: 'wsjtx.exe',
+    });
     flushSync();
 
     expect(renderedErrorToasts()).toEqual([text]);

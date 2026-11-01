@@ -16,6 +16,7 @@ A fake ``sounddevice`` stands in for PortAudio: no audio device, no Windows.
 from __future__ import annotations
 
 import logging
+import threading
 
 import pytest
 from test_audio_backend_capture_mode_mor4030 import (
@@ -26,6 +27,7 @@ from test_audio_backend_capture_mode_mor4030 import (
     _backend,
 )
 
+from rigplane.audio import _usb_holder
 from rigplane.audio.backend import (
     AudioDeviceBusyError,
     AudioDeviceId,
@@ -289,3 +291,96 @@ def test_the_category_is_one_of_the_publishable_reasons():
     from rigplane.audio.usb_driver import AudioStartFailureReason
 
     assert "device_in_use" in get_args(AudioStartFailureReason)
+
+
+# --- the holder-name seam (production lookup returns None for now) ----------
+
+
+def _lookup_returning(value):
+    calls: list[str] = []
+
+    def lookup(device_name: str):
+        calls.append(device_name)
+        return value
+
+    lookup.calls = calls  # type: ignore[attr-defined]
+    return lookup
+
+
+async def _busy_with_lookup(lookup, *, timeout=None):
+    backend = _backend(_real_sd())
+    policy = backend._capture_policy
+    policy.holder_lookup = lookup
+    if timeout is not None:
+        policy.holder_timeout_s = timeout
+    with pytest.raises(AudioDeviceBusyError) as raised:
+        await _start(backend, "rx")
+    return raised.value
+
+
+async def test_holder_name_found_is_exposed_and_logged_as_the_exe_name_only(caplog):
+    lookup = _lookup_returning(r"C:\Users\someone\AppData\Local\WSJT-X\wsjtx.exe")
+    with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
+        error = await _busy_with_lookup(lookup)
+    assert error.holder == "wsjtx.exe"
+    assert lookup.calls == ["Microphone (USB Audio CODEC)"]
+    text = " ".join(r.getMessage() for r in caplog.records)
+    assert "wsjtx.exe" in text
+    assert "someone" not in text and "AppData" not in text
+
+
+@pytest.mark.parametrize("value", [None, "", "   ", "\\", "C:\\"])
+async def test_holder_name_not_found_gives_no_name(value):
+    error = await _busy_with_lookup(_lookup_returning(value))
+    assert error.holder is None
+
+
+async def test_a_raising_holder_lookup_never_breaks_the_failure():
+    def boom(_device_name):
+        raise OSError("registry unavailable at C:\\Users\\someone")
+
+    error = await _busy_with_lookup(boom)
+    assert isinstance(error, AudioDeviceBusyError)
+    assert error.holder is None
+
+
+async def test_a_slow_holder_lookup_is_abandoned_after_its_bound():
+    release = threading.Event()
+
+    def slow(_device_name):
+        release.wait(5)
+        return "late.exe"
+
+    try:
+        error = await _busy_with_lookup(slow, timeout=0.05)
+    finally:
+        release.set()
+    assert error.holder is None
+
+
+async def test_the_lookup_is_not_asked_when_the_open_is_not_a_busy_refusal():
+    lookup = _lookup_returning("wsjtx.exe")
+    sd = FakeSd(
+        exclusive_error=_real_refusal(),
+        shared_error=FakePortAudioError("Invalid number of channels", -9998),
+        refuse_shared=True,
+    )
+    backend = _backend(sd)
+    backend._capture_policy.holder_lookup = lookup
+    with pytest.raises(FakePortAudioError):
+        await _start(backend, "rx")
+    assert lookup.calls == []
+
+
+def test_the_production_lookup_has_no_mechanism_yet():
+    assert _usb_holder.find_holder_name("Microphone (USB Audio CODEC)") is None
+
+
+async def test_the_lookup_is_only_asked_for_the_capture_direction():
+    lookup = _lookup_returning("wsjtx.exe")
+    backend = _backend(_real_sd())
+    backend._capture_policy.holder_lookup = lookup
+    with pytest.raises(AudioDeviceBusyError) as raised:
+        await _start(backend, "tx")
+    assert lookup.calls == []
+    assert raised.value.holder is None
