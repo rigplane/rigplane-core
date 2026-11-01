@@ -634,6 +634,52 @@ class TestYaesuCatTransport:
 
         assert response == "FA"  # First line (echo itself)
 
+    async def test_query_pairs_the_reply_to_the_whole_request_body(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """MOR-3677: a late reply to a sibling query is stale, not the answer.
+
+        ``NA1;`` reads the SUB narrow state; ``NA00;`` is the late answer
+        to the earlier MAIN ``NA0;``. The digit-stripped prefix (``NA``)
+        accepted it and the ``NA1{state};`` parser then failed — the
+        owner's bench logged six ``declared read defect`` events a day on
+        exactly that frame. Whole-request pairing skips the stale line and
+        waits for the matching reply."""
+        reader = FakeStreamReader([b"NA00;", b"NA11;"])
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test")
+        await transport.connect()
+        response = await transport.query("NA1;")
+
+        assert response == "NA11"
+        assert transport.stats.stale_lines_skipped == 1
+        assert writer.written == [b"NA1;"]
+
+    async def test_query_pairs_a_reply_through_a_declared_template_head(
+        self, mock_serial_connection: Any
+    ) -> None:
+        """MOR-3677: the one data exception — a reply head the profile's
+        parse template declares shorter than the request (get_s_meter_sub:
+        ``SM1;`` is answered ``SM0…``, the side digit echoed 0, f18b397f) —
+        still pairs, so strict whole-request matching does not time the
+        SUB S-meter read out."""
+        reader = FakeStreamReader([b"SM0078;"])
+        writer = FakeStreamWriter()
+        mock_serial_connection.open_serial_connection = AsyncMock(
+            return_value=(reader, writer)
+        )
+
+        transport = YaesuCatTransport(device="/dev/test", reply_heads=frozenset({"SM"}))
+        await transport.connect()
+        response = await transport.query("SM1;")
+
+        assert response == "SM0078"
+        assert transport.stats.stale_lines_skipped == 0
+
     async def test_context_manager_opens_and_closes(
         self, mock_serial_connection: Any
     ) -> None:

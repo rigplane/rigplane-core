@@ -10,8 +10,10 @@ Design principles (learned from production):
 1. **No fire-and-forget.**  Even SET commands may trigger echo or auto-info
    responses.  ``write()`` always drains them before releasing the lock.
 
-2. **Prefix-based response matching.**  ``query()`` skips stale auto-info
-   lines that don't match the expected command prefix.
+2. **Prefix-based response matching.**  ``query()`` pairs a reply with
+   the whole request body and skips stale lines (a late reply to another
+   query, unsolicited auto-info) that match none of the expected
+   prefixes.
 
 3. **``?;`` = hard error.**  Radio returns ``?;`` for unrecognized commands.
    Detected in ``query()``. In ``write()`` (MOR-2103), detected only for a
@@ -33,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -180,12 +182,21 @@ class YaesuCatTransport:
         timeout: float = _DEFAULT_TIMEOUT,
         echo_suppression: bool = True,
         debug_logging: bool = False,
+        reply_heads: Collection[str] | None = None,
     ) -> None:
         self._device = device
         self._baudrate = baudrate
         self._timeout = timeout
         self._echo_suppression = echo_suppression
         self._debug_logging = debug_logging
+        # MOR-3677: the reply-line vocabulary the radio's profile declares
+        # (the literal heads of its parse templates). A head that is a
+        # prefix of a request body widens that query's pairing — the one
+        # recorded shape where a data reply does not restate the request's
+        # selector (FTX-1 ``SM1;`` is answered ``SM0…``).
+        self._reply_heads: frozenset[str] = (
+            frozenset(reply_heads) if reply_heads else frozenset()
+        )
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -487,8 +498,10 @@ class YaesuCatTransport:
         """Send a GET command and return the matching response.
 
         Acquires the transport gate, flushes stale RX data, sends the
-        command, then reads lines until one matches the expected prefix.
-        Echo lines and stale auto-info are silently skipped.
+        command, then reads lines until one matches an expected prefix:
+        the whole request body, widened by any profile-declared reply
+        head that is a prefix of it (``reply_heads``). Echo lines and
+        stale auto-info are silently skipped.
 
         Args:
             command: CAT command string (e.g. ``"FA;"``).
@@ -516,10 +529,19 @@ class YaesuCatTransport:
             await self._raw_write(command, is_current=is_current)
             self._stats.queries += 1
 
-            # Expected prefix: strip trailing digits from command body.
-            # "SM0;" → prefix "SM", "FA;" → prefix "FA", "MD0;" → prefix "MD"
+            # Expected reply prefixes (MOR-3677): a data reply starts with
+            # the whole request body — "NA1;" is answered "NA11;", so the
+            # late answer to the sibling MAIN query ("NA00;" for "NA1;")
+            # is a stale line, not this query's answer. A profile-declared
+            # reply head that is a prefix of the request widens the match:
+            # get_s_meter_sub's "SM{receiver}…" template head is the data
+            # that says "SM1;" is answered "SM0…" (the radio echoes the
+            # side digit as 0).
             cmd_body = command.rstrip(";")
-            expected_prefix = cmd_body.rstrip("0123456789")
+            expected_prefixes = {cmd_body}
+            expected_prefixes.update(
+                head for head in self._reply_heads if head and cmd_body.startswith(head)
+            )
 
             if timeout is None:
                 timeout = self._timeout
@@ -548,12 +570,12 @@ class YaesuCatTransport:
                     continue
 
                 # ── Auto-info suppression (prefix mismatch) ──
-                if expected_prefix and not response.startswith(expected_prefix):
+                if not any(response.startswith(prefix) for prefix in expected_prefixes):
                     self._stats.stale_lines_skipped += 1
                     logger.info(
                         "CAT: skipping stale %r (expected prefix %r)",
                         response,
-                        expected_prefix,
+                        cmd_body,
                     )
                     continue
 
