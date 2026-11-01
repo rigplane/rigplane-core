@@ -200,6 +200,10 @@ class TestPortAudioDuplexCallback:
             deliver_channels=1,
             rx_audio_channel="left",
             tx_channels=1,
+            # The duplex TX leg is host-to-radio audio: the free-running
+            # ring, so a freshly written frame plays on the next callback
+            # (MOR-4013; the default is the adaptive RX policy).
+            tx_playout="immediate",
         )
         received: list[bytes] = []
         await stream.start(received.append)
@@ -274,6 +278,10 @@ class TestPortAudioDuplexDiscardQueued:
             channels=1,
             frame_ms=20,
             tx_channels=1,
+            # The duplex TX leg is host-to-radio audio: the free-running
+            # ring, so after a discard the next written frame plays on the
+            # next callback (the pre-MOR-4013 behaviour, byte-identical).
+            tx_playout="immediate",
         )
         received: list[bytes] = []
         await stream.start(received.append)
@@ -485,6 +493,40 @@ class TestUsbDriverDuplex:
         assert backend.duplex_streams == []
         await driver.stop_rx()
         await driver.stop_tx()
+
+    @pytest.mark.asyncio()
+    async def test_driver_tx_opens_use_immediate_playout(self) -> None:
+        """Every host-to-radio TX open in the driver is explicitly immediate.
+
+        The adaptive fill target is the default for RX playback sinks, so
+        the driver must opt its TX paths out: ``start_tx`` passes
+        ``playout="immediate"`` and the duplex TX leg passes
+        ``tx_playout="immediate"`` (MOR-4013). Without this a freshly
+        written TX frame would wait behind the 150 ms priming gate.
+        """
+        backend = FakeAudioBackend(devices=[DUPLEX_DEVICE, SEPARATE_RX_DEVICE])
+        driver = UsbAudioDriver(
+            rx_device="USB Audio CODEC",
+            tx_device="BlackHole 2ch",
+            backend=backend,
+        )
+        await driver.start_rx(lambda _pcm: None)
+        await driver.start_tx()
+        assert len(backend.tx_streams) == 1
+        assert backend.tx_streams[0].playout == "immediate"
+        await driver.stop_rx()
+        await driver.stop_tx()
+
+        duplex_backend = FakeAudioBackend(devices=[DUPLEX_DEVICE])
+        duplex_driver = UsbAudioDriver(
+            rx_device="USB Audio CODEC",
+            tx_device="USB Audio CODEC",
+            backend=duplex_backend,
+        )
+        await duplex_driver.start_duplex(lambda _pcm: None)
+        assert len(duplex_backend.duplex_streams) == 1
+        assert duplex_backend.duplex_streams[0].tx_playout == "immediate"
+        await duplex_driver.stop_duplex()
 
 
 # ---------------------------------------------------------------------------

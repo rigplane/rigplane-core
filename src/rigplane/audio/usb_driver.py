@@ -2197,6 +2197,9 @@ class UsbAudioDriver:
                 sample_rate=contract.sample_rate_hz,
                 channels=contract.channels,
                 frame_ms=fm,
+                # MOR-4013: host-to-radio TX keeps the free-running ring so
+                # a freshly written frame plays on the very next callback.
+                playout="immediate",
             )
             self._tx_stream = stream
             try:
@@ -2392,6 +2395,9 @@ class UsbAudioDriver:
             deliver_channels=rx_contract.channels,
             rx_audio_channel=self._config.rx_audio_channel,
             tx_channels=tx_contract.channels,
+            # MOR-4013: the TX leg is host-to-radio audio — the
+            # free-running ring, never the RX fill target.
+            tx_playout="immediate",
         )
         self._duplex_stream = stream
         try:

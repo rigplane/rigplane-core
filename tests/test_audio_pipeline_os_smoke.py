@@ -232,8 +232,10 @@ def _frame_count() -> int:
         value = int(raw)
     except ValueError:
         pytest.skip(f"{FRAME_COUNT_ENV} must be an integer, got {raw!r}")
-    if value < 3:
-        pytest.skip(f"{FRAME_COUNT_ENV} must be >= 3, got {value}")
+    # MOR-4013: adaptive playback primes at a 150 ms fill target (8 frames
+    # at 20 ms), so fewer than 10 frames would capture silence by design.
+    if value < 10:
+        pytest.skip(f"{FRAME_COUNT_ENV} must be >= 10, got {value}")
     return value
 
 

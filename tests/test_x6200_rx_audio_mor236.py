@@ -24,6 +24,7 @@ from rigplane.audio.backend import (
     AudioDeviceInfo,
     FakeRxStream,
     FakeTxStream,
+    TxPlayoutPolicy,
 )
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.config import SerialBackendConfig
@@ -94,8 +95,9 @@ class _MonoUsbAudioBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        playout: TxPlayoutPolicy = "adaptive",
     ) -> FakeTxStream:
-        stream = FakeTxStream()
+        stream = FakeTxStream(playout=playout)
         self.tx_streams.append(stream)
         return stream
 
