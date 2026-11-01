@@ -160,6 +160,7 @@ export interface ReceiverStatePublic {
   filter: number | null;
   dataMode: number | null;
   filterWidth?: number | null;
+  filterWidthRadioDefault?: boolean | null;
   att: number | null;
   preamp: number | null;
   nb: boolean | null;

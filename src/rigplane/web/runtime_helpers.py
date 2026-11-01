@@ -67,6 +67,7 @@ _RECEIVER_FREQ_MODE_FIELDS = {
     "filter_num": "filter",
     "data_mode": "data_mode",
     "filter_width": "filter_width",
+    "filter_width_radio_default": "filter_width_radio_default",
 }
 _VFO_SLOT_FIELDS = {
     "freq_hz": "freq_hz",
