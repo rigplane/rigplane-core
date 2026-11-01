@@ -1709,6 +1709,37 @@ def test_ftx1_empty_store_nulls_every_unobserved_status_leaf() -> None:
     assert isinstance(payload["revision"], int)
 
 
+def test_ftx1_filter_width_radio_default_publishes_null_then_true() -> None:
+    """MOR-3677: the flag leaf is null with an unobserved fieldStatus row
+    until the SH read publishes it, then true and available."""
+
+    store = StateStore()
+    payload = _profile_payload("FTX-1", store.snapshot(), receiver_count=2)
+
+    assert payload["main"]["filterWidthRadioDefault"] is None
+    assert payload["sub"]["filterWidthRadioDefault"] is None
+    assert payload["fieldStatus"]["main.filterWidthRadioDefault"]["observed"] is False
+    assert payload["fieldStatus"]["sub.filterWidthRadioDefault"]["observed"] is False
+
+    store.apply(
+        _observation(
+            FieldPath.active("main", "freq_mode", "filter_width_radio_default"),
+            True,
+            at=1.0,
+            max_age=2.0,
+        )
+    )
+    payload = _profile_payload("FTX-1", store.snapshot(), receiver_count=2)
+
+    assert payload["main"]["filterWidthRadioDefault"] is True
+    assert payload["fieldStatus"]["main.filterWidthRadioDefault"]["observed"] is True
+    assert (
+        payload["fieldStatus"]["main.filterWidthRadioDefault"]["availability"]
+        == "available"
+    )
+    assert payload["sub"]["filterWidthRadioDefault"] is None
+
+
 def test_observed_value_stays_published_after_the_freshness_tick_marks_it_stale() -> (
     None
 ):

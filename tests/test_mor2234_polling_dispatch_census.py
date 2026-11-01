@@ -61,6 +61,7 @@ from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.tx_target import KnownTxTarget
 from rigplane.core.types import BreakInMode
+from rigplane.backends.yaesu_cat.radio import FilterWidthReading
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.rig_loader import load_rig
 from _acquisition_query_helpers import recording_executor
@@ -285,7 +286,9 @@ def _make_ftx1_radio() -> MagicMock:
     radio.read_attenuator = AsyncMock(return_value=True)
     radio.read_preamp = AsyncMock(return_value=2)
     radio.read_agc = AsyncMock(return_value=3)
-    radio.read_filter_width = AsyncMock(return_value=500)
+    radio.read_filter_width_reading = AsyncMock(
+        return_value=FilterWidthReading(500, False)
+    )
     radio.read_if_shift = AsyncMock(
         side_effect=lambda receiver=0: 200 if receiver == 0 else 210
     )
@@ -380,7 +383,7 @@ async def _run_ftx1_poll_cycles(
             "read_attenuator",
             "read_preamp",
             "read_agc",
-            "read_filter_width",
+            "read_filter_width_reading",
             "read_if_shift",
             "read_narrow",
             "read_nb_level",

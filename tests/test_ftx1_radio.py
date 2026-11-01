@@ -11,7 +11,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat.radio import FilterWidthReading, YaesuCatRadio
 from rigplane.backends.yaesu_cat import radio as yaesu_radio
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import CatTimeoutError
@@ -1391,6 +1391,46 @@ async def test_read_filter_width_unavailable_yields_none(connected_radio):
     # A code past the table's last entry.
     connected_radio._transport.query = AsyncMock(return_value="SH0024")
     assert await connected_radio.read_filter_width(0, mode="USB") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("receiver", "mode", "answer", "expected"),
+    [
+        # MOR-3677 bench: the FTX-1 on the Mac mini over USB answers code
+        # 00 in DATA and CW (CAT watch 2026-10-22 09:16:53 EDT: DATA-U
+        # ``MD0C; SH0000; NA00;``; MOR-3693 reads 2026-10-21: CW-U
+        # ``MD03; SH0000;``). A 00 answer is the radio's own default: no
+        # Hz, flag true — on both receivers and in every mode alike.
+        (0, "DATA-U", "SH0000", FilterWidthReading(None, True)),
+        (1, "DATA-U", "SH1000", FilterWidthReading(None, True)),
+        (0, "DATA-L", "SH0000", FilterWidthReading(None, True)),
+        (1, "DATA-L", "SH1000", FilterWidthReading(None, True)),
+        (0, "CW-U", "SH0000", FilterWidthReading(None, True)),
+        (1, "CW-U", "SH1000", FilterWidthReading(None, True)),
+        (0, "CW-L", "SH0000", FilterWidthReading(None, True)),
+        (1, "CW-L", "SH1000", FilterWidthReading(None, True)),
+        # A normal answer: Hz decoded, flag false (USB ``MD02; SH0020;``
+        # from the same watch, 09:17:10 EDT).
+        (0, "USB", "SH0020", FilterWidthReading(3000, False)),
+        (1, "LSB", "SH1020", FilterWidthReading(3000, False)),
+        # No Hz for another reason: no table row (C4FM-DN) or an
+        # out-of-table code — flag false, never mistaken for a default.
+        (0, "C4FM-DN", "SH0005", FilterWidthReading(None, False)),
+        (0, "USB", "SH0024", FilterWidthReading(None, False)),
+        # A fixed-width mode answers from the profile manual whatever the
+        # SH code is — even 00 (fixed wins over the default code).
+        (0, "AM-N", "SH0000", FilterWidthReading(6000, False)),
+    ],
+)
+async def test_read_filter_width_reading_flags_radio_default(
+    connected_radio, receiver, mode, answer, expected
+):
+    """MOR-3677: the width read reports a 00 answer as radio-default."""
+    connected_radio._transport.query = AsyncMock(return_value=answer)
+    assert (
+        await connected_radio.read_filter_width_reading(receiver, mode=mode) == expected
+    )
 
 
 @pytest.mark.asyncio
