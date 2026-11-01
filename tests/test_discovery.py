@@ -9,7 +9,7 @@ import logging
 import socket
 import sys
 import time
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from functools import partial
 from threading import Event, get_ident
 from types import SimpleNamespace
@@ -2133,13 +2133,22 @@ class _FakeUdpSocket:
 
 
 @contextmanager
-def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float = 0.05):
+def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float | None = 0.05):
     import socket as _socket
     import time as _time
 
+    # ``step=None`` leaves the real clock in place. Patching time.monotonic
+    # redirects EVERY reader in the process, including the event loop's own
+    # clock, so asyncio.sleep timers fire only when the fake clock advances;
+    # a frozen clock (step=0.0) hangs any await asyncio.sleep in the test.
+    clock = (
+        patch.object(_time, "monotonic", _FakeClock(step=step))
+        if step is not None
+        else nullcontext()
+    )
     with (
         patch.object(_socket, "socket", return_value=fake),
-        patch.object(_time, "monotonic", _FakeClock(step=step)),
+        clock,
         # The fake has no connect()/getsockname(); without this patch the
         # single-socket tests would rely on the address probe raising
         # AttributeError and pre-setting fake.closed via its finally-close.
@@ -2457,11 +2466,13 @@ class TestProbeLanRadioFakeSocket:
         assert fake.closed
 
     async def test_cancellation_mid_probe_closes_socket(self) -> None:
-        # A frozen monotonic clock keeps the probe window open forever, so
-        # the only thing that can close the socket is the cancellation stop
-        # signal reaching the probe loop.
+        # The 300 s window is far beyond the test's lifetime, so only the
+        # cancellation stop signal can end the probe loop and close the
+        # socket. The real clock is used on purpose: freezing time.monotonic
+        # also freezes the event loop's clock, and the awaits below would
+        # never fire — the hang this test showed on the CI Mac mini.
         fake = _FakeUdpSocket({})
-        with _patched_lan_socket(fake, step=0.0):
+        with _patched_lan_socket(fake, step=None):
             probe = asyncio.create_task(probe_lan_radio("192.168.1.50", timeout=300.0))
             await asyncio.sleep(0.15)
             assert not fake.closed
