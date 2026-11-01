@@ -92,6 +92,7 @@ def radio_config() -> dict:
         "username": ICOM_USER,
         "password": ICOM_PASS,
         "radio_addr": ICOM_RADIO_ADDR,
+        "port": _env_int("ICOM_PORT", 50001),
     }
 
 
