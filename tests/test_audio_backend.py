@@ -1610,19 +1610,23 @@ class TestPortAudioTxFillTargetAndDrift:
         ``ceil((j+1)/R) - 1`` and delivered one block later on every second
         frame (deterministic ±40 ms jitter, 2-frame catch-up bursts). Frames
         whose delivery lands inside the long stall are held and flushed at
-        its end."""
+        its end. Delivery order always equals generation order (a real
+        producer never reorders frames), so a delayed odd frame and the
+        even frame behind it arrive together as one catch-up burst."""
         schedule: dict[int, list[int]] = {}
         j = 0
+        last_block = 0
         while True:
             gen = math.ceil((j + 1) / self.PRODUCER_RATIO) - 1
             if gen >= blocks:
                 break
-            block = gen + (j % 2)
+            block = max(gen + (j % 2), last_block)
             if (
                 stall_start is not None
                 and stall_start <= block < stall_start + stall_blocks
             ):
                 block = stall_start + stall_blocks
+            last_block = block
             schedule.setdefault(block, []).append(j)
             j += 1
         return schedule
@@ -1780,6 +1784,7 @@ class TestPortAudioTxFillTargetAndDrift:
             ) * self.FRAME_SAMPLES
 
         fills: list[float] = []
+        ratios: list[float] = []
         outdata = bytearray(self.FRAME_BYTES)
         pre_stall_overruns = -1
         for block in range(blocks):
@@ -1787,6 +1792,7 @@ class TestPortAudioTxFillTargetAndDrift:
                 await stream.write(frame(idx))
             callback(outdata, self.FRAME_SAMPLES, None, None)  # type: ignore[operator]
             fills.append(stream.write_health.buffered_audio_ms)
+            ratios.append(stream.write_health.playback_read_ratio)
             if block == stall_start - 1:
                 pre_stall_overruns = stream.write_health.overrun_events
 
@@ -1800,11 +1806,16 @@ class TestPortAudioTxFillTargetAndDrift:
         assert 120.0 <= float(np.median(warm)) <= 250.0
 
         health = stream.write_health
+        assert health.callback_errors == 0
         assert health.fill_target_ms == 150.0
         assert health.refill_events == 1
         assert health.underrun_events == 1
         assert health.overrun_events <= 5
-        assert abs(health.playback_read_ratio - self.PRODUCER_RATIO) < 0.003
+        # The instantaneous ratio swings between exact copy (1.0) and the
+        # slew-limited correction as the fill crosses the deadband; the
+        # controller's job is that its AVERAGE read rate tracks the producer
+        # surplus (here ≈ 1.52%) once the fill is held.
+        assert abs(float(np.mean(ratios[-1_000:])) - self.PRODUCER_RATIO) < 0.003
 
         await stream.stop()
 
@@ -1829,12 +1840,14 @@ class TestPortAudioTxFillTargetAndDrift:
             return tone.astype(np.int16).tobytes()
 
         outputs: list[bytes] = []
+        ratios: list[float] = []
         outdata = bytearray(self.FRAME_BYTES)
         for block in range(blocks):
             for idx in schedule.get(block, ()):
                 await stream.write(frame(idx))
             callback(outdata, self.FRAME_SAMPLES, None, None)  # type: ignore[operator]
             outputs.append(bytes(outdata))
+            ratios.append(stream.write_health.playback_read_ratio)
 
         # Skip the priming silence (the ring primes at ~block 9, once the
         # 8th frame has been delivered) plus a margin, so the silence→tone
@@ -1849,10 +1862,13 @@ class TestPortAudioTxFillTargetAndDrift:
         assert float(np.sqrt(np.mean(played**2))) > 8_000.0
 
         health = stream.write_health
+        assert health.callback_errors == 0
         assert health.refill_events == 0
         assert health.underrun_events == 0
         assert health.overrun_events == 0
-        assert abs(health.playback_read_ratio - self.PRODUCER_RATIO) < 0.003
+        # Average read rate (the instantaneous ratio swings across the
+        # deadband) tracks the producer surplus.
+        assert abs(float(np.mean(ratios[-1_000:])) - self.PRODUCER_RATIO) < 0.003
 
         await stream.stop()
 
