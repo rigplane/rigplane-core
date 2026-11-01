@@ -225,6 +225,7 @@ def test_to_dict_main_keys() -> None:
         "mode",
         "filter",
         "filter_width",
+        "filter_width_radio_default",
         "data_mode",
         "att",
         "preamp",

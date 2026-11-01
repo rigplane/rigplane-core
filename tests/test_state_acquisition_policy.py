@@ -1803,8 +1803,10 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     # MOR-2111 tone half: +4 SUB tone fields (repeater_tone/tsql toggles,
     # tone_freq/tsql_freq controls) on top of the previous 69/64.
     # MOR-2969: +2 tone_squelch_type (MAIN, SUB), each with a field policy.
-    assert len(acquisition.capabilities) == 75
-    assert len(acquisition.field_policies) == 70
+    # MOR-3677: +2 filter_width_radio_default (MAIN, SUB), each with a field
+    # policy that mirrors the filter_width one.
+    assert len(acquisition.capabilities) == 77
+    assert len(acquisition.field_policies) == 72
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
@@ -2144,9 +2146,16 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "global.meters.power"),
         ("FTX-1", "global.meters.swr"),
         ("FTX-1", "receiver.main.active.freq_mode.filter_width"),
+        # MOR-3677: a probe reading, not a guess: the radio-default flag is
+        # published by the very SH read the width above comes from, so it
+        # carries the width's own narrow clause. Bench frames: `MD0C; SH0000;
+        # NA00;` in DATA-U and `MD03; SH0000;` in CW-U (SH answers code 000
+        # with narrow off). A stale true must not outlive a discarded width.
+        ("FTX-1", "receiver.main.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width"),
+        ("FTX-1", "receiver.sub.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
         ("IC-705", "global.meters.alc"),
         ("IC-705", "global.meters.comp"),

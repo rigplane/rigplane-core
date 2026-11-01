@@ -539,6 +539,7 @@ CONTROL_FIELD_NAMES: Final[frozenset[str]] = frozenset(
         "rf_gain",
         "squelch",
         "filter_width",
+        "filter_width_radio_default",
         "split",
         "tx_target",
         "active",
@@ -554,6 +555,7 @@ PANEL_ADJUSTABLE_FIELD_NAMES: Final[frozenset[str]] = frozenset(
     {
         "auto_notch",
         "filter_width",
+        "filter_width_radio_default",
         "if_shift",
         "manual_notch",
         "manual_notch_freq",
@@ -1433,6 +1435,10 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
             unit="hz",
+        ),
+        spec(
+            FieldPath.active(receiver_id, "freq_mode", "filter_width_radio_default"),
+            "bool",
         ),
         spec(
             FieldPath.active(receiver_id, "freq_mode", "filter_num"),

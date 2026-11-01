@@ -99,6 +99,14 @@ class ReceiverStatePublic(_Strict):
     dataMode: int | None = None
 
     filterWidth: int | None = None
+    # True when the radio's width answer is the profile-declared
+    # ``radio_default_code`` (no Hz value); the ``filterWidth`` leaf is null
+    # then. This observation leaf shares its snake_case name with the
+    # ``filter_width_radio_default`` CAPABILITY tag, which is a different
+    # namespace: the tag means "the reset command is writeable"
+    # (``capabilities.py``), this leaf means "the last read WAS the
+    # radio default" (MOR-3677).
+    filterWidthRadioDefault: bool | None = None
     att: int | None = None
     preamp: int | None = None
     nb: bool | None = None

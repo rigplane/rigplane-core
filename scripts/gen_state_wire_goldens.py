@@ -127,7 +127,8 @@ _POLLED_DCD_DELTAS = (
 _DCD_PATH = FieldPath.receiver("main", "operator_toggles", "dcd")
 
 _INT_BY_NAME = {"filter_width": 2400, "receiver": 0}
-_BOOL_BY_NAME = {"ptt": False}
+# The golden width carries a Hz value, so the radio-default flag is False.
+_BOOL_BY_NAME = {"ptt": False, "filter_width_radio_default": False}
 
 
 class _CaptureWriter:

@@ -1028,6 +1028,14 @@ _ICOM_V2_FIELD_FAMILIES: tuple[tuple[FieldPath, str, str | None, Any], ...] = (
         "main",
         500,
     ),
+    # The radio-default flag twin (MOR-3677): published by the same SH
+    # read, projected to its own public leaf.
+    (
+        FieldPath.active("main", "freq_mode", "filter_width_radio_default"),
+        "filterWidthRadioDefault",
+        "main",
+        True,
+    ),
     # global operator_controls
     (FieldPath.global_("operator_controls", "mic_gain"), "micGain", None, 5),
     (

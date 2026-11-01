@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+from rigplane.backends.yaesu_cat.radio import FilterWidthReading
 from rigplane.core.acquisition_scheduler import resolve_available_when
 from rigplane.core.state_acquisition_policy import AvailabilityClause
 from rigplane.core.state_pipeline_contracts import (
@@ -30,6 +31,8 @@ from rigplane.profiles import get_radio_profile
 
 _MAIN_WIDTH = FieldPath.active("main", "freq_mode", "filter_width")
 _SUB_WIDTH = FieldPath.active("sub", "freq_mode", "filter_width")
+_MAIN_FLAG = FieldPath.active("main", "freq_mode", "filter_width_radio_default")
+_SUB_FLAG = FieldPath.active("sub", "freq_mode", "filter_width_radio_default")
 _MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
 _SUB_NARROW = FieldPath.receiver("sub", "operator_toggles", "narrow")
 
@@ -50,6 +53,22 @@ def test_filter_width_is_declared_absent_while_narrow_is_on(
     """Each receiver's width policy carries exactly its own narrow clause."""
 
     assert _acquisition().policy_for(width).available_when == (
+        AvailabilityClause(field=narrow, operator="equals", value=False),
+    )
+
+
+@pytest.mark.parametrize(
+    ("flag", "narrow"),
+    [(_MAIN_FLAG, _MAIN_NARROW), (_SUB_FLAG, _SUB_NARROW)],
+)
+def test_radio_default_flag_is_declared_absent_while_narrow_is_on(
+    flag: FieldPath, narrow: FieldPath
+) -> None:
+    """MOR-3677: each flag policy carries its receiver's narrow clause, like
+    the width — otherwise a stale true would survive while the width is
+    discarded."""
+
+    assert _acquisition().policy_for(flag).available_when == (
         AvailabilityClause(field=narrow, operator="equals", value=False),
     )
 
@@ -108,7 +127,9 @@ def _radio() -> MagicMock:
     radio.read_transmit_state = AsyncMock(
         return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
     )
-    radio.read_filter_width = AsyncMock(return_value=500)
+    radio.read_filter_width_reading = AsyncMock(
+        return_value=FilterWidthReading(500, False)
+    )
     return radio
 
 
@@ -139,17 +160,22 @@ async def test_medium_poll_withholds_only_the_narrow_receivers_width_read(
 
     assert [
         (await_args.args[0], await_args.kwargs["mode"])
-        for await_args in radio.read_filter_width.await_args_list
+        for await_args in radio.read_filter_width_reading.await_args_list
     ] == expected_receivers
     widths = {
         str(item.path)
         for item in observations
         if item.path in (_MAIN_WIDTH, _SUB_WIDTH)
     }
+    flags = {
+        str(item.path) for item in observations if item.path in (_MAIN_FLAG, _SUB_FLAG)
+    }
     if main_narrow:
         assert widths == {str(_SUB_WIDTH)}
+        assert flags == {str(_SUB_FLAG)}
     else:
         assert widths == {str(_MAIN_WIDTH), str(_SUB_WIDTH)}
+        assert flags == {str(_MAIN_FLAG), str(_SUB_FLAG)}
 
 
 @pytest.mark.asyncio
@@ -168,7 +194,7 @@ async def test_medium_poll_withholds_the_sub_width_read_while_subs_narrow_is_on(
 
     assert [
         (await_args.args[0], await_args.kwargs["mode"])
-        for await_args in radio.read_filter_width.await_args_list
+        for await_args in radio.read_filter_width_reading.await_args_list
     ] == [(0, "USB")]
     widths = {
         str(item.path)
@@ -176,3 +202,34 @@ async def test_medium_poll_withholds_the_sub_width_read_while_subs_narrow_is_on(
         if item.path in (_MAIN_WIDTH, _SUB_WIDTH)
     }
     assert widths == {str(_MAIN_WIDTH)}
+    flags = {
+        str(item.path) for item in observations if item.path in (_MAIN_FLAG, _SUB_FLAG)
+    }
+    assert flags == {str(_MAIN_FLAG)}
+
+
+@pytest.mark.asyncio
+async def test_medium_poll_emits_radio_default_flag_with_null_width() -> None:
+    """MOR-3677: one SH read publishes both leaves — a null width and a
+    true flag — under the same narrow gate."""
+
+    radio = _radio()
+    radio._state_store = _narrow_store(main_narrow=False, sub_narrow=False)
+    radio.read_filter_width_reading = AsyncMock(
+        side_effect=lambda receiver=0, *, mode: (
+            FilterWidthReading(None, True)
+            if receiver == 0
+            else FilterWidthReading(500, False)
+        )
+    )
+    adapter = YaesuObservationAdapter(
+        radio, profile=_acquisition(), clock=lambda: 123.456
+    )
+
+    observations = await adapter.poll_medium()
+
+    by_path = {str(item.path): item for item in observations}
+    assert by_path[str(_MAIN_WIDTH)].value is None
+    assert by_path[str(_MAIN_FLAG)].value is True
+    assert by_path[str(_SUB_WIDTH)].value == 500
+    assert by_path[str(_SUB_FLAG)].value is False

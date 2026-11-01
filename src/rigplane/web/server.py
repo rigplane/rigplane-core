@@ -290,6 +290,7 @@ _LEGACY_RECEIVER_FREQ_MODE_FIELDS: tuple[tuple[str, str], ...] = (
     ("filter", "filter"),
     ("data_mode", "data_mode"),
     ("filter_width", "filter_width"),
+    ("filter_width_radio_default", "filter_width_radio_default"),
 )
 _LEGACY_VFO_SLOT_FIELDS: tuple[tuple[str, str], ...] = (
     ("freq_hz", "freq_hz"),
