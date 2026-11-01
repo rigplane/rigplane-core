@@ -60,7 +60,7 @@ const FROZEN: Record<string, readonly string[]> = {
     'reversePaddle', 'apf', 'twinPeak',
   ],
   validateScopeControls: [
-    'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+    'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'refRange', 'dual', 'receiver',
     'duringTx', 'centerType', 'vbwNarrow', 'rbw',
   ],
   validateScopeDisplay: ['source', 'health', 'hardwareConnected'],

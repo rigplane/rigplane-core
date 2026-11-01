@@ -80,9 +80,21 @@ describe('scopeControls evidence gate (MOR-1298, N3)', () => {
     const view = model(bareState(), scopeCaps());
     expect(view.scopeControls).toBeDefined();
     expect(Object.keys(view.scopeControls!).sort()).toEqual(
-      ['centerType', 'dual', 'duringTx', 'edge', 'hold', 'mode', 'rbw', 'receiver', 'refDb', 'span',
-        'speed', 'vbwNarrow'],
+      ['centerType', 'dual', 'duringTx', 'edge', 'hold', 'mode', 'rbw', 'receiver', 'refDb',
+        'refRange', 'span', 'speed', 'vbwNarrow'],
     );
+  });
+
+  it('derives refRange from the caps-declared REF fields (MOR-3694)', () => {
+    // No declared range (older server / non-declaring profile): fail closed.
+    expect(model(bareState(), scopeCaps()).scopeControls!.refRange).toBeNull();
+    const withRange = model(bareState(), caps({
+      capabilities: ['scope'],
+      ref_min_db: -20,
+      ref_max_db: 20,
+      ref_step_db: 0.5,
+    })).scopeControls!;
+    expect(withRange.refRange).toEqual({ min: -20, max: 20 });
   });
 });
 
