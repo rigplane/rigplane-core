@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import struct
+import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
@@ -43,6 +46,7 @@ __all__ = [
     "discover_serial_radios",
     "enumerate_serial_ports",
     "probe_hamlib_rigctld_targets",
+    "probe_lan_radio",
     "probe_serial_civ",
     "probe_serial_kenwood_cat",
     "probe_serial_yaesu_cat",
@@ -55,6 +59,37 @@ __all__ = [
 #: port. A radio found by :func:`discover_lan_radios` answered on it, so
 #: ``discover`` pins it in the commands it prints (MOR-3859).
 LAN_DISCOVERY_PORT = 50001
+
+#: Re-send the LAN "Are You There" probe periodically across the listen
+#: window so a single dropped UDP packet (or brief control-port contention)
+#: does not hide a radio for the entire window; shared by the broadcast scan
+#: (:func:`discover_lan_radios`) and the unicast probe
+#: (:func:`probe_lan_radio`).
+_LAN_RESEND_INTERVAL = 0.6
+#: Per-socket receive poll. Polling N sockets costs up to N × 50 ms per
+#: loop iteration, so a scan may overshoot its deadline by that much.
+_LAN_RECV_POLL_INTERVAL = 0.05
+
+#: OS errno values that mean "the probed host or network cannot be reached
+#: at all": no route, host/link down, or the ICMP port unreachable. Windows
+#: reports the same situations as WSA* errnos and as
+#: ``ConnectionRefusedError`` / ``ConnectionResetError``, which
+#: ``_is_unreachable_error`` matches by type.
+_PROBE_UNREACHABLE_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in (
+        "EHOSTDOWN",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "ECONNREFUSED",
+        "WSAEHOSTDOWN",
+        "WSAEHOSTUNREACH",
+        "WSAENETUNREACH",
+        "WSAECONNREFUSED",
+        "WSAECONNRESET",
+    )
+    if hasattr(errno, name)
+)
 
 _CIV_PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
 # Minimum valid response: FE FE E0 <addr> 19 00 <model_id_byte> FD = 8 bytes
@@ -809,6 +844,36 @@ def _local_ipv4_addresses() -> list[str]:
     return unique
 
 
+def _are_you_there_packet(sender_id: int) -> bytes:
+    """Build the 16-byte Icom LAN "Are You There" (ptype 0x03) packet.
+
+    Shared by the :func:`discover_lan_radios` broadcast scan and the
+    :func:`probe_lan_radio` unicast probe. *sender_id* must be non-zero:
+    the IC-7610 ignores packets with sender_id=0.
+    """
+    pkt = bytearray(0x10)
+    struct.pack_into("<I", pkt, 0, 0x10)  # size
+    struct.pack_into("<H", pkt, 4, 0x03)  # ARE_YOU_THERE
+    struct.pack_into("<H", pkt, 6, 0)  # seq=0
+    struct.pack_into("<I", pkt, 8, sender_id)  # sender_id (non-zero!)
+    struct.pack_into("<I", pkt, 0x0C, 0)  # remote_id=0 (unknown)
+    return bytes(pkt)
+
+
+def _is_unreachable_error(exc: BaseException) -> bool:
+    """True when *exc* reports the probed host or network unreachable.
+
+    Covers the no-route / host-down errnos, the ICMP port unreachable
+    (as ``ConnectionRefusedError`` / ``ConnectionResetError``) and the
+    unresolvable-name ``socket.gaierror``.
+    """
+    import socket
+
+    if isinstance(exc, (ConnectionRefusedError, ConnectionResetError, socket.gaierror)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _PROBE_UNREACHABLE_ERRNOS
+
+
 async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     """Discover Icom radios on LAN via UDP broadcast ("Are You There").
 
@@ -828,30 +893,15 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
         List of dicts with keys ``host`` and ``remote_id``.
     """
     import socket
-    import struct
     import time
-
-    # Re-send the "Are You There" probe periodically across the listen window
-    # so a single dropped UDP packet (or brief control-port contention) does
-    # not hide a radio for the entire scan. A radio that only answers a later
-    # probe is still discovered; responses are deduplicated by host.
-    RESEND_INTERVAL = 0.6
-    # Per-socket receive poll. Polling N sockets costs up to N × 50 ms per
-    # loop iteration, so the scan may overshoot its deadline by that much.
-    RECV_POLL_INTERVAL = 0.05
 
     def _scan() -> list[dict[str, object]]:
         import random
 
         # Build "Are You There" packet with random sender_id
         # IC-7610 ignores packets with sender_id=0
-        pkt = bytearray(0x10)
-        struct.pack_into("<I", pkt, 0, 0x10)  # size
-        struct.pack_into("<H", pkt, 4, 0x03)  # ARE_YOU_THERE
-        struct.pack_into("<H", pkt, 6, 0)  # seq=0
         my_id = random.randint(1, 0xFFFFFFFF)
-        struct.pack_into("<I", pkt, 8, my_id)  # sender_id (non-zero!)
-        struct.pack_into("<I", pkt, 0x0C, 0)  # remote_id=0 (unknown)
+        pkt = _are_you_there_packet(my_id)
 
         # Enumeration is best-effort: any exception (a chroot without routing,
         # exotic resolver errors) falls back to the unbound socket alone.
@@ -866,7 +916,7 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 if address is not None:
                     sock.bind((address, 0))
-                sock.settimeout(RECV_POLL_INTERVAL)
+                sock.settimeout(_LAN_RECV_POLL_INTERVAL)
             except BaseException:
                 sock.close()
                 raise
@@ -935,13 +985,13 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
 
             start = time.monotonic()
             deadline = start + timeout
-            next_resend = start + RESEND_INTERVAL
+            next_resend = start + _LAN_RESEND_INTERVAL
             while time.monotonic() < deadline:
                 # Spread retransmits across the window; keep within `timeout`.
                 now = time.monotonic()
                 if now >= next_resend:
                     _broadcast(first=False)
-                    next_resend = now + RESEND_INTERVAL
+                    next_resend = now + _LAN_RESEND_INTERVAL
                 for sock in sockets:
                     try:
                         data, addr = sock.recvfrom(256)
@@ -976,6 +1026,132 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
         return list(found.values())
 
     return await asyncio.get_running_loop().run_in_executor(None, _scan)
+
+
+async def probe_lan_radio(
+    host: str,
+    port: int = LAN_DISCOVERY_PORT,
+    *,
+    timeout: float = 3.0,
+) -> bool:
+    """Unicast "Are You There" liveness probe for one Icom LAN radio.
+
+    Asks a known (remembered) radio's control port whether it is
+    answering, with the radio's own discovery handshake — the same
+    packet :func:`discover_lan_radios` broadcasts — retransmitted every
+    0.6 s inside the window. Prefer this over connecting to the control
+    port with TCP: the port is UDP, and a real radio may silently drop a
+    TCP SYN, making a reachable radio look unreachable.
+
+    Args:
+        host: Hostname or IPv4 address of the radio.
+        port: UDP control port of the radio.
+        timeout: How long to keep probing, in seconds.
+
+    Returns:
+        ``True`` on the first "I Am Here" from *host*; ``False`` when the
+        window ends with no answer or the OS reports the host unreachable
+        (no route, host down, ICMP port unreachable, unresolvable name).
+        Never raises for an unreachable host; programming errors raise.
+    """
+    import random
+    import socket
+    import time
+
+    # Set from the cancelled/finished awaiting coroutine so the worker
+    # thread closes its socket promptly instead of holding it until the
+    # window ends.
+    stop = threading.Event()
+
+    def _probe() -> bool:
+        # Resolve in the worker thread: a slow resolver must not block the
+        # event loop, and an unresolvable name is a plain False.
+        try:
+            infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError:  # includes socket.gaierror (unresolvable name)
+            return False
+        target = infos[0][4]
+
+        pkt = _are_you_there_packet(random.randint(1, 0xFFFFFFFF))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(_LAN_RECV_POLL_INTERVAL)
+
+            def _send() -> bool:
+                """Send one probe; False when the host is unreachable."""
+                try:
+                    sock.sendto(pkt, target)
+                except OSError as exc:
+                    if _is_unreachable_error(exc):
+                        logger.info(
+                            "probe_lan_radio: %s reported unreachable: %s",
+                            host,
+                            exc,
+                        )
+                        return False
+                    logger.debug("probe_lan_radio: send failed: %s", exc)
+                return True
+
+            if not _send():
+                return False
+
+            start = time.monotonic()
+            deadline = start + timeout
+            next_resend = start + _LAN_RESEND_INTERVAL
+            # The `now < deadline` loop form (like the scan) also ends a
+            # non-positive or NaN window immediately instead of spinning.
+            while time.monotonic() < deadline:
+                if stop.is_set():
+                    return False
+                # Spread retransmits across the window; keep within
+                # `timeout`.
+                now = time.monotonic()
+                if now >= next_resend:
+                    if not _send():
+                        return False
+                    next_resend = now + _LAN_RESEND_INTERVAL
+                try:
+                    data, addr = sock.recvfrom(256)
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    if _is_unreachable_error(exc):
+                        logger.info(
+                            "probe_lan_radio: %s reported unreachable: %s",
+                            host,
+                            exc,
+                        )
+                        return False
+                    # Any other per-socket error just skips this poll; the
+                    # socket stays usable, so pace the loop (same tolerance
+                    # as the broadcast scan).
+                    logger.debug("probe_lan_radio: recvfrom failed: %s", exc)
+                    time.sleep(0.01)
+                    continue
+                if (
+                    addr[0] == target[0]
+                    and len(data) >= 0x10
+                    and struct.unpack_from("<H", data, 4)[0] == 0x04  # I_AM_HERE
+                ):
+                    logger.info(
+                        "probe_lan_radio: %s answered (remote_id=0x%08X)",
+                        host,
+                        struct.unpack_from("<I", data, 8)[0],
+                    )
+                    return True
+            return False
+        finally:
+            sock.close()
+
+    # Same executor approach as discover_lan_radios: this module's LAN
+    # probing already runs its blocking-socket loop in the default
+    # executor, so the event loop stays free; the stop event above adds
+    # the prompt socket close on cancellation the one-shot probe needs.
+    future = asyncio.get_running_loop().run_in_executor(None, _probe)
+    try:
+        return await future
+    finally:
+        stop.set()
 
 
 def _resolve_xiegu_x6200_override(

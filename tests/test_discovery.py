@@ -6,8 +6,10 @@ import asyncio
 import errno
 import json
 import logging
+import socket
 import sys
-from contextlib import ExitStack, contextmanager
+import time
+from contextlib import ExitStack, contextmanager, nullcontext
 from functools import partial
 from threading import Event, get_ident
 from types import SimpleNamespace
@@ -20,6 +22,7 @@ from rigplane.discovery import (
     CivProbeResult,
     RadioDiscoveryResult,
     SerialPortCandidate,
+    _are_you_there_packet,
     _is_candidate,
     _is_xiegu_model_id_reply,
     _local_ipv4_addresses,
@@ -30,11 +33,13 @@ from rigplane.discovery import (
     discover_lan_radios,
     discover_serial_radios,
     enumerate_serial_ports,
+    probe_lan_radio,
     probe_serial_civ,
     probe_serial_yaesu_cat,
     probe_xiegu_model_id,
 )
 from rigplane.usb_audio_resolve import AudioDeviceMapping
+from rigplane_testkit.icom import MockIcomRadio
 
 
 @pytest.mark.parametrize("os_name,indices", [("macos", (3, 3)), ("windows", (1, 5))])
@@ -2064,6 +2069,10 @@ class _FakeUdpSocket:
 
     ``bind_error`` is raised from bind() to fake an address that can no
     longer be bound (adapter vanished, address reassigned).
+
+    ``send_error`` is raised from every sendto call (after the attempt is
+    recorded), faking e.g. a pending ICMP error surfacing on Linux
+    retransmits.
     """
 
     def __init__(
@@ -2073,13 +2082,16 @@ class _FakeUdpSocket:
         recv_errors: list[Exception] | None = None,
         recv_error_always: Exception | None = None,
         bind_error: Exception | None = None,
+        send_error: Exception | None = None,
     ) -> None:
         self._responses = {k: list(v) for k, v in responses.items()}
         self._recv_errors = list(recv_errors or [])
         self._recv_error_always = recv_error_always
         self._bind_error = bind_error
+        self._send_error = send_error
         self.send_count = 0
         self.sent_to: list[tuple] = []
+        self.sent: list[bytes] = []
         self.bound_to: tuple | None = None
         self.closed = False
         self._pending: list[tuple[bytes, tuple]] = []
@@ -2098,6 +2110,9 @@ class _FakeUdpSocket:
     def sendto(self, _data: bytes, addr: tuple) -> int:
         self.send_count += 1
         self.sent_to.append(addr)
+        self.sent.append(bytes(_data))
+        if self._send_error is not None:
+            raise self._send_error
         # Queue any responses unlocked by reaching this probe count.
         self._pending.extend(self._responses.pop(self.send_count, []))
         return len(_data)
@@ -2118,13 +2133,22 @@ class _FakeUdpSocket:
 
 
 @contextmanager
-def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float = 0.05):
+def _patched_lan_socket(fake: _FakeUdpSocket, *, step: float | None = 0.05):
     import socket as _socket
     import time as _time
 
+    # ``step=None`` leaves the real clock in place. Patching time.monotonic
+    # redirects EVERY reader in the process, including the event loop's own
+    # clock, so asyncio.sleep timers fire only when the fake clock advances;
+    # a frozen clock (step=0.0) hangs any await asyncio.sleep in the test.
+    clock = (
+        patch.object(_time, "monotonic", _FakeClock(step=step))
+        if step is not None
+        else nullcontext()
+    )
     with (
         patch.object(_socket, "socket", return_value=fake),
-        patch.object(_time, "monotonic", _FakeClock(step=step)),
+        clock,
         # The fake has no connect()/getsockname(); without this patch the
         # single-socket tests would rely on the address probe raising
         # AttributeError and pre-setting fake.closed via its finally-close.
@@ -2318,6 +2342,208 @@ class TestDiscoverLanRadios:
         assert fakes[1].send_count == 0  # and never used to probe
         assert fakes[0].send_count >= 1
         assert fakes[2].send_count >= 1
+
+
+# ---------------------------------------------------------------------------
+# Shared "Are You There" packet layout (MOR-3669)
+# ---------------------------------------------------------------------------
+
+
+class TestAreYouTherePacket:
+    def test_layout_is_pinned(self) -> None:
+        # size 0x10 | ptype 0x03 (ARE_YOU_THERE) | seq 0 | sender_id |
+        # remote_id 0, all little-endian — the same 16 bytes the broadcast
+        # scan built inline before the helper existed.
+        pkt = _are_you_there_packet(0x11223344)
+        assert pkt == bytes.fromhex("10000000030000004433221100000000")
+        assert len(pkt) == 0x10
+
+    async def test_broadcast_scan_sends_packets_with_that_layout(self) -> None:
+        # The scan must send exactly the shared helper's layout: size
+        # 0x10, ptype 0x03, seq 0, a non-zero sender id (the IC-7610
+        # ignores sender_id=0) and remote_id 0.
+        fake = _FakeUdpSocket({})
+        with _patched_lan_socket(fake):
+            await discover_lan_radios(timeout=3.0)
+
+        assert fake.sent, "the scan must send at least one probe"
+        import struct
+
+        for data in fake.sent:
+            size, ptype, seq = struct.unpack_from("<IHH", data, 0)
+            sender, remote = struct.unpack_from("<II", data, 8)
+            assert (size, ptype, seq) == (0x10, 0x03, 0)
+            assert sender != 0
+            assert remote == 0
+
+
+# ---------------------------------------------------------------------------
+# Unicast "Are You There" probe (probe_lan_radio) — MOR-3669
+# ---------------------------------------------------------------------------
+
+
+class TestProbeLanRadioFakeSocket:
+    async def test_returns_true_on_first_i_am_here_and_stops(self) -> None:
+        addr = ("192.168.1.50", 50001)
+        fake = _FakeUdpSocket({1: [(_i_am_here(0xDEADBEEF), addr)]})
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is True
+        assert fake.send_count == 1  # returned on the first answer
+        assert fake.sent_to == [addr]  # unicast to the host, not broadcast
+        assert fake.closed
+
+    async def test_answer_from_a_different_host_does_not_count(self) -> None:
+        other = ("192.168.1.99", 50001)
+        fake = _FakeUdpSocket({1: [(_i_am_here(0x1), other)]})
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is False
+        assert fake.closed
+
+    async def test_datagram_that_is_not_i_am_here_does_not_count(self) -> None:
+        addr = ("192.168.1.50", 50001)
+        noise = bytearray(0x10)
+        import struct
+
+        struct.pack_into("<I", noise, 0, 0x10)
+        struct.pack_into("<H", noise, 4, 0x00)  # not I_AM_HERE (0x04)
+        fake = _FakeUdpSocket({1: [(bytes(noise), addr)]})
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is False
+
+    async def test_radio_answering_only_a_later_probe_is_found(self) -> None:
+        # Like the scan, the probe retransmits across the window instead of
+        # trusting one datagram.
+        addr = ("192.168.1.50", 50001)
+        fake = _FakeUdpSocket({3: [(_i_am_here(0x2), addr)]})
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is True
+        assert fake.send_count >= 3
+
+    async def test_silent_host_returns_false_and_closes_socket(self) -> None:
+        fake = _FakeUdpSocket({})
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is False
+        assert fake.send_count >= 2  # kept retransmitting through the window
+        assert fake.closed
+
+    async def test_recvfrom_connection_refused_returns_false(self) -> None:
+        # ICMP port unreachable surfaces as ConnectionRefusedError on some
+        # platforms; it must end the probe as a plain False.
+        fake = _FakeUdpSocket({}, recv_error_always=ConnectionRefusedError())
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is False
+        assert fake.closed
+
+    async def test_recvfrom_host_unreachable_errno_returns_false(self) -> None:
+        err = OSError(errno.EHOSTUNREACH, "no route to host")
+        fake = _FakeUdpSocket({}, recv_error_always=err)
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is False
+        assert fake.closed
+
+    async def test_sendto_connection_refused_returns_false(self) -> None:
+        # A pending ICMP error can surface from a later sendto (Linux
+        # retransmits) instead of from recvfrom.
+        fake = _FakeUdpSocket({}, send_error=ConnectionRefusedError())
+        with _patched_lan_socket(fake):
+            result = await probe_lan_radio("192.168.1.50", timeout=3.0)
+
+        assert result is False
+        assert fake.closed
+
+    async def test_cancellation_mid_probe_closes_socket(self) -> None:
+        # The 300 s window is far beyond the test's lifetime, so only the
+        # cancellation stop signal can end the probe loop and close the
+        # socket. The real clock is used on purpose: freezing time.monotonic
+        # also freezes the event loop's clock, and the awaits below would
+        # never fire — the hang this test showed on the CI Mac mini.
+        fake = _FakeUdpSocket({})
+        with _patched_lan_socket(fake, step=None):
+            probe = asyncio.create_task(probe_lan_radio("192.168.1.50", timeout=300.0))
+            await asyncio.sleep(0.15)
+            assert not fake.closed
+            probe.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await probe
+
+            deadline = time.perf_counter() + 5.0
+            while not fake.closed:
+                assert time.perf_counter() < deadline, (
+                    "probe socket still open after cancellation"
+                )
+                await asyncio.sleep(0.01)
+
+
+class TestProbeLanRadioRealSocket:
+    async def test_running_simulator_answers(self) -> None:
+        # The IC-7610 LAN wire simulator answers the control-port handshake;
+        # the probe must see its "I Am Here" on the simulator's actual
+        # ephemeral port.
+        sim = MockIcomRadio()
+        await sim.start()
+        try:
+            result = await probe_lan_radio("127.0.0.1", sim.control_port, timeout=2.0)
+        finally:
+            await sim.stop()
+
+        assert result is True
+
+    async def test_closed_loopback_port_returns_false_within_window(self) -> None:
+        # Nothing listens on the port (the ICMP port-unreachable path, or
+        # plain silence on platforms that do not report it to unconnected
+        # sockets): the probe ends in False, never an exception.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        finally:
+            sock.close()
+
+        t0 = time.monotonic()
+        result = await probe_lan_radio("127.0.0.1", port, timeout=1.0)
+        elapsed = time.monotonic() - t0
+
+        assert result is False
+        assert elapsed <= 1.0 + 2.0
+
+    async def test_bound_silent_socket_returns_false_at_window_end(self) -> None:
+        # A socket that is bound but never answers is a blackhole: only the
+        # window can end it.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            t0 = time.monotonic()
+            result = await probe_lan_radio("127.0.0.1", port, timeout=1.0)
+            elapsed = time.monotonic() - t0
+        finally:
+            sock.close()
+
+        assert result is False
+        assert 0.9 <= elapsed <= 3.0
+
+    async def test_unresolvable_host_returns_false(self) -> None:
+        # ".invalid" can never resolve (RFC 6761): the name-resolution
+        # failure is a plain False.
+        result = await probe_lan_radio(
+            "rigplane-no-such-host-3669.invalid", timeout=1.0
+        )
+
+        assert result is False
 
 
 class _FakeRouteSocket:
