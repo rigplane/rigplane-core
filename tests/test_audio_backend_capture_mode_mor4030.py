@@ -28,9 +28,17 @@ class FakeSd:
     """The slice of ``sounddevice`` the streams touch, recording every call."""
 
     def __init__(
-        self, *, refuse_exclusive=False, refuse_shared=False, refuse_at="open"
+        self,
+        *,
+        refuse_exclusive=False,
+        refuse_shared=False,
+        refuse_at="open",
+        exclusive_error: BaseException | None = None,
     ) -> None:
-        self.refuse_exclusive = refuse_exclusive
+        self.refuse_exclusive = refuse_exclusive or exclusive_error is not None
+        self.exclusive_error = exclusive_error or OSError(
+            "Error opening stream: exclusive-mode format not accepted"
+        )
         self.refuse_shared = refuse_shared
         # "open": the constructor raises; "start": the stream builds, then
         # ``start()`` raises (PortAudio can refuse at either point).
@@ -54,21 +62,21 @@ class FakeSd:
             def __init__(self, **kw: object) -> None:
                 sd.opened.append({"kind": self.kind, **kw})
                 extra = kw.get("extra_settings")
-                self.error: str | None = None
+                self.error: BaseException | None = None
                 if extra is not None and extra.exclusive:
                     if sd.refuse_exclusive:
-                        self.error = "Error opening stream: device unavailable"
+                        self.error = sd.exclusive_error
                 elif sd.refuse_shared:
-                    self.error = "Error opening stream: shared refused"
+                    self.error = OSError("Error opening stream: shared refused")
                 if self.error is not None and sd.refuse_at == "open":
-                    raise OSError(self.error)
+                    raise self.error
                 self.closed = False
                 self.started = False
                 sd.streams.append(self)
 
             def start(self) -> None:
                 if self.error is not None:
-                    raise OSError(self.error)
+                    raise self.error
                 self.started = True
 
             def stop(self) -> None:
@@ -89,7 +97,10 @@ class FakeSd:
 
     def query_devices(self, index):
         self.queries.append(("device", index))
-        return {"hostapi": 3 if index == WASAPI_DEVICE else 0}
+        return {
+            "name": "Microphone (USB Audio CODEC)",
+            "hostapi": 3 if index == WASAPI_DEVICE else 0,
+        }
 
     def query_hostapis(self, index):
         self.queries.append(("host", index))

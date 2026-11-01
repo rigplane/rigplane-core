@@ -553,6 +553,40 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     },
   );
 
+  // MOR-4030 case C: another program holds the codec exclusively. The one
+  // plain-words message, once per failure stretch (the refusal stops the RX
+  // demand, so a repeated frame is ignored until the operator retries).
+  it('device_in_use gets the in-use toast once and latches the refusal', async () => {
+    const { audioManager, audio, notify, socket } = await rig('localhost');
+    const frame = {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: device_in_use',
+      reason: 'device_in_use',
+    };
+    serverText(socket, frame);
+    serverText(socket, frame);
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(
+      'error', expect.any(String), 'rxAudioDeviceInUse',
+    );
+    expect(audioManager.rxEnabled).toBe(false);
+    expect(audio.getAudioState().rxError).toBe(true);
+  });
+
+  it('a retry after a device_in_use refusal clears the latch and can fail again', async () => {
+    const { audioManager, audio, notify, socket } = await rig('localhost');
+    const frame = {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: device_in_use',
+      reason: 'device_in_use',
+    };
+    serverText(socket, frame);
+    audioManager.startRx();
+    expect(audio.getAudioState().rxError).toBe(false);
+    serverText(FakeWebSocket.instances[FakeWebSocket.instances.length - 1], frame);
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ['unknown', 'other'],
     ['missing', undefined],
@@ -637,6 +671,28 @@ describe('RX refusal toast through the real runtime notification path (MOR-3823)
     flushSync();
 
     expect(renderedErrorToasts()).toEqual([NEUTRAL_TOAST_TEXT]);
+  });
+
+  it.each([
+    ['en-US', 'The radio\'s audio input is in use by another program. Close it and RigPlane will reconnect.'],
+    ['ru-RU', 'Звуковой вход радио занят другой программой. Закройте её, и RigPlane подключится снова.'],
+    ['ja-JP', '無線機の音声入力は別のプログラムが使用中です。そのプログラムを閉じると、RigPlane が再接続します。'],
+  ])('renders the in-use sentence in %s through the real runtime path', (locale, text) => {
+    setLocale(locale as 'en-US' | 'ru-RU' | 'ja-JP');
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    runtimeBoundAudioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    serverText(socket, {
+      type: 'error',
+      message: 'audio_start: RX audio failed to start: device_in_use',
+      reason: 'device_in_use',
+    });
+    flushSync();
+
+    expect(renderedErrorToasts()).toEqual([text]);
   });
 
   it('renders nothing when the runtime notifier binding was never installed', async () => {
