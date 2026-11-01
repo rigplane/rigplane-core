@@ -931,6 +931,9 @@ class _PortAudioTxStream:
         playout: TxPlayoutPolicy = "adaptive",
     ) -> None:
         self._sd = sd
+        # numpy handle for the adaptive drift-compensated read (MOR-4013);
+        # the immediate TX policy never touches it.
+        self._np = _np
         self._device_index = device_index
         self._sample_rate = sample_rate
         self._channels = channels
