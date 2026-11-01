@@ -202,7 +202,9 @@ def test_serial_device_secret_resolved_in_step_env() -> None:
     )
     for step_name in ("Check radio configuration", "Validate"):
         block = steps[step_name]
-        assert expected in block, f"{step_name} must resolve BENCH_FTX1_SERIAL at step env"
+        assert expected in block, (
+            f"{step_name} must resolve BENCH_FTX1_SERIAL at step env"
+        )
     assert "matrix.icom_serial_device" not in _radio_job_text()
 
 
@@ -211,7 +213,7 @@ def test_simulator_lifecycle_uses_process_group() -> None:
     start = _run_text(steps["Start IC-7610 LAN simulator"]) or ""
     stop = _run_text(steps["Stop IC-7610 LAN simulator"]) or ""
     assert "setsid uv run python scripts/bench/ic7610_lan_simulator.py" in start
-    assert "kill -TERM -- \"-$(cat \"$RUNNER_TEMP/sim.pid\")\"" in stop
+    assert 'kill -TERM -- "-$(cat "$RUNNER_TEMP/sim.pid")"' in stop
 
 
 def test_matrix_matches_current_bench_inventory() -> None:
@@ -228,7 +230,9 @@ def test_matrix_matches_current_bench_inventory() -> None:
         "BENCH_IC7300_SERIAL",
         "BENCH_IC7610_HOST",
     ):
-        assert dropped not in job_text, f"removed bench leg still in workflow: {dropped!r}"
+        assert dropped not in job_text, (
+            f"removed bench leg still in workflow: {dropped!r}"
+        )
 
 
 def test_workflow_uses_only_self_hosted_runners() -> None:
