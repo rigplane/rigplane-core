@@ -198,7 +198,10 @@ def test_frontend_reset_reaches_the_wire_only_through_the_two_clicks() -> None:
     double-click (``resetWidthRow`` via the wired ``onWidthReset`` prop) and
     the sidebar Reset button (``handleTableReset``)."""
 
-    definitions = _grep_frontend(r"\bonFilterWidthReset\s*:")
+    # An object-literal member whose value is the handler; a JSX ternary such
+    # as ``cond ? filterIntents.onFilterWidthReset : undefined`` only passes
+    # the handler along and is not a definition.
+    definitions = _grep_frontend(r"^\s*onFilterWidthReset\s*:\s*\(")
     assert [file for file, _, _ in definitions] == [
         "frontend/src/lib/runtime/commands/panel-commands.ts"
     ]
