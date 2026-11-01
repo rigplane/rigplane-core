@@ -492,6 +492,10 @@
         "operational": true
       }
     },
+    "filterWidthDisplay": {
+      "state": "unknown",
+      "reason": "not-observed"
+    },
     "filterWidthMin": {
       "reading": {
         "status": "unknown"
