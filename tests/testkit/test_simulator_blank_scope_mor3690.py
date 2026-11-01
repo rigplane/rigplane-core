@@ -22,49 +22,13 @@ from rigplane.scope import ScopeAssembler
 from rigplane.web.radio_poller import EnableScope
 from rigplane.web.server import WebServer
 from rigplane_testkit.icom import MockIcomRadio
+from rigplane_testkit.sim.engine.core import ManualClock
 from test_web_server_coverage import _scope_radio
-from testkit.test_simulator_faults import _HOST, _UdpClient, _openclose
-
-_WAVE_PREFIX = bytes.fromhex("fefee0982700")
-_ACK = bytes.fromhex("fefee098fbfd")
-
-
-class _Clock:
-    def __init__(self) -> None:
-        self.now = 0.0
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-async def _client() -> _UdpClient:
-    client = _UdpClient()
-    loop = asyncio.get_running_loop()
-    await loop.create_datagram_endpoint(lambda: client, local_addr=(_HOST, 0))
-    return client
-
-
-async def _open(client: _UdpClient, sim: MockIcomRadio, seq: int = 1) -> None:
-    client.send(_openclose(seq=seq), sim.civ_port)
-    marker = await client.recv()
-    assert marker[0x15:] == bytes.fromhex("fefe009800fd")
+from testkit.test_simulator_scope_stream import _ACK, _client, _open, _waves
 
 
 def _set(sim: MockIcomRadio, payload: bytes) -> None:
     assert sim._dispatch_civ(0x27, payload, 0xE0) == _ACK  # noqa: SLF001
-
-
-async def _waves(client: _UdpClient) -> list[bytes]:
-    await asyncio.sleep(0.01)
-    frames = []
-    while not client.queue.empty():
-        packet = client.queue.get_nowait()
-        if packet[0x15:].startswith(_WAVE_PREFIX):
-            frames.append(packet[0x15:])
-    return frames
 
 
 def _decode(frame: bytes) -> SimpleNamespace:
@@ -79,7 +43,7 @@ def _decode(frame: bytes) -> SimpleNamespace:
 
 
 async def _collect_blank_waves() -> list[SimpleNamespace]:
-    clock = _Clock()
+    clock = ManualClock()
     sim = MockIcomRadio(scope_stream=True, scope_blank_waves=True, clock=clock)
     await sim.start()
     client = await _client()
