@@ -57,7 +57,6 @@ jobs:
             icom_host: ""
             icom_user: ""
             icom_pass: ""
-            icom_serial_device: ${{ secrets.BENCH_FTX1_SERIAL }}
             bench_lock: "true"
             start_simulator: "false"
             hardware_pytest: "false"
@@ -69,7 +68,6 @@ jobs:
             icom_host: "127.0.0.1"
             icom_user: "testuser"
             icom_pass: "testpass"
-            icom_serial_device: ""
             bench_lock: "false"
             start_simulator: "true"
             hardware_pytest: "true"
@@ -115,7 +113,7 @@ jobs:
           ICOM_HOST: ${{ matrix.icom_host }}
           ICOM_USER: ${{ matrix.icom_user }}
           ICOM_PASS: ${{ matrix.icom_pass }}
-          ICOM_SERIAL_DEVICE: ${{ matrix.icom_serial_device }}
+          ICOM_SERIAL_DEVICE: ${{ matrix.config_kind == 'serial' && secrets.BENCH_FTX1_SERIAL || '' }}
         run: |
           configured=true
           case "$CONFIG_KIND" in
@@ -165,7 +163,7 @@ jobs:
         if: matrix.start_simulator == 'true' && steps.config.outputs.configured == 'true' && steps.mode.outputs.dry_run != 'true'
         run: |
           port_file="$RUNNER_TEMP/sim-control-port"
-          uv run python scripts/bench/ic7610_lan_simulator.py --port-file "$port_file" &
+          setsid uv run python scripts/bench/ic7610_lan_simulator.py --port-file "$port_file" &
           echo $! > "$RUNNER_TEMP/sim.pid"
           ready=false
           for _ in $(seq 1 60); do
@@ -188,7 +186,7 @@ jobs:
           ICOM_HOST: ${{ matrix.icom_host }}
           ICOM_USER: ${{ matrix.icom_user }}
           ICOM_PASS: ${{ matrix.icom_pass }}
-          ICOM_SERIAL_DEVICE: ${{ matrix.icom_serial_device }}
+          ICOM_SERIAL_DEVICE: ${{ matrix.config_kind == 'serial' && secrets.BENCH_FTX1_SERIAL || '' }}
           RIGPLANE_VALIDATION_ALLOW_HARDWARE: "1"
           CONNECT: ${{ matrix.connect }}
           MODE: ${{ steps.mode.outputs.mode }}
@@ -249,7 +247,7 @@ jobs:
         if: always() && matrix.start_simulator == 'true' && steps.config.outputs.configured == 'true'
         run: |
           if [ -f "$RUNNER_TEMP/sim.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/sim.pid")" 2>/dev/null || true
+            kill -TERM -- "-$(cat "$RUNNER_TEMP/sim.pid")" 2>/dev/null || true
           fi
 
       - name: Release bench lock

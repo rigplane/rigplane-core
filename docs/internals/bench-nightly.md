@@ -17,8 +17,8 @@ The macOS bench runner is `mm-macos-ci-1` (org runner, runner group
 `rigplane-ci`): online with labels exactly `self-hosted`, `macOS`, `ARM64`,
 `platform`, `bench`. Real-radio legs use `[self-hosted, macOS, ARM64, bench]`.
 
-The IC-7610 hardware leg was removed on 2026-10-23: the bench no longer hosts
-an IC-7610. Nightly IC-7610 coverage uses
+The IC-7610 hardware leg was removed: the bench no longer hosts an IC-7610.
+Nightly IC-7610 coverage uses
 `rigplane_testkit/icom/simulator.py` (`MockIcomRadio` with the recorded LAN
 table from `tests/testkit/ic7610_fakes.py: ic7610_lan_fake`), started on
 loopback inside the job via `scripts/bench/ic7610_lan_simulator.py`.
@@ -28,8 +28,7 @@ there is no self-hosted Windows runner on GTR7 available to `rigplane-core`
 today. It will not return until such a runner exists.
 
 The IC-705 leg was dropped while that radio is away from the bench (field
-use). It will return through a follow-up that reads the matrix from an
-infra-control inventory file; until then it is not in this workflow.
+use); until it returns it is not in this workflow.
 
 Light-runner legs use `[self-hosted, Linux, ARM64, light]` (repo runners
 `mm-light-core-1`/`2`/`3` and org runner `mm-light-org-1`).

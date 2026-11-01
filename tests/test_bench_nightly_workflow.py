@@ -180,6 +180,40 @@ def test_matrix_runs_on_comes_from_each_entry() -> None:
     assert 'runs_on: \'["self-hosted", "Linux", "ARM64", "light"]\'' in job_text
 
 
+def test_strategy_matrix_does_not_reference_secrets() -> None:
+    job_text = _radio_job_text()
+    strategy_match = re.search(
+        r"^    strategy:\n(?:(?:^      .*\n)|(?:^        .*\n))*",
+        job_text,
+        re.MULTILINE,
+    )
+    assert strategy_match is not None, "radio job strategy block missing"
+    strategy_text = strategy_match.group(0)
+    assert "secrets." not in strategy_text, (
+        "secrets context is invalid inside jobs.<id>.strategy; resolve at step env"
+    )
+
+
+def test_serial_device_secret_resolved_in_step_env() -> None:
+    steps = _named_steps(_step_blocks(_radio_job_text()))
+    expected = (
+        "ICOM_SERIAL_DEVICE: ${{ matrix.config_kind == 'serial' && "
+        "secrets.BENCH_FTX1_SERIAL || '' }}"
+    )
+    for step_name in ("Check radio configuration", "Validate"):
+        block = steps[step_name]
+        assert expected in block, f"{step_name} must resolve BENCH_FTX1_SERIAL at step env"
+    assert "matrix.icom_serial_device" not in _radio_job_text()
+
+
+def test_simulator_lifecycle_uses_process_group() -> None:
+    steps = _named_steps(_step_blocks(_radio_job_text()))
+    start = _run_text(steps["Start IC-7610 LAN simulator"]) or ""
+    stop = _run_text(steps["Stop IC-7610 LAN simulator"]) or ""
+    assert "setsid uv run python scripts/bench/ic7610_lan_simulator.py" in start
+    assert "kill -TERM -- \"-$(cat \"$RUNNER_TEMP/sim.pid\")\"" in stop
+
+
 def test_matrix_matches_current_bench_inventory() -> None:
     job_text = _radio_job_text()
     assert "radio: ftx1" in job_text
