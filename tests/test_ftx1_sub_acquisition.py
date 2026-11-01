@@ -157,8 +157,14 @@ class _BenchWire:
         answers: Mapping[str, str],
         stale: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
-        self._answers = dict(answers)
-        self._stale = {cmd: list(lines) for cmd, lines in (stale or {}).items()}
+        # Both tables are keyed by the request body WITHOUT its ";"
+        # terminator — the same normalisation the writer applies when it
+        # records each outgoing request, so every query the radio issues
+        # (poll_medium's frequency read first) finds its scripted answer.
+        self._answers = {cmd.rstrip(";"): body for cmd, body in answers.items()}
+        self._stale = {
+            cmd.rstrip(";"): list(lines) for cmd, lines in (stale or {}).items()
+        }
         self._pending_body: str | None = None
         self.reader = self._Reader(self)
         self.writer = self._Writer(self)

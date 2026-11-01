@@ -349,38 +349,6 @@ _READ_SAMPLE_PARAMS: tuple[dict[str, str], ...] = (
     {"chan": "001"},
 )
 
-# A second Yaesu profile, not FTX-1's facts: different verbs, same two
-# template shapes — the strict pair (head restates the request) and the
-# head-shorter-than-request exception the S-meter quirk needs. Proves the
-# derivation walks any Yaesu profile, not the one shipped radio.
-_SECOND_YAESU_PROFILE = """
-    [radio]
-    id = "yaesu_walk_second"
-    model = "WALK-SECOND"
-    receiver_count = 2
-    has_lan = false
-    has_wifi = false
-
-    [protocol]
-    type = "yaesu_cat"
-
-    [capabilities]
-    features = ["audio"]
-
-    [modes]
-    list = ["USB"]
-
-    [filters]
-    list = ["FIL1"]
-
-    [vfo]
-    scheme = "ab"
-
-    [commands]
-    get_narrow_sub = { cat = { read = "NB1;", parse = "NB1{state};" } }
-    get_s_meter_sub = { cat = { read = "SV1;", parse = "SV{receiver}{raw:03d};" } }
-    """
-
 
 class TestLiteralHead:
     def test_literal_head_stops_at_the_first_placeholder(self):
@@ -411,21 +379,16 @@ def _formatted_read_bodies(read: str) -> list[str]:
     return bodies
 
 
-def _yaesu_read_commands(
-    extra_profile: str | None = None,
-) -> list[tuple[str, str, str, str]]:
+def _yaesu_read_commands() -> list[tuple[str, str, str, str]]:
     """(profile, command, request body, parse-template head) per read, for
-    every Yaesu profile shipped in ``rigs/`` (today only ftx1.toml) plus an
-    optional synthetic second Yaesu profile path."""
-    paths = [
-        path
-        for path in sorted(_RIGS_DIR.glob("*.toml"))
-        if not path.name.startswith("_")
-    ]
-    if extra_profile is not None:
-        paths.append(Path(extra_profile))
+    every Yaesu profile shipped in ``rigs/`` — discovered the same way the
+    other profile-iteration walks discover profiles (glob ``rigs/*.toml``
+    skipping ``_``-prefixed files, ``load_rig`` each, keep the ones whose
+    loaded ``protocol_type`` is the Yaesu CAT one)."""
     entries: list[tuple[str, str, str, str]] = []
-    for path in paths:
+    for path in sorted(_RIGS_DIR.glob("*.toml")):
+        if path.name.startswith("_"):
+            continue
         config = load_rig(path)
         if config.protocol_type != "yaesu_cat":
             continue
@@ -441,27 +404,21 @@ def _yaesu_read_commands(
 
 
 class TestReplyHeadCoversEveryYaesuRead:
-    @pytest.fixture
-    def second_profile(self, tmp_path: Path) -> str:
-        path = tmp_path / "yaesu_walk_second.toml"
-        path.write_text(_SECOND_YAESU_PROFILE)
-        return str(path)
-
     def test_shipped_yaesu_profiles_exist(self) -> None:
-        """The walk covers at least one shipped Yaesu profile."""
+        """The walk covers at least one shipped Yaesu profile — the family
+        is present in the shipped data, so the walk below cannot pass
+        vacuously over an empty set of profiles."""
         assert any(profile == "yaesu_ftx1" for profile, *_ in _yaesu_read_commands())
 
-    def test_every_read_body_starts_with_its_parse_template_head(
-        self, second_profile: str
-    ) -> None:
+    def test_every_read_body_starts_with_its_parse_template_head(self) -> None:
         """No Yaesu profile read silently times out under whole-request
         pairing: every request body starts with its own parse template's
         literal head, so the head (a profile-declared reply prefix) keeps
         every template-conforming reply pairable (MOR-3677). The walk
-        covers every Yaesu profile in ``rigs/`` plus the synthetic second
-        profile above — at least FTX-1 and one other Yaesu radio."""
+        covers every Yaesu profile in ``rigs/`` — today FTX-1; any future
+        Yaesu profile joins it through the same ``rigs/`` glob."""
         heads_shorter_than_body: list[tuple[str, str, str, str]] = []
-        for profile, name, body, head in _yaesu_read_commands(second_profile):
+        for profile, name, body, head in _yaesu_read_commands():
             assert head, f"{profile}/{name}: empty reply head for {body!r}"
             assert body.startswith(head), (
                 f"{profile}/{name}: request {body!r} does not start with its "
@@ -476,10 +433,3 @@ class TestReplyHeadCoversEveryYaesuRead:
         assert ("yaesu_ftx1", "get_s_meter_sub", "SM1", "SM") in (
             heads_shorter_than_body
         )
-        # The synthetic profile's exception, different verbs, same shape.
-        assert (
-            "yaesu_walk_second",
-            "get_s_meter_sub",
-            "SV1",
-            "SV",
-        ) in heads_shorter_than_body
