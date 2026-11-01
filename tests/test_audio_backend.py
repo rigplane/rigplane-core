@@ -4,8 +4,10 @@ from __future__ import annotations
 
 
 import asyncio
+import math
 import sys
 
+import numpy as np
 import pytest
 
 from rigplane.audio.backend import (
@@ -1119,7 +1121,17 @@ class TestPortAudioBackendDeps:
         assert isinstance(stream, TxStream)
 
     @pytest.mark.asyncio()
-    async def test_portaudio_tx_write_drops_oldest_when_buffer_full(self) -> None:
+    async def test_portaudio_tx_write_trims_once_to_fill_target_when_capped(
+        self,
+    ) -> None:
+        """Enqueue overrun trims the ring once back to the fill target.
+
+        The hard cap is fill target (150 ms) + headroom (100 ms) = 250 ms.
+        Each overflowing write drops the stalest audio back down to the 150 ms
+        target in ONE trim (MOR-4013) instead of the old per-write frame drop
+        that pinned a free-running 1 s ring at capacity.
+        """
+
         class FakeSd:
             class OutputStream:
                 def __init__(self, **kw: object) -> None:
@@ -1147,13 +1159,18 @@ class TestPortAudioBackendDeps:
         for _ in range(180):
             await stream.write(frame)
 
+        # 180 × 320 audio frames = 57600 frames in. The cap is 250 ms
+        # (12000 frames): writes 1-37 fill to 12160 -> write 38 trims back
+        # to the 150 ms target; from there every 16th write (54, 70, ...,
+        # 166) trims 5120 frames. 9 trims, 45920 frames (956.7 ms) dropped,
+        # 143 whole write-frames dropped, 11680 frames (243.3 ms) buffered.
         health = stream.write_health
         assert health.frames_queued == 180
-        assert health.frames_dropped == 30
-        assert health.overrun_events == 30
-        assert health.buffered_audio_ms == pytest.approx(1000.0)
-        assert health.dropped_audio_ms == pytest.approx(200.0)
-        assert health.overrun_audio_ms == pytest.approx(200.0)
+        assert health.frames_dropped == 143
+        assert health.overrun_events == 9
+        assert health.buffered_audio_ms == pytest.approx(11_680 / 48.0)
+        assert health.dropped_audio_ms == pytest.approx(45_920 / 48.0)
+        assert health.overrun_audio_ms == pytest.approx(45_920 / 48.0)
 
         await stream.stop()
 
@@ -1161,6 +1178,11 @@ class TestPortAudioBackendDeps:
     async def test_portaudio_tx_callback_consumes_realtime_without_blocking_write(
         self,
     ) -> None:
+        """Matched producer/device clocks: the ring holds at the fill target
+        and every block takes the exact bit-identical copy path (ratio 1.0,
+        MOR-4013). The producer replenishes one 20 ms frame per consumed
+        block, so the fill error stays inside the drift deadband and no
+        resampling ever engages."""
         created: list[object] = []
 
         class FakeSd:
@@ -1194,37 +1216,45 @@ class TestPortAudioBackendDeps:
         await stream.start()
         output = created[0]
 
-        input_frames = [frame(idx) for idx in range(150)]
+        blocks = 40
+        input_frames = [frame(idx) for idx in range(8 + blocks)]
         output_frames: list[bytes] = []
 
-        async def enqueue_one_second() -> None:
-            for pcm in input_frames:
+        # Prime with 8 frames (160 ms >= the 150 ms fill target), then keep
+        # the producer exactly matched with the device cadence.
+        async def enqueue_and_replenish() -> None:
+            for pcm in input_frames[:8]:
                 await stream.write(pcm)
 
-        await asyncio.wait_for(enqueue_one_second(), timeout=0.25)
-        assert stream.write_health.buffered_audio_ms == pytest.approx(1000.0)
+        await asyncio.wait_for(enqueue_and_replenish(), timeout=0.25)
+        assert stream.write_health.buffered_audio_ms == pytest.approx(160.0)
 
-        for _ in range(50):
+        for idx in range(blocks):
             outdata = bytearray(960 * 16 * 2)
             output.callback(outdata, 960, None, None)  # type: ignore[attr-defined]
             output_frames.append(bytes(outdata))
+            await stream.write(input_frames[8 + idx])
+            assert stream.write_health.buffered_audio_ms == pytest.approx(160.0)
 
-        assert b"".join(output_frames) == b"".join(input_frames)
-        assert len(output_frames) == 50
-        assert [len(write) for write in output_frames] == [960 * 16 * 2] * 50
+        assert b"".join(output_frames) == b"".join(input_frames[:blocks])
+        assert [len(write) for write in output_frames] == [960 * 16 * 2] * blocks
 
         health = stream.write_health
-        assert health.frames_queued == 150
+        assert health.frames_queued == 8 + blocks
         assert health.frames_dropped == 0
-        assert health.write_attempts == 50
-        assert health.writes_completed == 50
-        assert health.enqueued_audio_ms == pytest.approx(1000.0)
-        assert health.queued_audio_ms == pytest.approx(1000.0)
-        assert health.buffered_audio_ms == 0.0
-        assert health.callback_consumed_audio_ms == pytest.approx(1000.0)
-        assert health.consumed_audio_ms == pytest.approx(1000.0)
-        assert health.callback_output_audio_ms == pytest.approx(1000.0)
-        assert health.written_audio_ms == pytest.approx(1000.0)
+        assert health.overrun_events == 0
+        assert health.underrun_events == 0
+        assert health.refill_events == 0
+        assert health.playback_read_ratio == 1.0
+        assert health.write_attempts == blocks
+        assert health.writes_completed == blocks
+        assert health.enqueued_audio_ms == pytest.approx((8 + blocks) * 20.0)
+        assert health.queued_audio_ms == pytest.approx((8 + blocks) * 20.0)
+        assert health.buffered_audio_ms == pytest.approx(160.0)
+        assert health.callback_consumed_audio_ms == pytest.approx(blocks * 20.0)
+        assert health.consumed_audio_ms == pytest.approx(blocks * 20.0)
+        assert health.callback_output_audio_ms == pytest.approx(blocks * 20.0)
+        assert health.written_audio_ms == pytest.approx(blocks * 20.0)
         assert health.dropped_audio_ms == 0.0
         assert health.callback_underrun_audio_ms == 0.0
         assert health.underrun_audio_ms == 0.0
@@ -1234,27 +1264,78 @@ class TestPortAudioBackendDeps:
         await stream.stop()
 
     @pytest.mark.asyncio()
-    async def test_portaudio_tx_callback_reports_underrun_with_silence(
+    async def test_portaudio_tx_dry_ring_counts_one_refill_and_silence(
         self,
     ) -> None:
-        backend = PortAudioBackend(dependency_loader=lambda: (object(), object()))
+        """A stalled producer drops the stream to unprimed ONCE: the dry
+        block counts a single underrun/refill event and later silent blocks
+        count nothing until the ring refills to the target (MOR-4013)."""
+        created: list[object] = []
+
+        class FakeSd:
+            class OutputStream:
+                def __init__(self, **kw: object) -> None:
+                    self.callback = kw["callback"]
+                    created.append(self)
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        def frame(idx: int) -> bytes:
+            value = 3000 + 37 * idx
+            # 960 stereo audio frames (20 ms @ 48 kHz) of a constant value.
+            return value.to_bytes(2, "little", signed=True) * 1920
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), np))
         stream = backend.open_tx(AudioDeviceId(0), sample_rate=48_000, channels=2)
+        await stream.start()
+        callback = created[0].callback  # type: ignore[attr-defined]
+
+        # Prime with 8 × 20 ms frames (160 ms >= the 150 ms fill target).
+        for idx in range(8):
+            await stream.write(frame(idx))
+
         outdata = bytearray(960 * 2 * 2)
+        callback(outdata, 960, None, None)  # type: ignore[operator]
+        assert bytes(outdata) == frame(0)
 
-        stream._output_callback(outdata, 960, None, None)  # type: ignore[attr-defined]
+        # Drain the ring: blocks stay primed while audio remains.
+        for _ in range(7):
+            callback(outdata, 960, None, None)  # type: ignore[operator]
 
+        # The dry block: full-block silence plus ONE underrun/refill event.
+        callback(outdata, 960, None, None)  # type: ignore[operator]
         assert bytes(outdata) == b"\x00" * (960 * 2 * 2)
+
+        # Further starved blocks are plain unprimed silence: no per-block
+        # underrun accounting.
+        for _ in range(2):
+            callback(outdata, 960, None, None)  # type: ignore[operator]
+            assert bytes(outdata) == b"\x00" * (960 * 2 * 2)
+
         health = stream.write_health
-        assert health.write_attempts == 1
-        assert health.writes_completed == 1
-        assert health.callback_consumed_audio_ms == 0.0
-        assert health.consumed_audio_ms == 0.0
-        assert health.callback_output_audio_ms == pytest.approx(20.0)
-        assert health.written_audio_ms == pytest.approx(20.0)
-        assert health.callback_underrun_events == 1
         assert health.underrun_events == 1
-        assert health.callback_underrun_audio_ms == pytest.approx(20.0)
-        assert health.underrun_audio_ms == pytest.approx(20.0)
+        assert health.refill_events == 1
+        assert health.playback_read_ratio == 1.0
+
+        # Refill to the target: playback resumes from the next frame with
+        # no additional events.
+        for idx in range(8, 16):
+            await stream.write(frame(idx))
+        callback(outdata, 960, None, None)  # type: ignore[operator]
+        assert bytes(outdata) == frame(8)
+
+        health = stream.write_health
+        assert health.underrun_events == 1
+        assert health.refill_events == 1
+
+        await stream.stop()
 
     @pytest.mark.asyncio()
     async def test_portaudio_tx_callback_handles_output_failure(self) -> None:
@@ -1300,10 +1381,13 @@ class TestPortAudioBackendDeps:
             value.to_bytes(2, "little", signed=True)
             for value in (100, -100, 200, -200, 300, -300)
         )
+        # Fill to the 150 ms priming target with the pattern followed by
+        # padding; playback starts only once the target is reached (MOR-4013).
+        padding = b"\x00\x00" * (7_200 * 2 - len(pcm) // 2)
 
         stream._running = True  # type: ignore[attr-defined]
-        await stream.write(pcm)
-        outdata = bytearray(len(pcm))
+        await stream.write(pcm + padding)
+        outdata = bytearray(3 * 2 * 2)
         stream._output_callback(outdata, 3, None, None)  # type: ignore[attr-defined]
 
         assert bytes(outdata) == pcm
@@ -1323,9 +1407,14 @@ class TestPortAudioBackendDeps:
 
         stream._output_callback(outdata, 960, None, Status())  # type: ignore[attr-defined]
 
+        # Never primed: the empty stream outputs silence and records the
+        # status flag, but a never-playing stream does not count underruns
+        # (MOR-4013).
+        assert bytes(outdata) == b"\x00" * (960 * 2 * 2)
         health = stream.write_health
         assert health.callback_status_flags == {"output_underflow": 1}
-        assert health.underrun_events == 1
+        assert health.underrun_events == 0
+        assert health.refill_events == 0
 
     @pytest.mark.asyncio()
     async def test_portaudio_tx_stop_closes_without_drain_wait(self) -> None:
@@ -1358,6 +1447,170 @@ class TestPortAudioBackendDeps:
         assert output.stopped is True  # type: ignore[attr-defined]
         assert output.closed is True  # type: ignore[attr-defined]
         assert stream.write_health.buffered_audio_ms == 0.0
+
+
+# ---------------------------------------------------------------------------
+# MOR-4013 — RX playback fill target + device-clock drift compensation
+# ---------------------------------------------------------------------------
+
+
+class TestPortAudioTxFillTargetAndDrift:
+    """The playback ring holds a small fill target and compensates device
+    clock drift instead of free-running at the 1 s capacity (MOR-4013).
+
+    Field evidence (IC-705 over bursty Wi-Fi): the producer delivers 50 Hz
+    frames in bursts while the cable device callback runs at 49.1-49.5 Hz
+    (1-2% slow), so a free-running ring pins at capacity and drops a frame
+    per write (overrun 96.9 s / 9503 events) or drains to per-block
+    zero-fill underruns (124.2 s / 6723 events).
+    """
+
+    FRAME_SAMPLES = 960  # 20 ms @ 48 kHz mono
+    FRAME_BYTES = FRAME_SAMPLES * 2
+    PRODUCER_RATIO = 50.0 / 49.25  # ≈ 1.5228% producer surplus (device slow)
+
+    def _make_stream(self) -> tuple[PortAudioBackend, object, object]:
+        created: list[object] = []
+
+        class FakeSd:
+            class OutputStream:
+                def __init__(self, **kw: object) -> None:
+                    self.callback = kw["callback"]
+                    created.append(self)
+
+                def start(self) -> None:
+                    pass
+
+                def stop(self) -> None:
+                    pass
+
+                def close(self) -> None:
+                    pass
+
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), np))
+        stream = backend.open_tx(
+            AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
+        )
+        return backend, stream, created[0].callback  # type: ignore[return-value]
+
+    def _delivery_schedule(
+        self,
+        blocks: int,
+        stall_start: int | None,
+        stall_blocks: int,
+    ) -> dict[int, list[int]]:
+        """Virtual-time producer: frame j is generated at device block
+        ``ceil((j+1)/R) - 1`` and delivered one block later on every second
+        frame (deterministic ±40 ms jitter, 2-frame catch-up bursts). Frames
+        whose delivery lands inside the long stall are held and flushed at
+        its end."""
+        schedule: dict[int, list[int]] = {}
+        j = 0
+        while True:
+            gen = math.ceil((j + 1) / self.PRODUCER_RATIO) - 1
+            if gen >= blocks:
+                break
+            block = gen + (j % 2)
+            if (
+                stall_start is not None
+                and stall_start <= block < stall_start + stall_blocks
+            ):
+                block = stall_start + stall_blocks
+            schedule.setdefault(block, []).append(j)
+            j += 1
+        return schedule
+
+    @pytest.mark.asyncio()
+    async def test_holds_fill_target_over_drift_bursts_and_long_stall(self) -> None:
+        """120 s of virtual time: a 1.52% fast producer feeding bursty writes
+        against a slow device clock stays banded around the 150 ms target —
+        no drift overruns, and one long stall counts exactly one refill."""
+        backend, stream, callback = self._make_stream()
+        await stream.start()
+
+        blocks = 6_000  # 120 s of device time at 49.25 Hz
+        stall_start, stall_blocks = 3_000, 30  # one 600 ms producer stall
+        schedule = self._delivery_schedule(blocks, stall_start, stall_blocks)
+
+        def frame(idx: int) -> bytes:
+            return ((idx * 37) % 30_001 + 100).to_bytes(
+                2, "little"
+            ) * self.FRAME_SAMPLES
+
+        fills: list[float] = []
+        outdata = bytearray(self.FRAME_BYTES)
+        pre_stall_overruns = -1
+        for block in range(blocks):
+            for idx in schedule.get(block, ()):
+                await stream.write(frame(idx))
+            callback(outdata, self.FRAME_SAMPLES, None, None)  # type: ignore[operator]
+            fills.append(stream.write_health.buffered_audio_ms)
+            if block == stall_start - 1:
+                pre_stall_overruns = stream.write_health.overrun_events
+
+        # Drift and jitter alone never overrun: the ring holds near the
+        # target instead of pinning at the 1 s capacity.
+        assert pre_stall_overruns == 0
+
+        warm = fills[250:]  # skip the priming ramp
+        assert max(fills) <= 250.0
+        assert float(np.percentile(warm, 95)) < 250.0
+        assert 120.0 <= float(np.median(warm)) <= 250.0
+
+        health = stream.write_health
+        assert health.fill_target_ms == 150.0
+        assert health.refill_events == 1
+        assert health.underrun_events == 1
+        assert health.overrun_events <= 5
+        assert abs(health.playback_read_ratio - self.PRODUCER_RATIO) < 0.003
+
+        await stream.stop()
+
+    @pytest.mark.asyncio()
+    async def test_drift_compensation_keeps_sine_continuous(self) -> None:
+        """A continuous sine through the drift-compensated ring comes out
+        continuous: no splice discontinuities beyond the natural slope of
+        the (slightly resampled) tone, no silence gaps, no drops."""
+        backend, stream, callback = self._make_stream()
+        await stream.start()
+
+        blocks = 4_500  # ~91 s of device time; enough for the old ring to pin
+        schedule = self._delivery_schedule(blocks, None, 0)
+
+        amplitude, frequency, rate = 12_000.0, 937.0, 48_000
+
+        def frame(idx: int) -> bytes:
+            start = idx * self.FRAME_SAMPLES
+            t = (start + np.arange(self.FRAME_SAMPLES, dtype=np.float64)) / rate
+            tone = np.rint(amplitude * np.sin(2 * np.pi * frequency * t))
+            return tone.astype(np.int16).tobytes()
+
+        outputs: list[bytes] = []
+        outdata = bytearray(self.FRAME_BYTES)
+        for block in range(blocks):
+            for idx in schedule.get(block, ()):
+                await stream.write(frame(idx))
+            callback(outdata, self.FRAME_SAMPLES, None, None)  # type: ignore[operator]
+            outputs.append(bytes(outdata))
+
+        # Skip the priming silence (the ring primes at ~block 15) plus a
+        # margin, so the silence→tone transition is not part of the check.
+        played = np.frombuffer(b"".join(outputs[20:]), dtype=np.int16).astype(
+            np.float64
+        )
+        deltas = np.abs(np.diff(played))
+        # Natural per-sample slope of a ~951 Hz tone at amplitude 12000 is
+        # ≈1493; a dropped or spliced frame jumps by ≈2×amplitude.
+        assert float(deltas.max()) < 1_700.0
+        assert float(np.sqrt(np.mean(played**2))) > 8_000.0
+
+        health = stream.write_health
+        assert health.refill_events == 0
+        assert health.underrun_events == 0
+        assert health.overrun_events == 0
+        assert abs(health.playback_read_ratio - self.PRODUCER_RATIO) < 0.003
+
+        await stream.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -1399,23 +1652,35 @@ class TestPortAudioTxDiscardQueued:
                 def close(self) -> None:
                     pass
 
-        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), np))
         stream = backend.open_tx(
             AudioDeviceId(0), sample_rate=48_000, channels=1, frame_ms=20
         )
         await stream.start()
         callback = created[0].callback  # type: ignore[attr-defined]
 
-        # Three identifiable 20 ms frames (1920 bytes s16le mono @ 48 kHz).
+        def frame(value: int) -> bytes:
+            return value.to_bytes(2, "little", signed=True) * 960
+
+        # Prime the fill target (MOR-4013): 160 ms of neutral filler plays
+        # first, then the three identifiable 20 ms frames queue behind it.
+        filler = frame(0)
+        for _ in range(8):
+            await stream.write(filler)
         frame_a = b"\x11" * 1920
         frame_b = b"\x22" * 1920
         frame_c = b"\x33" * 1920
-        for frame in (frame_a, frame_b, frame_c):
-            await stream.write(frame)
+        for pending in (frame_a, frame_b, frame_c):
+            await stream.write(pending)
 
-        # The device clock consumes half of frame A (480 samples = 960 bytes).
+        # The device clock drains the filler (16 × 480 samples) and then
+        # consumes part of frame A. The drift controller eats slightly more
+        # than realtime while the fill sits above the target, so the exact
+        # splice point inside frame A is only bounded, not pinned.
         outdata = bytearray(960)
-        callback(outdata, 480, None, None)
+        for _ in range(16):
+            callback(outdata, 480, None, None)  # type: ignore[operator]
+        callback(outdata, 480, None, None)  # type: ignore[operator]
         assert bytes(outdata) == frame_a[:960]
 
         # Discard: the rest of frame A plus frames B and C — three queued
@@ -1426,26 +1691,29 @@ class TestPortAudioTxDiscardQueued:
 
         # The next output callback produces silence, not the discarded bytes.
         outdata = bytearray(1920)
-        callback(outdata, 960, None, None)
+        callback(outdata, 960, None, None)  # type: ignore[operator]
         assert bytes(outdata) == b"\x00" * 1920
 
         health = stream.write_health
         assert health.discard_events == 1
-        # 3×1920 - 960 = 4800 bytes = 2400 samples = 50 ms @ 48 kHz mono.
-        assert health.discarded_audio_ms == pytest.approx(50.0)
+        # 3×20 ms queued minus what the drain left in frame A (~0.1 ms of
+        # drift-controlled overshoot): 50 ms within a small bound.
+        assert health.discarded_audio_ms == pytest.approx(50.0, abs=1.0)
 
-        # A frame written after the discard plays next and intact.
+        # Frames written after the discard refill the target and then play
+        # next, intact (frame_d first).
         frame_d = b"\x44" * 1920
-        await stream.write(frame_d)
+        for _ in range(8):
+            await stream.write(frame_d)
         outdata = bytearray(1920)
-        callback(outdata, 960, None, None)
+        callback(outdata, 960, None, None)  # type: ignore[operator]
         assert bytes(outdata) == frame_d
 
         # A second discard with nothing queued returns 0; counters unchanged.
         assert await stream.discard_queued() == 0
         health = stream.write_health
         assert health.discard_events == 1
-        assert health.discarded_audio_ms == pytest.approx(50.0)
+        assert health.discarded_audio_ms == pytest.approx(50.0, abs=1.0)
 
         await stream.stop()
 

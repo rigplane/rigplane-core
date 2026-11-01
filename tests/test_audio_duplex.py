@@ -21,6 +21,7 @@ import struct
 import threading
 import types
 
+import numpy as np
 import pytest
 
 from rigplane.audio.backend import (
@@ -206,9 +207,13 @@ class TestPortAudioDuplexCallback:
         cb = captured["callback"]
         assert callable(cb)
 
-        # Queue one mono 20 ms TX frame (960 samples) to be pulled into outdata.
+        # Prime the TX fill target (MOR-4013): 8 × 20 ms frames (160 ms) are
+        # queued, the identifiable frame first; the callback then pulls the
+        # first frame bit-exact (ratio 1.0 path, fill inside the deadband).
         tx_frame = b"".join(struct.pack("<h", (v % 200) - 100) for v in range(960))
-        await stream.write(tx_frame)
+        padding = b"\x00" * 1920
+        for queued in (tx_frame, *([padding] * 7)):
+            await stream.write(queued)
 
         # Build one duplex callback: indata = 960 stereo frames (L = signal,
         # R = silence), outdata = 960 mono frames to fill.
@@ -267,7 +272,7 @@ class TestPortAudioDuplexDiscardQueued:
     @pytest.mark.asyncio()
     async def test_discard_queued_drops_pending_tx_playback(self) -> None:
         FakeSd, captured = _make_fake_sd()
-        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), object()))
+        backend = PortAudioBackend(dependency_loader=lambda: (FakeSd(), np))
         stream = backend.open_duplex(
             AudioDeviceId(0),
             sample_rate=48_000,
@@ -280,15 +285,23 @@ class TestPortAudioDuplexDiscardQueued:
         cb = captured["callback"]
         assert callable(cb)
 
-        # Three identifiable 20 ms TX frames (1920 bytes s16le mono @ 48 kHz).
+        # Prime the fill target (MOR-4013): 160 ms of neutral filler plays
+        # first, then the three identifiable 20 ms frames queue behind it.
+        filler = b"\x00" * 1920
+        for _ in range(8):
+            await stream.write(filler)
         frame_a = b"\x11" * 1920
         frame_b = b"\x22" * 1920
         frame_c = b"\x33" * 1920
         for frame in (frame_a, frame_b, frame_c):
             await stream.write(frame)
 
-        # The device clock consumes half of frame A (480 samples = 960 bytes).
+        # The device clock drains the filler (16 × 480 samples) and then
+        # consumes part of frame A; the splice point inside frame A is
+        # bounded, not pinned (drift eats slightly above realtime).
         outdata = bytearray(960)
+        for _ in range(16):
+            cb(_FakeIndata(b"\x00" * 960), outdata, 480, None, None)  # type: ignore[operator]
         cb(_FakeIndata(b"\x00" * 960), outdata, 480, None, None)  # type: ignore[operator]
         assert bytes(outdata) == frame_a[:960]
 
@@ -305,12 +318,15 @@ class TestPortAudioDuplexDiscardQueued:
 
         health = stream.write_health
         assert health.discard_events == 1
-        # 3×1920 - 960 = 4800 bytes = 2400 samples = 50 ms @ 48 kHz mono.
-        assert health.discarded_audio_ms == pytest.approx(50.0)
+        # 3×1920 - ~960 = ~4800 bytes = ~50 ms @ 48 kHz mono (the drain's
+        # drift overshoot inside frame A keeps it a bounded value).
+        assert health.discarded_audio_ms == pytest.approx(50.0, abs=1.0)
 
-        # A frame written after the discard plays next and intact.
+        # Frames written after the discard refill the target and then play
+        # next, intact (frame_d first).
         frame_d = b"\x44" * 1920
-        await stream.write(frame_d)
+        for _ in range(8):
+            await stream.write(frame_d)
         outdata = bytearray(1920)
         cb(_FakeIndata(b"\x00" * 1920), outdata, 960, None, None)  # type: ignore[operator]
         assert bytes(outdata) == frame_d
@@ -319,7 +335,7 @@ class TestPortAudioDuplexDiscardQueued:
         assert await stream.discard_queued() == 0
         health = stream.write_health
         assert health.discard_events == 1
-        assert health.discarded_audio_ms == pytest.approx(50.0)
+        assert health.discarded_audio_ms == pytest.approx(50.0, abs=1.0)
 
         await stream.stop()
 
