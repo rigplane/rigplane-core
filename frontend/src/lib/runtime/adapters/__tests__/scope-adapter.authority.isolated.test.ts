@@ -491,7 +491,7 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     // derivation uses; its FieldStatus row is what the derivation reads.
     const main = {
       ...receiver(14_074_000), filterWidth: null, filterWidthRadioDefault: true,
-    } as ReturnType<typeof receiver>;
+    } as unknown as ReturnType<typeof receiver>;
     const s = {
       ...state({ main }),
       fieldStatus: {
