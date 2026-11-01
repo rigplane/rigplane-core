@@ -16,6 +16,8 @@ bench condition.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -139,6 +141,81 @@ def _bench_radio() -> YaesuCatRadio:
     return radio
 
 
+class _BenchWire:
+    """A scripted CAT wire the real transport runs on (MOR-3677).
+
+    Only the wire is faked: the writer records each request body, the
+    reader serves ``_CAT_ANSWERS``, with chosen commands first receiving
+    scripted stale lines — the wire the owner's bench showed, where the
+    late MAIN ``NA0;`` answer (``NA00;``) rides inside the ``NA1;``
+    window. The transport's reply pairing runs for real, so a stale line
+    the pairing should skip is skipped by the pairing, not by a mock.
+    """
+
+    def __init__(
+        self,
+        answers: Mapping[str, str],
+        stale: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
+        self._answers = dict(answers)
+        self._stale = {cmd: list(lines) for cmd, lines in (stale or {}).items()}
+        self._pending_body: str | None = None
+        self.reader = self._Reader(self)
+        self.writer = self._Writer(self)
+
+    def _next_line(self) -> bytes:
+        """The next wire line for the pending request, or silence."""
+        body = self._pending_body
+        if body is None:
+            raise asyncio.TimeoutError("wire silence")
+        if self._stale.get(body):
+            return (self._stale[body].pop(0) + ";").encode("ascii")
+        self._pending_body = None  # the request is answered; reads go quiet
+        answer = self._answers.get(body)
+        if answer is None:
+            raise asyncio.TimeoutError("wire silence")
+        return (answer + ";").encode("ascii")
+
+    class _Reader:
+        """Reader half: serves the scripted lines as ';'-terminated bytes."""
+
+        def __init__(self, wire: _BenchWire) -> None:
+            self._wire = wire
+
+        async def readuntil(self, separator: bytes) -> bytes:
+            return self._wire._next_line()
+
+    class _Writer:
+        """Writer half: records the last request body written."""
+
+        def __init__(self, wire: _BenchWire) -> None:
+            self._wire = wire
+
+        def write(self, data: bytes) -> None:
+            self._wire._pending_body = data.decode("ascii").rstrip(";")
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+
+def _bench_radio_on_wire(
+    stale: Mapping[str, Sequence[str]] | None = None,
+) -> YaesuCatRadio:
+    """A YaesuCatRadio whose real transport sits on the scripted wire."""
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(_RIGS_DIR / "ftx1.toml"))
+    wire = _BenchWire(_CAT_ANSWERS, stale)
+    radio._transport._reader = wire.reader  # type: ignore[assignment]
+    radio._transport._writer = wire.writer  # type: ignore[assignment]
+    radio._transport._connected = True
+    return radio
+
+
 def _single_receive_store() -> StateStore:
     """The bench condition: dual receive (``FR``) observed OFF and SUB in USB
     (the probe's mode), so the SUB notch-freq clause resolves permissively."""
@@ -195,6 +272,31 @@ async def test_sub_state_is_acquired_in_single_receive() -> None:
     # Table 5 code 20 → 3000 Hz).
     assert snapshot.field(_MAIN_FILTER_WIDTH).value == 3000
     assert snapshot.field(_SUB_S_METER).value == -36
+
+
+@pytest.mark.asyncio
+async def test_sub_narrow_survives_a_stale_main_narrow_reply() -> None:
+    """MOR-3677: the late MAIN narrow answer riding inside the ``NA1;``
+    window is skipped by pairing, not parsed as the SUB answer.
+
+    The owner's bench logged six ``declared read defect`` events a day as
+    ``declared read 'sub.narrow' ... command 'NA1{state};'; frame 'NA00;'``:
+    the transport's digit-stripped prefix (``NA``) accepted the stale MAIN
+    reply and the parser then failed. On the real transport's pairing the
+    stale frame is skipped (``stale_lines_skipped``) and the SUB narrow
+    state comes from the matching ``NA11;`` — a declared-read defect would
+    have dropped exactly that field (``_safe_read`` skips the path)."""
+    radio = _bench_radio_on_wire(stale={"NA1;": ["NA00"]})
+    store = _single_receive_store()
+    radio._state_store = store
+
+    adapter = YaesuObservationAdapter.from_radio(radio)
+    for observation in await adapter.poll_medium():
+        store.apply(observation)
+
+    snapshot = store.snapshot()
+    assert snapshot.field(_SUB_NARROW).value is True
+    assert radio._transport.stats.stale_lines_skipped == 1
 
 
 @pytest.mark.asyncio

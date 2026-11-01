@@ -9,6 +9,9 @@ Covers:
 
 from __future__ import annotations
 
+import string
+from pathlib import Path
+
 import pytest
 
 from rigplane.backends.yaesu_cat.parser import (
@@ -16,7 +19,10 @@ from rigplane.backends.yaesu_cat.parser import (
     CatFormatError,
     CatParseError,
     format_command,
+    literal_head,
 )
+from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.rig_loader import load_rig
 
 
 # ---------------------------------------------------------------------------
@@ -323,3 +329,157 @@ class TestCompileOnce:
             result = parser.parse(cmd)
             assert result["state"] == state
             assert result["raw"] == raw
+
+
+# ---------------------------------------------------------------------------
+# Reply-head derivation for transport pairing (MOR-3677)
+# ---------------------------------------------------------------------------
+
+_RIGS_DIR = Path(__file__).parents[1] / "rigs"
+
+# Sample values for the placeholders read templates carry, one dict per
+# selector value that changes the issued request. A future read template
+# with a new placeholder name has no sample here and the walk fails
+# loudly (format_command raises) instead of the profile silently timing
+# out on the wire.
+_READ_SAMPLE_PARAMS: tuple[dict[str, str], ...] = (
+    {"receiver": "0"},
+    {"receiver": "1"},
+    {"type": "8"},
+    {"chan": "001"},
+)
+
+# A second Yaesu profile, not FTX-1's facts: different verbs, same two
+# template shapes — the strict pair (head restates the request) and the
+# head-shorter-than-request exception the S-meter quirk needs. Proves the
+# derivation walks any Yaesu profile, not the one shipped radio.
+_SECOND_YAESU_PROFILE = """
+    [radio]
+    id = "yaesu_walk_second"
+    model = "WALK-SECOND"
+    receiver_count = 2
+    has_lan = false
+    has_wifi = false
+
+    [protocol]
+    type = "yaesu_cat"
+
+    [capabilities]
+    features = ["audio"]
+
+    [modes]
+    list = ["USB"]
+
+    [filters]
+    list = ["FIL1"]
+
+    [vfo]
+    scheme = "ab"
+
+    [commands]
+    get_narrow_sub = { cat = { read = "NB1;", parse = "NB1{state};" } }
+    get_s_meter_sub = { cat = { read = "SV1;", parse = "SV{receiver}{raw:03d};" } }
+    """
+
+
+class TestLiteralHead:
+    def test_literal_head_stops_at_the_first_placeholder(self):
+        # The get_s_meter_sub template: the head is the whole reply prefix
+        # the radio guarantees — the side digit is NOT part of it.
+        assert literal_head("SM{receiver}{raw:03d};") == "SM"
+
+    def test_literal_head_of_a_strict_template_restates_the_request(self):
+        # The get_narrow_sub template: the head pins the SUB selector.
+        assert literal_head("NA1{state};") == "NA1"
+
+    def test_literal_head_before_a_mid_template_placeholder(self):
+        # A literal tail after the placeholder never reaches the head.
+        assert literal_head("CN{receiver}0{code:03d};") == "CN"
+
+
+def _formatted_read_bodies(read: str) -> list[str]:
+    """Every sample wire body the read template issues (without ``;``)."""
+    names = [name for _, name, _, _ in string.Formatter().parse(read) if name]
+    if not names:
+        return [read.rstrip(";")]
+    bodies = [
+        format_command(read, **sample).rstrip(";")
+        for sample in _READ_SAMPLE_PARAMS
+        if set(names) <= set(sample)
+    ]
+    assert bodies, f"read template {read!r} has no sample parameters for {names}"
+    return bodies
+
+
+def _yaesu_read_commands(
+    extra_profile: str | None = None,
+) -> list[tuple[str, str, str, str]]:
+    """(profile, command, request body, parse-template head) per read, for
+    every Yaesu profile shipped in ``rigs/`` (today only ftx1.toml) plus an
+    optional synthetic second Yaesu profile path."""
+    paths = [
+        path
+        for path in sorted(_RIGS_DIR.glob("*.toml"))
+        if not path.name.startswith("_")
+    ]
+    if extra_profile is not None:
+        paths.append(Path(extra_profile))
+    entries: list[tuple[str, str, str, str]] = []
+    for path in paths:
+        config = load_rig(path)
+        if config.protocol_type != "yaesu_cat":
+            continue
+        for name, spec in config.commands.items():
+            if not isinstance(spec, CatCommandSpec) or not spec.parse:
+                continue
+            if spec.read is None:
+                continue
+            head = literal_head(spec.parse).rstrip(";")
+            for body in _formatted_read_bodies(spec.read):
+                entries.append((config.id, name, body, head))
+    return entries
+
+
+class TestReplyHeadCoversEveryYaesuRead:
+    @pytest.fixture
+    def second_profile(self, tmp_path: Path) -> str:
+        path = tmp_path / "yaesu_walk_second.toml"
+        path.write_text(_SECOND_YAESU_PROFILE)
+        return str(path)
+
+    def test_shipped_yaesu_profiles_exist(self) -> None:
+        """The walk covers at least one shipped Yaesu profile."""
+        assert any(profile == "yaesu_ftx1" for profile, *_ in _yaesu_read_commands())
+
+    def test_every_read_body_starts_with_its_parse_template_head(
+        self, second_profile: str
+    ) -> None:
+        """No Yaesu profile read silently times out under whole-request
+        pairing: every request body starts with its own parse template's
+        literal head, so the head (a profile-declared reply prefix) keeps
+        every template-conforming reply pairable (MOR-3677). The walk
+        covers every Yaesu profile in ``rigs/`` plus the synthetic second
+        profile above — at least FTX-1 and one other Yaesu radio."""
+        heads_shorter_than_body: list[tuple[str, str, str, str]] = []
+        for profile, name, body, head in _yaesu_read_commands(second_profile):
+            assert head, f"{profile}/{name}: empty reply head for {body!r}"
+            assert body.startswith(head), (
+                f"{profile}/{name}: request {body!r} does not start with its "
+                f"parse-template head {head!r}"
+            )
+            if head != body:
+                heads_shorter_than_body.append((profile, name, body, head))
+        # The one data exception the mechanism must keep pairing: the SUB
+        # S-meter's template head is shorter than its request (the radio
+        # echoes the side digit as 0), so strict whole-request matching
+        # alone would time it out.
+        assert ("yaesu_ftx1", "get_s_meter_sub", "SM1", "SM") in (
+            heads_shorter_than_body
+        )
+        # The synthetic profile's exception, different verbs, same shape.
+        assert (
+            "yaesu_walk_second",
+            "get_s_meter_sub",
+            "SV1",
+            "SV",
+        ) in heads_shorter_than_body
