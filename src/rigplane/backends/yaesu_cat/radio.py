@@ -49,7 +49,13 @@ from ...runtime.managed_tx_state import (
 )
 from ...types import AudioCodec, BreakInMode, Mode, RepeaterShiftDirection
 from .memory import memory_entry_from_cat
-from .parser import CatCommandParser, CatParseError, format_command, is_data_mode
+from .parser import (
+    CatCommandParser,
+    CatParseError,
+    format_command,
+    is_data_mode,
+    literal_head,
+)
 from .transport import (
     CatCommandRejected,
     CatTimeoutError,
@@ -229,7 +235,24 @@ class YaesuCatRadio:
         self._cw_text_generation = 0
         self._tuner_provider_generation: Callable[[], int] | None = None
         self._device = device
-        self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
+        # MOR-3677: the reply-line vocabulary this profile declares — the
+        # literal head of every parse template. The transport pairs a data
+        # reply with the whole request body, widened by any declared head
+        # that is a prefix of it. Only get_s_meter_sub needs the widening
+        # ("SM{receiver}…" is the data that says "SM1;" is answered
+        # "SM0…" — the radio echoes the side digit as 0); the selector-
+        # parameterised reads (RM/CT/CN/OS/MR/MT) keep their verb-level
+        # heads, which preserves exactly today's acceptance for them, and
+        # every other head restates its request and adds nothing.
+        reply_heads = {
+            literal_head(spec.parse).rstrip(";")
+            for spec in self._config.commands.values()
+            if isinstance(spec, CatCommandSpec) and spec.parse
+        }
+        reply_heads.discard("")
+        self._transport = YaesuCatTransport(
+            device=device, baudrate=baudrate, reply_heads=frozenset(reply_heads)
+        )
         self._state = RadioState()
         self._audio_bus: AudioBus | None = None
         self._audio_session: AudioSession | None = None

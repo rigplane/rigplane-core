@@ -57,6 +57,7 @@ __all__ = [
     "CatCommandParser",
     "format_command",
     "is_data_mode",
+    "literal_head",
 ]
 
 
@@ -209,6 +210,17 @@ def _extract_field_names(template: str) -> list[str]:
             if base:
                 names.append(base)
     return names
+
+
+def literal_head(template: str) -> str:
+    """The literal text before the first placeholder of *template*.
+
+    ``"NA1{state};"`` → ``"NA1"``; ``"SM{receiver}{raw:03d};"`` → ``"SM"``.
+    The head is the invariant prefix every reply the template accepts
+    starts with — the profile-declared reply shape the transport's query
+    pairing widens a strict whole-request match with (MOR-3677).
+    """
+    return next(string.Formatter().parse(template))[0]
 
 
 def format_command(template: str, **kwargs: Any) -> str:
