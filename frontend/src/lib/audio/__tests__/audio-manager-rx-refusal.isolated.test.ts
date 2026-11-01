@@ -455,6 +455,20 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
   });
 });
 
+// MOR-4030 case C. The exact wire frame the REAL `/api/v1/audio` WebSocket
+// sends when another program holds the radio's codec (exclusive open and
+// shared fallback both refused with `Invalid device [PaErrorCode -9996]`),
+// asserted key for key by the Python twin
+// tests/test_web_usb_pairing_integration.py
+// ::test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client
+// [codec-held-by-another-program]. The same test asserts that an
+// access-denied failure keeps `reason: 'other'`.
+const IN_USE_REFUSAL_FRAME = {
+  type: 'error',
+  message: 'audio_start: RX audio failed to start: device_in_use',
+  reason: 'device_in_use',
+};
+
 describe('RX refusal reason routing (MOR-3823)', () => {
   // The exact wire frame the backend emits for a pairing refusal, copied
   // from tests/test_web_usb_pairing_integration.py
@@ -558,11 +572,7 @@ describe('RX refusal reason routing (MOR-3823)', () => {
   // demand, so a repeated frame is ignored until the operator retries).
   it('device_in_use gets the in-use toast once and latches the refusal', async () => {
     const { audioManager, audio, notify, socket } = await rig('localhost');
-    const frame = {
-      type: 'error',
-      message: 'audio_start: RX audio failed to start: device_in_use',
-      reason: 'device_in_use',
-    };
+    const frame = IN_USE_REFUSAL_FRAME;
     serverText(socket, frame);
     serverText(socket, frame);
     expect(notify).toHaveBeenCalledTimes(1);
@@ -575,11 +585,7 @@ describe('RX refusal reason routing (MOR-3823)', () => {
 
   it('a retry after a device_in_use refusal clears the latch and can fail again', async () => {
     const { audioManager, audio, notify, socket } = await rig('localhost');
-    const frame = {
-      type: 'error',
-      message: 'audio_start: RX audio failed to start: device_in_use',
-      reason: 'device_in_use',
-    };
+    const frame = IN_USE_REFUSAL_FRAME;
     serverText(socket, frame);
     audioManager.startRx();
     expect(audio.getAudioState().rxError).toBe(false);
@@ -685,11 +691,7 @@ describe('RX refusal toast through the real runtime notification path (MOR-3823)
     runtimeBoundAudioManager.startRx();
     const socket = FakeWebSocket.instances[0];
     socket.open();
-    serverText(socket, {
-      type: 'error',
-      message: 'audio_start: RX audio failed to start: device_in_use',
-      reason: 'device_in_use',
-    });
+    serverText(socket, IN_USE_REFUSAL_FRAME);
     flushSync();
 
     expect(renderedErrorToasts()).toEqual([text]);
