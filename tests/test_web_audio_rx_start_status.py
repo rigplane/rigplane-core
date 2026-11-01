@@ -231,3 +231,63 @@ async def test_refusal_reports_its_redacted_reason_category(station, case):
         },
     }
     assert "private" not in json.dumps(status)
+
+
+class _BusyRadio(RefusingRadio):
+    def __init__(self, holder):
+        super().__init__()
+        self.holder = holder
+
+    async def start_rx(self, callback, *, jitter_depth=None):
+        from rigplane.audio.backend import AudioDeviceBusyError
+
+        raise AudioDeviceBusyError(
+            "private device /private/example is in use",
+            device_index=19,
+            holder=self.holder,
+        )
+
+
+async def _busy_station(holder):
+    radio = _BusyRadio(holder)
+    server = WebServer(radio, WebConfig(radio_model="IC-7610"))
+    return server, radio, server._audio_broadcaster
+
+
+@pytest.mark.parametrize(
+    "holder,expected",
+    [("wsjtx.exe", {"holder": "wsjtx.exe"}), (None, {})],
+)
+async def test_in_use_refusal_names_the_holder_in_frame_and_status(holder, expected):
+    server, _radio, broadcaster = await _busy_station(holder)
+    try:
+        ws = _make_ws()
+        await broadcaster.subscribe(ws=ws)
+        frame = json.loads(ws.send_text.await_args[0][0])
+        assert frame == {
+            "type": "error",
+            "message": "audio_start: RX audio failed to start: device_in_use",
+            "reason": "device_in_use",
+            **expected,
+        }
+        assert await info(server) == {
+            "schemaVersion": 1,
+            "failure": {
+                "stage": "rx_start",
+                "code": "core_rx_start_failed",
+                "reason": "device_in_use",
+                **expected,
+            },
+        }
+        assert "private" not in json.dumps(frame)
+    finally:
+        await broadcaster._stop_relay()
+
+
+async def test_a_holder_name_never_rides_a_refusal_of_another_category(station):
+    server, radio, broadcaster = station
+    ws = _make_ws()
+    await broadcaster.subscribe(ws=ws)
+    frame = json.loads(ws.send_text.await_args[0][0])
+    assert "holder" not in frame
+    assert "holder" not in (await info(server))["failure"]
