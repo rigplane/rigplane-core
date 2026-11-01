@@ -61,18 +61,6 @@ jobs:
             bench_lock: "true"
             start_simulator: "false"
             hardware_pytest: "false"
-          - radio: ic705
-            label: IC-705
-            connect: --backend serial --model IC-705 --radio-addr 0xA4
-            runs_on: '["self-hosted", "macOS", "ARM64", "bench"]'
-            config_kind: serial
-            icom_host: ""
-            icom_user: ""
-            icom_pass: ""
-            icom_serial_device: ${{ secrets.BENCH_IC705_SERIAL }}
-            bench_lock: "true"
-            start_simulator: "false"
-            hardware_pytest: "false"
           - radio: ic7610-sim
             label: IC-7610 (simulator)
             connect: --backend lan --model IC-7610 --radio-addr 0x98

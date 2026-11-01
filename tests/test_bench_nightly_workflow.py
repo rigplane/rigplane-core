@@ -183,14 +183,14 @@ def test_matrix_runs_on_comes_from_each_entry() -> None:
 def test_matrix_matches_current_bench_inventory() -> None:
     job_text = _radio_job_text()
     assert "radio: ftx1" in job_text
-    assert "radio: ic705" in job_text
     assert "radio: ic7610-sim" in job_text
-    assert "label: IC-705" in job_text
     assert "label: IC-7610 (simulator)" in job_text
-    assert "BENCH_IC705_SERIAL" in job_text
     for dropped in (
+        "radio: ic705",
         "radio: ic7300",
         "radio: ic7610\n",
+        "label: IC-705",
+        "BENCH_IC705_SERIAL",
         "BENCH_IC7300_SERIAL",
         "BENCH_IC7610_HOST",
     ):

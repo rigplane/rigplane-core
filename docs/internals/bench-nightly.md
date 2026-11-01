@@ -11,7 +11,6 @@ GitHub-hosted runners in this workflow.
 | Job label | Runner labels | Connection |
 |---|---|---|
 | FTX-1 | `[self-hosted, macOS, ARM64, bench]` | USB serial (`yaesu-cat`) |
-| IC-705 | `[self-hosted, macOS, ARM64, bench]` | USB serial (`serial`, CI-V `0xA4`) |
 | IC-7610 (simulator) | `[self-hosted, Linux, ARM64, light]` | In-repo IC-7610 LAN simulator on loopback |
 
 The macOS bench runner is `mm-macos-ci-1` (org runner, runner group
@@ -27,6 +26,10 @@ loopback inside the job via `scripts/bench/ic7610_lan_simulator.py`.
 The IC-7300 leg was dropped: that radio moved to the GTR7 Windows host and
 there is no self-hosted Windows runner on GTR7 available to `rigplane-core`
 today. It will not return until such a runner exists.
+
+The IC-705 leg was dropped while that radio is away from the bench (field
+use). It will return through a follow-up that reads the matrix from an
+infra-control inventory file; until then it is not in this workflow.
 
 Light-runner legs use `[self-hosted, Linux, ARM64, light]` (repo runners
 `mm-light-core-1`/`2`/`3` and org runner `mm-light-org-1`).
@@ -106,15 +109,10 @@ the runner log masks them. The simulator leg needs no secrets.
 | Secret | Used as |
 |---|---|
 | `BENCH_FTX1_SERIAL` | `ICOM_SERIAL_DEVICE` for the FTX-1 |
-| `BENCH_IC705_SERIAL` | `ICOM_SERIAL_DEVICE` for the IC-705 |
-
-The owner must create `BENCH_IC705_SERIAL` with the IC-705 USB serial device
-path on the macOS bench runner. Until it exists, the IC-705 job ends red in
-`Outcome: not configured` (intended).
 
 Removed with the dropped legs (secrets may remain in the repo settings but are
-unused here): `BENCH_IC7610_HOST`, `BENCH_IC7610_USER`, `BENCH_IC7610_PASS`,
-`BENCH_IC7300_SERIAL`.
+unused here): `BENCH_IC705_SERIAL`, `BENCH_IC7610_HOST`, `BENCH_IC7610_USER`,
+`BENCH_IC7610_PASS`, `BENCH_IC7300_SERIAL`.
 
 ## What stays on the runner
 
