@@ -49,9 +49,6 @@ const SERVER_RX_DEVICE_REASONS = new Set([
 // MOR-4030 case C: another program holds the radio's codec exclusively, so
 // neither the exclusive open nor the shared fallback could start RX.
 const SERVER_RX_DEVICE_IN_USE = 'device_in_use';
-// The server names the holding program by its executable FILE name only. Show
-// it only when it still looks like one (no path, no control characters, short).
-const HOLDER_PROGRAM_NAME = /^[^\\/\u0000-\u001f\u007f]{1,64}$/;
 const TX_START_SILENT_REASONS = new Set([
   'TX MIC: capture start cancelled',
   'TX MIC: capture stopped before start completed',
@@ -64,12 +61,7 @@ const TX_START_REASON_CODES: Readonly<Record<string, string>> = {
 };
 
 /** Sink for an operator-facing error banner: (level, message, code). */
-type OperatorNotifier = (
-  level: 'error',
-  message: string,
-  code: string,
-  params?: Record<string, string>,
-) => void;
+type OperatorNotifier = (level: 'error', message: string, code: string) => void;
 
 export interface AudioControllerBinding {
   remote(): boolean;
@@ -594,21 +586,11 @@ class AudioManager {
             'rxAudioStationDeviceNeeded',
           );
         } else if (msg.reason === SERVER_RX_DEVICE_IN_USE) {
-          const holder = (msg as { holder?: unknown }).holder;
-          if (typeof holder === 'string' && HOLDER_PROGRAM_NAME.test(holder)) {
-            this._operatorNotifier?.(
-              'error',
-              `The radio's audio input is in use by ${holder}. Close it and RigPlane will reconnect.`,
-              'rxAudioDeviceInUseBy',
-              { program: holder },
-            );
-          } else {
-            this._operatorNotifier?.(
-              'error',
-              'The radio\'s audio input is in use by another program. Close it and RigPlane will reconnect.',
-              'rxAudioDeviceInUse',
-            );
-          }
+          this._operatorNotifier?.(
+            'error',
+            'The radio\'s audio input is in use by another program. Close it and RigPlane will reconnect.',
+            'rxAudioDeviceInUse',
+          );
         } else {
           this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
         }

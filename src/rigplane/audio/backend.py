@@ -950,13 +950,7 @@ class _CapturePolicy:
             device_name = str(info["name"])
         except Exception:
             return None
-        # The holder is only looked up for capture: its sessions are those of the
-        # capture endpoint, and the message that names it is about the audio input.
-        holder = (
-            holder_exe_name(self.holder_lookup, device_name, self.holder_timeout_s)
-            if direction == "rx"
-            else None
-        )
+        holder = holder_exe_name(self.holder_lookup, device_name, self.holder_timeout_s)
         logger.warning(
             "portaudio: device [%d] is in use by %s; audio cannot start until it lets go",
             device_index,

@@ -1357,7 +1357,7 @@ The category is one of the publishable `AudioStartFailureReason` values
 (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
 `open_timeout`, `device_in_use`, `format`, `other`) classified by
 `src/rigplane/audio/usb_driver.py: audio_start_failure_reason`. Exception text
-is never sent, so the frame is safe to show a remote client (the one deliberate detail is `holder`, the executable file name of the program holding the radio's audio input, present only with `device_in_use` and only when it could be found); the same category
+is never sent, so the frame is safe to show a remote client; the same category
 appears under `audioReceive.failure.reason` in `GET /api/v1/info`.
 
 ### `/api/v1/ws` command envelope

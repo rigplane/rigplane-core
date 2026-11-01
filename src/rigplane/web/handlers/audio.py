@@ -25,7 +25,6 @@ from ...audio._usb_pairing import AudioCandidate
 from ...audio.usb_driver import (
     AudioAlreadyStartedError,
     audio_start_failure_details,
-    audio_start_failure_holder,
     audio_start_failure_reason,
 )
 from ...dsp.tap_registry import TapHandle, TapRegistry
@@ -437,7 +436,7 @@ class AudioBroadcaster:
         self._relay_task: asyncio.Task[None] | None = None
         self._rx_start_attempt = 0
         self._rx_start_failure: (
-            tuple[object, object, str, tuple[AudioCandidate, ...], str | None] | None
+            tuple[object, object, str, tuple[AudioCandidate, ...]] | None
         ) = None
         self._seq: int = 0
         self._web_codec: int = AUDIO_CODEC_PCM16
@@ -680,14 +679,12 @@ class AudioBroadcaster:
                 self._rx_start_failure = None
         payload: dict[str, Any] | None = None
         if self._rx_start_failure is not None:
-            _, _, reason, candidates, holder = self._rx_start_failure
+            _, _, reason, candidates = self._rx_start_failure
             payload = {
                 "stage": "rx_start",
                 "code": "core_rx_start_failed",
                 "reason": reason,
             }
-            if holder:
-                payload["holder"] = holder
             if candidates:
                 payload["candidates"] = [
                     {
@@ -1331,13 +1328,7 @@ class AudioBroadcaster:
             self._subscription = None
             if source is not None:
                 reason, candidates = audio_start_failure_details(exc)
-                self._rx_start_failure = (
-                    radio,
-                    source,
-                    reason,
-                    candidates,
-                    audio_start_failure_holder(exc),
-                )
+                self._rx_start_failure = (radio, source, reason, candidates)
             await self._notify_relay_start_failure(exc)
 
     async def _notify_relay_start_failure(self, exc: Exception) -> None:
@@ -1351,21 +1342,16 @@ class AudioBroadcaster:
         detail ("select explicit RX/TX devices") is meaningless to a remote
         client. ``message`` keeps the fixed prefix the frontend matches on
         and appends only the category token; the same token rides in
-        ``reason`` so clients can branch without parsing the message. The one
-        extra detail is ``holder``, the executable file name of the program
-        holding the device, on the ``device_in_use`` category only (MOR-4030).
+        ``reason`` so clients can branch without parsing the message.
         """
         if not self._client_ws:
             return
         reason = audio_start_failure_reason(exc)
-        holder = audio_start_failure_holder(exc)
         payload = encode_json(
             {
                 "type": "error",
                 "message": f"audio_start: RX audio failed to start: {reason}",
                 "reason": reason,
-                # The holding program's file name for the in-use category only.
-                **({"holder": holder} if holder else {}),
             }
         )
         for ws in list(self._client_ws.values()):

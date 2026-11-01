@@ -160,32 +160,6 @@ AudioStartFailureReason = Literal[
 ]
 
 
-def _exception_chain(exc: BaseException) -> list[BaseException]:
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and current not in chain:
-        chain.append(current)
-        current = current.__cause__ or (
-            None if current.__suppress_context__ else current.__context__
-        )
-    return chain
-
-
-def audio_start_failure_holder(exc: BaseException) -> str | None:
-    """The holding program's executable name for a ``device_in_use`` failure.
-
-    ``None`` for every other category and when no name was found. The name is a
-    bare file name (see ``_usb_holder``): the one deliberate detail a start
-    failure publishes besides its category.
-    """
-    if audio_start_failure_reason(exc) != "device_in_use":
-        return None
-    for error in _exception_chain(exc):
-        if isinstance(error, AudioDeviceBusyError):
-            return error.holder
-    return None
-
-
 def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
     """Classify an audio start failure by the exception types it chains.
 
@@ -199,7 +173,13 @@ def audio_start_failure_details(
 ) -> tuple[AudioStartFailureReason, tuple[AudioCandidate, ...]]:
     from ._usb_pairing import WindowsAudioTopologyError
 
-    chain = _exception_chain(exc)
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
     reasons: tuple[
         tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
     ] = (
