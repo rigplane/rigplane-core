@@ -462,6 +462,41 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
     expect(toSpectrumAuthority(withStatus(nativeState, 'main.ifShift', undefined), nativeCaps)?.ifShiftHz)
       .toBeNull();
   });
+
+  // MOR-3677: the authority carries the modeFilter group's FilterWidthDisplay
+  // (the spectrum chip's source) next to filterWidthHz, but the DIGEST takes
+  // only the display's state KIND — a held-stale known reading must not churn
+  // the digest every freshness tick, while a state change must reach it.
+  it('mirrors the modeFilter filterWidthDisplay, known with the observed hz', () => {
+    expect(toSpectrumAuthority(state(), caps())?.filterWidthDisplay)
+      .toEqual({ state: 'known', hz: 2400, stale: false });
+  });
+
+  it('the digest carries the display state kind but not the stale flag (MOR-3677)', () => {
+    const freshResult = toSpectrumAuthority(state(), caps());
+    const heldResult = toSpectrumAuthority(withStatus(state(), 'main.filterWidth', stale), caps());
+    expect(heldResult?.filterWidthDisplay).toEqual({ state: 'known', hz: 2400, stale: true });
+    expect(heldResult?.filterWidthHz).toBe(2400);
+    expect(heldResult?.digest).toBe(freshResult?.digest);
+  });
+
+  it('a display state change reaches the digest, and radio-default drops filterWidthHz (MOR-3677)', () => {
+    // The PR1 wire leaf rides in through the same defensive cast the
+    // derivation uses; its FieldStatus row is what the derivation reads.
+    const main = { ...receiver(14_074_000), filterWidth: null, filterWidthRadioDefault: true };
+    const s = {
+      ...state({ main }),
+      fieldStatus: {
+        ...state().fieldStatus,
+        'main.filterWidthRadioDefault': freshStatus('main.filterWidthRadioDefault'),
+      },
+    } as ServerState;
+    const result = toSpectrumAuthority(s, caps());
+    expect(result?.filterWidthDisplay).toEqual({ state: 'radio-default' });
+    expect(result?.filterWidthHz).toBeNull();
+    expect(result?.rule).toBeNull();
+    expect(result?.digest).not.toBe(toSpectrumAuthority(state(), caps())?.digest);
+  });
 });
 
 describe('MOR-1409 A06a1 deterministic filter-width snapping', () => {

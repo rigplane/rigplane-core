@@ -169,3 +169,54 @@ describe('modeFilter (MOR-1262 slice 4A)', () => {
     expect(knownValue(validated.filterWidthMax)).toBe(3600);
   });
 });
+
+describe('modeFilter.filterWidthDisplay (MOR-3677)', () => {
+  const displayOver = (display: unknown) => {
+    const withMf = withModeFilter(base);
+    return {
+      ...withMf,
+      modeFilter: { ...withMf.modeFilter, filterWidthDisplay: display },
+    };
+  };
+
+  it.each([
+    { state: 'known', hz: 2400, stale: false },
+    { state: 'known', hz: 2400, stale: true },
+    { state: 'radio-default' },
+    { state: 'narrow' },
+    { state: 'unknown', reason: 'not-reported' },
+    { state: 'unknown', reason: 'not-observed' },
+    { state: 'unsupported' },
+  ])('accepts the shipped display shape %j unchanged', (display) => {
+    expect(validateRadioViewModel(displayOver(display)).modeFilter?.filterWidthDisplay)
+      .toEqual(display);
+  });
+
+  it('rejects a modeFilter without the required filterWidthDisplay key', () => {
+    const withMf = withModeFilter(base);
+    const without = { ...withMf.modeFilter } as Record<string, unknown>;
+    delete without.filterWidthDisplay;
+    expect(() => validateRadioViewModel({ ...withMf, modeFilter: without })).toThrow(TypeError);
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { state: 'known' },
+    { state: 'known', hz: 2400 },
+    { state: 'known', hz: -50, stale: false },
+    { state: 'known', hz: 2400.5, stale: false },
+    { state: 'known', hz: 'wide', stale: false },
+    { state: 'known', hz: 2400, stale: 'no' },
+    { state: 'radio-default', hz: 2400 },
+    { state: 'narrow', reason: 'not-observed' },
+    { state: 'unknown' },
+    { state: 'unknown', reason: 'made-up' },
+    { state: 'unsupported', reason: 'not-reported' },
+    { state: 'mostly-narrow' },
+  ])('rejects the malformed display %j with a precise path', (display) => {
+    expect(() => validateRadioViewModel(displayOver(display)))
+      .toThrow(/\$\.modeFilter\.filterWidthDisplay/);
+  });
+});

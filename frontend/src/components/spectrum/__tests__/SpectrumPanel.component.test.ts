@@ -13,6 +13,7 @@ import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
+import type { FilterWidthDisplay } from '../../../semantic/radio-view-model';
 import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { ScopeRenderTrace, type TraceReceipt } from '$lib/runtime/scope-render-trace';
@@ -514,6 +515,7 @@ type TestAuthority = Readonly<{
   mode: string | null;
   filter: string | null;
   filterWidthHz: number | null;
+  filterWidthDisplay: FilterWidthDisplay | null;
   filterShape: number | null;
   ifShiftHz: number | null;
   pbtInnerHz: number | null;
@@ -536,6 +538,7 @@ function authority(overrides: Partial<Omit<TestAuthority, 'digest'>> = {}): Test
     mode: 'USB',
     filter: 'FIL1',
     filterWidthHz: 2_400,
+    filterWidthDisplay: { state: 'known', hz: 2_400, stale: false } as FilterWidthDisplay,
     filterShape: 1,
     ifShiftHz: 0,
     pbtInnerHz: 0,
@@ -1654,6 +1657,58 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(authorityContractSource).toContain('id = "scope_metadata_owner"');
   });
 });
+
+// MOR-3677 — the passband-unknown chip: when the radio's width answer is
+// honest-but-Hz-less (its own mode default, NARROW, or an observed "no Hz
+// for this mode"), the spectrum says WHY with a text chip instead of
+// silently drawing no passband geometry at all. The chip is NOT gated on
+// `tuneVisible` and never draws an overlay, a shaded region, or a
+// full-width fill — there is no geometry to draw.
+describe('SpectrumPanel passband-unknown chip (MOR-3677)', () => {
+  function mountWithDisplay(display: FilterWidthDisplay | null): HTMLElement {
+    authorityHarness.state.current = authority({
+      filterWidthDisplay: display,
+      filterWidthHz: display !== null && display.state === 'known' ? display.hz : null,
+    });
+    const target = mountPanel();
+    emitFrame();
+    return target;
+  }
+
+  it.each([
+    ['radio-default', { state: 'radio-default' } as FilterWidthDisplay, 'Radio default'],
+    ['narrow', { state: 'narrow' } as FilterWidthDisplay, 'Narrow (radio)'],
+  ])('renders the %s chip with its value text and no overlay', (_label, display, text) => {
+    const target = mountWithDisplay(display);
+    const chip = target.querySelector<HTMLElement>('[data-testid="passband-unknown"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.dataset.state).toBe(display.state);
+    expect(chip!.textContent).toBe(text);
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+    expect(target.querySelector('.passband-resize-zone')).toBeNull();
+  });
+
+  it('renders the not-reported chip and never a fabricated overlay', () => {
+    const target = mountWithDisplay({ state: 'unknown', reason: 'not-reported' });
+    const chip = target.querySelector<HTMLElement>('[data-testid="passband-unknown"]');
+    expect(chip).not.toBeNull();
+    expect(chip!.dataset.state).toBe('not-reported');
+    expect(chip!.textContent).toBe('The radio does not report a filter width for this mode.');
+    expect(target.querySelector('.passband-overlay')).toBeNull();
+  });
+
+  it.each([
+    ['known', { state: 'known', hz: 2_400, stale: false } as FilterWidthDisplay],
+    ['known stale', { state: 'known', hz: 2_400, stale: true } as FilterWidthDisplay],
+    ['not-observed', { state: 'unknown', reason: 'not-observed' } as FilterWidthDisplay],
+    ['unsupported', { state: 'unsupported' } as FilterWidthDisplay],
+    ['absent', null],
+  ])('draws NO chip for the %s display', (_label, display) => {
+    const target = mountWithDisplay(display);
+    expect(target.querySelector('[data-testid="passband-unknown"]')).toBeNull();
+  });
+});
+
 
 // MOR-1369 (v3-rework S6b-1) — `hideScopeControls` is a pure pass-through to
 // the real (unmocked) SpectrumToolbar; no logic of its own lives here. One
