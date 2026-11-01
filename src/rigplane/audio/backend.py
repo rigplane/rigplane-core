@@ -23,6 +23,23 @@ from typing import Any, Callable, NewType, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 _TX_BUFFER_MS = 1_000
+# RX playback fill-target + device-clock drift compensation (MOR-4013).
+# The playback ring is NOT free-running: the callback stays silent until
+# ``_TX_FILL_TARGET_MS`` is buffered (at least two ``frame_ms`` blocks),
+# then holds that fill. A slow filtered proportional controller skews the
+# read rate (clamped to ±3%, field drift is 1-2%) so a producer at 50 Hz
+# feeding a 49.25 Hz device clock neither pins the ring at capacity nor
+# drains it. ``_TX_OVERRUN_HEADROOM_MS`` on top of the target forms the
+# hard enqueue cap: one burst above it trims once back to the target with
+# a short fade at the splice instead of dropping a frame per write.
+_TX_FILL_TARGET_MS = 150
+_TX_OVERRUN_HEADROOM_MS = 100
+_TX_DRIFT_MAX_RATIO = 0.03
+_TX_DRIFT_KP = 1.0e-5
+_TX_DRIFT_FILTER_S = 2.0
+_TX_DRIFT_SLEW_PER_S = 0.01
+_TX_DRIFT_DEADBAND_MS = 20
+_TX_TRIM_FADE_MS = 5
 _LINUX_ALSA_INPUT_LATENCY_S = 0.050
 
 # ---------------------------------------------------------------------------
@@ -130,6 +147,10 @@ class TxStreamHealth:
     callback_calls_per_sec_ewma: float | None = None
     discard_events: int = 0
     discarded_audio_ms: float = 0.0
+    # MOR-4013 fill-target playback state.
+    refill_events: int = 0
+    playback_read_ratio: float = 1.0
+    fill_target_ms: float = 0.0
 
     def __post_init__(self) -> None:
         self._sync_alias_pair("enqueued_audio_ms", "queued_audio_ms", 0.0)
@@ -199,6 +220,9 @@ class TxStreamHealth:
             "last_error": self.last_error,
             "discard_events": self.discard_events,
             "discarded_audio_ms": self.discarded_audio_ms,
+            "refill_events": self.refill_events,
+            "playback_read_ratio": self.playback_read_ratio,
+            "fill_target_ms": self.fill_target_ms,
         }
 
 
@@ -856,6 +880,13 @@ class _PortAudioTxStream:
     The bounded callback ring decouples async producers from PortAudio's
     hardware-clocked consumer: ``write()`` enqueues interleaved PCM and returns
     quickly, and the callback drains the ring at the playback cadence.
+
+    The ring is held at a small fill target instead of free-running
+    (MOR-4013): playback starts only once ``_TX_FILL_TARGET_MS`` is
+    buffered, a drift-compensated read ratio absorbs producer/device clock
+    mismatch (±3% clamp), a dry ring drops to unprimed for ONE refill
+    event instead of per-block zero-fill underruns, and an enqueue above
+    the cap trims once back to the target with a short fade at the splice.
     """
 
     def __init__(
@@ -874,6 +905,15 @@ class _PortAudioTxStream:
         self._blocksize = blocksize
         self._bytes_per_audio_frame = max(1, channels * 2)
         self._capacity_bytes = self._buffer_capacity_bytes()
+        self._fill_target_ms = float(_TX_FILL_TARGET_MS)
+        self._fill_target_frames = self._audio_frames_for_ms(_TX_FILL_TARGET_MS)
+        self._fill_target_bytes = self._fill_target_frames * self._bytes_per_audio_frame
+        self._tx_cap_bytes = (
+            self._fill_target_frames
+            + self._audio_frames_for_ms(_TX_OVERRUN_HEADROOM_MS)
+        ) * self._bytes_per_audio_frame
+        self._drift_deadband_frames = self._audio_frames_for_ms(_TX_DRIFT_DEADBAND_MS)
+        self._trim_fade_frames = self._audio_frames_for_ms(_TX_TRIM_FADE_MS)
         self._stream: Any = None
         self._mta = _WindowsMtaLease()
         self._running = False
@@ -904,6 +944,12 @@ class _PortAudioTxStream:
         self._last_error: str | None = None
         self._discard_events: int = 0
         self._discarded_audio_ms: float = 0.0
+        # Fill-target playback state (MOR-4013).
+        self._primed = False
+        self._refill_events: int = 0
+        self._drift_ratio: float = 1.0
+        self._drift_phase: float = 0.0
+        self._drift_filtered_error: float = 0.0
 
     @property
     def running(self) -> bool:
@@ -939,6 +985,9 @@ class _PortAudioTxStream:
                 last_error=self._last_error,
                 discard_events=self._discard_events,
                 discarded_audio_ms=round(self._discarded_audio_ms, 3),
+                refill_events=self._refill_events,
+                playback_read_ratio=round(self._drift_ratio, 5),
+                fill_target_ms=self._fill_target_ms,
             )
 
     async def start(self) -> None:
@@ -992,8 +1041,10 @@ class _PortAudioTxStream:
             return
 
         # Keep producer writes cheap: enqueue bytes into the bounded ring and
-        # let the callback clock playback. On overflow, discard oldest queued
-        # audio first so latency cannot grow without bound.
+        # let the callback clock playback. Above the hard cap the stalest
+        # audio is trimmed ONCE back to the fill target (with a short fade at
+        # the splice) so latency cannot grow without bound and catch-up
+        # bursts stop dropping a frame per write (MOR-4013).
         incoming_drop_bytes = 0
         if len(data) > self._capacity_bytes:
             incoming_drop_bytes = self._align_byte_count(
@@ -1004,19 +1055,17 @@ class _PortAudioTxStream:
 
         dropped_bytes = incoming_drop_bytes
         with self._lock:
-            overflowed = self._buffered_bytes + len(data) > self._capacity_bytes
-            while (
-                self._buffered_bytes + len(data) > self._capacity_bytes
-                and self._frame_lengths
-            ):
-                dropped_bytes += self._drop_oldest_locked(self._frame_lengths[0])
-            remaining_overflow = max(
-                0,
-                self._buffered_bytes + len(data) - self._capacity_bytes,
-            )
-            if remaining_overflow:
-                drop_bytes = self._align_byte_count(remaining_overflow, round_up=True)
-                dropped_bytes += self._drop_oldest_locked(drop_bytes)
+            overflowed = self._buffered_bytes + len(data) > self._tx_cap_bytes
+            if overflowed:
+                excess_bytes = (
+                    self._buffered_bytes + len(data) - self._fill_target_bytes
+                )
+                trim_bytes = min(
+                    self._align_byte_count(excess_bytes, round_up=True),
+                    self._buffered_bytes,
+                )
+                dropped_bytes += self._drop_oldest_locked(trim_bytes)
+                self._apply_trim_fade_locked()
             if incoming_drop_bytes or overflowed:
                 self._overrun_events += 1
             if dropped_bytes:
@@ -1070,19 +1119,18 @@ class _PortAudioTxStream:
         byte_count = frames * self._bytes_per_audio_frame
         self._record_callback_attempt(status)
         try:
-            # Callback hot path: no logging or I/O. Copy from the ring; if the
-            # producer falls behind, fill the remainder with silence and record
-            # an underrun.
+            # Callback hot path: no logging or I/O. Fill the block from the
+            # ring at the drift-compensated read rate; a dry or unprimed ring
+            # outputs silence and counts a single refill event (MOR-4013).
             dest = memoryview(outdata).cast("B")
             if len(dest) != byte_count:
                 raise ValueError(
                     f"output buffer is {len(dest)} bytes, expected {byte_count}"
                 )
-            consumed_bytes = self._read_ring_into_locked(dest)
-            if consumed_bytes < byte_count:
-                underrun_bytes = byte_count - consumed_bytes
-                dest[consumed_bytes:] = b"\x00" * underrun_bytes
-                self._record_underrun(underrun_bytes)
+            with self._lock:
+                consumed_bytes = self._playback_block_locked(dest, frames)
+                if consumed_bytes < byte_count:
+                    dest[consumed_bytes:] = b"\x00" * (byte_count - consumed_bytes)
             self._record_callback_complete(
                 consumed_bytes=consumed_bytes,
                 output_bytes=byte_count,
@@ -1118,27 +1166,155 @@ class _PortAudioTxStream:
             self._write_failures += 1
             self._last_error = f"{type(exc).__name__}: {exc}"
 
-    def _record_underrun(self, byte_count: int) -> None:
-        with self._lock:
-            self._underrun_audio_ms += self._audio_ms_for_bytes(byte_count)
-            self._underrun_events += 1
+    def _playback_block_locked(self, dest: memoryview, frames: int) -> int:
+        """Fill one playback block from the ring; caller holds ``self._lock``.
 
-    def _read_ring_into_locked(self, dest: memoryview) -> int:
-        requested = len(dest)
-        with self._lock:
-            copied = min(requested, self._buffered_bytes)
-            first = min(copied, self._capacity_bytes - self._read_pos)
-            if first:
-                dest[:first] = self._buffer[self._read_pos : self._read_pos + first]
-            second = copied - first
-            if second:
-                dest[first : first + second] = self._buffer[:second]
-            self._read_pos = (self._read_pos + copied) % self._capacity_bytes
-            self._buffered_bytes -= copied
-            self._consume_frame_lengths_locked(copied, count_dropped=False)
-            if self._buffered_bytes == 0:
-                self._read_pos = self._write_pos
-        return copied
+        Returns the input bytes consumed (0 for a silent block). While
+        unprimed the callback outputs silence until the fill target is
+        buffered again. A primed ring that cannot supply the block goes dry
+        ONCE: one underrun plus one refill event, then back to unprimed —
+        a stall no longer produces a partial-block zero-fill underrun per
+        callback (MOR-4013).
+        """
+        if not self._primed:
+            if self._buffered_bytes < self._fill_target_bytes:
+                return 0
+            self._primed = True
+        ratio = self._drift_ratio_for_block_locked(frames)
+        if ratio == 1.0:
+            # Exact copy path: bit-identical passthrough whenever the fill
+            # error sits inside the deadband (matched clocks).
+            self._drift_phase = 0.0
+            need_frames = frames
+        else:
+            need_frames = int(math.floor(self._drift_phase + (frames - 1) * ratio)) + 2
+        available_frames = self._buffered_bytes // self._bytes_per_audio_frame
+        if available_frames < need_frames:
+            shortfall_bytes = (need_frames - available_frames) * (
+                self._bytes_per_audio_frame
+            )
+            self._primed = False
+            self._refill_events += 1
+            self._underrun_events += 1
+            self._underrun_audio_ms += self._audio_ms_for_bytes(shortfall_bytes)
+            self._reset_drift_locked()
+            return 0
+        if ratio == 1.0:
+            return self._copy_head_into_locked(
+                dest, frames * self._bytes_per_audio_frame
+            )
+        return self._read_interpolated_locked(dest, frames, ratio)
+
+    def _drift_ratio_for_block_locked(self, frames: int) -> float:
+        """Read ratio for this block from the fill error; caller holds the lock.
+
+        Slow filtered proportional controller: inside the deadband the exact
+        copy path runs (ratio 1.0); outside it the ratio is slew-limited and
+        clamped to ±3% so a 1-2% producer/device clock mismatch is absorbed
+        without letting the ring pin at the cap or drain (MOR-4013).
+        """
+        dt = frames / self._sample_rate
+        error_frames = (
+            self._buffered_bytes // self._bytes_per_audio_frame
+        ) - self._fill_target_frames
+        alpha = 1.0 - math.exp(-dt / _TX_DRIFT_FILTER_S)
+        self._drift_filtered_error += alpha * (
+            error_frames - self._drift_filtered_error
+        )
+        if abs(error_frames) <= self._drift_deadband_frames:
+            self._drift_ratio = 1.0
+            return 1.0
+        target_ratio = 1.0 + _TX_DRIFT_KP * self._drift_filtered_error
+        target_ratio = min(
+            1.0 + _TX_DRIFT_MAX_RATIO,
+            max(1.0 - _TX_DRIFT_MAX_RATIO, target_ratio),
+        )
+        max_step = _TX_DRIFT_SLEW_PER_S * dt
+        if target_ratio > self._drift_ratio + max_step:
+            target_ratio = self._drift_ratio + max_step
+        elif target_ratio < self._drift_ratio - max_step:
+            target_ratio = self._drift_ratio - max_step
+        self._drift_ratio = target_ratio
+        return target_ratio
+
+    def _read_interpolated_locked(
+        self,
+        dest: memoryview,
+        frames: int,
+        ratio: float,
+    ) -> int:
+        """Consume ``frames * ratio`` input frames as one output block via
+        linear interpolation, keeping the fractional read position between
+        blocks; caller holds ``self._lock``."""
+        advance_exact = self._drift_phase + frames * ratio
+        advance_frames = int(math.floor(advance_exact))
+        need_frames = int(math.floor(self._drift_phase + (frames - 1) * ratio)) + 2
+        span = self._peek_head_bytes_locked(need_frames * self._bytes_per_audio_frame)
+        np = self._np
+        samples = np.frombuffer(span, dtype=np.int16)
+        positions = self._drift_phase + np.arange(frames, dtype=np.float64) * ratio
+        base = positions.astype(np.int64)
+        frac = positions - base
+        values = np.rint(samples[base] * (1.0 - frac) + samples[base + 1] * frac)
+        payload = values.astype(np.int16).tobytes()
+        dest[: len(payload)] = payload
+        self._consume_head_locked(advance_frames * self._bytes_per_audio_frame)
+        self._drift_phase = advance_exact - advance_frames
+        return advance_frames * self._bytes_per_audio_frame
+
+    def _copy_head_into_locked(self, dest: memoryview, byte_count: int) -> int:
+        """Bit-exact copy of ``byte_count`` bytes out of the ring head;
+        caller holds ``self._lock`` and guarantees they are buffered."""
+        first = min(byte_count, self._capacity_bytes - self._read_pos)
+        if first:
+            dest[:first] = self._buffer[self._read_pos : self._read_pos + first]
+        second = byte_count - first
+        if second:
+            dest[first : first + second] = self._buffer[:second]
+        self._read_pos = (self._read_pos + byte_count) % self._capacity_bytes
+        self._buffered_bytes -= byte_count
+        self._consume_frame_lengths_locked(byte_count, count_dropped=False)
+        if self._buffered_bytes == 0:
+            self._read_pos = self._write_pos
+        return byte_count
+
+    def _peek_head_bytes_locked(self, byte_count: int) -> bytes:
+        """Copy ``byte_count`` bytes from the ring head without consuming."""
+        first = min(byte_count, self._capacity_bytes - self._read_pos)
+        segment = bytes(self._buffer[self._read_pos : self._read_pos + first])
+        second = byte_count - first
+        if second:
+            segment += bytes(self._buffer[:second])
+        return segment
+
+    def _consume_head_locked(self, byte_count: int) -> None:
+        self._drop_oldest_locked(byte_count, count_dropped=False)
+
+    def _reset_drift_locked(self) -> None:
+        self._drift_ratio = 1.0
+        self._drift_phase = 0.0
+        self._drift_filtered_error = 0.0
+
+    def _apply_trim_fade_locked(self) -> None:
+        """Short fade-in over the ring head after a trim so the splice where
+        stale audio was dropped does not click; caller holds the lock."""
+        buffered_frames = self._buffered_bytes // self._bytes_per_audio_frame
+        fade_frames = min(self._trim_fade_frames, buffered_frames // 2)
+        if fade_frames < 2:
+            return
+        byte_count = fade_frames * self._bytes_per_audio_frame
+        segment = bytearray(self._peek_head_bytes_locked(byte_count))
+        channels = self._channels
+        for i in range(len(segment) // 2):
+            scale = ((i // channels) + 1) / fade_frames
+            value = int.from_bytes(segment[2 * i : 2 * i + 2], "little", signed=True)
+            segment[2 * i : 2 * i + 2] = int(value * scale).to_bytes(
+                2, "little", signed=True
+            )
+        first = min(byte_count, self._capacity_bytes - self._read_pos)
+        self._buffer[self._read_pos : self._read_pos + first] = segment[:first]
+        if first < byte_count:
+            self._buffer[: byte_count - first] = segment[first:]
 
     def _write_ring_locked(self, data: bytes) -> None:
         first = min(len(data), self._capacity_bytes - self._write_pos)
@@ -1150,13 +1326,18 @@ class _PortAudioTxStream:
         self._write_pos = (self._write_pos + len(data)) % self._capacity_bytes
         self._buffered_bytes += len(data)
 
-    def _drop_oldest_locked(self, byte_count: int) -> int:
+    def _drop_oldest_locked(
+        self,
+        byte_count: int,
+        *,
+        count_dropped: bool = True,
+    ) -> int:
         dropped = min(byte_count, self._buffered_bytes)
         if dropped <= 0:
             return 0
         self._read_pos = (self._read_pos + dropped) % self._capacity_bytes
         self._buffered_bytes -= dropped
-        self._consume_frame_lengths_locked(dropped, count_dropped=True)
+        self._consume_frame_lengths_locked(dropped, count_dropped=count_dropped)
         if self._buffered_bytes == 0:
             self._read_pos = self._write_pos
         return dropped
@@ -1183,6 +1364,9 @@ class _PortAudioTxStream:
         frames = (self._sample_rate * _TX_BUFFER_MS) // 1000
         return max(1, frames) * self._bytes_per_audio_frame
 
+    def _audio_frames_for_ms(self, ms: int) -> int:
+        return max(1, (self._sample_rate * ms) // 1000)
+
     def _clear_buffer(self) -> None:
         with self._lock:
             self._discard_locked()
@@ -1194,6 +1378,8 @@ class _PortAudioTxStream:
         self._write_pos = 0
         self._buffered_bytes = 0
         self._frame_lengths.clear()
+        self._primed = False
+        self._reset_drift_locked()
 
     def _audio_ms_for_bytes(self, byte_count: int) -> float:
         frames = byte_count // self._bytes_per_audio_frame
