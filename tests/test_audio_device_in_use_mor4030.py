@@ -374,3 +374,13 @@ async def test_the_lookup_is_not_asked_when_the_open_is_not_a_busy_refusal():
 
 def test_the_production_lookup_has_no_mechanism_yet():
     assert _usb_holder.find_holder_name("Microphone (USB Audio CODEC)") is None
+
+
+async def test_the_lookup_is_only_asked_for_the_capture_direction():
+    lookup = _lookup_returning("wsjtx.exe")
+    backend = _backend(_real_sd())
+    backend._capture_policy.holder_lookup = lookup
+    with pytest.raises(AudioDeviceBusyError) as raised:
+        await _start(backend, "tx")
+    assert lookup.calls == []
+    assert raised.value.holder is None
