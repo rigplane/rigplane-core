@@ -1355,7 +1355,7 @@ appends only the failure category, and `reason` carries the same category
 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster._notify_relay_start_failure`).
 The category is one of the publishable `AudioStartFailureReason` values
 (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
-`open_timeout`, `format`, `other`) classified by
+`open_timeout`, `device_in_use`, `format`, `other`) classified by
 `src/rigplane/audio/usb_driver.py: audio_start_failure_reason`. Exception text
 is never sent, so the frame is safe to show a remote client; the same category
 appears under `audioReceive.failure.reason` in `GET /api/v1/info`.

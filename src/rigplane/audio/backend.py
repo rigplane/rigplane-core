@@ -29,6 +29,12 @@ from typing import (
 )
 
 from ._portaudio_enum import WASAPI_HOST_API
+from ._usb_holder import (
+    HOLDER_LOOKUP_TIMEOUT_S,
+    HolderLookup,
+    find_holder_name,
+    holder_exe_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -760,6 +766,50 @@ class _WindowsMtaLease:
         self._cookie, self._ole32 = None, None
 
 
+class AudioDeviceBusyError(RuntimeError):
+    """Another program holds the codec: the exclusive open was refused as busy
+    and the shared fallback failed too (MOR-4030).
+
+    Windows refuses a shared open while an exclusive holder exists, so RX
+    cannot start until the holder lets go. ``holder`` is the holding
+    program's executable name when it could be found, never a path.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        device_index: int | None = None,
+        holder: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.device_index = device_index
+        self.holder = holder
+
+
+# paDeviceUnavailable, which PortAudio's WASAPI layer maps AUDCLNT_E_DEVICE_IN_USE to,
+# and that host error (0x8889000A) itself, signed and unsigned.
+_BUSY_CODES = frozenset({-9985, -2004287478, 0x8889000A})
+
+
+def _is_device_busy(error: BaseException) -> bool:
+    """Whether a refused WASAPI open means the device is in use."""
+
+    def walk(value: object) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return value in _BUSY_CODES
+        if isinstance(value, str):
+            text = value.lower()
+            return "device unavailable" in text or "device is in use" in text
+        if isinstance(value, (tuple, list)):
+            return any(walk(item) for item in value)
+        return False
+
+    return walk(error.args)
+
+
 class _OpenAttempt(NamedTuple):
     """One way to open a stream: its PortAudio ``extra_settings`` and whether it
     is a WASAPI exclusive open."""
@@ -787,6 +837,8 @@ class _CapturePolicy:
         self.mode: CaptureMode = mode  # type: ignore[assignment]
         self._logged: set[int] = set()
         self._logged_lock = threading.Lock()
+        self.holder_lookup: HolderLookup = find_holder_name
+        self.holder_timeout_s = HOLDER_LOOKUP_TIMEOUT_S
 
     def _is_wasapi(self, sd: Any, device_index: int) -> bool:
         if self.mode != "exclusive-preferred":
@@ -840,6 +892,32 @@ class _CapturePolicy:
             "using shared mode, where Windows audio effects can apply",
             device_index,
             error,
+        )
+
+    def busy_error(
+        self, sd: Any, device_index: int, exclusive_error: BaseException | None
+    ) -> AudioDeviceBusyError | None:
+        """The busy refusal when the exclusive open was refused as busy, else None.
+
+        Called only after the shared fallback failed too. Looks up the holding
+        program's name (bounded, never raising) and logs its executable name.
+        """
+        if exclusive_error is None or not _is_device_busy(exclusive_error):
+            return None
+        try:
+            device_name = str(sd.query_devices(device_index)["name"])
+        except Exception:
+            device_name = ""
+        holder = holder_exe_name(self.holder_lookup, device_name, self.holder_timeout_s)
+        logger.warning(
+            "portaudio: device [%d] is in use by %s; RX cannot start until it lets go",
+            device_index,
+            holder or "another program",
+        )
+        return AudioDeviceBusyError(
+            f"Audio device [{device_index}] is in use by another program.",
+            device_index=device_index,
+            holder=holder,
         )
 
 
@@ -943,6 +1021,7 @@ class _PortAudioRxStream:
                         exc_info=True,
                     )
             attempts = self._capture_policy.attempts(self._sd, self._device_index)
+            exclusive_error: Exception | None = None
             for number, attempt in enumerate(attempts, start=1):
                 stage = "open"
                 try:
@@ -964,7 +1043,13 @@ class _PortAudioRxStream:
                     self._stream.start()
                 except Exception as exc:
                     if not attempt.exclusive or number == len(attempts):
+                        busy = self._capture_policy.busy_error(
+                            self._sd, self._device_index, exclusive_error
+                        )
+                        if busy is not None:
+                            raise busy from exc
                         raise
+                    exclusive_error = exc
                     self._capture_policy.note_fallback(self._device_index, exc)
                     self._close_failed_attempt()
                     continue
@@ -1195,6 +1280,7 @@ class _PortAudioTxStream:
         try:
             self._mta.acquire()
             attempts = self._capture_policy.attempts(self._sd, self._device_index)
+            exclusive_error: Exception | None = None
             for number, attempt in enumerate(attempts, start=1):
                 try:
                     self._stream = self._sd.OutputStream(
@@ -1214,7 +1300,13 @@ class _PortAudioTxStream:
                     self._stream.start()
                 except Exception as exc:
                     if not attempt.exclusive or number == len(attempts):
+                        busy = self._capture_policy.busy_error(
+                            self._sd, self._device_index, exclusive_error
+                        )
+                        if busy is not None:
+                            raise busy from exc
                         raise
+                    exclusive_error = exc
                     self._capture_policy.note_fallback(self._device_index, exc)
                     failed, self._stream = self._stream, None
                     try:
@@ -2632,6 +2724,7 @@ class FakeAudioBackend:
 
 __all__ = [
     "AudioBackend",
+    "AudioDeviceBusyError",
     "AudioDeviceConfig",
     "AudioDeviceId",
     "AudioDeviceInfo",

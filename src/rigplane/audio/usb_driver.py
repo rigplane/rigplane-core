@@ -34,6 +34,7 @@ from ._usb_snapshot import Flow, UsbSnapshot
 
 from .backend import (
     AudioBackend,
+    AudioDeviceBusyError,
     AudioDeviceConfig,
     AudioDeviceId,
     AudioDeviceInfo,
@@ -153,6 +154,7 @@ AudioStartFailureReason = Literal[
     "usb_topology_unavailable",
     "usb_ambiguous",
     "open_timeout",
+    "device_in_use",
     "format",
     "other",
 ]
@@ -182,6 +184,7 @@ def audio_start_failure_details(
         tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
     ] = (
         ((AudioCaptureOpenTimeoutError,), "open_timeout"),
+        ((AudioDeviceBusyError,), "device_in_use"),
         ((AudioFormatUnsupportedError,), "format"),
         ((AudioDeviceAmbiguousError,), "usb_ambiguous"),
         ((AudioTopologyUnavailableError,), "usb_topology_unavailable"),
