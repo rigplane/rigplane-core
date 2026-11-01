@@ -109,6 +109,19 @@ def _load_scope_templates(radio_addr: int) -> dict[int, list[bytes]]:
     return templates
 
 
+def _blank_scope_wave(frame: bytes) -> bytes:
+    """Zero a recorded ``27 00`` wave's pixel payload, keep framing intact.
+
+    Layout is ``FE FE to from 27 00 rx seq seqMax pixels... FD``: bytes
+    before index 9 (framing, receiver, sequence) are preserved so the
+    production assembler still completes the frame — with all-zero
+    pixels, as a radio shows while a front-panel menu is open (MOR-3690).
+    """
+    if len(frame) < 11 or frame[4:6] != b"\x27\x00" or frame[-1:] != b"\xfd":
+        raise ValueError("blank scope wave needs a complete 27 00 frame")
+    return frame[:9] + bytes(len(frame) - 10) + b"\xfd"
+
+
 # ---------------------------------------------------------------------------
 # Protocol constants (duplicated here to keep mock self-contained)
 # ---------------------------------------------------------------------------
@@ -423,6 +436,10 @@ class MockIcomRadio(AudioPortMixin):
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
+        scope_blank_waves: emit the recorded ``27 00`` waves with the pixel
+            payload zeroed (framing, receiver and sequence bytes intact).
+            Models a radio that keeps streaming while it shows another
+            screen (front-panel menu, MOR-3690). Requires ``scope_stream``.
         rx_source: optional RX audio source (``rx_source.WavSource``)
             played in place of the byte ramp; None (default) keeps the
             ramp. Restarts from its head on each stream start.
@@ -459,6 +476,7 @@ class MockIcomRadio(AudioPortMixin):
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
         scope_stream: bool = False,
+        scope_blank_waves: bool = False,
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
     ) -> None:
@@ -539,6 +557,7 @@ class MockIcomRadio(AudioPortMixin):
         self._scope_12: int = 0x00
         self._scope_13: int = 0x01
         self._scope_stream = scope_stream
+        self._scope_blank_waves = scope_blank_waves and scope_stream
         self._scope_speed = {0x00: 0x01, 0x01: 0x00}  # MAIN mid, SUB fast in w55
         self._scope_templates = (
             _load_scope_templates(radio_addr) if scope_stream else {}
@@ -2734,6 +2753,8 @@ class MockIcomRadio(AudioPortMixin):
                 frames = self._scope_templates[receiver]
                 index = self._scope_template_index[receiver]
                 frame = frames[index % len(frames)]
+                if self._scope_blank_waves:
+                    frame = _blank_scope_wave(frame)
                 self._scope_template_index[receiver] = index + 1
                 self._send(
                     self._civ_proto,

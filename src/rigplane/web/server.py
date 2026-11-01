@@ -1433,6 +1433,15 @@ class WebServer:
         # Unsubscribes the managed TX authority invalidation listener on stop.
         self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
         self._scope_health_max_retries: int = 3  # give up after N failed re-enables
+        # MOR-3690: the watchdog tells "frames arrive" apart from "frames
+        # carry data". All-zero frames that keep arriving mean the radio
+        # deliberately shows another screen (front-panel menu); only a full
+        # stop of frames while the link is up is a transport fault.
+        self._scope_last_frame: float = 0.0  # last arrival of any scope frame
+        self._scope_health_attempts: int = 0  # transport-stall writes used
+        self._scope_health_next_retry_at: float = 0.0  # backoff gate (monotonic)
+        self._scope_healthy_since: float | None = None  # start of healthy flow
+        self._scope_hidden_published: bool | None = None  # last fact verdict
         # Band plan registry
         from .band_plan import DEFAULT_BAND_PLANS_DIR, BandPlanRegistry  # noqa: TID251
 
@@ -1745,6 +1754,11 @@ class WebServer:
             self._scope_handlers.add(handler)
             if was_empty and not was_registered:
                 self._scope_demand_generation += 1
+                # MOR-3690: a fresh viewing session gets a fresh attempt
+                # budget — the previous session's exhaustion does not leak.
+                self._scope_health_attempts = 0
+                self._scope_health_next_retry_at = 0.0
+                self._scope_healthy_since = None
             generation = self._scope_demand_generation
             if not was_registered:
                 self._broadcast_ws_client_state_update()
@@ -3581,19 +3595,75 @@ class WebServer:
             return False
 
     def _scope_health_check(self, frame: Any) -> None:
-        """Track whether scope frames contain real data (non-zero pixels)."""
+        """Track scope frame arrival and whether frames carry real data.
+
+        MOR-3690: every frame arrival refreshes ``_scope_last_frame`` first —
+        an all-zero frame still proves the transport is alive, so only a
+        full stop of frames is a transport fault. Non-zero pixels refresh
+        ``_scope_last_nonzero`` as before.
+        """
         import time
 
         try:
             # ScopeFrame has .pixels (bytes-like)
             pixels = getattr(frame, "pixels", None) or b""
+            self._scope_last_frame = time.monotonic()
             if any(b != 0 for b in pixels):
-                self._scope_last_nonzero = time.monotonic()
+                self._scope_last_nonzero = self._scope_last_frame
         except (AttributeError, TypeError):
             logger.debug("scope health check: unexpected frame type", exc_info=True)
 
+    _SCOPE_HEALTH_RECOVERY_WINDOWS = 3  # healthy monitor windows to reset budget
+    _SCOPE_HIDDEN_PATH = FieldPath.parse("health.health.scope_hidden")
+
+    def _scope_health_source(self) -> SourceMetadata:
+        """Source qualifier for the scope-health state facts (MOR-3690)."""
+        return SourceMetadata(
+            source="local_reconcile",
+            provider="scope_health",
+            transport="web",
+        )
+
+    def _publish_scope_hidden(self, hidden: bool, *, now: float) -> None:
+        """Publish the scope-hidden verdict as a state fact, on change only.
+
+        MOR-3690: ``True`` means all-zero frames keep arriving, so the radio
+        deliberately shows another screen (front-panel menu) — a valid
+        state the UI can report as "scope hidden on the radio". ``False``
+        means non-zero frames flow again. No verdict is published while the
+        monitor cannot tell (transport stall, TX, link down, no viewers),
+        so the last verdict never flaps.
+        """
+        if self._scope_hidden_published is hidden:
+            return
+        self._scope_hidden_published = hidden
+        self.command_state_store.apply_current(
+            Observation(
+                path=self._SCOPE_HIDDEN_PATH,
+                value=hidden,
+                source=self._scope_health_source(),
+                timestamp_monotonic=now,
+            )
+        )
+        logger.info(
+            "scope-health: scope %s",
+            "hidden on the radio (menu), not re-enabling"
+            if hidden
+            else "visible again (non-zero frames flowing)",
+        )
+
     async def _scope_health_monitor(self) -> None:
-        """Background task: re-enable scope if frames are all-zero for too long.
+        """Background task: bounded scope re-enable on transport stall only.
+
+        MOR-3690: all-zero frames that keep arriving are a valid radio
+        state (the operator opened a front-panel menu), never a reason to
+        write scope-enable — that write kicks the operator out of the
+        menu. Only a full stop of frames while the link is up is a
+        transport fault, and even then re-enable is bounded per session
+        with backoff: the attempt counter never resets just because an
+        attempt was made. It resets only after healthy non-zero frames
+        have flowed for a while, on a new viewing session, or while
+        transmit is known (MOR-2859).
 
         For serial-only radios (has_lan=False), scope data delivery differs
         significantly — the radio may need CI-V output enabled, higher baud
@@ -3603,7 +3673,6 @@ class WebServer:
         import time
 
         max_retries = self._scope_health_max_retries
-        retries = 0
         try:
             while True:
                 await asyncio.sleep(self._scope_health_interval)
@@ -3613,8 +3682,9 @@ class WebServer:
                     continue
                 # Don't re-enable scope while radio is disconnected
                 if not self._radio_ready():
-                    self._scope_last_nonzero = time.monotonic()  # reset timer
-                    retries = 0
+                    self._scope_last_frame = time.monotonic()
+                    self._scope_last_nonzero = time.monotonic()
+                    self._scope_healthy_since = None
                     continue
                 if not self._scope_enabled:
                     continue
@@ -3622,40 +3692,69 @@ class WebServer:
                     # MOR-2859: all-zero frames are expected during transmit
                     # (an IC-7300 with scope-during-TX off sends blanks), so
                     # pause the stall timer instead of re-enabling mid-TX.
+                    self._scope_last_frame = time.monotonic()
                     self._scope_last_nonzero = time.monotonic()
-                    retries = 0
+                    self._scope_health_attempts = 0
+                    self._scope_health_next_retry_at = 0.0
+                    self._scope_healthy_since = None
                     continue
                 now = time.monotonic()
-                if self._scope_last_nonzero == 0.0:
-                    # Never seen non-zero — might be starting up
+                if self._scope_last_frame == 0.0:
+                    # Never seen any frame — might be starting up
+                    self._scope_last_frame = now
                     self._scope_last_nonzero = now
                     continue
-                elapsed = now - self._scope_last_nonzero
-                if elapsed > self._scope_health_interval:
-                    if retries >= max_retries:
-                        if retries == max_retries:
-                            logger.warning(
-                                "scope-health: giving up after %d retries "
-                                "(scope may not be available on this backend)",
-                                max_retries,
-                            )
-                            retries += 1  # log once
-                        continue
-                    await self._execute_scope_command(
-                        EnableScope(generation=self._scope_demand_generation)
-                    )
-                    self._scope_last_nonzero = now  # reset to avoid spam
-                    retries += 1
-                    logger.warning(
-                        "scope-health: all-zero frames for %.0fs, re-enabling scope "
-                        "(attempt %d/%d)",
-                        elapsed,
-                        retries,
-                        max_retries,
-                    )
-                else:
-                    # Scope is healthy — reset retry counter
-                    retries = 0
+                interval = self._scope_health_interval
+                frames_flowing = now - self._scope_last_frame <= interval
+                data_flowing = (
+                    self._scope_last_nonzero != 0.0
+                    and now - self._scope_last_nonzero <= interval
+                )
+                if data_flowing:
+                    if self._scope_healthy_since is None:
+                        self._scope_healthy_since = now
+                    elif (
+                        now - self._scope_healthy_since
+                        >= self._SCOPE_HEALTH_RECOVERY_WINDOWS * interval
+                    ):
+                        # Healthy non-zero frames for a while: fresh budget.
+                        self._scope_health_attempts = 0
+                        self._scope_health_next_retry_at = 0.0
+                    self._publish_scope_hidden(False, now=now)
+                    continue
+                self._scope_healthy_since = None
+                if frames_flowing:
+                    # Frames arrive but carry no data: the radio shows
+                    # another screen. Valid state — never write scope-enable.
+                    self._publish_scope_hidden(True, now=now)
+                    continue
+                # Transport fault: no scope frames at all while the link is
+                # up. Bounded re-enables with backoff, then silence.
+                if self._scope_health_attempts >= max_retries:
+                    if self._scope_health_attempts == max_retries:
+                        logger.warning(
+                            "scope-health: giving up after %d retries "
+                            "(scope may not be available on this backend)",
+                            max_retries,
+                        )
+                        self._scope_health_attempts += 1  # log once
+                    continue
+                if now < self._scope_health_next_retry_at:
+                    continue
+                await self._execute_scope_command(
+                    EnableScope(generation=self._scope_demand_generation)
+                )
+                self._scope_health_attempts += 1
+                self._scope_health_next_retry_at = now + interval * (
+                    2**self._scope_health_attempts
+                )
+                logger.warning(
+                    "scope-health: no scope frames for %.0fs while link up, "
+                    "re-enabling scope (attempt %d/%d)",
+                    now - self._scope_last_frame,
+                    self._scope_health_attempts,
+                    max_retries,
+                )
         except asyncio.CancelledError:
             pass
 
