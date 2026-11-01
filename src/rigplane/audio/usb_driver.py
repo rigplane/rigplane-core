@@ -1256,6 +1256,7 @@ class UsbAudioDriver:
         backend: AudioBackend | None = None,
         rx_audio_channel: str = "mix",
         capture_open_timeout: float = _CAPTURE_OPEN_TIMEOUT_S,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         # ONE per-device config carrier (MOR-578). Callers either hand a
         # ready-made :class:`AudioDeviceConfig` or use the historical keyword
@@ -1291,6 +1292,7 @@ class UsbAudioDriver:
         # tests can shrink it well below ``_CAPTURE_OPEN_TIMEOUT_S`` without
         # a real multi-second wait.
         self._capture_open_timeout = capture_open_timeout
+        self._monotonic = monotonic
         # MOR-2892: every bounded off-loop PortAudio operation submits to
         # the module-wide ``bounded_portaudio_pool`` (ONE executor, ONE
         # saturation counter — shared with ``AudioBridge``; see the pool
@@ -1449,12 +1451,12 @@ class UsbAudioDriver:
 
         config = self._config
         generation = self._selection_generation
-        deadline = time.monotonic() + self._capture_open_timeout
+        deadline = self._monotonic() + self._capture_open_timeout
         self._selected_rx = None
         self._selected_tx = None
 
         def remaining() -> float:
-            timeout = deadline - time.monotonic()
+            timeout = deadline - self._monotonic()
             if timeout <= 0:
                 raise AudioCaptureOpenTimeoutError(
                     f"{direction.upper()} device enumeration exceeded "
