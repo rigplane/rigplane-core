@@ -62,7 +62,7 @@
     PBT mechanism.
 -->
 <script module lang="ts">
-  import type { DisplayObservedField, TxAuxField } from './radio-view-model';
+  import type { DisplayObservedField, ModeFilterViewModel, TxAuxField } from './radio-view-model';
   import { readingText } from '../primitives/reading-text';
   import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
@@ -117,6 +117,7 @@
   import type { PoliteControlAnnouncement } from '../primitives/control-feedback/control-feedback-presentation';
   import type { FilterFiniteLayout, FilterInstrumentHandles } from './filter-instruments';
   import type { RadioViewModel } from './radio-view-model';
+  import { disabledReasonText } from './disabled-reason';
 
   interface Props {
     view: RadioViewModel;
@@ -350,6 +351,52 @@
     filterWidthLease?.reset();
   }
 
+  /** MOR-3677: the width row's display state, resolved from the group's
+   *  `filterWidthDisplay` derivation. The derivation names the Hz-less
+   *  states (radio-default, narrow, not-reported); for `known` the row
+   *  additionally requires the `filterWidth` FIELD to be usable, so a
+   *  hand-built model whose two members disagree fails closed to the
+   *  disabled not-observed row — never a lit slider over an unread field.
+   *  `unsupported` never reaches here: the structural gate below hides the
+   *  row entirely. */
+  type WidthRowState = 'known' | 'radio-default' | 'narrow' | 'not-reported' | 'not-observed';
+
+  function widthRowState(group: ModeFilterViewModel): WidthRowState {
+    const display = group.filterWidthDisplay;
+    if (display.state === 'radio-default') return 'radio-default';
+    if (display.state === 'narrow') return 'narrow';
+    if (display.state === 'unknown' && display.reason === 'not-reported') return 'not-reported';
+    if (display.state === 'known' && usable(group.filterWidth)) return 'known';
+    return 'not-observed';
+  }
+
+  function widthOutputText(group: ModeFilterViewModel, row: WidthRowState): string {
+    if (row === 'radio-default') return t('core.filter.width.value.radioDefault');
+    if (row === 'narrow') return t('core.filter.width.value.narrow');
+    // `known` keeps today's rendering (the confirmed reading, MOR-2667
+    // empty box for the unread cases).
+    return readingText(group.filterWidth);
+  }
+
+  /** The row's reason text: the per-state sentence for the Hz-less states,
+   *  and the SHARED two-level vocabulary (`core.disabledReason.unobserved`)
+   *  for not-observed — one "why is this disabled" wording family. */
+  function widthRowReason(row: WidthRowState): string | undefined {
+    if (row === 'radio-default') return t('core.filter.width.reason.radioDefault');
+    if (row === 'narrow') return t('core.filter.width.reason.narrow');
+    if (row === 'not-reported') return t('core.filter.width.reason.notReported');
+    if (row === 'not-observed') return disabledReasonText({ structural: true, operational: false });
+    return undefined;
+  }
+
+  const WIDTH_DISABLED_REASON: Readonly<Record<WidthRowState, string | undefined>> = {
+    known: undefined,
+    'radio-default': 'radio-default',
+    narrow: 'narrow',
+    'not-reported': 'not-reported',
+    'not-observed': 'field-not-observed',
+  };
+
   function changePassband(field: FilterPassbandLevelField, value: number): void {
     if (!filterPassband || !usable(filterPassband[field])) return;
     if (field !== 'ifShift' && !pbtUsable(filterPassband[field])) return;
@@ -580,7 +627,14 @@
     {/if}
     {#if modeFilter}
       {#if modeFilter.filterWidth.availability.structural}
-        <label class="filter-level" data-testid="filter-width" data-disabled-reason={reasonOf(modeFilter.filterWidth)}>
+        {@const widthRow = widthRowState(modeFilter)}
+        {@const widthReason = widthRowReason(widthRow)}
+        {@const widthReasonId = `${pendingFilterId}-width-reason`}
+        <label class="filter-level" data-testid="filter-width" data-width-state={widthRow}
+          data-disabled-reason={WIDTH_DISABLED_REASON[widthRow]}
+          title={widthReason}
+          aria-describedby={widthReason !== undefined ? widthReasonId : undefined}
+        >
           <!-- MOR-2535: the reset gesture lives on the label and the value
                cell, NOT on the track — a track double-click fires native
                `input` events (position commands) before `dblclick` would
@@ -590,11 +644,13 @@
                no declared factory default exists, so the hint appears only
                when a reset would actually do something. A FIXED-width radio
                has no width to set (the track is not drawn either), so the
-               gesture is gated off there too. -->
+               gesture is gated off there too. MOR-3677: the hint names the
+               RADIO's own default (which can itself be narrow in CW and
+               data modes), not a bare "default". -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <span
             class="filter-level-name"
-            title={!fixedWidth && (onWidthReset !== undefined || filterWidthDefaultHz() !== null) ? 'Double-click: default' : undefined}
+            title={!fixedWidth && (onWidthReset !== undefined || filterWidthDefaultHz() !== null) ? t('core.filter.width.resetHint') : undefined}
             ondblclick={resetWidthRow}
           >Width</span>
           {#if !fixedWidth}
@@ -614,7 +670,13 @@
             />
           {/if}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <output ondblclick={resetWidthRow}>{readingText(modeFilter.filterWidth)}</output>
+          <!-- MOR-3677: the value cell names the Hz-less states
+               (radio-default, narrow) instead of going blank; the unread
+               states keep the MOR-2668 empty unlit box. -->
+          <output ondblclick={resetWidthRow}>{widthOutputText(modeFilter, widthRow)}</output>
+          {#if widthReason !== undefined}
+            <span id={widthReasonId} class="sr-only">{widthReason}</span>
+          {/if}
           {#if filterWidthAnnouncement !== null}
             {#key filterWidthAnnouncement.eventKey}
               <span class="sr-only" role="status" aria-live="polite" aria-atomic="true"

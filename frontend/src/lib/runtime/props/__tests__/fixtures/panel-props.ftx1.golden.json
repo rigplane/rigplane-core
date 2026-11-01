@@ -88,6 +88,7 @@
     "hasFilterShape": false,
     "filterLabels": [],
     "filterWidth": 3000,
+    "filterWidthState": null,
     "filterWidthMin": 300,
     "filterWidthMax": 4000,
     "filterConfig": {

@@ -41,6 +41,7 @@ import type {
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
+import { deriveFilterWidthDisplay } from './filter-width-display';
 import { refRangeFromCaps } from '../../../components/spectrum/spectrum-toolbar-logic';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
@@ -599,6 +600,11 @@ function deriveModeFilter(
     currentFilter: txAuxField(hasFilterSelect, filterObserved, numOrUndef(rx?.filter ?? undefined)),
     filterChoices,
     filterWidth: txAuxField(hasWidth, widthObserved, numOrUndef(rx?.filterWidth ?? undefined)),
+    // MOR-3677: the composed display verdict for the ACTIVE receiver —
+    // radio-default / narrow / not-reported are states the raw `filterWidth`
+    // field cannot name. Same `(state, caps)` purity as every other fact
+    // here (the ONE derivation, `filter-width-display.ts`).
+    filterWidthDisplay: deriveFilterWidthDisplay(state, caps, onSub ? 'SUB' : 'MAIN'),
     // F2 fix (verify round 1): the bounds' VALUE comes from
     // `resolveFilterModeConfig(caps, rx?.mode, rx?.dataMode)` — caps + MODE,
     // never from `filterWidth` — so their operational gate must be

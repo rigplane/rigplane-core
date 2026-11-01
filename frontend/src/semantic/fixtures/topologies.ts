@@ -268,6 +268,8 @@ export function withModeFilter(fixture: RadioViewModel): RadioViewModel {
     currentFilter: known(1),
     filterChoices: ['FIL1', 'FIL2', 'FIL3'],
     filterWidth: known(2400),
+    // MOR-3677: a fully-observed group carries a known width display.
+    filterWidthDisplay: { state: 'known', hz: 2400, stale: false },
     filterWidthMin: known(50),
     filterWidthMax: known(3600),
   };

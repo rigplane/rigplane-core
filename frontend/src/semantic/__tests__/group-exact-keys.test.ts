@@ -32,7 +32,7 @@ const FROZEN: Record<string, readonly string[]> = {
   ],
   validateModeFilter: [
     'currentMode', 'modeChoices', 'currentFilter', 'filterChoices', 'filterWidth',
-    'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
+    'filterWidthDisplay', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
   ],
   validateFilterPassband: [
     'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',

@@ -189,6 +189,28 @@ export type DisplayObservation<T> =
   | { readonly state: 'unknown'; readonly reason: 'not-observed' | 'invalid-value' | 'invalid-evidence' | 'identity-unresolved' }
   | { readonly state: 'unsupported' };
 
+/**
+ * MOR-3677 — the filter-width DISPLAY state: what the width row and the
+ * spectrum chip render for the active receiver's width. A composed verdict
+ * over the `filterWidth`, `narrow` and `filterWidthRadioDefault` leaves
+ * (derived by `lib/runtime/adapters/filter-width-display.ts`'s
+ * `deriveFilterWidthDisplay`, the ONE definition) rather than a per-leaf
+ * `DisplayObservation`: the FTX-1 reports widths the leaf vocabulary cannot
+ * name — its own mode default (CAT code 000, no Hz exists) and the NARROW
+ * takeover (SH does not follow NARROW, so no Hz may be shown while it is
+ * on). `not-reported` is the honest "the radio answered but carries no Hz
+ * for this mode" (C4FM, an out-of-table code, or the flag leaf still
+ * unpublished by a pre-PR1 backend); `not-observed` is everything else,
+ * fail-closed.
+ */
+export type FilterWidthDisplay = Readonly<
+  | { readonly state: 'known'; readonly hz: number; readonly stale: boolean }
+  | { readonly state: 'radio-default' }
+  | { readonly state: 'narrow' }
+  | { readonly state: 'unknown'; readonly reason: 'not-reported' | 'not-observed' }
+  | { readonly state: 'unsupported' }
+>;
+
 export interface DisplayObservedField<T> extends TxAuxField<T> {
   readonly display?: DisplayObservation<T>;
 }
@@ -392,7 +414,14 @@ export interface ModeFilterViewModel {
   modeChoices: readonly string[];
   currentFilter: ModeFilterField<number>;
   filterChoices: readonly string[];
+  /**
+   * MOR-3677: the composed width display state (see `FilterWidthDisplay`).
+   * `filterWidth` keeps its own meaning — the Hz reading or unknown — so
+   * command gating (`usable`) and the feedback lifecycle stay untouched;
+   * this field owns the RENDERING vocabulary only.
+   */
   filterWidth: ModeFilterField<number>;
+  filterWidthDisplay: FilterWidthDisplay;
   filterWidthMin: ModeFilterField<number>;
   filterWidthMax: ModeFilterField<number>;
 }
@@ -2033,11 +2062,35 @@ function validateModInputChoices(value: unknown, path: string): NonNullable<Filt
   });
 }
 
+function validateFilterWidthDisplay(value: unknown, path: string): FilterWidthDisplay {
+  const v = record(value, path);
+  const state = str(v.state, `${path}.state`);
+  if (state === 'known') {
+    exactKeys(v, ['state', 'hz', 'stale'], path);
+    const hz = num(v.hz, `${path}.hz`);
+    if (!Number.isSafeInteger(hz) || hz <= 0) invalid(`${path}.hz`, 'a positive safe integer');
+    return { state, hz, stale: bool(v.stale, `${path}.stale`) };
+  }
+  if (state === 'radio-default' || state === 'narrow' || state === 'unsupported') {
+    exactKeys(v, ['state'], path);
+    return { state };
+  }
+  if (state === 'unknown') {
+    exactKeys(v, ['state', 'reason'], path);
+    const reason = str(v.reason, `${path}.reason`);
+    if (reason !== 'not-reported' && reason !== 'not-observed') {
+      invalid(`${path}.reason`, "'not-reported' or 'not-observed'");
+    }
+    return { state, reason };
+  }
+  invalid(`${path}.state`, "a FilterWidthDisplay state ('known' | 'radio-default' | 'narrow' | 'unknown' | 'unsupported')");
+}
+
 function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'currentMode', 'modeChoices', 'currentFilter', 'filterChoices',
-    'filterWidth', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
+    'filterWidth', 'filterWidthDisplay', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
   ], path);
   return {
     activeFilterConfiguration: validateFilterConfiguration(v.activeFilterConfiguration, `${path}.activeFilterConfiguration`),
@@ -2046,6 +2099,7 @@ function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
     currentFilter: validateTxAuxField(v.currentFilter, `${path}.currentFilter`, num),
     filterChoices: strArray(v.filterChoices, `${path}.filterChoices`),
     filterWidth: validateTxAuxField(v.filterWidth, `${path}.filterWidth`, num),
+    filterWidthDisplay: validateFilterWidthDisplay(v.filterWidthDisplay, `${path}.filterWidthDisplay`),
     filterWidthMin: validateTxAuxField(v.filterWidthMin, `${path}.filterWidthMin`, num),
     filterWidthMax: validateTxAuxField(v.filterWidthMax, `${path}.filterWidthMax`, num),
   };
