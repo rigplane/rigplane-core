@@ -791,6 +791,25 @@ def _serialize_agc_readback(profile: "RadioProfile") -> dict[str, object] | None
     }
 
 
+def _serialize_scope_ref_range(profile: "RadioProfile") -> dict[str, object]:
+    """MOR-3694: publish the profile's declared scope REF adjustable range.
+
+    Field names are the profile's own (``[scope]`` ``ref_min_db``/
+    ``ref_max_db``/``ref_step_db``, see ``rigs/_schema.md``). ``{}`` when
+    the profile declares no range — clients must fail closed (disable the
+    REF steppers), never fall back to a hard-coded range.
+    """
+    if profile.scope_ref_min_db is None or profile.scope_ref_max_db is None:
+        return {}
+    payload: dict[str, object] = {
+        "ref_min_db": profile.scope_ref_min_db,
+        "ref_max_db": profile.scope_ref_max_db,
+    }
+    if profile.scope_ref_step_db is not None:
+        payload["ref_step_db"] = profile.scope_ref_step_db
+    return payload
+
+
 def _serialize_choices(
     values: tuple[int, ...] | None,
     labels: dict[str, str] | None,
@@ -4342,6 +4361,7 @@ class WebServer:
                         for value, label in (profile.data_mode_inputs or ())
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
+                    **_serialize_scope_ref_range(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
                     "txBands": _serialize_tx_bands(profile),
                     **_serialize_max_power(profile, self._radio),
@@ -5058,6 +5078,7 @@ class WebServer:
                     "hasRxAntenna": profile.antenna_has_rx_ant,
                 }
             )
+            payload.update(_serialize_scope_ref_range(profile))
             if profile.controls:
                 payload["controls"] = profile.controls
             payload["txBands"] = _serialize_tx_bands(profile)

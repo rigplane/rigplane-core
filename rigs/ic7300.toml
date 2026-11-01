@@ -40,6 +40,12 @@ audio_codec = [{ vid = "08BB", pid = "2901" }]
 
 [scope]
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+# 27 19: adjustable range -20.0 ~ +20.0 dB in 0.5 dB steps (MOR-3694;
+# owner-confirmed, and the range the IC-7300MK2 CI-V guide p.25 documents
+# for the same command on that radio, see ic7300mk2.toml).
+ref_min_db = -20.0
+ref_max_db = 20.0
+ref_step_db = 0.5
 
 # ── Capabilities ─────────────────────────────────────────────────
 # Feature tags determine which UI panels and controls are rendered.

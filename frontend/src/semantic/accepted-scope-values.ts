@@ -40,6 +40,26 @@ export function acceptedNumber(
 }
 
 /**
+ * MOR-3694 — the same gate for a DECIMAL level readback: the value must be
+ * a finite number inside the declared `[min, max]` range, but not an
+ * integer (the REF readback is half-dB on the shipped Icom rigs, e.g.
+ * -4.5). The integer-only `acceptedNumber` above stays the gate for the
+ * ordinal fields (mode/span/speed/edge).
+ */
+export function acceptedLevel(
+  field: InstrumentField<number> | undefined,
+  min: number,
+  max: number,
+): number | null {
+  if (field === undefined || field.availability === undefined) return null;
+  if (!usable(field)) return null;
+  const { value } = field.reading;
+  if (typeof value !== 'number' || !Number.isFinite(value)
+    || value < min || value > max) return null;
+  return value;
+}
+
+/**
  * The known reading of a boolean scope field, or `null` when the gate fails
  * or the value is not a real boolean.
  */

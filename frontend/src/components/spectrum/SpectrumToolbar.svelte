@@ -16,9 +16,9 @@
     SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
     toggleLayer as toggleLayerFn, isLayerVisible,
     isSpanApplicable, isEdgeApplicable,
-    clampSpan, clampSpeed, clampBrt, clampRef,
+    clampSpan, clampSpeed, clampBrt, stepRef,
   } from './spectrum-toolbar-logic';
-  import { acceptedBoolean, acceptedNumber } from '../../semantic/accepted-scope-values';
+  import { acceptedBoolean, acceptedLevel, acceptedNumber } from '../../semantic/accepted-scope-values';
 
   interface LayerInfo {
     name: string;
@@ -218,7 +218,15 @@
   let scopeSpan = $derived(acceptedNumber(scopeFacts?.span, 0, 7));
   let scopeSpeed = $derived(acceptedNumber(scopeFacts?.speed, 0, 2));
   let scopeHold = $derived(acceptedBoolean(scopeFacts?.hold));
-  let scopeRef = $derived(acceptedNumber(scopeFacts?.refDb, -30, 10));
+  /* MOR-3694: the radio's declared REF range (view model, from caps). No
+   *  declared range ⇒ REF −/+/0 fail closed (`scopeRef` stays null); a
+   *  half-dB readback stays usable — the level gate accepts decimals. */
+  let scopeRefRange = $derived(scopeFacts?.refRange ?? null);
+  let scopeRef = $derived(
+    scopeRefRange === null
+      ? null
+      : acceptedLevel(scopeFacts?.refDb, scopeRefRange.min, scopeRefRange.max),
+  );
   let scopeDual = $derived(acceptedBoolean(scopeFacts?.dual));
   let scopeReceiver = $derived(acceptedNumber(scopeFacts?.receiver, 0, 1));
 
@@ -257,9 +265,14 @@
     scopeHandlers.onHoldChange(!scopeHold);
   }
 
+  /* MOR-3694: REF steps on the 5 dB grid against the DECLARED range —
+   *  from an off-grid or half-dB readback the value snaps to the
+   *  neighbouring grid point, and the result never leaves the range. */
   function changeRef(delta: -5 | 0 | 5) {
-    if (scopeRef === null) return;
-    scopeHandlers.onRefChange(delta === 0 ? 0 : clampRef(scopeRef, delta));
+    if (scopeRef === null || scopeRefRange === null) return;
+    scopeHandlers.onRefChange(
+      delta === 0 ? 0 : stepRef(scopeRef, delta === -5 ? -1 : 1, scopeRefRange),
+    );
   }
 
   function toggleDual() {

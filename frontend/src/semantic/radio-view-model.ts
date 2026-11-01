@@ -1122,10 +1122,17 @@ export interface ScopeControlsViewModel {
   /** Sweep-speed ordinal 0=FST/1=MID/2=SLO. */
   speed: ScopeControlsField<number>;
   hold: ScopeControlsField<boolean>;
-  /** Reference level in dB, clamped [-30, 10] by the toolbar's `clampRef`
-   *  (that clamp is a UI editing convenience, not a fact constraint — the
-   *  raw value here is whatever the radio reports). */
+  /** Reference level in dB. The raw value here is whatever the radio
+   *  reports — including half-dB values — never a clamped or stepped
+   *  copy; `refRange` below carries the declared range the UI steps and
+   *  clamps against (`stepRef` in `spectrum-toolbar-logic.ts`). */
   refDb: ScopeControlsField<number>;
+  /** The radio's declared REF adjustable range, derived from
+   *  capabilities (`ref_min_db`/`ref_max_db`, MOR-3694). `null` when the
+   *  active radio declares none — the REF steppers fail closed then, with
+   *  no fallback range. A capability echo fixed when caps load, not a
+   *  reading. */
+  refRange: { readonly min: number; readonly max: number } | null;
   dual: ScopeControlsField<boolean>;
   /** 0=MAIN, 1=SUB. */
   receiver: ScopeControlsField<number>;
@@ -2362,7 +2369,7 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
   const v = record(value, path);
   exactKeys(
     v,
-    ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+    ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'refRange', 'dual', 'receiver',
       'duringTx', 'centerType', 'vbwNarrow', 'rbw'],
     path,
   );
@@ -2373,6 +2380,7 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
     speed: validateTxAuxField(v.speed, `${path}.speed`, num),
     hold: validateTxAuxField(v.hold, `${path}.hold`, bool),
     refDb: validateTxAuxField(v.refDb, `${path}.refDb`, num),
+    refRange: validateRefRange(v.refRange, `${path}.refRange`),
     dual: validateTxAuxField(v.dual, `${path}.dual`, bool),
     receiver: validateTxAuxField(v.receiver, `${path}.receiver`, num),
     duringTx: validateTxAuxField(v.duringTx, `${path}.duringTx`, bool),
@@ -2380,6 +2388,19 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
     vbwNarrow: validateTxAuxField(v.vbwNarrow, `${path}.vbwNarrow`, bool),
     rbw: validateTxAuxField(v.rbw, `${path}.rbw`, num),
   };
+}
+
+/** MOR-3694: `null` or exactly `{min, max}` with min <= max. */
+function validateRefRange(
+  value: unknown,
+  path: string,
+): { readonly min: number; readonly max: number } | null {
+  if (value === null) return null;
+  const v = record(value, path);
+  exactKeys(v, ['min', 'max'], path);
+  const range = { min: num(v.min, `${path}.min`), max: num(v.max, `${path}.max`) };
+  if (range.min > range.max) invalid(`${path}.min`, 'min <= max');
+  return range;
 }
 
 const SCOPE_SOURCES: readonly ScopeSourceKind[] = ['hardware', 'audio_fft'];

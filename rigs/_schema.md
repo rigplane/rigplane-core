@@ -301,6 +301,17 @@ as an argument — `commands/` may not import `profiles/`, so the runtime
 reads the resolved profile and passes the list in. A profile that omits
 this key therefore decodes and encodes no span at all.
 
+The `ref_*_db` triple is the 0x19 reference level's adjustable range
+(MOR-3694). Every shipped profile that declares the `scope` capability and
+binds the 0x19 command declares all three (a conformance test enforces
+it); `ref_step_db` is the radio's own resolution (0.5 dB on the Icom
+rigs), not the UI stepping grid. The web server publishes the triple on
+both capability endpoints under these same names; the frontend steps REF
+on a 5 dB grid clamped to this range and the `set_scope_ref` handler
+refuses values outside it. A profile that omits the triple gets REF
+stepping that fails closed on both ends — disabled keys, refused writes —
+never a fallback range.
+
 ## `[attenuator]` — Attenuator Steps
 
 Optional section. Defines available attenuator values for the radio.

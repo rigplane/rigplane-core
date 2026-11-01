@@ -3169,6 +3169,25 @@ class ControlHandler:
             case "set_scope_ref":
                 ref = _int_param(params["ref"], "ref")
                 self._ensure_capability("scope", "set_scope_ref")
+                # MOR-3694: refuse (never clamp) a REF outside the active
+                # profile's declared range. The check lives HERE because
+                # the queue below acks immediately — the ValueError the
+                # encoder would raise inside the poller task never reaches
+                # the client. No declared range fails closed too: the UI
+                # disables its REF steppers for the same fact.
+                profile = getattr(self._radio, "profile", None)
+                ref_min = getattr(profile, "scope_ref_min_db", None)
+                ref_max = getattr(profile, "scope_ref_max_db", None)
+                if ref_min is None or ref_max is None:
+                    raise ValueError(
+                        "set_scope_ref refused: active profile declares no "
+                        "scope reference range ([scope] ref_min_db/ref_max_db)"
+                    )
+                if not ref_min <= ref <= ref_max:
+                    raise ValueError(
+                        f"scope ref must be {ref_min} to {ref_max} dB for "
+                        f"this radio, got {ref}"
+                    )
                 q.put(SetScopeRef(ref))
                 return {"ref": ref}
             case "set_scope_hold":

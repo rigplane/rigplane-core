@@ -387,12 +387,28 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         return ref_db
 
     async def set_scope_ref(self, ref: float) -> None:
-        """Set the scope reference level in dB."""
+        """Set the scope reference level in dB.
+
+        The range check uses the profile's declared ``[scope]``
+        ``ref_min_db``/``ref_max_db`` (passed in because ``commands/``
+        may not import ``profiles/``, the same contract as span presets);
+        with none declared, the encoder's own historical IC-7610 default
+        applies.
+        """
         self._check_connected()
         receiver = self._scope_controls().receiver
+        ref_bounds = (
+            (self._profile.scope_ref_min_db, self._profile.scope_ref_max_db)
+            if self._profile.scope_ref_min_db is not None
+            and self._profile.scope_ref_max_db is not None
+            else None
+        )
         await self._send_civ_raw(
             self._commands.scope_set_ref(
-                ref, to_addr=self._radio_addr, receiver=receiver
+                ref,
+                to_addr=self._radio_addr,
+                receiver=receiver,
+                ref_bounds=ref_bounds,
             ),
             wait_response=False,
         )
