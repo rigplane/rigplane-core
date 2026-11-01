@@ -34,7 +34,14 @@ class FakeSd:
         refuse_shared=False,
         refuse_at="open",
         exclusive_error: BaseException | None = None,
+        shared_error: BaseException | None = None,
+        unplugged: tuple[int, ...] = (),
     ) -> None:
+        self.shared_error = shared_error or OSError(
+            "Error opening stream: shared refused"
+        )
+        # Devices PortAudio no longer enumerates (query_devices raises).
+        self.unplugged = set(unplugged)
         self.refuse_exclusive = refuse_exclusive or exclusive_error is not None
         self.exclusive_error = exclusive_error or OSError(
             "Error opening stream: exclusive-mode format not accepted"
@@ -67,7 +74,7 @@ class FakeSd:
                     if sd.refuse_exclusive:
                         self.error = sd.exclusive_error
                 elif sd.refuse_shared:
-                    self.error = OSError("Error opening stream: shared refused")
+                    self.error = sd.shared_error
                 if self.error is not None and sd.refuse_at == "open":
                     raise self.error
                 self.closed = False
@@ -97,9 +104,13 @@ class FakeSd:
 
     def query_devices(self, index):
         self.queries.append(("device", index))
+        if index in self.unplugged:
+            raise ValueError(f"Error querying device {index}")
         return {
             "name": "Microphone (USB Audio CODEC)",
             "hostapi": 3 if index == WASAPI_DEVICE else 0,
+            "max_input_channels": 2,
+            "max_output_channels": 2,
         }
 
     def query_hostapis(self, index):

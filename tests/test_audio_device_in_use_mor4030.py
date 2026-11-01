@@ -1,11 +1,14 @@
 """MOR-4030 case C: another program holds the radio's codec exclusively.
 
 Windows refuses a shared open while an exclusive holder exists, so with
-``exclusive-preferred`` the exclusive open is refused as busy AND the shared
-fallback fails too: RX never starts. That case alone is raised as
-``AudioDeviceBusyError`` (start-failure category ``device_in_use``), which the
-RX-start refusal frame and the ``audioReceive`` status already carry to the UI.
-Any other open failure keeps its current category and message.
+``exclusive-preferred`` the exclusive open is refused AND the shared fallback
+fails too, both with the real run's ``Invalid device [PaErrorCode -9996]``: RX
+never starts. That case alone (the shared failure is "device unavailable" or
+"invalid device" or carries AUDCLNT_E_DEVICE_IN_USE, and the device still
+enumerates with channels) is raised as ``AudioDeviceBusyError`` (start-failure
+category ``device_in_use``), which the RX-start refusal frame and the
+``audioReceive`` status already carry to the UI. Any other open failure keeps
+its current category and message.
 
 A fake ``sounddevice`` stands in for PortAudio: no audio device, no Windows.
 """
@@ -43,19 +46,28 @@ class FakePortAudioError(Exception):
     """The shape sounddevice's PortAudioError has: (message, code[, host error])."""
 
 
-def _busy_errors():
+# The real strings from the real-Windows run (IC-7300 codec held exclusively by
+# another process): BOTH the exclusive open and the shared fallback raised this.
+REAL_INVALID_DEVICE = "Error opening InputStream: Invalid device [PaErrorCode -9996]"
+
+
+def _real_refusal():
+    return FakePortAudioError(REAL_INVALID_DEVICE, -9996)
+
+
+def _in_use_shared_errors():
     return {
-        # paDeviceUnavailable, which PortAudio's WASAPI layer maps
-        # AUDCLNT_E_DEVICE_IN_USE to.
-        "code": FakePortAudioError("Error opening InputStream", -9985),
-        "text": FakePortAudioError(
+        "real-invalid-device": _real_refusal(),
+        "device-unavailable-code": FakePortAudioError(
+            "Error opening InputStream", -9985
+        ),
+        "device-unavailable-text": FakePortAudioError(
             "Error opening InputStream: Device unavailable [PaErrorCode -9985]"
         ),
-        # An unmapped host error carrying AUDCLNT_E_DEVICE_IN_USE (0x8889000A).
-        "host-error": FakePortAudioError(
+        "host-error-in-use": FakePortAudioError(
             "Error opening InputStream: Unanticipated host error",
             -9999,
-            ("Windows WASAPI", -2004287478, "The device is in use"),
+            ("Windows WASAPI", -2004287478, "AUDCLNT_E_DEVICE_IN_USE (0x8889000A)"),
         ),
     }
 
@@ -70,15 +82,24 @@ async def _start(backend, direction, device=WASAPI_DEVICE):
     return stream
 
 
+def _real_sd(**kw):
+    """Both attempts fail as in the real run: the same Invalid device error."""
+    return FakeSd(
+        exclusive_error=_real_refusal(),
+        shared_error=_real_refusal(),
+        refuse_shared=True,
+        **kw,
+    )
+
+
 @pytest.mark.parametrize("direction", ["rx", "tx"])
-@pytest.mark.parametrize("busy", ["code", "text", "host-error"])
-async def test_exclusive_busy_and_shared_failed_raises_the_busy_error(busy, direction):
-    sd = FakeSd(exclusive_error=_busy_errors()[busy], refuse_shared=True)
+async def test_the_real_run_refusal_raises_the_in_use_error(direction):
+    sd = _real_sd()
     backend = _backend(sd)
     stream = (
         backend.open_rx(AudioDeviceId(WASAPI_DEVICE))
         if direction == "rx"
-        else (backend.open_tx(AudioDeviceId(WASAPI_DEVICE)))
+        else backend.open_tx(AudioDeviceId(WASAPI_DEVICE))
     )
     with pytest.raises(AudioDeviceBusyError) as raised:
         if direction == "rx":
@@ -86,39 +107,110 @@ async def test_exclusive_busy_and_shared_failed_raises_the_busy_error(busy, dire
         else:
             await stream.start()
     assert not stream.running
-    # The shared failure is the cause; the exclusive refusal stays in the log.
-    assert isinstance(raised.value.__cause__, OSError)
+    assert raised.value.device_index == WASAPI_DEVICE
+    # The shared failure is the cause; it is the real PortAudio error verbatim.
+    assert raised.value.__cause__.args == (REAL_INVALID_DEVICE, -9996)
     assert audio_start_failure_reason(raised.value) == "device_in_use"
     assert [o["extra_settings"].exclusive for o in sd.opened] == [True, False]
 
 
-@pytest.mark.parametrize("refuse_at", ["open", "start"])
-async def test_busy_is_raised_whether_the_refusals_come_at_open_or_start(refuse_at):
+@pytest.mark.parametrize("shared", list(_in_use_shared_errors()))
+async def test_every_in_use_shape_of_the_shared_failure_raises_the_in_use_error(shared):
     sd = FakeSd(
-        exclusive_error=_busy_errors()["code"], refuse_shared=True, refuse_at=refuse_at
+        exclusive_error=_real_refusal(),
+        shared_error=_in_use_shared_errors()[shared],
+        refuse_shared=True,
     )
     with pytest.raises(AudioDeviceBusyError):
         await _start(_backend(sd), "rx")
 
 
+async def test_any_exclusive_open_error_counts_when_the_shared_one_says_in_use():
+    sd = FakeSd(
+        exclusive_error=OSError("Error opening InputStream: something else"),
+        shared_error=_real_refusal(),
+        refuse_shared=True,
+    )
+    with pytest.raises(AudioDeviceBusyError):
+        await _start(_backend(sd), "rx")
+
+
+@pytest.mark.parametrize("refuse_at", ["open", "start"])
+async def test_the_refusals_may_come_at_open_or_start(refuse_at):
+    with pytest.raises(AudioDeviceBusyError):
+        await _start(_backend(_real_sd(refuse_at=refuse_at)), "rx")
+
+
 @pytest.mark.parametrize("direction", ["rx", "tx"])
-async def test_exclusive_busy_but_shared_opens_is_not_the_busy_error(direction):
-    sd = FakeSd(exclusive_error=_busy_errors()["code"])
+async def test_exclusive_refused_but_shared_opens_is_not_the_in_use_error(direction):
+    sd = FakeSd(exclusive_error=_real_refusal())
     stream = await _start(_backend(sd), direction)
     assert stream.running and stream.exclusive is False
     await stream.stop()
 
 
+ACCESS_DENIED = FakePortAudioError(
+    "Error opening InputStream: Unanticipated host error [PaErrorCode -9999]",
+    -9999,
+    ("Windows WASAPI", -2147024891, "Access is denied. (0x80070005)"),
+)
+
+
 @pytest.mark.parametrize("direction", ["rx", "tx"])
-async def test_a_not_busy_exclusive_refusal_keeps_the_shared_error(direction):
+@pytest.mark.parametrize(
+    "shared",
+    [
+        FakePortAudioError(
+            "Error opening InputStream: Invalid number of channels", -9998
+        ),
+        FakePortAudioError("Error opening InputStream: Invalid sample rate", -9997),
+        ACCESS_DENIED,
+        OSError("Error opening stream: shared refused"),
+    ],
+    ids=["channels", "sample-rate", "access-denied", "plain-oserror"],
+)
+async def test_other_shared_failures_keep_their_own_error(shared, direction):
     sd = FakeSd(
-        exclusive_error=FakePortAudioError("Invalid number of channels", -9998),
-        refuse_shared=True,
+        exclusive_error=_real_refusal(), shared_error=shared, refuse_shared=True
     )
-    with pytest.raises(OSError, match="shared refused") as raised:
+    with pytest.raises(type(shared)) as raised:
+        await _start(_backend(sd), direction)
+    assert raised.value is shared
+    assert audio_start_failure_reason(raised.value) == "other"
+
+
+async def test_access_denied_on_both_attempts_stays_the_old_error():
+    sd = FakeSd(
+        exclusive_error=ACCESS_DENIED, shared_error=ACCESS_DENIED, refuse_shared=True
+    )
+    with pytest.raises(FakePortAudioError) as raised:
+        await _start(_backend(sd), "rx")
+    assert raised.value is ACCESS_DENIED
+
+
+@pytest.mark.parametrize("direction", ["rx", "tx"])
+async def test_invalid_device_for_a_device_that_no_longer_enumerates_stays_old(
+    direction,
+):
+    sd = _real_sd(unplugged=(WASAPI_DEVICE,))
+    with pytest.raises(FakePortAudioError) as raised:
         await _start(_backend(sd), direction)
     assert not isinstance(raised.value, AudioDeviceBusyError)
+    assert raised.value.args == (REAL_INVALID_DEVICE, -9996)
     assert audio_start_failure_reason(raised.value) == "other"
+
+
+async def test_invalid_device_for_a_device_without_channels_stays_old():
+    sd = _real_sd()
+    original = sd.query_devices
+
+    def no_inputs(index):
+        return {**original(index), "max_input_channels": 0}
+
+    sd.query_devices = no_inputs  # type: ignore[method-assign]
+    with pytest.raises(FakePortAudioError) as raised:
+        await _start(_backend(sd), "rx")
+    assert not isinstance(raised.value, AudioDeviceBusyError)
 
 
 @pytest.mark.parametrize(
@@ -126,18 +218,16 @@ async def test_a_not_busy_exclusive_refusal_keeps_the_shared_error(direction):
     [("shared", WASAPI_DEVICE), ("shared", MME_DEVICE), (EXCLUSIVE, MME_DEVICE)],
 )
 async def test_plain_open_failures_are_unchanged(capture_mode, device):
-    sd = FakeSd(refuse_shared=True)
-    # A device-unavailable error on a plain open is not a holder: no exclusive
-    # open was refused first.
-    sd.exclusive_error = _busy_errors()["code"]
-    with pytest.raises(OSError, match="shared refused") as raised:
+    # The same real error on a plain open is not a holder: no exclusive open
+    # was refused first.
+    sd = FakeSd(shared_error=_real_refusal(), refuse_shared=True)
+    with pytest.raises(FakePortAudioError) as raised:
         await _start(_backend(sd, capture_mode), "rx", device)
     assert not isinstance(raised.value, AudioDeviceBusyError)
 
 
-async def test_the_busy_refusal_logs_one_fallback_line_per_device(caplog):
-    sd = FakeSd(exclusive_error=_busy_errors()["code"], refuse_shared=True)
-    backend = _backend(sd)
+async def test_the_in_use_refusal_logs_one_fallback_line_per_device(caplog):
+    backend = _backend(_real_sd())
     with caplog.at_level(logging.WARNING, logger=_BACKEND_LOGGER):
         for _ in range(3):
             with pytest.raises(AudioDeviceBusyError):
@@ -148,6 +238,7 @@ async def test_the_busy_refusal_logs_one_fallback_line_per_device(caplog):
         if r.name == _BACKEND_LOGGER and "exclusive open" in r.getMessage()
     ]
     assert len(fallbacks) == 1
+    assert REAL_INVALID_DEVICE in fallbacks[0]
 
 
 # --- through the driver ------------------------------------------------------
@@ -217,8 +308,7 @@ def _lookup_returning(value):
 
 
 async def _busy_with_lookup(lookup, *, timeout=None):
-    sd = FakeSd(exclusive_error=_busy_errors()["code"], refuse_shared=True)
-    backend = _backend(sd)
+    backend = _backend(_real_sd())
     policy = backend._capture_policy
     policy.holder_lookup = lookup
     if timeout is not None:
@@ -271,7 +361,8 @@ async def test_a_slow_holder_lookup_is_abandoned_after_its_bound():
 async def test_the_lookup_is_not_asked_when_the_open_is_not_a_busy_refusal():
     lookup = _lookup_returning("wsjtx.exe")
     sd = FakeSd(
-        exclusive_error=FakePortAudioError("Invalid number of channels", -9998),
+        exclusive_error=_real_refusal(),
+        shared_error=FakePortAudioError("Invalid number of channels", -9998),
         refuse_shared=True,
     )
     backend = _backend(sd)
