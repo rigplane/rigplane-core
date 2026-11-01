@@ -41,6 +41,7 @@ import type {
 } from '../../../semantic/radio-view-model';
 import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
+import { refRangeFromCaps } from '../../../components/spectrum/spectrum-toolbar-logic';
 import { isFieldAvailable } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
@@ -1746,6 +1747,9 @@ function deriveScopeControls(
     speed: txAuxField(true, topFieldAvailable(state, 'scopeControls.speed'), numOrUndef(sc?.speed)),
     hold: txAuxField(true, topFieldAvailable(state, 'scopeControls.hold'), boolOrUndef(sc?.hold)),
     refDb: txAuxField(true, topFieldAvailable(state, 'scopeControls.refDb'), numOrUndef(sc?.refDb)),
+    // MOR-3694: the declared REF range from capabilities; `null` fails the
+    // REF steppers closed (no fallback range).
+    refRange: refRangeFromCaps(caps),
     dual: txAuxField(
       hasReceiverSelect, topFieldAvailable(state, 'scopeControls.dual'), boolOrUndef(sc?.dual),
     ),

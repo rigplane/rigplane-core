@@ -861,6 +861,7 @@
         "structural": true,
         "operational": true
       }
-    }
+    },
+    "refRange": null
   }
 }

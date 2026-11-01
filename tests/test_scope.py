@@ -815,6 +815,19 @@ class TestScopeCommandBuilders:
         assert frame[5] == 0x19
         assert frame[6:9] == b"\x10\x50\x01"
 
+    def test_scope_set_ref_with_ic705_bounds_accepts_plus_15(self, cmd_map) -> None:
+        """MOR-3694: caller-supplied bounds are the radio's declared range
+        (the IC-705's -20.0..+20.0), not the encoder's IC-7610 default."""
+        frame = scope_set_ref(15.0, cmd_map=cmd_map, ref_bounds=(-20.0, 20.0))
+        # +15.0 dB → [10dB=1, 1dB=5] [0.1dB=0, 0] [sign=plus]
+        assert frame[6:9] == b"\x15\x00\x00"
+
+    def test_scope_set_ref_with_bounds_rejects_outside_declared_range(
+        self, cmd_map
+    ) -> None:
+        with pytest.raises(ValueError, match=r"-20\.0 to 20\.0"):
+            scope_set_ref(21.0, cmd_map=cmd_map, ref_bounds=(-20.0, 20.0))
+
     def test_scope_set_speed(self, cmd_map) -> None:
         frame = scope_set_speed(1, cmd_map=cmd_map)
         assert frame[4] == 0x27

@@ -24,6 +24,10 @@ class WebSocketRoute(TypedDict):
 class ResponseFieldContract(TypedDict):
     required: tuple[str, ...]
     result_values: NotRequired[tuple[str, ...]]
+    # Optional-but-stable fields: present only when the active profile
+    # declares them (MOR-3694's scope REF range). Listed so the stable
+    # surface documents them without demanding them from every radio.
+    optional: NotRequired[tuple[str, ...]]
 
 
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
@@ -216,7 +220,11 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "audioConfig",
             "webrtc",
             "cwText",
-        )
+        ),
+        # MOR-3694: the profile's declared `[scope]` REF range, snake_case
+        # as in the profile. Present only when the active profile declares
+        # it; clients fail closed (disable REF stepping) without it.
+        "optional": ("ref_min_db", "ref_max_db", "ref_step_db"),
     },
     "/api/v1/managed-transmit": {
         "required": (

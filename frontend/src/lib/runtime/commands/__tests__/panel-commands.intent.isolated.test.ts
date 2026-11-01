@@ -1824,11 +1824,19 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   });
 
   it('delegates keyboard dial and scope controls only from known generation-bound scope metadata', () => {
-    h.caps = { ...h.caps!, scope: true, capabilities: [...(h.caps!.capabilities as string[]), 'dial_lock', 'scope'] };
+    h.caps = {
+      ...h.caps!,
+      scope: true,
+      capabilities: [...(h.caps!.capabilities as string[]), 'dial_lock', 'scope'],
+      // MOR-3694: the IC-705/IC-7300 declared REF range (-20..+20, 0.5 dB).
+      ref_min_db: -20,
+      ref_max_db: 20,
+      ref_step_db: 0.5,
+    };
     h.state = {
       ...h.state!,
       dialLock: false,
-      scopeControls: { span: 7, refDb: -30, hold: false, dual: false, speed: 0 },
+      scopeControls: { span: 7, refDb: -20, hold: false, dual: false, speed: 0 },
     } as ServerState;
 
     const actions = [
@@ -1845,7 +1853,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(exactCalls()).toEqual([
       ['set_dial_lock', { on: true }],
       ['set_scope_span', { span: 7 }],
-      ['set_scope_ref', { ref: -30 }],
+      // At the declared floor the down-step stays at -20 (clamped to the
+      // radio's own range, not the old hard-coded -30).
+      ['set_scope_ref', { ref: -20 }],
       ['set_scope_hold', { on: true }],
       ['set_scope_dual', { dual: true }],
       ['set_scope_speed', { speed: 1 }],
@@ -1871,14 +1881,23 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
     h.state = oneReceiverAbState();
     h.state = { ...h.state, dialLock: false, scopeControls: { span: 0, refDb: 10, hold: false, dual: false, speed: 2 } } as ServerState;
-    h.caps = { ...h.caps!, receivers: 1, vfoScheme: 'ab' };
+    h.caps = {
+      ...h.caps!,
+      receivers: 1,
+      vfoScheme: 'ab',
+      ref_min_db: -20,
+      ref_max_db: 20,
+      ref_step_db: 0.5,
+    };
     expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_dual' })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'down' } })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_fst' })).toBe(true);
     expect(exactCalls()).toEqual([
       ['set_scope_span', { span: 0 }],
-      ['set_scope_ref', { ref: 10 }],
+      // 10 is inside the IC-705-style declared range: the up-step goes to
+      // 15 on the 5 dB grid, beyond the old hard-coded +10 ceiling.
+      ['set_scope_ref', { ref: 15 }],
       ['set_scope_speed', { speed: 0 }],
     ]);
     expectIntentTransport();
@@ -1898,18 +1917,82 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(getCommandLifecycles()).toHaveLength(0);
   });
 
-  it('rejects malformed scope direction and every non-integral or out-of-range observed step value', () => {
-    h.caps = { ...h.caps!, scope: true, capabilities: [...(h.caps!.capabilities as string[]), 'scope'] };
+  it('rejects malformed scope direction and every out-of-range observed REF step value', () => {
+    h.caps = {
+      ...h.caps!,
+      scope: true,
+      capabilities: [...(h.caps!.capabilities as string[]), 'scope'],
+      ref_min_db: -20,
+      ref_max_db: 20,
+      ref_step_db: 0.5,
+    };
     h.state = { ...h.state!, scopeControls: { span: 3, refDb: 0, hold: false, dual: false, speed: 1 } } as ServerState;
     expect(dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'sideways' } })).toBe(true);
     for (const span of [-1, 8, 1.5]) {
       h.state = { ...h.state!, scopeControls: { span, refDb: 0, hold: false, dual: false, speed: 1 } } as ServerState;
       expect(dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'up' } })).toBe(true);
     }
-    for (const refDb of [-35, 15, 1.5]) {
+    // MOR-3694: a readback outside the declared range (-20..+20) never
+    // computes a step — including the -22 the old offset grid produced.
+    for (const refDb of [-35, -22, 21]) {
       h.state = { ...h.state!, scopeControls: { span: 3, refDb, hold: false, dual: false, speed: 1 } } as ServerState;
       expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
     }
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+
+    // An off-grid or half-dB readback INSIDE the declared range steps onto
+    // the 5 dB grid (the pre-fix code refused every non-integer readback).
+    // Up from -4.5 lands on the grid point ABOVE it (0), the same bucket
+    // rule as -4 up → 0; down from -4.5 would give -5 (SpectrumToolbar's
+    // "steps REF from a half-dB readback" case pins that direction).
+    h.sendCommand.mockClear();
+    for (const [refDb, expected] of [[15, 20], [1.5, 5], [-4, 0], [-4.5, 0], [19, 20]] as const) {
+      h.state = { ...h.state!, scopeControls: { span: 3, refDb, hold: false, dual: false, speed: 1 } } as ServerState;
+      expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
+      expect(h.sendCommand).toHaveBeenLastCalledWith('set_scope_ref', { ref: expected }, expect.any(String));
+    }
+    expect(exactCalls()).toEqual([
+      ['set_scope_ref', { ref: 20 }],
+      ['set_scope_ref', { ref: 5 }],
+      ['set_scope_ref', { ref: 0 }],
+      ['set_scope_ref', { ref: 0 }],
+      ['set_scope_ref', { ref: 20 }],
+    ]);
+    expectIntentTransport();
+  });
+
+  it('fails closed for scope REF commands when no range is declared (MOR-3694)', () => {
+    h.caps = { ...h.caps!, scope: true, capabilities: [...(h.caps!.capabilities as string[]), 'scope'] };
+    h.state = { ...h.state!, scopeControls: { span: 3, refDb: 0, hold: false, dual: false, speed: 1 } } as ServerState;
+
+    makeScopeControlsHandlers().onRefChange(0);
+    expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('dispatches set_scope_ref only inside the declared range, from a half-dB readback', () => {
+    h.caps = {
+      ...h.caps!,
+      scope: true,
+      capabilities: [...(h.caps!.capabilities as string[]), 'scope'],
+      ref_min_db: -20,
+      ref_max_db: 20,
+      ref_step_db: 0.5,
+    };
+    h.state = { ...h.state!, scopeControls: { span: 3, refDb: -4.5, hold: false, dual: false, speed: 1 } } as ServerState;
+
+    makeScopeControlsHandlers().onRefChange(-5);
+    expect(exactCalls()).toEqual([['set_scope_ref', { ref: -5 }]]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+    // The -22 the IC-705 received four times never dispatches; nor does a
+    // non-integer proposal or one beyond the declared ceiling.
+    for (const ref of [-22, 21, 0.5]) makeScopeControlsHandlers().onRefChange(ref);
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
   });
@@ -2478,6 +2561,12 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     h.caps = {
       capabilities: ['scope', 'dual_rx', 'dial_lock', 'power_control'],
       scope: true,
+      // MOR-3694: the REF range the real IC-7300 fixture publishes; without
+      // it onRefChange fails closed and the scope vocabulary below would
+      // lose its set_scope_ref entry.
+      ref_min_db: -20,
+      ref_max_db: 20,
+      ref_step_db: 0.5,
       stateContractVersion: 1,
       providerGeneration: 31,
       receivers: 2,

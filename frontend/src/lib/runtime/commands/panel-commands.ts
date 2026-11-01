@@ -36,6 +36,7 @@ import { audioManager } from '$lib/audio/audio-manager';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { currentControlSessionEpoch, dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
 import { getCommandLifecycles } from '$lib/stores/commands.svelte';
+import { stepRef, refRangeFromCaps } from '../../../components/spectrum/spectrum-toolbar-logic';
 import {
   getSharedTuningAccumulator,
   type AcceptedTargetQuery,
@@ -1522,22 +1523,35 @@ function currentScopeContext() {
     ? context : null;
 }
 
-function validScopeValue(value: unknown, kind: 'boolean' | 'integer', min = 0, max = 0): boolean {
-  return kind === 'boolean' ? typeof value === 'boolean'
-    : Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+function validScopeValue(
+  value: unknown,
+  kind: 'boolean' | 'integer' | 'number',
+  min = 0,
+  max = 0,
+): boolean {
+  if (kind === 'boolean') return typeof value === 'boolean';
+  if (kind === 'number') {
+    // MOR-3694: a REF readback may be half-dB (e.g. -4.5) — finite and in
+    // range is enough for the CURRENT value; only proposals must be
+    // integers on the stepping grid.
+    return typeof value === 'number' && Number.isFinite(value)
+      && (value as number) >= min && (value as number) <= max;
+  }
+  return Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
 }
 
 function acceptsScopeValue(
   context: NonNullable<ReturnType<typeof currentScopeContext>>,
   field: string,
   proposed: unknown,
-  kind: 'boolean' | 'integer',
+  kind: 'boolean' | 'integer' | 'number',
   min = 0,
   max = 0,
+  currentKind: 'boolean' | 'integer' | 'number' = kind,
 ): boolean {
   const current = (context.state.scopeControls as unknown as Record<string, unknown> | undefined)?.[field];
   return isFieldAvailable(context.state, `scopeControls.${field}`)
-    && validScopeValue(current, kind, min, max) && validScopeValue(proposed, kind, min, max);
+    && validScopeValue(current, currentKind, min, max) && validScopeValue(proposed, kind, min, max);
 }
 
 function hasPhysicalSub(context: NonNullable<ReturnType<typeof currentScopeContext>>): boolean {
@@ -1591,7 +1605,11 @@ export function makeScopeControlsHandlers() {
     },
     onRefChange: (ref: number) => {
       const context = currentScopeContext();
-      if (!context || !acceptsScopeValue(context, 'refDb', ref, 'integer', -30, 10)) return;
+      // MOR-3694: gate on the caps-declared REF range; no declared range
+      // fails closed (no fallback). The CURRENT readback may be half-dB.
+      const range = refRangeFromCaps(context?.caps ?? null);
+      if (!context || !range
+        || !acceptsScopeValue(context, 'refDb', ref, 'integer', range.min, range.max, 'number')) return;
       dispatchRadioIntent({ name: 'set_scope_ref', params: { ref } });
     },
     onDualChange: (dual: boolean) => {
@@ -1933,8 +1951,16 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
     case 'scope_ref_step': {
       const current = keyboardScopeField(context, 'refDb');
       const direction = keyboardDirection(safeParams.direction);
-      if (context.caps.scope === true && has('scope') && direction && typeof current === 'number' && Number.isSafeInteger(current) && current >= -30 && current <= 10) {
-        makeScopeControlsHandlers().onRefChange(Math.max(-30, Math.min(10, current + (direction === 'down' ? -5 : 5))));
+      // MOR-3694: step on the 5 dB grid against the caps-declared range.
+      // The readback may be off-grid or half-dB but must sit inside the
+      // declared range; no declared range fails closed.
+      const range = refRangeFromCaps(context.caps);
+      if (context.caps.scope === true && has('scope') && direction && range
+        && typeof current === 'number' && Number.isFinite(current)
+        && current >= range.min && current <= range.max) {
+        makeScopeControlsHandlers().onRefChange(
+          stepRef(current, direction === 'down' ? -1 : 1, range),
+        );
       }
       return true;
     }

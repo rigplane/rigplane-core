@@ -421,6 +421,15 @@ def test_capabilities_contract_requires_mode_families() -> None:
     )
 
 
+def test_capabilities_contract_lists_the_scope_ref_range_as_optional() -> None:
+    """MOR-3694: the profile-declared scope REF range is an optional stable
+    field on ``/api/v1/capabilities`` — present only when the active
+    profile's ``[scope]`` declares it, absent otherwise (the REF steppers
+    fail closed on the client)."""
+    optional = RESPONSE_FIELD_CONTRACTS["/api/v1/capabilities"].get("optional", ())
+    assert set(optional) >= {"ref_min_db", "ref_max_db", "ref_step_db"}
+
+
 def test_runtime_contract_requires_the_process_block() -> None:
     assert "process" in RESPONSE_FIELD_CONTRACTS["/api/v1/runtime"]["required"]
 

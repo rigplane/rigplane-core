@@ -264,7 +264,7 @@ import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY,
 } from '../../../presentation/workspace/resolution';
 import {
-  SPAN_LABELS, clampSpan, clampSpeed, clampRef,
+  SPAN_LABELS, clampSpan, clampSpeed, stepRef, type RefRange,
 } from '../../../components/spectrum/spectrum-toolbar-logic';
 import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import {
@@ -1026,6 +1026,10 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
     receiver: 0, duringTx: false, centerType: 0, vbwNarrow: false, rbw: 0,
   } as const;
 
+  /** MOR-3694: the declared REF range the mobile fixture's caps carry
+   * (an IC-7610-shaped -30..+10; the steppers fail closed without one). */
+  const MOBILE_REF_RANGE: RefRange = { min: -30, max: 10 };
+
   /** A hardware-scope radio with every scope leaf read. `dual_rx` makes the
    *  receiver/SRC segment structural too, so every control draws. The state
    *  is a FULL valid snapshot (both receivers, txTarget, connection): the
@@ -1044,6 +1048,10 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       ...oldCaps, model: 'fixture', receivers: dual ? 2 : 1,
       vfoScheme: dual ? 'main_sub' : 'ab',
       capabilities: dual ? ['scope', 'dual_rx'] : ['scope'],
+      // MOR-3694: without a declared REF range the scope REF keys fail
+      // closed, so the hardware-scope fixture declares one.
+      ref_min_db: MOBILE_REF_RANGE.min,
+      ref_max_db: MOBILE_REF_RANGE.max,
     } as Capabilities);
     const slot = (freqHz: number) => ({ freqHz, mode: 'USB' as const, filterNum: 1, dataMode: 0 });
     const receiver = (freqHz: number) => ({
@@ -1150,7 +1158,9 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
         '[data-testid="scope-ref"] button[aria-label="Increase scope reference"]',
       )!.click();
       flushSync();
-      expect(scopeIntents.onRefChange).toHaveBeenCalledExactlyOnceWith(clampRef(SCOPE_READS.refDb, 5));
+      expect(scopeIntents.onRefChange).toHaveBeenCalledExactlyOnceWith(
+        stepRef(SCOPE_READS.refDb, 1, MOBILE_REF_RANGE),
+      );
       // HOLD.
       panel.querySelector<HTMLButtonElement>('[data-testid="scope-hold"]')!.click();
       flushSync();

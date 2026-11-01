@@ -740,6 +740,54 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         assert rig.rf_sql_control_model == "combined"
 
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            # MOR-3694: every shipped scope-REF rig declares its 27 19
+            # adjustable range. IC-705/IC-7300/IC-9700 are -20.0..+20.0 in
+            # 0.5 dB steps (owner-confirmed on the IC-705 bench radio; the
+            # IC-7300MK2 CI-V guide p.25 documents the same range for that
+            # radio, and ic7300mk2.toml already declared it); the IC-7610 is
+            # -30.0..+10.0 (IC-7610 CI-V Reference p.15).
+            ("ic705.toml", (-20.0, 20.0, 0.5)),
+            ("ic7300.toml", (-20.0, 20.0, 0.5)),
+            ("ic7300mk2.toml", (-20.0, 20.0, 0.5)),
+            ("ic9700.toml", (-20.0, 20.0, 0.5)),
+            ("ic7610.toml", (-30.0, 10.0, 0.5)),
+        ],
+    )
+    def test_scope_ref_range_parsed_from_shipped_scope_rigs(self, name, expected):
+        """MOR-3694: the loader parses `[scope]` REF range fields."""
+        profile = load_rig(RIGS_DIR / name).to_profile()
+        assert profile.scope_ref_min_db == expected[0], name
+        assert profile.scope_ref_max_db == expected[1], name
+        assert profile.scope_ref_step_db == expected[2], name
+
+    def test_every_scope_ref_capable_profile_declares_a_ref_range(self):
+        """MOR-3694 conformance: a rig that can set the scope REF level must
+        declare its adjustable range, or every REF control fails closed.
+
+        Scope-REF-capable means the profile both declares the ``scope``
+        capability and binds the 27 19 REF command — the two facts the UI
+        and the web handler gate on.
+        """
+        checked = 0
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            profile = load_rig(path).to_profile()
+            if "scope" not in profile.capabilities:
+                continue
+            if not profile.supports_command("get_scope_ref"):
+                continue
+            assert profile.scope_ref_min_db is not None, path.name
+            assert profile.scope_ref_max_db is not None, path.name
+            assert profile.scope_ref_step_db is not None, path.name
+            assert profile.scope_ref_min_db < profile.scope_ref_max_db, path.name
+            assert profile.scope_ref_step_db > 0, path.name
+            checked += 1
+        assert checked >= 5, "expected the five shipped Icom scope rigs"
+
     def test_ic7610_marks_scope_controls_and_filter_shape_startup_optional(self):
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         acquisition = rig.to_profile().state_acquisition

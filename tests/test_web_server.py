@@ -4751,6 +4751,42 @@ async def test_ic705_rx_only_bands_neither_endpoint_tx_band_over_http() -> None:
         await srv.stop()
 
 
+async def test_ic705_scope_ref_range_reaches_both_capability_endpoints_over_http() -> (
+    None
+):
+    """MOR-3694: the profile's `[scope]` REF range is published on both
+    capability endpoints so the frontend steps REF on the radio's own range
+    instead of a hard-coded one (the IC-705 sent -22 before this)."""
+
+    profile = load_rig(_IC705_RIG).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+    )
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        for path in ("/api/v1/capabilities", "/api/v1/info"):
+            status, _, body = await _http_get(host, port, path)
+            assert status == 200, path
+            payload = json.loads(body)
+            capabilities = (
+                payload["capabilities"] if path == "/api/v1/info" else payload
+            )
+            assert capabilities["ref_min_db"] == -20.0, path
+            assert capabilities["ref_max_db"] == 20.0, path
+            assert capabilities["ref_step_db"] == 0.5, path
+    finally:
+        await srv.stop()
+
+
 # MOR-3634: per-band rated maximum power (``max_power_w`` on a band row) is
 # published as ``txBands[].maxPowerW`` next to the flat ``maxPowerW``; the
 # power slider scales to it. Same shipped-profile -> loader -> WebServer ->
