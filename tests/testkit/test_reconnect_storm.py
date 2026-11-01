@@ -11,11 +11,13 @@ simulator counted, and that the client then stays CONNECTED for
 ``_OBSERVE_S`` seconds without logging the
 ``civ.soft_reconnect.already_open_stalled`` line.
 
-The no-notice drop also pins how it recovered: through the identity hold,
-escalating on exactly one rejected renewal. A standby scenario (a simulator
-scenario, not recorded radio behaviour) pins the other side: a radio that
-keeps answering renewals while its CI-V DATA is silent never escalates and
-never re-logs in.
+The no-notice drop also pins how it recovered: the watchdog probes the
+control session before its OpenClose patience and escalates on exactly one
+rejected renewal (with the patience patched short this also covers the
+identity-hold route). A standby scenario (a simulator scenario, not
+recorded radio behaviour) pins the other side: a radio that keeps
+answering renewals while its CI-V DATA is silent never escalates and
+never re-logs in — answered instantly, answered late, or silent for 20 s.
 
 ``_Run.report`` prints the state sequence, reconnect-status callbacks,
 counters and the first log lines when an assert fails.
@@ -439,8 +441,9 @@ async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     assert run.states_after == [_CONNECTED], run.report()
     assert run.storm_lines == [], run.report()
     assert run.freq == _FREQ_HZ, run.report()
-    # Recovery went through the identity hold and a rejected renewal: exactly
-    # one reject escalation, never the three-silent-probes verdict.
+    # Recovery escalated on a rejected renewal: exactly one reject verdict,
+    # never the three-silent-probes verdict. With the pre-patience probe the
+    # verdict comes from the watchdog; without it, from the identity hold.
     assert len([line for line in run.dead_hold_lines if "(reject)" in line]) == 1, (
         run.report()
     )
