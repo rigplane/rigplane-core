@@ -468,6 +468,11 @@ async def test_bridge_start_stop_rx_only():
     assert radio.audio_bus.subscriber_count == 1
     assert len(backend.tx_streams) == 1
     assert backend.tx_streams[0].running
+    # The RX playback sink (radio -> speakers) opts in to the fill-target
+    # policy (MOR-4013): a 150 ms cushion plus drift compensation absorbs
+    # bursty radio delivery. TX audio to the radio (usb_driver) never
+    # passes a fill target and keeps the free-running ring.
+    assert backend.tx_streams[0].fill_target_ms == 150
 
     await bridge.stop()
     assert not bridge._running
