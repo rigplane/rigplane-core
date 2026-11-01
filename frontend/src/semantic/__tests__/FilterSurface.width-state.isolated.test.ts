@@ -162,7 +162,11 @@ describe('MOR-3677 FilterSurface width row renders the FilterWidthDisplay states
     );
     expect(row.querySelector<HTMLElement>('output')!.textContent).toBe('Radio default');
     expect(row.querySelector<HTMLInputElement>('input')!.disabled).toBe(true);
-    expect(row.querySelector('[aria-describedby]')?.getAttribute('aria-describedby')).toContain('width-reason');
+    const describedBy = row.getAttribute('aria-describedby');
+    expect(describedBy).toContain('width-reason');
+    expect(document.getElementById(describedBy!)?.textContent).toBe(
+      'The radio is using its own default width for this mode and does not report it in Hz.',
+    );
   });
 
   it('narrow: the value cell names NARROW, the row explains why, the slider is disabled', () => {

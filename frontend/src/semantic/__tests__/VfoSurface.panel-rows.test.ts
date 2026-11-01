@@ -505,6 +505,7 @@ describe('MODE/FIL three-way presence (2/main_sub)', () => {
       currentFilter: absent,
       filterChoices: ['FIL1'],
       filterWidth: absent,
+      filterWidthDisplay: { state: 'unsupported' },
       filterWidthMin: absent,
       filterWidthMax: absent,
     },

@@ -115,6 +115,21 @@
   let hasFilterShape = $derived(p.hasFilterShape ?? false);
   let filterLabels = $derived(p.filterLabels ?? ['FIL1', 'FIL2', 'FIL3']);
   let filterWidth = $derived(p.filterWidth);
+  // MOR-3677: the Hz-less width states name themselves instead of a blank
+  // reserved slot — `toFilterProps` gates both leaves on their own field
+  // availability, so the chip only appears for a CONFIRMED radio-default or
+  // NARROW reading (never for a plain unobserved width).
+  let filterWidthState = $derived(p.filterWidthState ?? null);
+  let widthStateText = $derived(
+    filterWidthState === 'radio-default' ? t('core.filter.width.value.radioDefault')
+      : filterWidthState === 'narrow' ? t('core.filter.width.value.narrow')
+      : '',
+  );
+  let widthStateTitle = $derived(
+    filterWidthState === 'radio-default' ? t('core.filter.width.reason.radioDefault')
+      : filterWidthState === 'narrow' ? t('core.filter.width.reason.narrow')
+      : undefined,
+  );
   let filterWidthMin = $derived(p.filterWidthMin ?? 50);
   let filterWidthMax = $derived(p.filterWidthMax ?? 9999);
   let filterConfig = $derived(p.filterConfig ?? null);
@@ -638,6 +653,9 @@
         issuedStatusPresentation={filterWidthStatusPresentation}
         variant="hardware-illuminated"
       />
+      {#if filterWidthState !== null && Number.isNaN(filterWidth)}
+        <span class="bw-state" data-width-state={filterWidthState} title={widthStateTitle}>{widthStateText}</span>
+      {/if}
       {#if filterWidthFeedback.busy && lifecycleTarget !== null}
         <span class="bw-pending-target" data-pending-width-target>
           PENDING {formatExactWidthDisplay(lifecycleTarget)}
@@ -721,6 +739,9 @@
     >
       <span class="bw-label">BW</span>
       <span class="bw-value" data-confirmed-width>{formatExactWidthDisplay(filterWidthFeedback.confirmed)}</span>
+      {#if filterWidthState !== null && Number.isNaN(filterWidth)}
+        <span class="bw-state" data-width-state={filterWidthState} title={widthStateTitle}>{widthStateText}</span>
+      {/if}
       {#if filterWidthFeedback.busy && lifecycleTarget !== null}
         <span class="bw-pending-target" data-pending-width-target>
           PENDING {formatExactWidthDisplay(lifecycleTarget)}
@@ -983,6 +1004,15 @@
   }
 
   .bw-value:empty::before { content: '\200b'; }
+
+  /* MOR-3677: the Hz-less width states (radio default, NARROW) name
+     themselves next to the reserved readout, in the pending chip's muted
+     register — a state label, not a value. */
+  .bw-state {
+    color: var(--v2-text-dim);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+  }
 
   .bw-pending-target {
     border: 1px dashed var(--v2-accent-cyan);

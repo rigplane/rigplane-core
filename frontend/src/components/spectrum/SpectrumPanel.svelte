@@ -521,6 +521,33 @@
       : confirmedPassband ? (activeResizePassbandHz ?? lifecyclePassbandHz ?? spectrumAuthority!.filterWidthHz!) : 0,
   );
   let passbandShiftHz = $derived(managed ? displayTuple?.shiftHz ?? 0 : confirmedPassband ? spectrumAuthority!.ifShiftHz! : 0);
+  // MOR-3677: the Hz-less width states say WHY on the scope itself — a text
+  // chip, never geometry. Known/unobserved/unsupported draw nothing (a known
+  // width draws the real overlay; an unobserved one has nothing honest to
+  // say that the disabled control does not). Not gated on `tuneVisible`:
+  // the chip explains the passband's absence even when the carrier marker
+  // itself is out of the sample plane. This works on the managed and
+  // unmanaged paths alike — `spectrumAuthority` is computed for both.
+  let passbandMarker = $derived.by(() => {
+    const display = spectrumAuthority?.filterWidthDisplay ?? null;
+    if (display === null) return null;
+    if (display.state === 'radio-default') return 'radio-default';
+    if (display.state === 'narrow') return 'narrow';
+    if (display.state === 'unknown' && display.reason === 'not-reported') return 'not-reported';
+    return null;
+  });
+  let passbandMarkerText = $derived(
+    passbandMarker === 'radio-default' ? t('core.filter.width.value.radioDefault')
+      : passbandMarker === 'narrow' ? t('core.filter.width.value.narrow')
+      : passbandMarker === 'not-reported' ? t('core.filter.width.reason.notReported')
+      : '',
+  );
+  let passbandMarkerTitle = $derived(
+    passbandMarker === 'radio-default' ? t('core.filter.width.reason.radioDefault')
+      : passbandMarker === 'narrow' ? t('core.filter.width.reason.narrow')
+      : passbandMarker === 'not-reported' ? t('core.filter.width.reason.notReported')
+      : undefined,
+  );
   let canResizePassband = $derived(
     confirmedPassband && !displayStale
       && spectrumAuthority !== null
@@ -1361,6 +1388,18 @@
       {#if tuneLineVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
       {/if}
+      <!-- MOR-3677: the Hz-less width chip — the spectrum's honest "why
+           there is no passband marker", next to the overlay block and
+           independent of it: no geometry, no shaded region, no full-width
+           fill is ever drawn for these states. -->
+      {#if passbandMarker !== null}
+        <div
+          class="passband-unknown"
+          data-testid="passband-unknown"
+          data-state={passbandMarker}
+          title={passbandMarkerTitle}
+        >{passbandMarkerText}</div>
+      {/if}
     </div>
   </div>
   </div>
@@ -1568,6 +1607,23 @@
     border-right: 1px dashed var(--scope-passband-edge, rgba(59, 130, 246, 0.4));
     pointer-events: none;
     z-index: 4;
+  }
+
+  /* MOR-3677: the Hz-less width chip — a text label in the scope overlay
+     area, structurally reserved and inert; it never draws passband
+     geometry. */
+  .passband-unknown {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    z-index: 5;
+    padding: 1px 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    pointer-events: none;
   }
 
   .passband-resize-zone {

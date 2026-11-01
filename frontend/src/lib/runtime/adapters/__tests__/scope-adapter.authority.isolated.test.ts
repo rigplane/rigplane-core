@@ -33,11 +33,17 @@ import {
 } from '$lib/radio/filter-controls';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
 
+// MOR-3677: `lastObservedMonotonic` is part of every observed FieldStatus
+// the server publishes (the FTX-1/IC-7300 captures carry it), and the
+// FilterWidthDisplay qualification reads it as evidence — the fixtures here
+// must be shape-realistic, not minimal.
 const fresh: FieldStatus = {
   storePath: 'fixture', observed: true, freshness: 'fresh', availability: 'available',
+  lastObservedMonotonic: 100,
 };
 const stale: FieldStatus = {
   storePath: 'fixture', observed: true, freshness: 'stale', availability: 'stale',
+  lastObservedMonotonic: 100,
 };
 const SEGMENT_RULE: FilterModeConfig = {
   defaults: [3000, 2400, 1800], fixed: false, minHz: 50, maxHz: 3600,
@@ -483,7 +489,9 @@ describe('MOR-1409 A06a1 canonical spectrum authority selector', () => {
   it('a display state change reaches the digest, and radio-default drops filterWidthHz (MOR-3677)', () => {
     // The PR1 wire leaf rides in through the same defensive cast the
     // derivation uses; its FieldStatus row is what the derivation reads.
-    const main = { ...receiver(14_074_000), filterWidth: null, filterWidthRadioDefault: true };
+    const main = {
+      ...receiver(14_074_000), filterWidth: null, filterWidthRadioDefault: true,
+    } as ReturnType<typeof receiver>;
     const s = {
       ...state({ main }),
       fieldStatus: {
