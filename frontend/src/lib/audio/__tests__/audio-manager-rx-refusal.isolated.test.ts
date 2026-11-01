@@ -593,7 +593,10 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     });
     expect(notify).toHaveBeenCalledTimes(1);
     expect(notify).toHaveBeenCalledWith(
-      'error', expect.any(String), 'rxAudioDeviceInUseBy', { program: 'wsjtx.exe' },
+      'error',
+      "The radio's audio input is in use by wsjtx.exe. Close it, then turn the audio on again.",
+      'rxAudioDeviceInUseBy',
+      { program: 'wsjtx.exe' },
     );
   });
 
@@ -613,7 +616,11 @@ describe('RX refusal reason routing (MOR-3823)', () => {
       holder,
     });
     expect(notify).toHaveBeenCalledTimes(1);
-    expect(notify).toHaveBeenCalledWith('error', expect.any(String), 'rxAudioDeviceInUse');
+    expect(notify).toHaveBeenCalledWith(
+      'error',
+      "The radio's audio input is in use by another program. Close it, then turn the audio on again.",
+      'rxAudioDeviceInUse',
+    );
   });
 
   it('a holder name never changes the toast of another reason', async () => {
@@ -737,9 +744,9 @@ describe('RX refusal toast through the real runtime notification path (MOR-3823)
   });
 
   it.each([
-    ['en-US', 'The radio\'s audio input is in use by wsjtx.exe. Close it and RigPlane will reconnect.'],
-    ['ru-RU', 'Звуковой вход радио занят программой wsjtx.exe. Закройте её, и RigPlane подключится снова.'],
-    ['ja-JP', '無線機の音声入力は wsjtx.exe が使用中です。そのプログラムを閉じると、RigPlane が再接続します。'],
+    ['en-US', 'The radio\'s audio input is in use by wsjtx.exe. Close it, then turn the audio on again.'],
+    ['ru-RU', 'Звуковой вход радио занят программой wsjtx.exe. Закройте её, затем включите аудио снова.'],
+    ['ja-JP', '無線機の音声入力は wsjtx.exe が使用中です。そのプログラムを閉じてから、オーディオをもう一度オンにしてください。'],
   ])('renders the named in-use sentence in %s through the real runtime path', (locale, text) => {
     setLocale(locale as 'en-US' | 'ru-RU' | 'ja-JP');
     app = mount(Toast, { target: host });
