@@ -319,6 +319,183 @@ async def test_w1_serial_ambiguous_refusal_reaches_ws_client_as_category_only(
                 await radio.disconnect()
 
 
+class _FakePortAudioError(Exception):
+    """The shape sounddevice's PortAudioError has: (message, code[, host error])."""
+
+
+def _fake_portaudio(session, *, exclusive_error, shared_error):
+    """A fake ``sounddevice`` over the W1 enumeration whose WASAPI opens raise.
+
+    It is the lowest seam: everything above it (PortAudioBackend, the capture
+    policy, the driver, the radio, the web server and its WebSocket) is real.
+    """
+    from types import SimpleNamespace
+
+    enumeration = session["raw"]["portaudio"]
+    devices = enumeration["devices"]
+    opened = []
+
+    class WasapiSettings:
+        def __init__(self, exclusive=False, auto_convert=False):
+            self.exclusive = exclusive
+            self.auto_convert = auto_convert
+
+    class InputStream:
+        def __init__(self, **kwargs):
+            extra = kwargs.get("extra_settings")
+            opened.append(extra.exclusive if extra is not None else None)
+            error = exclusive_error if extra and extra.exclusive else shared_error
+            if error is not None:
+                raise error
+
+        def start(self):
+            raise AssertionError("an open that was refused must not start")
+
+        def close(self):
+            pass
+
+    def hostapis():
+        return [
+            {
+                "name": api["name"],
+                "devices": [
+                    d["index"] for d in devices if d["hostapi"] == api["index"]
+                ],
+                "default_input_device": api["default_input"],
+                "default_output_device": api["default_output"],
+            }
+            for api in enumeration["hostapis"]
+        ]
+
+    sd = SimpleNamespace(
+        default=SimpleNamespace(device=(19, 17)),
+        WasapiSettings=WasapiSettings,
+        InputStream=InputStream,
+        query_devices=lambda index=None: devices if index is None else devices[index],
+        query_hostapis=lambda index=None: (
+            hostapis() if index is None else hostapis()[index]
+        ),
+        check_input_settings=lambda **kwargs: None,
+        check_output_settings=lambda **kwargs: None,
+    )
+    return sd, opened
+
+
+REAL_INVALID_DEVICE = "Error opening InputStream: Invalid device [PaErrorCode -9996]"
+ACCESS_DENIED_ERROR = (
+    "Error opening InputStream: Unanticipated host error [PaErrorCode -9999]"
+)
+
+
+@pytest.mark.parametrize(
+    "shared_error,reason",
+    [
+        (_FakePortAudioError(REAL_INVALID_DEVICE, -9996), "device_in_use"),
+        (
+            _FakePortAudioError(
+                ACCESS_DENIED_ERROR,
+                -9999,
+                ("Windows WASAPI", -2147024891, "Access is denied. (0x80070005)"),
+            ),
+            "other",
+        ),
+    ],
+    ids=["codec-held-by-another-program", "access-denied"],
+)
+async def test_w1_exclusive_preferred_in_use_refusal_reaches_ws_client(
+    tmp_path, monkeypatch, shared_error, reason
+):
+    """MOR-4030 seam test: browser ``audio_start`` over the REAL ``/api/v1/audio``
+    WebSocket against a W1 Windows pairing in ``exclusive-preferred`` mode.
+
+    Only ``sounddevice`` is faked. The exclusive open and the shared fallback
+    both raise the real run's ``Invalid device [PaErrorCode -9996]`` (the codec
+    is held by another program), so the refusal is ``device_in_use``; a shared
+    failure that says access denied keeps the old ``other`` category. The frame
+    below is the exact frame the frontend routes to the in-use toast
+    (``audio-manager-rx-refusal.isolated.test.ts``), and
+    ``/api/v1/info`` publishes the same category.
+    """
+    session = _w1_session()
+    backend, _ = _inject_windows(monkeypatch, session)
+    sd, opened = _fake_portaudio(
+        session,
+        exclusive_error=_FakePortAudioError(REAL_INVALID_DEVICE, -9996),
+        shared_error=shared_error,
+    )
+    real_backend = usb_driver.PortAudioBackend
+    monkeypatch.setattr(
+        usb_driver,
+        "PortAudioBackend",
+        lambda **kwargs: real_backend(
+            dependency_loader=lambda: (sd, object()), **kwargs
+        ),
+    )
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        profile=get_radio_profile("IC-7300"),
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        civ_link=_FakeSerialCivLink(model_id=0x94),
+        _enumerate_serial_ports_fn=lambda: [],
+        capture_mode="exclusive-preferred",
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    writer = None
+    try:
+        await radio.connect()
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/audio")
+        await _ws_send_text(
+            writer,
+            json.dumps(
+                {
+                    "type": "audio_start",
+                    "direction": "rx",
+                    "preferred_rx_codec": "pcm16",
+                }
+            ),
+        )
+        errors = []
+        async with asyncio.timeout(5):
+            while not errors:
+                opcode, payload = await _ws_recv_frame(reader)
+                assert opcode == WS_OP_TEXT
+                message = json.loads(payload)
+                assert message["type"] != "audio_format", "the refused RX started"
+                if message["type"] == "error":
+                    errors.append(message)
+
+        assert errors == [
+            {
+                "type": "error",
+                "message": f"audio_start: RX audio failed to start: {reason}",
+                "reason": reason,
+            }
+        ]
+        # WASAPI exclusive first, then shared WASAPI with auto-convert.
+        assert opened == [True, False]
+        status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
+        assert status == 200
+        failure = json.loads(body)["audioReceive"]["failure"]
+        assert failure == {
+            "stage": "rx_start",
+            "code": "core_rx_start_failed",
+            "reason": reason,
+        }
+        assert radio.audio_session.rx_demand == 0
+    finally:
+        try:
+            if writer is not None:
+                await _close_ws(writer)
+        finally:
+            try:
+                await server.stop()
+            finally:
+                await radio.disconnect()
+
+
 def _w3_padded_session():
     """W3 with PortAudio list positions matching its indices.
 

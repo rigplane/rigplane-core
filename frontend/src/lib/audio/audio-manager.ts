@@ -605,7 +605,7 @@ class AudioManager {
           } else {
             this._operatorNotifier?.(
               'error',
-              'The radio\'s audio input is in use by another program. Close it and RigPlane will reconnect.',
+              'The radio\'s audio input is in use by another program. Close it, then turn the audio on again.',
               'rxAudioDeviceInUse',
             );
           }
