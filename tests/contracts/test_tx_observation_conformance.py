@@ -7,12 +7,14 @@ queue liveness against every backend's real fake wire.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from dataclasses import fields
+from collections.abc import AsyncIterator, Awaitable, Callable
+from dataclasses import fields, replace
 from pathlib import Path
+from typing import TypeVar
 from unittest.mock import patch
 
 import pytest
+from _timing import VirtualClock
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
 from tx_observation_fakes import (
     CIV_NON_ANSWERS,
@@ -28,6 +30,7 @@ from tx_observation_fakes import (
 
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.backends.yaesu_cat import YaesuCatRadio
+from rigplane.core.radio_protocol import TransmitStateReadable
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.tx_observation import RADIO_READBACK_SOURCES, TxStateReading
 
@@ -60,19 +63,74 @@ CIV_BACKENDS: tuple[str, ...] = (
 )
 
 
+T = TypeVar("T")
+
+#: One drive step of virtual time. Smaller than every timer on the CI-V read
+#: path, so a step never jumps over the moment a reply or a deadline is due
+#: (``elapse`` fires each timer in order regardless of the step size).
+_DRIVE_STEP_S = 0.05
+
+#: Virtual seconds a driven read may take before the test calls it stuck. A
+#: bound for a hung read (the 0.3 s read deadline plus the 0.2 s readback
+#: settle both fit many times over), not the expected wait.
+_DRIVE_LIMIT_S = 5.0
+
+
+async def _on_virtual_time(clock: VirtualClock, call: Callable[[], Awaitable[T]]) -> T:
+    """Run one harness call (a read or a PTT write), moving only the virtual clock.
+
+    MOR-3662: the CI-V read carries a 0.3 s wall-clock deadline
+    (``TX_READ_DEADLINE_SECONDS``). Every wire here is in-process, so the
+    reply is always ready as soon as the loop runs, but on a loaded runner
+    the loop can be descheduled for longer than that deadline and the read
+    reports ``failure="timeout"`` (``value=None``) for an answer that was
+    sent. On the virtual clock the deadline fires only when this driver
+    advances time, and ``elapse`` lets every woken task run to quiescence
+    before the next timer, so the reply is always handled first. The PTT
+    writes wait on the same lane timers, so they are driven the same way.
+    """
+    task = asyncio.ensure_future(call())
+    try:
+        spent = 0.0
+        while not task.done():
+            assert spent < _DRIVE_LIMIT_S, "the call never finished on virtual time"
+            await clock.elapse(_DRIVE_STEP_S)
+            spent += _DRIVE_STEP_S
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+
+
 @pytest.fixture
 async def harness(
     request: pytest.FixtureRequest,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[TxObservationHarness]:
-    from rigplane.runtime.radio import CoreRadio
-
     built = await build_harness(request.param)
+    clock: VirtualClock | None = None
     if request.param in CIV_BACKENDS:
-        monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.001)
+        # Taken only now: connecting a radio waits on its own timers, and
+        # nothing is advancing the clock while the harness is built.
+        # The same install the ``virtual_clock`` fixture does (an async
+        # fixture cannot be requested mid-fixture, and it installs up front).
+        loop = asyncio.get_running_loop()
+        clock = VirtualClock(start=loop.time())
+        clock.install(loop)
+        wired = built
+        built = replace(
+            built,
+            read_transmit_state=lambda: _on_virtual_time(
+                clock, wired.read_transmit_state
+            ),
+            key=lambda: _on_virtual_time(clock, wired.key),
+            unkey=lambda: _on_virtual_time(clock, wired.unkey),
+        )
     try:
         yield built
     finally:
+        if clock is not None:
+            # Closing waits on real timers too; give the loop its clock back.
+            clock.uninstall(asyncio.get_running_loop())
         await built.close()
 
 
@@ -165,6 +223,20 @@ async def test_every_backend_answers_every_scripted_answer(
         assert reading.value is True
     else:
         assert reading.value is not False
+
+
+@pytest.mark.parametrize("harness", CIV_BACKENDS, indirect=True)
+async def test_a_civ_read_deadline_moves_only_with_the_virtual_clock(
+    harness: TxObservationHarness,
+) -> None:
+    """MOR-3662: the CI-V columns read on virtual time, never the wall clock.
+
+    The read's own deadline is real-time and 0.3 s; a loaded runner that
+    descheduled the loop for that long turned a scripted answer into
+    ``failure="timeout"``. The pin is the clock itself: the loop under test
+    carries a :class:`VirtualClock`, so no wall-clock stall can fire it.
+    """
+    assert isinstance(asyncio.get_running_loop().time, VirtualClock)
 
 
 @every_backend()
@@ -386,7 +458,8 @@ async def test_a_backend_exposes_the_row_five_read_primitive(
     harness now points ``read_transmit_state`` at this same method directly
     rather than assembling the equivalent from shipped parts.
     """
-    reading = await harness.radio.read_transmit_state()
+    assert isinstance(harness.radio, TransmitStateReadable)
+    reading = await harness.read_transmit_state()
     assert isinstance(reading, TxStateReading)
 
 
