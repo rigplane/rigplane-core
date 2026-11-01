@@ -101,6 +101,7 @@ def create_radio(config: BackendConfig) -> Radio:
             rx_device=config.rx_device,
             tx_device=config.tx_device,
             audio_sample_rate=config.audio_sample_rate,
+            capture_mode=config.capture_mode,
         )
     if isinstance(config, RigctldBackendConfig):
         return RigctldClientRadio(
@@ -127,6 +128,7 @@ def create_radio(config: BackendConfig) -> Radio:
                 rx_device=config.rx_device,
                 tx_device=config.tx_device,
                 audio_sample_rate=config.audio_sample_rate or 48000,
+                capture_mode=config.capture_mode,
             )
 
         constructor = _SERIAL_MODEL_CLASSES.get(model)
@@ -148,6 +150,7 @@ def create_radio(config: BackendConfig) -> Radio:
             audio_sample_rate=config.audio_sample_rate,
             rx_device=config.rx_device,
             tx_device=config.tx_device,
+            capture_mode=config.capture_mode,
             ptt_mode=config.ptt_mode,
             allow_low_baud_scope=config.allow_low_baud_scope,
             profile=config.profile,

@@ -865,6 +865,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="USB audio TX device name, index or stable id HOSTAPI|endpoint-id / HOSTAPI|name:device-name for --backend serial (default: $ICOM_USB_TX_DEVICE or auto)",
     )
     p.add_argument(
+        "--usb-capture-mode",
+        dest="usb_capture_mode",
+        choices=["shared", "exclusive-preferred"],
+        default=_get_env("ICOM_USB_CAPTURE_MODE", "shared"),
+        metavar="MODE",
+        help="Windows capture mode of the radio's USB audio codec for --backend serial/yaesu-cat: shared (default; other programs can use the codec too, but Windows audio enhancements can silence radio audio) or exclusive-preferred (WASAPI exclusive, bypasses the enhancements, falls back to shared; other programs lose the codec while it runs) (default: $ICOM_USB_CAPTURE_MODE or shared)",
+    )
+    p.add_argument(
         "--list-audio-devices",
         dest="list_audio_devices",
         action="store_true",
@@ -2190,6 +2198,7 @@ async def _build_backend_config(
             model=model_name,
             rx_device=getattr(args, "rx_device", None) or None,
             tx_device=getattr(args, "tx_device", None) or None,
+            capture_mode=getattr(args, "usb_capture_mode", "shared"),
         )
     if backend == "rigctld":
         if serial_port:
@@ -2229,6 +2238,7 @@ async def _build_backend_config(
             model=model_name,
             rx_device=getattr(args, "rx_device", None) or None,
             tx_device=getattr(args, "tx_device", None) or None,
+            capture_mode=getattr(args, "usb_capture_mode", "shared"),
             ptt_mode=getattr(args, "serial_ptt_mode", "civ"),
         )
     # LAN backend — auto-discover if host not set.

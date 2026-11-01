@@ -27,6 +27,7 @@ All commands accept these options:
 | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT mode (`civ` currently supported) |
 | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device name (serial/CAT profiles with audio support) |
 | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device name (serial/CAT profiles with audio support) |
+| `--usb-capture-mode` | `ICOM_USB_CAPTURE_MODE` | `shared` | Windows capture mode of the radio's USB audio codec: `shared` or `exclusive-preferred` (see [Windows capture mode](configuration.md#windows-capture-mode)) |
 | — | `ICOM_AUDIO_SAMPLE_RATE` | profile/default | LAN audio sample-rate override (`8000`, `16000`, `24000`, or `48000`) |
 | `--model` | — | — | Radio model (e.g. `IC-7610`), resolved from `rigs/*.toml`. The `lan` and `serial` backends refuse to start without it; on `lan`, a `--radio-addr` that matches a profile also works. |
 | `--radio-addr` | — | from the profile | CI-V address override (hex or decimal) |

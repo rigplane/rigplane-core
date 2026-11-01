@@ -120,7 +120,7 @@
   "core.overlay.scopeDisconnected": "Scope disconnected — reconnecting…",
   "core.overlay.scopeTransmitting": "Transmitting — the radio sends no panorama during transmit",
   "core.overlay.audioLinkLost": "Audio link lost — reconnecting…",
-  "core.overlay.rxSilence": "No audio from the radio: the server receives only digital silence. On macOS, give Microphone permission to the program that starts the server, or check the radio's USB audio output.",
+  "core.overlay.rxSilence": "No audio from the radio: the server receives only digital silence. On macOS, give Microphone permission to the program that starts the server, or check the radio's USB audio output. On Windows, turn off \"Audio enhancements\" for this input in Windows Sound settings.",
 
   "core.diagnostics.sendReport.title": "Send Diagnostic Report",
   "core.diagnostics.sendReport.confirm": "Send Report",
@@ -188,6 +188,7 @@
   "core.toast.txAudioStartFailed": "TX audio could not start",
   "core.toast.rxAudioResumeFailed": "Local audio could not resume. Check application sound permissions and output settings.",
   "core.toast.rxAudioStartFailed": "Radio audio capture could not start. Check the audio diagnostics before retrying.",
+  "core.toast.rxAudioDeviceInUse": "The radio's audio input is in use by another program. Close it, then turn the audio on again.",
   "core.toast.rxAudioStationDeviceNeeded": "The radio's audio devices could not be paired automatically. The station's audio device has to be chosen on the station computer — whoever runs the station can do it in its audio device settings.",
   "core.toast.txAudioStopped": "TX audio stopped — the transmission ended early",
   "core.toast.unknown": "Something went wrong. Try again later.",

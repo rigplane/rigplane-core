@@ -891,6 +891,26 @@ class TestBackendArgs:
         args = p.parse_args(["--rx-device", "IC-7610 USB Audio", "status"])
         assert args.rx_device == "IC-7610 USB Audio"
 
+    def test_usb_capture_mode_default_is_shared(self, monkeypatch):
+        monkeypatch.delenv("ICOM_USB_CAPTURE_MODE", raising=False)
+        args = _build_parser().parse_args(["status"])
+        assert args.usb_capture_mode == "shared"
+
+    def test_usb_capture_mode_override(self):
+        args = _build_parser().parse_args(
+            ["--usb-capture-mode", "exclusive-preferred", "status"]
+        )
+        assert args.usb_capture_mode == "exclusive-preferred"
+
+    def test_usb_capture_mode_env(self, monkeypatch):
+        monkeypatch.setenv("ICOM_USB_CAPTURE_MODE", "exclusive-preferred")
+        args = _build_parser().parse_args(["status"])
+        assert args.usb_capture_mode == "exclusive-preferred"
+
+    def test_usb_capture_mode_rejects_unknown_value(self):
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["--usb-capture-mode", "raw", "status"])
+
     def test_tx_device_default_none(self):
         p = _build_parser()
         args = p.parse_args(["status"])
@@ -1023,6 +1043,33 @@ class TestBuildBackendConfig:
         assert isinstance(config, SerialBackendConfig)
         assert config.rx_device == "IC-7610 RX"
         assert config.tx_device == "IC-7610 TX"
+
+    @pytest.mark.parametrize(
+        "backend,config_type",
+        [
+            ("serial", SerialBackendConfig),
+            ("yaesu-cat", YaesuCatBackendConfig),
+        ],
+    )
+    async def test_usb_capture_mode_reaches_the_backend_config(
+        self, backend, config_type
+    ):
+        args = _build_parser().parse_args(
+            [
+                "--backend",
+                backend,
+                "--serial-port",
+                "/dev/tty.usb0",
+                "--usb-capture-mode",
+                "exclusive-preferred",
+                "--model",
+                "IC-7300" if backend == "serial" else "FTX-1",
+                "status",
+            ]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, config_type)
+        assert config.capture_mode == "exclusive-preferred"
 
     async def test_serial_ptt_mode_passed(self):
         p = _build_parser()

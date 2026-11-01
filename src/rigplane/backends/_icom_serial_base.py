@@ -34,6 +34,7 @@ from ..radio import CoreRadio
 from ..types import AudioCodec, ScopeCompletionPolicy, get_audio_capabilities
 
 if TYPE_CHECKING:
+    from ..audio.backend import CaptureMode
     from .discovery import SerialPortCandidate
     from .icom7610.drivers.serial_civ_link import SerialCivLink
     from .icom7610.drivers.serial_session import SerialSessionDriver
@@ -163,6 +164,7 @@ class _IcomSerialRadioBase(CoreRadio):
         audio_sample_rate: int = _DEFAULT_AUDIO_SAMPLE_RATE,
         rx_device: str | None = None,
         tx_device: str | None = None,
+        capture_mode: CaptureMode = "shared",
         ptt_mode: str = "civ",
         profile: "RadioProfile | str | None" = None,
         model: str | None = None,
@@ -250,6 +252,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 sample_rate=audio_sample_rate,
                 channels=self._serial_audio_channels_for_codec(),
                 frame_ms=20,
+                capture_mode=capture_mode,
             ),
             serial_port=device,
             usb_identity=self._profile.usb_identity,

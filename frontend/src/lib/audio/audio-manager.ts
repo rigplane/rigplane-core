@@ -46,6 +46,9 @@ const SERVER_RX_DEVICE_REASONS = new Set([
   'usb_topology_names',
   'usb_topology_unavailable',
 ]);
+// MOR-4030 case C: another program holds the radio's codec exclusively, so
+// neither the exclusive open nor the shared fallback could start RX.
+const SERVER_RX_DEVICE_IN_USE = 'device_in_use';
 const TX_START_SILENT_REASONS = new Set([
   'TX MIC: capture start cancelled',
   'TX MIC: capture stopped before start completed',
@@ -581,6 +584,12 @@ class AudioManager {
             'error',
             'The radio\'s audio devices could not be paired automatically. The station\'s audio device has to be chosen on the station computer — whoever runs the station can do it in its audio device settings.',
             'rxAudioStationDeviceNeeded',
+          );
+        } else if (msg.reason === SERVER_RX_DEVICE_IN_USE) {
+          this._operatorNotifier?.(
+            'error',
+            'The radio\'s audio input is in use by another program. Close it, then turn the audio on again.',
+            'rxAudioDeviceInUse',
           );
         } else {
           this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');

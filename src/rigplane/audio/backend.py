@@ -18,7 +18,17 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, NewType, Protocol, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    NamedTuple,
+    NewType,
+    Protocol,
+    runtime_checkable,
+)
+
+from ._portaudio_enum import WASAPI_HOST_API
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +76,23 @@ compensation — the RX playback sinks (radio → speakers / virtual cable).
 plays on the very next callback — the host-to-radio TX paths.
 """
 
+CaptureMode = Literal["shared", "exclusive-preferred"]
+"""How a USB radio codec is captured and played on Windows (MOR-4030).
+
+``"shared"`` (the default) uses the host API pairing picks first (MME) and the
+Windows shared audio engine, so other programs, WSJT-X pointed at the codec
+included, can use the codec at the same time. The Windows engine applies the
+input's effects there, and its default AI noise suppression gates non-speech
+audio such as a radio's receive audio into digital silence.
+
+``"exclusive-preferred"`` prefers the WASAPI host API for both directions and
+opens the codec in WASAPI exclusive mode, which bypasses the engine and its
+effects, and falls back to shared WASAPI when the exclusive open is refused.
+Other platforms ignore it.
+"""
+
+CAPTURE_MODES: tuple[CaptureMode, ...] = ("shared", "exclusive-preferred")
+
 _ALSA_HW_RE = re.compile(r"(?:plug)?(hw:\d+,\d+)")
 
 
@@ -94,7 +121,9 @@ class AudioDeviceConfig:
     ``deliver_channels`` value, as before — it is a derived downmix
     instruction, not device config). ``rx_device``/``tx_device`` are the
     driver-level selection overrides; they are not consulted below the
-    driver, exactly like the old keywords.
+    driver, exactly like the old keywords. ``capture_mode`` (MOR-4030) is the
+    Windows capture mode of a USB radio codec, see :data:`CaptureMode`; the
+    driver reads it for pairing and builds its backend from it.
     """
 
     rx_device: str | None = None
@@ -103,6 +132,7 @@ class AudioDeviceConfig:
     channels: int = 1
     frame_ms: int = 20
     rx_audio_channel: str = "mix"
+    capture_mode: CaptureMode = "shared"
 
 
 @dataclass(frozen=True, slots=True)
@@ -730,6 +760,194 @@ class _WindowsMtaLease:
         self._cookie, self._ole32 = None, None
 
 
+class AudioDeviceBusyError(RuntimeError):
+    """Another program holds the codec: the exclusive open was refused as busy
+    and the shared fallback failed too (MOR-4030).
+
+    Windows refuses a shared open while an exclusive holder exists, so RX
+    cannot start until the holder lets go.
+    """
+
+    def __init__(self, message: str, *, device_index: int | None = None) -> None:
+        super().__init__(message)
+        self.device_index = device_index
+
+
+# How PortAudio reports a codec another program holds exclusively. The real
+# Windows run (MOR-4030) saw paInvalidDevice (-9996) from BOTH the exclusive open
+# and the shared fallback; paDeviceUnavailable (-9985) and the WASAPI host error
+# AUDCLNT_E_DEVICE_IN_USE (0x8889000A, signed and unsigned) are the same fact.
+_IN_USE_CODES = frozenset({-9985, -9996, -2004287478, 0x8889000A})
+_IN_USE_TEXT = (
+    "device unavailable",
+    "invalid device",
+    "device is in use",
+    "device_in_use",
+    "0x8889000a",
+)
+# E_ACCESSDENIED: a privacy or permission refusal, never "in use".
+_ACCESS_DENIED_CODES = frozenset({-2147024891, 0x80070005})
+_ACCESS_DENIED_TEXT = ("0x80070005", "access is denied", "e_accessdenied")
+
+
+def _error_values(error: BaseException) -> tuple[list[int], list[str]]:
+    """The integer codes and lower-cased texts in a PortAudio error's args."""
+    codes: list[int] = []
+    texts: list[str] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, int):
+            codes.append(value)
+        elif isinstance(value, str):
+            texts.append(value.lower())
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                walk(item)
+
+    walk(error.args)
+    return codes, texts
+
+
+def _is_in_use_refusal(error: BaseException) -> bool:
+    """Whether an open error says the device is held, not denied or malformed."""
+    codes, texts = _error_values(error)
+    if any(code in _ACCESS_DENIED_CODES for code in codes) or any(
+        marker in text for text in texts for marker in _ACCESS_DENIED_TEXT
+    ):
+        return False
+    return any(code in _IN_USE_CODES for code in codes) or any(
+        marker in text for text in texts for marker in _IN_USE_TEXT
+    )
+
+
+class _OpenAttempt(NamedTuple):
+    """One way to open a stream: its PortAudio ``extra_settings`` and whether it
+    is a WASAPI exclusive open."""
+
+    extra_settings: Any
+    exclusive: bool
+
+
+class _CapturePolicy:
+    """WASAPI capture-mode policy shared by the streams one backend opens (MOR-4030).
+
+    In ``"exclusive-preferred"`` mode a stream on a WASAPI device is opened in
+    exclusive mode first and, when PortAudio refuses that, once more in shared
+    mode with sample-rate auto-convert (shared WASAPI otherwise accepts only
+    the engine's mix format, which MME converted for free). Every other device
+    and the ``"shared"`` mode open exactly as before, with no host-API lookup.
+    The fallback is logged once per device, not once per open.
+    """
+
+    def __init__(self, mode: str = "shared") -> None:
+        if mode not in CAPTURE_MODES:
+            raise ValueError(
+                f"capture_mode must be one of {', '.join(CAPTURE_MODES)}; got {mode!r}."
+            )
+        self.mode: CaptureMode = mode  # type: ignore[assignment]
+        self._logged: set[int] = set()
+        self._logged_lock = threading.Lock()
+
+    def _is_wasapi(self, sd: Any, device_index: int) -> bool:
+        if self.mode != "exclusive-preferred":
+            return False
+        try:
+            host_api = sd.query_devices(device_index)["hostapi"]
+            return bool(
+                type(host_api) is int
+                and host_api >= 0
+                and sd.query_hostapis(host_api)["name"] == WASAPI_HOST_API
+            )
+        except Exception:
+            logger.debug(
+                "portaudio: host API metadata unavailable; opening in shared mode",
+                exc_info=True,
+            )
+            return False
+
+    def attempts(self, sd: Any, device_index: int) -> tuple[_OpenAttempt, ...]:
+        """The opens to try, in order: exclusive then shared WASAPI, or one plain."""
+        if self._is_wasapi(sd, device_index):
+            try:
+                return (
+                    _OpenAttempt(sd.WasapiSettings(exclusive=True), True),
+                    _OpenAttempt(sd.WasapiSettings(auto_convert=True), False),
+                )
+            except Exception:
+                logger.debug(
+                    "portaudio: WASAPI settings unavailable; opening in shared mode",
+                    exc_info=True,
+                )
+        return (_OpenAttempt(None, False),)
+
+    def probe_settings(self, sd: Any, device_index: int) -> Any:
+        """``extra_settings`` for a format probe: shared WASAPI may convert the rate."""
+        if self._is_wasapi(sd, device_index):
+            try:
+                return sd.WasapiSettings(auto_convert=True)
+            except Exception:
+                logger.debug("portaudio: WASAPI settings unavailable", exc_info=True)
+        return None
+
+    def note_fallback(self, device_index: int, error: BaseException) -> None:
+        """Log that the exclusive open was refused, once for this device."""
+        with self._logged_lock:
+            if device_index in self._logged:
+                return
+            self._logged.add(device_index)
+        logger.warning(
+            "portaudio: WASAPI exclusive open of device [%d] was refused (%s); "
+            "using shared mode, where Windows audio effects can apply",
+            device_index,
+            error,
+        )
+
+    def busy_error(
+        self,
+        sd: Any,
+        device_index: int,
+        exclusive_error: BaseException | None,
+        shared_error: BaseException,
+        *,
+        direction: str,
+    ) -> AudioDeviceBusyError | None:
+        """The in-use refusal when another program holds the device, else None.
+
+        Called only after the shared fallback failed too. It is the case when
+        the exclusive open was refused, the shared failure says the device is
+        held (see ``_is_in_use_refusal``), and the device still enumerates with
+        channels for this direction (so it is not unplugged or missing).
+        """
+        if exclusive_error is None or not _is_in_use_refusal(shared_error):
+            return None
+        try:
+            info = sd.query_devices(device_index)
+            channels = info[
+                "max_input_channels" if direction == "rx" else "max_output_channels"
+            ]
+            if not channels > 0:
+                return None
+        except Exception:
+            return None
+        logger.warning(
+            "portaudio: device [%d] is in use by another program; "
+            "audio cannot start until it lets go",
+            device_index,
+        )
+        return AudioDeviceBusyError(
+            f"Audio device [{device_index}] is in use by another program.",
+            device_index=device_index,
+        )
+
+
+def _stream_kwargs(attempt: _OpenAttempt, kwargs: dict[str, Any]) -> dict[str, Any]:
+    if attempt.extra_settings is None:
+        return kwargs
+    return {**kwargs, "extra_settings": attempt.extra_settings}
+
+
 class _PortAudioRxStream:
     """RxStream backed by a callback-driven sounddevice InputStream.
 
@@ -765,9 +983,13 @@ class _PortAudioRxStream:
         config: AudioDeviceConfig,
         blocksize: int,
         deliver_channels: int | None = None,
+        capture_policy: _CapturePolicy | None = None,
     ) -> None:
         self._sd = sd
         self._device_index = device_index
+        self._capture_policy = capture_policy or _CapturePolicy()
+        # True once the stream opened in WASAPI exclusive mode (MOR-4030).
+        self.exclusive = False
         self._sample_rate = config.sample_rate
         # ``config.channels`` is the OS open count; ``_deliver_channels`` is
         # what the consumer receives. When deliver < open (mono request on a
@@ -819,17 +1041,45 @@ class _PortAudioRxStream:
                         "portaudio-rx: host API metadata unavailable; using low latency",
                         exc_info=True,
                     )
-            self._stream = self._sd.InputStream(
-                samplerate=self._sample_rate,
-                channels=self._channels,
-                dtype="int16",
-                device=self._device_index,
-                blocksize=self._blocksize,
-                latency=latency,
-                callback=self._input_callback,
-            )
-            stage = "start"
-            self._stream.start()
+            attempts = self._capture_policy.attempts(self._sd, self._device_index)
+            exclusive_error: Exception | None = None
+            for number, attempt in enumerate(attempts, start=1):
+                stage = "open"
+                try:
+                    self._stream = self._sd.InputStream(
+                        **_stream_kwargs(
+                            attempt,
+                            {
+                                "samplerate": self._sample_rate,
+                                "channels": self._channels,
+                                "dtype": "int16",
+                                "device": self._device_index,
+                                "blocksize": self._blocksize,
+                                "latency": latency,
+                                "callback": self._input_callback,
+                            },
+                        )
+                    )
+                    stage = "start"
+                    self._stream.start()
+                except Exception as exc:
+                    if not attempt.exclusive or number == len(attempts):
+                        busy = self._capture_policy.busy_error(
+                            self._sd,
+                            self._device_index,
+                            exclusive_error,
+                            exc,
+                            direction="rx",
+                        )
+                        if busy is not None:
+                            raise busy from exc
+                        raise
+                    exclusive_error = exc
+                    self._capture_policy.note_fallback(self._device_index, exc)
+                    self._close_failed_attempt()
+                    continue
+                self.exclusive = attempt.exclusive
+                break
         except BaseException:
             logger.warning(
                 "portaudio-rx: %s failed (device=%d, sample_rate=%d, "
@@ -852,6 +1102,15 @@ class _PortAudioRxStream:
                 )
             raise
         self._running = True
+
+    def _close_failed_attempt(self) -> None:
+        """Close the stream a refused exclusive open left behind, if any."""
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                logger.debug("portaudio-rx: failed-attempt close failed", exc_info=True)
 
     async def stop(self) -> None:
         stream = self._stream
@@ -929,8 +1188,12 @@ class _PortAudioTxStream:
         blocksize: int,
         *,
         playout: TxPlayoutPolicy = "adaptive",
+        capture_policy: _CapturePolicy | None = None,
     ) -> None:
         self._sd = sd
+        self._capture_policy = capture_policy or _CapturePolicy()
+        # True once the stream opened in WASAPI exclusive mode (MOR-4030).
+        self.exclusive = False
         # numpy handle for the adaptive drift-compensated read (MOR-4013);
         # the immediate TX policy never touches it.
         self._np = _np
@@ -1041,16 +1304,49 @@ class _PortAudioTxStream:
             raise RuntimeError("TX stream already running.")
         try:
             self._mta.acquire()
-            self._stream = self._sd.OutputStream(
-                samplerate=self._sample_rate,
-                channels=self._channels,
-                dtype="int16",
-                device=self._device_index,
-                blocksize=self._blocksize,
-                latency="low",
-                callback=self._output_callback,
-            )
-            self._stream.start()
+            attempts = self._capture_policy.attempts(self._sd, self._device_index)
+            exclusive_error: Exception | None = None
+            for number, attempt in enumerate(attempts, start=1):
+                try:
+                    self._stream = self._sd.OutputStream(
+                        **_stream_kwargs(
+                            attempt,
+                            {
+                                "samplerate": self._sample_rate,
+                                "channels": self._channels,
+                                "dtype": "int16",
+                                "device": self._device_index,
+                                "blocksize": self._blocksize,
+                                "latency": "low",
+                                "callback": self._output_callback,
+                            },
+                        )
+                    )
+                    self._stream.start()
+                except Exception as exc:
+                    if not attempt.exclusive or number == len(attempts):
+                        busy = self._capture_policy.busy_error(
+                            self._sd,
+                            self._device_index,
+                            exclusive_error,
+                            exc,
+                            direction="tx",
+                        )
+                        if busy is not None:
+                            raise busy from exc
+                        raise
+                    exclusive_error = exc
+                    self._capture_policy.note_fallback(self._device_index, exc)
+                    failed, self._stream = self._stream, None
+                    try:
+                        self._close_stream(failed)
+                    except Exception:
+                        logger.debug(
+                            "portaudio-tx: failed-attempt close failed", exc_info=True
+                        )
+                    continue
+                self.exclusive = attempt.exclusive
+                break
         except BaseException:
             try:
                 await self.stop()
@@ -1729,10 +2025,15 @@ class PortAudioBackend:
         self,
         *,
         dependency_loader: Callable[[], tuple[Any, Any]] | None = None,
+        capture_mode: CaptureMode = "shared",
     ) -> None:
         self._sd: Any = None
         self._np: Any = None
         self._dependency_loader = dependency_loader
+        # MOR-4030: ``"exclusive-preferred"`` opens WASAPI devices in
+        # exclusive mode (shared fallback); see :data:`CaptureMode`. It
+        # applies to the RX and TX streams opened here, never to duplex.
+        self._capture_policy = _CapturePolicy(capture_mode)
 
     @property
     def sounddevice_module(self) -> Any | None:
@@ -1795,11 +2096,15 @@ class PortAudioBackend:
     ) -> bool:
         sd, _ = self._ensure_deps()
         idx = int(device)
+        extra = self._capture_policy.probe_settings(sd, idx)
+        kwargs: dict[str, Any] = {"device": idx, "samplerate": sample_rate}
+        if extra is not None:
+            kwargs["extra_settings"] = extra
         try:
             if direction == "rx":
-                sd.check_input_settings(device=idx, samplerate=sample_rate)
+                sd.check_input_settings(**kwargs)
             else:
-                sd.check_output_settings(device=idx, samplerate=sample_rate)
+                sd.check_output_settings(**kwargs)
             return True
         except Exception:
             return False
@@ -1835,6 +2140,7 @@ class PortAudioBackend:
             ),
             blocksize=blocksize,
             deliver_channels=deliver_channels,
+            capture_policy=self._capture_policy,
         )
 
     def open_tx(
@@ -1856,6 +2162,7 @@ class PortAudioBackend:
             channels=channels,
             blocksize=blocksize,
             playout=playout,
+            capture_policy=self._capture_policy,
         )
 
     def open_duplex(
@@ -2446,9 +2753,12 @@ class FakeAudioBackend:
 
 __all__ = [
     "AudioBackend",
+    "AudioDeviceBusyError",
     "AudioDeviceConfig",
     "AudioDeviceId",
     "AudioDeviceInfo",
+    "CAPTURE_MODES",
+    "CaptureMode",
     "DuplexStream",
     "FakeAudioBackend",
     "FakeDuplexStream",
