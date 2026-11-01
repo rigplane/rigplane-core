@@ -11,13 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [3.1.2rc1] — 2026-11-01
 
-- Windows: a radio's USB codec no longer has to deliver digital silence when the Windows AI noise suppression ("Audio enhancements") is on for its capture input. A new capture mode for serial and Yaesu CAT radios, `exclusive-preferred` (`--usb-capture-mode`, `ICOM_USB_CAPTURE_MODE`, `capture_mode` on the backend configs), pairs the codec on WASAPI for both directions and opens it in WASAPI exclusive mode, which bypasses those effects; when Windows refuses the exclusive open it opens shared WASAPI instead and logs that once. Saved `MME|...` device selectors keep working and resolve to the same endpoint on WASAPI. The default stays `shared` (other programs can use the codec at the same time); when a shared capture stays silent for ten seconds on Windows, the log and the RX audio notice now say to turn off "Audio enhancements" for that input in Windows Sound settings. When another program holds the codec exclusively, so both the exclusive open and the shared fallback are refused, RX start now fails with the category `device_in_use` and the message "The radio's audio input is in use by another program. Close it, then turn the audio on again." On Windows the message names the program ("...in use by wsjtx.exe...") when the audio sessions of the capture endpoint show it, and stays generic otherwise.
+This is the first release candidate of 3.1.2. It adds an exclusive-preferred
+capture mode for USB radio codecs on Windows, with notices that tell you when
+another program holds the codec or Windows silences it, faster recovery of a
+silently dropped LAN session, FTX-1 filter-width fixes, steadier RX playback,
+a unicast liveness probe for LAN radios, and more. Details by area below.
 
 ### Added
 
 - `probe_lan_radio` — a public unicast liveness probe for Icom LAN radios: sends the radio's own "Are You There" handshake to one known host and control port (retransmitting through the window) and returns `True` on the first "I Am Here" and `False` on timeout or when the OS reports the host unreachable, never raising for an unreachable host, so callers can give up on an unreachable saved radio in seconds instead of waiting out a full connect cycle. Import it from `rigplane` or `rigplane.backends.discovery`.
+
+### Changed
+
+- Every CI-V frequency field is read and written by one shared codec, so frequency encoding no longer differs between commands.
+- Test-suite stability: new pins for USB audio pairing of renamed endpoints on the IC-7610 shape, the TX observation conformance now runs on virtual time, and two timing-dependent tests were made deterministic.
+
+### Fixed
+
+- Windows: a radio's USB codec no longer has to deliver digital silence when the Windows AI noise suppression ("Audio enhancements") is on for its capture input. A new capture mode for serial and Yaesu CAT radios, `exclusive-preferred` (`--usb-capture-mode`, `ICOM_USB_CAPTURE_MODE`, `capture_mode` on the backend configs), pairs the codec on WASAPI for both directions and opens it in WASAPI exclusive mode, which bypasses those effects; when Windows refuses the exclusive open it opens shared WASAPI instead and logs that once. Saved `MME|...` device selectors keep working and resolve to the same endpoint on WASAPI. The default stays `shared` (other programs can use the codec at the same time); when a shared capture stays silent for ten seconds on Windows, the log and the RX audio notice now say to turn off "Audio enhancements" for that input in Windows Sound settings. When another program holds the codec exclusively, so both the exclusive open and the shared fallback are refused, RX start now fails with the category `device_in_use` and the message "The radio's audio input is in use by another program. Close it, then turn the audio on again." On Windows the message names the program ("...in use by wsjtx.exe...") when the audio sessions of the capture endpoint show it, and stays generic otherwise.
+- A LAN session the radio drops without a notice now recovers in about 6-8 seconds instead of after about a minute: on the first stall the watchdog asks the control session by token renewal, and when the radio rejects it, the session is released and logged in again at once. A slow or unanswered renewal keeps the existing patience.
+- The scope reference level (REF) steps on a 5 dB grid and stays inside the range the radio's profile declares.
+- RX audio playback holds a small fill target (150 ms) and compensates for the drift between the radio's clock and the sound device's clock, instead of building up a full second of buffered audio and dropping a frame per write.
+- FTX-1: a filter-width answer of `SH 00` is reported as the radio default, with no Hz value, and the UI shows the radio-default and NARROW filter-width states instead of an unknown width.
+- Yaesu CAT replies are matched to the whole query, not only the command prefix, so a late reply to a sibling query is skipped instead of being taken as the answer; this fixes the FTX-1 SUB narrow-filter read.
+- The scope-health watchdog leaves a radio alone while it is in its own menu and sends all-zero scope frames, instead of restarting the scope.
 
 ## [3.1.0rc1] — 2026-10-31
 
@@ -5066,7 +5085,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.0rc1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...HEAD
+[3.1.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...v3.1.2rc1
 [3.1.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...v3.1.0rc1
 [3.0.1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/rigplane/rigplane-core/compare/v3.0.0rc1...v3.0.0
