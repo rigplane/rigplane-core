@@ -13,6 +13,7 @@ A fake ``sounddevice`` stands in for PortAudio: no audio device, no Windows.
 from __future__ import annotations
 
 import logging
+import sys
 
 import pytest
 
@@ -102,13 +103,17 @@ class FakeSd:
         self.InputStream = InputStream
         self.OutputStream = OutputStream
 
+    def hostapi_of(self, index):
+        """The PortAudio host API index the fake lists *index* under."""
+        return 3 if index == WASAPI_DEVICE else 0
+
     def query_devices(self, index):
         self.queries.append(("device", index))
         if index in self.unplugged:
             raise ValueError(f"Error querying device {index}")
         return {
             "name": "Microphone (USB Audio CODEC)",
-            "hostapi": 3 if index == WASAPI_DEVICE else 0,
+            "hostapi": self.hostapi_of(index),
             "max_input_channels": 2,
             "max_output_channels": 2,
         }
@@ -274,7 +279,18 @@ async def test_shared_mode_never_touches_wasapi_settings(direction):
         await stream.start()
     assert "extra_settings" not in sd.opened[0]
     assert sd.settings == []
-    assert sd.queries == []
+    # Shared mode asks nothing about WASAPI. The one lookup that can remain is
+    # the pre-existing Linux-only ALSA capture-latency lookup in the RX stream
+    # (``_PortAudioRxStream.start``: query_devices(device)["hostapi"], then
+    # query_hostapis(hostapi)["name"]); it runs for any host API on Linux and
+    # never elsewhere, and the TX stream has none.
+    if direction == "rx" and sys.platform == "linux":
+        assert sd.queries == [
+            ("device", WASAPI_DEVICE),
+            ("host", sd.hostapi_of(WASAPI_DEVICE)),
+        ]
+    else:
+        assert sd.queries == []
     assert stream.exclusive is False
     await stream.stop()
 
