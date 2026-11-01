@@ -598,7 +598,7 @@ class AudioManager {
           if (typeof holder === 'string' && HOLDER_PROGRAM_NAME.test(holder)) {
             this._operatorNotifier?.(
               'error',
-              `The radio's audio input is in use by ${holder}. Close it and RigPlane will reconnect.`,
+              `The radio's audio input is in use by ${holder}. Close it, then turn the audio on again.`,
               'rxAudioDeviceInUseBy',
               { program: holder },
             );
