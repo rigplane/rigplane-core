@@ -6,7 +6,10 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Literal
 
-from rigplane.audio._portaudio_enum import HostApiRecord, PortAudioDeviceRecord
+from rigplane.audio._portaudio_enum import (
+    HostApiRecord,
+    PortAudioDeviceRecord,
+)
 from rigplane.audio._usb_names import endpoint_name_key, mme_listed_matches
 from rigplane.audio._usb_snapshot import AudioEndpoint, Flow, UsbNode, UsbSnapshot
 from rigplane.core.usb_identity import UsbAudioIdentity
@@ -110,6 +113,53 @@ def _matches(
     )
 
 
+def _hostapis(snapshot: UsbSnapshot, prefer: str | None) -> tuple[HostApiRecord, ...]:
+    """Host APIs in PortAudio order, the *prefer* one first when it is present."""
+    hostapis = snapshot.portaudio.hostapis
+    if prefer is None:
+        return hostapis
+    return tuple(sorted(hostapis, key=lambda api: api.name != prefer))
+
+
+def same_endpoint_records(
+    snapshot: UsbSnapshot, selector: str, flow: Flow
+) -> tuple[tuple[PortAudioDeviceRecord, HostApiRecord], ...]:
+    """PortAudio devices, on any host API, for the endpoint a stable *selector* names.
+
+    A saved selector is ``<host API>|<endpoint id>`` or ``<host API>|name:<name>``
+    (see :func:`candidate_stable_id`). Windows lists one endpoint once per host
+    API, so a selector saved under one host API (MME before the exclusive
+    capture mode) still names the same endpoint under another. An endpoint id
+    follows the snapshot's endpoint rows; a name compares across host APIs,
+    allowing MME's 31-character truncation in either direction.
+    """
+    identity = selector.partition("|")[2]
+    apis = {api.index: api for api in snapshot.portaudio.hostapis}
+    found = []
+    for record in snapshot.portaudio.devices:
+        api = apis.get(record.hostapi)
+        channels = (
+            record.max_input_channels
+            if flow == "capture"
+            else record.max_output_channels
+        )
+        if api is None or channels <= 0:
+            continue
+        if identity.casefold().startswith("name:"):
+            name = identity[len("name:") :]
+            same = mme_listed_matches(name, record.name) or mme_listed_matches(
+                record.name, name
+            )
+        else:
+            same = any(
+                endpoint.os_id.casefold() == identity.casefold()
+                for endpoint in _matches(snapshot, record, api, flow)
+            )
+        if same:
+            found.append((record, api))
+    return tuple(found)
+
+
 def _under_hub(owner: str, hub: UsbNode | None, nodes: dict[str, UsbNode]) -> bool:
     node = nodes.get(owner.casefold())
     if hub is None or node is None or node.kind != "device":
@@ -127,9 +177,12 @@ def _under_hub(owner: str, hub: UsbNode | None, nodes: dict[str, UsbNode]) -> bo
 
 
 def _candidates(
-    snapshot: UsbSnapshot, hub: UsbNode | None, nodes: dict[str, UsbNode]
+    snapshot: UsbSnapshot,
+    hub: UsbNode | None,
+    nodes: dict[str, UsbNode],
+    prefer: str | None = None,
 ) -> tuple[AudioCandidate, ...]:
-    for api in snapshot.portaudio.hostapis:
+    for api in _hostapis(snapshot, prefer):
         candidates = []
         for record in snapshot.portaudio.devices:
             if record.hostapi != api.index:
@@ -187,9 +240,20 @@ def _complete(nodes: dict[str, UsbNode]) -> bool:
 
 
 def pair(
-    snapshot: UsbSnapshot, serial_port: str, identity: UsbAudioIdentity | None
+    snapshot: UsbSnapshot,
+    serial_port: str,
+    identity: UsbAudioIdentity | None,
+    *,
+    prefer_hostapi: str | None = None,
 ) -> PairOk | PairRefused:
-    """Pair within a non-root hub and at most one nested hub below it."""
+    """Pair within a non-root hub and at most one nested hub below it.
+
+    The first host API with exactly one input and one output for the codec
+    wins, in PortAudio order. *prefer_hostapi* moves that host API to the
+    front (MOR-4030: WASAPI for the exclusive capture mode); RX and TX always
+    come from the same host API, and when the preferred one has no unique
+    pair the usual order applies.
+    """
     nodes = {node.id.casefold(): node for node in snapshot.usb}
     hub: UsbNode | None = None
     evidence: list[str] = []
@@ -205,7 +269,7 @@ def pair(
         return PairRefused(
             reason,
             wire,
-            _candidates(snapshot, hub, nodes),
+            _candidates(snapshot, hub, nodes, prefer_hostapi),
             (*evidence, "refused:" + reason),
         )
 
@@ -320,7 +384,7 @@ def pair(
             ownership[(api.index, record.index)] = (capture, render, owners)
 
     contested = False
-    for api in snapshot.portaudio.hostapis:
+    for api in _hostapis(snapshot, prefer_hostapi):
         inputs = []
         outputs = []
         api_contested = False

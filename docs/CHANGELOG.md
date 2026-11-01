@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows: a radio's USB codec no longer has to deliver digital silence when the Windows AI noise suppression ("Audio enhancements") is on for its capture input. A new capture mode for serial and Yaesu CAT radios, `exclusive-preferred` (`--usb-capture-mode`, `ICOM_USB_CAPTURE_MODE`, `capture_mode` on the backend configs), pairs the codec on WASAPI for both directions and opens it in WASAPI exclusive mode, which bypasses those effects; when Windows refuses the exclusive open it opens shared WASAPI instead and logs that once. Saved `MME|...` device selectors keep working and resolve to the same endpoint on WASAPI. The default stays `shared` (other programs can use the codec at the same time); when a shared capture stays silent for ten seconds on Windows, the log and the RX audio notice now say to turn off "Audio enhancements" for that input in Windows Sound settings.
+
 ### Added
 
 - `probe_lan_radio` — a public unicast liveness probe for Icom LAN radios: sends the radio's own "Are You There" handshake to one known host and control port (retransmitting through the window) and returns `True` on the first "I Am Here" and `False` on timeout or when the OS reports the host unreachable, never raising for an unreachable host, so callers can give up on an unreachable saved radio in seconds instead of waiting out a full connect cycle. Import it from `rigplane` or `rigplane.backends.discovery`.

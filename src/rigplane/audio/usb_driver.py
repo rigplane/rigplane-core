@@ -25,7 +25,8 @@ from typing import Any, Callable, Coroutine, Iterator, Literal
 
 from rigplane.core.usb_identity import UsbAudioIdentity
 
-from ._usb_pairing import AudioCandidate, candidate_stable_id
+from ._portaudio_enum import WASAPI_HOST_API
+from ._usb_pairing import AudioCandidate, candidate_stable_id, same_endpoint_records
 from ._usb_raw_linux import RawLinux
 from ._usb_raw_macos import RawMacos
 from ._usb_raw_windows import RawWindows
@@ -48,6 +49,15 @@ _PORTAUDIO_OPERATION_IDS = count(1)
 
 _SILENCE_WARN_SECONDS = 10
 """Consecutive bit-exact-zero RX seconds before the silence watchdog warns."""
+
+_WINDOWS_ENHANCEMENTS_NOTICE = (
+    "Windows is giving this app only silence from the radio's USB input. "
+    'Turn off "Audio enhancements" for this input in Windows Sound settings.'
+)
+"""The one plain-words notice raised when a shared-mode Windows capture stays
+digitally silent (MOR-4030). Windows' default AI noise suppression gates
+non-speech audio such as a radio's receive audio. The frontend carries the same
+sentence in ``core.overlay.rxSilence``."""
 
 _DEPENDENCY_HINT = (
     "USB audio backend requires optional dependencies sounddevice and numpy. "
@@ -899,6 +909,7 @@ def _find_by_override(
     override: str,
     direction: str,
     snapshot: UsbSnapshot | None = None,
+    prefer_hostapi: str | None = None,
 ) -> UsbAudioDevice:
     selector = override.strip()
     if not selector:
@@ -947,6 +958,20 @@ def _find_by_override(
                     and candidate_stable_id(snapshot, record, api, flow) == selector
                 ):
                     stable_matches.append(dev)
+            # MOR-4030: with a preferred host API the saved host-API prefix is
+            # advisory: the same endpoint on the preferred host API wins, so a
+            # selector saved as ``MME|...`` keeps working when WASAPI is
+            # preferred. No unique twin there keeps the saved choice.
+            if prefer_hostapi is not None:
+                twins = [
+                    dev
+                    for record, api in same_endpoint_records(snapshot, selector, flow)
+                    if api.name == prefer_hostapi
+                    for dev in devices
+                    if dev.index == record.index and dev.name == record.name
+                ]
+                if len(twins) == 1:
+                    return twins[0]
         match = _unique_override_match(
             stable_matches, override=selector, direction=direction
         )
@@ -1038,8 +1063,13 @@ def select_usb_audio_devices(
     rx_device: str | None = None,
     tx_device: str | None = None,
     snapshot: UsbSnapshot | None = None,
+    prefer_hostapi: str | None = None,
 ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
-    """Select RX/TX devices deterministically with override precedence."""
+    """Select RX/TX devices deterministically with override precedence.
+
+    *prefer_hostapi* (MOR-4030) names the host API a stable ``<host API>|...``
+    selector moves to when the same endpoint is listed there.
+    """
     rx_candidates = [dev for dev in devices if dev.supports_rx]
     tx_candidates = [dev for dev in devices if dev.supports_tx]
     duplex_candidates = [dev for dev in devices if dev.duplex]
@@ -1050,7 +1080,11 @@ def select_usb_audio_devices(
     ):
         if not candidates and override is not None and "|" in override:
             _find_by_override(
-                candidates, override=override, direction=direction, snapshot=snapshot
+                candidates,
+                override=override,
+                direction=direction,
+                snapshot=snapshot,
+                prefer_hostapi=prefer_hostapi,
             )
 
     if not rx_candidates:
@@ -1067,11 +1101,19 @@ def select_usb_audio_devices(
 
     if rx_device is not None:
         selected_rx = _find_by_override(
-            rx_candidates, override=rx_device, direction="rx", snapshot=snapshot
+            rx_candidates,
+            override=rx_device,
+            direction="rx",
+            snapshot=snapshot,
+            prefer_hostapi=prefer_hostapi,
         )
     elif tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
+            tx_candidates,
+            override=tx_device,
+            direction="tx",
+            snapshot=snapshot,
+            prefer_hostapi=prefer_hostapi,
         )
         selected_rx = (
             selected_tx
@@ -1083,7 +1125,11 @@ def select_usb_audio_devices(
 
     if tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
+            tx_candidates,
+            override=tx_device,
+            direction="tx",
+            snapshot=snapshot,
+            prefer_hostapi=prefer_hostapi,
         )
     elif rx_device is not None and selected_rx.supports_tx:
         selected_tx = selected_rx
@@ -1286,7 +1332,13 @@ class UsbAudioDriver:
         )
         self._serial_port = serial_port
         self._usb_identity = usb_identity
-        self._backend: AudioBackend = backend or PortAudioBackend()
+        # MOR-4030: the default backend learns a non-default capture mode; the
+        # shared default builds it exactly as before.
+        self._backend: AudioBackend = backend or (
+            PortAudioBackend()
+            if self._config.capture_mode == "shared"
+            else PortAudioBackend(capture_mode=self._config.capture_mode)
+        )
         # MOR-1438: bound on how long an RX/TX stream open may block before
         # it is treated as stuck (see ``_open_stream``). Overridable so
         # tests can shrink it well below ``_CAPTURE_OPEN_TIMEOUT_S`` without
@@ -1574,14 +1626,23 @@ class UsbAudioDriver:
                 if enumeration is not None:
                     session["raw"]["portaudio"] = enumeration.to_json_dict()
                 snapshot = adapt_windows(session)
+            # MOR-4030: exclusive-preferred pairs and resolves saved selectors on
+            # WASAPI for both directions; shared keeps the first host API.
+            prefer = (
+                {"prefer_hostapi": WASAPI_HOST_API}
+                if self._config.capture_mode == "exclusive-preferred"
+                and snapshot.os == "windows"
+                else {}
+            )
             if self._config.rx_device is not None or self._config.tx_device is not None:
                 return select_usb_audio_devices(
                     devices,
                     rx_device=self._config.rx_device,
                     tx_device=self._config.tx_device,
                     snapshot=snapshot,
+                    **prefer,
                 )
-            mapping = pair(snapshot, serial_port, self._usb_identity)
+            mapping = pair(snapshot, serial_port, self._usb_identity, **prefer)
             if isinstance(mapping, PairRefused):
                 raise pairing_refusal_error(mapping)
             rx = next((d for d in devices if d.index == mapping.rx_index), None)
@@ -1758,6 +1819,11 @@ class UsbAudioDriver:
             f"{device.name}; tried {list(self._sample_rate_candidates(requested_sample_rate))}."
         )
 
+    def _rx_exclusive(self) -> bool:
+        """Whether the RX capture opened in WASAPI exclusive mode (MOR-4030)."""
+        stream = self._duplex_stream or self._rx_stream
+        return bool(getattr(stream, "exclusive", False))
+
     def _silence_watchdog(
         self, callback: Callable[[bytes], None], frame_ms: int
     ) -> Callable[[bytes], None]:
@@ -1781,14 +1847,19 @@ class UsbAudioDriver:
                 if state["silent_frames"] == threshold and not state["warned"]:
                     state["warned"] = True
                     self._rx_silent = True
-                    logger.warning(
-                        "usb-audio: RX capture has delivered only digital "
-                        "silence for ~%ds — the input may lack OS capture "
-                        "permission (macOS: grant Microphone to the "
-                        "launching app/context) or the radio's USB audio "
-                        "output may be off",
-                        _SILENCE_WARN_SECONDS,
-                    )
+                    if platform.system() == "Windows" and not self._rx_exclusive():
+                        # MOR-4030: a shared-mode capture runs through the
+                        # Windows audio engine, whose input effects gate it.
+                        logger.warning("usb-audio: %s", _WINDOWS_ENHANCEMENTS_NOTICE)
+                    else:
+                        logger.warning(
+                            "usb-audio: RX capture has delivered only digital "
+                            "silence for ~%ds — the input may lack OS capture "
+                            "permission (macOS: grant Microphone to the "
+                            "launching app/context) or the radio's USB audio "
+                            "output may be off",
+                            _SILENCE_WARN_SECONDS,
+                        )
             else:
                 if state["warned"]:
                     logger.info("RX audio signal detected")

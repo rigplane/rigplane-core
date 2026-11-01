@@ -304,3 +304,20 @@ async def test_host_api_lookup_failure_degrades_to_a_plain_open():
 def test_unknown_capture_mode_is_refused():
     with pytest.raises(ValueError, match="capture_mode"):
         PortAudioBackend(capture_mode="exclusive")
+
+
+async def test_missing_wasapi_settings_degrades_to_a_plain_open():
+    sd = FakeSd()
+
+    def unavailable(**_kw):
+        raise AttributeError("no WASAPI support in this PortAudio build")
+
+    sd.WasapiSettings = unavailable  # type: ignore[assignment]
+    backend = _backend(sd)
+    stream = backend.open_rx(AudioDeviceId(WASAPI_DEVICE))
+    await stream.start(lambda _pcm: None)
+    assert "extra_settings" not in sd.opened[0]
+    assert stream.exclusive is False
+    await stream.stop()
+    assert backend.check_sample_rate(AudioDeviceId(WASAPI_DEVICE), 48_000) is True
+    assert "extra_settings" not in sd.probes[0][1]

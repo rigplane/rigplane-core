@@ -15,7 +15,7 @@ import type { RadioViewModel, RxAudioViewModel } from '../radio-view-model';
 import type { RxAudioAuthorityPublication } from '../rx-audio-instruments';
 
 const SILENCE_TEXT =
-  "No audio from the radio: the server receives only digital silence. On macOS, give Microphone permission to the program that starts the server, or check the radio's USB audio output.";
+  "No audio from the radio: the server receives only digital silence. On macOS, give Microphone permission to the program that starts the server, or check the radio's USB audio output. On Windows, turn off \"Audio enhancements\" for this input in Windows Sound settings.";
 
 const AUTHORITY_STATE = { providerGeneration: 1 } as ServerState;
 const AUTHORITY_CAPS = {

@@ -66,6 +66,7 @@ from .transport import (
 
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
+    from ...audio.backend import CaptureMode
     from ...audio.session import AudioSession
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
@@ -231,6 +232,7 @@ class YaesuCatRadio:
         tx_device: str | None = None,
         audio_sample_rate: int = 48000,
         audio_driver: UsbAudioDriver | None = None,
+        capture_mode: CaptureMode = "shared",
         tx_abort_fence: TxAbortFence | None = None,
     ) -> None:
         """Create a YaesuCatRadio instance.
@@ -241,6 +243,8 @@ class YaesuCatRadio:
             profile: Rig profile name (``"ftx1"``) or a loaded ``RigConfig``.
             rx_device: USB audio input device name for RX audio capture.
             tx_device: USB audio output device name for TX audio playback.
+            capture_mode: Windows capture mode of the USB codec, ``"shared"``
+                (default) or ``"exclusive-preferred"`` (MOR-4030).
             audio_sample_rate: Audio sample rate in Hz (default 48000).
             audio_driver: Optional pre-constructed UsbAudioDriver (for testing).
             tx_abort_fence: Runtime-owned fence for local CW/tuner work. Calls
@@ -298,6 +302,7 @@ class YaesuCatRadio:
                     tx_device=tx_device,
                     sample_rate=audio_sample_rate,
                     channels=1,
+                    capture_mode=capture_mode,
                     # The FTX-1 presents USB RX audio on the LEFT channel only;
                     # the profile's [audio].rx_audio_channel selects which
                     # channel the stereo→mono downmix keeps at full level

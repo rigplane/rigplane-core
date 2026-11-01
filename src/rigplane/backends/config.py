@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from ..audio.backend import CAPTURE_MODES, CaptureMode
 from ..profiles import RadioProfile
 from ..types import AudioCodec, get_audio_capabilities
 
@@ -69,6 +70,7 @@ class SerialBackendConfig:
     audio_sample_rate: int = _DEFAULT_AUDIO_SAMPLE_RATE
     rx_device: str | None = None
     tx_device: str | None = None
+    capture_mode: CaptureMode = "shared"
     ptt_mode: Literal["civ"] = "civ"
     allow_low_baud_scope: bool = False
     profile: RadioProfile | str | None = None
@@ -89,6 +91,8 @@ class SerialBackendConfig:
             raise ValueError("rx_device override must be a non-empty string.")
         if self.tx_device is not None and not self.tx_device.strip():
             raise ValueError("tx_device override must be a non-empty string.")
+        if self.capture_mode not in CAPTURE_MODES:
+            raise ValueError(f"capture_mode must be one of {', '.join(CAPTURE_MODES)}.")
         if self.ptt_mode != "civ":
             raise ValueError("ptt_mode must be 'civ'.")
         if not isinstance(self.allow_low_baud_scope, bool):
@@ -105,6 +109,7 @@ class YaesuCatBackendConfig:
     audio_sample_rate: int = 48000
     rx_device: str | None = None
     tx_device: str | None = None
+    capture_mode: CaptureMode = "shared"
     model: str | None = None
 
     def __post_init__(self) -> None:
@@ -118,6 +123,8 @@ class YaesuCatBackendConfig:
             raise ValueError("rx_device override must be a non-empty string.")
         if self.tx_device is not None and not self.tx_device.strip():
             raise ValueError("tx_device override must be a non-empty string.")
+        if self.capture_mode not in CAPTURE_MODES:
+            raise ValueError(f"capture_mode must be one of {', '.join(CAPTURE_MODES)}.")
 
 
 @dataclass(frozen=True, slots=True)
