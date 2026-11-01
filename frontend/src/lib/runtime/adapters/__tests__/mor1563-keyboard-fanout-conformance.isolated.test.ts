@@ -147,7 +147,7 @@ import {
 } from './conformance/harness';
 import { PROFILES } from './conformance/profiles';
 import { dispatchKeyboardRadioAction } from '../../commands/panel-commands';
-import { stepRef } from '../../../components/spectrum/spectrum-toolbar-logic';
+import { stepRef } from '../../../../components/spectrum/spectrum-toolbar-logic';
 import { resetSharedTuningAccumulatorForTests } from '../../commands/tuning-accumulator';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 

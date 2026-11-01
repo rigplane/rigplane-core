@@ -267,7 +267,7 @@
 
   /* MOR-3694: REF steps on the 5 dB grid against the DECLARED range —
    *  from an off-grid or half-dB readback the value snaps to the
-   *  neighbouring grid point, and the result never leaves the range. */
+   *  neighbouring grid point and never leaves the declared range. */
   function changeRef(delta: -5 | 0 | 5) {
     if (scopeRef === null || scopeRefRange === null) return;
     scopeHandlers.onRefChange(

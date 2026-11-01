@@ -1943,8 +1943,11 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
     // An off-grid or half-dB readback INSIDE the declared range steps onto
     // the 5 dB grid (the pre-fix code refused every non-integer readback).
+    // Up from -4.5 lands on the grid point ABOVE it (0), the same bucket
+    // rule as -4 up → 0; down from -4.5 would give -5 (SpectrumToolbar's
+    // "steps REF from a half-dB readback" case pins that direction).
     h.sendCommand.mockClear();
-    for (const [refDb, expected] of [[15, 20], [1.5, 5], [-4, 0], [-4.5, -5], [19, 20]] as const) {
+    for (const [refDb, expected] of [[15, 20], [1.5, 5], [-4, 0], [-4.5, 0], [19, 20]] as const) {
       h.state = { ...h.state!, scopeControls: { span: 3, refDb, hold: false, dual: false, speed: 1 } } as ServerState;
       expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
       expect(h.sendCommand).toHaveBeenLastCalledWith('set_scope_ref', { ref: expected }, expect.any(String));
@@ -1953,7 +1956,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       ['set_scope_ref', { ref: 20 }],
       ['set_scope_ref', { ref: 5 }],
       ['set_scope_ref', { ref: 0 }],
-      ['set_scope_ref', { ref: -5 }],
+      ['set_scope_ref', { ref: 0 }],
       ['set_scope_ref', { ref: 20 }],
     ]);
     expectIntentTransport();
@@ -2558,6 +2561,12 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     h.caps = {
       capabilities: ['scope', 'dual_rx', 'dial_lock', 'power_control'],
       scope: true,
+      // MOR-3694: the REF range the real IC-7300 fixture publishes; without
+      // it onRefChange fails closed and the scope vocabulary below would
+      // lose its set_scope_ref entry.
+      ref_min_db: -20,
+      ref_max_db: 20,
+      ref_step_db: 0.5,
       stateContractVersion: 1,
       providerGeneration: 31,
       receivers: 2,
