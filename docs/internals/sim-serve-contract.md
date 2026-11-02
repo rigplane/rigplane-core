@@ -108,21 +108,36 @@ only):
   with the personality's CI-V address substituted; the pixel payloads are
   the IC-7610's. A single-receiver personality (IC-7300MK2) keeps MAIN
   waves only and never streams SUB, whatever the scope dual-mode byte says.
-- The `19 00` identity is never invented as a verified one. A profile with a
+- The `19 00` identity is never presented as a verified one. A profile with a
   recorded or documented token (`[identity].expected_ids`, the IC-7610's
-  `98`) answers exactly that token and Core verifies it. A profile with none
-  (the IC-9700 and IC-7300MK2: their guides list the command but not the
-  reply bytes) answers with the Icom convention seen in every recorded radio
-  (the CI-V address) because Core refuses commands until `19 00` is answered
-  with some bytes; the personality marks this (`MockIcomRadio.identity_source`
-  is `"unverified"`, `"recorded"` otherwise) and Core classifies the answer
-  UNVERIFIED, never VERIFIED. The real radios' replies are unknown.
+  `98`) answers exactly that token and Core verifies it
+  (`MockIcomRadio.identity_source == "recorded"`). A profile with none (the
+  IC-9700 and IC-7300MK2: their guides list the command but not the reply
+  bytes) cannot be verified, and Core refuses commands until `19 00` is
+  answered with some bytes, so the personality answers an explicit
+  placeholder (`serve.UNVERIFIED_IDENTITY_TOKEN`, `00`: neither the CI-V
+  address nor any model's token), marks it (`identity_source == "unverified"`)
+  and Core classifies the answer UNVERIFIED, never VERIFIED. The real
+  radios' replies are unknown.
+- RX audio follows the RX format the client declares in its accepted
+  conninfo (codec byte at `0x72`, BE u32 rate at `0x74`): s16 PCM mono or
+  stereo is sized as exactly 20 ms per burst (`burst_payloads`: the recorded
+  1364/1364/1112 split at 48 kHz stereo, the same proportions scaled for
+  other formats). The mono packetization of a real radio is unrecorded, and
+  with a file RX source the burst is the source's stereo bytes truncated to
+  the negotiated size. Codecs other than s16 PCM keep the recorded stereo
+  shape.
 - The TX audio path is unrecorded: `/audio/tx` format labelling falls back
   to the profile-default constant and `format: "default"` when nothing was
   captured and nothing learned.
 - The discovery reply (`04` I-am-here) carries no model name: a client
   cannot tell the personalities apart from discovery alone, only from the
   `19 00` identity read.
+
+The LAN startup line is typed: `serve.LanStartupFields` / `LanStartupLine`
+(TypedDicts, producer side) and `serve.parse_lan_startup(line)` (raises
+`ValueError` on an unknown or missing key or a wrong type) are the contract
+consumers use instead of guessing keys.
 
 `GET /state` keeps the LAN shape
 (`frequency_hz`, `mode`, `ptt`, `session_held`, `login_count`), and the

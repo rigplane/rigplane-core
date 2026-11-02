@@ -28,10 +28,10 @@ import math
 import signal
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, get_type_hints
 
 from aiohttp import web
 
@@ -218,7 +218,7 @@ class RadioBackend:
     radio: Any
     start: Callable[[], Awaitable[None]]
     stop: Callable[[], Awaitable[None]]
-    startup_fields: Callable[[], dict]
+    startup_fields: Callable[[], Mapping[str, object]]
     state: Callable[[], dict]
     events: dict[str, Callable[[Any, dict], dict]]
     vanish: _VanishController | None = None  # serial: restore-timer seam
@@ -388,6 +388,12 @@ _LAN_RADIO_MODELS: dict[str, str] = {
 }
 
 
+#: The ``19 00`` answer of a personality whose profile declares no identity token. A
+#: declared placeholder, deliberately not a model identity (it is not the CI-V address
+#: and no profile lists it), so nothing downstream can mistake it for a verified one.
+UNVERIFIED_IDENTITY_TOKEN = b"\x00"
+
+
 def build_lan_personality(profile: RadioProfile, **kwargs: Any) -> MockIcomRadio:
     """The one place an Icom LAN personality is built from its capability profile.
 
@@ -397,10 +403,11 @@ def build_lan_personality(profile: RadioProfile, **kwargs: Any) -> MockIcomRadio
     that and Core verifies it (``identity_source == "recorded"``). A profile
     with none cannot be given a verified identity: Core refuses commands
     until ``19 00`` is answered with *some* bytes, so the personality answers
-    with the Icom convention seen in every recorded radio (the CI-V address)
-    and says so — ``identity_source == "unverified"`` — and Core classifies
-    that answer UNVERIFIED, never VERIFIED. ``kwargs`` are the caller's
-    simulator options (ports, credentials, hold, audio, scope).
+    the explicit placeholder :data:`UNVERIFIED_IDENTITY_TOKEN` (neither the
+    CI-V address nor any model's token) and says so —
+    ``identity_source == "unverified"`` — and Core classifies that answer
+    UNVERIFIED, never VERIFIED. ``kwargs`` are the caller's simulator
+    options (ports, credentials, hold, audio, scope).
     """
     radio = MockIcomRadio(
         radio_addr=profile.civ_addr,
@@ -412,9 +419,46 @@ def build_lan_personality(profile: RadioProfile, **kwargs: Any) -> MockIcomRadio
         radio.model_id = bytes.fromhex(ids[0])
         radio.identity_source = "recorded"
     else:
-        radio.model_id = bytes([profile.civ_addr])
+        radio.model_id = UNVERIFIED_IDENTITY_TOKEN
         radio.identity_source = "unverified"
     return radio
+
+
+class LanStartupFields(TypedDict):
+    """The radio-specific part of an Icom LAN simulator's startup JSON line."""
+
+    radio: str
+    fidelity: str
+    evidence: str
+    transport: str
+    host: str
+    control_port: int
+    username: str
+
+
+class LanStartupLine(LanStartupFields):
+    """A complete Icom LAN startup line (``startup_line``): envelope + fields."""
+
+    sim: str
+    control: str
+    seed: int
+
+
+def parse_lan_startup(line: Mapping[str, object]) -> LanStartupLine:
+    """The producer's parser for an Icom LAN startup line (raises ValueError).
+
+    Consumers read the declared fields from the result instead of guessing
+    keys of the raw JSON; an unknown or missing key, or a wrong type, is an
+    error here rather than a ``KeyError`` somewhere downstream.
+    """
+    types = get_type_hints(LanStartupLine)
+    if set(line) != set(types):
+        raise ValueError(f"startup line keys {sorted(line)} != {sorted(types)}")
+    for key, want in types.items():
+        value = line[key]
+        if not isinstance(value, want) or (want is int and isinstance(value, bool)):
+            raise ValueError(f"startup line {key!r}: {value!r} is not {want.__name__}")
+    return LanStartupLine(**line)  # type: ignore[typeddict-item]
 
 
 def _lan_radio_backend(args: argparse.Namespace) -> RadioBackend:
@@ -450,7 +494,7 @@ def _lan_radio_backend(args: argparse.Namespace) -> RadioBackend:
         _REPO_ROOT / "tests" / "fixtures" / args.radio / "civ_pairs.jsonl"
     ).is_file()
 
-    def _startup_fields() -> dict:
+    def _startup_fields() -> LanStartupFields:
         # _username is the accepted login; the password never appears in output.
         return {
             "radio": profile.model,

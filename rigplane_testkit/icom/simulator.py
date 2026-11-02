@@ -37,7 +37,11 @@ from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.icom.rx_source import RxSource
-from rigplane_testkit.icom.simulator_audio import AudioPortMixin, TxAudioFormat
+from rigplane_testkit.icom.simulator_audio import (
+    AudioPortMixin,
+    RxAudioFormat,
+    TxAudioFormat,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1757,6 +1761,12 @@ class MockIcomRadio(AudioPortMixin):
                 # the capture exports can label what they record. A bare
                 # conninfo (zero rate, never sent by a real client)
                 # teaches nothing.
+                rx_sample_rate = struct.unpack_from(">I", data, 0x74)[0]
+                if rx_sample_rate > 0:
+                    # The RX stream is sized from the declared RX format.
+                    self._audio_rx_format = RxAudioFormat(
+                        codec=data[0x72], sample_rate=rx_sample_rate
+                    )
                 tx_sample_rate = struct.unpack_from(">I", data, 0x78)[0]
                 if tx_sample_rate > 0:
                     self._audio_tx_format = TxAudioFormat(
