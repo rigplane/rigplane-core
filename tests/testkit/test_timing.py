@@ -276,6 +276,25 @@ def test_the_decorator_hands_the_clock_in_and_keeps_the_other_parameters_typed()
     assert seen == [2.5]
 
 
+@pytest.mark.timeout(30)
+def test_cleanup_that_sleeps_after_the_watchdog_fired_still_completes() -> None:
+    clock = VirtualClock()
+    cleaned: list[bool] = []
+
+    async def scenario() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(
+                0.01
+            )  # the virtual clock is frozen; cleanup must still end
+            cleaned.append(True)
+
+    with pytest.raises(AssertionError, match="still waiting"):
+        clock.run(scenario, real_timeout_s=0.2)
+    assert cleaned == [True]
+
+
 def test_the_first_parameter_must_be_the_clock() -> None:
     with pytest.raises(TypeError, match="first parameter"):
 

@@ -218,10 +218,16 @@ class VirtualClock(ManualClock):
             assert task is not None
             tripped = False
 
+            def stop_scenario() -> None:
+                # Give the loop its own, progressing clock before the cancellation: the
+                # scenario's cleanup (a `finally` that sleeps) must not wait on a frozen one.
+                self.uninstall(loop)
+                task.cancel()
+
             def trip() -> None:
                 nonlocal tripped
                 tripped = True
-                loop.call_soon_threadsafe(task.cancel)
+                loop.call_soon_threadsafe(stop_scenario)
 
             watchdog = threading.Timer(real_timeout_s, trip)
             watchdog.daemon = True

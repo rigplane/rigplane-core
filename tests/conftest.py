@@ -314,7 +314,7 @@ async def virtual_clock() -> AsyncGenerator[VirtualClock, None]:
     """A clock that moves only on ``await virtual_clock.elapse(dt)``.
 
     Installed as ``loop.time`` of this test's own loop and nowhere else (see
-    ``rigplane_testkit/timing.py``). Pair it with ``@pytest.mark.timeout``: a test
+    ``src/rigplane/testing/timing.py``). Pair it with ``@pytest.mark.timeout``: a test
     that awaits a timer nobody advances waits forever.
     """
     async with VirtualClock.on_running_loop() as clock:
