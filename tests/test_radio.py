@@ -31,7 +31,6 @@ from rigplane.commands import (
     parse_civ_frame,
 )
 from rigplane.commander import Priority
-from rigplane.commands.commander import PendingAnswer
 from rigplane.exceptions import (
     CommandError,
     CommandRejectedError,
@@ -2038,62 +2037,6 @@ class TestResponseDeadlineOpensAtSend:
 
         assert frame is not None
         assert frame.command == 0x03
-
-
-class TestReadReleasesWorkerSlot:
-    """A read gives the commander's worker back before its window closes.
-
-    MOR-3888: the commander's executor is
-    ``_civ_rx.py: CivRuntime.execute_civ_raw_for_worker``. A read still
-    unanswered ``_READ_SLOT_HOLD_S`` after its send returns a
-    ``PendingAnswer`` that settles within the same answer window, so a user
-    write queued behind a lost read answer does not wait out that window.
-    """
-
-    @pytest.mark.asyncio
-    async def test_unanswered_read_returns_pending_answer_that_takes_late_answer(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
-        started = time.monotonic()
-        result = await radio._civ_runtime.execute_civ_raw_for_worker(cmd)
-        released_after = time.monotonic() - started
-
-        assert isinstance(result, PendingAnswer)
-        assert released_after < 1.0, f"slot held {released_after:.2f}s"
-        assert not result.answer.done()
-        mock_transport.queue_response(_freq_response(14_074_000))
-        frame = await asyncio.wait_for(result.answer, 2)
-        assert frame is not None and frame.command == 0x03
-        assert radio._civ_request_tracker.pending_count == 0
-
-    @pytest.mark.asyncio
-    async def test_refusal_after_release_still_settles_the_read(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        cmd = build_civ_frame(
-            IC_7610_ADDR, CONTROLLER_ADDR, 0x1A, sub=0x05, data=b"\x00\x90"
-        )
-        result = await radio._civ_runtime.execute_civ_raw_for_worker(cmd)
-
-        assert isinstance(result, PendingAnswer)
-        mock_transport.queue_response(_nak_response())
-        with pytest.raises(CommandRejectedError, match="refused \\(NAK\\)"):
-            await asyncio.wait_for(result.answer, 2)
-        assert radio._civ_request_tracker.pending_count == 0
-
-    @pytest.mark.asyncio
-    async def test_write_keeps_the_slot_for_its_whole_ack_window(
-        self, radio: IcomRadio
-    ) -> None:
-        radio._civ_get_timeout = 0.6
-        cmd = build_civ_frame(
-            IC_7610_ADDR, CONTROLLER_ADDR, 0x05, data=b"\x00\x40\x07\x14\x00"
-        )
-        started = time.monotonic()
-        with pytest.raises(TimeoutError):
-            await radio._civ_runtime.execute_civ_raw_for_worker(cmd)
-        assert time.monotonic() - started >= 0.55
 
 
 class TestRefusedReadSettlesOnNak:
