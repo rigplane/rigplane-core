@@ -35,7 +35,7 @@ from rigplane.audio.usb_driver import (
 )
 
 from _portaudio_pool_helpers import drain_pool
-from rigplane_testkit.timing import VirtualClock, await_until
+from rigplane.testing.timing import VirtualClock, await_until
 
 _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default — keeps this suite fast while

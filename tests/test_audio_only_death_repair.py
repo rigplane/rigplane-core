@@ -35,7 +35,7 @@ from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
 from scripts.soak import soak_driver
-from rigplane_testkit.timing import await_until
+from rigplane.testing.timing import await_until
 
 #: Bound for "frames reach the subscription again" (the property a fix must give).
 RESUME_BOUND_S = 10.0

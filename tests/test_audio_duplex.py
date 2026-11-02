@@ -35,7 +35,7 @@ from rigplane.audio.backend import (
 )
 from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
 from rigplane.audio_bridge import AudioBridge
-from rigplane_testkit.timing import await_until
+from rigplane.testing.timing import await_until
 
 DUPLEX_DEVICE = AudioDeviceInfo(
     id=AudioDeviceId(0),

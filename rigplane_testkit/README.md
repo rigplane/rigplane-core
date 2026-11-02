@@ -8,11 +8,12 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
 
 ## Contents
 
-- `rigplane_testkit.timing` — the one virtual clock for tests (MOR-3920, MOR-4075),
-  shared with rigplane-pro: `VirtualClock` (a `ManualClock` that also drives an
-  event loop's timers and a module's own `time`/`asyncio` names), the
-  `@virtual_clock` decorator, and `wait_until` / `await_until` for real events.
-  Do not write another per-file clock class.
+- `rigplane.testing.timing` — the one virtual clock for tests (MOR-3920, MOR-4075),
+  shipped in the `rigplane` wheel (not in this directory) so rigplane-pro and any
+  downstream suite import it through the ordinary `rigplane` dependency: `VirtualClock`
+  (a `ManualClock`, the simulator engine's clock, that also drives an event loop's timers
+  and a module's own `time`/`asyncio` names), the `@virtual_clock` decorator, and
+  `wait_until` / `await_until` for real events. Do not write another per-file clock class.
 - `rigplane_testkit.realtime_guard` — a collection-time plugin (loaded from
   `tests/conftest.py`) that refuses a test using a real sleep, the real clock or a real
   timeout of 1 s or less unless it runs on the virtual clock or carries
