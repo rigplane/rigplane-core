@@ -171,3 +171,26 @@ async def test_plain_read_of_the_selected_sub_does_not_refuse_main() -> None:
     await _refuse(radio, command, wire_sub, wire_data)
     assert scheduler.consecutive_refusals(sub) == 1
     assert scheduler.consecutive_refusals(main) == 0
+
+
+async def test_a_direct_answer_ends_a_refusal_with_no_request_pending() -> None:
+    """Pre-review finding 1: the tuner read is refused and its request is
+    gone; a real answer then arrives for a direct getter, not for an
+    acquisition request. That answer ends the refusal and its withholding."""
+    radio, scheduler = _radio("IC-705")
+    tuner = FieldPath.global_("operator_controls", "tuner_status")
+    await _refuse(radio, 0x1C, 0x01, b"")
+    assert scheduler.consecutive_refusals(tuner) == 1
+    assert tuner not in scheduler.unobserved_startup_paths(())
+    assert scheduler.pending_requests() == ()
+
+    answer = build_civ_frame(
+        CONTROLLER_ADDR, radio._radio_addr, 0x1C, sub=0x01, data=b"\x01"
+    )
+    await radio._civ_runtime._route_civ_frame(
+        parse_civ_frame(answer), generation=radio._civ_epoch
+    )
+
+    assert radio._state_store.snapshot().field(tuner).value is not None
+    assert scheduler.consecutive_refusals(tuner) == 0
+    assert tuner in scheduler.unobserved_startup_paths(())
