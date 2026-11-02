@@ -445,6 +445,11 @@ class MockIcomRadio(AudioPortMixin):
             ramp. Restarts from its head on each stream start.
         require_control_discovery: reject login from sender IDs that have
             not sent control discovery, or have since sent DISCONNECT.
+        data_capable_modes: set of CI-V mode bytes that can carry the DATA
+            flag (None = every mode, the unchanged default). When set, a
+            0x26 SET with a non-zero data byte for a mode outside the set
+            is NAKed with no state change, and so is a 0x1A 06 DATA-on SET
+            while the current mode is outside the set (MOR-4036).
     """
 
     def __init__(
@@ -479,6 +484,7 @@ class MockIcomRadio(AudioPortMixin):
         scope_blank_waves: bool = False,
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
+        data_capable_modes: frozenset[int] | None = None,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -544,6 +550,13 @@ class MockIcomRadio(AudioPortMixin):
         # the selected receiver, 1 = SUB is (recorded vfo_select window).
         self._dual_receiver: bool = dual_receiver
         self._selected_receiver: int = 0
+        # MOR-4036: the set of CI-V mode bytes that can carry the DATA flag
+        # (None = every mode, today's behaviour — unchanged for all existing
+        # tests). When set, a 0x26 SET whose data byte is non-zero for a mode
+        # outside the set is NAKed with no state change, and so is a 0x1A 06
+        # DATA-on SET while the current mode is outside the set — the bench
+        # IC-705 behaviour (26 00 03 01 01 = CW+DATA is NAKed).
+        self._data_capable_modes: frozenset[int] | None = data_capable_modes
         # Modelling of the 0x1A 05 menu items the startup reader reads;
         # current values (defaults and byte widths live in the table above).
         self._ctl_mem_menu: dict[bytes, int] = {
@@ -2463,6 +2476,14 @@ class MockIcomRadio(AudioPortMixin):
                 )
             if len(payload) == 4 and payload[0] in (0x00, 0x01):  # SET
                 mode, data_mode, filt = payload[1], payload[2], payload[3]
+                # MOR-4036: DATA cannot be carried into a mode outside the
+                # declared data-capable set — refuse before any mutation.
+                if (
+                    self._data_capable_modes is not None
+                    and data_mode
+                    and mode not in self._data_capable_modes
+                ):
+                    return self._civ_nak(to, frm)
                 if payload[0] == 0x00:
                     self._mode = mode  # shared with 0x04/0x06
                     self._data_mode = data_mode
@@ -2549,6 +2570,9 @@ class MockIcomRadio(AudioPortMixin):
         # receiver, and the DATA flag is the byte 0x26 selector 00 reports,
         # so 07 D0/D1 selection keeps MAIN/SUB isolated (the swap in the
         # 0x07 handler owns the mapping).
+        # MOR-4036: with ``data_capable_modes`` set, a DATA-on write while
+        # the current mode cannot carry DATA is NAKed before any mutation
+        # (the bench IC-705 refuses CW+DATA).
         if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x06":
             rest = payload[1:]
             if not rest:  # GET: DATA plus filter (00 00 while DATA is OFF)
@@ -2560,6 +2584,12 @@ class MockIcomRadio(AudioPortMixin):
                     sub=0x06,
                     data=bytes([self._data_mode, filt]),
                 )
+            if (
+                self._data_capable_modes is not None
+                and rest[0]
+                and self._mode not in self._data_capable_modes
+            ):
+                return self._civ_nak(to, frm)
             if len(rest) == 1 and rest[0] <= 0x03:  # short SET: DATA 0-3
                 self._data_mode = rest[0]
                 return self._civ_ack(to, frm)

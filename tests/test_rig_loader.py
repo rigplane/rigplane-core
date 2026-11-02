@@ -848,6 +848,51 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         assert rig.to_profile().data_mode_inputs == expected
 
     @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            # MOR-4036: [data_mode].modes — the modes that can carry DATA.
+            # IC-705: DATA exists in SSB, AM, FM (instruction manual /
+            # Hamlib); bench-verified 2026-11-02 that CW+DATA is NAKed.
+            ("ic705.toml", ("USB", "LSB", "AM", "FM")),
+            # X6200: PDF page 10 Table 3 documents LSB-D and USB-D only.
+            ("x6200.toml", ("USB", "LSB")),
+        ],
+    )
+    def test_data_mode_modes_reach_runtime_profile(self, name, expected):
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.data_mode_modes == expected, name
+        assert rig.to_profile().data_mode_modes == expected, name
+
+    def test_data_mode_modes_undeclared_is_none_for_shipped_rigs(self):
+        # MOR-4036: rigs without a sourced fact (X6100 among them) stay
+        # undeclared — None keeps the runtime's old preserve-the-flag path.
+        for name in ("x6100.toml", "ic7610.toml", "ic7300.toml"):
+            profile = load_rig(RIGS_DIR / name).to_profile()
+            assert profile.data_mode_modes is None, name
+
+    @pytest.mark.parametrize(
+        ("modes", "message"),
+        [
+            ('["USB", "NOPE"]', r"names mode 'NOPE' that is not in \[modes\].list"),
+            ("[]", "modes must be a non-empty array"),
+            ('["USB", "USB"]', "repeats mode 'USB'"),
+            ('["USB", 3]', r"modes\[1\] must be a string"),
+            ('"USB"', "modes must be a non-empty array"),
+        ],
+    )
+    def test_data_mode_modes_reject_invalid_metadata(self, tmp_path, modes, message):
+        text = re.sub(
+            r"\[data_mode\]\n",
+            f"[data_mode]\nmodes = {modes}\n",
+            TEMPLATE_PATH.read_text(),
+            count=1,
+        )
+        path = tmp_path / "invalid-data-mode-modes.toml"
+        path.write_text(text)
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(path)
+
+    @pytest.mark.parametrize(
         ("inputs", "message"),
         [
             (
