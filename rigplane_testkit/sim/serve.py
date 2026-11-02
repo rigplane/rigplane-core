@@ -8,9 +8,12 @@ rejected control event, plus start and stop, lands in a bounded trace
 field; the trace is a log of what happened, not a replay script (a restore
 timer's ``usb_reappear`` record appears only if the timer fires).
 
-Three radio kinds: ``ic7610`` (LAN, MOR-3593), ``ic7300`` (serial CI-V,
-MOR-3594) and ``ftx1`` (Yaesu CAT serial, MOR-3602) — each on real
-endpoints; :class:`RadioBackend` is the seam between them.
+Five radio kinds: the Icom LAN personalities ``ic7610`` (recorded,
+MOR-3593), ``ic9700`` and ``ic7300mk2`` (declared from their capability
+profiles, MOR-3907/MOR-3910 — one generic profile-driven backend), the
+serial ``ic7300`` CI-V fake (MOR-3594) and ``ftx1`` (Yaesu CAT serial,
+MOR-3602) — each on real endpoints; :class:`RadioBackend` is the seam
+between them.
 """
 
 from __future__ import annotations
@@ -25,14 +28,15 @@ import math
 import signal
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, get_type_hints
 
 from aiohttp import web
 
 from rigplane.core.types import AudioCodec
+from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.profiles.rig_loader import RigLoadError
 
 from rigplane_testkit.icom.faults import FaultPlan
@@ -207,14 +211,14 @@ class TraceLog:
 class RadioBackend:
     """One radio kind's seam: radio, lifecycle, startup fields (key order
     is the contract), /state body and event handlers. The audio_tx_*
-    callables back ``GET /audio/tx[.wav]``; only the IC-7610 backend sets
+    callables back ``GET /audio/tx[.wav]``; only the Icom LAN backends set
     them (its simulator captures TX audio), the serial backends leave them
     None and the routes answer 404 ``unsupported``."""
 
     radio: Any
     start: Callable[[], Awaitable[None]]
     stop: Callable[[], Awaitable[None]]
-    startup_fields: Callable[[], dict]
+    startup_fields: Callable[[], Mapping[str, object]]
     state: Callable[[], dict]
     events: dict[str, Callable[[Any, dict], dict]]
     vanish: _VanishController | None = None  # serial: restore-timer seam
@@ -275,29 +279,6 @@ class ServeStack:
     trace: TraceLog
     app: web.Application
     stop_event: asyncio.Event
-
-
-def build_radio(args: argparse.Namespace) -> MockIcomRadio:
-    """The IC-7610 simulator with the serve defaults (MOR-3593): the recorded
-    real dead-session hold (83.4-85.9 s), not the 0.5 s fast-test default.
-    TX-audio payload capture is on so ``GET /audio/tx[.wav]`` can serve the
-    sink (MOR-3256)."""
-    # None = do not pass the kwarg: MockIcomRadio's own default applies.
-    pairs = (("username", args.username), ("password", args.password))
-    credentials = {key: value for key, value in pairs if value is not None}
-    return MockIcomRadio(
-        host=args.bind,
-        port=0,
-        civ_port=0,
-        single_owner=True,
-        keepalive_hold_s=args.keepalive_hold_s,
-        fault_plan=FaultPlan(seed=args.seed),
-        enable_audio=True,
-        dual_receiver=True,
-        stateful_ptt=True,
-        capture_tx_audio=True,
-        **credentials,
-    )
 
 
 # The IC-7610 profile's TX leg (rigs/ic7610.toml: tx_codec PCM_1CH_16BIT,
@@ -393,15 +374,131 @@ def _audio_tx_wav(radio: MockIcomRadio, since: int) -> bytes:
     return body.getvalue()
 
 
-def _ic7610_backend(args: argparse.Namespace) -> RadioBackend:
-    """The LAN simulator behind real UDP servers (MOR-3593 behaviour)."""
-    radio = build_radio(args)
+# Profiles, rigs/ and fixtures live under the repo root (see the FTX-1 note below).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    def _startup_fields() -> dict:
+
+# The Icom LAN personalities (MOR-3593 IC-7610; MOR-3907/MOR-3910 declared
+# IC-9700 and IC-7300MK2): CLI id -> capability model. The profile is the
+# single source of radio facts — no per-model branch exists below.
+_LAN_RADIO_MODELS: dict[str, str] = {
+    "ic7610": "IC-7610",
+    "ic9700": "IC-9700",
+    "ic7300mk2": "IC-7300MK2",
+}
+
+
+#: The ``19 00`` answer of a personality whose profile declares no identity token. A
+#: declared placeholder, deliberately not a model identity (it is not the CI-V address
+#: and no profile lists it), so nothing downstream can mistake it for a verified one.
+UNVERIFIED_IDENTITY_TOKEN = b"\x00"
+
+
+def build_lan_personality(profile: RadioProfile, **kwargs: Any) -> MockIcomRadio:
+    """The one place an Icom LAN personality is built from its capability profile.
+
+    The profile drives the CI-V address (``radio_addr``), the receiver layout
+    (``dual_receiver``) and the ``19 00`` identity answer. A profile with a
+    recorded or documented token (``expected_identity_ids``) answers exactly
+    that and Core verifies it (``identity_source == "recorded"``). A profile
+    with none cannot be given a verified identity: Core refuses commands
+    until ``19 00`` is answered with *some* bytes, so the personality answers
+    the explicit placeholder :data:`UNVERIFIED_IDENTITY_TOKEN` (neither the
+    CI-V address nor any model's token) and says so —
+    ``identity_source == "unverified"`` — and Core classifies that answer
+    UNVERIFIED, never VERIFIED. ``kwargs`` are the caller's simulator
+    options (ports, credentials, hold, audio, scope).
+    """
+    radio = MockIcomRadio(
+        radio_addr=profile.civ_addr,
+        dual_receiver=profile.receiver_count > 1,
+        **kwargs,
+    )
+    ids = profile.expected_identity_ids
+    if ids:
+        radio.model_id = bytes.fromhex(ids[0])
+        radio.identity_source = "recorded"
+    else:
+        radio.model_id = UNVERIFIED_IDENTITY_TOKEN
+        radio.identity_source = "unverified"
+    return radio
+
+
+class LanStartupFields(TypedDict):
+    """The radio-specific part of an Icom LAN simulator's startup JSON line."""
+
+    radio: str
+    fidelity: str
+    evidence: str
+    transport: str
+    host: str
+    control_port: int
+    username: str
+
+
+class LanStartupLine(LanStartupFields):
+    """A complete Icom LAN startup line (``startup_line``): envelope + fields."""
+
+    sim: str
+    control: str
+    seed: int
+
+
+def parse_lan_startup(line: Mapping[str, object]) -> LanStartupLine:
+    """The producer's parser for an Icom LAN startup line (raises ValueError).
+
+    Consumers read the declared fields from the result instead of guessing
+    keys of the raw JSON; an unknown or missing key, or a wrong type, is an
+    error here rather than a ``KeyError`` somewhere downstream.
+    """
+    types = get_type_hints(LanStartupLine)
+    if set(line) != set(types):
+        raise ValueError(f"startup line keys {sorted(line)} != {sorted(types)}")
+    for key, want in types.items():
+        value = line[key]
+        if not isinstance(value, want) or (want is int and isinstance(value, bool)):
+            raise ValueError(f"startup line {key!r}: {value!r} is not {want.__name__}")
+    return LanStartupLine(**line)  # type: ignore[typeddict-item]
+
+
+def _lan_radio_backend(args: argparse.Namespace) -> RadioBackend:
+    """One generic Icom LAN simulator behind real UDP servers.
+
+    Every Icom LAN radio is built the same way from its capability
+    profile (:func:`build_lan_personality`). Everything else keeps the
+    MOR-3593 serve defaults: the recorded real dead-session hold
+    (83.4-85.9 s, not the 0.5 s fast-test default) and TX-audio payload
+    capture so ``GET /audio/tx[.wav]`` can serve the sink (MOR-3256).
+    Fidelity is honest (sim-serve-contract.md): "A" only with a recording
+    of this exact model under tests/fixtures/<id>/, "C" for a
+    profile-declared personality.
+    """
+    profile = resolve_radio_profile(model=_LAN_RADIO_MODELS[args.radio])
+    # None = do not pass the kwarg: MockIcomRadio's own default applies.
+    pairs = (("username", args.username), ("password", args.password))
+    credentials = {key: value for key, value in pairs if value is not None}
+    radio = build_lan_personality(
+        profile,
+        host=args.bind,
+        port=0,
+        civ_port=0,
+        single_owner=True,
+        keepalive_hold_s=args.keepalive_hold_s,
+        fault_plan=FaultPlan(seed=args.seed),
+        enable_audio=True,
+        stateful_ptt=True,
+        capture_tx_audio=True,
+        **credentials,
+    )
+    recorded = (
+        _REPO_ROOT / "tests" / "fixtures" / args.radio / "civ_pairs.jsonl"
+    ).is_file()
+
+    def _startup_fields() -> LanStartupFields:
         # _username is the accepted login; the password never appears in output.
         return {
-            "radio": "IC-7610",
-            "fidelity": "A",
+            "radio": profile.model,
+            "fidelity": "A" if recorded else "C",
             "evidence": "simulated",
             "transport": "lan",
             "host": args.bind,
@@ -429,10 +526,6 @@ def _ic7610_backend(args: argparse.Namespace) -> RadioBackend:
         audio_tx_stats=lambda since: _audio_tx_stats(radio, since),
         audio_tx_wav=lambda since: _audio_tx_wav(radio, since),
     )
-
-
-# Profiles, rigs/ and fixtures live under the repo root (see the FTX-1 note below).
-_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _ic7300_backend(args: argparse.Namespace, trace: TraceLog) -> RadioBackend:
@@ -587,12 +680,12 @@ def build_stack(args: argparse.Namespace) -> ServeStack:
     trace = TraceLog(args.trace)
     stop_event = asyncio.Event()
     try:
-        if args.radio == "ic7300":
+        if args.radio in _LAN_RADIO_MODELS:
+            backend = _lan_radio_backend(args)
+        elif args.radio == "ic7300":
             backend = _ic7300_backend(args, trace)
-        elif args.radio == "ftx1":
-            backend = _ftx1_backend(args, trace)
         else:
-            backend = _ic7610_backend(args)
+            backend = _ftx1_backend(args, trace)
     except (OSError, ValueError, RigLoadError) as exc:
         # A missing/unreadable profile, bad TOML or a bad fixture is a
         # startup error (SystemExit prints the message, no traceback), not

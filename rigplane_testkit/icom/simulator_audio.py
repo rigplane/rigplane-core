@@ -62,6 +62,27 @@ _AUDIO_IN_BURST_OFFSETS_S = (0.0, 0.0003, 0.0005)
 # Recorded per-burst payload split: 1364 + 1364 + 1112 = 3840 bytes =
 # 20 ms of 48 kHz stereo s16 (the profile's PCM_2CH_16BIT rx codec).
 _AUDIO_BURST_PAYLOADS = (1364, 1364, 1112)
+_RECORDED_BURST_BYTES = sum(_AUDIO_BURST_PAYLOADS)
+
+# RX codec bytes (conninfo 0x72, core/types.py AudioCodec) the streamer can
+# honour: s16 PCM, the only RX payload it generates.
+_RX_PCM16_CHANNELS = {0x04: 1, 0x10: 2}  # PCM_1CH_16BIT, PCM_2CH_16BIT
+
+
+def burst_payloads(channels: int, sample_rate: int) -> tuple[int, int, int]:
+    """The three packet payload lengths of one 20 ms burst in this PCM16 format.
+
+    The recorded split is for 48 kHz stereo (3840 bytes); any other format
+    keeps the three-packet cadence and the recorded proportions, rounded
+    down to whole sample frames, so a burst always carries exactly 20 ms of
+    audio in the negotiated format. The mono/other-rate packetization of a
+    real radio is unrecorded (a declared gap).
+    """
+    frame = 2 * channels  # s16 bytes per sample frame
+    total = (sample_rate * 20 // 1000) * frame
+    first = (total * _AUDIO_BURST_PAYLOADS[0] // _RECORDED_BURST_BYTES) // frame * frame
+    return (first, first, total - 2 * first)
+
 
 # BE u16 at 0x10: 0x8126 on the first packet of each burst, 0x8026 on the
 # continuations (audio_rx_headers.jsonl).
@@ -80,6 +101,19 @@ class TxAudioFormat:
     Production conninfo layout (``src/rigplane/core/auth.py``:
     ``build_conninfo_packet``): tx codec byte at 0x73, BE u32 tx sample
     rate at 0x78. Sink frames snapshot it at arrival.
+    """
+
+    codec: int
+    sample_rate: int
+
+
+@dataclass(frozen=True, slots=True)
+class RxAudioFormat:
+    """The RX audio format a client declares in its accepted conninfo.
+
+    Production conninfo layout (``src/rigplane/core/auth.py``:
+    ``build_conninfo_packet``): rx codec byte at 0x72, BE u32 rx sample
+    rate at 0x74. The RX streamer sizes its bursts from it.
     """
 
     codec: int
@@ -157,6 +191,7 @@ class AudioPortMixin:
         # (None until then; a conninfo with a zero sample rate teaches
         # nothing).
         self._audio_tx_format: TxAudioFormat | None = None
+        self._audio_rx_format: RxAudioFormat | None = None
 
     async def _audio_start(self) -> None:
         """Bind the audio port at the CI-V port + 1 when free (else any).
@@ -349,6 +384,7 @@ class AudioPortMixin:
         self._audio_stop_rx(reason)
         self._audio_last_client_seq = None
         self._audio_tx_format = None
+        self._audio_rx_format = None
 
     def _audio_stop_rx(self, reason: str) -> None:
         """Cancel the RX stream task and forget the audio client."""
@@ -551,6 +587,13 @@ class AudioPortMixin:
         if self._audio_send(pkt, addr):
             self._audio_rx_frames_sent += 1
 
+    def _audio_rx_burst_payloads(self) -> tuple[int, int, int]:
+        """Payload lengths for the RX format the client declared (recorded when none)."""
+        fmt = self._audio_rx_format
+        if fmt is None or fmt.codec not in _RX_PCM16_CHANNELS or fmt.sample_rate <= 0:
+            return _AUDIO_BURST_PAYLOADS
+        return burst_payloads(_RX_PCM16_CHANNELS[fmt.codec], fmt.sample_rate)
+
     def _audio_rx_packet(
         self, position: int, client_id: int, burst: bytes | None
     ) -> bytes:
@@ -565,7 +608,8 @@ class AudioPortMixin:
         """
         import rigplane_testkit.icom.simulator as _sim
 
-        payload_len = _AUDIO_BURST_PAYLOADS[position]
+        payloads = self._audio_rx_burst_payloads()
+        payload_len = payloads[position]
         total = AUDIO_HEADER_SIZE + payload_len
         pkt = bytearray(total)
         struct.pack_into("<I", pkt, 0x00, total)
@@ -579,7 +623,7 @@ class AudioPortMixin:
         struct.pack_into(">H", pkt, 0x14, 0)  # recorded: always 0
         struct.pack_into(">H", pkt, 0x16, payload_len)
         if burst is not None:
-            start_off = sum(_AUDIO_BURST_PAYLOADS[:position])  # 0/1364/2728
+            start_off = sum(payloads[:position])
             pkt[AUDIO_HEADER_SIZE:] = burst[start_off : start_off + payload_len]
         else:
             start = self._audio_rx_inner_seq & 0xFF
