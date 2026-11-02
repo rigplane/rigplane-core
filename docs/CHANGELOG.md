@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.2rc2] — 2026-11-02
+
+This is the second release candidate of 3.1.2. It fixes mode changes out of a
+DATA mode on the IC-705, garbled RX audio from capture devices with more than
+two channels, stuttering RX audio in a hidden browser tab, rigctld writes held
+up by a lost or refused read, and the audio bridge not starting when the radio
+connects after the server. Details below.
+
+### Changed
+
+- Test-suite stability: the IC-9700 and IC-7300MK2 LAN simulators take their behaviour from the capability profile, timing tests share one virtual-clock helper, and a collection-time check stops new wall-clock tests from being added.
+
+### Fixed
+
+- IC-705 and other radios with DATA-less modes: changing from a DATA mode (for example USB-D) to a mode without DATA (CW, CW-R, RTTY) no longer sends the DATA flag with the new mode. The radio refused that command and stayed in the DATA mode while the change was reported as done. Profiles now declare which modes accept DATA (`[data_mode].modes`). (MOR-4036, #4459)
+- RX audio from a capture device with more than two input channels (PipeWire "pulse", BlackHole, multi-channel interfaces) is no longer garbage: the first two device channels are taken as left and right and mixed down to the delivered layout. (MOR-4029, #4461)
+- Web UI: RX audio no longer stutters heavily while the browser tab is hidden (for example on Android with battery management). The jitter buffer widens while the page is hidden and drops the excess backlog when the page is shown again, so playback does not stay seconds behind. (MOR-3965, #4462)
+- rigctld with several clients: a frequency read whose answer from the radio is lost no longer delays another client's frequency change by up to two seconds (for example a WSJT-X poll and a spot click). A read gives up the radio command slot after 0.25 s while it keeps waiting for its answer. (MOR-3888, #4463)
+- A read the radio refuses (CI-V NAK) now counts as answered instead of timing out: the web server no longer waits 10 s at every IC-705 start for the tuner status, and rigctld stops logging repeated read timeouts for refused reads. A refused read that is required for safe operation still fails startup. (MOR-4058, #4464)
+- `rigplane web` started before the radio is connected no longer turns the audio bridge off for the whole run: the bridge auto-start now waits until the radio is connected, then starts as before. An explicit `--bridge=<DEVICE>` still fails at once. (MOR-2922, #4458)
+
 ## [3.1.2rc1] — 2026-11-01
 
 This is the first release candidate of 3.1.2. It adds an exclusive-preferred
@@ -5085,7 +5106,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...HEAD
+[3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
 [3.1.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...v3.1.2rc1
 [3.1.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...v3.1.0rc1
 [3.0.1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0...v3.0.1
