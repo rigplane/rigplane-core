@@ -1659,14 +1659,6 @@ class AcquisitionScheduler:
         # Any completed acquisition breaks the key's consecutive-timeout run:
         # the next terminal timeout of this key expedites its retry again.
         self._consecutive_timeout_by_key.pop(key, None)
-        answered = [path for path in request.paths if path in self._refused_paths]
-        for path in answered:
-            del self._refused_paths[path]
-        if answered:
-            logger.info(
-                "acquisition: %s answered again after a refusal",
-                ", ".join(str(path) for path in answered),
-            )
 
         declared_cadence = request.policy.cadence_seconds
         if declared_cadence is None:
@@ -1738,6 +1730,29 @@ class AcquisitionScheduler:
             self._profile.field_policies
         )
 
+    def refused_paths(self) -> frozenset[FieldPath]:
+        """Return the paths whose last read the radio refused (MOR-4058)."""
+
+        return frozenset(self._refused_paths)
+
+    def end_refusals(self, paths: Iterable[FieldPath]) -> None:
+        """The radio answered *paths*: their refusal and its delay are over.
+
+        Called for every accepted observation, whether or not a request was
+        waiting for it (a direct getter's answer counts too).
+        """
+
+        answered = sorted(
+            (path for path in paths if path in self._refused_paths), key=str
+        )
+        for path in answered:
+            del self._refused_paths[path]
+        if answered:
+            logger.info(
+                "acquisition: %s answered again after a refusal",
+                ", ".join(str(path) for path in answered),
+            )
+
     def consecutive_refusals(self, path: FieldPath) -> int:
         """Return how many reads of *path* the radio refused in a row."""
 
@@ -1760,7 +1775,7 @@ class AcquisitionScheduler:
         ``acquisition_request_timeout`` — and the cadence poll asks for them
         again only once per :meth:`_refusal_retry_seconds` (their policy's
         idle ceiling), whatever the cadence of the siblings in their poll
-        group. An answer ends the refusal (:meth:`record_acquisition_result`).
+        group. An answer ends the refusal (:meth:`end_refusals`).
         """
 
         refused = frozenset(paths)

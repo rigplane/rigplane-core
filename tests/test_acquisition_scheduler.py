@@ -323,6 +323,7 @@ def test_an_answer_ends_the_refusal(caplog: pytest.LogCaptureFixture) -> None:
         scheduler.record_read_refusal((_TUNER,), now=clock.now())
         clock.advance(30.0)
         retry = _dispatch(scheduler, clock.now())
+        scheduler.end_refusals((_TUNER,))
         scheduler.record_acquisition_result(
             retry,
             _changeset(

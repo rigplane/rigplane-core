@@ -2682,6 +2682,12 @@ class CivRuntime:
         scheduler = getattr(self._host, "_acquisition_scheduler", None)
         if not isinstance(scheduler, AcquisitionScheduler):
             return
+        # MOR-4058: any accepted answer ends a refusal, requested or not.
+        scheduler.end_refusals(
+            path
+            for path in scheduler.refused_paths()
+            if _field_paths_match(path, observation.path)
+        )
         for request in scheduler.pending_requests():
             matched_paths = tuple(
                 path
