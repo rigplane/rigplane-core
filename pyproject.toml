@@ -137,6 +137,7 @@ markers = [
     "property: Hypothesis property-based tests under tests/property",
 ]
 testpaths = ["tests"]
+realtime_baseline = "tests/realtime_baseline.txt"
 # Repo root on sys.path so tests can import the top-level rigplane_testkit package.
 pythonpath = ["."]
 python_files = ["test_*.py"]
