@@ -26,6 +26,7 @@ __all__ = [
     "PttReplyLedger",
     "is_directed_ptt_reply",
     "iter_civ_frames",
+    "read_identity_from_frame",
     "request_key_from_frame",
 ]
 
@@ -160,6 +161,7 @@ class _AckWaiter:
     generation: int
     nak_only: bool = False
     response_key: CivRequestKey | None = None
+    refused_read: CivRequestKey | None = None
 
 
 @dataclass(slots=True)
@@ -192,6 +194,22 @@ def request_key_from_frame(frame: CivFrame) -> CivRequestKey:
             )
             else b""
         ),
+    )
+
+
+def read_identity_from_frame(frame: CivFrame) -> CivRequestKey:
+    """The whole identity of an outgoing read, every selector byte kept.
+
+    MOR-4058: :func:`request_key_from_frame` keeps only the selector bytes a
+    reply must echo to be matched, so two ``1A 05`` menu reads share one
+    response key. A refusal (bare ``FA``) has no payload to tell them apart:
+    it must name the read by everything the read carried.
+    """
+    return CivRequestKey(
+        command=frame.command,
+        sub=frame.sub,
+        receiver=frame.receiver,
+        data_prefix=frame.data,
     )
 
 
@@ -233,6 +251,9 @@ class CivRequestTracker:
         self._ack_backlog_drops = 0
         self._ack_orphans = 0
         self._ack_unclaimed_at: float | None = None
+        # MOR-4058: reads a refusal (bare FA) retired, oldest first, until
+        # ``take_refused_reads`` hands them to the acquisition scheduler.
+        self._refused_reads: list[CivRequestKey] = []
 
     @property
     def pending_count(self) -> int:
@@ -327,11 +348,14 @@ class CivRequestTracker:
         consume_backlog: bool = True,
         nak_only: bool = False,
         response_key: CivRequestKey | None = None,
+        refused_read: CivRequestKey | None = None,
     ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
 
         ``response_key`` is read for a sink (``wait=False``) only; ``resolve``
-        says when a data response retires that sink.
+        says when a data response retires that sink. ``refused_read`` (sinks
+        only, :func:`read_identity_from_frame`) is what
+        :meth:`take_refused_reads` reports when a refusal retires the sink.
 
         Returns:
             - Future when ``wait=True`` (caller awaits ACK/NAK)
@@ -372,9 +396,23 @@ class CivRequestTracker:
                 created_monotonic=created,
                 generation=self._generation,
                 response_key=response_key,
+                refused_read=refused_read,
             )
         )
         return token
+
+    def take_refused_reads(self) -> tuple[CivRequestKey, ...]:
+        """Return and forget the reads a refusal retired since the last call.
+
+        MOR-4058: a fire-and-forget read waits on a sink carrying its
+        ``response_key``. When a bare ``0xFA`` retires such a sink, the
+        radio has answered that read with a refusal: a terminal answer, not
+        a lost one. Radios answer in order, so the refusal belongs to the
+        oldest sink still open — the same attribution every ACK/NAK here
+        gets.
+        """
+        refused, self._refused_reads = tuple(self._refused_reads), []
+        return refused
 
     def register_response(self, key: CivRequestKey) -> asyncio.Future[CivFrame]:
         """Register a pending request that expects a specific data response."""
@@ -525,6 +563,11 @@ class CivRequestTracker:
                     return True
                 elif waiter.future is None:
                     # Successfully sunk an ACK for a fire-and-forget request
+                    if (
+                        event.type is CivEventType.NAK
+                        and waiter.refused_read is not None
+                    ):
+                        self._refused_reads.append(waiter.refused_read)
                     return True
 
             # Park short-lived orphan ACK/NAK frames, bounded and TTL-pruned.
@@ -584,6 +627,7 @@ class CivRequestTracker:
                 w.future.set_exception(exc)
         self._ack_waiters.clear()
         self._ack_backlog.clear()
+        self._refused_reads.clear()
 
         for pending in self._response_waiters:
             if not pending.future.done():

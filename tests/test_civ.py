@@ -225,3 +225,49 @@ async def test_tracker_ack_backlog_is_bounded_fifo() -> None:
     assert stats["ack_orphans"] == 3
     assert stats["ack_backlog_drops"] == 1
     assert stats["ack_backlog_hits"] == 2
+
+
+def _nak_frame() -> CivFrame:
+    return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFA, sub=None, data=b"")
+
+
+@pytest.mark.asyncio
+async def test_refusal_names_the_oldest_open_read_sink() -> None:
+    """MOR-4058: a FA that retires a read's sink names that read."""
+    tracker = CivRequestTracker()
+    answered = CivRequestKey(command=0x03, sub=None)
+    refused = CivRequestKey(command=0x1C, sub=0x01)
+    later = CivRequestKey(command=0x1C, sub=0x03)
+    for key in (answered, refused, later):
+        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+    tracker.resolve(
+        CivEvent(type=CivEventType.RESPONSE, frame=_response_frame(0x03, b"\x00"))
+    )
+
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert tracker.take_refused_reads() == (refused,)
+    assert tracker.take_refused_reads() == ()
+
+
+@pytest.mark.asyncio
+async def test_only_a_refused_read_sink_is_named() -> None:
+    tracker = CivRequestTracker()
+    tracker.register_ack(wait=False)  # a fire-and-forget write
+    read = CivRequestKey(command=0x03, sub=None)
+    tracker.register_ack(wait=False, response_key=read, refused_read=read)
+    tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+    tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_ack_frame()))
+
+    assert tracker.take_refused_reads() == ()
+
+
+@pytest.mark.asyncio
+async def test_generation_advance_forgets_refused_reads() -> None:
+    tracker = CivRequestTracker()
+    tuner = CivRequestKey(command=0x1C, sub=0x01)
+    tracker.register_ack(wait=False, response_key=tuner, refused_read=tuner)
+    tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+    tracker.advance_generation(RuntimeError("reconnect"))
+
+    assert tracker.take_refused_reads() == ()

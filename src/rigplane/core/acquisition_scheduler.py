@@ -38,6 +38,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
     acquisition_class_for_path,
     demoted_acquisition_class,
+    startup_critical_path,
 )
 from rigplane.core.state_store import (
     FieldSnapshot,
@@ -69,6 +70,7 @@ __all__ = [
     "adaptive_cadence_limit",
     "availability_clause_holds",
     "civ_acquisition_executor_for_provider",
+    "civ_route_for_query",
     "civ_transport_budget_hz",
     "derive_active_receiver_value",
     "derive_tx_active",
@@ -318,6 +320,30 @@ class _PendingMeterSample:
 _CIV_ACQUISITION_PROVIDERS = frozenset(("icom_civ", "xiegu_civ"))
 
 
+def civ_route_for_query(
+    query: AcquisitionQuery,
+    supports_cmd29: CivCmd29Support | None,
+) -> AcquisitionQuery | None:
+    """The query as it goes out on the wire, or ``None`` if it cannot.
+
+    A receiver-routed query keeps its cmd29 route where the profile has one
+    for the command. Without one, MAIN's read goes out plain (the radio
+    answers it for the selected receiver) and SUB's cannot be sent. One
+    decision for the acquisition executor and for naming the declared path
+    a refused read belongs to (MOR-4058).
+    """
+
+    if (
+        query.receiver is None
+        or supports_cmd29 is None
+        or supports_cmd29(query.command, query.sub)
+    ):
+        return query
+    if query.receiver != 0:
+        return None
+    return replace(query, receiver=None)
+
+
 class IcomCivAcquisitionExecutor:
     """CI-V path-to-query executor for compatible CI-V acquisition profiles."""
 
@@ -352,16 +378,12 @@ class IcomCivAcquisitionExecutor:
                 failed.append(path)
                 failure_reason = failure_reason or "no_civ_query_mapping"
                 continue
-            if (
-                query.receiver is not None
-                and self._supports_cmd29 is not None
-                and not self._supports_cmd29(query.command, query.sub)
-            ):
-                if query.receiver != 0:
-                    failed.append(path)
-                    failure_reason = failure_reason or "no_civ_receiver_route"
-                    continue
-                query = replace(query, receiver=None)
+            routed = civ_route_for_query(query, self._supports_cmd29)
+            if routed is None:
+                failed.append(path)
+                failure_reason = failure_reason or "no_civ_receiver_route"
+                continue
+            query = routed
             if query in sent_queries:
                 sent.append(path)
                 continue
@@ -425,6 +447,8 @@ _CLASS_RANK: dict[AcquisitionClass, int] = {
     klass: rank for rank, klass in enumerate(AcquisitionClass)
 }
 _MIN_RECONCILIATION_MAX_AGE = 1e-9
+#: MOR-4058: the failure reason of a read the radio refused (CI-V ``FA``).
+_REFUSED: Final[str] = "acquisition_request_refused"
 #: MOR-1898: liveness budget for a request whose ``max_age`` is the
 #: freshness epsilon (``_MIN_RECONCILIATION_MAX_AGE`` or below) and that
 #: carries no explicit ``timeout``. Such a
@@ -499,6 +523,14 @@ def civ_transport_budget_hz(radio: object) -> float | None:
     return 1.0 / max(interval, rtt)
 
 
+@dataclass(slots=True)
+class _ReadRefusal:
+    """A path whose read the radio refused, and when to ask again (MOR-4058)."""
+
+    count: int
+    retry_at: float
+
+
 class AcquisitionScheduler:
     """Minimal priority/dedupe queue for backend-neutral acquisition reads."""
 
@@ -526,6 +558,7 @@ class AcquisitionScheduler:
         "_pending_cadence_by_key",
         "_prime_cursor",
         "_profile",
+        "_refused_paths",
         "_requests_by_key",
         "_startup_defect",
         "_tx_active",
@@ -550,6 +583,9 @@ class AcquisitionScheduler:
         # timeout re-arm ``next_due`` one cadence out, so a deterministically
         # failing query can never be re-dispatched on every drain pass.
         self._consecutive_timeout_by_key: dict[_AcquisitionRequestKey, int] = {}
+        # MOR-4058: paths whose read the radio refused (NAK); any answer for
+        # the path drops it.
+        self._refused_paths: dict[FieldPath, _ReadRefusal] = {}
         self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
         # request id -> per-path timestamp of the drain pass that sent it,
         # dropped where the request is removed from ``_requests_by_key``.
@@ -936,6 +972,25 @@ class AcquisitionScheduler:
         if availability is not None:
             return availability
 
+        if normalized_priority in _AUTOMATIC_PRIORITIES:
+            # MOR-4058: automatic work (priming, cadence, reconciliation)
+            # waits out a refusal's retry delay; a read asked for by name
+            # goes out regardless.
+            askable = tuple(
+                path
+                for path in normalized_paths
+                if not self._refusal_withheld(path, now)
+            )
+            if not askable:
+                return EnsureFreshResult(
+                    status=AcquisitionStatus.UNAVAILABLE,
+                    message=(
+                        f"{', '.join(str(path) for path in normalized_paths)}: "
+                        "refused by the radio; asked again after its retry delay"
+                    ),
+                )
+            normalized_paths = askable
+
         if self._external_cat_paused:
             queued: list[AcquisitionRequest] = []
             deferred = False
@@ -1140,10 +1195,18 @@ class AcquisitionScheduler:
         self._availability = resolve_available_when(self._profile, snapshot)
 
     def _contradicted_automatic_request(self, request: AcquisitionRequest) -> bool:
-        """Whether ``request`` is automatic and every path is contradicted."""
+        """Whether ``request`` is automatic and no path may be asked now.
 
+        A path may not be asked while its declared availability is
+        contradicted (MOR-3630) or while a refusal's retry delay runs
+        (MOR-4058, :meth:`record_read_refusal`).
+        """
+
+        now = self._clock.now()
         return request.priority in _AUTOMATIC_PRIORITIES and all(
-            self._availability.get(path, True) is False for path in request.paths
+            self._availability.get(path, True) is False
+            or self._refusal_withheld(path, now)
+            for path in request.paths
         )
 
     def due_requests(
@@ -1544,6 +1607,12 @@ class AcquisitionScheduler:
         whose resolved policy carries ``tx_only``, and paths
         ``availability`` maps to ``False``.
 
+        MOR-4058: a path the radio refused (:meth:`record_read_refusal`) is
+        answered — unavailable on this radio as it is set up now — and leaves
+        the set, unless it is safety-critical (``startup_critical_path``);
+        the gate counts a critical path's refusals as failed reads instead
+        (:meth:`consecutive_refusals`).
+
         ``availability`` carries what :func:`resolve_available_when` made of
         each conditional field's declared clauses. A path it omits is
         unconditional and keeps its membership. MOR-2803: ``None`` (a clause
@@ -1569,6 +1638,7 @@ class AcquisitionScheduler:
                     and profile.capability_for(path).startup_required
                     and not profile.policy_for(path).tx_only
                     and availability.get(path, True) is not False
+                    and (path not in self._refused_paths or startup_critical_path(path))
                 ),
                 key=str,
             )
@@ -1648,7 +1718,10 @@ class AcquisitionScheduler:
         # answer must not postpone unread siblings. Full-group replies settle
         # individually, so include successful paths from earlier replies.
         poll_paths = self._poll_cadence_groups().get(key, ())
-        if not completed_paths.issuperset(poll_paths):
+        # MOR-4058: a refused sibling is answered for the group's clock.
+        if not completed_paths.issuperset(
+            path for path in poll_paths if path not in self._refused_paths
+        ):
             return
 
         previous = self._cadence_state_for(
@@ -1676,6 +1749,111 @@ class AcquisitionScheduler:
             current_cadence_seconds=current_cadence,
             next_due_monotonic=change_set.timestamp_monotonic + current_cadence,
         )
+
+    def declared_paths(self) -> frozenset[FieldPath]:
+        """Every path this profile acquires: pollable ones and policy fields."""
+
+        return frozenset(self._profile.pollable_paths()) | frozenset(
+            self._profile.field_policies
+        )
+
+    def refused_paths(self) -> frozenset[FieldPath]:
+        """Return the paths whose last read the radio refused (MOR-4058)."""
+
+        return frozenset(self._refused_paths)
+
+    def end_refusals(self, paths: Iterable[FieldPath]) -> None:
+        """The radio answered *paths*: their refusal and its delay are over.
+
+        Called for every accepted observation, whether or not a request was
+        waiting for it (a direct getter's answer counts too).
+        """
+
+        answered = sorted(
+            (path for path in paths if path in self._refused_paths), key=str
+        )
+        for path in answered:
+            del self._refused_paths[path]
+        if answered:
+            logger.info(
+                "acquisition: %s answered again after a refusal",
+                ", ".join(str(path) for path in answered),
+            )
+
+    def consecutive_refusals(self, path: FieldPath) -> int:
+        """Return how many reads of *path* the radio refused in a row."""
+
+        refusal = self._refused_paths.get(path)
+        return 0 if refusal is None else refusal.count
+
+    def record_read_refusal(
+        self,
+        paths: Iterable[FieldPath],
+        *,
+        now: float,
+    ) -> None:
+        """The radio answered a read of *paths* with a refusal (MOR-4058).
+
+        A refusal (CI-V ``FA``) is a terminal answer: whether a radio refuses
+        a read can depend on its setup (no tuner attached), so it is recorded
+        at runtime, not declared. The paths stop holding the startup gate
+        (:meth:`unobserved_startup_paths`), a request in flight for them
+        completes as ``acquisition_request_refused`` — never as an
+        ``acquisition_request_timeout`` — and the cadence poll asks for them
+        again only once per :meth:`_refusal_retry_seconds` (their policy's
+        idle ceiling), whatever the cadence of the siblings in their poll
+        group. An answer ends the refusal (:meth:`end_refusals`).
+        """
+
+        refused = frozenset(paths)
+        if not refused:
+            return
+        newly = sorted(
+            (path for path in refused if path not in self._refused_paths), key=str
+        )
+        for path in refused:
+            self._refused_paths[path] = _ReadRefusal(
+                count=self.consecutive_refusals(path) + 1,
+                retry_at=now + self._refusal_retry_seconds(path),
+            )
+        if newly:
+            logger.info(
+                "acquisition: the radio refused the read of %s; "
+                "treating it as answered (unavailable) until it answers",
+                ", ".join(str(path) for path in newly),
+            )
+        for request in self.pending_requests():
+            matched = tuple(path for path in request.paths if path in refused)
+            if not matched:
+                continue
+            subset = replace(request, paths=matched)
+            if self.may_credit(subset, observation_timestamp=now):
+                self.record_acquisition_failure(
+                    subset,
+                    reason=_REFUSED,
+                    failed_paths=matched,
+                    now=now,
+                    link_healthy=False,
+                )
+
+    def _refusal_retry_seconds(self, path: FieldPath) -> float:
+        """How long a refused path waits before its next read (MOR-4058).
+
+        The policy's idle ceiling (:func:`adaptive_cadence_limit`): the
+        slowest cadence the policy allows a field that never changes, which
+        is what a refused field looks like. Its own cadence when it declares
+        no ceiling.
+        """
+
+        policy = self._profile.policy_for(path)
+        ceiling = adaptive_cadence_limit(policy)
+        if ceiling is not None:
+            return ceiling
+        return policy.cadence_seconds or 0.0
+
+    def _refusal_withheld(self, path: FieldPath, now: float) -> bool:
+        refusal = self._refused_paths.get(path)
+        return refusal is not None and refusal.retry_at > now
 
     def record_acquisition_failure(
         self,
@@ -2000,9 +2178,14 @@ class AcquisitionScheduler:
                 # first computation whose resolution holds again. A ``None``
                 # resolution or a path absent from the map never skips.
                 continue
+            # MOR-4058: a refused path joins its group's poll once per retry
+            # interval, not on every cadence of the siblings that answer.
+            asked = tuple(p for p in paths if not self._refusal_withheld(p, now))
+            if not asked:
+                continue
             state = self._cadence_state_for(key, policy, now=now)
             if state.next_due_monotonic <= now:
-                due.extend((key, path) for path in paths)
+                due.extend((key, path) for path in asked)
 
         grouped: dict[_AcquisitionRequestKey, list[FieldPath]] = {}
         for key, path in due:

@@ -515,6 +515,9 @@ class _RecordingScheduler:
     def consecutive_request_timeouts(self, _path: FieldPath) -> int:
         return 0
 
+    def consecutive_refusals(self, _path: FieldPath) -> int:
+        return 0
+
 
 class _FakeSocket:
     def getsockname(self) -> tuple[str, int]:

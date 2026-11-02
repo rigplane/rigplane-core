@@ -9,7 +9,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import replace
 
-from rigplane.commands._frame import decode_wire_tuple, parse_civ_frame
+from rigplane.commands._frame import (
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    decode_wire_tuple,
+    parse_civ_frame,
+)
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
     SCOPE_SELECTOR_MAIN,
@@ -18,8 +23,11 @@ from rigplane.commands.scope import (
 from rigplane.core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionQueryResolver,
+    CivCmd29Support,
+    civ_route_for_query,
     resolve_available_when,
 )
+from rigplane.core.civ import CivRequestKey, read_identity_from_frame
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateSnapshot
 from rigplane.profiles import RadioProfile
@@ -159,6 +167,26 @@ def wire_parts_for_query(
     ):
         return query.command, query.sub, bytes([scope_receiver]) + query.data[1:]
     return query.command, query.sub, query.data
+
+
+def read_identity_for_query(
+    query: AcquisitionQuery,
+    scope_receiver: int,
+    supports_cmd29: CivCmd29Support,
+) -> CivRequestKey | None:
+    """The read identity a query goes out under (MOR-4058).
+
+    Routed exactly as the acquisition executor routes it
+    (:func:`civ_route_for_query`), so a refused read names only the declared
+    path whose own read it was; ``None`` when the query cannot be sent.
+    """
+
+    routed = civ_route_for_query(query, supports_cmd29)
+    if routed is None:
+        return None
+    command, sub, data = wire_parts_for_query(routed, scope_receiver)
+    frame = build_civ_frame(0x00, CONTROLLER_ADDR, command, sub=sub, data=data)
+    return read_identity_from_frame(parse_civ_frame(frame))
 
 
 def acquisition_query_resolver_for_profile(
