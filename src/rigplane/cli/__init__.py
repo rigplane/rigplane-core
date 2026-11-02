@@ -135,7 +135,10 @@ from rigplane.runtime.managed_tx_authority import (  # noqa: E402
     ShutdownResult,
 )
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator  # noqa: E402
-from rigplane.runtime.managed_tx_state import ActuationOperation  # noqa: E402
+from rigplane.runtime.managed_tx_state import (  # noqa: E402
+    ActuationOperation,
+    ManagedTxIntentKind,
+)
 from rigplane.runtime.managed_tx_composition import (  # noqa: E402
     ManagedTxComposition,
     ManagedTxCompositionPort,
@@ -2457,7 +2460,19 @@ def _unconfirmed_unkey(
 async def _shutdown_managed_tx_composition(
     composition: ManagedTxCompositionPort,
 ) -> None:
-    session = composition.authority.snapshot_nowait().state.intent.owner_token
+    # MOR-4048: the state before the shutdown starts decides whether an
+    # unconfirmed unkey can mean a keyed rig. A clean authority owes no
+    # release, so the shutdown's own belt-and-braces force_receive going
+    # unanswered (a second signal cancelling the Commander worker) cannot
+    # have left the rig keyed.
+    state_at_start = composition.authority.snapshot_nowait().state
+    session = state_at_start.intent.owner_token
+    owed_at_start = (
+        state_at_start.intent.kind is not ManagedTxIntentKind.RX
+        or state_at_start.release_required
+        or state_at_start.pending_effect is not None
+        or state_at_start.last_error is not None
+    )
     termination = asyncio.Event()
     shutdown = asyncio.create_task(composition.shutdown(termination))
     try:
@@ -2471,20 +2486,36 @@ async def _shutdown_managed_tx_composition(
                 asyncio.shield(shutdown), timeout=_MANAGED_TX_SHUTDOWN_SETTLE_S
             )
         except TimeoutError:
-            logger.error(
-                "managed TX shutdown: unkey not confirmed, the rig may still be"
-                " keyed: %s; still running %.1fs after it was terminated",
-                _unconfirmed_unkey(composition, session),
-                _MANAGED_TX_SHUTDOWN_SETTLE_S,
-            )
+            if owed_at_start:
+                logger.error(
+                    "managed TX shutdown: unkey not confirmed, the rig may still"
+                    " be keyed: %s; still running %.1fs after it was terminated",
+                    _unconfirmed_unkey(composition, session),
+                    _MANAGED_TX_SHUTDOWN_SETTLE_S,
+                )
+            else:
+                logger.warning(
+                    "managed TX shutdown: the final force_receive was not"
+                    " confirmed, nothing was keyed or owed when shutdown began:"
+                    " %s; still running %.1fs after it was terminated",
+                    _unconfirmed_unkey(composition, session),
+                    _MANAGED_TX_SHUTDOWN_SETTLE_S,
+                )
             return
     if result is ShutdownResult.TERMINATED:
-        logger.error(
-            "managed TX shutdown: unkey not confirmed within %.1fs, the rig may"
-            " still be keyed: %s",
-            _MANAGED_TX_SHUTDOWN_DRAIN_S,
-            _unconfirmed_unkey(composition, session),
-        )
+        if owed_at_start:
+            logger.error(
+                "managed TX shutdown: unkey not confirmed within %.1fs, the rig"
+                " may still be keyed: %s",
+                _MANAGED_TX_SHUTDOWN_DRAIN_S,
+                _unconfirmed_unkey(composition, session),
+            )
+        else:
+            logger.warning(
+                "managed TX shutdown: the final force_receive was not confirmed,"
+                " nothing was keyed or owed when shutdown began: %s",
+                _unconfirmed_unkey(composition, session),
+            )
 
 
 class _ManagedTxRadioSession:

@@ -3613,13 +3613,17 @@ class TestFirstSignalShutdownBound:
         return [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
 
     @staticmethod
-    def _composition(after: ManagedTxState, shutdown: Any) -> MagicMock:
-        """Keyed by session web-1 until ``shutdown`` starts, then *after*."""
+    def _composition(
+        after: ManagedTxState, shutdown: Any, before: ManagedTxState | None = None
+    ) -> MagicMock:
+        """Keyed by session web-1 (or ``before``) until ``shutdown`` starts,
+        then *after*."""
         keyed = ManagedTxState(
             intent=ManagedTxIntent.ptt("web-1"),
             release_plan=ReleasePlan.PTT_RELEASE,
             tx_started_at_monotonic=1.0,
         )
+        start = keyed if before is None else before
         started: list[bool] = []
 
         async def run(termination: Any) -> Any:
@@ -3629,7 +3633,7 @@ class TestFirstSignalShutdownBound:
         composition = MagicMock()
         composition.shutdown = AsyncMock(side_effect=run)
         composition.authority.snapshot_nowait.side_effect = lambda: ManagedTxProjection(
-            after if started else keyed, None, None, 4
+            after if started else start, None, None, 4
         )
         return composition
 
@@ -3943,6 +3947,182 @@ class TestFirstSignalShutdownBound:
             "the rig may still be keyed: session web-1, provider generation 4,"
             " attempt 9 force_receive uncertain (attempt deadline expired)"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "before",
+        [
+            ManagedTxState(
+                intent=ManagedTxIntent.ptt("web-1"),
+                release_plan=ReleasePlan.PTT_RELEASE,
+                tx_started_at_monotonic=1.0,
+            ),
+            ManagedTxState(release_plan=ReleasePlan.FORCE_RELEASE),
+            ManagedTxState(
+                pending_effect=ManagedTxEffect(
+                    ActuationOperation.FORCE_RECEIVE, EffectToken(4, 2, "7")
+                )
+            ),
+        ],
+        ids=["keyed-intent", "release-owed", "pending-effect"],
+    )
+    async def test_a_terminated_managed_tx_shutdown_that_owed_at_start_is_still_an_error(
+        self, caplog: pytest.LogCaptureFixture, before: ManagedTxState
+    ) -> None:
+        """MOR-4048: anything owed when the shutdown began keeps the
+        unconfirmed-unkey ERROR."""
+        from rigplane import cli
+
+        async def terminated(_termination: Any) -> ShutdownResult:
+            return ShutdownResult.TERMINATED
+
+        composition = self._composition(before, terminated, before=before)
+        await cli._shutdown_managed_tx_composition(composition)
+
+        (error,) = self._errors(caplog)
+        assert "the rig may still be keyed" in error
+
+    @pytest.mark.asyncio
+    async def test_a_terminated_managed_tx_shutdown_that_began_clean_is_a_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """MOR-4048: a clean authority owes no release, so a TERMINATED
+        shutdown whose own belt-and-braces force_receive went unanswered
+        must not claim the rig may still be keyed."""
+        from rigplane import cli
+
+        async def terminated(_termination: Any) -> ShutdownResult:
+            return ShutdownResult.TERMINATED
+
+        unanswered = ManagedTxEffect(
+            ActuationOperation.FORCE_RECEIVE, EffectToken(4, 2, "8")
+        )
+        composition = self._composition(
+            ManagedTxState(pending_effect=unanswered),
+            terminated,
+            before=ManagedTxState(
+                last_actuation=ActuationDiagnostic(
+                    ActuationOperation.FORCE_RECEIVE, ActuationResult.ACCEPTED, "7"
+                )
+            ),
+        )
+        await cli._shutdown_managed_tx_composition(composition)
+
+        assert self._errors(caplog) == []
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelname == "WARNING"
+            and "nothing was keyed or owed" in record.getMessage()
+        ]
+        assert warnings == [
+            "managed TX shutdown: the final force_receive was not confirmed,"
+            " nothing was keyed or owed when shutdown began: session none,"
+            " provider generation 4, attempt 8 force_receive unanswered"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_never_finishing_clean_shutdown_warns_without_the_keyed_claim(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """MOR-4048: the settle-timeout path too must not claim a keyed rig
+        when nothing was owed when the shutdown began."""
+        import asyncio
+
+        from rigplane import cli
+
+        monkeypatch.setattr(cli, "_MANAGED_TX_SHUTDOWN_DRAIN_S", 0.05)
+        monkeypatch.setattr(cli, "_MANAGED_TX_SHUTDOWN_SETTLE_S", 0.05)
+        release = asyncio.Event()
+
+        async def never_finishes(termination: asyncio.Event) -> None:
+            await termination.wait()
+            await release.wait()  # still running after termination
+
+        composition = self._composition(
+            ManagedTxState(),
+            never_finishes,
+            before=ManagedTxState(
+                last_actuation=ActuationDiagnostic(
+                    ActuationOperation.FORCE_RECEIVE, ActuationResult.ACCEPTED, "7"
+                )
+            ),
+        )
+        await asyncio.wait_for(cli._shutdown_managed_tx_composition(composition), 1.0)
+        release.set()
+        await asyncio.sleep(0.01)
+
+        assert self._errors(caplog) == []
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelname == "WARNING"
+            and "nothing was keyed or owed" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].startswith(
+            "managed TX shutdown: the final force_receive was not confirmed,"
+            " nothing was keyed or owed when shutdown began:"
+        )
+        assert "; still running" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_a_clean_real_composition_shutdown_over_a_dead_commander_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4048, end to end over the real composition and authority: the
+    second signal cancels the Commander worker, so its enqueue raises
+    ConnectionError for the shutdown's final force_receive; the authority
+    was clean when the shutdown began, so the CLI must warn, not error."""
+    import asyncio
+
+    from rigplane import cli
+    from rigplane.core.state_store import StateStore
+    from rigplane.runtime.managed_tx_effect_lane import ManagedTxActuator
+
+    class DeadCommanderActuator:
+        async def actuate(self, token, operation, *, is_current):
+            if operation is ActuationOperation.FORCE_RECEIVE:
+                raise ConnectionError("Commander is not started")
+            return ActuationResult.ACCEPTED
+
+    actuator = DeadCommanderActuator()
+    assert isinstance(actuator, ManagedTxActuator)
+    composition = ManagedTxComposition(
+        actuator, config_path=tmp_path / "managed-tx.json"
+    )
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(actuator)
+    await composition.bind_state_store(store)
+    started = composition.authority.snapshot_nowait()
+    assert started.provider_generation is not None
+    assert started.state.intent.owner_token is None  # clean RX, nobody keyed
+    assert not started.state.release_required
+
+    monkeypatch.setattr(cli, "_MANAGED_TX_SHUTDOWN_DRAIN_S", 0.5)
+    await asyncio.wait_for(cli._shutdown_managed_tx_composition(composition), 10.0)
+
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelname == "ERROR"
+    ] == []
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelname == "WARNING"
+        and "nothing was keyed or owed" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        "managed TX shutdown: the final force_receive was not confirmed,"
+        " nothing was keyed or owed when shutdown began:"
+    )
+    assert "force_receive uncertain (Commander is not started)" in warnings[0]
 
 
 class TestRemainingPortPreflight:
