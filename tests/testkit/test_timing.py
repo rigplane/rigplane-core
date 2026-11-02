@@ -25,6 +25,9 @@ def test_it_is_the_testkit_manual_clock() -> None:
     assert clock.advance(2.5) == 7.5
 
 
+@pytest.mark.realtime(
+    reason="compares the virtual clock with the real one to prove it is not"
+)
 @pytest.mark.timeout(30)
 async def test_time_moves_only_when_the_test_elapses_it(
     virtual_clock: VirtualClock,
@@ -86,6 +89,9 @@ async def test_wait_for_times_out_at_the_virtual_deadline(
         await waiter
 
 
+@pytest.mark.realtime(
+    reason="reads the real clock to prove other threads keep real time"
+)
 @pytest.mark.timeout(30)
 async def test_the_global_asyncio_and_time_functions_stay_untouched(
     virtual_clock: VirtualClock,
@@ -115,6 +121,7 @@ async def test_the_global_asyncio_and_time_functions_stay_untouched(
     assert _globals() == real
 
 
+@pytest.mark.realtime(reason="reads the real clock to prove the loop got its own back")
 async def test_the_loop_gets_its_own_clock_back_after_the_fixture() -> None:
     loop = asyncio.get_running_loop()
     clock = VirtualClock(start=loop.time())
