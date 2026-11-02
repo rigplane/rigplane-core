@@ -7,6 +7,7 @@ beforeEach(() => {
   const gains: any[] = [];
   const panners: any[] = [];
   const splitters: any[] = [];
+  const srcs: any[] = [];
   ctx = {
     state: 'running', sampleRate: SAMPLE_RATE, currentTime: 0, destination: {},
     resume: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined),
@@ -31,8 +32,13 @@ beforeEach(() => {
         getChannelData: (channel: number) => planes[channel] };
     }),
     _lastSrc: null as any,
+    _srcs: srcs,
     createBufferSource: vi.fn(function (this: any) {
-      const src = { buffer: null, connect: vi.fn(), start: vi.fn() };
+      const src = {
+        buffer: null, connect: vi.fn(), start: vi.fn(), stop: vi.fn(),
+        addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      };
+      srcs.push(src);
       ctx._lastSrc = src;
       return src;
     }),
@@ -52,6 +58,12 @@ function pcm16(n: number): ArrayBuffer {
   v.setUint8(0, MSG_TYPE_RX); v.setUint8(1, CODEC_PCM16);
   v.setUint16(4, SAMPLE_RATE / 100, true); v.setUint8(6, 1); v.setUint8(7, FRAME_DURATION_MS);
   return buf;
+}
+
+// Stub document.hidden (own property; delete restores the prototype getter).
+// get()-based so a test can flip visibility mid-run, as MOR-3965 does.
+function setHidden(hidden: boolean): void {
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
 }
 
 describe('local RX playback diagnostics', () => {
@@ -555,6 +567,100 @@ describe('RxPlayer link-quality stats (MOR-585)', () => {
     p.feed(pcm16(480));           // 1 underrun
     p.stop();
     expect(p.stats()).toMatchObject({ underruns: 0, bufferDepthMs: 0, droppedFrames: 0 });
+  });
+});
+
+describe('RxPlayer hidden-tab burst absorption (MOR-3965)', () => {
+  afterEach(() => { delete (document as any).hidden; });
+
+  it('absorbs a 2 s burst while hidden, then keeps absorbing later bursts', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    // A throttled background tab delivers WS frames in one burst at a
+    // single currentTime — 100 x 20 ms frames = 2 s of audio at once.
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(100);
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().underruns).toBe(0);
+    const starts = ctx._srcs.map((s: any) => s.start.mock.calls[0][0]);
+    expect(starts[0]).toBeCloseTo(0.4, 5);   // primed at the 400 ms background floor
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i] - starts[i - 1]).toBeCloseTo(0.02, 6);  // contiguous, no re-prime
+    }
+    // The clock moved on; the next burst continues the same timeline.
+    ctx.currentTime = 2.0;
+    for (let i = 0; i < 20; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(120);
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().underruns).toBe(0);
+    expect(ctx._srcs[100].start.mock.calls[0][0]).toBeCloseTo(2.4, 5);
+    p.stop();
+  });
+
+  it('drops the same burst at the foreground ceiling while visible (foreground unchanged)', () => {
+    setHidden(false);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    // Foreground bounds: starts 0.05..0.29 (13 frames fit under 300 ms), 87 dropped.
+    expect(p.stats().playback.scheduledFrames).toBe(13);
+    expect(p.stats().droppedFrames).toBe(87);
+    p.stop();
+  });
+
+  it('trims the hidden backlog to the foreground ceiling when the page becomes visible', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));  // sources at 0.4 .. 2.38 s
+    setHidden(false);
+    ctx.currentTime = 1.003;   // odd clock value — no FP tie with the 20 ms grid
+    document.dispatchEvent(new Event('visibilitychange'));
+    const starts = ctx._srcs.map((s: any) => s.start.mock.calls[0][0]);
+    const now = 1.003, limit = now + 0.3;
+    for (let i = 0; i < starts.length; i++) {
+      if (starts[i] > limit) expect(ctx._srcs[i].stop).toHaveBeenCalledTimes(1);
+      if (starts[i] <= now) expect(ctx._srcs[i].stop).not.toHaveBeenCalled();
+    }
+    // 55 whole not-yet-started buffers beyond the limit were dropped in one trim.
+    expect(p.stats().droppedFrames).toBe(55);
+    // Schedule head is back within the foreground bounds (297 ms ≤ 300 ms)…
+    expect(p.stats().bufferDepthMs).toBe(297);
+    // …and the next frame continues right after the kept tail, with no gap
+    // and no spurious underrun.
+    p.feed(pcm16(960));
+    expect(ctx._srcs[100].start.mock.calls[0][0]).toBeCloseTo(1.3, 5);
+    expect(ctx._srcs[100].stop).not.toHaveBeenCalled();
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
+  it('respects configured bounds wider than the background constants while hidden', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    p.setJitterBounds(1000, 8000);
+    ctx.currentTime = 0;
+    p.feed(pcm16(960));
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(1.0, 5);  // configured floor wins
+    for (let i = 0; i < 249; i++) p.feed(pcm16(960));   // ~5 s backlog: beyond 4 s, within 8 s
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().playback.scheduledFrames).toBe(250);
+    p.stop();
+  });
+
+  it('detaches the visibilitychange listener on stop()', () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    try {
+      const p = new RxPlayer(); p.start();
+      const added = add.mock.calls.filter(([event]) => event === 'visibilitychange');
+      expect(added.length).toBe(1);
+      p.stop();
+      expect(remove).toHaveBeenCalledWith('visibilitychange', added[0][1]);
+    } finally {
+      add.mockRestore(); remove.mockRestore();
+    }
   });
 });
 
