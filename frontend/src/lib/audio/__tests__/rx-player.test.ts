@@ -636,6 +636,20 @@ describe('RxPlayer hidden-tab burst absorption (MOR-3965)', () => {
     p.stop();
   });
 
+  it('flush() stops pending sources without counting drops (MOR-3965 reconnect)', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    for (let i = 0; i < 10; i++) p.feed(pcm16(960));
+    p.flush();
+    for (const s of ctx._srcs) expect(s.stop).toHaveBeenCalledTimes(1);
+    expect(p.stats().droppedFrames).toBe(0);
+    ctx.currentTime = 5; p.feed(pcm16(960));
+    expect(ctx._srcs.at(-1).start.mock.calls[0][0]).toBeCloseTo(5.4, 5);
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
   it('respects configured bounds wider than the background constants while hidden', () => {
     setHidden(true);
     const p = new RxPlayer(); p.start();

@@ -420,8 +420,15 @@ export class RxPlayer {
     this.opusTs = 0;
   }
 
-  /** Flush pipeline (e.g. on reconnect) */
+  /** Flush pipeline (e.g. on reconnect): stop every still-tracked pending
+   *  source so the previous session cannot keep playing under the fresh
+   *  schedule, drop the backlog WITHOUT counting it as dropped frames (the
+   *  session is gone — nothing audible was skipped), then re-prime. */
   flush(): void {
+    for (const entry of this._scheduledSrcs) {
+      try { entry.src.stop(); } catch { /* already ended */ }
+    }
+    this._scheduledSrcs = [];
     this.nextPlayTime = 0;
   }
 
