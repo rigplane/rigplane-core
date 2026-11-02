@@ -124,6 +124,7 @@ from rigplane.core.radio_protocol import (  # noqa: E402
     PrivilegedTxApi,
     Radio,
     RadioIdentityStatus,
+    radio_audio_ready,
     serial_identity_hold,
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
@@ -4751,19 +4752,6 @@ def _print_serial_baud_notice(radio: Radio) -> None:
         print(notice)
 
 
-def _serial_identity_holds(radio: Radio) -> bool:
-    """Whether the serial identity gate holds the connect (MOR-3081).
-
-    MOR-3078: delegates to the one shared predicate
-    (``core.radio_protocol: serial_identity_hold``) — checking/
-    no_response on a radio that is NOT connected. The connect-time read
-    is in flight or unanswered, so a radio-RX start — the audio
-    bridge's first demand — would be refused.
-    """
-
-    return serial_identity_hold(radio) is not None
-
-
 async def _cmd_web(
     radio: Radio,
     args: argparse.Namespace,
@@ -4921,18 +4909,21 @@ async def _cmd_web(
     # previous fail-hard behaviour.
     bridge_device = getattr(args, "web_bridge", None)
     bridge_info: str | None = None
-    if bridge_device == "auto" and _serial_identity_holds(radio):
-        # MOR-3081: the identity gate holds the open link, so the bridge's
-        # radio-RX start would be refused with an ERROR traceback. Skip
-        # the auto-start now; MOR-3078 arms ONE deferred attempt on the
-        # web application's lifetime that starts the bridge once the
-        # connect latches and the hold clears. An explicit
-        # --bridge=<DEVICE> keeps its fail-hard behaviour below.
+    if bridge_device == "auto" and not radio_audio_ready(radio):
+        # MOR-2922: the radio cannot serve the bridge's first demand yet
+        # — its port never opened (the MOR-2876 no-port start) or the
+        # identity gate holds the open link (MOR-3081) — so a radio-RX
+        # start now would be refused. Skip the auto-start; MOR-3078 arms
+        # ONE deferred attempt on the web application's lifetime that
+        # starts the bridge once the radio is connected and the hold
+        # clears. An explicit --bridge=<DEVICE> keeps its fail-hard
+        # behaviour below.
         logger.warning(
-            "audio bridge auto-start deferred: the radio has not answered "
-            "its identity read — the bridge starts once the radio answers"
+            "audio bridge auto-start deferred: the radio is not connected "
+            "or has not answered its identity read — the bridge starts "
+            "once the radio is ready"
         )
-        bridge_info = "deferred: radio not answering"
+        bridge_info = "deferred: radio not ready"
         server.defer_audio_bridge_start(
             device_name=None,
             tx_device_name=getattr(args, "web_bridge_tx_device", None),

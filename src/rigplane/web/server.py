@@ -176,7 +176,7 @@ from ..radio_protocol import (
     ProviderOwnedStateCapable,
     RadioIdentity,
     StateStoreCapable,
-    serial_identity_hold,
+    radio_audio_ready,
 )
 
 if TYPE_CHECKING:
@@ -192,8 +192,9 @@ __all__ = ["WebConfig", "WebServer", "run_web_server"]
 logger = logging.getLogger(__name__)
 
 # MOR-3078: how often the deferred audio-bridge auto-start re-checks the
-# identity hold. A coarse poll — not a hot loop; the wait ends at the
-# radio's answer or the server's stop, whichever comes first.
+# radio's readiness (connected, no identity hold — MOR-2922). A coarse
+# poll — not a hot loop; the wait ends at the radio's answer or the
+# server's stop, whichever comes first.
 _BRIDGE_DEFER_POLL_S: float = 0.25
 
 # MOR-2880: minimum spacing between refusal WARNINGs, so a page
@@ -3923,9 +3924,11 @@ class WebServer:
         deferred_bridge = self._deferred_bridge_start
         if deferred_bridge is not None:
             # MOR-3078: the CLI armed a deferred auto-start while the
-            # identity gate held the connect; the running application —
-            # not the CLI — now owns the one attempt. If startup never
-            # reaches this point, nothing was ever spawned.
+            # radio could not serve audio yet — not connected (MOR-2922)
+            # or the identity gate held the connect (MOR-3081); the
+            # running application — not the CLI — now owns the one
+            # attempt. If startup never reaches this point, nothing was
+            # ever spawned.
             self._deferred_bridge_start = None
             self._spawn(self._run_deferred_audio_bridge_start(**deferred_bridge))
 
@@ -4035,7 +4038,8 @@ class WebServer:
     ) -> None:
         """Arm ONE deferred auto-start of the audio bridge (MOR-3078).
 
-        The CLI's default ``--bridge=auto`` defers while the serial
+        The CLI's default ``--bridge=auto`` defers while the radio cannot
+        serve audio yet — the serial port never opened (MOR-2922) or the
         identity gate holds the connect (MOR-3081); this arms the
         follow-up. The attempt is spawned by :meth:`start` — so a server
         that never starts never spawns it — as a ``_spawn`` task that
@@ -4067,14 +4071,15 @@ class WebServer:
         max_retries: int,
         retry_base_delay: float,
     ) -> None:
-        """Wait out the identity hold, then start the bridge exactly once."""
+        """Wait until the radio can serve audio, then start the bridge.
+
+        The wait condition is the same shared predicate the CLI's arming
+        used (``core.radio_protocol: radio_audio_ready``, MOR-2922): a
+        disconnected radio and one whose identity read is pending both
+        refuse the bridge's radio-RX start.
+        """
         while not self._stopping:
-            radio = self._radio
-            if (
-                radio is not None
-                and radio.connected
-                and serial_identity_hold(radio) is None
-            ):
+            if radio_audio_ready(self._radio):
                 break
             await asyncio.sleep(_BRIDGE_DEFER_POLL_S)
         if self._stopping:
