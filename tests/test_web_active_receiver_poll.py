@@ -12,7 +12,7 @@ from rigplane.core.state_store import FreshnessState
 from rigplane.runtime._state_queries import build_state_queries
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from scripts.soak import soak_driver
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 
 async def _get(session: aiohttp.ClientSession, base: str, path: str) -> dict[str, Any]:

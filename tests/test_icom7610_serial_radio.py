@@ -49,7 +49,7 @@ from rigplane.types import AudioCodec
 from rigplane.types import bcd_encode
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import _await_initial_state_acquisition
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 try:  # MOR-3071: absent on the merge-base — the identity-gate tests below
     # fail first there (RED); the try keeps the module collectable so each

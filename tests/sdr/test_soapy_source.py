@@ -20,7 +20,7 @@ import pytest
 from rigplane.sdr import IqBlock, IqSource
 from rigplane.sdr.soapy_source import SoapyIqSource
 from rigplane.sdr.types import SdrConfig
-from _timing import wait_until
+from rigplane.testing.timing import wait_until
 
 _FIXED_CLOCK_S = 4242.0
 

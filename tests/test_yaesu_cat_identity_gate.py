@@ -31,7 +31,7 @@ from rigplane.core.radio_protocol import (
 )
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.rig_loader import load_rig
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 # Bench-measured FTX-1 IF; frame (see tests/test_ftx1_radio.py,

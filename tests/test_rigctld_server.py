@@ -23,7 +23,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, patch
 import pytest
 
 from serial_stub import SerialMockRadio
-from _timing import VirtualClock, await_until
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.commands.commander import Priority
 from rigplane.core.acquisition_scheduler import (
     AcquisitionExecutionResult,

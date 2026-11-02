@@ -40,7 +40,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from _timing import await_until
+from rigplane.testing.timing import await_until
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR

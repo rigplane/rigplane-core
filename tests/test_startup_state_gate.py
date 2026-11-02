@@ -71,7 +71,7 @@ from rigplane.web.web_startup import (
     _await_initial_state_acquisition,
     _observed_paths,
 )
-from _timing import await_until
+from rigplane.testing.timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 
 FREQ = FieldPath.active("main", "freq_mode", "freq_hz")

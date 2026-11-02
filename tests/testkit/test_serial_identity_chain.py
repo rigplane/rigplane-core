@@ -31,7 +31,7 @@ from rigplane.exceptions import ConnectionError as RigplaneConnectionError
 from rigplane.profiles import resolve_radio_profile
 
 from rigplane_testkit.serial import CivSerialFake
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 _PROFILE = resolve_radio_profile(model="IC-7300")

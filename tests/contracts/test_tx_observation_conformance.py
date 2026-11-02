@@ -14,7 +14,7 @@ from typing import TypeVar
 from unittest.mock import patch
 
 import pytest
-from _timing import VirtualClock
+from rigplane.testing.timing import VirtualClock
 from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
 from tx_observation_fakes import (
     CIV_NON_ANSWERS,

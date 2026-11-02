@@ -65,7 +65,7 @@ from rigplane_testkit.yaesu import FakeCatRadio
 
 from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 from test_yaesu_audio import FakeAudioDriver
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 _PCM_FRAME = b"\x01\x02\x03\x04"
 

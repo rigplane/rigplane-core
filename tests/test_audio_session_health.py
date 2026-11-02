@@ -35,7 +35,7 @@ from rigplane.audio.session import (
 )
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.web.server import WebConfig, WebServer
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 
