@@ -495,54 +495,74 @@ def _ensure_portaudio_deps() -> tuple[Any, Any]:
     return sd, np
 
 
-def _downmix_stereo_to_mono_s16le(pcm: bytes, *, channel: str = "mix") -> bytes:
-    """Collapse L+R interleaved s16le → mono s16le via the selected ``channel``.
+def _downmix_stereo_to_mono_s16le(
+    pcm: bytes,
+    *,
+    channel: str = "mix",
+    open_channels: int = 2,
+    deliver_channels: int = 1,
+) -> bytes:
+    """Collapse the first two channels of N-channel interleaved s16le PCM.
 
-    Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` but is dependency-
-    free (stdlib ``array``) so it can run on the PortAudio audio thread without
-    importing numpy. Used by :class:`_PortAudioRxStream` when a stereo-native
-    device is opened at 2 channels but the consumer wants mono (MOR-504):
-    passing interleaved stereo straight through would halve the effective
-    sample-rate and compress the spectrum 2x — the same bug the bridge downmix
-    guards (issue #1381). Trailing bytes that do not form a whole L/R sample
-    pair are dropped (an incomplete frame cannot satisfy the fixed contract).
+    Generalizes the MOR-504/508 stereo-to-mono downmix to a capture device
+    opened at MORE channels than the consumer receives (MOR-4029: PipeWire's
+    ``pulse`` = 32 ch, BlackHole = 16 ch, any 4/6/8-channel interface). The
+    device's FIRST TWO channels are L/R — the extra virtual-cable/interface
+    channels carry no radio audio, so averaging all N open channels would only
+    attenuate the signal; channels 2..N-1 are dropped. ``open_channels`` is the
+    OS-open count (N >= 2); ``deliver_channels`` is the delivered count:
 
-    ``channel`` picks how each L/R pair collapses to one mono sample (MOR-508):
+    - ``1`` — mono via ``channel`` (MOR-508): ``"mix"`` (default) = per-frame
+      average ``(L + R) // 2`` of channels 0 and 1 (correct for a dual-mono
+      source, the historical behavior preserved verbatim); ``"left"`` = ch0 at
+      FULL level (the FTX-1 presents its USB RX audio on the LEFT channel only;
+      ``mix`` averaging the live L with a silent R halves the level);
+      ``"right"`` = ch1 at FULL level (the mirror case). ``open_channels == 2``
+      is byte-identical to the historical stereo-to-mono behavior, so
+      IC-7610/X6200 etc. are unchanged.
+    - ``2`` — keep channels 0 and 1 interleaved, drop the rest.
 
-    - ``"mix"`` (default) — the per-pair average ``(L + R) // 2``. Correct for a
-      dual-mono source (``L == R``); the historical behavior preserved verbatim
-      for every rig that does not opt out, so IC-7610/X6200 etc. are unchanged.
-    - ``"left"`` — take L at FULL level. The FTX-1 presents its USB RX audio on
-      the LEFT channel only (R is the silent noise floor); ``mix`` averaging the
-      live L with a silent R halves the level (−6 dB → quiet audio + low FFT
-      scope). Selecting L delivers it undivided.
-    - ``"right"`` — take R at FULL level (the mirror case).
+    Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` but is
+    dependency-free (stdlib ``array``) so it can run on the PortAudio audio
+    thread without importing numpy. Used by :class:`_RxFramer` whenever a
+    device opens at more channels than it delivers: passing the interleaved
+    PCM straight through would misread the delivered layout (wrong effective
+    sample-rate, garbage audio — the same class of bug the bridge downmix
+    guards, issue #1381). Trailing bytes that do not form a whole N-channel
+    frame are dropped (an incomplete frame cannot satisfy the fixed contract).
 
     Single-channel selection cannot clip: it copies one existing s16 sample
-    per pair, so the output stays in range with no widening/averaging.
+    per frame, so the output stays in range with no widening/averaging.
     """
+    import sys
     from array import array
 
-    usable = len(pcm) - (len(pcm) % 4)  # whole L/R pairs (2 ch × 2 bytes)
+    frame_bytes = 2 * open_channels  # one N-channel frame of s16 samples
+    usable = len(pcm) - (len(pcm) % frame_bytes)
     if usable <= 0:
         return b""
     samples = array("h")
     samples.frombytes(pcm[:usable])
-    import sys
-
     if sys.byteorder != "little":
         samples.byteswap()
-    mono = array("h", bytes(len(samples)))  # len(samples)//2 mono samples
+    # Extended slices pull L/R at C speed (this runs on the audio thread with
+    # up to 32 open channels).
+    left = samples[0::open_channels]
+    right = samples[1::open_channels]
+    if deliver_channels == 2:
+        stereo = array("h", bytes(4 * len(left)))  # len(left) L/R pairs
+        stereo[0::2] = left
+        stereo[1::2] = right
+        if sys.byteorder != "little":
+            stereo.byteswap()
+        return stereo.tobytes()
     if channel == "left":
-        for i in range(0, len(samples), 2):
-            mono[i // 2] = samples[i]
+        mono = left
     elif channel == "right":
-        for i in range(0, len(samples), 2):
-            mono[i // 2] = samples[i + 1]
-    else:  # "mix" — per-pair average (default; legacy behavior)
-        for i in range(0, len(samples), 2):
-            # Average in a wider int to avoid s16 overflow before truncation.
-            mono[i // 2] = (samples[i] + samples[i + 1]) // 2
+        mono = right
+    else:  # "mix" — per-frame average (default; legacy behavior)
+        # Average in a wider int to avoid s16 overflow before truncation.
+        mono = array("h", [(lch + rch) // 2 for lch, rch in zip(left, right)])
     if sys.byteorder != "little":
         mono.byteswap()
     return mono.tobytes()
@@ -644,11 +664,12 @@ class _RxFramer:
 
     Factored out of :class:`_PortAudioRxStream` so the duplex stream
     (:class:`_PortAudioDuplexStream`) can reuse the *exact* same capture
-    semantics — the stereo→mono ``rx_audio_channel`` downmix (MOR-504/508) plus
-    the lossless re-chunking of engine-native variable-size blocks into fixed
-    ``frame_ms`` frames (the downstream PCM-TX validator rejects any other size).
-    The owning stream is the single audio-thread writer, so no lock is needed;
-    the consumer ``callback`` is contractually cheap and thread-safe.
+    semantics — the N-channel ``rx_audio_channel`` downmix (MOR-504/508/4029)
+    plus the lossless re-chunking of engine-native variable-size blocks into
+    fixed ``frame_ms`` frames (the downstream PCM-TX validator rejects any
+    other size). The owning stream is the single audio-thread writer, so no
+    lock is needed; the consumer ``callback`` is contractually cheap and
+    thread-safe.
     """
 
     def __init__(
@@ -658,11 +679,16 @@ class _RxFramer:
         deliver_channels: int,
     ) -> None:
         self._rx_audio_channel = config.rx_audio_channel
-        # Software downmix only fires for the stereo-native → mono case. Any
-        # other deliver/open relationship passes interleaved PCM through
-        # unchanged (over-request already clamps open == deliver upstream).
         # ``config.channels`` is the OS-open count in this per-stream scope.
-        self._downmix_stereo_to_mono = config.channels == 2 and deliver_channels == 1
+        # Software downmix fires whenever the device opens at MORE channels
+        # than the consumer receives (N >= 2 open -> 1 or 2 delivered,
+        # MOR-4029); N == 2 -> 1 is the historical stereo-to-mono case
+        # (MOR-504/508). Any other deliver/open relationship passes
+        # interleaved PCM through unchanged (over-request already clamps
+        # open == deliver upstream).
+        self._open_channels = config.channels
+        self._deliver_channels = deliver_channels
+        self._downmix = config.channels > deliver_channels
         frame_samples = (config.sample_rate * config.frame_ms) // 1000
         self._frame_bytes = max(1, frame_samples * deliver_channels * 2)
         self._accumulator = bytearray()
@@ -679,9 +705,9 @@ class _RxFramer:
 
         Runs on PortAudio's audio thread: keep it non-blocking. Copies the PCM
         out of the (reused, variable-size) input buffer, optionally downmixes
-        stereo→mono, accumulates, then slices whole fixed-size frames out and
-        hands each to the consumer. Re-chunking a continuous callback stream is
-        lossless and adds no scheduling seam.
+        N open channels to the delivered layout, accumulates, then slices whole
+        fixed-size frames out and hands each to the consumer. Re-chunking a
+        continuous callback stream is lossless and adds no scheduling seam.
         """
         result = _RxFeedResult()
         try:
@@ -694,17 +720,22 @@ class _RxFramer:
             return result
         if not pcm:
             return result
-        if self._downmix_stereo_to_mono:
-            # Device opened at 2 ch (native) but consumer wants mono (MOR-504):
-            # collapse interleaved L/R → mono BEFORE chunking, so the
-            # accumulator/fixed-frame slicing operates on mono bytes and the
-            # FFT scope + broadcaster receive the mono contract they expect.
+        if self._downmix:
+            # Device opened at N >= 2 ch (native) but the consumer receives
+            # fewer (MOR-4029; N == 2 -> mono is the MOR-504 case): collapse
+            # the first two device channels to the delivered layout BEFORE
+            # chunking, so the accumulator/fixed-frame slicing operates on
+            # delivered-layout bytes and the FFT scope + broadcaster receive
+            # the layout they expect.
             try:
-                pcm = _downmix_stereo_to_mono_s16le(pcm, channel=self._rx_audio_channel)
-            except Exception:
-                logger.warning(
-                    "portaudio-rx: stereo→mono downmix failed", exc_info=True
+                pcm = _downmix_stereo_to_mono_s16le(
+                    pcm,
+                    channel=self._rx_audio_channel,
+                    open_channels=self._open_channels,
+                    deliver_channels=self._deliver_channels,
                 )
+            except Exception:
+                logger.warning("portaudio-rx: channel downmix failed", exc_info=True)
                 result.callback_errors += 1
                 return result
             if not pcm:
@@ -1019,9 +1050,10 @@ class _PortAudioRxStream:
         self.exclusive = False
         self._sample_rate = config.sample_rate
         # ``config.channels`` is the OS open count; ``_deliver_channels`` is
-        # what the consumer receives. When deliver < open (mono request on a
-        # stereo-native device, MOR-504) the framer downmixes interleaved
-        # s16le to the deliver count before chunking. Default: deliver == open.
+        # what the consumer receives. When deliver < open (1- or 2-channel
+        # request on an N-channel device, MOR-504/4029) the framer downmixes
+        # interleaved s16le to the deliver count before chunking. Default:
+        # deliver == open.
         self._channels = config.channels
         self._deliver_channels = (
             config.channels if deliver_channels is None else deliver_channels
@@ -1165,7 +1197,7 @@ class _PortAudioRxStream:
     ) -> None:
         # Runs on PortAudio's audio thread: keep it non-blocking. The shared
         # framer copies the captured PCM out of the (reused, variable-size) input
-        # buffer, optionally downmixes stereo→mono, accumulates, and delivers
+        # buffer, optionally downmixes N open channels, accumulates, and delivers
         # whole fixed-size frames to the consumer. Re-chunking a continuous
         # callback stream is lossless and adds no scheduling seam, so it keeps
         # the fixed-frame contract without re-introducing the comb. The consumer
@@ -1876,7 +1908,7 @@ class _PortAudioDuplexStream:
     Reuses the existing data paths rather than duplicating them:
 
     - **RX leg** delegates to the shared :class:`_RxFramer` — the *same*
-      ``rx_audio_channel`` downmix (MOR-504/508) and lossless re-chunking into
+      ``rx_audio_channel`` downmix (MOR-504/508/4029) and lossless re-chunking into
       fixed ``frame_ms`` frames that :class:`_PortAudioRxStream` uses. Delivered
       frames are marshalled to the consumer exactly as the RX stream is (the
       consumer is contractually cheap/thread-safe; the bridge marshals onto its
@@ -1904,7 +1936,7 @@ class _PortAudioDuplexStream:
         self._device_index = device_index
         self._sample_rate = config.sample_rate
         # RX leg opens at the native ``config.channels`` count and delivers
-        # ``deliver_channels`` (downmix when fewer, MOR-504). The TX leg opens at
+        # ``deliver_channels`` (downmix when fewer, MOR-504/4029). The TX leg opens at
         # its own ``tx_channels`` count (the mono playback the radio's USB MOD
         # consumes); ``sd.Stream`` accepts a ``(in, out)`` channel pair so the
         # two legs need not match.
@@ -2148,10 +2180,10 @@ class PortAudioBackend:
     ) -> RxStream:
         sd, _ = self._ensure_deps()
         # ``channels`` is the OS open count; ``deliver_channels`` is what the
-        # consumer receives. When ``deliver_channels`` < ``channels`` (mono
-        # request on a stereo-native device, MOR-504) the stream software-
-        # downmixes before chunking, so the consumer still sees the mono
-        # fixed-frame contract while CoreAudio/AUHAL opens the device natively.
+        # consumer receives. When ``deliver_channels`` < ``channels`` (1- or
+        # 2-channel request on an N-channel device, MOR-504/4029) the stream
+        # software-downmixes before chunking, so the consumer still sees the
+        # delivered fixed-frame contract while the OS opens the device natively.
         if sys.platform == "darwin":
             blocksize = (sample_rate * frame_ms) // 1000
         else:
