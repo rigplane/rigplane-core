@@ -501,6 +501,12 @@ class RadioProfile:
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
+    # MOR-4036: ``[data_mode].modes`` — names as written in the rig TOML
+    # ``[modes].list`` of the modes that can carry the DATA flag. The 0x26
+    # selected-mode set drops the preserved DATA flag when the target mode
+    # is not among them. ``None`` = undeclared: the runtime keeps the
+    # current DATA flag (the unchanged pre-MOR-4036 behaviour).
+    data_mode_modes: tuple[str, ...] | None = None
     # When True, MAIN set_mode routes through CI-V 0x26 0x00 (set selected
     # receiver mode) instead of the bare 0x06. Data-driven: derived from the
     # profile declaring a ``set_selected_mode`` command (e.g. Xiegu X6200,
