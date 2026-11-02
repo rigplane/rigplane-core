@@ -389,7 +389,7 @@ _LAN_RADIO_MODELS: dict[str, str] = {
 
 
 def _lan_radio_backend(args: argparse.Namespace) -> RadioBackend:
-    """One generic Icom-LAN simulator behind real UDP servers.
+    """One generic Icom LAN simulator behind real UDP servers.
 
     Every Icom LAN radio is built the same way from its capability
     profile: the profile drives the CI-V address (``radio_addr``), the
