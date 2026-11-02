@@ -87,7 +87,11 @@ async def test_refused_command_still_naks_over_the_table() -> None:
         assert sim.refused_count == 1
 
 
-async def test_without_a_table_the_split_read_still_naks() -> None:
+async def test_without_a_table_the_split_read_answers_natively() -> None:
+    # Split is natively modelled (MOR-3907, C22 WSJT-X Split=Rig): the
+    # bare simulator answers the read OFF with no recorded table mounted.
+    # The opt-in refusal hook (test above) still NAKs first when set, and
+    # a body with neither a native handler nor a table entry still NAKs.
     async with _lan_sim() as (server, client):
         reply = await _ask_frame(client, server.civ_port, _SPLIT_READ, seq=1)
-        assert reply == _NAK_REPLY
+        assert reply == _SPLIT_READ_OFF_REPLY
