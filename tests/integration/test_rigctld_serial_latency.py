@@ -220,11 +220,7 @@ async def test_write_does_not_wait_out_a_lost_read_answer(model: str) -> None:
     endpoint = PtyEndpoint(fake)
     await endpoint.start()
     radio = radio_cls(device=endpoint.device, _enumerate_serial_ports_fn=lambda: [])
-    # No autonomous poll cycle: the only ``0F`` read on the wire is the
-    # client's own ``s``, so the injected loss cannot be eaten by another read.
-    server = RigctldServer(
-        radio, RigctldConfig(host="127.0.0.1", port=0, poll_interval=3600.0)
-    )
+    server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0))
     writers = []
     try:
         await asyncio.wait_for(radio.connect(), 30)
@@ -233,7 +229,27 @@ async def test_write_does_not_wait_out_a_lost_read_answer(model: str) -> None:
         poll_reader, poll_writer = await asyncio.open_connection("127.0.0.1", port)
         set_reader, set_writer = await asyncio.open_connection("127.0.0.1", port)
         writers.extend((poll_writer, set_writer))
-        await asyncio.sleep(1.0)  # let the connect-time reads settle
+        # Stop the background producers and wait for the wire to go quiet, so
+        # the only ``0F`` read left is the client's own ``s`` and the injected
+        # loss cannot be eaten by an acquisition read.
+        producers = [
+            task
+            for task in (
+                server._state_acquisition_drain_task,
+                server._state_store_freshness_task,
+            )
+            if task is not None
+        ]
+        for task in producers:
+            task.cancel()
+        await asyncio.gather(*producers, return_exceptions=True)
+        deadline = time.monotonic() + 5
+        quiet_since, last_count = time.monotonic(), len(fake.commands)
+        while time.monotonic() - quiet_since < 0.4:
+            assert time.monotonic() < deadline, "the wire never went quiet"
+            await asyncio.sleep(0.05)
+            if len(fake.commands) != last_count:
+                quiet_since, last_count = time.monotonic(), len(fake.commands)
 
         fake.lose_next_answer(0x0F)
         seen = len(fake.commands)
