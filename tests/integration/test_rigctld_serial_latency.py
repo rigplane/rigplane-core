@@ -10,6 +10,7 @@ import time
 import pytest
 
 from rigplane.backends.ic7300 import Ic7300SerialRadio
+from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.commands.commander import Priority
 from rigplane.core.acquisition_scheduler import (
     AcquisitionPriority,
@@ -19,6 +20,7 @@ from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane_testkit.serial.endpoints import PtyEndpoint, pty_supported
 from testkit.ic7300_fakes import ic7300_profile_fake
+from testkit.ic7610_fakes import ic7610_usb_fake
 
 pytestmark = pytest.mark.mock_integration
 
@@ -194,6 +196,70 @@ async def test_two_clients_frequency_readback_latency(silent: bool) -> None:
             tasks,
             [_close_writers, server.stop, radio.disconnect, endpoint.stop],
         )
+
+
+_SERIAL_RADIOS = {
+    "IC-7300": (ic7300_profile_fake, Ic7300SerialRadio),
+    "IC-7610": (ic7610_usb_fake, Icom7610SerialRadio),
+}
+
+
+@pytest.mark.skipif(not pty_supported(), reason="requires a PTY")
+@pytest.mark.parametrize("model", sorted(_SERIAL_RADIOS))
+async def test_write_does_not_wait_out_a_lost_read_answer(model: str) -> None:
+    """MOR-3888: a client read whose answer is lost must not hold up a write.
+
+    WSJT-X polls ``s`` every second and rigctld answers it with a live
+    ``0F`` read on the serial link. When that answer was lost, the
+    commander kept its single in-flight slot for the whole 2 s answer
+    window, and a spot-click ``F`` from a second client queued behind it
+    reached the radio only after ~1.9 s (bench harness, IC-7610 USB fake).
+    """
+    make_fake, radio_cls = _SERIAL_RADIOS[model]
+    fake = make_fake()
+    endpoint = PtyEndpoint(fake)
+    await endpoint.start()
+    radio = radio_cls(device=endpoint.device, _enumerate_serial_ports_fn=lambda: [])
+    server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0))
+    writers = []
+    try:
+        await asyncio.wait_for(radio.connect(), 30)
+        await server.start()
+        port = server._server.sockets[0].getsockname()[1]
+        poll_reader, poll_writer = await asyncio.open_connection("127.0.0.1", port)
+        set_reader, set_writer = await asyncio.open_connection("127.0.0.1", port)
+        writers.extend((poll_writer, set_writer))
+        await asyncio.sleep(1.0)  # let the connect-time reads settle
+
+        fake.lose_next_answer(0x0F)
+        seen = len(fake.commands)
+        poll_writer.write(b"s\n")
+        await poll_writer.drain()
+        while not any(frame.command == 0x0F for frame in fake.commands[seen:]):
+            await asyncio.sleep(0.005)
+
+        target = fake.frequency_hz + 1_000
+        start = time.monotonic()
+        set_writer.write(f"F {target}\n".encode())
+        await set_writer.drain()
+        while fake.frequency_hz != target and time.monotonic() - start < 5:
+            await asyncio.sleep(0.005)
+        applied_after = time.monotonic() - start
+        reply = await asyncio.wait_for(set_reader.readline(), 5)
+        await asyncio.wait_for(poll_reader.readline(), 5)
+
+        assert fake.frequency_hz == target
+        assert reply == b"RPRT 0\n", reply
+        assert applied_after < 1.0, (
+            f"F reached the radio {applied_after:.2f}s after it was sent"
+        )
+    finally:
+        for writer in writers:
+            writer.close()
+            await writer.wait_closed()
+        await server.stop()
+        await radio.disconnect()
+        await endpoint.stop()
 
 
 async def test_failing_poll_still_runs_cleanup() -> None:
