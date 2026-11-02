@@ -123,6 +123,8 @@ ALLOWLIST=(
     'contracts/consumer-expectations/pro/discovery_datagram.json'
     # Tests of preserved / migration code.
     'tests/test_icom_lan_shim.py'
+    # generated list of existing test node ids (MOR-4075), names historical test paths
+    'tests/realtime_baseline.txt'
     'tests/test_platformdirs_migration.py'
     'tests/test_diagnostics_bundle.py'                # asserts SCHEMA_VERSION_V1 backwards-compat
     'tests/test_diagnostics_contributors_batch1.py'   # asserts v1 system.json key absence
