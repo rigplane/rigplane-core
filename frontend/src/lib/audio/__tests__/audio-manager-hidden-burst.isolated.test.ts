@@ -1,16 +1,16 @@
-// Wire contract: the `audio_start` request and the RX frame header built
-// here are the ones the server-side audio handler accepts and emits; those
-// are pinned by tests/test_handlers_coverage.py (audio_start rx) and
-// tests/test_web_audio_session_rx.py / tests/test_web_usb_pairing_integration.py
-// (MSG_TYPE_AUDIO_RX frame header and PCM16 payload).
+// Wire contract: the `audio_start` request and the RX frame bytes built
+// here come from tests/fixtures/audio_rx_session_wire.json, shared with the
+// paired handler test tests/test_web_audio_rx_wire_fixture.py. That Python
+// test drives the REAL /api/v1/audio handler with the same request and
+// verifies the emitted binary frame against the same fixture, so a server
+// header-format regression fails there instead of leaving this spec green on
+// fabricated replies (owner's paired-handler test rule).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  AUDIO_HEADER_SIZE,
-  CODEC_PCM16,
-  FRAME_DURATION_MS,
-  MSG_TYPE_RX,
-  SAMPLE_RATE,
-} from '../constants';
+import { SAMPLE_RATE } from '../constants';
+import wire from '../../../../../tests/fixtures/audio_rx_session_wire.json';
+
+const rxWire = wire.rx_frame_pcm16_mono_20ms;
+const rxRequestWire = wire.audio_start_rx;
 
 vi.mock('../../stores/connection.svelte', () => ({
   setAudioConnected: vi.fn(),
@@ -119,16 +119,42 @@ function installFakeAudioContext(): void {
   vi.stubGlobal('AudioContext', function () { return ctx; } as any);
 }
 
-// One 20 ms mono PCM16 RX frame at 48 kHz: 960 samples = 1920 payload bytes.
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+// One 20 ms mono PCM16 RX frame built from the shared wire fixture: header
+// bytes from `headerHexWithSequence0`, payload from the payload rule
+// (`sample[i] = i % 100` as int16 LE). Only the sequence field varies.
+let rxSequence = 0;
 function rxFrame(): ArrayBuffer {
-  const buf = new ArrayBuffer(AUDIO_HEADER_SIZE + 960 * 2);
+  const header = hexToBytes(rxWire.headerHexWithSequence0);
+  new DataView(header.buffer).setUint16(2, rxSequence & 0xffff, true);
+  rxSequence += 1;
+  const samples = rxWire.payload.samples;
+  const buf = new ArrayBuffer(header.length + samples * 2);
+  new Uint8Array(buf).set(header, 0);
   const view = new DataView(buf);
-  view.setUint8(0, MSG_TYPE_RX);
-  view.setUint8(1, CODEC_PCM16);
-  view.setUint16(4, SAMPLE_RATE / 100, true);
-  view.setUint8(6, 1);
-  view.setUint8(7, FRAME_DURATION_MS);
+  for (let i = 0; i < samples; i++) {
+    view.setInt16(header.length + i * 2, i % 100, true);
+  }
   return buf;
+}
+
+/** The audio request the manager sent must match the shared fixture: the
+ *  stable subset equal, and the key set exactly stable + variable keys. */
+function expectRxSubscription(sent: unknown[]): void {
+  const stable = rxRequestWire.stable as Record<string, unknown>;
+  const expectedKeys = [...Object.keys(stable), ...rxRequestWire.variableKeys].sort();
+  const match = sent
+    .map((m) => JSON.parse(String(m)) as Record<string, unknown>)
+    .find((m) => Object.keys(stable).every((k) => m[k] === stable[k]));
+  expect(match).toBeDefined();
+  expect(Object.keys(match as Record<string, unknown>).sort()).toEqual(expectedKeys);
 }
 
 function setHidden(hidden: boolean): void {
@@ -145,9 +171,7 @@ async function startRxWithOpenSocket() {
   const ws = FakeWebSocket.instances[0];
   ws.open();
   // The session subscribes to RX with the audio request before any frame.
-  expect(ws.sent.map((m) => JSON.parse(String(m)))).toContainEqual(
-    expect.objectContaining({ type: 'audio_start', direction: 'rx' }),
-  );
+  expectRxSubscription(ws.sent);
   return { audioManager, ws };
 }
 
@@ -155,6 +179,7 @@ describe('hidden-tab burst through the real audio session (MOR-3965)', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.useFakeTimers();
+    rxSequence = 0;
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:5173' });
@@ -227,9 +252,7 @@ describe('hidden-tab burst through the real audio session (MOR-3965)', () => {
     const fresh = FakeWebSocket.instances[1];
     fresh.open(); // AudioManager re-subscribes and calls rxPlayer.flush().
     // The reconnect re-subscribes to RX through the audio request.
-    expect(fresh.sent.map((m) => JSON.parse(String(m)))).toContainEqual(
-      expect.objectContaining({ type: 'audio_start', direction: 'rx' }),
-    );
+    expectRxSubscription(fresh.sent);
 
     for (const src of ctx._srcs.slice(0, 100)) {
       expect(src.stop).toHaveBeenCalledTimes(1);
