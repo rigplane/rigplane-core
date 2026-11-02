@@ -10,7 +10,7 @@ from typing import Any, TypeVar
 from rigplane.core.exceptions import BackgroundSendDropped, ConnectionError
 from rigplane.core.types import CivFrame
 
-__all__ = ["IcomCommander", "InterferenceScope", "Priority"]
+__all__ = ["IcomCommander", "InterferenceScope", "PendingAnswer", "Priority"]
 
 
 class Priority(IntEnum):
@@ -40,6 +40,20 @@ _READ_LANES = frozenset((int(Priority.KEYING), int(Priority.BACKGROUND)))
 # raises ``BackgroundSendDropped`` instead of returning ``None``.  The cap
 # NEVER applies to non-background sends or to ``wait_dispatch=True`` sends.
 _MAX_BG_INFLIGHT = 64
+
+
+@dataclass(frozen=True, slots=True)
+class PendingAnswer:
+    """A read on the wire whose keyed answer is still due (MOR-3888).
+
+    The executor returns this instead of the frame when it gives the worker
+    back before the read's answer window closes. ``answer`` settles exactly
+    as the executor call would have -- the frame, ``None`` or its error --
+    and the worker hands that to the ``send`` caller, who sees no
+    difference; meanwhile the next queued frame is dispatched.
+    """
+
+    answer: asyncio.Future[CivFrame | None]
 
 
 @dataclass(slots=True)
@@ -121,7 +135,7 @@ class IcomCommander:
 
     def __init__(
         self,
-        execute: Callable[[bytes, bool], Awaitable[CivFrame | None]],
+        execute: Callable[[bytes, bool], Awaitable[CivFrame | PendingAnswer | None]],
     ) -> None:
         self._execute = execute
         self._queue: asyncio.PriorityQueue[tuple[int, int, _QueueItem]] | None = None
@@ -135,6 +149,9 @@ class IcomCommander:
         # Live read-modify-write scopes (MOR-3743).  The worker marks each
         # scope when it dispatches a non-BACKGROUND frame from another task.
         self._interference_scopes: set[InterferenceScope] = set()
+        # Reads the worker moved past while their answers are still due
+        # (MOR-3888), with the queue item each one settles.
+        self._pending_answers: dict[asyncio.Future[CivFrame | None], _QueueItem] = {}
 
     def start(self) -> None:
         if self._worker is None or self._worker.done():
@@ -161,6 +178,16 @@ class IcomCommander:
                     self._bg_inflight -= 1
                 _fail_item(item, ConnectionError("Commander stopped"))
                 queue.task_done()
+
+        pending_answers = list(self._pending_answers.items())
+        self._pending_answers.clear()
+        for answer, item in pending_answers:
+            _fail_item(item, ConnectionError("Commander stopped"))
+            answer.cancel()
+        if pending_answers:
+            await asyncio.gather(
+                *(answer for answer, _ in pending_answers), return_exceptions=True
+            )
 
         try:
             if worker is not None:
@@ -395,7 +422,9 @@ class IcomCommander:
 
                     if worker.cancelling():
                         raise asyncio.CancelledError
-                    if not item.future.done():
+                    if isinstance(resp, PendingAnswer):
+                        self._adopt_pending_answer(item, resp.answer)
+                    elif not item.future.done():
                         item.future.set_result(resp)
                 except asyncio.CancelledError:
                     if execute_task is not None and not execute_task.done():
@@ -409,11 +438,37 @@ class IcomCommander:
                 finally:
                     if item.counts_bg_inflight and self._bg_inflight > 0:
                         self._bg_inflight -= 1
-                    if (
-                        item.key is not None
-                        and self._pending_by_key.get(item.key) is item.future
-                    ):
-                        self._pending_by_key.pop(item.key, None)
+                    if item.future.done():
+                        self._forget_key(item)
                     queue.task_done()
         except asyncio.CancelledError:
             pass
+
+    def _forget_key(self, item: _QueueItem) -> None:
+        if item.key is not None and self._pending_by_key.get(item.key) is item.future:
+            self._pending_by_key.pop(item.key, None)
+
+    def _adopt_pending_answer(
+        self, item: _QueueItem, answer: asyncio.Future[CivFrame | None]
+    ) -> None:
+        """Settle *item* from a read's late answer while the worker moves on."""
+        self._pending_answers[answer] = item
+
+        def settle(done: asyncio.Future[CivFrame | None]) -> None:
+            self._pending_answers.pop(done, None)
+            if done.cancelled():
+                if not item.future.done():
+                    item.future.cancel()
+            elif (error := done.exception()) is not None:
+                _fail_item(item, error)
+            elif not item.future.done():
+                item.future.set_result(done.result())
+
+        def abandon(future: asyncio.Future[CivFrame | None]) -> None:
+            # The caller went away (timeout, disconnect): stop waiting too.
+            self._forget_key(item)
+            if future.cancelled() and not answer.done():
+                answer.cancel()
+
+        answer.add_done_callback(settle)
+        item.future.add_done_callback(abandon)

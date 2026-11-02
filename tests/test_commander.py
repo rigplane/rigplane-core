@@ -6,6 +6,7 @@ import contextlib
 import pytest
 
 from rigplane.commander import IcomCommander, Priority
+from rigplane.commands.commander import PendingAnswer
 from rigplane.exceptions import ConnectionError
 from rigplane.types import CivFrame
 
@@ -772,3 +773,98 @@ async def test_stop_returns_after_send_timeout_without_yield() -> None:
 
     # No yields between the timeout and stop().
     await _assert_stop_completes(c)
+
+
+class _ReadThenWrite:
+    """An executor whose ``read`` frame returns a PendingAnswer (MOR-3888)."""
+
+    def __init__(self) -> None:
+        self.answer: asyncio.Future[CivFrame | None] | None = None
+        self.seen: list[bytes] = []
+
+    async def __call__(
+        self, payload: bytes, wait_response: bool
+    ) -> CivFrame | PendingAnswer | None:
+        self.seen.append(payload)
+        if payload == b"read":
+            self.answer = asyncio.get_running_loop().create_future()
+            return PendingAnswer(self.answer)
+        return _ack()
+
+
+def _ack() -> CivFrame:
+    return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB, sub=None, data=b"")
+
+
+@pytest.mark.asyncio
+async def test_worker_moves_past_a_pending_read_answer() -> None:
+    """MOR-3888: a read whose answer is still due does not hold the slot."""
+    execute = _ReadThenWrite()
+    c = IcomCommander(execute)
+    c.start()
+    try:
+        read = asyncio.create_task(c.send(b"read", key="r", dedupe=True))
+        await asyncio.sleep(0)
+        write = await asyncio.wait_for(c.send(b"write"), 1)
+        assert write == _ack()
+        assert execute.seen == [b"read", b"write"]
+        assert not read.done(), "the read settled before its answer came"
+        assert c._pending_by_key.get("r") is not None
+        late = CivFrame(to_addr=0xE0, from_addr=0x98, command=0x0F, sub=None, data=b"")
+        assert execute.answer is not None
+        execute.answer.set_result(late)
+        assert await asyncio.wait_for(read, 1) == late
+        assert "r" not in c._pending_by_key
+        assert not c._pending_answers
+    finally:
+        await c.stop()
+
+
+@pytest.mark.asyncio
+async def test_pending_read_answer_error_reaches_its_caller() -> None:
+    execute = _ReadThenWrite()
+    c = IcomCommander(execute)
+    c.start()
+    try:
+        read = asyncio.create_task(c.send(b"read"))
+        await asyncio.sleep(0)
+        await c.send(b"write")
+        assert execute.answer is not None
+        execute.answer.set_exception(TimeoutError("CI-V response timed out"))
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(read, 1)
+    finally:
+        await c.stop()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_caller_cancels_its_pending_read_answer() -> None:
+    execute = _ReadThenWrite()
+    c = IcomCommander(execute)
+    c.start()
+    try:
+        read = asyncio.create_task(c.send(b"read"))
+        await asyncio.sleep(0)
+        await c.send(b"write")
+        read.cancel()
+        await asyncio.gather(read, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert execute.answer is not None and execute.answer.cancelled()
+        assert not c._pending_answers
+    finally:
+        await c.stop()
+
+
+@pytest.mark.asyncio
+async def test_stop_fails_a_pending_read_answer() -> None:
+    execute = _ReadThenWrite()
+    c = IcomCommander(execute)
+    c.start()
+    read = asyncio.create_task(c.send(b"read"))
+    await asyncio.sleep(0)
+    await c.send(b"write")
+    await c.stop()
+    with pytest.raises(ConnectionError, match="Commander stopped"):
+        await asyncio.wait_for(read, 1)
+    assert execute.answer is not None and execute.answer.cancelled()
+    assert not c._pending_answers

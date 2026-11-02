@@ -26,7 +26,7 @@ from rigplane.core.civ import (
     iter_civ_frames,
     request_key_from_frame,
 )
-from rigplane.commands.commander import IcomCommander, Priority
+from rigplane.commands.commander import IcomCommander, PendingAnswer, Priority
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
@@ -114,6 +114,13 @@ _FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
+#: MOR-3888: how long a read holds the commander's single in-flight slot
+#: before the worker moves on while the read keeps waiting for its keyed
+#: answer. Recorded answers arrive well inside it (IC-7300 USB reply 30 ms,
+#: ``rigplane_testkit/sim/profiles/ic7300.toml``; IC-7610 LAN p95 9 ms,
+#: ``_civ_rtt_estimate``), so only a lost or very late answer releases the
+#: slot; the read's answer window itself stays ``_civ_get_timeout``.
+_READ_SLOT_HOLD_S = 0.25
 
 #: Fallback freshness TTLs for CI-V observations, keyed ``(scope, family,
 #: name)`` — rig-blind, and read by ``_observation_max_age`` only for a path
@@ -1497,7 +1504,7 @@ class CivRuntime:
         self._ensure_civ_runtime()
         self.start_pump()
         if self._host._commander is None:
-            self._host._commander = IcomCommander(self.execute_civ_raw)
+            self._host._commander = IcomCommander(self.execute_civ_raw_for_worker)
         self._host._commander.start()
 
     async def stop_worker(self) -> None:
@@ -4509,6 +4516,45 @@ class CivRuntime:
         *,
         is_current: Callable[[], bool] | None = None,
     ) -> "CivFrame | None":
+        """Execute one CI-V command and wait out its whole answer window."""
+        result = await self._dispatch_civ_raw(
+            civ_frame,
+            wait_response=wait_response,
+            is_current=is_current,
+            release_slot_after=None,
+        )
+        assert not isinstance(result, PendingAnswer)
+        return result
+
+    async def execute_civ_raw_for_worker(
+        self,
+        civ_frame: bytes,
+        wait_response: bool = True,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> "CivFrame | PendingAnswer | None":
+        """The commander's executor: a read gives the worker back early.
+
+        MOR-3888: a read whose keyed answer has not come within
+        ``_READ_SLOT_HOLD_S`` of the send returns a :class:`PendingAnswer`,
+        so the next queued frame (a user write) goes out instead of waiting
+        out the rest of the read's 2 s answer window.
+        """
+        return await self._dispatch_civ_raw(
+            civ_frame,
+            wait_response=wait_response,
+            is_current=is_current,
+            release_slot_after=_READ_SLOT_HOLD_S,
+        )
+
+    async def _dispatch_civ_raw(
+        self,
+        civ_frame: bytes,
+        *,
+        wait_response: bool,
+        is_current: Callable[[], bool] | None,
+        release_slot_after: float | None,
+    ) -> "CivFrame | PendingAnswer | None":
         """Execute one CI-V command via request tracker (serialized by worker).
 
         A response-expecting read settles on the first of its data response
@@ -4522,6 +4568,12 @@ class CivRuntime:
         settle this read — the same exposure the write branch
         (``register_ack(wait=True)``) and the raw transaction path's
         ``nak_terminal=True`` default already carry.
+
+        With ``release_slot_after`` set, a read that is still unanswered that
+        long after its send returns a :class:`PendingAnswer` whose future
+        settles exactly as this call would have, within the same answer
+        window; the waiters stay registered in send order, so a late answer
+        or refusal still reaches this read (MOR-3888).
         """
         if self._host._civ_transport is None:
             raise ConnectionError("Not connected to radio")
@@ -4643,6 +4695,73 @@ class CivRuntime:
         pending: "asyncio.Future[CivFrame] | None" = None
         nak_pending: "asyncio.Future[CivFrame] | None" = None
         sent = False
+        detached = False
+
+        async def settle(
+            waiters: "tuple[asyncio.Future[CivFrame], ...]", window: float
+        ) -> CivFrame:
+            assert pending is not None
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=window,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                check_current()
+                tracker.note_timeout()
+                logger.debug(
+                    "CI-V command 0x%02X timed out",
+                    request_key.command,
+                )
+                raise TimeoutError("CI-V response timed out")
+            if pending in done:
+                check_current()
+                return pending.result()
+            assert nak_pending is not None
+            # A future settled with a *result* carries the 0xFA frame; one
+            # settled by a generation advance or stale cleanup carries an
+            # exception that ``result()`` re-raises here.
+            nak_pending.result()
+            logger.debug(
+                "CI-V command 0x%02X refused (NAK)",
+                request_key.command,
+            )
+            raise CommandRejectedError(
+                f"CI-V command 0x{request_key.command:02X} refused (NAK)"
+            )
+
+        def release_waiters() -> None:
+            if pending is not None:
+                tracker.unregister(pending)
+                if not pending.done():
+                    pending.cancel()
+                elif not pending.cancelled():
+                    pending.exception()
+                # A sent write left without its FB/FA may still be answered.
+                if (
+                    sent
+                    and not expects_response
+                    and (pending.cancelled() or pending.exception() is not None)
+                ):
+                    tracker.note_ack_unclaimed()
+            if nak_pending is not None:
+                tracker.unregister(nak_pending)
+                if not nak_pending.done():
+                    nak_pending.cancel()
+                elif not nak_pending.cancelled():
+                    nak_pending.exception()
+
+        async def finish_detached(
+            waiters: "tuple[asyncio.Future[CivFrame], ...]", window: float
+        ) -> "CivFrame | None":
+            try:
+                return await settle(waiters, window)
+            except Exception:
+                check_current()
+                raise
+            finally:
+                release_waiters()
+
         try:
             if expects_response:
                 pending = tracker.register_response(request_key)
@@ -4716,54 +4835,24 @@ class CivRuntime:
             waiters: tuple[asyncio.Future[CivFrame], ...] = (
                 (pending, nak_pending) if nak_pending is not None else (pending,)
             )
-            done, _ = await asyncio.wait(
-                waiters,
-                timeout=self._host._civ_get_timeout,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if not done:
-                check_current()
-                tracker.note_timeout()
-                logger.debug(
-                    "CI-V command 0x%02X timed out",
-                    request_key.command,
+            window = self._host._civ_get_timeout
+            hold = release_slot_after
+            if expects_response and hold is not None and hold < window:
+                done, _ = await asyncio.wait(
+                    waiters, timeout=hold, return_when=asyncio.FIRST_COMPLETED
                 )
-                raise TimeoutError("CI-V response timed out")
-            if pending in done:
-                check_current()
-                return pending.result()
-            assert nak_pending is not None
-            # A future settled with a *result* carries the 0xFA frame; one
-            # settled by a generation advance or stale cleanup carries an
-            # exception that ``result()`` re-raises here.
-            nak_pending.result()
-            logger.debug(
-                "CI-V command 0x%02X refused (NAK)",
-                request_key.command,
-            )
-            raise CommandRejectedError(
-                f"CI-V command 0x{request_key.command:02X} refused (NAK)"
-            )
+                if not done:
+                    # MOR-3888: give the worker back; the rest of the same
+                    # window runs in the PendingAnswer, which owns the
+                    # waiters from here.
+                    detached = True
+                    return PendingAnswer(
+                        asyncio.ensure_future(finish_detached(waiters, window - hold))
+                    )
+            return await settle(waiters, window)
         except Exception:
             check_current(pre_wire=not sent)
             raise
         finally:
-            if pending is not None:
-                tracker.unregister(pending)
-                if not pending.done():
-                    pending.cancel()
-                elif not pending.cancelled():
-                    pending.exception()
-                # A sent write left without its FB/FA may still be answered.
-                if (
-                    sent
-                    and not expects_response
-                    and (pending.cancelled() or pending.exception() is not None)
-                ):
-                    tracker.note_ack_unclaimed()
-            if nak_pending is not None:
-                tracker.unregister(nak_pending)
-                if not nak_pending.done():
-                    nak_pending.cancel()
-                elif not nak_pending.cancelled():
-                    nak_pending.exception()
+            if not detached:
+                release_waiters()
