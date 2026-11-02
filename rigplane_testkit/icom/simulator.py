@@ -93,8 +93,28 @@ _SCOPE_GAP_S = {0x00: 0.0344, 0x01: 0.120}
 _SCOPE_TICK_S = 0.005
 
 
-def _load_scope_templates(radio_addr: int) -> dict[int, list[bytes]]:
-    """Select recorded scope rows, then validate waves with the shared helper."""
+# The scope-wave recording is the IC-7610's: its rows carry the source
+# address 0x98. A LAN personality at another CI-V address (MOR-3907/3910)
+# replays the same waves with the source byte retargeted — a declared
+# tier-C gap, see docs/internals/sim-serve-contract.md.
+_SCOPE_RECORDING_RADIO_ADDR = 0x98
+
+
+def _retarget_scope_wave(frame: bytes, radio_addr: int) -> bytes:
+    """Rewrite a recorded wave's source address byte (index 3) only."""
+    return frame[:3] + bytes([radio_addr]) + frame[4:]
+
+
+def _load_scope_templates(
+    radio_addr: int, *, dual_receiver: bool = False
+) -> dict[int, list[bytes]]:
+    """Select recorded scope rows, then validate waves with the shared helper.
+
+    The rows load with the recording's own source address (0x98) and are
+    then retargeted to ``radio_addr`` so a client of a personality at
+    another address accepts the frames. A single-receiver personality
+    keeps MAIN waves only; a dual-receiver one needs MAIN and SUB.
+    """
     fixture = (
         Path(__file__).resolve().parents[2] / "tests/fixtures/ic7610/civ_pairs.jsonl"
     )
@@ -103,9 +123,16 @@ def _load_scope_templates(radio_addr: int) -> dict[int, list[bytes]]:
         for line in fixture.read_text(encoding="utf-8").splitlines()
         if (row := json.loads(line)).get("window") == "scope"
     ]
-    templates = scope_wave_templates(rows, radio_addr=radio_addr)
-    if not {0x00, 0x01} <= templates.keys():
-        raise ValueError("recorded scope window needs MAIN and SUB waves")
+    loaded = scope_wave_templates(rows, radio_addr=_SCOPE_RECORDING_RADIO_ADDR)
+    templates = {
+        receiver: [_retarget_scope_wave(frame, radio_addr) for frame in waves]
+        for receiver, waves in loaded.items()
+        if dual_receiver or receiver == 0x00
+    }
+    required = {0x00, 0x01} if dual_receiver else {0x00}
+    needed = "MAIN and SUB waves" if dual_receiver else "MAIN waves"
+    if not required <= templates.keys():
+        raise ValueError(f"recorded scope window needs {needed}")
     return templates
 
 
@@ -150,6 +177,7 @@ _CMD_FREQ_GET = 0x03
 _CMD_FREQ_SET = 0x05
 _CMD_MODE_GET = 0x04
 _CMD_MODE_SET = 0x06
+_CMD_SPLIT = 0x0F  # split on/off; 0x10-0x12 repeater shift stays unmodelled
 _CMD_LEVEL = 0x14
 _CMD_METER = 0x15
 _CMD_ATT = 0x11
@@ -432,7 +460,10 @@ class MockIcomRadio(AudioPortMixin):
             reads MAIN). When True, ``07 D0``/``D1`` swap the selected and
             unselected receiver fields (frequency, mode, DATA-mode flag,
             filter) and ``07 D2`` reads the selection (recorded IC-7610
-            ``vfo_select`` window).
+            ``vfo_select`` window). It also selects the scope-wave
+            receivers loaded for ``scope_stream``: True loads MAIN and SUB
+            (the recorded dual window), False keeps MAIN only and never
+            streams SUB, whatever the scope dual-mode byte says.
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
@@ -518,6 +549,10 @@ class MockIcomRadio(AudioPortMixin):
         self._frequency: int = 14_074_000
         self._mode: int = 0x01  # USB
         self._filter: int = 1
+        # Split state (0x0F). A simulator choice; the reply shape is the
+        # recorded IC-7610's (rx_write_restore window: bare GET answers
+        # "0F <state>", SET 00/01 ACKs).
+        self._split_on: bool = False
         self._power: int = 100  # 0-255 level
         self._s_meter: int = 120  # 0-255
         # MOR-3630: squelch-open (RX-busy) readback for the 0x15 0x01 poll.
@@ -560,7 +595,9 @@ class MockIcomRadio(AudioPortMixin):
         self._scope_blank_waves = scope_blank_waves and scope_stream
         self._scope_speed = {0x00: 0x01, 0x01: 0x00}  # MAIN mid, SUB fast in w55
         self._scope_templates = (
-            _load_scope_templates(radio_addr) if scope_stream else {}
+            _load_scope_templates(radio_addr, dual_receiver=dual_receiver)
+            if scope_stream
+            else {}
         )
         self._scope_template_index = {0x00: 0, 0x01: 0}
         self._scope_due: dict[int, float] = {}
@@ -2410,6 +2447,20 @@ class MockIcomRadio(AudioPortMixin):
                 )
             return self._civ_nak(to, frm)
 
+        # --- Split (0x0F) — recorded rx_write_restore window: a bare GET
+        # answers "0F <state>"; SET 00/01 ACKs and flips the state. The
+        # repeater-shift codes 0x10-0x12 share this command byte (MOR-2930)
+        # but have no recorded row: they keep today's NAK rather than an
+        # invented answer. Every Icom profile declares get/set_split.
+        if cmd == _CMD_SPLIT:
+            if not payload:  # GET
+                state = 0x01 if self._split_on else 0x00
+                return self._civ_frame(to, frm, _CMD_SPLIT, data=bytes([state]))
+            if payload in (b"\x00", b"\x01"):  # SET
+                self._split_on = payload[0] == 0x01
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
         # --- Transceiver ID (0x19 0x00) — the connect-time identity read ---
         if cmd == 0x19 and payload == b"\x00":
             return self._civ_frame(to, frm, 0x19, sub=0x00, data=self.model_id)
@@ -2711,7 +2762,13 @@ class MockIcomRadio(AudioPortMixin):
         ):
             return []
         wanted = (0x00, 0x01) if self._scope_13 == 0x01 else (self._scope_12,)
-        return [r for r in wanted if self._scope_speed[r] in _SCOPE_GAP_S]
+        # A receiver with no loaded waves (a single-receiver personality)
+        # never streams, whatever the dual-mode byte says.
+        return [
+            r
+            for r in wanted
+            if r in self._scope_templates and self._scope_speed[r] in _SCOPE_GAP_S
+        ]
 
     def _scope_retime(self, reset: int | None = None) -> None:
         """Keep unchanged receivers on phase; start or reset only affected ones."""

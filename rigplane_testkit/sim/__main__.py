@@ -41,10 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     serve.add_argument(
         "--radio",
-        choices=["ic7610", "ic7300", "ftx1"],
+        choices=["ic7610", "ic9700", "ic7300mk2", "ic7300", "ftx1"],
         required=True,
-        help="simulated radio model (ic7300 serves the serial CI-V fake; "
-        "ftx1 serves the Yaesu CAT serial fake)",
+        help="simulated radio model (ic9700/ic7300mk2 serve declared Icom LAN "
+        "personalities; ic7300 serves the serial CI-V fake; ftx1 serves "
+        "the Yaesu CAT serial fake)",
     )
     serve.add_argument(
         "--username",

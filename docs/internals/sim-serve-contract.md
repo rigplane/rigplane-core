@@ -10,7 +10,7 @@ it ships in `rigplane_testkit`, not in the published `rigplane` wheel.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--radio` | (required) | Model to simulate. Choices: `ic7610`, `ic7300`, `ftx1`. |
+| `--radio` | (required) | Model to simulate. Choices: `ic7610`, `ic9700`, `ic7300mk2` (Icom LAN), `ic7300`, `ftx1` (serial). |
 | `--seed` | `0` | `FaultPlan(seed=...)` for the simulator; makes fault decisions reproducible. |
 | `--bind` | `127.0.0.1` | Simulator bind address. `0.0.0.0` is an explicit opt-in to be reachable from another machine. For `ic7300`: the serial fake's TCP listener bind. |
 | `--control` | `127.0.0.1:0` | Control endpoint `HOST:PORT`; IPv6 literals bracketed as `[host]:port` (a bare literal is a CLI error). Port 0 = ephemeral, reported on stdout. |
@@ -19,7 +19,7 @@ it ships in `rigplane_testkit`, not in the published `rigplane` wheel.
 | `--username` | constructor default | Login username the simulator accepts (otherwise `MockIcomRadio`'s fixed test value). |
 | `--password` | constructor default | Login password the simulator accepts. Never printed, logged or returned. |
 
-With `--radio ic7300` or `--radio ftx1` the IC-7610-only flags
+With `--radio ic7300` or `--radio ftx1` the LAN-only flags
 (`--keepalive-hold-s`, `--username`, `--password`) are accepted and
 ignored.
 
@@ -37,7 +37,8 @@ with this key set and order:
 
 (`username` from `--username`, else the fixed test value; `control_port` is
 the radio LAN port a client connects to; `control` is the HTTP endpoint
-below.)
+below. `radio` is the capability model — `IC-9700`/`IC-7300MK2` personalities
+report `fidelity:"C"` instead of `"A"`; see the LAN personalities section.)
 
 ## Control endpoint
 
@@ -83,6 +84,40 @@ loop — one loop, no threads).
 Numeric arguments must be finite: `NaN`, `Infinity`, `-Infinity` (which
 permissive JSON parsers accept) are rejected as `invalid_args`, as are
 booleans and strings.
+
+## Icom LAN personalities (`--radio ic7610|ic9700|ic7300mk2`, MOR-3907/3910)
+
+All three Icom LAN radios go through ONE generic backend built from the
+capability profile (`rigplane.profiles.resolve_radio_profile(model=...)`):
+the profile drives the CI-V address (`radio_addr`), the receiver layout
+(`dual_receiver` = `receiver_count > 1`) and the `19 00` identity byte
+(the profile's `civ_addr`). No per-model branch exists. The IC-7610 keeps
+its recorded behaviour unchanged (fidelity `A`); the IC-9700 and IC-7300MK2
+are honest *declared* personalities (fidelity `C`) — no recording of either
+model exists, and nothing here claims hardware parity.
+
+Honest gaps of the two declared personalities (tier C, profile declarations
+only):
+
+- No recording exists: answers beyond the simulator's native CI-V handlers
+  are the IC-7610's recorded LAN table (when Pro's bench launcher mounts
+  `tests/testkit/ic7610_fakes.py:_answer_table("lan")`) or a NAK. Serve
+  itself mounts no table.
+- Scope waves are the IC-7610 recording retargeted: the recorded `27 00`
+  frames carry the recording's own source address (0x98) and are replayed
+  with the personality's CI-V address substituted; the pixel payloads are
+  the IC-7610's. A single-receiver personality (IC-7300MK2) keeps MAIN
+  waves only and never streams SUB, whatever the scope dual-mode byte says.
+- The TX audio path is unrecorded: `/audio/tx` format labelling falls back
+  to the profile-default constant and `format: "default"` when nothing was
+  captured and nothing learned.
+- The discovery reply (`04` I-am-here) carries no model name: a client
+  cannot tell the personalities apart from discovery alone, only from the
+  `19 00` identity read.
+
+`GET /state` keeps the LAN shape
+(`frequency_hz`, `mode`, `ptt`, `session_held`, `login_count`), and the
+IC-7610 events serve unchanged on every personality.
 
 ## Serial radios (`--radio ic7300`, MOR-3594)
 
@@ -189,7 +224,9 @@ level: past the Python recursion limit the event is rejected with 400
 
 The startup line carries `"evidence":"simulated"`. `fidelity` is the tier of
 the model's evidence: **A** — replay against a real recording of this exact
-model (the IC-7610 simulator has recorded conformance);
-**B** — manual oracles only; **C** — profile declarations only.
+model (the IC-7610 simulator has recorded conformance; serve derives the
+tier from the presence of `tests/fixtures/<radio>/civ_pairs.jsonl`);
+**B** — manual oracles only; **C** — profile declarations only (the IC-9700
+and IC-7300MK2 LAN personalities).
 
 Planned: `lan_drop` (exact N-second UDP blackout), tracked in MOR-3593.
