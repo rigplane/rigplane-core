@@ -9,7 +9,12 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import replace
 
-from rigplane.commands._frame import decode_wire_tuple, parse_civ_frame
+from rigplane.commands._frame import (
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    decode_wire_tuple,
+    parse_civ_frame,
+)
 from rigplane.commands.scope import (
     SCOPE_RECEIVER_SELECTOR_SUBS,
     SCOPE_SELECTOR_MAIN,
@@ -20,6 +25,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionQueryResolver,
     resolve_available_when,
 )
+from rigplane.core.civ import CivRequestKey, request_key_from_frame
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateSnapshot
 from rigplane.profiles import RadioProfile
@@ -159,6 +165,29 @@ def wire_parts_for_query(
     ):
         return query.command, query.sub, bytes([scope_receiver]) + query.data[1:]
     return query.command, query.sub, query.data
+
+
+def request_keys_for_query(
+    query: AcquisitionQuery,
+    scope_receiver: int,
+) -> frozenset[CivRequestKey]:
+    """The request keys a read of *query* can go out under (MOR-4058).
+
+    The key the CI-V request tracker gives the frame
+    :func:`wire_parts_for_query` builds — plus, for a MAIN-routed query, the
+    unwrapped frame the acquisition executor sends instead when the profile
+    has no cmd29 route for the command.
+    """
+
+    variants = [query]
+    if query.receiver == 0:
+        variants.append(replace(query, receiver=None))
+    keys = set()
+    for variant in variants:
+        command, sub, data = wire_parts_for_query(variant, scope_receiver)
+        frame = build_civ_frame(0x00, CONTROLLER_ADDR, command, sub=sub, data=data)
+        keys.add(request_key_from_frame(parse_civ_frame(frame)))
+    return frozenset(keys)
 
 
 def acquisition_query_resolver_for_profile(

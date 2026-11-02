@@ -95,7 +95,11 @@ from rigplane.core.types import (
 )
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime import radio_reconnect
-from rigplane.runtime._state_queries import tx_target_max_age
+from rigplane.runtime._state_queries import (
+    acquisition_query_resolver_for_profile,
+    request_keys_for_query,
+    tx_target_max_age,
+)
 from rigplane.runtime.meter_cal import interpolate_meter
 
 if TYPE_CHECKING:
@@ -2176,6 +2180,8 @@ class CivRuntime:
         claimed: _CivDataTransaction | None = None
         if self._host._civ_request_tracker.resolve(event, generation=generation):
             claimed = self._claim_civ_data_transaction(event)
+        if event.type is CivEventType.NAK:
+            self._record_refused_reads()
         if event.type is CivEventType.RESPONSE and not isinstance(
             claimed.owner if claimed is not None else None, _AuthoritativePttRead
         ):
@@ -2705,6 +2711,35 @@ class CivRuntime:
                 request_id=request.id,
                 paths=[str(path) for path in matched_paths],
                 changed=bool(changeset.changes),
+            )
+
+    def _record_refused_reads(self) -> None:
+        """Tell the acquisition scheduler which declared reads were refused.
+
+        MOR-4058: a refusal retired a fire-and-forget read's sink
+        (``CivRequestTracker.take_refused_reads``). Every declared path whose
+        query goes out under that read's request key is refused; the
+        scheduler records it as a terminal answer for both polling seats.
+        """
+        refused = self._host._civ_request_tracker.take_refused_reads()
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not refused or not isinstance(scheduler, AcquisitionScheduler):
+            return
+        resolve = acquisition_query_resolver_for_profile(self._host._profile)
+        scope_receiver = self._host._radio_state.scope_controls.receiver
+        paths = []
+        for path in scheduler.declared_paths():
+            query = resolve(path)
+            if query is not None and request_keys_for_query(
+                query, scope_receiver
+            ).intersection(refused):
+                paths.append(path)
+        if paths:
+            scheduler.record_read_refusal(paths, now=time.monotonic())
+            self._record_state_diagnostic(
+                "acquisition_refused",
+                "civ_rx.scheduler",
+                paths=sorted(str(path) for path in paths),
             )
 
     def _record_scheduler_results_for_changeset(self, changeset: ChangeSet) -> None:

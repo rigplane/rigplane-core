@@ -233,6 +233,9 @@ class CivRequestTracker:
         self._ack_backlog_drops = 0
         self._ack_orphans = 0
         self._ack_unclaimed_at: float | None = None
+        # MOR-4058: reads a refusal (bare FA) retired, oldest first, until
+        # ``take_refused_reads`` hands them to the acquisition scheduler.
+        self._refused_reads: list[CivRequestKey] = []
 
     @property
     def pending_count(self) -> int:
@@ -375,6 +378,19 @@ class CivRequestTracker:
             )
         )
         return token
+
+    def take_refused_reads(self) -> tuple[CivRequestKey, ...]:
+        """Return and forget the reads a refusal retired since the last call.
+
+        MOR-4058: a fire-and-forget read waits on a sink carrying its
+        ``response_key``. When a bare ``0xFA`` retires such a sink, the
+        radio has answered that read with a refusal: a terminal answer, not
+        a lost one. Radios answer in order, so the refusal belongs to the
+        oldest sink still open — the same attribution every ACK/NAK here
+        gets.
+        """
+        refused, self._refused_reads = tuple(self._refused_reads), []
+        return refused
 
     def register_response(self, key: CivRequestKey) -> asyncio.Future[CivFrame]:
         """Register a pending request that expects a specific data response."""
@@ -525,6 +541,11 @@ class CivRequestTracker:
                     return True
                 elif waiter.future is None:
                     # Successfully sunk an ACK for a fire-and-forget request
+                    if (
+                        event.type is CivEventType.NAK
+                        and waiter.response_key is not None
+                    ):
+                        self._refused_reads.append(waiter.response_key)
                     return True
 
             # Park short-lived orphan ACK/NAK frames, bounded and TTL-pruned.
@@ -584,6 +605,7 @@ class CivRequestTracker:
                 w.future.set_exception(exc)
         self._ack_waiters.clear()
         self._ack_backlog.clear()
+        self._refused_reads.clear()
 
         for pending in self._response_waiters:
             if not pending.future.done():

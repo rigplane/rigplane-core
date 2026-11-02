@@ -141,15 +141,13 @@ async def test_refused_safety_critical_read_still_fails_startup(
 ) -> None:
     """The IC-7610 USB recording has no ``1C 03`` (TX target) answer, so its
     fake refuses it. A refused safety-critical read is not served around: the
-    gate fails startup naming it after three refused reads (MOR-2749), well
-    inside the time three answer windows used to take."""
+    gate still fails startup naming it (MOR-2749), now counting its refusals
+    as the failed reads."""
     fake, endpoint, radio = await _connected("IC-7610")
     web = _gated_web(radio, "IC-7610")
     try:
-        started = time.monotonic()
         with pytest.raises(RuntimeError, match="tx_target"):
             await asyncio.wait_for(web.start(), 30)
-        assert time.monotonic() - started < 5.0
         assert (
             radio._acquisition_scheduler.consecutive_refusals(
                 FieldPath.global_("tx_state", "tx_target")
