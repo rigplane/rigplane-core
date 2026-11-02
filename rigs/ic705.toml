@@ -631,6 +631,11 @@ families = { cw = ["CW", "CW-R"] }
 [data_mode]
 count = 1
 labels = { "0" = "OFF", "1" = "DATA" }
+# The modes that can carry DATA (MOR-4036). Source: IC-705 Basic Manual
+# (data mode in SSB, AM and FM; Hamlib ic705_backend agrees). Bench-verified
+# 2026-11-02 on the IC-705: 26 00 03 01 01 (CW with DATA) is NAKed and the
+# radio stays in the old mode; 26 00 03 00 01 (DATA off) is ACKed.
+modes = ["USB", "LSB", "AM", "FM"]
 
 # wfview Inputs: MIC, USB, M/U, WLAN — Data Off / DATA1 mod Max=3 per IC-705.rig
 inputs = [

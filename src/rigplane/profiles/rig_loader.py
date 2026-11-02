@@ -691,6 +691,10 @@ class RigConfig:
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
+    # MOR-4036: ``[data_mode].modes`` — names from ``[modes].list`` of the
+    # modes that can carry the DATA flag. ``None`` = undeclared (the runtime
+    # keeps the current DATA flag on a mode change, the unchanged default).
+    data_mode_modes: tuple[str, ...] | None = None
     protocol_type: str = "civ"
     protocol_address: int | None = None
     protocol_baud: int | None = None
@@ -941,6 +945,7 @@ class RigConfig:
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
             data_mode_inputs=self.data_mode_inputs,
+            data_mode_modes=self.data_mode_modes,
             # isinstance, not membership: a declared-absent entry
             # (AbsentCommandSpec, MOR-2005 step 4a) is a dict key too, but
             # it means the opposite of "the radio has this command" — see
@@ -3275,6 +3280,35 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_labels = (
             dict(data_mode_section["labels"]) if "labels" in data_mode_section else None
         )
+        raw_modes = data_mode_section.get("modes")
+        if raw_modes is None:
+            data_mode_modes = None
+        else:
+            # MOR-4036: the modes that can carry the DATA flag — names as
+            # written in [modes].list, validated the same fail-loud way as
+            # [modes].families above.
+            if not isinstance(raw_modes, list) or not raw_modes:
+                raise RigLoadError(
+                    f"{filename}: [data_mode].modes must be a non-empty array"
+                )
+            for index, entry in enumerate(raw_modes):
+                if not isinstance(entry, str):
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].modes[{index}] must be a string"
+                    )
+                if entry not in modes:
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].modes[{index}] names mode "
+                        f"{entry!r} that is not in [modes].list"
+                    )
+            seen: set[str] = set()
+            for index, entry in enumerate(raw_modes):
+                if entry in seen:
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].modes[{index}] repeats mode {entry!r}"
+                    )
+                seen.add(entry)
+            data_mode_modes = tuple(raw_modes)
         raw_inputs = data_mode_section.get("inputs")
         if raw_inputs is not None:
             if not isinstance(raw_inputs, list) or not raw_inputs:
@@ -3312,10 +3346,12 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_count = 1
         data_mode_labels = {"0": "OFF", "1": "DATA"}
         data_mode_inputs = None
+        data_mode_modes = None
     else:
         data_mode_count = 0
         data_mode_labels = None
         data_mode_inputs = None
+        data_mode_modes = None
 
     # Parse [controls] (optional)
     controls_raw = data.get("controls")
@@ -3652,6 +3688,7 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,
         data_mode_inputs=data_mode_inputs,
+        data_mode_modes=data_mode_modes,
         protocol_type=protocol_type,
         protocol_address=protocol_address,
         protocol_baud=protocol_baud,
