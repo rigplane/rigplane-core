@@ -1,4 +1,4 @@
-"""The shared timing helpers in ``tests/_timing.py`` (MOR-3920)."""
+"""``rigplane_testkit.timing``: the one virtual clock and real-event waits (MOR-3920, MOR-4075)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import types
 
 import pytest
 
-from _timing import VirtualClock, await_until, wait_until
 from rigplane_testkit.sim.engine import ManualClock
+from rigplane_testkit.timing import VirtualClock, await_until, wait_until
+from rigplane_testkit.timing import virtual_clock as clocked
 
 
 def _globals() -> tuple[object, ...]:
@@ -182,3 +183,74 @@ async def test_await_until_waits_for_a_real_thread_without_moving_the_virtual_cl
     threading.Timer(0.05, lambda: box.append(1)).start()
     assert await await_until(lambda: box and box[0], timeout=10.0) == 1
     assert virtual_clock() == started
+
+
+# -- the decorator entry point (rigplane-pro style, one fresh loop per test) ------------
+
+
+@clocked
+async def test_decorator_runs_the_test_on_a_virtual_loop(clock: VirtualClock) -> None:
+    assert asyncio.get_running_loop().time is clock
+    task = asyncio.ensure_future(asyncio.sleep(3600.0))
+    await clock.elapse(3599.9)
+    assert not task.done()
+    await clock.elapse(0.2)
+    assert task.done()
+    assert clock.now == pytest.approx(3600.1)
+
+
+@clocked
+async def test_to_thread_runs_inline_so_thread_hops_cannot_reorder(
+    clock: VirtualClock,
+) -> None:
+    thread_names: list[str] = []
+
+    def work() -> int:
+        thread_names.append(threading.current_thread().name)
+        return 7
+
+    assert await asyncio.to_thread(work) == 7
+    assert thread_names == [threading.current_thread().name]
+
+
+def test_the_global_functions_are_restored_after_a_run() -> None:
+    before = _globals()
+    clock = VirtualClock()
+    loops: list[asyncio.AbstractEventLoop] = []
+
+    async def scenario() -> None:
+        loops.append(asyncio.get_running_loop())
+        await clock.elapse(1.0)
+
+    clock.run(scenario)
+    assert _globals() == before
+    assert "time" not in vars(loops[0])  # the loop's own clock was put back
+
+
+@pytest.mark.parametrize("period", [0.5, 2.0])
+@clocked
+async def test_decorator_keeps_pytest_parametrize_and_fixtures(
+    clock: VirtualClock, period: float, tmp_path: object
+) -> None:
+    assert tmp_path is not None
+    task = asyncio.ensure_future(asyncio.sleep(period))
+    await clock.elapse(period)
+    assert task.done()
+
+
+def test_a_scenario_that_waits_for_the_impossible_fails_instead_of_hanging() -> None:
+    clock = VirtualClock()
+
+    async def scenario() -> None:
+        await asyncio.Event().wait()
+
+    with pytest.raises(AssertionError, match="still waiting"):
+        clock.run(scenario, real_timeout_s=0.2)
+
+
+def test_the_first_parameter_must_be_the_clock() -> None:
+    with pytest.raises(TypeError, match="first parameter"):
+
+        @clocked
+        async def test_x(other: object) -> None:  # pragma: no cover - never runs
+            pass

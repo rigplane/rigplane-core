@@ -23,7 +23,7 @@ from rigplane.runtime.session_lifecycle import LifecycleState
 from _helpers import wrap_civ_in_udp
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _ConnectOnceStubs
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 _IDENTITY_CMD = 0x19
 _IDENTITY_SUB = 0x00

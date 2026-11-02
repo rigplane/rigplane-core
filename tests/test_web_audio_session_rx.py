@@ -38,7 +38,7 @@ from rigplane.runtime._audio_recovery import AudioRecoveryRuntime
 from rigplane.web.handlers import AudioBroadcaster
 from rigplane.web.protocol import AUDIO_HEADER_SIZE, MSG_TYPE_AUDIO_RX
 from rigplane.web.runtime_helpers import runtime_capabilities
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 

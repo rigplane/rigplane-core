@@ -51,7 +51,7 @@ from rigplane.runtime.managed_tx_composition import (
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
 
 from rigplane_testkit.serial import CivSerialFake
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 

@@ -19,7 +19,7 @@ from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.web.radio_poller import CommandQueue, RadioPoller, SetFreq
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 
 @pytest.fixture

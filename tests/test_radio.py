@@ -58,7 +58,7 @@ from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import observe_selected_receiver
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
-from _timing import VirtualClock, await_until
+from rigplane_testkit.timing import VirtualClock, await_until
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF

@@ -8,6 +8,11 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
 
 ## Contents
 
+- `rigplane_testkit.timing` — the one virtual clock for tests (MOR-3920, MOR-4075),
+  shared with rigplane-pro: `VirtualClock` (a `ManualClock` that also drives an
+  event loop's timers and a module's own `time`/`asyncio` names), the
+  `@virtual_clock` decorator, and `wait_until` / `await_until` for real events.
+  Do not write another per-file clock class.
 - `rigplane_testkit.icom` — `MockIcomRadio`, an asyncio UDP simulator of an
   Icom IC-7610 LAN interface: control-port discovery/login/token/ping, a CI-V
   command port, single-owner session holding with keepalive renewal, and

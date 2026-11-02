@@ -61,7 +61,7 @@ from rigplane.ws import (
     make_accept_key,
     make_frame,
 )
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 # ---------------------------------------------------------------------------
 # Frontend static build guard

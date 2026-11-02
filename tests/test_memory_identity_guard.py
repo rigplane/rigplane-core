@@ -19,7 +19,7 @@ from test_icom_lan_identity_gate import (
     _identity_sends,
 )
 from test_memory_write_layouts import _mem
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 
 @pytest.mark.parametrize("model", ["IC-705", "IC-7610"])

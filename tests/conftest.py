@@ -7,7 +7,6 @@ import os as _os
 _os.environ.setdefault("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", "1")
 del _os
 
-import asyncio  # noqa: E402
 import struct  # noqa: E402
 from collections.abc import AsyncGenerator, Iterator  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -22,7 +21,7 @@ from _perf_helpers import fast_connect  # noqa: E402
 from mock_server import MockIcomRadio  # noqa: E402
 
 from _caps import FULL_ICOM_CAPS as FULL_ICOM_CAPS  # noqa: F401, E402 — re-export
-from _timing import VirtualClock  # noqa: E402
+from rigplane_testkit.timing import VirtualClock  # noqa: E402
 
 _HEADER_FMT = "<IHHII"
 
@@ -315,13 +314,8 @@ async def virtual_clock() -> AsyncGenerator[VirtualClock, None]:
     """A clock that moves only on ``await virtual_clock.elapse(dt)``.
 
     Installed as ``loop.time`` of this test's own loop and nowhere else (see
-    ``tests/_timing.py``). Pair it with ``@pytest.mark.timeout``: a test that
-    awaits a timer nobody advances waits forever.
+    ``rigplane_testkit/timing.py``). Pair it with ``@pytest.mark.timeout``: a test
+    that awaits a timer nobody advances waits forever.
     """
-    loop = asyncio.get_running_loop()
-    clock = VirtualClock(start=loop.time())
-    clock.install(loop)
-    try:
+    async with VirtualClock.on_running_loop() as clock:
         yield clock
-    finally:
-        clock.uninstall(loop)

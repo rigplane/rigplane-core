@@ -42,7 +42,7 @@ from rigplane.runtime._control_phase import ControlPhaseRuntime, OPENCLOSE_SIZE
 from _helpers import freq_response, wrap_civ_in_udp
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _build_conninfo, _ConnectOnceStubs
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 _TOKEN = 0x5EC0DE01
 _RENEWAL_OK = 0x00000000

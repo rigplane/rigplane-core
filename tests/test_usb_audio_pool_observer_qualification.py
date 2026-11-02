@@ -19,7 +19,7 @@ from _mor3777_pool_observer import (
     current_for,
     set_current,
 )
-from _timing import await_until
+from rigplane_testkit.timing import await_until
 
 _WORKERS = usb_driver._CAPTURE_OPEN_MAX_WORKERS
 
