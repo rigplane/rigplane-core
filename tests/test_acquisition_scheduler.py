@@ -20,6 +20,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
+    adaptive_cadence_limit,
     AcquisitionStatus,
     DeclaredCommandDefect,
     MeterObservationCoalescer,
@@ -344,6 +345,75 @@ def test_an_answer_ends_the_refusal(caplog: pytest.LogCaptureFixture) -> None:
         "(unavailable) until it answers"
     ]
     assert any("answered again after a refusal" in m for m in messages)
+
+
+_VOX = FieldPath.global_("tx_state", "vox_on")
+_VOX_POLICY = AcquisitionPolicy(cadence_seconds=None, freshness_ttl_seconds=25.0)
+
+
+def _non_polling_scheduler(clock: FreshnessClock) -> AcquisitionScheduler:
+    """IC-705's ``vox_on`` shape: a primed, non-polling menu read."""
+    return AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(
+                FieldCapability(path=_VOX, command_response_observable=True),
+            ),
+            field_policies={_VOX: _VOX_POLICY},
+        ),
+        clock=clock,
+    )
+
+
+def test_refused_non_polling_field_is_not_primed_again_before_its_retry() -> None:
+    """Pre-review finding 2: priming honours the refusal's retry delay."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _non_polling_scheduler(clock)
+    primed = scheduler.prime_unobserved(observed_paths=())[0]
+    scheduler.record_dispatch(primed.id, paths=primed.paths, now=clock.now())
+    scheduler.record_read_refusal((_VOX,), now=clock.now())
+    retry = adaptive_cadence_limit(_VOX_POLICY)
+    assert retry is not None and retry > 5.0
+
+    clock.advance(5.0)  # the freshness service's adaptive re-prime interval
+    assert scheduler.prime_unobserved(observed_paths=()) == ()
+    assert scheduler.pending_requests() == ()
+
+    clock.advance(retry - 5.0)
+    assert scheduler.prime_unobserved(observed_paths=())[0].paths == (_VOX,)
+
+
+def test_automatic_refresh_of_a_refused_path_waits_for_its_retry() -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _non_polling_scheduler(clock)
+    scheduler.record_read_refusal((_VOX,), now=clock.now())
+
+    background = scheduler.ensure_fresh(
+        _VOX, max_age=1.0, priority=AcquisitionPriority.RECONCILIATION, reason="stale"
+    )
+    assert background.request is None
+    assert scheduler.pending_requests() == ()
+
+    asked = scheduler.ensure_fresh(
+        _VOX, max_age=1.0, priority=AcquisitionPriority.USER, reason="rigctld-get"
+    )
+    assert asked.request is not None, "a read asked for by name still goes out"
+
+
+def test_queued_unsent_automatic_request_is_withheld_after_a_refusal() -> None:
+    """A request queued before the refusal arrived stays pending but unsent
+    until the retry."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    queued = scheduler.due_requests(now=clock.now())[0]
+    sent_earlier = replace(queued, paths=(_TUNER,))
+    scheduler.record_read_refusal(sent_earlier.paths, now=clock.now() - 1.0)
+    assert scheduler.pending_requests()[0].id == queued.id
+
+    assert scheduler.dispatchable_requests() == ()
+
+    clock.advance(adaptive_cadence_limit(_REFUSAL_POLICY) or 0.0)
+    assert scheduler.dispatchable_requests()[0].id == queued.id
 
 
 def _profile(
