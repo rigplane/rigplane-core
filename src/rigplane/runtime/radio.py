@@ -5047,8 +5047,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 # that recorded USB answers (30 ms) beat by a wide margin.
                 timeout=_LIVE_READ_ANSWER_WINDOW_S if strict else None,
             )
-        except (CommandError, TimeoutError):
+        except (CommandError, TimeoutError, asyncio.TimeoutError) as exc:
             if strict:
+                if isinstance(exc, asyncio.TimeoutError):
+                    # The caller's answer window (MOR-3888) expired: report it
+                    # as this library's timeout, like the 2 s CI-V window does.
+                    raise TimeoutError("No response for get_split") from exc
                 raise
             if self._last_split is not None:
                 logger.debug(

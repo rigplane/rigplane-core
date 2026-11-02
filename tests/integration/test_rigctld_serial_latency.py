@@ -220,7 +220,11 @@ async def test_write_does_not_wait_out_a_lost_read_answer(model: str) -> None:
     endpoint = PtyEndpoint(fake)
     await endpoint.start()
     radio = radio_cls(device=endpoint.device, _enumerate_serial_ports_fn=lambda: [])
-    server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0))
+    # No autonomous poll cycle: the only ``0F`` read on the wire is the
+    # client's own ``s``, so the injected loss cannot be eaten by another read.
+    server = RigctldServer(
+        radio, RigctldConfig(host="127.0.0.1", port=0, poll_interval=3600.0)
+    )
     writers = []
     try:
         await asyncio.wait_for(radio.connect(), 30)
@@ -246,8 +250,10 @@ async def test_write_does_not_wait_out_a_lost_read_answer(model: str) -> None:
             await asyncio.sleep(0.005)
         applied_after = time.monotonic() - start
         reply = await asyncio.wait_for(set_reader.readline(), 5)
-        await asyncio.wait_for(poll_reader.readline(), 5)
+        poll_reply = await asyncio.wait_for(poll_reader.readline(), 5)
 
+        # The client's own read must have been the one that lost its answer.
+        assert poll_reply == b"RPRT -11\n", poll_reply
         assert fake.frequency_hz == target
         assert reply == b"RPRT 0\n", reply
         assert applied_after < 1.0, (
