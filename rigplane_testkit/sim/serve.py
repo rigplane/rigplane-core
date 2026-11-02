@@ -381,14 +381,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # The Icom LAN personalities (MOR-3593 IC-7610; MOR-3907/MOR-3910 declared
 # IC-9700 and IC-7300MK2): CLI id -> capability model. The profile is the
 # single source of radio facts — no per-model branch exists below.
-_ICOM_LAN_MODELS: dict[str, str] = {
+_LAN_RADIO_MODELS: dict[str, str] = {
     "ic7610": "IC-7610",
     "ic9700": "IC-9700",
     "ic7300mk2": "IC-7300MK2",
 }
 
 
-def _icom_lan_backend(args: argparse.Namespace) -> RadioBackend:
+def _lan_radio_backend(args: argparse.Namespace) -> RadioBackend:
     """One generic Icom-LAN simulator behind real UDP servers.
 
     Every Icom LAN radio is built the same way from its capability
@@ -401,7 +401,7 @@ def _icom_lan_backend(args: argparse.Namespace) -> RadioBackend:
     with a recording of this exact model under tests/fixtures/<id>/,
     "C" for a profile-declared personality.
     """
-    profile = resolve_radio_profile(model=_ICOM_LAN_MODELS[args.radio])
+    profile = resolve_radio_profile(model=_LAN_RADIO_MODELS[args.radio])
     # None = do not pass the kwarg: MockIcomRadio's own default applies.
     pairs = (("username", args.username), ("password", args.password))
     credentials = {key: value for key, value in pairs if value is not None}
@@ -610,8 +610,8 @@ def build_stack(args: argparse.Namespace) -> ServeStack:
     trace = TraceLog(args.trace)
     stop_event = asyncio.Event()
     try:
-        if args.radio in _ICOM_LAN_MODELS:
-            backend = _icom_lan_backend(args)
+        if args.radio in _LAN_RADIO_MODELS:
+            backend = _lan_radio_backend(args)
         elif args.radio == "ic7300":
             backend = _ic7300_backend(args, trace)
         else:

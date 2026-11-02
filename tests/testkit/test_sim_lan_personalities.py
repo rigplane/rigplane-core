@@ -117,9 +117,9 @@ def test_scope_templates_retarget_the_recording_source():
 
     dual = _load_scope_templates(0xA2, dual_receiver=True)
     assert set(dual) == {0x00, 0x01}
-    assert all(
-        frame[3] == 0xA2 for waves in dual.values() for frame in waves
-    ), "retargeted waves must carry the personality's source address"
+    assert all(frame[3] == 0xA2 for waves in dual.values() for frame in waves), (
+        "retargeted waves must carry the personality's source address"
+    )
 
     mono = _load_scope_templates(0xB6, dual_receiver=False)
     assert set(mono) == {0x00}, "a single-receiver personality keeps MAIN only"
@@ -229,7 +229,9 @@ async def test_rx_audio_frames_arrive_non_silent(
 async def _exchange(writer, reader, payload: bytes, *, lines: int = 1) -> bytes:
     writer.write(payload)
     await writer.drain()
-    return b"".join([await asyncio.wait_for(reader.readline(), 5) for _ in range(lines)])
+    return b"".join(
+        [await asyncio.wait_for(reader.readline(), 5) for _ in range(lines)]
+    )
 
 
 async def test_mk2_wsjtx_split_keeps_the_cat_link():
@@ -244,7 +246,9 @@ async def test_mk2_wsjtx_split_keeps_the_cat_link():
         model="IC-7300MK2",
     )
     await radio.connect()
-    server = RigctldServer(radio, RigctldConfig(host="127.0.0.1", port=0, command_timeout=5.0))
+    server = RigctldServer(
+        radio, RigctldConfig(host="127.0.0.1", port=0, command_timeout=5.0)
+    )
     server._state_store = radio.state_store
     await server.start()
     try:
@@ -259,15 +263,17 @@ async def test_mk2_wsjtx_split_keeps_the_cat_link():
             assert await _exchange(writer, reader, b"I 14080100\n") == b"RPRT 0\n"
             assert await _exchange(writer, reader, b"X CW 600\n") == b"RPRT 0\n"
             # ``s`` is get_split_vfo: two lines (split flag, TX VFO label).
-            assert (
-                await _exchange(writer, reader, b"s\n", lines=2)
-            ).splitlines()[0] == b"1"
+            assert (await _exchange(writer, reader, b"s\n", lines=2)).splitlines()[
+                0
+            ] == b"1"
 
             for _ in range(5):
-                assert (await _exchange(writer, reader, b"f\n")).splitlines()[
-                    0
-                ].isdigit()
-                m_reply = (await _exchange(writer, reader, b"m\n", lines=2)).splitlines()
+                assert (
+                    (await _exchange(writer, reader, b"f\n")).splitlines()[0].isdigit()
+                )
+                m_reply = (
+                    await _exchange(writer, reader, b"m\n", lines=2)
+                ).splitlines()
                 assert m_reply[0] and b"RPRT" not in m_reply[0]
                 # The production poller re-solicits transmit state every
                 # cycle: without it the connect-time PTT observation goes
@@ -287,9 +293,9 @@ async def test_mk2_wsjtx_split_keeps_the_cat_link():
             # sleep (the production poller re-solicits every cycle).
             assert (await radio.read_transmit_state()).value is False
             assert await _exchange(writer, reader, b"S 0 VFOB\n") == b"RPRT 0\n"
-            assert (
-                await _exchange(writer, reader, b"s\n", lines=2)
-            ).splitlines()[0] == b"0"
+            assert (await _exchange(writer, reader, b"s\n", lines=2)).splitlines()[
+                0
+            ] == b"0"
             assert await radio.get_freq() == freq_before
             assert await radio.get_mode() == mode_before
             assert sim.login_count == 1
