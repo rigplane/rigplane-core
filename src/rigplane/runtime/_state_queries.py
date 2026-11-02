@@ -25,7 +25,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionQueryResolver,
     resolve_available_when,
 )
-from rigplane.core.civ import CivRequestKey, request_key_from_frame
+from rigplane.core.civ import CivRequestKey, read_identity_from_frame
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateSnapshot
 from rigplane.profiles import RadioProfile
@@ -186,7 +186,7 @@ def request_keys_for_query(
     for variant in variants:
         command, sub, data = wire_parts_for_query(variant, scope_receiver)
         frame = build_civ_frame(0x00, CONTROLLER_ADDR, command, sub=sub, data=data)
-        keys.add(request_key_from_frame(parse_civ_frame(frame)))
+        keys.add(read_identity_from_frame(parse_civ_frame(frame)))
     return frozenset(keys)
 
 

@@ -24,6 +24,7 @@ from rigplane.core.civ import (
     PttReplyLedger,
     is_directed_ptt_reply,
     iter_civ_frames,
+    read_identity_from_frame,
     request_key_from_frame,
 )
 from rigplane.commands.commander import IcomCommander, Priority
@@ -4620,6 +4621,9 @@ class CivRuntime:
             token_or_future = tracker.register_ack(
                 wait=False,
                 response_key=request_key if expects_response else None,
+                refused_read=(
+                    read_identity_from_frame(parsed_frame) if expects_response else None
+                ),
             )
             if isinstance(token_or_future, int):
                 ack_sink_token = token_or_future

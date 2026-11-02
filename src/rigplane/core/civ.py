@@ -26,6 +26,7 @@ __all__ = [
     "PttReplyLedger",
     "is_directed_ptt_reply",
     "iter_civ_frames",
+    "read_identity_from_frame",
     "request_key_from_frame",
 ]
 
@@ -160,6 +161,7 @@ class _AckWaiter:
     generation: int
     nak_only: bool = False
     response_key: CivRequestKey | None = None
+    refused_read: CivRequestKey | None = None
 
 
 @dataclass(slots=True)
@@ -192,6 +194,22 @@ def request_key_from_frame(frame: CivFrame) -> CivRequestKey:
             )
             else b""
         ),
+    )
+
+
+def read_identity_from_frame(frame: CivFrame) -> CivRequestKey:
+    """The whole identity of an outgoing read, every selector byte kept.
+
+    MOR-4058: :func:`request_key_from_frame` keeps only the selector bytes a
+    reply must echo to be matched, so two ``1A 05`` menu reads share one
+    response key. A refusal (bare ``FA``) has no payload to tell them apart:
+    it must name the read by everything the read carried.
+    """
+    return CivRequestKey(
+        command=frame.command,
+        sub=frame.sub,
+        receiver=frame.receiver,
+        data_prefix=frame.data,
     )
 
 
@@ -330,11 +348,14 @@ class CivRequestTracker:
         consume_backlog: bool = True,
         nak_only: bool = False,
         response_key: CivRequestKey | None = None,
+        refused_read: CivRequestKey | None = None,
     ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
 
         ``response_key`` is read for a sink (``wait=False``) only; ``resolve``
-        says when a data response retires that sink.
+        says when a data response retires that sink. ``refused_read`` (sinks
+        only, :func:`read_identity_from_frame`) is what
+        :meth:`take_refused_reads` reports when a refusal retires the sink.
 
         Returns:
             - Future when ``wait=True`` (caller awaits ACK/NAK)
@@ -375,6 +396,7 @@ class CivRequestTracker:
                 created_monotonic=created,
                 generation=self._generation,
                 response_key=response_key,
+                refused_read=refused_read,
             )
         )
         return token
@@ -543,9 +565,9 @@ class CivRequestTracker:
                     # Successfully sunk an ACK for a fire-and-forget request
                     if (
                         event.type is CivEventType.NAK
-                        and waiter.response_key is not None
+                        and waiter.refused_read is not None
                     ):
-                        self._refused_reads.append(waiter.response_key)
+                        self._refused_reads.append(waiter.refused_read)
                     return True
 
             # Park short-lived orphan ACK/NAK frames, bounded and TTL-pruned.

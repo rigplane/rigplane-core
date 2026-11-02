@@ -239,7 +239,7 @@ async def test_refusal_names_the_oldest_open_read_sink() -> None:
     refused = CivRequestKey(command=0x1C, sub=0x01)
     later = CivRequestKey(command=0x1C, sub=0x03)
     for key in (answered, refused, later):
-        tracker.register_ack(wait=False, response_key=key)
+        tracker.register_ack(wait=False, response_key=key, refused_read=key)
     tracker.resolve(
         CivEvent(type=CivEventType.RESPONSE, frame=_response_frame(0x03, b"\x00"))
     )
@@ -254,7 +254,8 @@ async def test_refusal_names_the_oldest_open_read_sink() -> None:
 async def test_only_a_refused_read_sink_is_named() -> None:
     tracker = CivRequestTracker()
     tracker.register_ack(wait=False)  # a fire-and-forget write
-    tracker.register_ack(wait=False, response_key=CivRequestKey(command=0x03, sub=None))
+    read = CivRequestKey(command=0x03, sub=None)
+    tracker.register_ack(wait=False, response_key=read, refused_read=read)
     tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
     tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_ack_frame()))
 
@@ -264,7 +265,8 @@ async def test_only_a_refused_read_sink_is_named() -> None:
 @pytest.mark.asyncio
 async def test_generation_advance_forgets_refused_reads() -> None:
     tracker = CivRequestTracker()
-    tracker.register_ack(wait=False, response_key=CivRequestKey(command=0x1C, sub=0x01))
+    tuner = CivRequestKey(command=0x1C, sub=0x01)
+    tracker.register_ack(wait=False, response_key=tuner, refused_read=tuner)
     tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
     tracker.advance_generation(RuntimeError("reconnect"))
 
