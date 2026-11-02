@@ -840,10 +840,12 @@ class UsbAudioStreamContract:
 
     ``None`` means the stream opens at ``channels`` (open == deliver). It is set
     only when the device is opened at MORE channels than downstream consumes —
-    i.e. a mono (deliver=1) request on a stereo-native device (open=2): the
-    stream opens at the native count and software-downmixes back to ``channels``
-    (MOR-504). ``channels`` always stays the DELIVERED count (downstream DSP is
-    48 kHz mono), so diagnostics and the fixed-frame contract see the mono path.
+    i.e. a 1- or 2-channel deliver request on an N-channel device (PipeWire
+    ``pulse`` = 32 ch, BlackHole = 16 ch, any 4/6/8-channel interface,
+    MOR-4029): the stream opens at the native count and software-downmixes back
+    to ``channels`` (MOR-504 generalized beyond open=2). ``channels`` always
+    stays the DELIVERED count (downstream DSP is 48 kHz), so diagnostics and
+    the fixed-frame contract see the delivered layout.
     """
 
     @property
@@ -1720,12 +1722,15 @@ class UsbAudioDriver:
           than the device exposes (stereo request on a mono capture endpoint).
           Both open and deliver clamp DOWN to ``device_max``; downstream is mono,
           so a 1-channel capture feeds the broadcaster cleanly.
-        - **Under-request (MOR-504)** — a mono (deliver=1) request on a
-          stereo-NATIVE device. macOS AUHAL refuses to open a 2-channel device at
-          1 channel (err -10863), so the stream opens at the device-native count
-          and the RX stream software-downmixes back to mono before delivery. RX
-          path only (TX never up-opens — there is no mix-up direction for
-          playback).
+        - **Under-request (MOR-504, generalized by MOR-4029)** — a 1- or 2-channel
+          deliver request on an N-channel device (a mono request on a
+          stereo-native device, or any deliver count on PipeWire ``pulse`` = 32 ch,
+          BlackHole = 16 ch, a 4/6/8-channel interface). macOS AUHAL refuses to
+          open a 2-channel device at 1 channel (err -10863), so the stream opens
+          at the device-native count and the RX stream software-downmixes back to
+          the delivered layout before delivery (the first two device channels are
+          L/R). RX path only (TX never up-opens — there is no mix-up direction
+          for playback).
         """
 
         device_max = (
