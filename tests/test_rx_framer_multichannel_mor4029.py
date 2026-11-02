@@ -44,7 +44,11 @@ from test_web_server import (
 )
 
 from rigplane.audio import usb_driver
-from rigplane.audio._portaudio_enum import PortAudioDeviceRecord
+from rigplane.audio._portaudio_enum import (
+    HostApiRecord,
+    PortAudioDeviceRecord,
+    read_portaudio_enumeration,
+)
 from rigplane.audio.backend import (
     AudioDeviceConfig,
     PortAudioBackend,
@@ -211,12 +215,22 @@ def _fake_sd_builder(max_input_channels: int) -> tuple[type, dict[str, Any]]:
         _device_record(1, "pulse-out", inputs=0, outputs=2),
     ]
     devices = [asdict(record) for record in records]
+    # The host API reply is derived from the typed producer contract too:
+    # sounddevice reports a "devices" index list where HostApiRecord keeps
+    # the count, and the fake is checked back through the real parser below.
+    host_record = HostApiRecord(
+        index=0,
+        name="ALSA",
+        device_count=len(records),
+        default_input=0,
+        default_output=1,
+    )
     hostapis = [
         {
-            "name": "ALSA",
-            "devices": [0, 1],
-            "default_input_device": 0,
-            "default_output_device": 1,
+            "name": host_record.name,
+            "devices": list(range(host_record.device_count)),
+            "default_input_device": host_record.default_input,
+            "default_output_device": host_record.default_output,
         }
     ]
     captured: dict[str, Any] = {}
@@ -254,6 +268,9 @@ def _fake_sd_builder(max_input_channels: int) -> tuple[type, dict[str, Any]]:
         def check_output_settings(**_kw: Any) -> None:
             return None
 
+    enumeration = read_portaudio_enumeration(FakeSd)
+    assert enumeration.hostapis == (host_record,)
+    assert enumeration.devices == tuple(records)
     return FakeSd, captured
 
 
