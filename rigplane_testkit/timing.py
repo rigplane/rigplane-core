@@ -65,13 +65,17 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, overload
 
 from rigplane_testkit.sim.engine import ManualClock
+
+if TYPE_CHECKING:
+    import pytest
 
 __all__ = ["VirtualClock", "await_until", "virtual_clock", "wait_until"]
 
 T = TypeVar("T")
+P = ParamSpec("P")
 
 # How many loop turns one settle may take before the loop counts as busy.
 _MAX_SETTLE_TURNS = 10_000
@@ -177,7 +181,10 @@ class VirtualClock(ManualClock):
                 loop.set_default_executor(_InlineExecutor())
             watchdog.start()
             try:
-                return await scenario()
+                result = await scenario()
+                if tripped:  # the scenario swallowed the watchdog's cancellation
+                    raise asyncio.CancelledError
+                return result
             except asyncio.CancelledError:
                 if tripped:
                     raise AssertionError(
@@ -204,7 +211,7 @@ class VirtualClock(ManualClock):
         self.advance(max(0.0, delay))
         await asyncio.sleep(0)
 
-    def scope_to(self, monkeypatch: Any, module: Any) -> None:
+    def scope_to(self, monkeypatch: pytest.MonkeyPatch, module: Any) -> None:
         """Point ``module``'s own ``time`` / ``asyncio`` names at this clock.
 
         Only the names inside ``module`` are replaced (by views that forward
@@ -244,6 +251,28 @@ async def _settle(loop: asyncio.AbstractEventLoop) -> None:
     raise AssertionError(
         "the event loop never went quiet; a task is spinning on sleep(0)"
     )
+
+
+@overload
+def virtual_clock(
+    test: Callable[Concatenate[VirtualClock, P], Awaitable[None]],
+    *,
+    start: float = 0.0,
+    inline_threads: bool = True,
+    real_timeout_s: float = _DEFAULT_REAL_TIMEOUT_S,
+) -> Callable[P, None]: ...
+
+
+@overload
+def virtual_clock(
+    test: None = None,
+    *,
+    start: float = 0.0,
+    inline_threads: bool = True,
+    real_timeout_s: float = _DEFAULT_REAL_TIMEOUT_S,
+) -> Callable[
+    [Callable[Concatenate[VirtualClock, P], Awaitable[None]]], Callable[P, None]
+]: ...
 
 
 def virtual_clock(

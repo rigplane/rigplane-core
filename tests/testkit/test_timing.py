@@ -248,6 +248,34 @@ def test_a_scenario_that_waits_for_the_impossible_fails_instead_of_hanging() -> 
         clock.run(scenario, real_timeout_s=0.2)
 
 
+def test_a_scenario_that_swallows_the_watchdog_still_fails() -> None:
+    clock = VirtualClock()
+
+    async def scenario() -> str:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            return "swallowed"  # e.g. a reconnect loop that absorbs cancellation
+        return "never"
+
+    with pytest.raises(AssertionError, match="still waiting"):
+        clock.run(scenario, real_timeout_s=0.2)
+
+
+def test_the_decorator_hands_the_clock_in_and_keeps_the_other_parameters_typed() -> (
+    None
+):
+    seen: list[float] = []
+
+    @clocked
+    async def scenario(clock: VirtualClock, period: float) -> None:
+        await clock.elapse(period)
+        seen.append(clock.now)
+
+    scenario(2.5)  # type-checks only because the clock parameter was stripped
+    assert seen == [2.5]
+
+
 def test_the_first_parameter_must_be_the_clock() -> None:
     with pytest.raises(TypeError, match="first parameter"):
 
