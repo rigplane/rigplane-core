@@ -280,5 +280,5 @@ def test_the_first_parameter_must_be_the_clock() -> None:
     with pytest.raises(TypeError, match="first parameter"):
 
         @clocked
-        async def test_x(other: object) -> None:  # pragma: no cover - never runs
+        async def scenario(other: object) -> None:  # pragma: no cover - never runs
             pass
