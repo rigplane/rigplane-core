@@ -66,7 +66,8 @@ wave-output enable is refused with a NAK on a link whose baud is below
 gated.
 
 Faults are scriptable and deterministic: ``delay_identity_answer``,
-``answer_identity_after_reconnect_only``, ``wrong_model_id``, ``silence``
+``answer_identity_after_reconnect_only``, ``wrong_model_id``,
+``lose_next_answer`` (one request heard, its answer lost), ``silence``
 (the MOR-2861 case: link open, nothing answers), ``usb_vanish`` /
 ``usb_reappear`` (reads, writes and new opens raise ``ENODEV``, the class
 ``core/serial_open.py: serial_open_diagnostic`` maps to
@@ -293,6 +294,7 @@ class CivSerialFake:
         self._identity_after_reconnect_only = False
         self._model_id_override: bytes | None = None
         self._silent_until = 0.0
+        self._lost_answers: list[int] = []
         self._vanished = False
         self._answers_at_baud = answers_at_baud
         self._locks_to_first_baud = locks_to_first_baud
@@ -534,6 +536,12 @@ class CivSerialFake:
             model_id = candidate
         self._model_id_override = bytes(model_id)
 
+    def lose_next_answer(self, command: int) -> None:
+        """MOR-3888: the radio hears the next *command* request but its answer
+        never arrives (the echo still does), as when a reply is lost on the
+        link. Writes and every other request are answered as usual."""
+        self._lost_answers.append(command)
+
     def silence(self, for_seconds: float) -> None:
         """MOR-2861: the link stays open and nothing answers for the window.
 
@@ -632,6 +640,9 @@ class CivSerialFake:
             return
         reply = self._answer(parsed, connection, frame)
         if reply is None:
+            return
+        if parsed.command in self._lost_answers:
+            self._lost_answers.remove(parsed.command)
             return
         delay = self._answer_delay_s(parsed, reply)
         identity_fault = (
