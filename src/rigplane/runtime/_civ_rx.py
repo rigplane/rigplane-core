@@ -98,7 +98,7 @@ from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime import radio_reconnect
 from rigplane.runtime._state_queries import (
     acquisition_query_resolver_for_profile,
-    request_keys_for_query,
+    read_identity_for_query,
     tx_target_max_age,
 )
 from rigplane.runtime.meter_cal import interpolate_meter
@@ -2726,14 +2726,19 @@ class CivRuntime:
         scheduler = getattr(self._host, "_acquisition_scheduler", None)
         if not refused or not isinstance(scheduler, AcquisitionScheduler):
             return
-        resolve = acquisition_query_resolver_for_profile(self._host._profile)
+        profile = self._host._profile
+        resolve = acquisition_query_resolver_for_profile(profile)
         scope_receiver = self._host._radio_state.scope_controls.receiver
         paths = []
         for path in scheduler.declared_paths():
             query = resolve(path)
-            if query is not None and request_keys_for_query(
-                query, scope_receiver
-            ).intersection(refused):
+            if (
+                query is not None
+                and read_identity_for_query(
+                    query, scope_receiver, profile.supports_cmd29
+                )
+                in refused
+            ):
                 paths.append(path)
         if paths:
             scheduler.record_read_refusal(paths, now=time.monotonic())

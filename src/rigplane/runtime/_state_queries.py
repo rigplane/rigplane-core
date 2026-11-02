@@ -23,6 +23,8 @@ from rigplane.commands.scope import (
 from rigplane.core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionQueryResolver,
+    CivCmd29Support,
+    civ_route_for_query,
     resolve_available_when,
 )
 from rigplane.core.civ import CivRequestKey, read_identity_from_frame
@@ -167,27 +169,24 @@ def wire_parts_for_query(
     return query.command, query.sub, query.data
 
 
-def request_keys_for_query(
+def read_identity_for_query(
     query: AcquisitionQuery,
     scope_receiver: int,
-) -> frozenset[CivRequestKey]:
-    """The request keys a read of *query* can go out under (MOR-4058).
+    supports_cmd29: CivCmd29Support,
+) -> CivRequestKey | None:
+    """The read identity a query goes out under (MOR-4058).
 
-    The key the CI-V request tracker gives the frame
-    :func:`wire_parts_for_query` builds — plus, for a MAIN-routed query, the
-    unwrapped frame the acquisition executor sends instead when the profile
-    has no cmd29 route for the command.
+    Routed exactly as the acquisition executor routes it
+    (:func:`civ_route_for_query`), so a refused read names only the declared
+    path whose own read it was; ``None`` when the query cannot be sent.
     """
 
-    variants = [query]
-    if query.receiver == 0:
-        variants.append(replace(query, receiver=None))
-    keys = set()
-    for variant in variants:
-        command, sub, data = wire_parts_for_query(variant, scope_receiver)
-        frame = build_civ_frame(0x00, CONTROLLER_ADDR, command, sub=sub, data=data)
-        keys.add(read_identity_from_frame(parse_civ_frame(frame)))
-    return frozenset(keys)
+    routed = civ_route_for_query(query, supports_cmd29)
+    if routed is None:
+        return None
+    command, sub, data = wire_parts_for_query(routed, scope_receiver)
+    frame = build_civ_frame(0x00, CONTROLLER_ADDR, command, sub=sub, data=data)
+    return read_identity_from_frame(parse_civ_frame(frame))
 
 
 def acquisition_query_resolver_for_profile(

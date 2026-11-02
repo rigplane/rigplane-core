@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import replace
 
 import pytest
 
@@ -125,20 +126,29 @@ async def test_ic705_nb_depth_refusal_is_not_a_vox_delay_refusal() -> None:
 
 
 def _receiver_routed(radio: IcomRadio, scheduler: AcquisitionScheduler) -> tuple:
-    """A MAIN path and its SUB twin the profile reads through cmd29."""
+    """A declared MAIN path and its declared SUB twin, both read via cmd29."""
     resolve = acquisition_query_resolver_for_profile(radio._profile)
-    for path in sorted(scheduler.declared_paths(), key=str):
-        query = resolve(path)
+    declared = sorted(scheduler.declared_paths(), key=str)
+    for main in declared:
+        query = resolve(main)
         if (
-            query is not None
-            and query.receiver == 0
-            and path.receiver_id is not None
-            and radio._profile.supports_cmd29(query.command, query.sub)
+            query is None
+            or query.receiver != 0
+            or not radio._profile.supports_cmd29(query.command, query.sub)
         ):
-            twin = FieldPath.receiver("1", path.family.value, path.name)
-            twin_query = resolve(twin)
-            if twin_query is not None and twin_query.receiver == 1:
-                return path, twin, query
+            continue
+        for sub in declared:
+            twin = resolve(sub)
+            if (
+                sub.family == main.family
+                and sub.name == main.name
+                and sub.slot == main.slot
+                and twin is not None
+                and twin.receiver == 1
+                and (twin.command, twin.sub, twin.data)
+                == (query.command, query.sub, query.data)
+            ):
+                return main, sub, query
     raise AssertionError("no cmd29-routed MAIN/SUB pair declared")
 
 
@@ -157,9 +167,7 @@ async def test_plain_read_of_the_selected_sub_does_not_refuse_main() -> None:
     assert scheduler.consecutive_refusals(main) == 0
     assert scheduler.consecutive_refusals(sub) == 0
 
-    command, wire_sub, wire_data = wire_parts_for_query(
-        query.__class__(query.command, query.sub, query.data, receiver=1), 0
-    )
+    command, wire_sub, wire_data = wire_parts_for_query(replace(query, receiver=1), 0)
     await _refuse(radio, command, wire_sub, wire_data)
     assert scheduler.consecutive_refusals(sub) == 1
     assert scheduler.consecutive_refusals(main) == 0

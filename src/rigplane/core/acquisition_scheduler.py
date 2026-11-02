@@ -70,6 +70,7 @@ __all__ = [
     "adaptive_cadence_limit",
     "availability_clause_holds",
     "civ_acquisition_executor_for_provider",
+    "civ_route_for_query",
     "civ_transport_budget_hz",
     "derive_active_receiver_value",
     "derive_tx_active",
@@ -319,6 +320,30 @@ class _PendingMeterSample:
 _CIV_ACQUISITION_PROVIDERS = frozenset(("icom_civ", "xiegu_civ"))
 
 
+def civ_route_for_query(
+    query: AcquisitionQuery,
+    supports_cmd29: CivCmd29Support | None,
+) -> AcquisitionQuery | None:
+    """The query as it goes out on the wire, or ``None`` if it cannot.
+
+    A receiver-routed query keeps its cmd29 route where the profile has one
+    for the command. Without one, MAIN's read goes out plain (the radio
+    answers it for the selected receiver) and SUB's cannot be sent. One
+    decision for the acquisition executor and for naming the declared path
+    a refused read belongs to (MOR-4058).
+    """
+
+    if (
+        query.receiver is None
+        or supports_cmd29 is None
+        or supports_cmd29(query.command, query.sub)
+    ):
+        return query
+    if query.receiver != 0:
+        return None
+    return replace(query, receiver=None)
+
+
 class IcomCivAcquisitionExecutor:
     """CI-V path-to-query executor for compatible CI-V acquisition profiles."""
 
@@ -353,16 +378,12 @@ class IcomCivAcquisitionExecutor:
                 failed.append(path)
                 failure_reason = failure_reason or "no_civ_query_mapping"
                 continue
-            if (
-                query.receiver is not None
-                and self._supports_cmd29 is not None
-                and not self._supports_cmd29(query.command, query.sub)
-            ):
-                if query.receiver != 0:
-                    failed.append(path)
-                    failure_reason = failure_reason or "no_civ_receiver_route"
-                    continue
-                query = replace(query, receiver=None)
+            routed = civ_route_for_query(query, self._supports_cmd29)
+            if routed is None:
+                failed.append(path)
+                failure_reason = failure_reason or "no_civ_receiver_route"
+                continue
+            query = routed
             if query in sent_queries:
                 sent.append(path)
                 continue
