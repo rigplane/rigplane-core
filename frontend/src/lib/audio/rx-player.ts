@@ -429,6 +429,10 @@ export class RxPlayer {
       try { entry.src.stop(); } catch { /* already ended */ }
     }
     this._scheduledSrcs = [];
+    // A decoder that still holds pending background work would otherwise
+    // deliver old audio into the freshly flushed timeline; the next Opus
+    // frame lazily configures a fresh one.
+    this.resetDecoder();
     this.nextPlayTime = 0;
   }
 
@@ -465,8 +469,11 @@ export class RxPlayer {
     if (!this.decoder) {
       const ctx = this.ctx;
       this.opusTs = 0;
-      this.decoder = new AudioDecoder({
+      const decoder: AudioDecoder = new AudioDecoder({
         output: (audioData: AudioData) => {
+          // Output of a decoder that was reset or replaced (flush, codec
+          // switch) must not reach the playback timeline.
+          if (this.decoder !== decoder) { audioData.close(); return; }
           const frames = audioData.numberOfFrames;
           const numCh = audioData.numberOfChannels;
           const buf = ctx.createBuffer(numCh, frames, audioData.sampleRate);
@@ -480,9 +487,10 @@ export class RxPlayer {
         },
         error: (err: DOMException) => {
           console.warn('RxPlayer: AudioDecoder error', err);
-          this.decoder = null;
+          if (this.decoder === decoder) this.decoder = null;
         },
       });
+      this.decoder = decoder;
       this.decoder.configure({
         codec: 'opus',
         sampleRate: sr > 0 ? sr : SAMPLE_RATE,

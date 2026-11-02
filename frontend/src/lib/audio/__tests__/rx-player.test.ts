@@ -730,6 +730,31 @@ describe('RxPlayer mid-stream codec switch (MOR-588)', () => {
     p.stop();
   });
 
+  it('flush() discards Opus output still pending in the old decoder (MOR-3965 reconnect)', () => {
+    const p = new RxPlayer(); p.start();
+    // A delayed (background) decoder: output arrives only when released.
+    const pending: Array<() => void> = [];
+    const decode = vi.spyOn(FakeAudioDecoder.prototype, 'decode').mockImplementation(function (this: any) {
+      const init = this.init;
+      pending.push(() => init.output({
+        numberOfFrames: 480, numberOfChannels: 1, sampleRate: SAMPLE_RATE,
+        copyTo: vi.fn(), close: vi.fn(),
+      }));
+    });
+    p.feed(opus());
+    const old = FakeAudioDecoder.instances[0];
+    p.flush();                       // reconnect before the decode finished
+    expect(old.state).toBe('closed');
+    pending.forEach(release => release());   // the old output lands late
+    expect(ctx.createBufferSource).not.toHaveBeenCalled();
+    decode.mockRestore();
+    p.feed(opus());                  // fresh frames use a fresh decoder
+    expect(FakeAudioDecoder.instances.length).toBe(2);
+    expect(FakeAudioDecoder.instances[1].state).toBe('configured');
+    expect(ctx.createBufferSource).toHaveBeenCalledTimes(1);
+    p.stop();
+  });
+
   it('Opus→PCM16 switch closes the stale Opus decoder and keeps playing', () => {
     const p = new RxPlayer(); p.start();
     p.feed(opus());

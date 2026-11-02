@@ -1,3 +1,8 @@
+// Wire contract: the `audio_start` request and the RX frame header built
+// here are the ones the server-side audio handler accepts and emits; those
+// are pinned by tests/test_handlers_coverage.py (audio_start rx) and
+// tests/test_web_audio_session_rx.py / tests/test_web_usb_pairing_integration.py
+// (MSG_TYPE_AUDIO_RX frame header and PCM16 payload).
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AUDIO_HEADER_SIZE,
@@ -139,6 +144,10 @@ async function startRxWithOpenSocket() {
   audioManager.startRx();
   const ws = FakeWebSocket.instances[0];
   ws.open();
+  // The session subscribes to RX with the audio request before any frame.
+  expect(ws.sent.map((m) => JSON.parse(String(m)))).toContainEqual(
+    expect.objectContaining({ type: 'audio_start', direction: 'rx' }),
+  );
   return { audioManager, ws };
 }
 
@@ -182,12 +191,16 @@ describe('hidden-tab burst through the real audio session (MOR-3965)', () => {
     ctx.currentTime = 1.003;
     document.dispatchEvent(new Event('visibilitychange'));
     const limit = 1.003 + 0.3;
+    // A buffer is trimmed when it has not started and would end beyond the
+    // foreground ceiling; anything already started or ending inside it stays.
     let stopped = 0;
     for (let i = 0; i < starts.length; i++) {
-      if (starts[i] > limit) {
+      const notStarted = starts[i] > 1.003;
+      const endsBeyond = starts[i] + 0.02 > limit;
+      if (notStarted && endsBeyond) {
         expect(ctx._srcs[i].stop).toHaveBeenCalledTimes(1);
         stopped++;
-      } else if (starts[i] <= 1.003) {
+      } else {
         expect(ctx._srcs[i].stop).not.toHaveBeenCalled();
       }
     }
@@ -213,6 +226,10 @@ describe('hidden-tab burst through the real audio session (MOR-3965)', () => {
     expect(FakeWebSocket.instances).toHaveLength(2);
     const fresh = FakeWebSocket.instances[1];
     fresh.open(); // AudioManager re-subscribes and calls rxPlayer.flush().
+    // The reconnect re-subscribes to RX through the audio request.
+    expect(fresh.sent.map((m) => JSON.parse(String(m)))).toContainEqual(
+      expect.objectContaining({ type: 'audio_start', direction: 'rx' }),
+    );
 
     for (const src of ctx._srcs.slice(0, 100)) {
       expect(src.stop).toHaveBeenCalledTimes(1);
