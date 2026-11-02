@@ -14,6 +14,13 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   (a `ManualClock`, the simulator engine's clock, that also drives an event loop's timers
   and a module's own `time`/`asyncio` names), the `@virtual_clock` decorator, and
   `wait_until` / `await_until` for real events. Do not write another per-file clock class.
+- `rigplane_testkit.realtime_guard` — a collection-time plugin (loaded from
+  `tests/conftest.py`) that refuses a test using a real sleep, the real clock or a real
+  timeout of 1 s or less unless it runs on the virtual clock or carries
+  `@pytest.mark.realtime(reason="...")`. Tests not yet converted are listed in
+  `tests/realtime_baseline.txt`, which may only shrink (`--realtime-write-baseline`
+  regenerates it from a full collection; `python -m rigplane_testkit.realtime_guard
+  tests/realtime_baseline.txt origin/main` fails if it grew).
 - `rigplane_testkit.icom` — `MockIcomRadio`, an asyncio UDP simulator of an
   Icom IC-7610 LAN interface: control-port discovery/login/token/ping, a CI-V
   command port, single-owner session holding with keepalive renewal, and
