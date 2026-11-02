@@ -972,6 +972,25 @@ class AcquisitionScheduler:
         if availability is not None:
             return availability
 
+        if normalized_priority in _AUTOMATIC_PRIORITIES:
+            # MOR-4058: automatic work (priming, cadence, reconciliation)
+            # waits out a refusal's retry delay; a read asked for by name
+            # goes out regardless.
+            askable = tuple(
+                path
+                for path in normalized_paths
+                if not self._refusal_withheld(path, now)
+            )
+            if not askable:
+                return EnsureFreshResult(
+                    status=AcquisitionStatus.UNAVAILABLE,
+                    message=(
+                        f"{', '.join(str(path) for path in normalized_paths)}: "
+                        "refused by the radio; asked again after its retry delay"
+                    ),
+                )
+            normalized_paths = askable
+
         if self._external_cat_paused:
             queued: list[AcquisitionRequest] = []
             deferred = False
@@ -1176,10 +1195,18 @@ class AcquisitionScheduler:
         self._availability = resolve_available_when(self._profile, snapshot)
 
     def _contradicted_automatic_request(self, request: AcquisitionRequest) -> bool:
-        """Whether ``request`` is automatic and every path is contradicted."""
+        """Whether ``request`` is automatic and no path may be asked now.
 
+        A path may not be asked while its declared availability is
+        contradicted (MOR-3630) or while a refusal's retry delay runs
+        (MOR-4058, :meth:`record_read_refusal`).
+        """
+
+        now = self._clock.now()
         return request.priority in _AUTOMATIC_PRIORITIES and all(
-            self._availability.get(path, True) is False for path in request.paths
+            self._availability.get(path, True) is False
+            or self._refusal_withheld(path, now)
+            for path in request.paths
         )
 
     def due_requests(
