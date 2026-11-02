@@ -283,6 +283,7 @@ def test_the_decorator_hands_the_clock_in_and_keeps_the_other_parameters_typed()
     assert seen == [2.5]
 
 
+@pytest.mark.realtime(reason="after the watchdog fires the loop runs on the real clock")
 @pytest.mark.timeout(30)
 def test_cleanup_that_sleeps_after_the_watchdog_fired_still_completes() -> None:
     clock = VirtualClock()

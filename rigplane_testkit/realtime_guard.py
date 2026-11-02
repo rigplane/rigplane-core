@@ -26,7 +26,7 @@ same-file fixtures it requests, transitively; helpers in other files are not fol
 
 Imports are resolved, so ``import time as t`` or ``from time import monotonic`` count.
 
-The virtual clock (:mod:`rigplane_testkit.timing`) replaces ``loop.time`` of the test's own
+The virtual clock (:mod:`rigplane.testing.timing`) replaces ``loop.time`` of the test's own
 loop, so it covers exactly ``asyncio.sleep`` and ``asyncio-timeout``. A test that runs on it
 (the ``@virtual_clock`` decorator, a ``clock`` / ``virtual_clock`` parameter,
 ``VirtualClock(...)``) is still refused for ``time.sleep``, ``clock-read`` and
@@ -47,7 +47,7 @@ import ast
 import os
 import subprocess
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -73,7 +73,6 @@ _ASYNC_KINDS = frozenset(
     {"asyncio.sleep", "asyncio-timeout"}
 )  # what the virtual clock covers
 _TIGHT_TIMEOUT_S = 1.0
-_VIRTUAL_PARAMS = frozenset({"clock", "virtual_clock"})
 
 _CLOCK_READS = frozenset(
     f"time.{name}"
@@ -138,10 +137,10 @@ def _number(node: ast.AST | None) -> float | None:
     return None
 
 
-def _import_map(tree: ast.AST) -> dict[str, str]:
-    """Local name -> dotted origin, for every import anywhere in the module."""
+def _import_names(nodes: Iterable[ast.AST]) -> dict[str, str]:
+    """Local name -> dotted origin for the import statements among ``nodes``."""
     names: dict[str, str] = {}
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 local = alias.asname or alias.name.split(".")[0]
@@ -150,6 +149,14 @@ def _import_map(tree: ast.AST) -> dict[str, str]:
             for alias in node.names:
                 names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
     return names
+
+
+def _definition_imports(
+    module_imports: dict[str, str], fn: ast.FunctionDef | ast.AsyncFunctionDef
+) -> dict[str, str]:
+    """The module's imports, overridden by the imports local to ``fn``: a sibling
+    function's local import never changes how this function's names resolve."""
+    return {**module_imports, **_import_names(ast.walk(fn))}
 
 
 def _dotted(func: ast.AST, imports: dict[str, str]) -> str | None:
@@ -239,12 +246,31 @@ def _scan_body(fn: ast.AST, imports: dict[str, str]) -> _Body:
     return body
 
 
-def _is_virtual(fn: ast.FunctionDef | ast.AsyncFunctionDef, source: str) -> bool:
-    if any("virtual_clock" in ast.unparse(d) for d in fn.decorator_list):
+def _is_virtual(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef, imports: dict[str, str]
+) -> bool:
+    """Evidence that the test's own loop runs on the virtual clock.
+
+    Only the real entry points count: the ``@virtual_clock`` decorator (also under an import
+    alias), a ``virtual_clock`` fixture parameter, ``VirtualClock.on_running_loop()`` or an
+    explicit ``.install(loop)``. Constructing a ``VirtualClock`` or taking some other
+    parameter named ``clock`` does not put the loop on it.
+    """
+    for decorator in fn.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = _dotted(target, imports) or ast.unparse(target)
+        if name.endswith("virtual_clock"):
+            return True
+    if "virtual_clock" in {a.arg for a in fn.args.args + fn.args.kwonlyargs}:
         return True
-    if {a.arg for a in fn.args.args + fn.args.kwonlyargs} & _VIRTUAL_PARAMS:
-        return True
-    return "VirtualClock(" in (ast.get_source_segment(source, fn) or "")
+    for node in ast.walk(fn):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"on_running_loop", "install"}
+        ):
+            return True
+    return False
 
 
 def _marked_realtime(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -280,10 +306,17 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
 
     Definitions are keyed by qualified scope (``Class.method``): a ``self.helper()`` call
     resolves inside its own class, a bare call to a module-level function, so repeated names
-    in different classes never share effects.
+    in different classes never share effects. A fixture a test requests resolves the way the
+    test runner does: the test's own class first, then enclosing scopes, then the module; a
+    class's autouse fixtures apply to that class's tests, the module's to every test of the
+    file.
     """
     tree = ast.parse(source)
-    imports = _import_map(tree)
+    module_imports = _import_names(
+        node
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+    )
     defs: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
 
     def visit(node: ast.AST, prefix: str) -> None:
@@ -294,20 +327,41 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
                 visit(child, prefix + child.name + ".")
 
     visit(tree, "")
-    bodies = {qual: _scan_body(fn, imports) for qual, fn in defs.items()}
-    fixtures: dict[str, str] = {}  # fixture name -> qualified definition (last wins)
-    autouse: list[str] = []
-    for qual, fn in defs.items():
-        is_fixture, is_autouse = _fixture_info(fn)
-        if is_fixture:
-            fixtures[fn.name] = qual
-            if is_autouse and "." not in qual:
-                autouse.append(qual)
+    bodies = {
+        qual: _scan_body(fn, _definition_imports(module_imports, fn))
+        for qual, fn in defs.items()
+    }
+    fixture_quals = {qual for qual, fn in defs.items() if _fixture_info(fn)[0]}
+    autouse_quals = {qual for qual in fixture_quals if _fixture_info(defs[qual])[1]}
+
+    def scope_of(qual: str) -> str:
+        return qual.rpartition(".")[0]
+
+    def resolve_fixture(name: str, from_qual: str) -> str | None:
+        """The fixture ``name`` as seen from ``from_qual``: innermost enclosing class first."""
+        scope = scope_of(from_qual)
+        while True:
+            candidate = f"{scope}.{name}" if scope else name
+            if candidate in fixture_quals:
+                return candidate
+            if not scope:
+                return None
+            scope = scope_of(scope)
+
+    def applicable_autouse(from_qual: str) -> list[str]:
+        scope = scope_of(from_qual)
+        return [
+            q
+            for q in autouse_quals
+            if scope_of(q) == ""
+            or scope == scope_of(q)
+            or scope.startswith(scope_of(q) + ".")
+        ]
 
     def closure(root: str) -> set[str]:
         effects: set[str] = set()
         seen: set[str] = set()
-        todo = [root, *autouse]
+        todo = [root, *applicable_autouse(root)]
         while todo:
             qual = todo.pop()
             if qual in seen or qual not in bodies:
@@ -315,7 +369,7 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
             seen.add(qual)
             body = bodies[qual]
             effects |= body.effects
-            owner = qual.rpartition(".")[0]
+            owner = scope_of(qual)
             for name in body.module_calls:
                 if name in bodies:
                     todo.append(name)
@@ -324,15 +378,18 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
                 if local in bodies:
                     todo.append(local)
             for arg in defs[qual].args.args + defs[qual].args.kwonlyargs:
-                if arg.arg in fixtures:
-                    todo.append(fixtures[arg.arg])
+                found = resolve_fixture(arg.arg, qual)
+                if found is not None and found != qual:
+                    todo.append(found)
         return effects
 
     facts: dict[str, TestFacts] = {}
     for qual, fn in defs.items():
-        if fn.name.startswith("test") and not _fixture_info(fn)[0]:
+        if fn.name.startswith("test") and qual not in fixture_quals:
             facts[qual] = TestFacts(
-                frozenset(closure(qual)), _is_virtual(fn, source), _marked_realtime(fn)
+                frozenset(closure(qual)),
+                _is_virtual(fn, _definition_imports(module_imports, fn)),
+                _marked_realtime(fn),
             )
     return facts
 
@@ -374,7 +431,7 @@ class Report:
         if self.new:
             parts.append(
                 "tests that depend on the real clock or a real sleep (run them on the "
-                "virtual clock from rigplane_testkit.timing, wait for events, or mark "
+                "virtual clock from rigplane.testing.timing, wait for events, or mark "
                 "@pytest.mark.realtime(reason='...')):\n  "
                 + "\n  ".join(
                     f"{key}  [{', '.join(sorted(kinds))}]"
@@ -561,6 +618,7 @@ def _case_exempt(item: pytest.Item) -> tuple[bool, bool]:
 
 def _growth(rootdir: Path, baseline_path: Path) -> list[str]:
     base = base_revision(rootdir)
+    explicit = bool(os.environ.get("RIGPLANE_REALTIME_BASE_REF"))
     if base is None:
         _warn_if_ci("no base revision to compare the realtime baseline with")
         return []
@@ -570,6 +628,10 @@ def _growth(rootdir: Path, baseline_path: Path) -> list[str]:
         _warn_if_ci(f"realtime baseline growth not verified: {exc}")
         return []
     if check.status == "unavailable":
+        if explicit:
+            raise pytest.UsageError(
+                f"realtime baseline growth not verified: {check.detail}"
+            )
         _warn_if_ci(f"realtime baseline growth not verified: {check.detail}")
     return list(check.grown)
 
@@ -620,12 +682,19 @@ def pytest_collection_modifyitems(
             "# Tests that still depend on the real clock (MOR-4075). This file may only shrink:\n"
             "# convert a test, then delete its line. New real-clock tests are not allowed here.\n"
         )
+        # A partial run (a subset of files) rewrites only what it collected: entries of
+        # modules it did not collect stay, so it can never discard unrelated exemptions.
+        kept = {
+            entry
+            for entry in read_baseline(baseline_path)
+            if entry.partition("::")[0] not in scans
+            and (rootdir / entry.partition("::")[0]).is_file()
+        }
+        written = sorted(report.flagged | kept)
         baseline_path.write_text(
-            header + "".join(f"{k}\n" for k in sorted(report.flagged)), encoding="utf-8"
+            header + "".join(f"{k}\n" for k in written), encoding="utf-8"
         )
-        raise pytest.UsageError(
-            f"wrote {len(report.flagged)} entries to {baseline_path}"
-        )
+        raise pytest.UsageError(f"wrote {len(written)} entries to {baseline_path}")
     if baseline_path is not None:
         report.grown = _growth(rootdir, baseline_path)
     if not report.ok():

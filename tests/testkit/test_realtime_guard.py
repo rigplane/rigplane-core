@@ -221,6 +221,10 @@ def test_the_virtual_clock_exempts_only_what_it_virtualizes() -> None:
         async def test_fixture_timers(virtual_clock):
             await asyncio.sleep(5)
 
+        async def test_installed_on_the_running_loop():
+            async with VirtualClock.on_running_loop() as clock:
+                await asyncio.sleep(5)
+
         async def test_real_sleep_on_a_virtual_loop(virtual_clock):
             time.sleep(0.1)
 
@@ -240,6 +244,101 @@ def test_the_virtual_clock_exempts_only_what_it_virtualizes() -> None:
     assert facts["test_thread_wait_on_a_virtual_loop"].violations() == {
         "thread-timeout"
     }
+
+
+def test_a_constructed_or_unrelated_clock_does_not_virtualize_the_loop() -> None:
+    facts = _facts(
+        """
+        import asyncio
+
+        async def test_constructed_only():
+            clock = VirtualClock()
+            await asyncio.sleep(0.1)
+
+        async def test_some_other_clock_fixture(clock):
+            await asyncio.sleep(0.1)
+        """
+    )
+    assert facts["test_constructed_only"].violations() == {"asyncio.sleep"}
+    assert facts["test_some_other_clock_fixture"].violations() == {"asyncio.sleep"}
+
+
+def test_a_siblings_local_import_cannot_change_another_tests_names() -> None:
+    facts = _facts(
+        """
+        from time import sleep
+
+        async def test_real(virtual_clock):
+            sleep(0.1)
+
+        async def test_sibling(virtual_clock):
+            from asyncio import sleep
+            await sleep(0.1)
+        """
+    )
+    assert facts["test_real"].violations() == {"time.sleep"}
+    assert not facts["test_sibling"].violations()  # a virtual asyncio.sleep
+
+
+def test_fixtures_resolve_in_their_own_pytest_scope() -> None:
+    facts = _facts(
+        """
+        import time
+        import pytest
+
+        class TestA:
+            @pytest.fixture
+            def setup(self):
+                time.sleep(0.1)
+
+            def test_x(self, setup):
+                pass
+
+        class TestB:
+            @pytest.fixture
+            def setup(self):
+                pass
+
+            def test_y(self, setup):
+                pass
+
+        @pytest.fixture
+        def shared():
+            pass
+
+        class TestC:
+            @pytest.fixture
+            def shared(self):
+                time.sleep(0.1)
+
+            def test_shadowed(self, shared):
+                pass
+
+        class TestD:
+            def test_module_level(self, shared):
+                pass
+
+        class TestE:
+            @pytest.fixture(autouse=True)
+            def everywhere_in_e(self):
+                time.sleep(0.1)
+
+            def test_e(self):
+                pass
+
+        class TestF:
+            def test_f(self):
+                pass
+        """
+    )
+    assert facts["TestA.test_x"].effects == {"time.sleep"}
+    assert not facts["TestB.test_y"].effects
+    assert facts["TestC.test_shadowed"].effects == {
+        "time.sleep"
+    }  # class shadows module
+    assert not facts["TestD.test_module_level"].effects
+    assert facts["TestE.test_e"].effects == {"time.sleep"}  # class autouse
+    assert not facts["TestF.test_f"].effects
 
 
 def test_a_reasoned_mark_exempts_and_a_bare_mark_does_not() -> None:
@@ -462,6 +561,116 @@ def test_a_real_sleep_on_a_virtual_loop_is_still_refused(tmp_path: Path) -> None
     assert "test_sample.py::test_virtual_timers  [" not in output
 
 
+def _write_baseline_suite(tmp_path: Path) -> None:
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n"
+        + _PLUGIN_CONFTEST
+        + "@pytest.fixture\nasync def virtual_clock():\n    yield None\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nrealtime_baseline = realtime_baseline.txt\nasyncio_mode = auto\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_a.py").write_text(
+        textwrap.dedent(
+            """
+            import asyncio, time
+            import pytest
+
+            def test_sleeps():
+                time.sleep(0.1)
+
+            @pytest.mark.realtime(reason="OS timer")
+            def test_marked():
+                time.sleep(0.1)
+
+            async def test_virtual(virtual_clock):
+                await asyncio.sleep(5)
+
+            @pytest.mark.parametrize("n", [1, pytest.param(2, marks=pytest.mark.realtime(reason="x"))])
+            def test_mixed(n):
+                time.sleep(0.1)
+
+            def test_clean():
+                pass
+            """
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "test_b.py").write_text(
+        "import time\n\ndef test_other_sleeps():\n    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+
+
+def test_the_write_option_generates_the_baseline_from_a_collection(
+    tmp_path: Path,
+) -> None:
+    _write_baseline_suite(tmp_path)
+    (tmp_path / "realtime_baseline.txt").write_text("", encoding="utf-8")
+    done = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--co",
+            "--realtime-write-baseline",
+            str(tmp_path),
+        ],
+        cwd=tmp_path,
+        env={"PYTHONPATH": str(ROOT), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert done.returncode != 0  # the write mode ends the run on purpose
+    assert "wrote 3 entries" in done.stderr + done.stdout
+    assert read_baseline(tmp_path / "realtime_baseline.txt") == {
+        "test_a.py::test_sleeps",
+        "test_a.py::test_mixed",  # one unmarked case is enough
+        "test_b.py::test_other_sleeps",
+    }
+
+
+def test_a_partial_write_keeps_entries_of_modules_it_did_not_collect(
+    tmp_path: Path,
+) -> None:
+    _write_baseline_suite(tmp_path)
+    (tmp_path / "realtime_baseline.txt").write_text(
+        "test_b.py::test_other_sleeps\ntest_a.py::test_old_and_gone\ngone.py::test_x\n",
+        encoding="utf-8",
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:cacheprovider",
+            "--co",
+            "--realtime-write-baseline",
+            str(tmp_path / "test_a.py"),
+        ],
+        cwd=tmp_path,
+        env={"PYTHONPATH": str(ROOT), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    # test_a.py was rewritten from its own collection; test_b.py's entry survives; the
+    # entry of a deleted module is dropped.
+    assert read_baseline(tmp_path / "realtime_baseline.txt") == {
+        "test_a.py::test_sleeps",
+        "test_a.py::test_mixed",
+        "test_b.py::test_other_sleeps",
+    }
+
+
 # -- the baseline can only shrink -------------------------------------------------------------
 
 
@@ -547,6 +756,23 @@ def test_a_new_offender_added_together_with_its_baseline_line_fails_collection(
     done = _collect(tmp_path, {"RIGPLANE_REALTIME_BASE_REF": "HEAD^1"})
     assert done.returncode != 0
     assert "may only shrink" in done.stderr + done.stdout
+
+
+def test_an_invalid_explicit_base_revision_fails_collection(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "conftest.py").write_text(_PLUGIN_CONFTEST, encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nrealtime_baseline = realtime_baseline.txt\n", encoding="utf-8"
+    )
+    (tmp_path / "realtime_baseline.txt").write_text("", encoding="utf-8")
+    (tmp_path / "test_sample.py").write_text(
+        "def test_fine():\n    pass\n", encoding="utf-8"
+    )
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+    done = _collect(tmp_path, {"RIGPLANE_REALTIME_BASE_REF": "no-such-ref"})
+    assert done.returncode != 0
+    assert "not verified" in done.stderr + done.stdout
 
 
 def test_the_base_revision_is_the_first_parent_in_ci_and_origin_main_elsewhere(
