@@ -1,0 +1,31 @@
+{
+  "mor": "MOR-3965",
+  "description": "Shared wire fixtures between the hidden-burst JS spec (frontend/src/lib/audio/__tests__/audio-manager-hidden-burst.isolated.test.ts) and the paired Python handler test (tests/test_web_audio_rx_wire_fixture.py). The JS spec builds every RX frame from rx_frame_pcm16_mono_20ms and checks every audio_start request against audio_start_rx; the Python test drives the REAL /api/v1/audio handler with the same request and verifies the emitted binary frame against the same expectations.",
+  "audio_start_rx": {
+    "description": "Exact JSON the browser sends to subscribe to RX. Fields that vary per browser/session are listed in variableKeys and filled in by each consumer; both sides compare the stable subset for equality AND the key set (stable keys + variableKeys).",
+    "stable": {
+      "type": "audio_start",
+      "direction": "rx"
+    },
+    "variableKeys": ["preferred_rx_codec", "client_id"],
+    "exampleVariables": {
+      "preferred_rx_codec": "pcm16",
+      "client_id": "fixture-client"
+    }
+  },
+  "rx_frame_pcm16_mono_20ms": {
+    "description": "Golden RX binary frame exactly as the server emits it (see encode_audio_frame in src/rigplane/web/protocol.py: 8-byte header = msg_type, codec, sequence uint16 LE, sample_rate/100 uint16 LE, channels, frame_ms). The broadcaster numbers frames from sequence 0 on a fresh broadcaster, so the first emitted frame pins the header bytes exactly.",
+    "msg_type": 16,
+    "codec": 2,
+    "sequence": 0,
+    "sample_rate_div100": 480,
+    "channels": 1,
+    "frame_ms": 20,
+    "headerHexWithSequence0": "10020000e0010114",
+    "payload": {
+      "encoding": "int16le",
+      "samples": 960,
+      "rule": "sample[i] = i % 100"
+    }
+  }
+}

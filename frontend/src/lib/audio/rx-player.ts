@@ -47,6 +47,24 @@ function emptyPlayback(): RxPlaybackDiagnostics {
 const MAX_COUNTER = 0xffffffff;
 const MAX_DIAGNOSTIC_FRAMES = 5760;
 const DIAGNOSTIC_MAX_AGE_MS = 2000;
+
+// Wider jitter bounds while the page is hidden (MOR-3965). Mobile browsers
+// throttle a background tab's WS delivery into bursts; with the foreground
+// ceiling most of each burst would start beyond now+ceiling and be dropped
+// (heard as heavy stutter). Background latency does not matter, so absorb
+// bursts up to BACKGROUND_CEILING_SEC instead. The setJitterBounds values
+// stay authoritative whenever they are already wider than these constants.
+const BACKGROUND_FLOOR_SEC = 0.4;
+const BACKGROUND_CEILING_SEC = 4.0;
+
+// A scheduled buffer source and its slot on the context clock — the pending
+// backlog _trimToForegroundBounds() walks on the hidden→visible transition.
+type ScheduledSource = {
+  src: AudioBufferSourceNode;
+  start: number;
+  duration: number;
+};
+
 type DecodedObservation = {
   channelCount: number;
   frameCount: number;
@@ -105,6 +123,9 @@ export class RxPlayer {
   // Cumulative since start(); reset on stop().
   private _underruns = 0;
   private _droppedFrames = 0;
+  // Scheduled-but-not-yet-ended buffer sources (MOR-3965). Entries remove
+  // themselves on 'ended'; stop() clears the list with the context.
+  private _scheduledSrcs: ScheduledSource[] = [];
   private _playback = emptyPlayback();
   private _resumeAttempt = 0;
   private _decodedObservation: DecodedObservation | null = null;
@@ -250,6 +271,7 @@ export class RxPlayer {
     this._droppedSuspendedFrames = 0;
     this._underruns = 0;
     this._droppedFrames = 0;
+    this._scheduledSrcs = [];
   }
 
   /** Link-quality snapshot for the periodic audio_stats uplink (MOR-585).
@@ -299,9 +321,15 @@ export class RxPlayer {
   }
 
   /** Resume-on-regain-focus handler: WKWebView re-suspends an AudioContext
-   *  when the webview is backgrounded; resume it when we come back. Bound as
-   *  an arrow property so add/removeEventListener see a stable reference. */
+   *  when the webview is backgrounded; resume it when we come back. On the
+   *  hidden→visible transition also trim a background-built backlog back to
+   *  the foreground bounds so the operator does not listen seconds behind
+   *  (MOR-3965). Bound as an arrow property so add/removeEventListener see
+   *  a stable reference. */
   private _onResumeEvent = (): void => {
+    if (typeof document !== 'undefined' && !document.hidden) {
+      this._trimToForegroundBounds();
+    }
     this._resume();
   };
 
@@ -392,8 +420,19 @@ export class RxPlayer {
     this.opusTs = 0;
   }
 
-  /** Flush pipeline (e.g. on reconnect) */
+  /** Flush pipeline (e.g. on reconnect): stop every still-tracked pending
+   *  source so the previous session cannot keep playing under the fresh
+   *  schedule, drop the backlog WITHOUT counting it as dropped frames (the
+   *  session is gone — nothing audible was skipped), then re-prime. */
   flush(): void {
+    for (const entry of this._scheduledSrcs) {
+      try { entry.src.stop(); } catch { /* already ended */ }
+    }
+    this._scheduledSrcs = [];
+    // A decoder that still holds pending background work would otherwise
+    // deliver old audio into the freshly flushed timeline; the next Opus
+    // frame lazily configures a fresh one.
+    this.resetDecoder();
     this.nextPlayTime = 0;
   }
 
@@ -430,8 +469,11 @@ export class RxPlayer {
     if (!this.decoder) {
       const ctx = this.ctx;
       this.opusTs = 0;
-      this.decoder = new AudioDecoder({
+      const decoder: AudioDecoder = new AudioDecoder({
         output: (audioData: AudioData) => {
+          // Output of a decoder that was reset or replaced (flush, codec
+          // switch) must not reach the playback timeline.
+          if (this.decoder !== decoder) { audioData.close(); return; }
           const frames = audioData.numberOfFrames;
           const numCh = audioData.numberOfChannels;
           const buf = ctx.createBuffer(numCh, frames, audioData.sampleRate);
@@ -445,9 +487,10 @@ export class RxPlayer {
         },
         error: (err: DOMException) => {
           console.warn('RxPlayer: AudioDecoder error', err);
-          this.decoder = null;
+          if (this.decoder === decoder) this.decoder = null;
         },
       });
+      this.decoder = decoder;
       this.decoder.configure({
         codec: 'opus',
         sampleRate: sr > 0 ? sr : SAMPLE_RATE,
@@ -517,6 +560,20 @@ export class RxPlayer {
     this._decodedObservedAt = performance.now();
   }
 
+  /** Effective jitter bounds for the current schedule() call: the configured
+   *  pair while visible, widened to the background constants while the page
+   *  is hidden (MOR-3965). Read at schedule time — no cached visibility
+   *  state — so a player created while already hidden behaves identically. */
+  private _jitterBounds(): { floorSec: number; ceilingSec: number } {
+    if (typeof document === 'undefined' || !document.hidden) {
+      return { floorSec: this._floorSec, ceilingSec: this._ceilingSec };
+    }
+    return {
+      floorSec: Math.max(this._floorSec, BACKGROUND_FLOOR_SEC),
+      ceilingSec: Math.max(this._ceilingSec, BACKGROUND_CEILING_SEC),
+    };
+  }
+
   private schedule(buf: AudioBuffer): void {
     if (!this.ctx || !this.preGain) return;
     const src = this.ctx.createBufferSource();
@@ -524,22 +581,60 @@ export class RxPlayer {
     src.connect(this.preGain);
 
     const now = this.ctx.currentTime;
+    const { floorSec, ceilingSec } = this._jitterBounds();
     if (this.nextPlayTime === 0 || this.nextPlayTime < now) {
       // Preserve a still-future schedule even when its remaining lead is
       // below the jitter floor: rebasing it would insert a silent gap.
       // Only an exhausted schedule is an underrun; start()/flush() prime
       // a new schedule with the configured floor.
       if (this.nextPlayTime > 0) this._underruns++;
-      this.nextPlayTime = now + this._floorSec;
+      this.nextPlayTime = now + floorSec;
     }
-    if (this.nextPlayTime > now + this._ceilingSec) {
+    if (this.nextPlayTime > now + ceilingSec) {
       this._droppedFrames++;
       return;
     }
 
     src.start(this.nextPlayTime);
+    const entry: ScheduledSource = { src, start: this.nextPlayTime, duration: buf.duration };
+    src.addEventListener('ended', () => {
+      const idx = this._scheduledSrcs.indexOf(entry);
+      if (idx >= 0) this._scheduledSrcs.splice(idx, 1);
+    });
+    this._scheduledSrcs.push(entry);
     this._playback.scheduledFrames = Math.min(MAX_COUNTER, this._playback.scheduledFrames + 1);
     this.nextPlayTime += buf.duration;
+  }
+
+  /** Stop not-yet-started sources beyond the foreground jitter ceiling and
+   *  pull nextPlayTime back to the kept tail (MOR-3965): returning to the
+   *  foreground must not leave seconds of delayed audio queued. Whole
+   *  buffers only — a source that already started keeps playing, so there
+   *  is no click. Trimmed frames count as dropped: they were scheduled and
+   *  are audibly skipped, so the audio_stats uplink must see them. */
+  private _trimToForegroundBounds(): void {
+    if (!this.ctx || this._scheduledSrcs.length === 0) return;
+    const now = this.ctx.currentTime;
+    const limit = now + this._ceilingSec;
+    let stopped = 0;
+    let tailEnd = 0;
+    const kept: ScheduledSource[] = [];
+    for (const entry of this._scheduledSrcs) {
+      if (entry.start <= now || entry.start + entry.duration <= limit) {
+        kept.push(entry);
+        tailEnd = entry.start + entry.duration;
+      } else {
+        try { entry.src.stop(); } catch { /* already ended */ }
+        stopped++;
+      }
+    }
+    this._scheduledSrcs = kept;
+    if (stopped === 0) return;
+    this._droppedFrames += stopped;
+    // Re-anchor at the kept tail (or the floor when nothing playable
+    // remains) so the next frame continues the timeline without a
+    // spurious underrun and within the foreground ceiling.
+    this.nextPlayTime = Math.max(tailEnd, now + this._floorSec);
   }
 
   private _applyGraphState(): void {
