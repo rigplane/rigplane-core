@@ -266,6 +266,13 @@ logger = logging.getLogger(__name__)
 _AUDIO_CAPABILITIES = get_audio_capabilities()
 _DEFAULT_AUDIO_CODEC = _AUDIO_CAPABILITIES.default_codec
 _DEFAULT_AUDIO_SAMPLE_RATE = _AUDIO_CAPABILITIES.default_sample_rate_hz
+
+#: MOR-3888: answer window of a client's live read (``get_split(strict=True)``).
+#: Recorded serial answers arrive in tens of milliseconds
+#: (``rigplane_testkit/sim/profiles/ic7300.toml``: 30 ms), so half a second is
+#: far outside a healthy answer and short enough that a lost answer does not
+#: park another client's write behind it for the full 2 s window.
+_LIVE_READ_ANSWER_WINDOW_S = 0.5
 # Default TTLs (seconds) for the GET-command cache fallback paths.
 _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 30.0}
 
@@ -5029,7 +5036,17 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         civ = self._commands.get_split(to_addr=self._radio_addr)
         try:
-            resp = await self._send_civ_expect(civ, label="get_split")
+            resp = await self._send_civ_expect(
+                civ,
+                label="get_split",
+                # MOR-3888: a strict read is a client's live poll (rigctld
+                # ``s``). It shares the commander's single in-flight slot
+                # with other clients' writes, so a lost answer must not hold
+                # that slot for the whole 2 s window. The caller's timeout
+                # abandons just this read (commander #1188) after a window
+                # that recorded USB answers (30 ms) beat by a wide margin.
+                timeout=_LIVE_READ_ANSWER_WINDOW_S if strict else None,
+            )
         except (CommandError, TimeoutError):
             if strict:
                 raise

@@ -254,12 +254,21 @@ async def test_write_does_not_wait_out_a_lost_read_answer(model: str) -> None:
             f"F reached the radio {applied_after:.2f}s after it was sent"
         )
     finally:
+        # Attempt every teardown step even when an earlier one raises.
         for writer in writers:
             writer.close()
-            await writer.wait_closed()
-        await server.stop()
-        await radio.disconnect()
+        results = await asyncio.gather(
+            *(writer.wait_closed() for writer in writers),
+            server.stop(),
+            radio.disconnect(),
+            return_exceptions=True,
+        )
         await endpoint.stop()
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, ConnectionError
+            ):
+                raise result
 
 
 async def test_failing_poll_still_runs_cleanup() -> None:
