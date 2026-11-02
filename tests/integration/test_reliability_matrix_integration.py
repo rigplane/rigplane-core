@@ -22,7 +22,7 @@ from rigplane.exceptions import (
     ConnectionError,
     TimeoutError as IcomTimeoutError,
 )
-from rigplane_testkit.timing import await_until
+from rigplane.testing.timing import await_until
 
 
 pytestmark = pytest.mark.integration

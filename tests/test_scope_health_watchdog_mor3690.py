@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from rigplane_testkit.timing import await_until
+from rigplane.testing.timing import await_until
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.web.radio_poller import EnableScope
 from rigplane.web.server import WebServer

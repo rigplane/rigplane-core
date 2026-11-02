@@ -43,7 +43,7 @@ from rigplane.runtime.radio import IcomRadio
 from test_audio_recovery_session import _StatefulFakeStream
 from test_hard_reconnect_hold_audio import _complete_hold
 from test_icom_lan_identity_gate import _LiveControlTransport, _fast_reread
-from rigplane_testkit.timing import await_until
+from rigplane.testing.timing import await_until
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 

@@ -41,7 +41,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxState,
     ReleasePlan,
 )
-from rigplane_testkit.timing import await_until
+from rigplane.testing.timing import await_until
 
 
 class TestParseFrequency:

@@ -1,4 +1,4 @@
-"""``rigplane_testkit.timing``: the one virtual clock and real-event waits (MOR-3920, MOR-4075)."""
+"""``rigplane.testing.timing``: the one virtual clock and real-event waits (MOR-3920, MOR-4075)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import types
 import pytest
 
 from rigplane_testkit.sim.engine import ManualClock
-from rigplane_testkit.timing import VirtualClock, await_until, wait_until
-from rigplane_testkit.timing import virtual_clock as clocked
+from rigplane.testing.timing import VirtualClock, await_until, wait_until
+from rigplane.testing.timing import virtual_clock as clocked
 
 
 def _globals() -> tuple[object, ...]:

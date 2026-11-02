@@ -4,8 +4,12 @@ One clock, one wait, for the whole suite and for downstream projects (rigplane-p
 imports this module). Do not write another per-file clock class or ``_wait_until``
 copy.
 
-* :class:`VirtualClock` is the testkit's :class:`ManualClock`
-  (``rigplane_testkit.sim.engine``) plus three ways to put it where the code
+This module SHIPS in the ``rigplane`` wheel so a downstream test suite can import it
+through its ordinary ``rigplane`` dependency (the repository's ``rigplane_testkit`` does
+not ship). It is pure standard-library asyncio with no runtime dependency, and nothing on
+the runtime path imports it: ``import rigplane`` must not load ``rigplane.testing``.
+
+* :class:`VirtualClock` is a :class:`ManualClock` (the simulator engine's clock too) plus three ways to put it where the code
   under test reads time:
 
   - **a ``clock=`` seam**: pass the clock itself, it is a ``Callable[[], float]``;
@@ -65,14 +69,29 @@ import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, overload
-
-from rigplane_testkit.sim.engine import ManualClock
+from dataclasses import dataclass
+from math import isfinite
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Concatenate,
+    ParamSpec,
+    Protocol,
+    TypeVar,
+    overload,
+)
 
 if TYPE_CHECKING:
     import pytest
 
-__all__ = ["VirtualClock", "await_until", "virtual_clock", "wait_until"]
+__all__ = [
+    "Clock",
+    "ManualClock",
+    "VirtualClock",
+    "await_until",
+    "virtual_clock",
+    "wait_until",
+]
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -80,6 +99,36 @@ P = ParamSpec("P")
 # How many loop turns one settle may take before the loop counts as busy.
 _MAX_SETTLE_TURNS = 10_000
 _DEFAULT_REAL_TIMEOUT_S = 30.0
+
+
+class Clock(Protocol):
+    def __call__(self) -> float: ...
+
+
+@dataclass
+class ManualClock:
+    """Deterministic test clock; ``advance(dt)`` moves and returns time."""
+
+    start: float = 0.0
+
+    def __post_init__(self) -> None:
+        start = float(self.start)
+        if not isfinite(start):
+            raise ValueError(f"ManualClock start must be finite: {start}")
+        self._now = start
+
+    def __call__(self) -> float:
+        return self._now
+
+    def advance(self, dt: float) -> float:
+        step = float(dt)
+        if not isfinite(step) or step < 0:
+            raise ValueError(f"advance dt must be finite and non-negative: {step}")
+        moved = self._now + step
+        if not isfinite(moved):
+            raise ValueError(f"advance to non-finite time: {self._now} + {step}")
+        self._now = moved
+        return self._now
 
 
 class _InlineExecutor(ThreadPoolExecutor):
