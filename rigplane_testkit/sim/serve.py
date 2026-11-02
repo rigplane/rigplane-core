@@ -36,7 +36,7 @@ from typing import Any
 from aiohttp import web
 
 from rigplane.core.types import AudioCodec
-from rigplane.profiles import resolve_radio_profile
+from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.profiles.rig_loader import RigLoadError
 
 from rigplane_testkit.icom.faults import FaultPlan
@@ -388,38 +388,64 @@ _LAN_RADIO_MODELS: dict[str, str] = {
 }
 
 
+def build_lan_personality(profile: RadioProfile, **kwargs: Any) -> MockIcomRadio:
+    """The one place an Icom LAN personality is built from its capability profile.
+
+    The profile drives the CI-V address (``radio_addr``), the receiver layout
+    (``dual_receiver``) and the ``19 00`` identity answer. A profile with a
+    recorded or documented token (``expected_identity_ids``) answers exactly
+    that and Core verifies it (``identity_source == "recorded"``). A profile
+    with none cannot be given a verified identity: Core refuses commands
+    until ``19 00`` is answered with *some* bytes, so the personality answers
+    with the Icom convention seen in every recorded radio (the CI-V address)
+    and says so — ``identity_source == "unverified"`` — and Core classifies
+    that answer UNVERIFIED, never VERIFIED. ``kwargs`` are the caller's
+    simulator options (ports, credentials, hold, audio, scope).
+    """
+    radio = MockIcomRadio(
+        radio_addr=profile.civ_addr,
+        dual_receiver=profile.receiver_count > 1,
+        **kwargs,
+    )
+    ids = profile.expected_identity_ids
+    if ids:
+        radio.model_id = bytes.fromhex(ids[0])
+        radio.identity_source = "recorded"
+    else:
+        radio.model_id = bytes([profile.civ_addr])
+        radio.identity_source = "unverified"
+    return radio
+
+
 def _lan_radio_backend(args: argparse.Namespace) -> RadioBackend:
     """One generic Icom LAN simulator behind real UDP servers.
 
     Every Icom LAN radio is built the same way from its capability
-    profile: the profile drives the CI-V address (``radio_addr``), the
-    receiver layout (``dual_receiver``) and the ``19 00`` identity byte.
-    Everything else keeps the MOR-3593 serve defaults: the recorded real
-    dead-session hold (83.4-85.9 s, not the 0.5 s fast-test default) and
-    TX-audio payload capture so ``GET /audio/tx[.wav]`` can serve the
-    sink (MOR-3256). Fidelity is honest (sim-serve-contract.md): "A" only
-    with a recording of this exact model under tests/fixtures/<id>/,
-    "C" for a profile-declared personality.
+    profile (:func:`build_lan_personality`). Everything else keeps the
+    MOR-3593 serve defaults: the recorded real dead-session hold
+    (83.4-85.9 s, not the 0.5 s fast-test default) and TX-audio payload
+    capture so ``GET /audio/tx[.wav]`` can serve the sink (MOR-3256).
+    Fidelity is honest (sim-serve-contract.md): "A" only with a recording
+    of this exact model under tests/fixtures/<id>/, "C" for a
+    profile-declared personality.
     """
     profile = resolve_radio_profile(model=_LAN_RADIO_MODELS[args.radio])
     # None = do not pass the kwarg: MockIcomRadio's own default applies.
     pairs = (("username", args.username), ("password", args.password))
     credentials = {key: value for key, value in pairs if value is not None}
-    radio = MockIcomRadio(
+    radio = build_lan_personality(
+        profile,
         host=args.bind,
         port=0,
         civ_port=0,
-        radio_addr=profile.civ_addr,
         single_owner=True,
         keepalive_hold_s=args.keepalive_hold_s,
         fault_plan=FaultPlan(seed=args.seed),
         enable_audio=True,
-        dual_receiver=profile.receiver_count > 1,
         stateful_ptt=True,
         capture_tx_audio=True,
         **credentials,
     )
-    radio.model_id = bytes([profile.civ_addr])
     recorded = (
         _REPO_ROOT / "tests" / "fixtures" / args.radio / "civ_pairs.jsonl"
     ).is_file()

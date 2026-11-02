@@ -20,6 +20,7 @@ import pytest
 
 from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
+from rigplane.core.radio_protocol import RadioIdentityStatus
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 
@@ -30,6 +31,7 @@ from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
 from rigplane_testkit.sim.__main__ import build_parser  # noqa: E402
 from rigplane_testkit.sim.serve import (  # noqa: E402
     DEFAULT_KEEPALIVE_HOLD_S,
+    build_lan_personality,
     build_stack,
     startup_line,
 )
@@ -45,14 +47,13 @@ CASES = [
 def _personality(model: str) -> MockIcomRadio:
     """The generic LAN personality for a capability model.
 
-    The same profile-driven facts the serve backend derives: the CI-V
-    address, the receiver layout and the ``19 00`` identity byte.
+    Built by the same function the serve backend uses, so the CI-V address,
+    receiver layout and ``19 00`` identity answer cannot drift from it.
     ``scope_stream`` is what Pro's bench launcher mounts on serve; here it
     exercises the same simulator mechanism directly.
     """
-    profile = resolve_radio_profile(model=model)
-    sim = MockIcomRadio(
-        radio_addr=profile.civ_addr,
+    return build_lan_personality(
+        resolve_radio_profile(model=model),
         single_owner=True,
         # The serve hold (85 s): the production client renews its token only
         # every 60 s, and the constructor default (0.5 s) would free the
@@ -60,11 +61,8 @@ def _personality(model: str) -> MockIcomRadio:
         # renewal (the C19 "no flapping" scenario needs the real hold).
         keepalive_hold_s=DEFAULT_KEEPALIVE_HOLD_S,
         enable_audio=True,
-        dual_receiver=profile.receiver_count > 1,
         scope_stream=True,
     )
-    sim.model_id = bytes([profile.civ_addr])
-    return sim
 
 
 def _in_range_hz(model: str) -> int:
@@ -99,14 +97,63 @@ async def test_banner_and_identity_from_profile(cli_id: str, model: str, fidelit
         assert line["transport"] == "lan"
         assert isinstance(line["control_port"], int) and line["control_port"] > 0
 
-        # The 19 00 identity read answers the personality's own CI-V address.
+        # The 19 00 identity read answers the personality's token: the
+        # profile's recorded one, or the declared-unverified convention token.
         reply = radio._dispatch_civ(0x19, b"\x00", 0xE0)
-        assert reply == bytes(
-            (0xFE, 0xFE, 0xE0, profile.civ_addr, 0x19, 0x00, profile.civ_addr, 0xFD)
+        assert reply == (
+            bytes((0xFE, 0xFE, 0xE0, profile.civ_addr, 0x19, 0x00))
+            + radio.model_id
+            + b"\xfd"
         )
     finally:
         await stack.backend.stop()
         stack.trace.close()
+
+
+# --- Identity: recorded token verifies, an unknown one stays unverified --------
+
+
+@pytest.mark.parametrize(("cli_id", "model", "fidelity"), CASES)
+async def test_identity_is_verified_only_from_a_recorded_token(
+    cli_id: str, model: str, fidelity: str
+):
+    profile = resolve_radio_profile(model=model)
+    sim = _personality(model)
+    if profile.expected_identity_ids:
+        assert sim.model_id == bytes.fromhex(profile.expected_identity_ids[0])
+        assert sim.identity_source == "recorded"
+        expected_status = RadioIdentityStatus.VERIFIED
+    else:
+        # No recorded or documented token: the personality says so, and Core
+        # must classify the answer UNVERIFIED (not VERIFIED, not a mismatch).
+        assert sim.identity_source == "unverified"
+        expected_status = RadioIdentityStatus.UNVERIFIED
+    await sim.start()
+    radio = IcomRadio(
+        host="127.0.0.1",
+        port=sim.control_port,
+        username="personality",
+        password="personality",
+        timeout=2.0,
+        model=model,
+    )
+    try:
+        with fast_connect():
+            await radio.connect()
+        await asyncio.sleep(1.0)
+        identity = radio.connection_identity
+        assert identity is not None and identity.status is expected_status
+    finally:
+        await radio.disconnect()
+        await sim.stop()
+
+
+def test_the_personalities_cover_both_identity_cases():
+    """The suite must keep one recorded and one unverified radio."""
+    known = [
+        bool(resolve_radio_profile(model=m).expected_identity_ids) for _, m, _ in CASES
+    ]
+    assert any(known) and not all(known)
 
 
 # --- Scope template retarget (the loader unit) --------------------------------
@@ -258,6 +305,12 @@ async def test_mk2_wsjtx_split_keeps_the_cat_link():
             freq_before = await radio.get_freq()
             mode_before = await radio.get_mode()
 
+            # What WSJT-X polls before it engages split: the RX VFO.
+            rx_freq = (await _exchange(writer, reader, b"f\n")).splitlines()
+            rx_mode = (await _exchange(writer, reader, b"m\n", lines=2)).splitlines()
+            assert rx_freq == [str(freq_before).encode()]
+            assert rx_mode[0] and b"RPRT" not in rx_mode[0]
+
             # Split=Rig: TX on VFOB in another mode (CW) while f/m poll at 1 s.
             assert await _exchange(writer, reader, b"S 1 VFOB\n") == b"RPRT 0\n"
             assert await _exchange(writer, reader, b"I 14080100\n") == b"RPRT 0\n"
@@ -266,15 +319,21 @@ async def test_mk2_wsjtx_split_keeps_the_cat_link():
             assert (await _exchange(writer, reader, b"s\n", lines=2)).splitlines()[
                 0
             ] == b"1"
+            # The writes took effect on the TX side: the requested split
+            # frequency and mode read back, not merely "RPRT 0".
+            assert (await _exchange(writer, reader, b"i\n")).splitlines() == [
+                b"14080100"
+            ]
+            split_mode = (await _exchange(writer, reader, b"x\n", lines=2)).splitlines()
+            assert split_mode[0] == b"CW" and split_mode[1].isdigit()
 
             for _ in range(5):
+                # The RX side must not move while the TX VFO is in CW: every
+                # poll returns the original RX frequency and mode.
+                assert (await _exchange(writer, reader, b"f\n")).splitlines() == rx_freq
                 assert (
-                    (await _exchange(writer, reader, b"f\n")).splitlines()[0].isdigit()
-                )
-                m_reply = (
                     await _exchange(writer, reader, b"m\n", lines=2)
-                ).splitlines()
-                assert m_reply[0] and b"RPRT" not in m_reply[0]
+                ).splitlines() == rx_mode
                 # The production poller re-solicits transmit state every
                 # cycle: without it the connect-time PTT observation goes
                 # stale (TTL, provider generation) and the rigctld write

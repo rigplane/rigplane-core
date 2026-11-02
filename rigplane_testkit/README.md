@@ -13,7 +13,7 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   command port, single-owner session holding with keepalive renewal, and
   fault injection (drop, reorder, stall, delay). Since MOR-3907/3910 the same
   simulator serves declared Icom LAN personalities (IC-9700, IC-7300MK2)
-  driven by the capability profile (`radio_addr`, `dual_receiver`, `model_id`;
+  driven by the capability profile (`radio_addr`, `dual_receiver`, `model_id`/`identity_source`;
   `sim serve --radio ic9700|ic7300mk2`, fidelity C — see
   `docs/internals/sim-serve-contract.md`). The CI-V dispatcher answers
   0x03/0x04/0x05/0x06 plus the selected/unselected receiver vocabulary

@@ -90,8 +90,8 @@ booleans and strings.
 All three Icom LAN radios go through ONE generic backend built from the
 capability profile (`rigplane.profiles.resolve_radio_profile(model=...)`):
 the profile drives the CI-V address (`radio_addr`), the receiver layout
-(`dual_receiver` = `receiver_count > 1`) and the `19 00` identity byte
-(the profile's `civ_addr`). No per-model branch exists. The IC-7610 keeps
+(`dual_receiver` = `receiver_count > 1`) and the `19 00` identity answer.
+No per-model branch exists. The IC-7610 keeps
 its recorded behaviour unchanged (fidelity `A`); the IC-9700 and IC-7300MK2
 are honest *declared* personalities (fidelity `C`) — no recording of either
 model exists, and nothing here claims hardware parity.
@@ -108,6 +108,15 @@ only):
   with the personality's CI-V address substituted; the pixel payloads are
   the IC-7610's. A single-receiver personality (IC-7300MK2) keeps MAIN
   waves only and never streams SUB, whatever the scope dual-mode byte says.
+- The `19 00` identity is never invented as a verified one. A profile with a
+  recorded or documented token (`[identity].expected_ids`, the IC-7610's
+  `98`) answers exactly that token and Core verifies it. A profile with none
+  (the IC-9700 and IC-7300MK2: their guides list the command but not the
+  reply bytes) answers with the Icom convention seen in every recorded radio
+  (the CI-V address) because Core refuses commands until `19 00` is answered
+  with some bytes; the personality marks this (`MockIcomRadio.identity_source`
+  is `"unverified"`, `"recorded"` otherwise) and Core classifies the answer
+  UNVERIFIED, never VERIFIED. The real radios' replies are unknown.
 - The TX audio path is unrecorded: `/audio/tx` format labelling falls back
   to the profile-default constant and `format: "default"` when nothing was
   captured and nothing learned.

@@ -544,8 +544,13 @@ class MockIcomRadio(AudioPortMixin):
         # Radio state (for CI-V responses)
         # MOR-3064: test-data model-id answered to ``19 00`` (identity read),
         # matching the recorded IC-7610 (answers 19 00 with 98 on LAN and
-        # USB) — suites override it per case.
+        # USB) — suites override it per case. ``identity_source`` says where
+        # the token comes from: ``"recorded"`` (the IC-7610 default here, or a
+        # token from the capability profile) or ``"unverified"`` (a declared
+        # personality whose profile has no recorded/documented token; the
+        # builder in rigplane_testkit/sim/serve.py sets it, MOR-3907).
         self.model_id: bytes = b"\x98"
+        self.identity_source: str = "recorded"
         self._frequency: int = 14_074_000
         self._mode: int = 0x01  # USB
         self._filter: int = 1
