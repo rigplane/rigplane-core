@@ -21,22 +21,47 @@ These tests pin the ONE shared downmix mechanism generalized to
 
 No radio-specific branch: the seam tests drive the generic driver config with
 the two rig-config shapes (mono deliver = the PCM_1CH radios, stereo deliver =
-the PCM_2CH radios) against 32- and 16-channel devices.
+the PCM_2CH radios) against 32- and 16-channel devices, plus a regression
+through the real ``/api/v1/audio`` WebSocket on two radio models that asserts
+the negotiated mono format and the exact downmixed payload.
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import struct
+from dataclasses import asdict
 from typing import Any
 
 import pytest
+from test_icom7610_serial_radio import _FakeSerialCivLink
+from test_web_server import (
+    _close_ws,
+    _ws_connect,
+    _ws_recv_frame,
+    _ws_send_text,
+)
 
+from rigplane.audio import usb_driver
+from rigplane.audio._portaudio_enum import PortAudioDeviceRecord
 from rigplane.audio.backend import (
     AudioDeviceConfig,
     PortAudioBackend,
     _RxFramer,
 )
 from rigplane.audio.usb_driver import UsbAudioDriver
+from rigplane.backends.ic705 import Ic705SerialRadio
+from rigplane.backends.ic7300 import Ic7300SerialRadio
+from rigplane.core.types import AudioCodec
+from rigplane.profiles import get_radio_profile
+from rigplane.web.protocol import (
+    AUDIO_CODEC_PCM16,
+    AUDIO_HEADER_SIZE,
+    MSG_TYPE_AUDIO_RX,
+)
+from rigplane.web.server import WebConfig, WebServer
+from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
 
 
 def _nchannel_block(open_channels: int, count: int, *, start: int = 0) -> bytes:
@@ -154,8 +179,46 @@ def _no_coreaudio_uid_map(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("rigplane.audio.usb_driver._get_uid_map", lambda: {})
 
 
+def _device_record(
+    index: int, name: str, *, inputs: int, outputs: int
+) -> PortAudioDeviceRecord:
+    """One typed enumeration record for the fake sounddevice."""
+    return PortAudioDeviceRecord(
+        index=index,
+        name=name,
+        hostapi=0,
+        max_input_channels=inputs,
+        max_output_channels=outputs,
+        default_samplerate=48_000.0,
+        default_low_input_latency=0.01,
+        default_low_output_latency=0.01,
+        default_high_input_latency=0.1,
+        default_high_output_latency=0.1,
+    )
+
+
 def _fake_sd_builder(max_input_channels: int) -> tuple[type, dict[str, Any]]:
-    """A fake sounddevice module + the dict its InputStream opens record."""
+    """A fake sounddevice module + the dict its InputStream opens record.
+
+    The ``query_devices()`` dicts are not handwritten: each is
+    ``dataclasses.asdict()`` of the typed producer contract
+    :class:`PortAudioDeviceRecord` — the same serialization the backend's
+    ``list_devices()`` reads and ``read_portaudio_enumeration`` parses —
+    so the seam tests cannot drift from the real enumeration shape.
+    """
+    records = [
+        _device_record(0, "pulse", inputs=max_input_channels, outputs=0),
+        _device_record(1, "pulse-out", inputs=0, outputs=2),
+    ]
+    devices = [asdict(record) for record in records]
+    hostapis = [
+        {
+            "name": "ALSA",
+            "devices": [0, 1],
+            "default_input_device": 0,
+            "default_output_device": 1,
+        }
+    ]
     captured: dict[str, Any] = {}
 
     class FakeInputStream:
@@ -176,16 +239,12 @@ def _fake_sd_builder(max_input_channels: int) -> tuple[type, dict[str, Any]]:
         InputStream = FakeInputStream
 
         @staticmethod
-        def query_devices() -> list[dict[str, Any]]:
-            return [
-                {
-                    "index": 0,
-                    "name": "pulse",
-                    "max_input_channels": max_input_channels,
-                    "max_output_channels": 2,
-                    "default_samplerate": 48_000,
-                }
-            ]
+        def query_devices(index: int | None = None) -> Any:
+            return devices if index is None else devices[index]
+
+        @staticmethod
+        def query_hostapis(index: int | None = None) -> Any:
+            return hostapis if index is None else hostapis[index]
 
         @staticmethod
         def check_input_settings(**_kw: Any) -> None:
@@ -262,3 +321,113 @@ async def test_driver_stereo_request_on_16ch_device_delivers_first_two() -> None
     assert received == [expected]
 
     await driver.stop_rx()
+
+
+# ---------------------------------------------------------------------------
+# WebSocket regression: radio -> audio session -> real /api/v1/audio -> client
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("radio_cls", "model", "model_id"),
+    [(Ic7300SerialRadio, "IC-7300", 0x94), (Ic705SerialRadio, "IC-705", 0xA4)],
+    ids=["ic7300", "ic705"],
+)
+@pytest.mark.parametrize(
+    "open_channels", [32, 16], ids=["pulse-32ch", "blackhole-16ch"]
+)
+@pytest.mark.asyncio
+async def test_rx_nchannel_downmix_reaches_browser_over_audio_websocket(
+    monkeypatch: pytest.MonkeyPatch,
+    radio_cls: type,
+    model: str,
+    model_id: int,
+    open_channels: int,
+) -> None:
+    """User-visible MOR-4029 path: a 32/16-channel capture downmixed to the browser.
+
+    Only ``sounddevice`` is faked (its enumeration comes from
+    :class:`PortAudioDeviceRecord`, as above); the radio, driver, real
+    ``PortAudioBackend`` framer, audio session, and the ``/api/v1/audio``
+    WebSocket handler are all real. The client sends ``audio_start``, the
+    server negotiates mono PCM16 @ 48 kHz, and the test drives the fake
+    InputStream callback with one N-channel interleaved block carrying
+    identifiable per-channel values, then asserts the AUDIO_RX payload is the
+    exact mono downmix of device channels 0/1.
+    """
+    fake_sd, captured = _fake_sd_builder(open_channels)
+    backend = PortAudioBackend(dependency_loader=lambda: (fake_sd, object()))
+    monkeypatch.setattr(
+        usb_driver, "PortAudioBackend", lambda *args, **kwargs: backend, raising=True
+    )
+    radio = radio_cls(
+        device="COM3",
+        profile=get_radio_profile(model),
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        rx_device="0",
+        tx_device="1",
+        civ_link=_FakeSerialCivLink(model_id=model_id),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    writer = None
+    try:
+        await radio.connect()
+        # Bind the real HTTP/WS dispatcher without the unrelated CAT poller.
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/audio")
+        await _ws_send_text(
+            writer,
+            json.dumps(
+                {
+                    "type": "audio_start",
+                    "direction": "rx",
+                    "preferred_rx_codec": "pcm16",
+                }
+            ),
+        )
+        audio_format = None
+        async with asyncio.timeout(5):
+            while audio_format is None:
+                opcode, payload = await _ws_recv_frame(reader)
+                assert opcode == WS_OP_TEXT
+                message = json.loads(payload)
+                if message["type"] == "audio_format":
+                    audio_format = message
+        assert audio_format == {
+            "type": "audio_format",
+            "codec": "pcm16",
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+        }
+
+        driver = radio._serial_audio_driver
+        assert captured["channels"] == open_channels  # opened device-native
+        contract = driver.usb_audio_contract
+        assert contract is not None and contract.rx is not None
+        assert contract.rx.channels == 1
+        assert contract.rx.open_channels == open_channels
+
+        cb = captured["callback"]
+        assert callable(cb)
+        cb(  # type: ignore[operator]
+            _FakeIndata(_nchannel_block(open_channels, 960)), 960, None, None
+        )
+
+        opcode, frame = await _ws_recv_frame(reader, timeout=5)
+        assert opcode == WS_OP_BINARY
+        assert frame[:2] == bytes([MSG_TYPE_AUDIO_RX, AUDIO_CODEC_PCM16])
+        expected = _mono_frame([1500 + t for t in range(960)])
+        assert frame[AUDIO_HEADER_SIZE:] == expected
+    finally:
+        try:
+            if writer is not None:
+                await _close_ws(writer)
+        finally:
+            try:
+                await server.stop()
+            finally:
+                await radio.disconnect()
