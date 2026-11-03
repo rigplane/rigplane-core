@@ -829,6 +829,8 @@ class ManagedTxAuthority:
         if isinstance(operation, AbortOperation):
             operation = ActuationOperation.FORCE_RECEIVE
         if operation is not ActuationOperation.FORCE_RECEIVE:
+            if self._shutdown_requested:
+                return False
             ticket = self._controller_effects.get(token)
             if ticket is None and self._controller is not None:
                 if self._controller.mode == "remote":

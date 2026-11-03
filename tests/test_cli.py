@@ -3943,11 +3943,16 @@ class TestFirstSignalShutdownBound:
                 pass
 
             async def serve_forever(
-                self, *, on_started=None, on_shutdown_signal=None, on_tx_release=None
+                self,
+                *,
+                on_started=None,
+                on_shutdown_signal=None,
+                on_tx_release=None,
+                before_cancel_all=None,
             ) -> None:
                 on_started()
                 on_shutdown_signal()
-                hooks.append(on_tx_release)
+                hooks.extend([on_tx_release, before_cancel_all])
 
         hooks: list[object] = []
         backstop = MagicMock()
@@ -3956,7 +3961,7 @@ class TestFirstSignalShutdownBound:
             assert await _cmd_web(AsyncMock(), args, shutdown_backstop=backstop) == 0
 
         backstop.arm.assert_called_once_with()
-        assert hooks == [backstop.protect]
+        assert hooks == [backstop.protect, backstop.wait_for_releases]
 
     def test_the_bound_sums_the_step_bounds_and_a_margin(self) -> None:
         from rigplane import cli

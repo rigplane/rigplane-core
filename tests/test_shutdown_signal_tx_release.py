@@ -191,7 +191,11 @@ async def _shutdown(
         if run.signal is not None and not task.done() and run.arm_calls == 0:
             run.signal()
         try:
-            await asyncio.wait_for(asyncio.shield(task), 10)
+            try:
+                await asyncio.wait_for(asyncio.shield(task), 10)
+            except asyncio.CancelledError:
+                if not task.cancelled():
+                    raise
         finally:
             run.backstop.disarm()
             if drain is not None:
@@ -273,7 +277,7 @@ async def test_second_signal_cancels_tasks_without_arming_again(
                 web_server.asyncio, "all_tasks", lambda _loop: {victim}
             )
             run.signal()
-        result = await asyncio.gather(victim, return_exceptions=True)
+            result = await asyncio.gather(victim, return_exceptions=True)
         assert isinstance(result[0], asyncio.CancelledError)
         assert run.arm_calls == 1
 
@@ -303,3 +307,141 @@ async def test_first_signal_release_start_failure_still_arms_clock(
         )
     finally:
         backstop.disarm()
+
+
+def _turn(loop: asyncio.AbstractEventLoop) -> None:
+    """Run ready callbacks once, without a task that cancel-all could kill."""
+    loop.call_soon(loop.stop)
+    loop.run_forever()
+
+
+@pytest.mark.parametrize("owner", ["rigctld", "http"])
+@pytest.mark.parametrize("third_signal", [False, True])
+@pytest.mark.parametrize("back_to_back", [False, True])
+def test_second_signal_waits_for_protected_wire_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    owner: str,
+    third_signal: bool,
+    back_to_back: bool,
+) -> None:
+    from rigplane.runtime.managed_tx_authority import ShutdownResult
+
+    # Keep real all_tasks cancellation off pytest's own event loop. The driver
+    # lives outside this loop, so its assertions survive the cancellation wave.
+    loop = asyncio.new_event_loop()
+    context = _shutdown(monkeypatch, tmp_path, owner)
+    run = loop.run_until_complete(context.__aenter__())
+    release_started = asyncio.Event()
+    release_gate = asyncio.Event()
+    release_cancelled = []
+    real_finish = run.radio.finish
+    exits = []
+    monkeypatch.setattr(web_server.os, "_exit", exits.append)
+
+    async def gated_finish(on: bool, is_current) -> None:
+        if not on:
+            release_started.set()
+            try:
+                await release_gate.wait()
+            except asyncio.CancelledError:
+                release_cancelled.append(True)
+                raise
+        await real_finish(on, is_current)
+
+    monkeypatch.setattr(run.radio, "finish", gated_finish)
+    victim = loop.create_task(asyncio.Event().wait())
+    try:
+        loop.call_soon(run.signal)
+        if back_to_back:
+            # Both handlers run in the same ready-callback batch, before any
+            # managed release coroutine can start.
+            loop.call_soon(run.signal)
+        else:
+            loop.run_until_complete(asyncio.wait_for(release_started.wait(), 5))
+            loop.call_soon(run.signal)
+        _turn(loop)
+        _turn(loop)
+        release = run.session._shutdown_task
+        assert release is not None
+        assert release.cancelling() == 0
+        loop.run_until_complete(asyncio.wait_for(release_started.wait(), 5))
+        assert release_cancelled == []
+        assert not victim.done()
+        if third_signal:
+            loop.call_soon(run.signal)
+            _turn(loop)
+            assert exits == [1]
+            assert release.cancelling() == 0
+        release_gate.set()
+        # Wait outside tasks: the promised cancellation must also reach the
+        # unrelated teardown, while the protected release finishes DRAINED.
+        victim.add_done_callback(lambda _task: loop.stop())
+        watchdog = loop.call_later(5, loop.stop)
+        loop.run_forever()
+        watchdog.cancel()
+        assert victim.cancelled()
+        assert release.done() and not release.cancelled()
+        assert release.exception() is None
+        assert release_cancelled == []
+        assert run.radio.wire == [True, False]
+        assert run.composition._shutdown_task.result() is ShutdownResult.DRAINED
+        assert not [
+            r
+            for r in caplog.records
+            if "unkey not confirmed" in r.message
+            or "the rig may still be keyed" in r.message
+        ]
+    finally:
+        release_gate.set()
+        run.resume.set()
+        # Drain the cancel-all wave before starting the harness cleanup task.
+        for _ in range(10):
+            _turn(loop)
+        loop.run_until_complete(context.__aexit__(None, None, None))
+        remaining = asyncio.all_tasks(loop)
+        for task in remaining:
+            task.cancel()
+
+        async def drain_remaining() -> None:
+            await asyncio.gather(*remaining, return_exceptions=True)
+
+        loop.run_until_complete(drain_remaining())
+        loop.close()
+
+
+def test_second_signal_without_protected_release_cancels_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.new_event_loop()
+    server = WebServer(MagicMock(), WebConfig())
+    signals = []
+
+    async def start() -> None:
+        server._server = MagicMock(wait_closed=AsyncMock())
+
+    monkeypatch.setattr(server, "start", start)
+    monkeypatch.setattr(server, "stop", AsyncMock())
+    monkeypatch.setattr(
+        web_server,
+        "_install_shutdown_signal_handlers",
+        lambda _loop, cb: signals.append(cb),
+    )
+    victim = loop.create_task(asyncio.Event().wait())
+    backstop = cli._ShutdownBackstop(victim, bound_s=60)
+    serving = loop.create_task(
+        server.serve_forever(before_cancel_all=backstop.wait_for_releases)
+    )
+    try:
+        _turn(loop)
+        loop.call_soon(signals[0])
+        loop.call_soon(signals[0])
+        for _ in range(4):
+            _turn(loop)
+        assert victim.cancelled()
+    finally:
+        for task in asyncio.all_tasks(loop):
+            task.cancel()
+        loop.run_until_complete(asyncio.gather(serving, victim, return_exceptions=True))
+        loop.close()
