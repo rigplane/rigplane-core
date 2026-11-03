@@ -11,9 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.2rc4] — 2026-11-03
+
+This is the fourth release candidate of 3.1.2. It fixes one thing on top of
+3.1.2rc3: a transmitter keyed through rigctld, HTTP or a controller session is
+unkeyed at the first shutdown signal, before the web server shuts down.
+
 ### Fixed
 
-- `web` and `station`: the first SIGTERM/SIGINT now starts managed-TX release for rigctld, HTTP and controller-session owners before web teardown. Admitted ON effects are fenced at the final wire check immediately on that signal. A second signal defers task cancellation until protected releases finish or reach their own bounds; a third still exits immediately. Late owner handbacks reuse the shutdown release without sending another OFF (MOR-4102, MOR-3999; `tests/test_shutdown_signal_tx_release.py`).
+- `web` and `station`: the first SIGTERM/SIGINT now starts managed-TX release for rigctld, HTTP and controller-session owners before web teardown. Admitted ON effects are fenced at the final wire check immediately on that signal. A second signal defers task cancellation until protected releases finish or reach their own bounds; a third still exits immediately. Late owner handbacks reuse the shutdown release without sending another OFF (MOR-4102, MOR-3999, #4470).
 
 ## [3.1.2rc3] — 2026-11-03
 
@@ -5120,7 +5126,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc4...HEAD
+[3.1.2rc4]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2rc4
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
 [3.1.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...v3.1.2rc1
