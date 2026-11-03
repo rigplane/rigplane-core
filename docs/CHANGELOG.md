@@ -14,8 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.1.2rc4] — 2026-11-03
 
 This is the fourth release candidate of 3.1.2. It fixes one thing on top of
-3.1.2rc3: a transmitter keyed through rigctld, HTTP or a controller session is
-unkeyed at the first shutdown signal, before the web server shuts down.
+3.1.2rc3: the first shutdown signal now starts the release of a transmitter keyed
+through rigctld, HTTP or a controller session before the web server shuts down.
 
 ### Fixed
 
