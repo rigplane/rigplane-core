@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -66,6 +67,119 @@ def test_serial_open_diagnostic_does_not_use_suppressed_context():
     wrapper.__context__ = OSError(errno.EACCES, "private detail")
     wrapper.__suppress_context__ = True
     assert serial_open_diagnostic(wrapper) == "serial_unknown"
+
+
+@pytest.mark.parametrize(
+    ("detail", "winerror", "expected"),
+    [
+        ("Access is denied.", 5, "serial_busy"),
+        ("Отказано в доступе.", 5, "serial_busy"),
+        ("Zugriff verweigert.", 5, "serial_busy"),
+        ("Sharing violation.", 32, "serial_busy"),
+        ("File not found.", 2, "serial_not_found"),
+        ("Path not found.", 3, "serial_not_found"),
+        ("Unknown error.", 87, "serial_unknown"),
+    ],
+)
+def test_windows_serial_open_diagnostic(detail, winerror, expected):
+    message = (
+        f"could not open port 'COM3': PermissionError(13, {detail!r}, None, {winerror})"
+    )
+    error = serial.SerialException(message)
+    native = OSError(errno.EACCES, detail)
+    native.winerror = winerror
+    for candidate in (error, native):
+        native_expected = (
+            expected if winerror != 87 else "serial_permission_denied: EACCES"
+        )
+        wanted = native_expected if candidate is native else expected
+        wrapper = RuntimeError("private wrapper")
+        for wrapped in (candidate, wrapper):
+            if wrapped is wrapper:
+                wrapper.__cause__ = candidate
+            assert serial_open.serial_open_diagnostic(wrapped) == wanted
+        wrapper.__cause__ = None
+        wrapper.__context__ = candidate
+        wrapper.__suppress_context__ = False
+        assert serial_open.serial_open_diagnostic(wrapper) == wanted
+        assert detail not in serial_open.serial_open_diagnostic(wrapper)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "unrelated private text",
+        "could not open port: PermissionError(13, 'private text', None, 5) trailing",
+        "could not open port: PermissionError(13, private text, None, 5)",
+    ],
+)
+def test_windows_serial_open_diagnostic_rejects_unrelated_messages(message):
+    assert (
+        serial_open.serial_open_diagnostic(serial.SerialException(message))
+        == "serial_unknown"
+    )
+
+
+@pytest.mark.asyncio
+async def test_windows_serial_open_error_reaches_radio_health_and_discovery():
+    from rigplane.backends.discovery import CivProbeDiagnostic
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.web.server import WebConfig, WebServer
+
+    error = serial.SerialException(
+        "could not open port 'COM3': PermissionError(13, 'Access is denied.', None, 5)"
+    )
+    link = SerialCivLink(
+        device="COM3", open_serial_connection=AsyncMock(side_effect=error)
+    )
+    radio = Icom7610SerialRadio(device="COM3")
+    radio._serial_session = link
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+
+    async def request(method: str, path: str) -> tuple[int, dict[str, Any]]:
+        assert server._server is not None
+        host, port = server._server.sockets[0].getsockname()[:2]
+        reader, writer = await asyncio.open_connection(host, port)
+        try:
+            writer.write(
+                f"{method} {path} HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Content-Length: 0\r\nConnection: close\r\n\r\n".encode()
+            )
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.read(), timeout=10.0)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        head, _, body = raw.partition(b"\r\n\r\n")
+        return int(head.split(b" ")[1]), json.loads(body)
+
+    try:
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        status, body = await request("POST", "/api/v1/radio/connect")
+        assert status == 500
+        status, body = await request("GET", "/api/v1/runtime")
+        assert status == 200
+        for private_detail in (str(error), "PermissionError", "Access is denied"):
+            assert private_detail not in json.dumps(body)
+        health = body["station"]["health"]
+        assert health["lastError"] == "serial_busy"
+        assert health["likelyCause"] == "radio_not_connected"
+    finally:
+        await server.stop()
+    sink = CivProbeDiagnostic()
+    assert (
+        await probe_serial_civ(
+            "COM3",
+            baud_rates=[19200],
+            _open_serial=AsyncMock(side_effect=error),
+            diagnostics=sink,
+        )
+        is None
+    )
+    assert sink.code == "serial_busy"
 
 
 @pytest.mark.asyncio
