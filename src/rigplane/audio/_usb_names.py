@@ -7,9 +7,11 @@ from rigplane.audio.backend import _ALSA_HW_RE
 _ALSA_NAME_SUFFIX_RE = re.compile(rf"\s*\({_ALSA_HW_RE.pattern}\)\s*$")
 
 
-def endpoint_name_key(name: str) -> str:
+def endpoint_name_key(name: str, *, strip_instance: bool = True) -> str:
     """Normalize whitespace and ALSA decorations, retaining the hardware address."""
     name = re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", " ".join(name.split())))
+    if strip_instance:
+        name = re.sub(r"\(\d+- ", "(", name)
     suffix = _ALSA_NAME_SUFFIX_RE.search(name)
     if suffix is not None:
         card = name[: suffix.start()].partition(":")[0].removesuffix(", USB Audio")

@@ -99,6 +99,12 @@ class AudioDeviceAmbiguousError(AudioDeviceSelectionError):
 class AudioTopologyUnavailableError(AudioDeviceSelectionError):
     """The USB topology was not read, so the radio's audio pair is unknown."""
 
+    def __init__(
+        self, message: str, *, candidates: tuple[AudioCandidate, ...] = ()
+    ) -> None:
+        super().__init__(message)
+        self.candidates = candidates
+
 
 class AudioDriverLifecycleError(RuntimeError):
     """Raised on invalid USB audio lifecycle operations."""
@@ -213,6 +219,8 @@ def audio_start_failure_details(
     for error in chain:
         if isinstance(error, WindowsAudioTopologyError):
             return error.refusal.wire_reason, error.candidates
+        if isinstance(error, AudioTopologyUnavailableError):
+            return "usb_topology_unavailable", error.candidates
         for types, reason in reasons:
             if isinstance(error, types):
                 return reason, ()
@@ -1685,9 +1693,23 @@ class UsbAudioDriver:
                 if (d.supports_rx if direction == "rx" else d.supports_tx)
             }
             if len(identities) != 1:
+                from ._usb_pairing import _candidates
+
+                enumeration = (
+                    read_portaudio_enumeration(sd_module)
+                    if sd_module is not None
+                    else None
+                )
+                session = {
+                    "raw": {"windows": records.to_json_dict(), "serial_ports": []}
+                }
+                if enumeration is not None:
+                    session["raw"]["portaudio"] = enumeration.to_json_dict()
+                snapshot = adapt_windows(session)
                 raise AudioTopologyUnavailableError(
                     "Windows USB audio selection is ambiguous or unavailable; "
-                    "select explicit RX/TX devices for the serial radio."
+                    "select explicit RX/TX devices for the serial radio.",
+                    candidates=_candidates(snapshot, None, {}, include_unmatched=True),
                 )
         return select_usb_audio_devices(candidates)
 
