@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.2rc3] — 2026-11-03
+
+This is the third release candidate of 3.1.2. It fixes one thing on top of
+3.1.2rc2: a Windows COM port held by another program is now reported as busy
+instead of an unknown error.
+
+### Fixed
+
+- Windows: when another program holds the COM port of a USB radio, opening it is now classified as `serial_busy` (a Windows access-denied or sharing-violation error) and `serial_not_found` for a missing port, instead of `serial_unknown`, so the local API and the apps built on it can tell the user that another program is using the port. Classification reads only the Windows error number, never the localized message text, so it works on every Windows language. POSIX handling is unchanged. (MOR-4105, #4468)
+
 ## [3.1.2rc2] — 2026-11-02
 
 This is the second release candidate of 3.1.2. It fixes mode changes out of a
@@ -5106,7 +5116,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...HEAD
+[3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
 [3.1.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...v3.1.2rc1
 [3.1.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...v3.1.0rc1
