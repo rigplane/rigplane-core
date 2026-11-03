@@ -35,7 +35,7 @@ from math import isfinite
 import os
 import signal
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 import time
 import uuid
@@ -2370,9 +2370,20 @@ class _ShutdownBackstop:
         self._bound_s = bound_s
         self._releases: list[tuple[asyncio.Future[Any], str, float]] = []
         self._clock: asyncio.Task[None] | None = None
+        self._on_first_signal: Callable[[], asyncio.Task[None]] | None = None
+
+    def set_first_signal_release(
+        self, release: Callable[[], asyncio.Task[None]]
+    ) -> None:
+        self._on_first_signal = release
 
     def arm(self) -> None:
         if self._clock is None:
+            try:
+                if self._on_first_signal is not None:
+                    self._on_first_signal()
+            except Exception:
+                logger.exception("could not start managed TX shutdown on first signal")
             self._clock = asyncio.get_running_loop().create_task(
                 self._enforce(), name="shutdown-backstop"
             )
@@ -2499,6 +2510,8 @@ class _ManagedTxRadioSession:
         self._composition = composition
         self._backstop = backstop
         self._shutdown_task: asyncio.Task[None] | None = None
+        if backstop is not None:
+            backstop.set_first_signal_release(self.begin_shutdown)
 
     async def __aenter__(self) -> Any:
         try:
@@ -2518,9 +2531,10 @@ class _ManagedTxRadioSession:
             await self._composition.transport_ready(entered)
         return entered
 
-    async def shutdown(self) -> None:
+    def begin_shutdown(self) -> asyncio.Task[None]:
         task = self._shutdown_task
         if task is None:
+            self._composition.authority.close_ingress_for_shutdown()
             task = asyncio.create_task(
                 _shutdown_managed_tx_composition(self._composition)
             )
@@ -2529,7 +2543,10 @@ class _ManagedTxRadioSession:
                 self._backstop.protect(
                     task, "managed TX shutdown", _MANAGED_TX_SHUTDOWN_S
                 )
-        await asyncio.shield(task)
+        return task
+
+    async def shutdown(self) -> None:
+        await asyncio.shield(self.begin_shutdown())
 
     async def __aexit__(self, *exc: object) -> bool:
         result = False

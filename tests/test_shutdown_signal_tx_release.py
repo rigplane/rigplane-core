@@ -236,7 +236,10 @@ async def test_first_signal_still_releases_controller_session_owner(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", ["rigctld", "http", "web"])
 async def test_late_handbacks_do_not_repeat_first_signal_unkey(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owner: str
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    owner: str,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     async with _shutdown(monkeypatch, tmp_path, owner) as run:
         await run.assert_early_unkey(f"{owner} owner awaiting idempotent handbacks")
@@ -248,6 +251,11 @@ async def test_late_handbacks_do_not_repeat_first_signal_unkey(
         assert run.radio.wire == [True, False]
     assert run.radio.wire == [True, False]
     assert run.radio.exit_calls == 1
+    assert not [
+        record
+        for record in caplog.records
+        if record.levelname in {"WARNING", "ERROR", "CRITICAL"} and record.exc_info
+    ]
 
 
 @pytest.mark.asyncio
@@ -268,3 +276,30 @@ async def test_second_signal_cancels_tasks_without_arming_again(
         result = await asyncio.gather(victim, return_exceptions=True)
         assert isinstance(result[0], asyncio.CancelledError)
         assert run.arm_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_first_signal_release_start_failure_still_arms_clock(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    backstop = cli._ShutdownBackstop(asyncio.current_task(), bound_s=60)
+
+    def fail() -> asyncio.Task[None]:
+        raise RuntimeError("release could not start")
+
+    backstop.set_first_signal_release(fail)
+    try:
+        backstop.arm()
+        clock = backstop._clock
+        assert clock is not None
+        backstop.arm()
+        assert backstop._clock is clock
+        assert (
+            sum(
+                "could not start managed TX shutdown" in r.message
+                for r in caplog.records
+            )
+            == 1
+        )
+    finally:
+        backstop.disarm()
