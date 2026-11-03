@@ -115,9 +115,10 @@ def _matches(
         for endpoint in snapshot.endpoints
         if endpoint.flow == flow
         and (
-            mme_listed_matches(record.name, endpoint.name)
+            mme_listed_matches(record.name, endpoint.name, strip_instance=True)
             if api.name == "MME"
-            else endpoint_name_key(record.name) == endpoint_name_key(endpoint.name)
+            else endpoint_name_key(record.name, strip_instance=True)
+            == endpoint_name_key(endpoint.name, strip_instance=True)
         )
     )
 

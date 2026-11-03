@@ -7,7 +7,7 @@ from rigplane.audio.backend import _ALSA_HW_RE
 _ALSA_NAME_SUFFIX_RE = re.compile(rf"\s*\({_ALSA_HW_RE.pattern}\)\s*$")
 
 
-def endpoint_name_key(name: str, *, strip_instance: bool = True) -> str:
+def endpoint_name_key(name: str, *, strip_instance: bool = False) -> str:
     """Normalize whitespace and ALSA decorations, retaining the hardware address."""
     name = re.sub(r"\(\s+", "(", re.sub(r"\s+\)", ")", " ".join(name.split())))
     if strip_instance:
@@ -19,10 +19,12 @@ def endpoint_name_key(name: str, *, strip_instance: bool = True) -> str:
     return name
 
 
-def mme_listed_matches(listed: str, owned: str) -> bool:
+def mme_listed_matches(
+    listed: str, owned: str, *, strip_instance: bool = False
+) -> bool:
     """Allow MME's 31-character listed-name truncation in one direction."""
-    listed_key = endpoint_name_key(listed)
-    owned_key = endpoint_name_key(owned)
+    listed_key = endpoint_name_key(listed, strip_instance=strip_instance)
+    owned_key = endpoint_name_key(owned, strip_instance=strip_instance)
     return listed_key == owned_key or (
         len(listed) == 31 and owned_key.startswith(listed_key)
     )

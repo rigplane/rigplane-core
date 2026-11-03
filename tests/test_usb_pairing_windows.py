@@ -541,11 +541,15 @@ async def test_empty_windows_topology_candidates_roundtrip(monkeypatch):
     session["raw"]["portaudio"]["devices"] = devices
     backend, _ = _inject_windows(monkeypatch, session)
     original_run = usb_driver.bounded_portaudio_pool.run_bounded
+    topology_reads = 0
 
     async def timed_out(fn, *, what, direction, timeout, **kwargs):
+        nonlocal topology_reads
         if what == "optional USB topology":
             assert timeout == 5.0
-            raise AudioCaptureOpenTimeoutError("topology timed out")
+            topology_reads += 1
+            if topology_reads == 1:
+                raise AudioCaptureOpenTimeoutError("topology timed out")
         return await original_run(
             fn, what=what, direction=direction, timeout=timeout, **kwargs
         )
@@ -579,6 +583,7 @@ async def test_empty_windows_topology_candidates_roundtrip(monkeypatch):
             selected.selected_rx_device.index,
             selected.selected_tx_device.index,
         ) == (2, 6)
+        assert topology_reads == 2
     finally:
         await selected.stop_rx()
 

@@ -223,6 +223,45 @@ async def test_driver_exclusive_preferred_falls_back_to_mme_when_pairing_needs_i
 # --- saved selectors resolve across host APIs ------------------------------
 
 
+@pytest.mark.parametrize("selected", [(1, 5), (2, 6)])
+@pytest.mark.parametrize("missing_twin", [False, True])
+async def test_saved_name_preserves_dual_codec_instance(
+    monkeypatch, selected, missing_twin
+):
+    session = _w3_session()
+    recorded = session["raw"]["portaudio"]["devices"]
+    devices = [
+        dict(
+            recorded[0],
+            index=i,
+            name=f"Unused {i}",
+            max_input_channels=0,
+            max_output_channels=0,
+        )
+        for i in range(7)
+    ]
+    for record in recorded:
+        devices[record["index"]] = record
+    session["raw"]["portaudio"]["devices"] = devices
+    session = _add_wasapi(session)
+    audio = session["raw"]["portaudio"]
+    saved = {
+        "rx_device": "MME|name:"
+        + next(d["name"] for d in audio["devices"] if d["index"] == selected[0]),
+        "tx_device": "MME|name:"
+        + next(d["name"] for d in audio["devices"] if d["index"] == selected[1]),
+    }
+    twins = (7, 9) if selected == (1, 5) else (8, 10)
+    if missing_twin:
+        for device in audio["devices"]:
+            if device["index"] in twins:
+                device["max_input_channels"] = device["max_output_channels"] = 0
+    backend, _ = _inject_windows(monkeypatch, session)
+    assert await _selected(_driver(backend, EXCLUSIVE, **saved)) == (
+        selected if missing_twin else twins
+    )
+
+
 def _saved_mme_selectors(session, variant):
     """Build the ``MME|...`` selectors a Pro/Core release before this change saved."""
     session = copy.deepcopy(session)

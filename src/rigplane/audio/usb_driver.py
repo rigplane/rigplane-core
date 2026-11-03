@@ -986,9 +986,13 @@ def _find_by_override(
                 if record is None or record.name != dev.name:
                     continue
                 api = apis.get(record.hostapi)
-                if (
-                    api is not None
-                    and candidate_stable_id(snapshot, record, api, flow) == selector
+                if api is not None and (
+                    (
+                        identity.casefold().startswith("name:")
+                        and api.name == api_name
+                        and record.name == identity[len("name:") :]
+                    )
+                    or candidate_stable_id(snapshot, record, api, flow) == selector
                 ):
                     stable_matches.append(dev)
             # MOR-4030: with a preferred host API the saved host-API prefix is

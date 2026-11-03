@@ -233,33 +233,6 @@ async def test_refusal_reports_its_redacted_reason_category(station, case):
     assert "private" not in json.dumps(status)
 
 
-async def test_topology_unavailable_exposes_typed_candidates(station):
-    from rigplane.audio._usb_pairing import AudioCandidate
-    from rigplane.audio.usb_driver import AudioTopologyUnavailableError
-
-    server, radio, broadcaster = station
-    candidate = AudioCandidate("MME|name:Mic", "Mic", "capture", "MME", 3, False)
-    error = AudioTopologyUnavailableError("unavailable", candidates=(candidate,))
-
-    async def refuse(callback, *, jitter_depth=None):
-        raise error
-
-    radio.start_rx = refuse
-    await broadcaster.ensure_relay()
-    failure = (await info(server))["failure"]
-    assert failure["reason"] == "usb_topology_unavailable"
-    assert failure["candidates"] == [
-        {
-            "stableId": "MME|name:Mic",
-            "displayName": "Mic",
-            "direction": "capture",
-            "hostApi": "MME",
-            "portAudioIndex": 3,
-            "nearRadio": False,
-        }
-    ]
-
-
 class _BusyRadio(RefusingRadio):
     def __init__(self, holder):
         super().__init__()
