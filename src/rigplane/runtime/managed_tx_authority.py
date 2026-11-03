@@ -216,6 +216,7 @@ class ManagedTxAuthority:
         self._release_drained = asyncio.Event()
         self._release_drained.set()
         self._shutting_down = False
+        self._shutdown_requested = False
         self._terminated = False
         self._shutdown_termination: asyncio.Event | None = None
         self._shutdown_task: asyncio.Task[ShutdownResult] | None = None
@@ -244,7 +245,11 @@ class ManagedTxAuthority:
         return bool(
             self._provider_generation is not None
             and not (
-                self._closing or self._closed or self._shutting_down or self._terminated
+                self._closing
+                or self._closed
+                or self._shutdown_requested
+                or self._shutting_down
+                or self._terminated
             )
             and self._state_is_clean_locked()
             and not self._pending_settlements_locked()
@@ -824,6 +829,8 @@ class ManagedTxAuthority:
         if isinstance(operation, AbortOperation):
             operation = ActuationOperation.FORCE_RECEIVE
         if operation is not ActuationOperation.FORCE_RECEIVE:
+            if self._shutdown_requested:
+                return False
             ticket = self._controller_effects.get(token)
             if ticket is None and self._controller is not None:
                 if self._controller.mode == "remote":
@@ -848,6 +855,14 @@ class ManagedTxAuthority:
     async def owner_disconnect(self, owner: str) -> ManagedTxOutcome:
         self._cancel_pending_ptt(owner)
         async with self._lock:
+            if (
+                self._shutdown_requested
+                or self._shutting_down
+                or self._closing
+                or self._closed
+                or self._terminated
+            ):
+                return ManagedTxOutcome.REJECTED
             self._require_ingress_open_locked()
             if self.tx_holder_nowait() != owner:
                 return ManagedTxOutcome.REJECTED
@@ -961,7 +976,13 @@ class ManagedTxAuthority:
 
     def _owned_tx_admitted_locked(self, owner: str) -> bool:
         """The owned-TX admission rule; no await between reads."""
-        if self._closing or self._closed or self._shutting_down or self._terminated:
+        if (
+            self._closing
+            or self._closed
+            or self._shutdown_requested
+            or self._shutting_down
+            or self._terminated
+        ):
             return False
         if self._provider_generation is None:
             return False
@@ -1033,6 +1054,9 @@ class ManagedTxAuthority:
             self._wakeup.wake()
         if transition is not None:
             await self._execute(transition.effects, full_force=False)
+
+    def close_ingress_for_shutdown(self) -> None:
+        self._shutdown_requested = True
 
     async def shutdown(
         self,
@@ -1470,7 +1494,7 @@ class ManagedTxAuthority:
 
     def _require_ingress_open_locked(self) -> None:
         self._require_open_locked()
-        if self._shutting_down:
+        if self._shutdown_requested or self._shutting_down:
             raise RuntimeError("managed TX authority is shutting down")
 
     def _require_provider_change_locked(self) -> None:

@@ -380,3 +380,56 @@ async def test_replacement_and_shutdown_drain_off_debt_at_final_wire_without_on_
     assert composition.authority is authority
     assert composition._abort_fence is fence  # noqa: SLF001
     assert composition._effect_lane is lane  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actuator_type", [_IcomActuator, _YaesuActuator])
+@pytest.mark.parametrize("operation", ["ptt_on", "transmit_on"])
+async def test_first_signal_fences_admitted_on_at_final_wire(
+    tmp_path, monkeypatch, actuator_type: type[_DelayedWire], operation: str
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from rigplane import cli
+    from rigplane.runtime.managed_tx_authority import ShutdownResult
+    from rigplane.web import server as web_server
+
+    actuator, composition, server = await _joined_web_runtime(tmp_path, actuator_type)
+    actuator.release_on.clear()
+    signals = []
+
+    async def start() -> None:
+        server._server = MagicMock(wait_closed=AsyncMock())
+
+    monkeypatch.setattr(server, "start", start)
+    monkeypatch.setattr(server, "stop", AsyncMock())
+    monkeypatch.setattr(
+        web_server,
+        "_install_shutdown_signal_handlers",
+        lambda _loop, cb: signals.append(cb),
+    )
+    backstop = cli._ShutdownBackstop(asyncio.current_task(), bound_s=60)
+    session = cli._ManagedTxRadioSession(actuator, composition, backstop)
+    serving = asyncio.create_task(server.serve_forever(on_shutdown_signal=backstop.arm))
+    try:
+        if operation == "ptt_on":
+            submission = await composition.authority.submit_ptt(True, "owner")
+        else:
+            submission = await composition.authority.submit_transmit_on()
+        await actuator.on_started.wait()
+        assert signals
+        signals[0]()
+        # Resume the final write before the newly scheduled shutdown tree runs.
+        actuator.release_on.set()
+        await submission.wait_settlement()
+        await session.shutdown()
+        await serving
+        assert True not in actuator.wire
+        assert actuator.wire[-1:] == [False]
+        assert await composition.shutdown(asyncio.Event()) is ShutdownResult.DRAINED
+    finally:
+        actuator.release_on.set()
+        backstop.disarm()
+        await session.shutdown()
+        serving.cancel()
+        await asyncio.gather(serving, return_exceptions=True)

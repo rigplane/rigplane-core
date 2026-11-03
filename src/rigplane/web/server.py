@@ -4133,6 +4133,7 @@ class WebServer:
         on_started: Callable[[], None] | None = None,
         on_shutdown_signal: Callable[[], None] | None = None,
         on_tx_release: _TxReleaseHook | None = None,
+        before_cancel_all: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully.
 
@@ -4143,7 +4144,8 @@ class WebServer:
         ``test_web_ui_banner_prints_only_after_the_server_reports_started``).
         ``on_shutdown_signal`` runs once, on the first SIGTERM/SIGINT.
         ``on_tx_release`` receives the shutdown's PTT drain task, its name and
-        its bound in seconds.
+        its bound in seconds. ``before_cancel_all`` lets protected releases
+        finish within their bounds before the second signal cancels tasks.
         """
         self._on_tx_release = on_tx_release
         await self.start()
@@ -4157,6 +4159,16 @@ class WebServer:
         stop_event = asyncio.Event()
         _signal_count = 0
 
+        async def _deferred_cancel_all() -> None:
+            try:
+                assert before_cancel_all is not None
+                await before_cancel_all()
+            finally:
+                me = asyncio.current_task()
+                for task in asyncio.all_tasks(loop):
+                    if task is not me:
+                        task.cancel()
+
         def _on_signal() -> None:
             nonlocal _signal_count
             _signal_count += 1
@@ -4167,8 +4179,11 @@ class WebServer:
                     on_shutdown_signal()
             elif _signal_count == 2:
                 logger.info("second signal — cancelling all tasks")
-                for task in asyncio.all_tasks(loop):
-                    task.cancel()
+                if before_cancel_all is None:
+                    for task in asyncio.all_tasks(loop):
+                        task.cancel()
+                else:
+                    loop.create_task(_deferred_cancel_all(), name="shutdown-cancel-all")
             else:
                 logger.info("forced exit")
                 import os

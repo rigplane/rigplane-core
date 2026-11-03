@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `web` and `station`: the first SIGTERM/SIGINT now starts managed-TX release for rigctld, HTTP and controller-session owners before web teardown. Admitted ON effects are fenced at the final wire check immediately on that signal. A second signal defers task cancellation until protected releases finish or reach their own bounds; a third still exits immediately. Late owner handbacks reuse the shutdown release without sending another OFF (MOR-4102, MOR-3999; `tests/test_shutdown_signal_tx_release.py`).
+
 ## [3.1.2rc3] — 2026-11-03
 
 This is the third release candidate of 3.1.2. It fixes one thing on top of
