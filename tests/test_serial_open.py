@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import json
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -123,10 +124,7 @@ def test_windows_serial_open_diagnostic_rejects_unrelated_messages(message):
 async def test_windows_serial_open_error_reaches_radio_health_and_discovery():
     from rigplane.backends.discovery import CivProbeDiagnostic
     from rigplane.backends.icom7610 import Icom7610SerialRadio
-    from rigplane.core.exceptions import ConnectionError as RadioConnectionError
-    from rigplane.web.runtime_helpers import classify_radio_health
     from rigplane.web.server import WebConfig, WebServer
-    from rigplane.web.state_schema import RadioHealthPublic
 
     error = serial.SerialException(
         "could not open port 'COM3': PermissionError(13, 'Access is denied.', None, 5)"
@@ -136,17 +134,41 @@ async def test_windows_serial_open_error_reaches_radio_health_and_discovery():
     )
     radio = Icom7610SerialRadio(device="COM3")
     radio._serial_session = link
-    with pytest.raises(RadioConnectionError):
-        await radio.connect()
-    assert radio.last_error == "Failed to connect serial session: serial_busy"
-    health = classify_radio_health(radio)
-    assert health["likelyCause"] == "radio_not_connected"
-    assert health["lastError"] == "serial_busy"
-    assert RadioHealthPublic.model_validate(health).lastError == "serial_busy"
-    server = WebServer(radio, WebConfig())
-    assert server._build_radio_health()["lastError"] == "serial_busy"
-    assert server._station_readiness_payload()["health"]["lastError"] == "serial_busy"
-    assert "Access is denied" not in str(health)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+
+    async def request(method: str, path: str) -> tuple[int, dict[str, Any]]:
+        assert server._server is not None
+        host, port = server._server.sockets[0].getsockname()[:2]
+        reader, writer = await asyncio.open_connection(host, port)
+        try:
+            writer.write(
+                f"{method} {path} HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Content-Length: 0\r\nConnection: close\r\n\r\n".encode()
+            )
+            await writer.drain()
+            raw = await asyncio.wait_for(reader.read(), timeout=10.0)
+        finally:
+            writer.close()
+            await writer.wait_closed()
+        head, _, body = raw.partition(b"\r\n\r\n")
+        return int(head.split(b" ")[1]), json.loads(body)
+
+    try:
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        status, body = await request("POST", "/api/v1/radio/connect")
+        assert status == 500
+        status, body = await request("GET", "/api/v1/runtime")
+        assert status == 200
+        for private_detail in (str(error), "PermissionError", "Access is denied"):
+            assert private_detail not in json.dumps(body)
+        health = body["station"]["health"]
+        assert health["lastError"] == "serial_busy"
+        assert health["likelyCause"] == "radio_not_connected"
+    finally:
+        await server.stop()
     sink = CivProbeDiagnostic()
     assert (
         await probe_serial_civ(
