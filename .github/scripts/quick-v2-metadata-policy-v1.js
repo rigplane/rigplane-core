@@ -114,10 +114,11 @@ function bindRunPullRequest(run, liveBaseSha) { const liveMain = assertSha(liveB
   if (!Array.isArray(run.pull_requests) || run.pull_requests.length !== 1) { throw new ObservationError('ambiguous_pull', 'run does not record exactly one pull request association', {publish: false, targetSha: headSha}); }
   const associated = run.pull_requests[0]; const pullNumber = associated?.number;
   const associatedHead = assertSha(associated?.head?.sha, 'workflow run associated head'); const associatedBase = assertSha(associated?.base?.sha, 'workflow run associated base');
+  if ( !Number.isSafeInteger(pullNumber) || pullNumber <= 0 || associated?.base?.ref !== 'main' || !canonicalRunRepository(associated?.head?.repo) || !canonicalRunRepository(associated?.base?.repo) ) { throw new ObservationError('invalid_binding', 'workflow run pull request association is not canonical', {publish: false, targetSha: headSha}); }
   // GitHub reports the PR's current head in a run's association, so a run whose PR has since moved to a new head
   // (superseded, usually cancelled by quick's concurrency) is stale, not a binding failure (MOR-3875 follow-up).
-  if (Number.isSafeInteger(pullNumber) && pullNumber > 0 && associatedHead !== headSha) { throw new ObservationError('stale_head', 'workflow run belongs to a superseded pull request head', {publish: false, targetSha: headSha}); }
-  if ( !Number.isSafeInteger(pullNumber) || pullNumber <= 0 || associated?.base?.ref !== 'main' || !canonicalRunRepository(associated?.head?.repo) || !canonicalRunRepository(associated?.base?.repo) ) { throw new ObservationError('invalid_binding', 'workflow run pull request association is not canonical', {publish: false, targetSha: headSha}); }
+  // Checked only after the PR number, base ref and both repository identities are canonical.
+  if (associatedHead !== headSha) { throw new ObservationError('stale_head', 'workflow run belongs to a superseded pull request head', {publish: false, targetSha: headSha}); }
   if (associatedBase !== liveMain) { throw new ObservationError('stale_base', 'workflow run recorded base is not live main', {publish: false, targetSha: headSha}); }
   return {pullNumber, headSha, baseSha: associatedBase};
 }
