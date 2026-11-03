@@ -2740,6 +2740,7 @@ async def _served_through_cli(
         on_started: object = None,
         on_shutdown_signal: object = None,
         on_tx_release: object = None,
+        before_cancel_all: object = None,
     ) -> None:
         await self.start()
         served.append(self)
