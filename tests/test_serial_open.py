@@ -68,6 +68,98 @@ def test_serial_open_diagnostic_does_not_use_suppressed_context():
     assert serial_open_diagnostic(wrapper) == "serial_unknown"
 
 
+@pytest.mark.parametrize(
+    ("detail", "winerror", "expected"),
+    [
+        ("Access is denied.", 5, "serial_busy"),
+        ("Отказано в доступе.", 5, "serial_busy"),
+        ("Zugriff verweigert.", 5, "serial_busy"),
+        ("Sharing violation.", 32, "serial_busy"),
+        ("File not found.", 2, "serial_not_found"),
+        ("Path not found.", 3, "serial_not_found"),
+        ("Unknown error.", 87, "serial_unknown"),
+    ],
+)
+def test_windows_serial_open_diagnostic(detail, winerror, expected):
+    message = (
+        f"could not open port 'COM3': PermissionError(13, {detail!r}, None, {winerror})"
+    )
+    error = serial.SerialException(message)
+    native = OSError(errno.EACCES, detail)
+    native.winerror = winerror
+    for candidate in (error, native):
+        native_expected = (
+            expected if winerror != 87 else "serial_permission_denied: EACCES"
+        )
+        wanted = native_expected if candidate is native else expected
+        wrapper = RuntimeError("private wrapper")
+        for wrapped in (candidate, wrapper):
+            if wrapped is wrapper:
+                wrapper.__cause__ = candidate
+            assert serial_open.serial_open_diagnostic(wrapped) == wanted
+        wrapper.__cause__ = None
+        wrapper.__context__ = candidate
+        wrapper.__suppress_context__ = False
+        assert serial_open.serial_open_diagnostic(wrapper) == wanted
+        assert detail not in serial_open.serial_open_diagnostic(wrapper)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "unrelated private text",
+        "could not open port: PermissionError(13, 'private text', None, 5) trailing",
+        "could not open port: PermissionError(13, private text, None, 5)",
+    ],
+)
+def test_windows_serial_open_diagnostic_rejects_unrelated_messages(message):
+    assert (
+        serial_open.serial_open_diagnostic(serial.SerialException(message))
+        == "serial_unknown"
+    )
+
+
+@pytest.mark.asyncio
+async def test_windows_serial_open_error_reaches_radio_health_and_discovery():
+    from rigplane.backends.discovery import CivProbeDiagnostic
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.core.exceptions import ConnectionError as RadioConnectionError
+    from rigplane.web.runtime_helpers import classify_radio_health
+    from rigplane.web.server import WebConfig, WebServer
+    from rigplane.web.state_schema import RadioHealthPublic
+
+    error = serial.SerialException(
+        "could not open port 'COM3': PermissionError(13, 'Access is denied.', None, 5)"
+    )
+    link = SerialCivLink(
+        device="COM3", open_serial_connection=AsyncMock(side_effect=error)
+    )
+    radio = Icom7610SerialRadio(device="COM3")
+    radio._serial_session = link
+    with pytest.raises(RadioConnectionError):
+        await radio.connect()
+    assert radio.last_error == "Failed to connect serial session: serial_busy"
+    health = classify_radio_health(radio)
+    assert health["likelyCause"] == "radio_not_connected"
+    assert health["lastError"] == "serial_busy"
+    assert RadioHealthPublic.model_validate(health).lastError == "serial_busy"
+    server = WebServer(radio, WebConfig())
+    assert server._build_radio_health()["lastError"] == "serial_busy"
+    assert server._station_readiness_payload()["health"]["lastError"] == "serial_busy"
+    assert "Access is denied" not in str(health)
+    sink = CivProbeDiagnostic()
+    assert (
+        await probe_serial_civ(
+            "COM3",
+            baud_rates=[19200],
+            _open_serial=AsyncMock(side_effect=error),
+            diagnostics=sink,
+        )
+        is None
+    )
+    assert sink.code == "serial_busy"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["connect", "soft_reconnect"])
 async def test_serial_permission_error_reaches_health_without_private_details(method):
