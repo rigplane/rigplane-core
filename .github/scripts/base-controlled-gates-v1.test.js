@@ -273,6 +273,29 @@ test('stale workflow-run base skips publication end to end without posting a sta
   assert.deepEqual(posted, []);
 });
 
+test('superseded cancelled workflow run skips green without posting a status', async () => {
+  // GitHub reports the PR's current head in run.pull_requests, so a quick run
+  // cancelled by a newer push no longer matches its association (run 41694954134).
+  const base = 'b'.repeat(40); const oldHead = 'a'.repeat(40); const newHead = 'e'.repeat(40);
+  const run = {...runPull(41, newHead, base), head_sha: oldHead, id: 9001, event: 'pull_request', status: 'completed', conclusion: 'cancelled', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  assert.throws(() => observer.bindRunPullRequest(run, base), /superseded pull request head/u);
+  const posted = [];
+  const github = {request: async (route) => {
+    if (route.startsWith('POST ')) { posted.push(route); return {data: {}}; }
+    if (route.includes('/actions/runs/')) return {data: run};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  let result = await observer.assess({github, context, liveBaseSha: base});
+  assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['workflow_run', 'stale_head', 'success', false, oldHead]);
+  result = await observer.rebindForPublication({github, result});
+  assert.deepEqual([result.code, result.state, result.publish], ['stale_head', 'success', false]);
+  if (result.publish) {
+    await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
+  }
+  assert.deepEqual(posted, []);
+});
+
 test('stale live pull base on the workflow-run path also skips without posting', async () => {
   const head = 'a'.repeat(40); const live = 'c'.repeat(40); const moved = 'd'.repeat(40);
   const run = {...runPull(41, head, live), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
