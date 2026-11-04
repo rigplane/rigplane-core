@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows USB audio: selection failures now offer explicit audio device candidates when USB topology or endpoint name matching is unavailable, and matching accounts for Windows' numbered endpoint prefixes. (MOR-4119)
+
 ## [3.1.2rc4] — 2026-11-03
 
 This is the fourth release candidate of 3.1.2. It fixes one thing on top of
