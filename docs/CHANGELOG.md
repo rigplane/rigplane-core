@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.1.2rc4] — 2026-11-03
+## [3.1.2] — 2026-11-04
 
 This is the fourth release candidate of 3.1.2. It fixes one thing on top of
 3.1.2rc3: the first shutdown signal now starts the release of a transmitter keyed
@@ -5126,8 +5126,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc4...HEAD
-[3.1.2rc4]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2rc4
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...HEAD
+[3.1.2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
 [3.1.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...v3.1.2rc1
