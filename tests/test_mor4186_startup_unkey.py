@@ -5,7 +5,10 @@ transmitting: the restarted process connects, reports ready, and nothing
 checks PTT. The fix lives at the one edge every backend already reports
 through ``ManagedTxComposition.transport_ready`` — provider activation —
 and reuses the managed-TX authority's FORCE_RECEIVE, whose settlement is
-the confirming readback the actuators already perform.
+the confirming readback the actuators already perform. PTT is read and
+the release debt recorded BEFORE the provider is published, so no
+ingress can be admitted while the read is in flight (review P1-1) and
+``provider_available`` issues the force_receive under its own lock.
 
 Fakes are built from the real backend types: the Icom rows run a real
 ``IcomRadio`` against the ``MockIcomRadio`` simulator with stateful PTT
@@ -35,7 +38,11 @@ from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
-from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+from rigplane.runtime.managed_tx_state import (
+    ManagedTxIntent,
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+)
 from rigplane.runtime.radio import IcomRadio
 
 _COMPOSITION_LOGGER = "rigplane.runtime.managed_tx_composition"
@@ -163,6 +170,81 @@ class _YaesuUnconfirmableReadbackFake(_YaesuStartupFake):
         return self.ptt_token
 
 
+class _YaesuRacingKeyFake(_YaesuStartupFake):
+    """A live client keys the rig while the startup PTT read is in flight.
+
+    The read reports the rig's real state, so on an unfixed head the
+    racing key is admitted (the provider is already published there),
+    the rig goes transmitting, and the read returns the verified True
+    the startup step then releases — the P1-1 race. Before publication
+    the racing key is refused and the read reports an untouched
+    receiving rig.
+    """
+
+    def __init__(self, *, ptt_token: str = "0") -> None:
+        super().__init__(ptt_token=ptt_token)
+        self.composition: ManagedTxComposition | None = None
+        self.race_outcome: ManagedTxOutcome | None = None
+
+    async def read_transmit_state(self) -> TxStateReading:
+        assert self.composition is not None
+        submission = await self.composition.authority.submit_ptt(True, "race-seat")
+        self.race_outcome = submission.outcome
+        await submission.wait_settlement()
+        return await _YaesuStartupFake.read_transmit_state(self)
+
+
+class _YaesuFlakyLinkFake(_YaesuStartupFake):
+    """A radio whose wire answers only while the link is up.
+
+    The startup read additionally re-keys as the still-live managed
+    owner, standing in for the client that keys the moment its
+    reconnecting session sees the provider again.
+    """
+
+    def __init__(self, *, ptt_token: str = "0") -> None:
+        super().__init__(ptt_token=ptt_token)
+        self.link_up = True
+        self.composition: ManagedTxComposition | None = None
+        self.rekey_outcomes: list[ManagedTxOutcome] = []
+
+    async def _write(
+        self,
+        command: str,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: Any = None,
+        on_committed: Callable[[], None] | None = None,
+        **params: str,
+    ) -> None:
+        if not self.link_up:
+            raise CatTimeoutError("Write timeout waiting for ';' terminator")
+        await super()._write(
+            command,
+            is_current=is_current,
+            tier=tier,
+            on_committed=on_committed,
+            **params,
+        )
+
+    async def read_ptt_token(
+        self,
+        *,
+        is_current: Callable[[], bool] | None = None,
+        tier: Any = None,
+    ) -> str:
+        if not self.link_up:
+            raise CatTimeoutError("Read timeout waiting for ';' terminator")
+        return await super().read_ptt_token(is_current=is_current, tier=tier)
+
+    async def read_transmit_state(self) -> TxStateReading:
+        assert self.composition is not None
+        submission = await self.composition.authority.submit_ptt(True, "seat-a")
+        self.rekey_outcomes.append(submission.outcome)
+        await submission.wait_settlement()
+        return await _YaesuStartupFake.read_transmit_state(self)
+
+
 async def _activated_yaesu_composition(
     tmp_path: Path,
     fake: _YaesuStartupFake,
@@ -208,7 +290,7 @@ async def test_yaesu_left_keyed_at_connect_gets_one_force_receive(
     assert "managed_tx.startup_unkey" in messages[0]
     assert "backend=yaesu_cat" in messages[0]
     assert "model=FTX-1" in messages[0]
-    assert "readback=accepted" in messages[0]
+    assert "force_receive confirmed" in messages[0]
     assert caplog.records[-1].levelno == logging.WARNING
     await composition.shutdown(asyncio.Event())
 
@@ -254,7 +336,7 @@ async def test_icom_left_keyed_at_connect_gets_one_force_receive(
         assert len(messages) == 1
         assert "backend=rigplane" in messages[0]
         assert "model=IC-7610" in messages[0]
-        assert "readback=accepted" in messages[0]
+        assert "force_receive confirmed" in messages[0]
         assert caplog.records[-1].levelno == logging.WARNING
     finally:
         await composition.shutdown(asyncio.Event())
@@ -349,7 +431,160 @@ async def test_yaesu_left_keyed_at_reconnect_is_released_again(
         composition.validate_state_store(store)
         messages = _startup_unkey_records(caplog)
         assert len(messages) == 2
-        assert all("readback=accepted" in message for message in messages)
+        assert all("force_receive confirmed" in message for message in messages)
+    finally:
+        await composition.shutdown(asyncio.Event())
+
+
+# ---------------------------------------------------------------------------
+# Review P1-1/P1-2 — a TX this process owns is never released at the edge
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tx_on_racing_the_startup_read_is_never_released(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """P1-1: a client TX ON admitted while the startup read is in flight.
+
+    On the unfixed head the read runs after the provider is published,
+    so the racing key is admitted, the rig goes transmitting, and the
+    read returns the verified True whose force_off then releases the
+    key this process just accepted. With the release recorded before
+    publication the racing key is refused (no provider exists yet), the
+    untouched receiving rig needs no release at all, and the owner keys
+    normally once the provider is current.
+    """
+    fake = _YaesuRacingKeyFake(ptt_token="0")
+    caplog.set_level(logging.INFO)
+    composition = ManagedTxComposition(
+        fake, config_path=tmp_path / "YaesuRacingKeyFake.json"
+    )
+    fake.composition = composition
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(fake)
+    await composition.bind_state_store(store)
+    try:
+        # The racing key was refused and never keyed the rig.
+        assert fake.race_outcome is ManagedTxOutcome.REJECTED
+        assert fake.set_ptt_writes == []
+        assert _startup_unkey_records(caplog) == []
+
+        # The owner keys normally once the provider is current, and
+        # nothing releases the key for him. A held key carries its own
+        # PTT_RELEASE plan — what must not exist is a FORCE_RECEIVE
+        # debt over an RX intent, i.e. the intent itself proves the
+        # key survived the edge.
+        submission = await composition.authority.submit_ptt(True, "race-seat")
+        assert submission.outcome is ManagedTxOutcome.ACCEPTED
+        await submission.wait_settlement()
+        assert fake.set_ptt_writes == ["1"]
+        state = (await composition.authority.snapshot()).state
+        assert state.intent == ManagedTxIntent.ptt("race-seat")
+        assert state.last_actuation is not None
+        assert state.last_actuation.result.value == "accepted"
+        composition.validate_state_store(store)
+    finally:
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_owned_tx_reconnect_release_comes_only_from_the_authority(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """P1-2: at a reconnect the only release is the authority's own.
+
+    A managed owner holds the key when the link drops; the authority's
+    own release at ``transport_unavailable`` cannot confirm on the dead
+    wire and stays owed. At ``transport_ready`` the startup unkey must
+    not read PTT or release anything — the owed release and the live
+    owner's re-key both belong to the authority, which retries the
+    force_receive itself and hands the owner his key back.
+    """
+    fake = _YaesuFlakyLinkFake(ptt_token="0")
+    caplog.set_level(logging.INFO)
+    composition = ManagedTxComposition(
+        fake, config_path=tmp_path / "YaesuFlakyLinkFake.json"
+    )
+    fake.composition = composition
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(fake)
+    await composition.bind_state_store(store)
+    try:
+        # The owner keys on the live link; the first edge's own re-key
+        # attempt (the fake's) was refused before publication.
+        submission = await composition.authority.submit_ptt(True, "seat-a")
+        assert submission.outcome is ManagedTxOutcome.ACCEPTED
+        await submission.wait_settlement()
+        assert fake.set_ptt_writes == ["1"]
+        assert fake.rekey_outcomes == [ManagedTxOutcome.REJECTED]
+
+        # The link drops with the key held: the authority's own release
+        # cannot confirm on the dead wire and stays owed.
+        fake.link_up = False
+        await composition.transport_unavailable(fake)
+        state = (await composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+        assert state.release_required
+
+        # The link returns with the rig still keyed. The reconnect edge
+        # never read PTT (no new re-key attempt) and issued no release
+        # of its own: the single "0" is the authority's own retry.
+        fake.link_up = True
+        store.begin_provider_generation()
+        await composition.transport_ready(object())
+
+        assert fake.rekey_outcomes == [ManagedTxOutcome.REJECTED]
+        assert fake.set_ptt_writes == ["1", "0"]
+        assert _startup_unkey_records(caplog) == []
+        assert await _authority_is_clean(composition)
+        composition.validate_state_store(store)
+
+        # The still-live owner takes his key back on the new link, and
+        # nothing releases it for him (the held key's own PTT_RELEASE
+        # plan is not a debt; the intent proves the key survived).
+        rekey = await composition.authority.submit_ptt(True, "seat-a")
+        assert rekey.outcome is ManagedTxOutcome.ACCEPTED
+        await rekey.wait_settlement()
+        assert fake.set_ptt_writes == ["1", "0", "1"]
+        state = (await composition.authority.snapshot()).state
+        assert state.intent == ManagedTxIntent.ptt("seat-a")
+    finally:
+        await composition.shutdown(asyncio.Event())
+
+
+@pytest.mark.asyncio
+async def test_yaesu_held_key_direct_reconnect_released_by_authority_only(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """P1-2 skip branch: a key the owner still holds is never touched.
+
+    The poller reconnects without a transport loss; the authority's own
+    ``start_provider_unavailable`` folds the held key into release debt
+    and ``provider_available``'s retry releases the rig once. The
+    startup release must skip without reading: no record, and no
+    second FORCE_RECEIVE beyond the authority's own.
+    """
+    fake = _YaesuStartupFake(ptt_token="0")
+    caplog.set_level(logging.INFO)
+    composition, store = await _activated_yaesu_composition(tmp_path, fake)
+    try:
+        submission = await composition.authority.submit_ptt(True, "seat-a")
+        assert submission.outcome is ManagedTxOutcome.ACCEPTED
+        await submission.wait_settlement()
+        assert fake.set_ptt_writes == ["1"]
+
+        store.begin_provider_generation()
+        await composition.transport_ready(object())
+
+        # The single "0" is the authority's own retry of the folded
+        # key; the startup edge added no release of its own.
+        assert fake.set_ptt_writes == ["1", "0"]
+        assert _startup_unkey_records(caplog) == []
+        assert await _authority_is_clean(composition)
+        composition.validate_state_store(store)
     finally:
         await composition.shutdown(asyncio.Event())
 
@@ -392,8 +627,11 @@ async def test_yaesu_unverified_ptt_reading_never_triggers_a_write(
     composition.validate_state_store(store)
     messages = _startup_unkey_records(caplog)
     assert len(messages) == 1
-    assert "not a verified readback" in messages[0]
-    assert caplog.records[-1].levelno == logging.INFO
+    # An unverified reading that says ON is an operator-visible
+    # anomaly (review P2), not an INFO footnote: the rig may really be
+    # transmitting and Core refuses to act on it.
+    assert "without a verified readback" in messages[0]
+    assert caplog.records[-1].levelno == logging.WARNING
     await composition.shutdown(asyncio.Event())
 
 
@@ -414,11 +652,20 @@ async def test_yaesu_unconfirmable_readback_is_one_bounded_submission(
         state = (await composition.authority.snapshot()).state
         assert state.intent.kind is ManagedTxIntentKind.RX
         assert state.release_required
+        # A client TX ON is refused while that release debt is owed
+        # (review P1-1): the debt window closes only on a confirmed
+        # force_receive readback, and until then keying over the
+        # possibly still-keyed rig must be impossible.
+        refused = await composition.authority.submit_transmit_on()
+        assert refused.outcome is ManagedTxOutcome.REJECTED
+        refused_state = refused.transition.state
+        assert refused_state.intent.kind is ManagedTxIntentKind.RX
+        assert refused_state.release_required
         composition.validate_state_store(store)
         records = _startup_unkey_log_records(caplog)
         assert len(records) == 1
         message = records[0].getMessage()
-        assert "readback=uncertain" in message
+        assert "release stays owed" in message
         assert "may still be transmitting" in message
         assert records[0].levelno == logging.WARNING
     finally:

@@ -32,10 +32,7 @@ from rigplane.runtime.managed_tx_effect_lane import (
     ManagedTxEffectLane,
 )
 from rigplane.runtime.managed_tx_fence import TxAbortFence
-from rigplane.runtime.managed_tx_state import (
-    ActuationResult,
-    ManagedTxIntentKind,
-)
+from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
 
 logger = logging.getLogger(__name__)
@@ -48,6 +45,14 @@ class _ProviderEvent:
     provider_generation: int
     observation_generation: int
     transport_identity: object
+
+
+@dataclass(frozen=True, slots=True)
+class _StartupRelease:
+    """A startup release debt recorded before its provider is published."""
+
+    backend_label: str
+    model_label: str
 
 
 _ProviderHook = Callable[[_ProviderEvent], Awaitable[None]]
@@ -274,6 +279,13 @@ class ManagedTxComposition:
         if not self._candidate_is_current(event):
             await self._retire_once(event)
             return
+        # MOR-4186 review P1-1: PTT is read and any release debt is
+        # recorded BEFORE the provider is published. While the read is
+        # in flight the authority holds no provider, so no managed
+        # ingress can be admitted and this release can never hit a TX
+        # this process owns; provider_available() then issues the
+        # force_receive under its own lock, before any ingress can key.
+        startup_release = await self._record_startup_release()
         self._events[event.provider_generation] = event
         try:
             await self._authority.provider_available(event.provider_generation)
@@ -286,75 +298,41 @@ class ManagedTxComposition:
             await self._retire_once(event)
             return
         self._active_provider = event
-        await self._startup_unkey()
+        if startup_release is not None:
+            await self._log_startup_release(startup_release)
 
-    async def _startup_unkey(self) -> None:
-        """MOR-4186: release a radio still keyed when its provider came up.
+    async def _record_startup_release(self) -> _StartupRelease | None:
+        """MOR-4186: record a release debt for a rig still keyed at the edge.
 
         Runs once at every provider activation — process start and every
         radio (re)connect, the one edge every backend already reports
-        through :meth:`transport_ready` — before the provider is published
-        to callers. PTT is read through the backend's normal read path
-        (:class:`~rigplane.core.radio_protocol.TransmitStateReadable`);
+        through :meth:`transport_ready` — while the authority still holds
+        no provider: no managed ingress can be admitted yet, so a TX
+        this process owns can never be caught by this release (the
+        review's P1-1 race). PTT is read through the backend's normal
+        read path (:class:`~rigplane.core.radio_protocol.TransmitStateReadable`);
         only a reading that positively says transmitting with a verified
         readback (the protocol's freshness proof — a bare value is not)
         while this process owes no release (the state a SIGKILLed Core
-        leaves behind on a USB-serial rig with no link watchdog) gets
-        exactly one FORCE_RECEIVE through the authority, whose settlement
-        is the confirming readback the actuators already perform. The
-        procedure is that one bounded submission: it never retries on its
-        own. An unconfirmed release keeps the authority's fail-closed
-        retry policy and its visible release debt, surfaced here as "may
-        still be transmitting"; nothing here reports the rig as receiving.
-        A PTT read that fails or is unreadable does nothing (no blind
-        writes) and logs at INFO. Never raises: this is part of the
-        connect path.
+        leaves behind on a USB-serial rig with no link watchdog)
+        records exactly one release debt:
+        :meth:`ManagedTxAuthority.submit_force_off` with no provider,
+        i.e. ``ManagedTxSubmission.pending_release``.
+        :meth:`ManagedTxAuthority.provider_available` then issues the
+        ``RetryForceReceive`` under its own lock before any ingress can
+        key, and every TX ON is refused while the debt stays owed. An
+        unconfirmed release keeps the authority's fail-closed retry
+        policy and its visible release debt, surfaced by
+        :meth:`_log_startup_release` as "may still be transmitting";
+        nothing here reports the rig as receiving. A PTT read that
+        fails or is unreadable does nothing (no blind writes) and logs
+        at INFO; an unverified "transmitting" reading also leaves the
+        rig untouched and logs at WARNING. Never raises: this is part
+        of the connect path.
         """
         actuator = self._actuator
         if not isinstance(actuator, TransmitStateReadable):
-            return
-        try:
-            projection = await self._authority.snapshot()
-            state = projection.state
-            if (
-                state.intent.kind is not ManagedTxIntentKind.RX
-                or state.release_required
-                or state.pending_effect is not None
-            ):
-                # A managed-TX owner or a release this process already
-                # owes covers the rig; the startup unkey is only for a
-                # key nothing in this process made.
-                return
-            reading = await actuator.read_transmit_state()
-        except Exception:
-            # Not an error: a radio whose PTT cannot be established is
-            # left untouched (no blind writes).
-            logger.info(
-                "managed_tx.startup_unkey: PTT read at connect failed; "
-                "leaving the rig untouched",
-                exc_info=True,
-            )
-            return
-        if reading.value is not True:
-            if reading.value is None:
-                logger.info(
-                    "managed_tx.startup_unkey: PTT unreadable at connect "
-                    "(%s); leaving the rig untouched",
-                    reading.failure or "no value",
-                )
-            return
-        if reading.failure is not None or not reading.verified_readback:
-            # The read contract: a returned value does not by itself prove
-            # a fresh physical-radio read, so an unverified "transmitting"
-            # is not the positive answer rule 4 requires.
-            logger.info(
-                "managed_tx.startup_unkey: PTT reading at connect is not "
-                "a verified readback (failure=%s verified=%s); leaving "
-                "the rig untouched",
-                reading.failure,
-                reading.verified_readback,
-            )
-            return
+            return None
         backend = getattr(actuator, "backend_id", None)
         backend_label = (
             backend
@@ -364,8 +342,52 @@ class ManagedTxComposition:
         model = getattr(actuator, "model", None)
         model_label = model if isinstance(model, str) and model else "unknown"
         try:
-            submission = await self._authority.submit_force_off()
-            settled = await submission.wait_settlement()
+            projection = await self._authority.snapshot()
+            state = projection.state
+            if (
+                state.intent.kind is not ManagedTxIntentKind.RX
+                or state.release_required
+                or state.pending_effect is not None
+            ):
+                # A managed-TX owner or a release this process already
+                # owes covers the rig; the startup release is only for
+                # a key nothing in this process made.
+                return None
+            reading = await actuator.read_transmit_state()
+        except Exception:
+            # Not an error: a radio whose PTT cannot be established is
+            # left untouched (no blind writes).
+            logger.info(
+                "managed_tx.startup_unkey: PTT read at connect failed; "
+                "leaving the rig untouched",
+                exc_info=True,
+            )
+            return None
+        if reading.value is not True:
+            if reading.value is None:
+                logger.info(
+                    "managed_tx.startup_unkey: PTT unreadable at connect "
+                    "(%s); leaving the rig untouched",
+                    reading.failure or "no value",
+                )
+            return None
+        if reading.failure is not None or not reading.verified_readback:
+            # The read contract: a returned value does not by itself prove
+            # a fresh physical-radio read, so an unverified "transmitting"
+            # is not the positive answer rule 4 requires.
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s PTT "
+                "reading at connect says transmitting without a "
+                "verified readback (failure=%s verified=%s); leaving "
+                "the rig untouched",
+                backend_label,
+                model_label,
+                reading.failure,
+                reading.verified_readback,
+            )
+            return None
+        try:
+            await self._authority.submit_force_off()
         except Exception:
             logger.warning(
                 "managed_tx.startup_unkey: backend=%s model=%s was "
@@ -375,26 +397,34 @@ class ManagedTxComposition:
                 model_label,
                 exc_info=True,
             )
-            return
-        result = "superseded" if settled is None else settled.result.value
-        if settled is not None and settled.result is ActuationResult.ACCEPTED:
+            return None
+        return _StartupRelease(backend_label, model_label)
+
+    async def _log_startup_release(self, release: _StartupRelease) -> None:
+        """Log the startup release outcome from the post-availability state.
+
+        The outcome is read from the authority snapshot after
+        :meth:`ManagedTxAuthority.provider_available` issued the
+        force_receive: ``release_required`` is cleared only by an
+        accepted readback, so a debt still visible here means the rig
+        may still be transmitting.
+        """
+        projection = await self._authority.snapshot()
+        if projection.state.release_required:
             logger.warning(
                 "managed_tx.startup_unkey: backend=%s model=%s was "
-                "transmitting at connect with no managed-TX owner; "
-                "force_receive confirmed, readback=%s",
-                backend_label,
-                model_label,
-                result,
+                "transmitting at connect with no managed-TX owner; the "
+                "release stays owed and the rig may still be transmitting",
+                release.backend_label,
+                release.model_label,
             )
         else:
             logger.warning(
                 "managed_tx.startup_unkey: backend=%s model=%s was "
                 "transmitting at connect with no managed-TX owner; "
-                "force_receive readback=%s; the release stays owed and the "
-                "rig may still be transmitting",
-                backend_label,
-                model_label,
-                result,
+                "force_receive confirmed",
+                release.backend_label,
+                release.model_label,
             )
 
     def _candidate_is_current(self, event: _ProviderEvent) -> bool:
