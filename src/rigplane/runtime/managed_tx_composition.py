@@ -279,6 +279,34 @@ class ManagedTxComposition:
         if not self._candidate_is_current(event):
             await self._retire_once(event)
             return
+        self._events[event.provider_generation] = event
+        await self._publish_prepared_provider(event)
+
+    async def _publish_prepared_provider(self, event: _ProviderEvent) -> None:
+        """Publish a prepared provider as one cancellation-joined unit.
+
+        The bounded sequence — startup PTT read, release-debt recording,
+        provider availability, currency re-check, activation — runs as
+        its own task, and a cancellation of the activating caller joins
+        it to completion instead of bisecting it (round-2 review P1):
+        the read still reaches its answer, any debt is still recorded,
+        and the provider is still published so its retry force-offs a
+        rig the read found keyed. Shutdown can therefore never drain a
+        half-activated provider as clean while the radio stays keyed.
+        """
+        publication = asyncio.create_task(self._publish_provider_once(event))
+        publication.add_done_callback(self._harvest)
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(publication)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _publish_provider_once(self, event: _ProviderEvent) -> None:
         # MOR-4186 review P1-1: PTT is read and any release debt is
         # recorded BEFORE the provider is published. While the read is
         # in flight the authority holds no provider, so no managed
@@ -286,7 +314,6 @@ class ManagedTxComposition:
         # this process owns; provider_available() then issues the
         # force_receive under its own lock, before any ingress can key.
         startup_release = await self._record_startup_release()
-        self._events[event.provider_generation] = event
         try:
             await self._authority.provider_available(event.provider_generation)
         except BaseException:

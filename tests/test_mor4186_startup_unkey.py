@@ -245,6 +245,20 @@ class _YaesuFlakyLinkFake(_YaesuStartupFake):
         return await _YaesuStartupFake.read_transmit_state(self)
 
 
+class _YaesuSuspendedReadFake(_YaesuStartupFake):
+    """A startup PTT read that suspends until released (rig keyed)."""
+
+    def __init__(self, *, ptt_token: str = "1") -> None:
+        super().__init__(ptt_token=ptt_token)
+        self.read_started = asyncio.Event()
+        self.release_read = asyncio.Event()
+
+    async def read_transmit_state(self) -> TxStateReading:
+        self.read_started.set()
+        await self.release_read.wait()
+        return await _YaesuStartupFake.read_transmit_state(self)
+
+
 async def _activated_yaesu_composition(
     tmp_path: Path,
     fake: _YaesuStartupFake,
@@ -611,6 +625,43 @@ async def test_yaesu_silent_ptt_read_leaves_the_rig_untouched(
     assert "PTT unreadable at connect (timeout)" in messages[0]
     assert caplog.records[-1].levelno == logging.INFO
     assert await _shutdown_terminated(composition) is ShutdownResult.TERMINATED
+
+
+@pytest.mark.asyncio
+async def test_cancelled_activation_joins_the_startup_release(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Round-2 review P1: cancellation joins the bounded publication.
+
+    The PTT read is suspended with the rig keyed; cancelling the
+    activation must not bisect the publication into a half-activated
+    provider that shutdown would drain as clean. The read reaches its
+    verified True, the debt is recorded, and the published provider's
+    retry OFFs the rig before the cancellation is honoured.
+    """
+    fake = _YaesuSuspendedReadFake(ptt_token="1")
+    caplog.set_level(logging.INFO)
+    composition = ManagedTxComposition(
+        fake, config_path=tmp_path / "YaesuSuspendedReadFake.json"
+    )
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(fake)
+    activation = asyncio.create_task(composition.bind_state_store(store))
+    await asyncio.wait_for(fake.read_started.wait(), timeout=5)
+    activation.cancel()
+    # The verified TX answer arrives despite the cancellation.
+    fake.release_read.set()
+    with pytest.raises(asyncio.CancelledError):
+        await activation
+
+    # The joined publication released the keyed rig and finished.
+    assert fake.set_ptt_writes == ["0"]
+    assert await _authority_is_clean(composition)
+    messages = _startup_unkey_records(caplog)
+    assert len(messages) == 1
+    assert "force_receive confirmed" in messages[0]
+    await composition.shutdown(asyncio.Event())
 
 
 @pytest.mark.asyncio
