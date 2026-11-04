@@ -295,9 +295,12 @@ class ManagedTxComposition:
         half-activated provider as clean while the radio stays keyed.
 
         A shutdown-time blanket cancellation may also cancel the
-        publication task itself; the ``done()``-guarded join then exits
-        without spinning (the shield of a cancelled task re-raises
-        without yielding) and propagates the cancellation once.
+        publication task itself — before its first instruction, so none
+        of its own bookkeeping ran (round-3 review P1). The owning
+        wrapper therefore performs the fail-closed abort bookkeeping
+        for every publication that did not complete, and the
+        ``done()``-guarded join exits without spinning (the shield of a
+        cancelled task re-raises without yielding).
         """
         publication = asyncio.create_task(
             self._publish_provider_once(event),
@@ -310,9 +313,35 @@ class ManagedTxComposition:
                 await asyncio.shield(publication)
             except asyncio.CancelledError:
                 cancelled = True
-        if cancelled or publication.cancelled():
+        if publication.cancelled():
+            await self._abort_prepared_publication(event)
+            raise asyncio.CancelledError
+        if cancelled:
             raise asyncio.CancelledError
         await publication
+
+    async def _abort_prepared_publication(self, event: _ProviderEvent) -> None:
+        """Fail-closed bookkeeping for a publication that did not complete.
+
+        An aborted publication leaves an unresolved PTT read behind, so
+        the release is owed, never assumed clean: the debt keeps every
+        shutdown path from draining the provider as clean while the rig
+        may still be keyed. Idempotent — a publication whose own error
+        path already recorded the debt or retired the event no-ops
+        here.
+        """
+        try:
+            await self._authority.submit_force_off()
+        except Exception:
+            # The authority may already be closing for shutdown; its
+            # own shutdown path then owes and drives the release.
+            logger.info(
+                "managed_tx.startup_unkey: recording the release debt of "
+                "an aborted publication failed; the authority's own "
+                "shutdown path owes the release",
+                exc_info=True,
+            )
+        await self._retire_once(event)
 
     async def _publish_provider_once(self, event: _ProviderEvent) -> None:
         # MOR-4186 review P1-1: PTT is read and any release debt is
@@ -326,7 +355,8 @@ class ManagedTxComposition:
             await self._authority.provider_available(event.provider_generation)
         except BaseException:
             # Any abort — a failed publication or a cancellation of the
-            # publication task itself — retires the prepared provider.
+            # publication task itself — retires the prepared provider;
+            # the owning wrapper records the fail-closed release debt.
             await self._retire_once(event)
             raise
         if not self._candidate_is_current(event):
@@ -391,13 +421,6 @@ class ManagedTxComposition:
                 # a key nothing in this process made.
                 return None
             reading = await actuator.read_transmit_state()
-        except asyncio.CancelledError:
-            # The read was interrupted without an answer: fail closed.
-            # The release is owed, never assumed clean, so no shutdown
-            # path can drain this provider as clean while the rig may
-            # still be keyed (round-2 review P1).
-            await self._authority.submit_force_off()
-            raise
         except Exception:
             # Not an error: a radio whose PTT cannot be established is
             # left untouched (no blind writes).

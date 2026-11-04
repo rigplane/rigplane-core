@@ -707,6 +707,64 @@ async def test_cancelled_publication_task_never_spins_and_owes_the_release(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_unstarted_publication_retires_and_owes(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Round-3 P1: a publication cancelled before its own bookkeeping.
+
+    A shutdown-time blanket cancellation can reach the publication task
+    before any of its own bookkeeping ran. The owning wrapper must
+    still retire the prepared provider and record the release debt, so
+    shutdown can never report DRAINED while the rig may be keyed.
+    """
+    retired: list[int] = []
+
+    async def retire_provider(event: object) -> None:
+        retired.append(getattr(event, "provider_generation"))
+
+    fake = _YaesuStartupFake(ptt_token="1")
+    composition = ManagedTxComposition(
+        fake,
+        config_path=tmp_path / "UnstartedPublication.json",
+        retire_provider=retire_provider,
+    )
+    started = asyncio.Event()
+
+    async def frozen_publication(event: object) -> None:
+        del event
+        started.set()
+        # Never proceeds and runs none of the real bookkeeping, like a
+        # task cancelled before its first instruction.
+        await asyncio.Event().wait()
+
+    composition._publish_provider_once = frozen_publication  # type: ignore[method-assign]
+    caplog.set_level(logging.INFO)
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(fake)
+    activation = asyncio.create_task(composition.bind_state_store(store))
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    publication = next(
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == "managed-tx-provider-publication"
+    )
+    publication.cancel()
+    activation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await activation
+
+    assert retired == [1]
+    state = (await composition.authority.snapshot()).state
+    assert state.intent.kind is ManagedTxIntentKind.RX
+    assert state.release_required
+    termination = asyncio.Event()
+    termination.set()
+    assert await composition.shutdown(termination) is ShutdownResult.TERMINATED
+
+
+@pytest.mark.asyncio
 async def test_yaesu_unverified_ptt_reading_never_triggers_a_write(
     tmp_path, caplog: pytest.LogCaptureFixture
 ) -> None:
