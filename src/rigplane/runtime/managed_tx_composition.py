@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from rigplane.core.radio_protocol import ManagedTxSupervisor
+from rigplane.core.radio_protocol import ManagedTxSupervisor, TransmitStateReadable
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
@@ -31,8 +32,13 @@ from rigplane.runtime.managed_tx_effect_lane import (
     ManagedTxEffectLane,
 )
 from rigplane.runtime.managed_tx_fence import TxAbortFence
-from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+from rigplane.runtime.managed_tx_state import (
+    ActuationResult,
+    ManagedTxIntentKind,
+)
 from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+
+logger = logging.getLogger(__name__)
 
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
 
@@ -122,6 +128,7 @@ class ManagedTxComposition:
     ) -> None:
         if not isinstance(actuator, ManagedTxActuator):
             raise TypeError("production managed TX requires a normalized actuator")
+        self._actuator = actuator
         self._prepare_provider = prepare_provider
         self._retire_provider = retire_provider
         self._abort_fence = TxAbortFence()
@@ -279,6 +286,116 @@ class ManagedTxComposition:
             await self._retire_once(event)
             return
         self._active_provider = event
+        await self._startup_unkey()
+
+    async def _startup_unkey(self) -> None:
+        """MOR-4186: release a radio still keyed when its provider came up.
+
+        Runs once at every provider activation — process start and every
+        radio (re)connect, the one edge every backend already reports
+        through :meth:`transport_ready` — before the provider is published
+        to callers. PTT is read through the backend's normal read path
+        (:class:`~rigplane.core.radio_protocol.TransmitStateReadable`);
+        only a reading that positively says transmitting with a verified
+        readback (the protocol's freshness proof — a bare value is not)
+        while this process owes no release (the state a SIGKILLed Core
+        leaves behind on a USB-serial rig with no link watchdog) gets
+        exactly one FORCE_RECEIVE through the authority, whose settlement
+        is the confirming readback the actuators already perform. The
+        procedure is that one bounded submission: it never retries on its
+        own. An unconfirmed release keeps the authority's fail-closed
+        retry policy and its visible release debt, surfaced here as "may
+        still be transmitting"; nothing here reports the rig as receiving.
+        A PTT read that fails or is unreadable does nothing (no blind
+        writes) and logs at INFO. Never raises: this is part of the
+        connect path.
+        """
+        actuator = self._actuator
+        if not isinstance(actuator, TransmitStateReadable):
+            return
+        try:
+            projection = await self._authority.snapshot()
+            state = projection.state
+            if (
+                state.intent.kind is not ManagedTxIntentKind.RX
+                or state.release_required
+                or state.pending_effect is not None
+            ):
+                # A managed-TX owner or a release this process already
+                # owes covers the rig; the startup unkey is only for a
+                # key nothing in this process made.
+                return
+            reading = await actuator.read_transmit_state()
+        except Exception:
+            # Not an error: a radio whose PTT cannot be established is
+            # left untouched (no blind writes).
+            logger.info(
+                "managed_tx.startup_unkey: PTT read at connect failed; "
+                "leaving the rig untouched",
+                exc_info=True,
+            )
+            return
+        if reading.value is not True:
+            if reading.value is None:
+                logger.info(
+                    "managed_tx.startup_unkey: PTT unreadable at connect "
+                    "(%s); leaving the rig untouched",
+                    reading.failure or "no value",
+                )
+            return
+        if reading.failure is not None or not reading.verified_readback:
+            # The read contract: a returned value does not by itself prove
+            # a fresh physical-radio read, so an unverified "transmitting"
+            # is not the positive answer rule 4 requires.
+            logger.info(
+                "managed_tx.startup_unkey: PTT reading at connect is not "
+                "a verified readback (failure=%s verified=%s); leaving "
+                "the rig untouched",
+                reading.failure,
+                reading.verified_readback,
+            )
+            return
+        backend = getattr(actuator, "backend_id", None)
+        backend_label = (
+            backend
+            if isinstance(backend, str) and backend
+            else (type(actuator).__name__)
+        )
+        model = getattr(actuator, "model", None)
+        model_label = model if isinstance(model, str) and model else "unknown"
+        try:
+            submission = await self._authority.submit_force_off()
+            settled = await submission.wait_settlement()
+        except Exception:
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s was "
+                "transmitting at connect with no managed-TX owner; "
+                "force_receive could not be submitted",
+                backend_label,
+                model_label,
+                exc_info=True,
+            )
+            return
+        result = "superseded" if settled is None else settled.result.value
+        if settled is not None and settled.result is ActuationResult.ACCEPTED:
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s was "
+                "transmitting at connect with no managed-TX owner; "
+                "force_receive confirmed, readback=%s",
+                backend_label,
+                model_label,
+                result,
+            )
+        else:
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s was "
+                "transmitting at connect with no managed-TX owner; "
+                "force_receive readback=%s; the release stays owed and the "
+                "rig may still be transmitting",
+                backend_label,
+                model_label,
+                result,
+            )
 
     def _candidate_is_current(self, event: _ProviderEvent) -> bool:
         store = self._state_store
