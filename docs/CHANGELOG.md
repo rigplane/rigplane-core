@@ -11,6 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.3rc1] — 2026-11-04
+
+This is the first release candidate of 3.1.3. It adds one safety fix on top of
+3.1.2: a transmitter left keyed after a crash is released when Core starts or
+reconnects.
+
+### Fixed
+
+- Transmitter left keyed after a crash: when Core starts or reconnects, it reads the radio's PTT before the radio is offered to clients; if the radio is transmitting and no one in this Core owns the transmission, Core releases it through the managed-TX authority and logs `managed_tx.startup_unkey`. A failed or unverified read writes nothing. (MOR-4186, #4474)
+
 ## [3.1.2] — 2026-11-04
 
 This is the fourth release candidate of 3.1.2. It fixes one thing on top of
@@ -5126,7 +5136,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.3rc1...HEAD
+[3.1.3rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...v3.1.3rc1
 [3.1.2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
