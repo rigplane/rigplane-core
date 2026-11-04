@@ -665,6 +665,48 @@ async def test_cancelled_activation_joins_the_startup_release(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_publication_task_never_spins_and_owes_the_release(
+    tmp_path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Round-2 P1, inner half: cancelling the publication task itself.
+
+    A shutdown-time blanket cancellation reaches the publication task
+    too. The join must exit without spinning on the cancelled task, the
+    abort retires the prepared provider, and the interrupted read
+    leaves the release owed — shutdown never drains the provider as
+    clean while the rig may still be keyed.
+    """
+    fake = _YaesuSuspendedReadFake(ptt_token="1")
+    caplog.set_level(logging.INFO)
+    composition = ManagedTxComposition(
+        fake, config_path=tmp_path / "YaesuSuspendedReadFakeCancel.json"
+    )
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(fake)
+    activation = asyncio.create_task(composition.bind_state_store(store))
+    await asyncio.wait_for(fake.read_started.wait(), timeout=5)
+
+    publication = next(
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == "managed-tx-provider-publication"
+    )
+    publication.cancel()
+    activation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await activation
+
+    # The interrupted read owes the release; nothing drained as clean.
+    state = (await composition.authority.snapshot()).state
+    assert state.intent.kind is ManagedTxIntentKind.RX
+    assert state.release_required
+    termination = asyncio.Event()
+    termination.set()
+    assert await composition.shutdown(termination) is ShutdownResult.TERMINATED
+
+
+@pytest.mark.asyncio
 async def test_yaesu_unverified_ptt_reading_never_triggers_a_write(
     tmp_path, caplog: pytest.LogCaptureFixture
 ) -> None:
