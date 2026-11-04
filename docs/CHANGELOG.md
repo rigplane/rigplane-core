@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.1.3rc1] — 2026-11-04
+## [3.1.3] — 2026-11-04
 
 This is the first release candidate of 3.1.3. It adds one safety fix on top of
 3.1.2: a transmitter left keyed after a crash is released when Core starts or
@@ -5136,8 +5136,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.3rc1...HEAD
-[3.1.3rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...v3.1.3rc1
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.3...HEAD
+[3.1.3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
