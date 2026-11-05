@@ -33,6 +33,7 @@ Design principles (learned from production):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Callable, Collection
@@ -213,6 +214,11 @@ class YaesuCatTransport:
         return self._connected
 
     @property
+    def baudrate(self) -> int:
+        """The baud the port runs at (or opens at next, while closed)."""
+        return self._baudrate
+
+    @property
     def timeout(self) -> float:
         """Per-attempt read timeout for queries (seconds)."""
         return self._timeout
@@ -254,6 +260,41 @@ class YaesuCatTransport:
             raise CatTransportError(
                 f"Failed to open serial port {self._device}: {exc}"
             ) from exc
+
+    def set_baudrate(self, baudrate: int) -> bool:
+        """Retune the open port to *baudrate* without reopening it (MOR-4207).
+
+        The connect-time baud search (``discovery.sweep_serial_bauds``) asks
+        the radio at each rate of its connect order on one open port, the
+        way ``SerialCivLink.set_baudrate`` does for CI-V. A closed transport
+        just remembers the rate for its next open. Returns ``False`` and
+        keeps the old rate when the writer exposes no pyserial object or the
+        port refuses the rate. ``query`` flushes stale bytes before each
+        command, so nothing read at the old rate is taken for an answer.
+        """
+        if baudrate <= 0:
+            raise ValueError("baudrate must be > 0")
+        if not self._connected:
+            self._baudrate = baudrate
+            return True
+        port = getattr(getattr(self._writer, "transport", None), "serial", None)
+        if port is None:
+            return False
+        try:
+            port.baudrate = baudrate
+        except Exception:
+            logger.warning(
+                "CAT: %s refused baud %d; keeping %d",
+                self._device,
+                baudrate,
+                self._baudrate,
+                exc_info=True,
+            )
+            with contextlib.suppress(Exception):
+                port.baudrate = self._baudrate  # roll the refused rate back
+            return False
+        self._baudrate = baudrate
+        return True
 
     async def close(self) -> None:
         """Close serial connection gracefully."""

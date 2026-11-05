@@ -211,7 +211,8 @@ class _IcomSerialRadioBase(CoreRadio):
         )
         self._serial_device = device
         self._serial_baudrate = baudrate
-        # MOR-3620: the baud the caller asked for, the bauds the connect-time
+        # MOR-3620: the baud the caller asked for (MOR-4207: a hint, tried
+        # right after the profile baud the connect opens at), the bauds the connect-time
         # sweep tried in vain, and the plain-words note when the radio
         # answered at another rate than configured.
         self._serial_configured_baudrate = baudrate
@@ -504,11 +505,14 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
         self._serial_deferred_audio = None
-        # MOR-3620: an owner connect starts at the configured baud again, so
-        # a restarted Auto radio relocks to it rather than to a past fallback.
+        # MOR-4207: an owner connect opens at the head of the connect order —
+        # the profile baud, not the configured one (a hint, tried next) — so
+        # a restarted Auto radio locks there rather than to a past fallback
+        # or a stale saved rate (MOR-3620).
         self.serial_baud_notice = None
-        if self._retune_serial_link(self._serial_configured_baudrate):
-            self._serial_baudrate = self._serial_configured_baudrate
+        first_baud = self._serial_connect_bauds()[0]
+        if self._retune_serial_link(first_baud):
+            self._serial_baudrate = first_baud
         self._conn_state = RadioConnectionState.CONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = False
@@ -1030,6 +1034,14 @@ class _IcomSerialRadioBase(CoreRadio):
             self.last_error = None
         return status in (RadioIdentityStatus.VERIFIED, RadioIdentityStatus.UNVERIFIED)
 
+    def _serial_connect_bauds(self) -> tuple[int, ...]:
+        """This radio's connect order: profile baud, configured baud, the rest."""
+        from .discovery import serial_connect_baud_rates
+
+        return serial_connect_baud_rates(
+            "civ", self._profile.default_baud, self._serial_configured_baudrate
+        )
+
     def _retune_serial_link(self, baud: int) -> bool:
         """Retune the open link; False for links that cannot (bespoke doubles)."""
         retune = getattr(self._serial_civ_link, "set_baudrate", None)
@@ -1073,19 +1085,21 @@ class _IcomSerialRadioBase(CoreRadio):
     async def _sweep_serial_baud(
         self, epoch: int, owner_stop_epoch: int
     ) -> bytes | None:
-        """Retry the identity read at the other documented bauds, once each.
+        """Retry the identity read at the rest of the connect order, once each.
 
         MOR-3620: an Icom radio on ``CI-V USB Baud Rate = Auto`` keeps the
         speed of the first host that talks to it, so silence at the current
         baud is often the radio answering at another one. Runs on the open
         link (the port is retuned in place, never reopened), reads only
-        ``19 00`` and stops at the first answer, keeping that baud. Without
+        ``19 00`` and stops at the first answer, keeping that baud. The order
+        is :meth:`_serial_connect_bauds` (MOR-4207): the configured baud
+        right after the profile baud the link opened at. Without
         an answer — also on cancellation or an error — the starting baud is
         put back unless the port refuses the return (then it stays where it
         is and warns), unless the attempt was retired meanwhile (its link then
         belongs to the successor). Returns the answered payload, or ``None``.
         """
-        from .discovery import serial_probe_baud_rates
+        from .discovery import sweep_serial_bauds
 
         def retired() -> bool:
             return (
@@ -1101,24 +1115,27 @@ class _IcomSerialRadioBase(CoreRadio):
             return None
         start = self._serial_baudrate
         payload: bytes | None = None
+
+        async def heard_at(baud: int) -> bool:
+            nonlocal payload
+            self._serial_baudrate = baud
+            self._serial_bauds_tried += (baud,)
+            payload = await self._read_serial_identity_payload()
+            # A retired attempt stops here too; a NAK keeps this baud for the
+            # hold (heard, not silent).
+            return (
+                retired() or payload is not None or self._serial_identity_read_refused
+            )
+
         try:
-            for baud in serial_probe_baud_rates("civ"):
-                if baud == start:
-                    continue
-                if retired() or not link.connected or not link.healthy:
-                    return None
-                if not self._retune_serial_link(baud):
-                    if retired() or not link.connected or not link.healthy:
-                        return None
-                    continue
-                self._serial_baudrate = baud
-                self._serial_bauds_tried += (baud,)
-                payload = await self._read_serial_identity_payload()
-                if retired():
-                    return None
-                if payload is not None or self._serial_identity_read_refused:
-                    return payload  # heard: a NAK keeps this baud for the hold too
-            return None
+            await sweep_serial_bauds(
+                self._serial_connect_bauds(),
+                start=start,
+                retune=self._retune_serial_link,
+                heard_at=heard_at,
+                usable=lambda: not retired() and link.connected and link.healthy,
+            )
+            return None if retired() else payload
         finally:
             if (
                 payload is None
