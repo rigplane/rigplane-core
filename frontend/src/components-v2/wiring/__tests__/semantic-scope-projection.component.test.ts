@@ -171,8 +171,22 @@ function clear() {
   if (history) expect(history.style.visibility).toBe('hidden');
 }
 
+// MOR-4206: the waterfall paints through the latest-frame pump on rAF, and
+// the stubbed rAF never fires on its own — flush the paint queue at the
+// points where a test expects a paint (same helper as the spectrum tests).
+let rafCallbacks: Map<number, FrameRequestCallback>;
+let rafId: number;
+function flushPaint(): void {
+  const pending = [...rafCallbacks.values()];
+  rafCallbacks.clear();
+  for (const callback of pending) callback(performance.now());
+}
+
 beforeEach(() => {
-  vi.useFakeTimers(); vi.stubGlobal('requestAnimationFrame', () => 1); vi.stubGlobal('cancelAnimationFrame', () => {});
+  vi.useFakeTimers();
+  rafCallbacks = new Map(); rafId = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { rafCallbacks.set(++rafId, callback); return rafId; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafCallbacks.delete(id); });
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   const noop = () => {}; const ctx = new Proxy({ measureText: () => ({ width: 1 }),
     createImageData: () => ({ data: new Uint8ClampedArray(4) }), getImageData: () => ({ data: new Uint8ClampedArray(4) }),
@@ -249,7 +263,7 @@ describe('one managed scope owner through the real region and panel', () => {
 
   it('appends only accepted receipts, including identical bins, and seeds recovery once', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render(); expect(push).toHaveBeenCalledTimes(1);
+    await render(); flushPaint(); expect(push).toHaveBeenCalledTimes(1);
     renew(10, true); expect(push).toHaveBeenCalledTimes(1);
     expect(target.querySelector('.passband-freshness')).toBeNull();
     renew(10); expect(push).toHaveBeenCalledTimes(1);
@@ -258,13 +272,13 @@ describe('one managed scope owner through the real region and panel', () => {
     // burst; advance to the live fps=20 cadence (50 ms) so this consecutive
     // frame classifies as live, not burst drain.
     vi.advanceTimersByTime(50); flushSync();
-    wire.frame(); expect(push).toHaveBeenCalledTimes(2);
+    wire.frame(); flushPaint(); expect(push).toHaveBeenCalledTimes(2);
     const shared = h.resources.acquire('hardware-scope', 'independent');
     toggle(); clear(); wire.frame(); expect(push).toHaveBeenCalledTimes(2);
-    toggle(); expect(push).toHaveBeenCalledTimes(3);
+    toggle(); flushPaint(); expect(push).toHaveBeenCalledTimes(3);
     renew(11); expect(push).toHaveBeenCalledTimes(3);
     vi.advanceTimersByTime(500); flushSync(); clear();
-    wire.frame(); expect(push).toHaveBeenCalledTimes(4);
+    wire.frame(); flushPaint(); expect(push).toHaveBeenCalledTimes(4);
     h.resources.release(shared);
   });
   // MOR-2425/R41: the panel paints no per-field freshness — the `◷` chip and
@@ -460,7 +474,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
   it('paints raw canvas/waterfall with one socket and lease and no receiver-dependent command', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
     expect(push).toHaveBeenCalledTimes(1);
     expect(wire.connect).toHaveBeenCalledTimes(1);
@@ -511,7 +525,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
   it('drops the lease and socket on unmount and never retains prior-session raw display', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(push).toHaveBeenCalledTimes(1);
     const painted = push.mock.calls.length;
     await unmount(component!); component = null; flushSync(); await Promise.resolve();
@@ -519,23 +533,24 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     expect(wire.count()).toBe(0);
     expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
     renew(11, true);
-    // Remount without emitting a frame: a prior-session frame must not paint.
-    await mountHost();
+    // Remount without emitting a frame: a prior-session frame must not paint,
+    // even when the paint queue flushes.
+    await mountHost(); flushPaint();
     expect(push.mock.calls.length).toBe(painted);
-    wire.connected(); wire.frame();
+    wire.connected(); wire.frame(); flushPaint();
     expect(push.mock.calls.length).toBe(painted + 1);
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
   it('keeps one lease across provider generation change with declared no-readback', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(push).toHaveBeenCalledTimes(1);
     const acquired = vi.spyOn(h.resources, 'acquire'), released = vi.spyOn(h.resources, 'release');
     radio.current!.providerGeneration = 2;
     for (const status of Object.values(radio.current!.fieldStatus!)) status.lastObservedMonotonic = 1;
     setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
-    publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
+    publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame(); flushPaint();
     expect(push).toHaveBeenCalledTimes(2);
     expect(acquired).not.toHaveBeenCalled(); expect(released).not.toHaveBeenCalled();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
@@ -543,18 +558,19 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
   it('ignores frames from the old epoch across a real disconnect and reconnect', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(push).toHaveBeenCalledTimes(1);
     wire.disconnect(); flushSync();
     const painted = push.mock.calls.length;
-    wire.frame();
+    // A frame from the old epoch must not paint, even when the queue flushes.
+    wire.frame(); flushPaint();
     expect(push.mock.calls.length).toBe(painted);
     wire.connected(); flushSync();
     // MOR-3471: the gate collapses sub-40ms-spaced deliveries as a replay
     // burst; advance to the live fps=20 cadence (50 ms) so the first frame
     // of the new epoch classifies as live.
     vi.advanceTimersByTime(50); flushSync();
-    wire.frame();
+    wire.frame(); flushPaint();
     expect(push.mock.calls.length).toBe(painted + 1);
   });
   it('clears the raw display and drops the lease when the hardware boundary ends', async () => {
