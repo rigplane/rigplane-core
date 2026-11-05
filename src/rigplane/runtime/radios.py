@@ -65,6 +65,10 @@ RADIOS: dict[str, RadioModel] = {
         civ_addr=0xA2,
         receivers=2,
     ),
+    "IC-905": RadioModel(
+        name="IC-905",
+        civ_addr=0xAC,
+    ),
     "IC-R8600": RadioModel(
         name="IC-R8600",
         civ_addr=0x96,
@@ -103,6 +107,9 @@ SERIAL_RADIO_MAP: dict[int, tuple[str, bytes]] = {
     # radio (identify_radio only logs a debug line on an ID mismatch).
     0xB6: ("IC-7300MK2", b""),
     0xA2: ("IC-9700", b"\x01\x20"),
+    # IC-905: the CI-V guide lists 19 00 but never documents the reply bytes;
+    # no model token is invented -- the 0xAC address alone identifies it.
+    0xAC: ("IC-905", b""),
     0x8E: ("IC-7851", b"\x01\x35"),
     0x96: ("IC-R8600", b"\x01\x26"),
 }
@@ -116,6 +123,7 @@ CIV_PROFILE_MAP: dict[int, str] = {
     0x94: "icom_ic7300",
     0xB6: "icom_ic7300mk2",
     0xA2: "icom_ic9700",
+    0xAC: "icom_ic905",
     0x8E: "",  # IC-7851 — no profile file yet
     0x96: "",  # IC-R8600 — no profile file yet
 }

@@ -7,9 +7,9 @@
 # Fails on an unlisted pair or a stale row; membership changes
 # require review. Not manual completeness or execution evidence.
 # Regenerate, do not hand-edit.
-census	civ_profiles	7
-census	distinct_gap_keys	150
-census	profile_key_gaps	375
+census	civ_profiles	8
+census	distinct_gap_keys	153
+census	profile_key_gaps	380
 census	public_builders	247
 gap	get_acc1_mod_level	X6100,X6200
 gap	get_af_mute	IC-7300,IC-7300MK2,X6100,X6200
@@ -40,7 +40,8 @@ gap	get_lan_mod_level	IC-7300,X6100,X6200
 gap	get_main_sub_band	IC-7300,IC-7300MK2,X6100,X6200
 gap	get_main_sub_tracking	IC-7300,IC-7300MK2,X6100,X6200
 gap	get_manual_notch_width	X6100,X6200
-gap	get_memory_mode	IC-705,IC-7300,IC-7300MK2,IC-7610,IC-9700
+gap	get_memory_contents	IC-905
+gap	get_memory_mode	IC-705,IC-7300,IC-7300MK2,IC-7610,IC-905,IC-9700
 gap	get_monitor	X6100,X6200
 gap	get_nb_depth	X6100,X6200
 gap	get_nb_width	X6100,X6200
@@ -48,7 +49,7 @@ gap	get_notch_filter	X6100,X6200
 gap	get_overflow_status	X6100,X6200
 gap	get_pbt_inner	X6100,X6200
 gap	get_pbt_outer	X6100,X6200
-gap	get_powerstat	IC-705,IC-7300,IC-7300MK2,IC-7610,X6100,X6200
+gap	get_powerstat	IC-705,IC-7300,IC-7300MK2,IC-7610,IC-905,X6100,X6200
 gap	get_quick_dual_watch	IC-7300,IC-7300MK2,X6100,X6200
 gap	get_quick_split	X6100,X6200
 gap	get_ref_adjust	IC-7300,IC-7300MK2,X6100,X6200
@@ -90,6 +91,7 @@ gap	get_vfo	IC-7300,IC-7300MK2
 gap	get_vox_delay	X6100,X6200
 gap	get_vox_gain	X6100,X6200
 gap	get_xfc_status	X6100,X6200
+gap	memory_clear	IC-905
 gap	power_off	X6100,X6200
 gap	power_on	X6100,X6200
 gap	scan_set_df_span	X6100,X6200
@@ -128,6 +130,7 @@ gap	set_ip_plus	X6100,X6200
 gap	set_lan_mod_level	IC-7300,X6100,X6200
 gap	set_main_sub_tracking	IC-7300,IC-7300MK2,X6100,X6200
 gap	set_manual_notch_width	X6100,X6200
+gap	set_memory_contents	IC-905
 gap	set_memory_group	IC-7300,IC-7300MK2,IC-7610,IC-9700,X6100,X6200
 gap	set_monitor	X6100,X6200
 gap	set_nb_depth	X6100,X6200
