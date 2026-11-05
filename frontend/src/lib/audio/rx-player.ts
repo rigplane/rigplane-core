@@ -1,16 +1,17 @@
 /**
  * RX Audio Player — decodes Opus/PCM16 frames and plays via AudioContext.
  *
- * Graph (per #753):
- *   source → preGain(volume) → ChannelSplitter(2)
- *                                 ├─ [0] → mainGain → mainPanner → destination
- *                                 └─ [1] → subGain  → subPanner  → destination
+ * Graph (per #753, output stage MOR-4210):
+ *   source → preGain(afLevelToRxGain(volume)) → ChannelSplitter(2)
+ *                                 ├─ [0] → mainGain → mainPanner ─┐
+ *                                 └─ [1] → subGain  → subPanner  ─┴→ limiterIn → limiter → destination
  *
  * - MAIN/SUB focus and stereo split are controlled via setFocus /
  *   setSplitStereo / setChannelGainDb (wired from AudioManager.setAudioConfig).
  * - For mono input (no dual-watch) the splitter's channel [1] is silent per
  *   the WebAudio spec — SUB audio simply doesn't contribute, which is correct.
- * - ``volume`` preserves its old semantics as the pre-routing level.
+ * - ``volume`` is the AF level 0..RX_AF_LEVEL_MAX; 0..1 is the old linear
+ *   pre-routing level, above 1 it is makeup gain up to +20 dB (MOR-4210).
  */
 
 import {
@@ -83,6 +84,56 @@ function dbToLinear(db: number): number {
   return Math.pow(10, db / 20);
 }
 
+/** Top of the browser RX AF level (LIVE monitor): 1 is unity gain, the range
+ *  above it is makeup gain up to `RX_MAKEUP_GAIN_MAX` (MOR-4210). */
+export const RX_AF_LEVEL_MAX = 2;
+
+/** Makeup gain at AF level RX_AF_LEVEL_MAX: +20 dB (MOR-4210). */
+const RX_MAKEUP_GAIN_MAX_DB = 20;
+export const RX_MAKEUP_GAIN_MAX = dbToLinear(RX_MAKEUP_GAIN_MAX_DB);
+
+/** AF level → preGain. 0..1 stays linear (the pre-MOR-4210 mapping, so 1 is
+ *  exact unity); 1..RX_AF_LEVEL_MAX rises evenly in dB up to
+ *  RX_MAKEUP_GAIN_MAX. */
+export function afLevelToRxGain(level: number): number {
+  if (!Number.isFinite(level) || level <= 0) return 0;
+  if (level <= 1) return level;
+  const above = Math.min(level, RX_AF_LEVEL_MAX) - 1;
+  return dbToLinear((above / (RX_AF_LEVEL_MAX - 1)) * RX_MAKEUP_GAIN_MAX_DB);
+}
+
+/** A StereoPannerNode at pan 0 sends mono input to each ear at cos(pi/4)
+ *  (Web Audio equal-power law, about -3 dB); the channel gain multiplies by
+ *  this to play the centred channel at its own level (MOR-4210). */
+const CENTRE_PAN_COMPENSATION = Math.SQRT2;
+
+// Output soft limiter (MOR-4210). A WaveShaperNode reads its curve over
+// input [-1, 1] and holds the end values beyond it, so limiterIn scales the
+// mix by 1/LIMITER_HEADROOM and the curve maps u to softLimit(u * headroom).
+// softLimit is the identity up to LIMITER_KNEE and then bends smoothly
+// (matching slope at the knee) towards LIMITER_CEILING, which it never
+// reaches: no output sample exceeds 0 dBFS at any gain.
+const LIMITER_KNEE = 0.5;      // -6 dBFS
+const LIMITER_CEILING = 0.99;  // -0.09 dBFS
+const LIMITER_HEADROOM = 4;
+const LIMITER_CURVE_POINTS = 4097;
+
+function softLimit(x: number): number {
+  const magnitude = Math.abs(x);
+  if (magnitude <= LIMITER_KNEE) return x;
+  const span = LIMITER_CEILING - LIMITER_KNEE;
+  return Math.sign(x) * (LIMITER_KNEE + span * Math.tanh((magnitude - LIMITER_KNEE) / span));
+}
+
+export function softLimitCurve(): Float32Array<ArrayBuffer> {
+  const curve = new Float32Array(LIMITER_CURVE_POINTS);
+  const mid = (LIMITER_CURVE_POINTS - 1) / 2;
+  for (let k = 0; k < LIMITER_CURVE_POINTS; k++) {
+    curve[k] = softLimit(((k - mid) / mid) * LIMITER_HEADROOM);
+  }
+  return curve;
+}
+
 export class RxPlayer {
   private ctx: AudioContext | null = null;
   private preGain: GainNode | null = null;
@@ -91,6 +142,8 @@ export class RxPlayer {
   private mainPanner: StereoPannerNode | null = null;
   private subPanner: StereoPannerNode | null = null;
   private splitter: ChannelSplitterNode | null = null;
+  private limiterIn: GainNode | null = null;
+  private limiter: WaveShaperNode | null = null;
   private decoder: AudioDecoder | null = null;
   private nextPlayTime = 0;
   private opusTs = 0;
@@ -162,8 +215,8 @@ export class RxPlayer {
   }
 
   set volume(v: number) {
-    this._volume = Math.max(0, Math.min(1, v));
-    if (this.preGain) this.preGain.gain.value = this._volume;
+    this._volume = Math.max(0, Math.min(RX_AF_LEVEL_MAX, v));
+    if (this.preGain) this.preGain.gain.value = afLevelToRxGain(this._volume);
   }
 
   get focus(): RxAudioFocus {
@@ -228,20 +281,26 @@ export class RxPlayer {
     if (!Ctx) return;
     this.ctx = new Ctx({ sampleRate: SAMPLE_RATE });
     this.preGain = this.ctx.createGain();
-    this.preGain.gain.value = this._volume;
+    this.preGain.gain.value = afLevelToRxGain(this._volume);
     this.mainGain = this.ctx.createGain();
     this.subGain = this.ctx.createGain();
     this.mainPanner = this.ctx.createStereoPanner();
     this.subPanner = this.ctx.createStereoPanner();
     this.splitter = this.ctx.createChannelSplitter(2);
+    this.limiterIn = this.ctx.createGain();
+    this.limiterIn.gain.value = 1 / LIMITER_HEADROOM;
+    this.limiter = this.ctx.createWaveShaper();
+    this.limiter.curve = softLimitCurve();
     // Wire up the graph.
     this.preGain.connect(this.splitter);
     this.splitter.connect(this.mainGain, 0);
     this.splitter.connect(this.subGain, 1);
     this.mainGain.connect(this.mainPanner);
     this.subGain.connect(this.subPanner);
-    this.mainPanner.connect(this.ctx.destination);
-    this.subPanner.connect(this.ctx.destination);
+    this.mainPanner.connect(this.limiterIn);
+    this.subPanner.connect(this.limiterIn);
+    this.limiterIn.connect(this.limiter);
+    this.limiter.connect(this.ctx.destination);
     this._applyGraphState();
     this.nextPlayTime = 0;
     this._attachResumeListeners();
@@ -265,6 +324,8 @@ export class RxPlayer {
       this.mainPanner = null;
       this.subPanner = null;
       this.splitter = null;
+      this.limiterIn = null;
+      this.limiter = null;
     }
     this.nextPlayTime = 0;
     this.opusTs = 0;
@@ -643,8 +704,9 @@ export class RxPlayer {
     }
     const mainOn = this._focus === 'main' || this._focus === 'both';
     const subOn = this._focus === 'sub' || this._focus === 'both';
-    this.mainGain.gain.value = mainOn ? dbToLinear(this._mainGainDb) : 0;
-    this.subGain.gain.value = subOn ? dbToLinear(this._subGainDb) : 0;
+    const centre = this._splitStereo ? 1 : CENTRE_PAN_COMPENSATION;
+    this.mainGain.gain.value = mainOn ? dbToLinear(this._mainGainDb) * centre : 0;
+    this.subGain.gain.value = subOn ? dbToLinear(this._subGainDb) * centre : 0;
     this.mainPanner.pan.value = this._splitStereo ? -1 : 0;
     this.subPanner.pan.value = this._splitStereo ? +1 : 0;
   }

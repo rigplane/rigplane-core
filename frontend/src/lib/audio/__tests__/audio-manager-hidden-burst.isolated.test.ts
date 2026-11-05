@@ -99,6 +99,7 @@ function installFakeAudioContext(): void {
     createGain: vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() })),
     createStereoPanner: vi.fn(() => ({ pan: { value: 0 }, connect: vi.fn() })),
     createChannelSplitter: vi.fn(() => ({ connect: vi.fn() })),
+    createWaveShaper: vi.fn(() => ({ curve: null, oversample: 'none', connect: vi.fn() })),
     createBuffer: vi.fn((channels: number, frameCount: number, rate: number) => {
       const planes = Array.from({ length: channels }, () => new Float32Array(frameCount));
       return {

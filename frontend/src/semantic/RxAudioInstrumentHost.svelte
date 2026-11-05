@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
+  import { RX_AF_LEVEL_MAX } from '$lib/audio/rx-player';
   import { LAN_MOD_INPUT_SOURCE } from '$lib/radio/mod-input';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { ValueControl } from '../components-v2/controls/value-control';
@@ -273,12 +274,14 @@
   let presentedAfAuthority = $derived(authority(presentation));
   let publishedAfAuthority = $derived(published === null ? null : authority(published));
   const AF_DOMAIN = { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 1 } as const;
+  /** MOR-4210: the browser volume runs past unity into makeup gain. */
+  const BROWSER_AF_DOMAIN = { ...AF_DOMAIN, max: RX_AF_LEVEL_MAX } as const;
   /** MOR-1676: on a radio-AF target whose caps publish `controls.af_level`,
    *  the slider moves on that raw range, one raw unit per step. A normalized
    *  reading or feedback value `v` shows as `Math.round(v * raw_max)`, and a
    *  raw request `r` leaves as `r / raw_max`, so the AF callbacks keep their
-   *  0..1 unit. The browser volume, and a radio publishing no range, keep
-   *  `AF_DOMAIN`. */
+   *  0..1 unit. A radio publishing no range keeps `AF_DOMAIN`; the browser
+   *  volume uses `BROWSER_AF_DOMAIN`. */
   function afScale(target: AfTarget | undefined): Readonly<{
     domain: ScalarDomain;
     show: (value: number) => number;
@@ -293,7 +296,8 @@
       || typeof rawMin !== 'number' || !Number.isSafeInteger(rawMin)
       || typeof rawMax !== 'number' || !Number.isSafeInteger(rawMax) || rawMax <= rawMin) {
       return {
-        domain: AF_DOMAIN, show: (value) => value, send: (value) => value,
+        domain: target === 'browser-volume' ? BROWSER_AF_DOMAIN : AF_DOMAIN,
+        show: (value) => value, send: (value) => value,
         feedback: (feedback) => feedback,
       };
     }

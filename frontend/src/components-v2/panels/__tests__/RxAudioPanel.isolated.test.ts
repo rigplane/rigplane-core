@@ -410,3 +410,40 @@ describe('RxAudioPanel AF level command-feedback wiring (MOR-2910)', () => {
     expect(afSlider(t).getAttribute('aria-disabled')).toBe('true');
   });
 });
+
+// MOR-4210: in LIVE the AF slider is the browser volume, which runs past
+// 100% into makeup gain. The radio AF lane (confirmed at 50% here) must
+// neither cap nor replace it; outside LIVE the radio's 0..1 range stays.
+describe('RxAudioPanel LIVE browser volume above 100% (MOR-4210)', () => {
+  function afSlider(t: HTMLElement): HTMLElement {
+    return t.querySelector<HTMLElement>('[aria-label="AF Level"]')!;
+  }
+  const live = (afLevel: number) =>
+    mountPanel({ hasLiveAudio: true, monitorMode: 'live', afLevel }, { confirmed: 0.5 });
+
+  it('reads back the browser volume above 100% on a 0..2 range', () => {
+    const t = live(1.5);
+    expect(afSlider(t).getAttribute('aria-valuemax')).toBe('2');
+    expect(afSlider(t).getAttribute('aria-valuenow')).toBe('1.5');
+    expect(vcValueFor(t, 'AF Level')).toBe('150%');
+  });
+
+  it('reads back the top of the browser range as 200%', () => {
+    expect(vcValueFor(live(2), 'AF Level')).toBe('200%');
+  });
+
+  it('adjusts the browser volume above 100%', () => {
+    vi.useFakeTimers();
+    const t = live(1.5);
+    afSlider(t).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(mockHandlers.onAfLevelChange).toHaveBeenCalledTimes(1);
+    expect(mockHandlers.onAfLevelChange.mock.calls[0][0]).toBeCloseTo(1.51, 12);
+    vi.useRealTimers();
+  });
+
+  it('keeps the radio 0..1 range outside LIVE', () => {
+    const t = mountPanel({ hasLiveAudio: true, monitorMode: 'local', afLevel: 0.5 });
+    expect(afSlider(t).getAttribute('aria-valuemax')).toBe('1');
+  });
+});

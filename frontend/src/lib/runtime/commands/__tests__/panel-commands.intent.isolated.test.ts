@@ -33,6 +33,8 @@ const h = vi.hoisted(() => ({
   patchRadioState: vi.fn(),
   patchReceiver: vi.fn(),
   rxEnabled: false,
+  /** `runtime.audio.volume`: the browser AF level in percent. */
+  volume: 100,
   setMuted: vi.fn(),
   setRxLive: vi.fn(),
   setRxVolume: vi.fn(),
@@ -81,6 +83,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
     get rxEnabled() { return h.rxEnabled; },
+    get audio() { return { volume: h.volume }; },
     setMuted: h.setMuted,
     setRxLive: h.setRxLive,
     setRxVolume: h.setRxVolume,
@@ -282,6 +285,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.patchRadioState.mockClear();
     h.patchReceiver.mockClear();
     h.rxEnabled = false;
+    h.volume = 100;
     h.setMuted.mockClear();
     h.setRxLive.mockClear();
     h.setRxVolume.mockClear();
@@ -499,7 +503,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   it('rejects invalid browser-local AF input before any local or radio effect', () => {
     h.rxEnabled = true;
     const rxAudio = makeRxAudioHandlers();
-    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const level of [-0.01, 2.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
       rxAudio.onAfLevelChange(level);
     }
 
@@ -531,6 +535,18 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setVolume).toHaveBeenNthCalledWith(2, 100);
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('lets the browser-local AF level reach the makeup-gain range up to 2 (MOR-4210)', () => {
+    h.rxEnabled = true;
+    const rxAudio = makeRxAudioHandlers();
+    rxAudio.onAfLevelChange(1.5);
+    rxAudio.onAfLevelChange(2);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(1, 1.5);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(2, 2);
+    expect(h.setVolume).toHaveBeenNthCalledWith(1, 150);
+    expect(h.setVolume).toHaveBeenNthCalledWith(2, 200);
+    expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
   it('mutes through the server command regardless of the observed AF level (MOR-2583)', () => {
@@ -2053,7 +2069,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     h.sendCommand.mockClear();
     resetCommandLifecycle();
     h.rxEnabled = true;
-    (h.state!.main as { afLevel: number }).afLevel = 0.02;
+    h.volume = 2;
     expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'down' } })).toBe(true);
     expect(h.setRxVolume).toHaveBeenCalledWith(0);
     expect(h.setVolume).toHaveBeenCalledWith(0);
@@ -2064,6 +2080,27 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     (h.state!.main as { rfGain: number }).rfGain = 128;
     expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'up' } })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'adjust_rf_gain', params: { direction: 'sideways' } })).toBe(true);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+  });
+
+  // MOR-4210: LIVE shortcuts step the browser volume, which runs past unity
+  // into makeup gain; the radio AF reading must not replace it.
+  it('steps the LIVE browser volume from its own reading, up to the browser maximum', () => {
+    h.rxEnabled = true;
+    h.volume = 150;
+    (h.state!.main as { afLevel: number }).afLevel = 0.5;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { delta: 5 } })).toBe(true);
+    expect(h.setRxVolume).toHaveBeenLastCalledWith(1.5 + 5 / 255);
+    expect(h.setVolume).toHaveBeenLastCalledWith(152);
+
+    h.volume = 198;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } })).toBe(true);
+    expect(h.setRxVolume).toHaveBeenLastCalledWith(2);
+    expect(h.setVolume).toHaveBeenLastCalledWith(200);
+
+    h.volume = 150;
+    expect(dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'down' } })).toBe(true);
+    expect(h.setRxVolume.mock.lastCall?.[0]).toBeCloseTo(1.45, 12);
     expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
