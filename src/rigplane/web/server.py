@@ -1462,11 +1462,13 @@ class WebServer:
         # write kicks the operator out of the menu).
         self._scope_last_frame: float = 0.0  # last arrival of any scope frame
         self._scope_hidden_published: bool | None = None  # last fact verdict
-        self._scope_hidden_at: float | None = None  # when the verdict was made
+        self._scope_hidden_at: float | None = None  # when last confirmed
         # The reconnect path is the only automatic scope re-enable left; it
-        # fires at most once per viewing session (demand generation) and
-        # never while the menu guard is active. None = never sent.
+        # fires at most once per viewing session (demand generation) AND
+        # connection epoch (provider generation), and never while the menu
+        # guard is active. None = never sent.
         self._scope_reenable_generation: int | None = None
+        self._scope_reenable_provider_generation: int | None = None
         # Band plan registry
         from .band_plan import DEFAULT_BAND_PLANS_DIR, BandPlanRegistry  # noqa: TID251
 
@@ -3531,29 +3533,55 @@ class WebServer:
             and self._hardware_scope_available
             and not self._scope_enable_failed
         ):
-            if self._scope_menu_guard_active(now=time.monotonic()):
-                logger.info(
-                    "scope: reconnect re-enable skipped — radio is in its "
-                    "own menu (scope hidden on the radio)"
-                )
-            elif self._scope_reenable_generation == self._scope_demand_generation:
-                logger.info(
-                    "scope: reconnect re-enable already sent for this "
-                    "viewing session (generation %d), skipping",
-                    self._scope_demand_generation,
-                )
-            else:
-                self._set_scope_data_callback(self._on_hardware_scope_frame)
-                if await self._execute_scope_command(
-                    EnableScope(generation=self._scope_demand_generation)
-                ):
-                    self._scope_enabled = True
-                    self._scope_reenable_generation = self._scope_demand_generation
+            # The existing scope-enable lock serialises the attempt check
+            # and the awaited command: overlapping refetch tasks cannot
+            # both pass the generation check before either enable lands,
+            # so the ordered queue never sees the claimed bound exceeded.
+            async with self._scope_enable_lock:
+                if self._scope_menu_guard_active(now=time.monotonic()):
                     logger.info(
-                        "scope: re-enable confirmed after reconnect "
-                        "(%d handlers)",
-                        len(self._scope_handlers),
+                        "scope: reconnect re-enable skipped — radio is in its "
+                        "own menu (scope hidden on the radio)"
                     )
+                elif self._scope_reenable_recorded_for(
+                    self.command_state_store.provider_generation
+                ):
+                    logger.info(
+                        "scope: reconnect re-enable already sent for this "
+                        "viewing session (generation %d), skipping",
+                        self._scope_demand_generation,
+                    )
+                else:
+                    self._set_scope_data_callback(self._on_hardware_scope_frame)
+                    if await self._execute_scope_command(
+                        EnableScope(generation=self._scope_demand_generation)
+                    ):
+                        self._scope_enabled = True
+                        self._scope_reenable_generation = self._scope_demand_generation
+                        self._scope_reenable_provider_generation = (
+                            self.command_state_store.provider_generation
+                        )
+                        logger.info(
+                            "scope: re-enable confirmed after reconnect (%d handlers)",
+                            len(self._scope_handlers),
+                        )
+
+    def _scope_reenable_recorded_for(self, provider_generation: int) -> bool:
+        """Whether the once-per-session reconnect enable already fired for
+        THIS connection epoch.
+
+        The bound is per viewing session AND per provider epoch: a genuinely
+        new connection (the backend's generation advance reached the shared
+        store's provider generation — the invalidation edge
+        ``_on_provider_generation`` already subscribes to) re-arms it, so a
+        second real outage while the same viewer stays connected still gets
+        its scope output restored; repeated refetches inside one epoch do
+        not.
+        """
+        return (
+            self._scope_reenable_generation == self._scope_demand_generation
+            and self._scope_reenable_provider_generation == provider_generation
+        )
 
     def _cancel_scope_reenable_task(self) -> None:
         """Cancel readiness work invalidated by a last-viewer transition."""
@@ -3663,18 +3691,19 @@ class WebServer:
         )
 
     def _civ_link_flowing(self, now: float) -> bool:
-        """Whether any CI-V traffic arrived within one monitor window.
+        """Whether the radio answered within one monitor window.
 
-        Reads the backend's monotonic ``_last_civ_data_received`` stamp —
-        every shipping backend maintains it (see
-        ``runtime/_runtime_protocols.py``), so this stays radio-agnostic:
-        no per-model branch, the stamp is part of the runtime protocol. A
-        missing or non-numeric stamp means "cannot tell" and counts as not
-        flowing.
+        Reads the Radio contract's public decode-point liveness stamp
+        (:attr:`rigplane.core.radio_protocol.Radio.last_valid_frame_monotonic`)
+        — the same evidence ``connection.liveness`` serves
+        (``runtime_helpers.connection_liveness_payload``), so this stays
+        radio-agnostic with no per-model branch. A missing or non-numeric
+        stamp (a producer that never answered on this connection
+        generation) means "cannot tell" and counts as not flowing.
         """
         radio = self._radio
         last = (
-            getattr(radio, "_last_civ_data_received", None)
+            getattr(radio, "last_valid_frame_monotonic", None)
             if radio is not None
             else None
         )
@@ -3711,6 +3740,14 @@ class WebServer:
         too, TX, link down, no viewers), so the last verdict never flaps.
         """
         if self._scope_hidden_published is hidden:
+            # A repeated definite observation of the SAME verdict refreshes
+            # its evidence clock BEFORE the duplicate publication is
+            # suppressed: a menu held open past the reconnect grace window
+            # keeps re-confirming itself every monitor window, and the
+            # reconnect guard must keep reading that as fresh evidence —
+            # otherwise the still-open menu goes stale and the next
+            # reconnect ejects the operator from it.
+            self._scope_hidden_at = now
             return
         self._scope_hidden_published = hidden
         self._scope_hidden_at = now
@@ -3806,8 +3843,7 @@ class WebServer:
                         True,
                         now=now,
                         detail=(
-                            f"no scope frames for {frames_idle:.0f}s, "
-                            "CI-V link healthy"
+                            f"no scope frames for {frames_idle:.0f}s, CI-V link healthy"
                         ),
                     )
                     continue

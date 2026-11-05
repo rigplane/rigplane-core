@@ -10,6 +10,7 @@ import pathlib
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,6 +44,7 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core.radio_protocol import ScopeCapable
 from rigplane.profiles import resolve_radio_profile
+from rigplane.scope import ScopeFrame
 from rigplane.testing.timing import VirtualClock
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
@@ -226,8 +228,10 @@ def _store_observation(
     )
 
 
-def _scope_radio(*, ready: bool = True, connected: bool = True) -> MagicMock:
-    radio = MagicMock()
+def _scope_radio(
+    *, ready: bool = True, connected: bool = True, cls: type = MagicMock
+) -> MagicMock:
+    radio = cls()
     radio.radio_ready = ready
     radio.connected = connected
     radio.capabilities = {"scope"}
@@ -3621,7 +3625,7 @@ async def test_scope_health_monitor_link_down_then_menu_silence(
             virtual_clock,
             3,
             between=lambda: setattr(
-                radio, "_last_civ_data_received", virtual_clock()  # noqa: SLF001
+                radio, "last_valid_frame_monotonic", virtual_clock()
             ),
         )
     finally:
@@ -3675,12 +3679,38 @@ _ZERO_SCOPE_PIXELS = bytes(479)
 _LIVE_SCOPE_PIXELS = b"\x00" * 200 + b"\x05\x20" + b"\x00" * 277
 
 
-def _zero_scope_frame() -> SimpleNamespace:
-    return SimpleNamespace(pixels=_ZERO_SCOPE_PIXELS)
+def _zero_scope_frame() -> ScopeFrame:
+    """A producer-typed blank frame: the exact type the radio callback delivers."""
+    return ScopeFrame(
+        receiver=0,
+        mode=0,
+        start_freq_hz=14_000_000,
+        end_freq_hz=14_350_000,
+        pixels=_ZERO_SCOPE_PIXELS,
+        out_of_range=False,
+    )
 
 
-def _live_scope_frame() -> SimpleNamespace:
-    return SimpleNamespace(pixels=_LIVE_SCOPE_PIXELS)
+def _live_scope_frame() -> ScopeFrame:
+    """A producer-typed frame carrying real pixel data."""
+    return ScopeFrame(
+        receiver=0,
+        mode=0,
+        start_freq_hz=14_000_000,
+        end_freq_hz=14_350_000,
+        pixels=_LIVE_SCOPE_PIXELS,
+        out_of_range=False,
+    )
+
+
+def test_scope_frame_fixtures_are_producer_typed() -> None:
+    """The scope-health fixtures are the producer's own type — the real
+    ``rigplane.scope.ScopeFrame`` the hardware scope callback delivers, with
+    every field the actual delivery path carries."""
+    for factory in (_zero_scope_frame, _live_scope_frame):
+        frame = factory()
+        assert isinstance(frame, ScopeFrame)
+        assert isinstance(frame.pixels, bytes)
 
 
 def _scope_hidden_verdict(srv: WebServer) -> object:
@@ -3697,7 +3727,8 @@ def _virtual_scope_server(
     *,
     interval: float = 10.0,
     on_enable: Callable[[], None] | None = None,
-) -> tuple[WebServer, MagicMock, list[EnableScope]]:
+    radio: Any | None = None,
+) -> tuple[WebServer, Any, list[EnableScope]]:
     """A scope WebServer whose monitor/reconnect paths run on a VirtualClock.
 
     MOR-3690 (reopened): ``clock.scope_to`` points the server module's own
@@ -3705,8 +3736,11 @@ def _virtual_scope_server(
     clock jump, never a real wait. ``on_enable`` fires inside the queue hook
     when an EnableScope lands — the beta.13 race seam (a frame stamped
     newer than the window's ``now`` while the write is in flight).
+    ``radio`` lets a test supply a producer with a specific liveness
+    surface (e.g. one that honors only the public Radio contract stamp).
     """
-    radio = _scope_radio()
+    if radio is None:
+        radio = _scope_radio()
     radio._fetch_initial_state = AsyncMock()  # noqa: SLF001
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())  # noqa: SLF001
@@ -3873,7 +3907,7 @@ async def test_scope_health_monitor_verdicts_around_tx(
             virtual_clock,
             3,
             between=lambda: setattr(
-                radio, "_last_civ_data_received", virtual_clock()  # noqa: SLF001
+                radio, "last_valid_frame_monotonic", virtual_clock()
             ),
         )
         assert _scope_hidden_verdict(srv) is True
@@ -3909,7 +3943,7 @@ async def test_scope_health_monitor_stale_ptt_writes_nothing(
             virtual_clock,
             3,
             between=lambda: setattr(
-                radio, "_last_civ_data_received", virtual_clock()  # noqa: SLF001
+                radio, "last_valid_frame_monotonic", virtual_clock()
             ),
         )
     finally:
