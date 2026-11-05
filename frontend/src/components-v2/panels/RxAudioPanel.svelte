@@ -6,6 +6,7 @@
   import { finiteValue, valueText } from '../../primitives/reading-text';
   import { deriveRxAudioProps, getRxAudioHandlers } from '$lib/runtime/adapters/audio-adapter';
   import { getAfLevelControlFeedback } from '$lib/runtime/adapters/panel-adapters';
+  import { RX_AF_LEVEL_MAX } from '$lib/audio/rx-player';
   import {
     createContinuousScalar,
     createHBarContinuousScalarPolicy,
@@ -40,7 +41,17 @@
   // MOR-2910: the confirmed reading now arrives through the shared AF
   // command-feedback lane; this guard still owns the non-finite → '' mapping.
   function formatAfLevelDisplay(v: number): string {
-    return valueText(finiteValue(v), normalizedPercentDisplay);
+    return valueText(finiteValue(v), afPercent);
+  }
+
+  // MOR-4210: in LIVE the slider is the browser volume (`props.afLevel`),
+  // which runs past 1 into makeup gain, so its range and percent readout go
+  // to RX_AF_LEVEL_MAX. Outside LIVE it stays the radio's 0..1 AF level.
+  let live = $derived(props.monitorMode === 'live');
+  const RADIO_AF_DOMAIN = { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 } as const;
+  const BROWSER_AF_DOMAIN = { ...RADIO_AF_DOMAIN, max: RX_AF_LEVEL_MAX } as const;
+  function afPercent(v: number): string {
+    return live ? `${Math.round(Math.max(0, Math.min(RX_AF_LEVEL_MAX, v)) * 100)}%` : normalizedPercentDisplay(v);
   }
 
   // MOR-2910: the AF level rides the shared command-feedback scalar —
@@ -48,14 +59,21 @@
   // shared hbar policy. The mute gate stays the panel's own `enabled`.
   let afLevelFeedback = $derived(getAfLevelControlFeedback());
   const afLevelBinding = createContinuousScalar(
-    () => ({
+    () => live ? {
+      evidence: 'reading', ownerKey: 'rx-audio-panel-af:browser-volume',
+      reading: Number.isFinite(props.afLevel)
+        ? { status: 'known', value: props.afLevel } : { status: 'unknown' },
+      domain: BROWSER_AF_DOMAIN,
+      enabled: Number.isFinite(props.afLevel),
+      request: handlers.onAfLevelChange,
+    } : {
       evidence: 'command-feedback', feedback: afLevelFeedback, command: 'set_af_level',
-      domain: { min: 0, max: 1, step: 0.01, defaultValue: null, fineStepDivisor: 10 },
+      domain: RADIO_AF_DOMAIN,
       enabled: !isMuted && afLevelFeedback.availability === 'available',
       request: handlers.onAfLevelChange,
-    }),
+    },
     createHBarContinuousScalarPolicy({
-      preview: 'optimistic', debounceMs: 50, describeTarget: normalizedPercentDisplay,
+      preview: 'optimistic', debounceMs: 50, describeTarget: afPercent,
     }),
   );
   const feedbackIntegratedControl = { 'feedback-policy': 'feedback-integrated' } as const;
