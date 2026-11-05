@@ -257,9 +257,31 @@ async def test_t2_foreign_held_session_busy_rejects_fresh_connect(
     radio._session_lifecycle._reject_cooldown_s = 0.0
 
     try:
-        with pytest.raises((RigplaneConnectionError, asyncio.TimeoutError)):
-            with fast_connect():
-                await asyncio.wait_for(radio.connect(), timeout=2.0)
+        with fast_connect():
+            # The start-up busy hold keeps retrying while the foreign owner holds
+            # on, so the connect is stopped once the radio has answered busy. A
+            # 2 s wall-clock budget instead could expire on a loaded host before
+            # the first busy reject went out.
+            answered_busy = asyncio.Event()
+            conninfo_status = sim._conninfo_status
+
+            def observed_status(addr: tuple[str, int], sender_id: int) -> bytes:
+                reply = conninfo_status(addr, sender_id)
+                if sim.busy_rejects >= 1:
+                    answered_busy.set()
+                return reply
+
+            sim._conninfo_status = observed_status  # type: ignore[method-assign]
+            connect = asyncio.create_task(radio.connect())
+            busy = asyncio.create_task(answered_busy.wait())
+            await asyncio.wait(
+                {connect, busy}, timeout=10.0, return_when=asyncio.FIRST_COMPLETED
+            )
+            busy.cancel()
+            if not connect.done():
+                connect.cancel()
+            with pytest.raises((RigplaneConnectionError, asyncio.CancelledError)):
+                await connect
     finally:
         # The bug signature: the radio sent at least one 0xFFFFFFFF busy reject,
         # and the session is still held by the FOREIGN owner (not us).
