@@ -250,6 +250,107 @@ async def test_refusal_names_the_oldest_open_read_sink() -> None:
     assert tracker.take_refused_reads() == ()
 
 
+def _directed_response(
+    command: int, data: bytes, *, sub: int | None = None
+) -> CivFrame:
+    return CivFrame(to_addr=0xE0, from_addr=0xA4, command=command, sub=sub, data=data)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_after_a_lost_answer_names_the_refused_read() -> None:
+    """MOR-4209: a read whose answer was lost does not take a later refusal.
+
+    The radio answers in order. Once it has answered a read sent after an
+    older still-open one, the older one's answer is not coming, so a bare FA
+    that follows belongs to a read the radio has not answered yet — not to
+    the lost one. Before the fix the lost read's sink stayed the oldest and
+    took the refusal: a frequency read was reported refused (and withheld)
+    while the tuner read the radio really refused timed out.
+    """
+    tracker = CivRequestTracker()
+    lost = CivRequestKey(command=0x03, sub=None)
+    answered = CivRequestKey(command=0x15, sub=0x02)
+    refused = CivRequestKey(command=0x1C, sub=0x01)
+    for key in (lost, answered, refused):
+        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(0x15, b"\x00\x40", sub=0x02),
+        )
+    )
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert tracker.take_refused_reads() == (refused,)
+    assert tracker.ack_sink_count == 0
+
+
+@pytest.mark.asyncio
+async def test_an_answer_also_retires_an_older_write_sink() -> None:
+    """MOR-4209: a write's FB/FA would have arrived before a later read's
+    answer, so that answer retires the older write sink too (its ACK is
+    lost), and the next FA reaches the read the radio is answering."""
+    tracker = CivRequestTracker()
+    tracker.register_ack(wait=False)  # a fire-and-forget write, ACK lost
+    answered = CivRequestKey(command=0x03, sub=None)
+    refused = CivRequestKey(command=0x1C, sub=0x01)
+    for key in (answered, refused):
+        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(0x03, b"\x00\x40\x07\x14\x00"),
+        )
+    )
+    assert tracker.ack_sink_count == 1
+    tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert tracker.take_refused_reads() == (refused,)
+
+
+@pytest.mark.asyncio
+async def test_a_broadcast_does_not_retire_older_sinks() -> None:
+    """MOR-4209: an unsolicited broadcast (to 0x00) answers no request, so
+    it says nothing about the older reads still waiting for their answer."""
+    tracker = CivRequestTracker()
+    pending = CivRequestKey(command=0x1C, sub=0x01)
+    tracker.register_ack(wait=False, response_key=pending, refused_read=pending)
+    meter = CivRequestKey(command=0x15, sub=0x02)
+    tracker.register_ack(wait=False, response_key=meter, refused_read=meter)
+
+    broadcast = CivFrame(
+        to_addr=0x00, from_addr=0xA4, command=0x15, sub=0x02, data=b"\x00\x40"
+    )
+    tracker.resolve(CivEvent(type=CivEventType.RESPONSE, frame=broadcast))
+    tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert tracker.take_refused_reads() == (pending,)
+
+
+@pytest.mark.asyncio
+async def test_an_answer_leaves_an_older_blocking_waiter_alone() -> None:
+    """MOR-4209: only fire-and-forget sinks follow the wire order the
+    commander gives them; a blocking waiter (a raw transaction registers
+    before its own pacing gap) is never retired by someone else's answer."""
+    tracker = CivRequestTracker()
+    blocking = tracker.register_ack(wait=True, consume_backlog=False)
+    assert isinstance(blocking, asyncio.Future)
+    read = CivRequestKey(command=0x03, sub=None)
+    tracker.register_ack(wait=False, response_key=read, refused_read=read)
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(0x03, b"\x00\x40\x07\x14\x00"),
+        )
+    )
+    assert not blocking.done()
+    tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_ack_frame()))
+    assert blocking.done()
+
+
 @pytest.mark.asyncio
 async def test_only_a_refused_read_sink_is_named() -> None:
     tracker = CivRequestTracker()
