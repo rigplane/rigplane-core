@@ -125,6 +125,21 @@ async def clocked_rx(
         client.close()
 
 
+async def _recv_frames(client: _UdpClient, count: int) -> list[bytes]:
+    """``count`` audio datagrams in the simulator's send order (header seq).
+
+    UDP keeps no order and a loaded WSL2 mirrored loopback does reorder a
+    burst now and then, so arrival order is not the wire order the tests
+    pin. The frames must still form one gapless seq run: nothing lost or
+    repeated.
+    """
+    frames = [await client.recv() for _ in range(count)]
+    frames.sort(key=lambda p: struct.unpack_from("<H", p, 6)[0])
+    seqs = [struct.unpack_from("<H", p, 6)[0] for p in frames]
+    assert seqs == list(range(seqs[0], seqs[0] + count)), seqs
+    return frames
+
+
 def _stereo_wav(path: Path, bursts: int) -> bytes:
     """A 48 kHz stereo s16 WAV (full-range pattern); returns the raw frames."""
     n = bursts * (RX_BURST_BYTES // 4)
@@ -216,7 +231,7 @@ async def test_catchup_bursts_keep_file_order(
     assert clock.deadlines[-1] == pytest.approx(0.14)
     assert len(clock.calls) == 18
     clock.advance_to(0.13)
-    frames = [await client.recv() for _ in range(18)]
+    frames = await _recv_frames(client, 18)
     assert [struct.unpack_from("<H", p, 6)[0] for p in frames] == list(range(18))
     assert [struct.unpack_from(">H", p, 0x12)[0] for p in frames] == list(range(18))
     assert b"".join(p[AUDIO_HEADER_SIZE:] for p in frames) == raw[: 6 * RX_BURST_BYTES]
@@ -247,7 +262,7 @@ async def test_delayed_task_start_keeps_the_slot_origin(
     file_pcm = b"".join(p[AUDIO_HEADER_SIZE:] for _, p in file_calls)
     assert file_pcm == raw[:RX_BURST_BYTES]
     clock.advance_to(0.101)
-    frames = [await client.recv() for _ in range(15)]
+    frames = await _recv_frames(client, 15)
     assert b"".join(p[AUDIO_HEADER_SIZE:] for p in frames[:12]) == bytes(
         4 * RX_BURST_BYTES
     )
@@ -373,7 +388,7 @@ async def test_pending_pcm_is_invalidated_on_reopen_or_retarget(
         assert server.audio_rx_frames_sent == 0
         await clock.tick(0.02)
         clock.advance_to(0.021)
-        frames = [await new_client.recv() for _ in range(3)]
+        frames = await _recv_frames(new_client, 3)
         assert all(
             struct.unpack_from("<I", p, 0x0C)[0] == _CLIENT_ID + 1 for p in frames
         )
