@@ -46,7 +46,6 @@ import pytest
 
 from rigplane.radio import IcomRadio
 
-from rigplane.testing.timing import await_until
 from rigplane_testkit.icom import FaultPlan, FaultRule, MockIcomRadio
 
 from _perf_helpers import fast_connect
@@ -706,9 +705,13 @@ async def test_new_claim_clears_gap_tracking() -> None:
         close = bytearray(_openclose())
         close[0x15] = 0x00
         proto.send(bytes(close), sim.civ_port)
-        # The close (CI-V port) and the claim (control port) travel on two
-        # sockets: let the close land first, or the new session counts it.
-        assert await await_until(lambda: not sim.session_held, timeout=2.0)
+        # The close and the conninfo go to different sockets, so delivery
+        # does not order them: a close handled after the new claim would
+        # open a gap in the new session's numbering. Send the conninfo
+        # only once the close has released the session.
+        released = await asyncio.wait_for(sim.wait_session_released(), 5.0)
+        # A client end (never a hold expiry).
+        assert released in MockIcomRadio.CLIENT_END_REASONS, released
         proto.send(_conninfo(), sim.control_port)
         await proto.recv()
 

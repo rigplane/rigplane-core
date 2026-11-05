@@ -2388,9 +2388,10 @@ def _parse_memory(
     recall = raw.get("recall", False)
     if not isinstance(recall, bool):
         raise RigLoadError(f"{filename}: [memory].recall must be a boolean")
-    if recall and addressing != "group_channel":
+    if recall and addressing == "band_channel":
         raise RigLoadError(
-            f"{filename}: [memory].recall is only implemented for group_channel"
+            f"{filename}: [memory].recall is only implemented for group_channel "
+            "and channel addressing"
         )
     groups: dict[str, tuple[int, ...]] = {}
     for key in ("dd_groups", "offset_10mhz_groups"):

@@ -48,9 +48,11 @@ async def test_grouped_recall_never_interleaves_memory_write() -> None:
         if len(payload) >= 2 and payload[0] == 0x08 and payload[1] == 0xA0:
             order.append("group")
             await asyncio.sleep(0)
+        elif payload == b"\x08":
+            order.append("memory_mode")  # MOR-4219: the recall ends in the Memory mode
         elif payload and payload[0] == 0x08:
             order.append("channel")
-        return CivFrame(CONTROLLER_ADDR, 0xA4, 0x00, None, b"", 0x00)
+        return CivFrame(CONTROLLER_ADDR, 0xA4, 0xFB, None, b"", 0x00)  # ACK
 
     async def fake_fire_and_forget(_civ: bytes) -> None:
         order.append("memory_write")
@@ -64,7 +66,7 @@ async def test_grouped_recall_never_interleaves_memory_write() -> None:
         )
     finally:
         radio._connected = False
-    assert order == ["group", "channel", "memory_write"]
+    assert order == ["group", "channel", "memory_mode", "memory_write"]
 
 
 @pytest.mark.asyncio
@@ -77,9 +79,11 @@ async def test_grouped_recall_never_interleaves_channel_only_select() -> None:
         if len(payload) >= 2 and payload[0] == 0x08 and payload[1] == 0xA0:
             order.append("group")
             await asyncio.sleep(0)
+        elif payload == b"\x08":
+            order.append("memory_mode")  # MOR-4219: the recall ends in the Memory mode
         elif payload and payload[0] == 0x08:
             order.append("channel")
-        return CivFrame(CONTROLLER_ADDR, 0xA4, 0x00, None, b"", 0x00)
+        return CivFrame(CONTROLLER_ADDR, 0xA4, 0xFB, None, b"", 0x00)  # ACK
 
     async def fake_fire_and_forget(_civ: bytes) -> None:
         order.append("channel_select")
@@ -93,7 +97,7 @@ async def test_grouped_recall_never_interleaves_channel_only_select() -> None:
         )
     finally:
         radio._connected = False
-    assert order == ["group", "channel", "channel_select"]
+    assert order == ["group", "channel", "memory_mode", "channel_select"]
 
 
 @pytest.mark.asyncio

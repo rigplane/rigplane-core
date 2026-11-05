@@ -32,20 +32,34 @@ _ERR_PREV_SESSION_ACTIVE = 0xFFFFFFFF
 
 
 class _UdpClient(asyncio.DatagramProtocol):
-    """Bare datagram client: everything received lands in ``queue``."""
+    """Bare datagram client: what the ports it talks to send lands in ``queue``.
+
+    A datagram from any other port is dropped: under xdist a simulator in
+    another worker can still be sending (retransmit rounds to a client it
+    let die, an audio stream) to a client port the OS handed this client
+    again. A port counts once ``send`` addressed it, or ``expect_from``
+    names it for a stream the simulator starts on its own.
+    """
 
     def __init__(self) -> None:
         self.queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.transport: asyncio.DatagramTransport | None = None
+        self._peers: set[int] = set()
 
     def connection_made(self, transport) -> None:  # type: ignore[override]
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr) -> None:
-        self.queue.put_nowait(data)
+        if addr[0] == _HOST and addr[1] in self._peers:
+            self.queue.put_nowait(data)
+
+    def expect_from(self, port: int) -> None:
+        """Accept datagrams from ``port`` without sending to it first."""
+        self._peers.add(port)
 
     def send(self, data: bytes, port: int) -> None:
         assert self.transport is not None
+        self._peers.add(port)
         self.transport.sendto(data, (_HOST, port))
 
     async def recv(self, timeout: float = 2.0) -> bytes:
@@ -211,6 +225,21 @@ async def client():
 # ---------------------------------------------------------------------------
 # Baseline
 # ---------------------------------------------------------------------------
+
+
+async def test_udp_client_drops_datagrams_from_ports_it_never_addressed(client):
+    # A stray from another worker's simulator: a port this client never sent to.
+    client.datagram_received(b"stray", (_HOST, 40_001))
+    assert client.queue.empty()
+    client.send(b"hello", 40_002)  # addressing a port admits what it sends back
+    client.datagram_received(b"reply", (_HOST, 40_002))
+    client.datagram_received(b"other host", ("127.0.0.2", 40_002))
+    client.expect_from(40_003)  # a stream the simulator starts on its own
+    client.datagram_received(b"stream", (_HOST, 40_003))
+    assert [client.queue.get_nowait() for _ in range(client.queue.qsize())] == [
+        b"reply",
+        b"stream",
+    ]
 
 
 async def test_no_plan_behaves_as_before(server, client):

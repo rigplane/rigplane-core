@@ -676,7 +676,10 @@ the FTX-1 declares the CAT pair `get_memory_channel` (MR) and `get_memory_tag` (
 `"channel"` (FTX-1, one numbered list, group 0 only); the first two also pick the
 `1A 00` record layout; `first_group`/`last_group` bound the
 group number or band code, `first_channel`/`last_channel` the channel;
-`recall = true` marks profiles whose select commands recall a listed channel.
+`recall = true` marks profiles whose select commands recall a channel: the
+group (`08 A0`, `group_channel` only), the channel (`08` + channel), then the
+Memory mode (bare `08`); allowed for `group_channel` and `channel` addressing
+(MOR-4219).
 `dd_groups` lists groups/bands where mode byte `0x22` is DD;
 `offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
 Both default to `[]` and accept only lists of unique integers within

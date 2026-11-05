@@ -21,11 +21,11 @@ vi.mock('../http-client', async (importOriginal) => ({
 type Envelope = Record<string, unknown>;
 interface GoldenEntry {
   capabilities?: Record<string, unknown>;
-  polledDcdCapabilities?: Record<string, unknown>;
-  polledDcdLeafStreamOpen?: [Envelope, Envelope];
+  polledSquelchCapabilities?: Record<string, unknown>;
+  polledSquelchLeafStreamRaised?: [Envelope, Envelope];
 }
 const goldens = goldenFile as unknown as Record<string, GoldenEntry>;
-const models = Object.keys(goldens).filter((model) => goldens[model].polledDcdLeafStreamOpen).sort();
+const models = Object.keys(goldens).filter((model) => goldens[model].polledSquelchLeafStreamRaised).sort();
 
 let loadedWsClient: typeof import('../ws-client') | null = null;
 let originalWebSocket: typeof WebSocket;
@@ -70,8 +70,8 @@ describe('memoized view model through the real delta-apply path (MOR-4213)', () 
 
   it.each(models)('%s: the view changes with each data delta and only then', async (model) => {
     const entry = goldens[model];
-    const [baseline, leafOpen] = structuredClone(entry.polledDcdLeafStreamOpen!);
-    const caps = validateCapabilities(structuredClone(entry.polledDcdCapabilities!));
+    const [baseline, leafOpen] = structuredClone(entry.polledSquelchLeafStreamRaised!);
+    const caps = validateCapabilities(structuredClone(entry.polledSquelchCapabilities!));
     fetchCapabilities.mockResolvedValue(caps);
     const wsClient = await import('../ws-client');
     loadedWsClient = wsClient;
@@ -85,20 +85,22 @@ describe('memoized view model through the real delta-apply path (MOR-4213)', () 
       JSON.stringify({ type: 'state_update', data }));
     const view = () => toRadioViewModel(store.getRadioState(), capabilities.getCapabilities())!;
     const squelch = (v: ReturnType<typeof view>) =>
-      v.receiverIndicators!.find((rx) => rx.receiver === 'MAIN')!.squelchOpen?.reading;
+      v.receiverIndicators!.find((rx) => rx.receiver === 'MAIN')!.squelch?.reading;
 
     deliver(baseline);
     const closed = view();
-    expect(squelch(closed)).toEqual({ status: 'known', value: false });
+    expect(squelch(closed)).toEqual({ status: 'known', value: 0 });
     expect(view()).toBe(closed);
 
-    // The producer's own leaf delta: squelch opens.
+    // The producer's own leaf delta: the squelch level rises.
     const before = store.getRadioState();
     deliver(leafOpen);
     expect(store.getRadioState()).not.toBe(before);
     const open = view();
     expect(open).not.toBe(closed);
-    expect(squelch(open)).toEqual({ status: 'known', value: true });
+    const raised = squelch(open);
+    expect(raised?.status).toBe('known');
+    expect(raised?.status === 'known' && raised.value).toBeGreaterThan(0);
     // Groups the delta did not touch keep their identity.
     expect(open.vfos).toBe(closed.vfos);
 
@@ -109,23 +111,22 @@ describe('memoized view model through the real delta-apply path (MOR-4213)', () 
     expect(store.getRadioState()).not.toBe(beforeMetadata);
     expect(view()).toBe(open);
 
-    // And back: squelch closes in a later delta of the same shape.
-    const leafClosed = followUp(metadataOnly, 4, [
-      [['main', 'sMeterSqlOpen'], false], [['main', 'dcd'], false],
-      [['fieldStatus', 'main.dcd', 'lastObservedMonotonic'], 1001.0],
-      [['fieldStatus', 'main.sMeterSqlOpen', 'lastObservedMonotonic'], 1001.0],
+    // And back: the level returns to 0 in a later delta of the same shape.
+    const leafZero = followUp(metadataOnly, 4, [
+      [['main', 'squelch'], 0],
+      [['fieldStatus', 'main.squelch', 'lastObservedMonotonic'], 1001.0],
     ], true);
-    deliver(leafClosed);
-    expect(store.getRadioState()?.main.dcd).toBe(false);
+    deliver(leafZero);
+    expect(store.getRadioState()?.main.squelch).toBe(0);
     const closedAgain = view();
     expect(closedAgain).not.toBe(open);
-    expect(squelch(closedAgain)).toEqual({ status: 'known', value: false });
+    expect(squelch(closedAgain)).toEqual({ status: 'known', value: 0 });
   });
 
   it.each(models)('%s: a capability refresh re-derives against the same state', async (model) => {
     const entry = goldens[model];
-    const [baseline] = structuredClone(entry.polledDcdLeafStreamOpen!);
-    const caps = validateCapabilities(structuredClone(entry.polledDcdCapabilities!));
+    const [baseline] = structuredClone(entry.polledSquelchLeafStreamRaised!);
+    const caps = validateCapabilities(structuredClone(entry.polledSquelchCapabilities!));
     fetchCapabilities.mockResolvedValue(caps);
     const wsClient = await import('../ws-client');
     loadedWsClient = wsClient;
@@ -137,13 +138,13 @@ describe('memoized view model through the real delta-apply path (MOR-4213)', () 
     instances[0].simulateOpen();
     instances[0].simulateMessage(JSON.stringify({ type: 'state_update', data: baseline }));
     const first = toRadioViewModel(store.getRadioState(), capabilities.getCapabilities())!;
-    expect(first.receiverIndicators!.find((rx) => rx.receiver === 'MAIN')!.squelchOpen).toBeDefined();
+    expect(first.receiverIndicators!.find((rx) => rx.receiver === 'MAIN')!.squelch).toBeDefined();
 
     // A refresh installs a new parsed body, as `fetchCapabilities` returns one:
-    // here the radio-less profile body, without the squelch-status tag set.
+    // here the radio-less profile body, without the squelch tag set.
     capabilities.setCapabilities(validateCapabilities(structuredClone(entry.capabilities!)));
     const next = toRadioViewModel(store.getRadioState(), capabilities.getCapabilities())!;
     expect(next).not.toBe(first);
-    expect(next.receiverIndicators!.find((rx) => rx.receiver === 'MAIN')!.squelchOpen).toBeUndefined();
+    expect(next.receiverIndicators!.find((rx) => rx.receiver === 'MAIN')!.squelch).toBeUndefined();
   });
 });

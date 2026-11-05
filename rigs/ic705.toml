@@ -148,9 +148,6 @@ polling_only = [
     "receiver.main.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
-    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp — the 0x15 0x01
-    # single-byte SQL-status read, same cadence class as the sibling toggles.
-    "receiver.main.operator_toggles.dcd",
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
     # MOR-2131: read by the same 16 5D query as the two booleans above.
@@ -559,7 +556,7 @@ first_group = 0
 last_group = 99
 first_channel = 0
 last_channel = 99
-recall = true  # 08 A0 selects the group, 08 the channel (guide p.3); not yet bench-verified
+recall = true  # 08 A0 selects the group, 08 + channel the channel, the bare 08 the Memory mode (guide p.3); not yet bench-verified
 
 # The verified 1A 00 write record (MOR-3644), field by field from the
 # IC-705 CI-V Reference Guide (A7560-8EX-1, Jul.2020) p.17 "Memory

@@ -23,6 +23,8 @@ from rigplane.radio import (
 from rigplane.audio.route import AudioConfigSource
 from rigplane.profiles import RadioProfile
 from rigplane.runtime._control_phase import ControlPhaseRuntime, _session_reject_hint
+from rigplane.runtime import session_lifecycle as session_lifecycle_module
+from rigplane.testing.timing import VirtualClock
 from rigplane.runtime.session_lifecycle import (
     AttemptOutcome,
     AttemptResult,
@@ -2146,7 +2148,9 @@ class TestStartupBusyLiveHolder:
         owner._control_phase._stop_watchdog()
 
     @pytest.mark.asyncio
-    async def test_live_owner_second_client_stops_after_four_logins(self) -> None:
+    async def test_live_owner_second_client_stops_after_four_logins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A live owner: busy at +0/+0.5/+1.0, then the +1.5 s attempt stops.
 
         The second client raises the honest error after exactly four logins
@@ -2163,6 +2167,13 @@ class TestStartupBusyLiveHolder:
             first_owner = sim.owner
             logins_before = sim.login_count
             busy_before = sim.busy_rejects
+            # The live-holder rule compares attempt start times, and on the
+            # wall clock a slow login (a loaded host) pushes the third start
+            # past +1.5 s. The lifecycle module's own clock and cooldown sleep
+            # run on the shared virtual clock, which moves only by the
+            # cooldowns, so the starts are exactly +0/+0.5/+1.0/+1.5 s; the
+            # sockets stay real.
+            VirtualClock(start=1_000.0).scope_to(monkeypatch, session_lifecycle_module)
             with (
                 patch.object(ControlPhaseRuntime, "_STATUS_REJECT_COOLDOWN", 0.5),
                 patch.object(

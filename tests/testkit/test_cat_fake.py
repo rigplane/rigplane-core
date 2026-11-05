@@ -229,6 +229,10 @@ async def test_echo_fault_echoes_the_request_before_the_answer(
 async def test_auto_info_burst_pushes_an_unsolicited_line(
     client: _CatClient, fake: FakeCatRadio
 ) -> None:
+    # A burst reaches the clients the fake has accepted. The connect
+    # returning does not mean the fake has run its accept yet (it may not
+    # have on WSL2 mirrored loopback), so a round trip proves it has.
+    assert await client.ask("FA;") == "FA014074000"
     fake.auto_info_burst("FA")
     assert await client.read_raw() == b"FA014074000;"
     await client.assert_silent()  # the line ends in one ';', nothing follows

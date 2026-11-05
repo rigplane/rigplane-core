@@ -196,6 +196,8 @@
   "core.toast.txAudioStopped": "TX audio stopped — the transmission ended early",
   "core.toast.unknown": "Something went wrong. Try again later.",
 
+  "core.memory.open": "Memory",
+
   "core.mobile.nav.label": "Radio navigation",
   "core.mobile.nav.tab.vfo": "VFO",
   "core.mobile.nav.tab.spectrum": "Spectrum",

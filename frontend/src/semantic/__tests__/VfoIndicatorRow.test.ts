@@ -23,7 +23,7 @@ function indicator(overrides: Partial<ReceiverIndicatorViewModel> = {}): Receive
     sMeter: known(0), bandwidthHz: known(2400), agcMode: known(0),
     nbActive: known(false), nrActive: known(true), notchMode: known('off'),
     attenuator: known(0), preamp: known(0), rfGain: known(0),
-    digiSel: known(false), ipPlus: known(true), squelchOpen: known(false),
+    digiSel: known(false), ipPlus: known(true), squelch: known(0),
     ...overrides,
   };
 }
@@ -114,37 +114,67 @@ describe('VfoIndicatorRow', () => {
     expect(root.querySelector('[data-indicator-fact="agc"]')?.textContent).toContain('AGC SLOW');
   });
 
-  it('lights the BUSY lamp first after the S-meter while the squelch reads open (MOR-3630)', () => {
-    const root = render({ indicator: indicator({ squelchOpen: known(true) }) });
-    const lamp = root.querySelector('[data-indicator-fact="busy"]');
-    expect(lamp?.getAttribute('data-state')).toBe('on');
-    expect(lamp?.textContent).toBe('BUSY');
-    expect(lamp?.getAttribute('aria-label')).toBe('Squelch open');
-    expect(lamp?.parentElement?.getAttribute('aria-label')).toBe('MAIN receiver facts');
-    expect(lamp?.parentElement?.firstElementChild).toBe(lamp);
-    expect(lamp?.parentElement?.previousElementSibling?.getAttribute('data-testid'))
-      .toBe('receiver-s-meter');
-  });
+  describe('SQL tag (squelch level above 0)', () => {
+    const sql = (root: HTMLElement) =>
+      root.querySelector<HTMLElement>('[data-indicator-fact="sql"]');
 
-  it('darkens the BUSY lamp while the squelch reads closed, keeping the label (MOR-3630)', () => {
-    const root = render({ indicator: indicator({ squelchOpen: known(false) }) });
-    const lamp = root.querySelector('[data-indicator-fact="busy"]');
-    expect(lamp?.getAttribute('data-state')).toBe('off');
-    expect(lamp?.textContent).toBe('BUSY');
-    expect(lamp?.getAttribute('aria-label')).toBe('Squelch closed');
-  });
+    it('prints SQL while the squelch level is above 0', () => {
+      const tag = sql(render({ indicator: indicator({ squelch: known(40) }) }))!;
+      expect(tag.textContent).toBe('SQL');
+      expect(tag.getAttribute('data-state')).toBe('on');
+      expect(tag.getAttribute('data-empty')).toBeNull();
+      expect(tag.getAttribute('aria-hidden')).toBeNull();
+    });
 
-  it('dims the BUSY lamp with no state sentence while the squelch is unread (MOR-3630)', () => {
-    const root = render({ indicator: indicator({ squelchOpen: unknown() }) });
-    const lamp = root.querySelector('[data-indicator-fact="busy"]');
-    expect(lamp?.getAttribute('data-state')).toBe('unknown');
-    expect(lamp?.textContent).toBe('BUSY');
-    expect(lamp?.getAttribute('aria-label')).toBeNull();
-  });
+    it('prints SQL for the smallest raised level, a partly closed squelch', () => {
+      const root = render({ indicator: indicator({ squelch: known(1) }) });
+      expect(sql(root)?.textContent).toBe('SQL');
+    });
 
-  it('draws no BUSY lamp when the radio declares no squelch fact (MOR-3630)', () => {
-    const root = render({ indicator: indicator({ squelchOpen: undefined }) });
-    expect(root.querySelector('[data-indicator-fact="busy"]')).toBeNull();
+    it('prints nothing at level 0 and keeps its reserved slot', () => {
+      const tag = sql(render({ indicator: indicator({ squelch: known(0) }) }))!;
+      expect(tag.textContent).toBe('');
+      expect(tag.getAttribute('data-empty')).toBe('true');
+      expect(tag.getAttribute('aria-hidden')).toBe('true');
+      expect(tag.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.sql}ch`);
+    });
+
+    it('prints nothing while the level is unread', () => {
+      const tag = sql(render({ indicator: indicator({ squelch: unknown() }) }))!;
+      expect(tag.textContent).toBe('');
+      expect(tag.getAttribute('data-empty')).toBe('true');
+    });
+
+    it('draws no SQL slot when the radio declares no squelch fact', () => {
+      const root = render({ indicator: indicator({ squelch: undefined }) });
+      expect(sql(root)).toBeNull();
+    });
+
+    it('draws no BUSY element, whatever the squelch says', () => {
+      for (const squelch of [known(0), known(40), unknown<number>(), undefined]) {
+        const root = render({ indicator: indicator({ squelch }) });
+        expect(root.querySelector('[data-indicator-fact="busy"]')).toBeNull();
+        expect(root.textContent ?? '').not.toContain('BUSY');
+        unmount(component!);
+        component = null;
+      }
+    });
+
+    it('marks the lit SQL tag on in the row and on the phone chip, the state its amber rule keys on', () => {
+      // jsdom does not apply a component's scoped CSS and the source-text
+      // ledger bans new source pins, so the amber paint itself (the
+      // `[data-indicator-fact='sql'][data-state='on']` rules in the
+      // component) is not asserted here; the behaviour pinned is the
+      // attribute those rules key on, in both appearances.
+      const row = render({ indicator: indicator({ squelch: known(40) }) });
+      expect(row.querySelector('[data-indicator-fact="sql"]')?.getAttribute('data-state')).toBe('on');
+      unmount(component!);
+      component = null;
+      const chips = render({ indicator: indicator({ squelch: known(40) }),
+        appearance: 'chips', facts: ['sql'] });
+      expect(chips.querySelector('[data-indicator-appearance="chips"] [data-indicator-fact="sql"]')
+        ?.getAttribute('data-state')).toBe('on');
+    });
   });
 
   it('shows a label with no value text for unread facts, never a dash (MOR-2644)', () => {
@@ -187,7 +217,7 @@ describe('VfoIndicatorRow', () => {
       bandwidthHz: unknown(false), agcMode: unknown(false), nbActive: unknown(false),
       nrActive: unknown(false), notchMode: unknown(false), attenuator: unknown(false),
       preamp: unknown(false), rfGain: unknown(false), digiSel: unknown(false),
-      ipPlus: unknown(false), squelchOpen: unknown(false),
+      ipPlus: unknown(false), squelch: unknown(false),
     }) });
     expect(root.querySelectorAll('[data-indicator-fact]')).toHaveLength(0);
     expect(root.querySelector('[data-testid="receiver-s-meter"]')).not.toBeNull();
@@ -491,7 +521,7 @@ describe('RF gain display observation', () => {
     ['preamp', 'P.AMP 3'], ['ip-plus', 'IP+ OFF'], ['digi-sel', 'DIGI-SEL OFF'],
     ['rf-gain', 'RFG 99%'], ['antenna', 'ANT 2'], ['atu', 'TUNE TUNING'],
     ['rit', 'RIT OFF −9999 Hz'], ['xit', 'XIT OFF −9999 Hz'],
-    ['busy', 'BUSY'],
+    ['sql', 'SQL'],
   ] as const)('fact %s reserves at least its widest lit text', (fact, widest) => {
     const reserved = FACT_SLOT_RESERVATIONS[fact as keyof typeof FACT_SLOT_RESERVATIONS];
     expect(reserved, `missing reservation for ${fact}`).toBeDefined();
@@ -598,45 +628,25 @@ describe('chips appearance (MOR-2852) — the phone meta facts', () => {
     }
   });
 
-  // MOR-3630 — the BUSY chip on the phone: label only, lit state in
-  // data-state like the NB/NR chips, first when listed first.
-  it('draws the BUSY chip first, lit while the squelch reads open', () => {
-    const root = render({ indicator: indicator({ squelchOpen: known(true) }),
-      appearance: 'chips', facts: ['busy', 'bandwidth', 'agc', 'nb', 'nr'] });
-    const facts = [...root.querySelectorAll('[data-indicator-fact]')];
-    expect(facts.map((node) => node.getAttribute('data-indicator-fact'))[0]).toBe('busy');
-    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
-    expect(busy.getAttribute('data-state')).toBe('on');
-    expect(busy.textContent).toBe('BUSY');
-    expect(busy.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.busy}ch`);
-    expect(busy.getAttribute('role')).toBe('img');
-    expect(busy.getAttribute('aria-label')).toBe('Squelch open');
+  it('draws the SQL chip as the bare tag while the level is above 0, nothing at 0', () => {
+    const raised = render({ indicator: indicator({ squelch: known(30) }),
+      appearance: 'chips', facts: ['bandwidth', 'sql'] });
+    const tag = raised.querySelector<HTMLElement>('[data-indicator-fact="sql"]')!;
+    expect(tag.textContent).toBe('SQL');
+    expect(tag.style.minInlineSize).toBe(`${FACT_SLOT_RESERVATIONS.sql}ch`);
+    unmount(component!);
+    component = null;
+    const open = render({ indicator: indicator({ squelch: known(0) }),
+      appearance: 'chips', facts: ['bandwidth', 'sql'] });
+    const quiet = open.querySelector<HTMLElement>('[data-indicator-fact="sql"]')!;
+    expect(quiet.textContent).toBe('');
+    expect(quiet.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('darkens the BUSY chip while the squelch reads closed, keeping the label', () => {
-    const root = render({ indicator: indicator({ squelchOpen: known(false) }),
-      appearance: 'chips', facts: ['busy', 'nb'] });
-    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
-    expect(busy.getAttribute('data-state')).toBe('off');
-    expect(busy.textContent).toBe('BUSY');
-    expect(busy.getAttribute('role')).toBe('img');
-    expect(busy.getAttribute('aria-label')).toBe('Squelch closed');
-  });
-
-  it('dims the BUSY chip while the squelch is unread', () => {
-    const root = render({ indicator: indicator({ squelchOpen: unknown<boolean>() }),
-      appearance: 'chips', facts: ['busy', 'nb'] });
-    const busy = root.querySelector<HTMLElement>('[data-indicator-fact="busy"]')!;
-    expect(busy.getAttribute('data-state')).toBe('unknown');
-    expect(busy.textContent).toBe('BUSY');
-    // Unread: the dimmed label only, no state sentence (same as the desktop lamp).
-    expect(busy.getAttribute('aria-label')).toBeNull();
-  });
-
-  it('omits the BUSY chip when the radio declares no squelch fact', () => {
-    const root = render({ indicator: indicator({ squelchOpen: undefined }),
-      appearance: 'chips', facts: ['busy', 'nb'] });
-    expect(root.querySelector('[data-indicator-fact="busy"]')).toBeNull();
+  it('omits the SQL chip when the radio declares no squelch fact', () => {
+    const root = render({ indicator: indicator({ squelch: undefined }),
+      appearance: 'chips', facts: ['sql', 'nb'] });
+    expect(root.querySelector('[data-indicator-fact="sql"]')).toBeNull();
     expect(root.querySelector('[data-indicator-fact="nb"]')).not.toBeNull();
   });
 

@@ -220,6 +220,8 @@
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
 
+  "core.memory.open": "メモリー",
+
   "core.mobile.nav.label": "トランシーバーのナビゲーション",
   "core.mobile.nav.tab.vfo": "VFO",
   "core.mobile.nav.tab.spectrum": "スペクトラム",

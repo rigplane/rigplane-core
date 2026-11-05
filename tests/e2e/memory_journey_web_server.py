@@ -77,6 +77,16 @@ class MemoryJourneyRadio(JourneyRadio):
 
     async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
         self._selected_memory = (0 if group is None else group, channel)
+        if group is None:
+            return  # the select-only form (Store) leaves the VFO mode
+        # The recall form (MOR-4219): the radio goes to the Memory mode on
+        # the channel, so its operating frequency and mode become the stored
+        # channel's; an empty channel changes nothing here.
+        stored = self._channels.get(self._selected_memory)
+        if stored is not None:
+            freq, mode = stored
+            await self.set_freq(freq)
+            await self.set_mode(mode)
 
     async def memory_write(self) -> None:
         slot = self._slots[0][self._vfo_slot[0]]
