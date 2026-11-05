@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1257,11 +1258,18 @@ async def test_failed_core_setters_leave_radio_state_unchanged() -> None:
 
 
 async def test_radio_reports_actionable_connection_failure() -> None:
-    # Default timeout: refusal is immediate, no short budget is needed.
-    radio = RigctldClientRadio(host="127.0.0.1", port=9)
+    # A bound but never-listening loopback socket refuses at once on every
+    # host and cannot be taken by another process while we hold it. A fixed
+    # low port does not: WSL2 drops SYNs to closed ports below the ephemeral
+    # range, so the connect hangs until the timeout instead of being refused.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as closed:
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        # Default timeout: refusal is immediate, no short budget is needed.
+        radio = RigctldClientRadio(host="127.0.0.1", port=port)
 
-    with pytest.raises(RadioConnectionError, match="127.0.0.1:9"):
-        await radio.connect()
+        with pytest.raises(RadioConnectionError, match=f"127.0.0.1:{port}"):
+            await radio.connect()
 
 
 async def test_radio_rejects_unsupported_data_mode() -> None:
