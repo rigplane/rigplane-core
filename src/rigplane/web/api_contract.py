@@ -224,7 +224,9 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
         # MOR-3694: the profile's declared `[scope]` REF range, snake_case
         # as in the profile. Present only when the active profile declares
         # it; clients fail closed (disable REF stepping) without it.
-        "optional": ("ref_min_db", "ref_max_db", "ref_step_db"),
+        # MOR-4210: the profile's `[audio].rx_audio_level_menu`, `null`
+        # when undeclared; absent when no profile is resolved.
+        "optional": ("ref_min_db", "ref_max_db", "ref_step_db", "rxAudioLevelMenu"),
     },
     "/api/v1/managed-transmit": {
         "required": (
