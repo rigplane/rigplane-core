@@ -8,6 +8,7 @@
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
   import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { LatestFramePump } from '../../lib/canvas/latest-frame-pump';
   import { getStageScale } from '../../primitives/stage/stage-scale';
   import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
 
@@ -28,19 +29,42 @@
   let cssWidth = 0;
   let cssHeight = 0;
 
+  // MOR-4206: scope frames can arrive faster than the display paints (and
+  // faster than the event loop drains them under load). Painting every
+  // delivery synchronously backlogged the WS queue and drained as a render
+  // burst — the waterfall visibly sped up while the main thread saturated.
+  // The pump keeps only the latest pending frame and paints once per
+  // animation frame, dropping (and tracing) stale frames; at or below the
+  // display rate every frame paints, exactly as before.
+  interface WaterfallFrame {
+    pixels: Uint8Array;
+    options: WaterfallOptions | undefined;
+    token: TraceToken | null;
+  }
+
+  function paintFrame(frame: WaterfallFrame): void {
+    if (!renderer) return;
+    const measuring = trace?.status === 'recording';
+    if (measuring) trace?.recordGeometry('waterfall', cssWidth, cssHeight, canvas.width, canvas.height, window.devicePixelRatio || 1);
+    const optionsStart = measuring ? performance.now() : 0;
+    if (frame.options) renderer.updateOptions(frame.options);
+    if (measuring) trace?.record('waterfall_options', frame.token, performance.now() - optionsStart);
+    const pushStart = measuring ? performance.now() : 0;
+    renderer.pushRow(frame.pixels);
+    if (measuring) trace?.record('waterfall_push', frame.token, performance.now() - pushStart);
+  }
+
+  const pump = new LatestFramePump<WaterfallFrame>(paintFrame, {
+    onDrop: (dropped) => {
+      if (trace?.status === 'recording') trace?.record('coalesced', dropped.token, 0, true);
+    },
+  });
+
   function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions, token?: TraceToken | null): void {
     if (document.hidden || !renderer) return;
     // The push fires synchronously from the frame handler while the options
     // $effect runs later — prefer the caller's fresh snapshot.
-    const effective = frameOptions ?? options;
-    const measuring = trace?.status === 'recording';
-    if (measuring) trace?.recordGeometry('waterfall', cssWidth, cssHeight, canvas.width, canvas.height, window.devicePixelRatio || 1);
-    const optionsStart = measuring ? performance.now() : 0;
-    if (effective) renderer.updateOptions(effective);
-    if (measuring) trace?.record('waterfall_options', token ?? null, performance.now() - optionsStart);
-    const pushStart = measuring ? performance.now() : 0;
-    renderer.pushRow(pixels);
-    if (measuring) trace?.record('waterfall_push', token ?? null, performance.now() - pushStart);
+    pump.push({ pixels, options: frameOptions ?? options, token: token ?? null });
   }
 
   $effect(() => {
@@ -100,6 +124,7 @@
     return () => {
       stopPixelWatch();
       ro.disconnect();
+      pump.dispose();
       renderer?.destroy();
       renderer = null;
       rendererReady = false;

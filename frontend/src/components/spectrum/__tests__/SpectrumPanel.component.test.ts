@@ -592,6 +592,14 @@ function emitFrame(overrides: Partial<TestScopeFrame> = {}): TestScopeFrame {
   return frame;
 }
 
+// MOR-4206: the waterfall paints from a requestAnimationFrame callback (the
+// rAF stub above defers it to a macrotask), so a delivered frame's row exists
+// only after one timer turn. Await this after a delivery the test expects to
+// have painted; without it only the LAST delivered frame would be pending.
+function flushWaterfallPaint(): Promise<void> {
+  return new Promise((resolve) => { setTimeout(resolve, 0); });
+}
+
 function rect(element: Element, left = 0, width = 200): void {
   Object.defineProperty(element, 'getBoundingClientRect', {
     configurable: true,
@@ -1962,14 +1970,14 @@ describe('SDR scope source routing (MOR-3158)', () => {
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_052_000, 0);
   });
 
-  it('holds the waterfall under the TX marker while sdr.txFrozen and resumes on release', () => {
+  it('holds the waterfall under the TX marker while sdr.txFrozen and resumes on release', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     try {
       selectSdrSource();
       const target = mountPanel();
-      emitFrame();
+      emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(1);
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
@@ -1979,6 +1987,7 @@ describe('SDR scope source routing (MOR-3158)', () => {
       expect(marker.closest('.waterfall-history')).not.toBeNull();
       clock += 1; emitFrame();
       clock += 1; emitFrame();
+      await flushWaterfallPaint();
       // Frozen: no new row scrolls — the last pre-TX panorama stays. The
       // deliveries still classify through the freshness gate (baseline
       // keeps moving).
@@ -1989,9 +1998,9 @@ describe('SDR scope source routing (MOR-3158)', () => {
       // Unfrozen: the frozen deliveries kept classifying through the
       // gate, so the spacing baseline never tripped a discontinuity and
       // painting resumes immediately.
-      clock += 83; emitFrame();
+      clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(2);
-      clock += 83; emitFrame();
+      clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(3);
     } finally {
       nowSpy.mockRestore();
@@ -1999,14 +2008,14 @@ describe('SDR scope source routing (MOR-3158)', () => {
     }
   });
 
-  it('paints the first live frame after a >3 s delivery silence during a TX freeze (MOR-3471)', () => {
+  it('paints the first live frame after a >3 s delivery silence during a TX freeze (MOR-3471)', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     try {
       selectSdrSource();
       const target = mountPanel();
-      emitFrame();
+      emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(1);
       // TX freeze with a silent source: deliveries stopped during the
       // freeze (nothing classifies — there is nothing to classify), so
@@ -2021,9 +2030,9 @@ describe('SDR scope source routing (MOR-3158)', () => {
       // The first live frame after the freeze paints immediately — no
       // multi-row suppression after a normal silence — and painting
       // continues.
-      clock += 83; emitFrame();
+      clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(2);
-      clock += 83; emitFrame();
+      clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(3);
     } finally {
       nowSpy.mockRestore();
@@ -2031,17 +2040,17 @@ describe('SDR scope source routing (MOR-3158)', () => {
     }
   });
 
-  it('paints burst-spaced live frames after a long flowing TX freeze because frozen deliveries kept classifying (MOR-3471)', () => {
+  it('paints burst-spaced live frames after a long flowing TX freeze because frozen deliveries kept classifying (MOR-3471)', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     try {
       selectSdrSource();
       const target = mountPanel();
-      emitFrame();
+      emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(1);
       // A second live-spaced delivery latches steady painting.
-      clock += 83; emitFrame();
+      clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(2);
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
       flushSync();
@@ -2054,6 +2063,7 @@ describe('SDR scope source routing (MOR-3158)', () => {
       for (let i = 0; i < 82; i += 1) {
         clock += 50; emitFrame();
       }
+      await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(2);
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
@@ -2066,11 +2076,13 @@ describe('SDR scope source routing (MOR-3158)', () => {
       // trip the discontinuity on the first live frame and suppress the
       // remaining burst inside the reopened 1500 ms skip window — pinned
       // failing-first by deleting both TX-frozen admit() calls.
+      // MOR-4206: one timer turn per delivery, so each admitted frame gets
+      // its own animation frame and paints — no latest-wins drop.
       for (let i = 0; i < 5; i += 1) {
-        clock += 1; emitFrame();
+        clock += 1; emitFrame(); await flushWaterfallPaint();
       }
       expect(push).toHaveBeenCalledTimes(7);
-      clock += 83; emitFrame();
+      clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(8);
     } finally {
       nowSpy.mockRestore();
@@ -2078,7 +2090,7 @@ describe('SDR scope source routing (MOR-3158)', () => {
     }
   });
 
-  it('holds managed waterfall pushes under the TX marker too', () => {
+  it('holds managed waterfall pushes under the TX marker too', async () => {
     function sdrProjection(sequence: number): ScopeDisplayProjection {
       return Object.freeze({
         frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
@@ -2099,12 +2111,14 @@ describe('SDR scope source routing (MOR-3158)', () => {
         get scopeProjection() { return props.get('projection'); },
         scopeDemanded: true,
       });
+      await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(1);
       // The first delivered projection paints (fresh gate) and the next
       // live-spaced one latches steady painting.
       for (let sequence = 2; sequence <= 6; sequence += 1) {
         clock += 83;
         props.set('projection', sdrProjection(sequence)); flushSync();
+        await flushWaterfallPaint();
       }
       expect(push).toHaveBeenCalledTimes(6);
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
@@ -2112,11 +2126,13 @@ describe('SDR scope source routing (MOR-3158)', () => {
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
       clock += 83;
       props.set('projection', sdrProjection(7)); flushSync();
+      await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(6);
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       clock += 83;
       props.set('projection', sdrProjection(8)); flushSync();
+      await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(7);
     } finally {
       nowSpy.mockRestore();
@@ -2574,7 +2590,7 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
   });
-  it('pushes normalized managed frames through existing waterfall registrations on mount and recovery', () => {
+  it('pushes normalized managed frames through existing waterfall registrations on mount and recovery', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
@@ -2582,6 +2598,7 @@ describe('managed scope projection (MOR-2367)', () => {
       ({ ...projection(), acceptedSequence: sequence });
     try {
       const { target, props } = managed(projection());
+      await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(1);
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
@@ -2592,13 +2609,15 @@ describe('managed scope projection (MOR-2367)', () => {
       for (let sequence = 2; sequence <= 6; sequence += 1) {
         clock += 83;
         props.set('projection', sequenced(sequence)); flushSync();
+        await flushWaterfallPaint();
       }
       expect(push).toHaveBeenCalledTimes(6);
       props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
-      emitFrame(); expect(push).toHaveBeenCalledTimes(afterClear);
+      emitFrame(); await flushWaterfallPaint(); expect(push).toHaveBeenCalledTimes(afterClear);
       clock += 83;
       props.set('projection', sequenced(7)); flushSync();
+      await flushWaterfallPaint();
       expect(target.querySelector('.waterfall-content canvas')).toBe(firstCanvas);
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('visible');
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
@@ -2608,14 +2627,15 @@ describe('managed scope projection (MOR-2367)', () => {
       push.mockRestore();
     }
   });
-  it('preserves raw waterfall push delivery in legacy mode', () => {
+  it('preserves raw waterfall push delivery in legacy mode', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     try {
       mountPanel(); const frame = emitFrame();
+      await flushWaterfallPaint();
       expect(push).toHaveBeenCalledWith(frame.pixels);
     } finally { push.mockRestore(); }
   });
-  it('wires the waterfall freshness gate into the waterfallPush registration (MOR-3471)', () => {
+  it('wires the waterfall freshness gate into the waterfallPush registration (MOR-3471)', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
@@ -2627,33 +2647,37 @@ describe('managed scope projection (MOR-2367)', () => {
     try {
       mountPanel();
       let id = 0;
-      const deliver = (spacing: number): void => {
+      const deliver = async (spacing: number): Promise<void> => {
         clock += spacing;
         emitFrame({ pixels: new Uint8Array(475).fill(++id) });
+        // MOR-4206: one timer turn per delivery, so each gate-admitted
+        // frame paints in its own animation frame instead of collapsing
+        // into the latest one.
+        await flushWaterfallPaint();
       };
       const painted = () => push.mock.calls.map(([pixels]) => pixels[0]);
       // Fresh registration: the first delivery paints and the first
       // live-spaced delivery latches steady painting.
-      deliver(0);
-      for (let index = 0; index < 5; index += 1) deliver(83);
+      await deliver(0);
+      for (let index = 0; index < 5; index += 1) await deliver(83);
       expect(painted()).toEqual([1, 2, 3, 4, 5, 6]);
       // A >3 s delivery gap re-opens skip mode: the entering frame
       // paints, the back-to-back burst that follows is suppressed at the
       // registration, and the first live-spaced delivery latches again.
       clock += 2 * 60 * 60 * 1000;
-      for (let index = 0; index < 8; index += 1) deliver(1);
-      for (let index = 0; index < 5; index += 1) deliver(83);
+      for (let index = 0; index < 8; index += 1) await deliver(1);
+      for (let index = 0; index < 5; index += 1) await deliver(83);
       expect(painted()).toEqual([1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19]);
       // A burst straddling a provider-switch remount hits a fresh gate:
       // it paints at most one row (the first delivery on the fresh
       // registration) while the rest drains at burst spacing inside the
       // skip budget.
       clock += 2 * 60 * 60 * 1000;
-      deliver(1);
-      deliver(1);
+      await deliver(1);
+      await deliver(1);
       generations.set('current', 18); flushSync();
-      deliver(1);
-      for (let index = 0; index < 3; index += 1) deliver(1);
+      await deliver(1);
+      for (let index = 0; index < 3; index += 1) await deliver(1);
       expect(painted()).toEqual([1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19, 20, 22]);
     } finally {
       Object.defineProperty(runtimeHarness.state, 'currentState', original);
@@ -3100,7 +3124,8 @@ describe('center panorama motion (MOR-2464)', () => {
     try {
       const { target, props } = mountPanorama(panoramaProjection());
       props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
-      expect(pushSpy).toHaveBeenCalled();
+      // MOR-4206: the row is written from the waterfall's rAF paint now.
+      await vi.waitFor(() => expect(pushSpy).toHaveBeenCalled());
       const binding = bindingOrders(updateSpy, 14_050_000, 0);
       expect(binding.length).toBeGreaterThan(0);
       expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder[0]!);
@@ -3134,7 +3159,8 @@ describe('center panorama motion (MOR-2464)', () => {
       updateSpy.mockClear(); pushSpy.mockClear();
       panoramaNow += 83;
       props.set('projection', panoramaProjection(14_051_000, 50_000, 7)); flushSync();
-      expect(pushSpy).toHaveBeenCalled();
+      // MOR-4206: the row is written from the waterfall's rAF paint now.
+      await vi.waitFor(() => expect(pushSpy).toHaveBeenCalled());
       const binding = bindingOrders(updateSpy, 14_051_000, 0);
       expect(binding.length).toBeGreaterThan(0);
       expect(Math.min(...binding)).toBeLessThan(pushSpy.mock.invocationCallOrder.at(-1)!);
