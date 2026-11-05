@@ -42,12 +42,25 @@
     token: TraceToken | null;
   }
 
+  // Review round 2 (MOR-4206): the queued pixels were sampled against the
+  // delivery-time sample window, but the panorama may have advanced while
+  // the frame awaited its animation frame — the options effect below has
+  // already applied the newer viewport. Keep the frame's sample-window
+  // center and paint it under the CURRENT viewport and appearance options,
+  // recomputing the sampling shift. Applying the delivery-time snapshot
+  // instead would scroll history backward against the spectrum/overlays
+  // and revert the center pixelToFreq() tunes against.
+  function reconciledFrameOptions(frameOptions: WaterfallOptions): WaterfallOptions {
+    const sampleWindowCenterHz = frameOptions.centerHz - frameOptions.panoramaShiftHz;
+    return { ...options, panoramaShiftHz: options.centerHz - sampleWindowCenterHz };
+  }
+
   function paintFrame(frame: WaterfallFrame): void {
     if (!renderer) return;
     const measuring = trace?.status === 'recording';
     if (measuring) trace?.recordGeometry('waterfall', cssWidth, cssHeight, canvas.width, canvas.height, window.devicePixelRatio || 1);
     const optionsStart = measuring ? performance.now() : 0;
-    if (frame.options) renderer.updateOptions(frame.options);
+    if (frame.options) renderer.updateOptions(reconciledFrameOptions(frame.options));
     if (measuring) trace?.record('waterfall_options', frame.token, performance.now() - optionsStart);
     const pushStart = measuring ? performance.now() : 0;
     renderer.pushRow(frame.pixels);

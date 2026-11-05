@@ -1988,16 +1988,13 @@ describe('SDR scope source routing (MOR-3158)', () => {
       clock += 1; emitFrame();
       clock += 1; emitFrame();
       await flushWaterfallPaint();
-      // Frozen: no new row scrolls — the last pre-TX panorama stays. The
-      // deliveries still classify through the freshness gate (baseline
-      // keeps moving).
+      // Frozen: no new row scrolls — the last pre-TX panorama stays.
       expect(push).toHaveBeenCalledTimes(1);
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
-      // Unfrozen: the frozen deliveries kept classifying through the
-      // gate, so the spacing baseline never tripped a discontinuity and
-      // painting resumes immediately.
+      // Unfrozen: with no spacing-based suppression left at the
+      // registration (MOR-4206), painting resumes immediately.
       clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(2);
       clock += 83; emitFrame(); await flushWaterfallPaint();
@@ -2008,7 +2005,7 @@ describe('SDR scope source routing (MOR-3158)', () => {
     }
   });
 
-  it('paints the first live frame after a >3 s delivery silence during a TX freeze (MOR-3471)', async () => {
+  it('paints the first live frame after a >3 s delivery silence during a TX freeze', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
@@ -2017,9 +2014,9 @@ describe('SDR scope source routing (MOR-3158)', () => {
       const target = mountPanel();
       emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(1);
-      // TX freeze with a silent source: deliveries stopped during the
-      // freeze (nothing classifies — there is nothing to classify), so
-      // the 4 s silence must not cost live rows afterwards.
+      // TX freeze with a silent source: deliveries stop during the freeze,
+      // and with no skip-window suppression left at the registration
+      // (MOR-4206) the 4 s silence costs no live rows afterwards.
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
@@ -2040,7 +2037,7 @@ describe('SDR scope source routing (MOR-3158)', () => {
     }
   });
 
-  it('paints burst-spaced live frames after a long flowing TX freeze because frozen deliveries kept classifying (MOR-3471)', async () => {
+  it('paints burst-spaced live frames after a long flowing TX freeze (MOR-4206)', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
@@ -2049,17 +2046,14 @@ describe('SDR scope source routing (MOR-3158)', () => {
       const target = mountPanel();
       emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(1);
-      // A second live-spaced delivery latches steady painting.
       clock += 83; emitFrame(); await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(2);
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
       // Flowing freeze: the SDR keeps delivering through the freeze at its
-      // production cadence (fps=20 → 50 ms) for 82 frames = 4.1 s, past
-      // the 3 s discontinuity threshold. Every frozen delivery must still
-      // classify through the gate (paint withheld), keeping the spacing
-      // baseline moving across the whole freeze.
+      // production cadence (fps=20 → 50 ms) for 82 frames = 4.1 s. Every
+      // frozen delivery is withheld from the waterfall (MOR-3158).
       for (let i = 0; i < 82; i += 1) {
         clock += 50; emitFrame();
       }
@@ -2068,16 +2062,10 @@ describe('SDR scope source routing (MOR-3158)', () => {
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
-      // Live deliveries right after unfreeze can batch tighter than the
-      // 40 ms burst spacing. Because the frozen flow kept classifying,
-      // the freeze never became a >3 s delivery gap: steady painting
-      // stayed latched and every burst-spaced live frame paints. Without
-      // the TX-frozen admit() classification this exact sequence would
-      // trip the discontinuity on the first live frame and suppress the
-      // remaining burst inside the reopened 1500 ms skip window — pinned
-      // failing-first by deleting both TX-frozen admit() calls.
-      // MOR-4206: one timer turn per delivery, so each admitted frame gets
-      // its own animation frame and paints — no latest-wins drop.
+      // Live deliveries right after unfreeze can batch tightly. With
+      // backlog handling consolidated into the rAF pump there is no
+      // spacing-based suppression left at the registration, so every
+      // burst-spaced live frame paints in its own animation frame.
       for (let i = 0; i < 5; i += 1) {
         clock += 1; emitFrame(); await flushWaterfallPaint();
       }
@@ -2602,10 +2590,8 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(push).toHaveBeenCalledTimes(1);
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
-      // Warm the fresh gate to steady painting (the first delivery
-      // paints, the first live-spaced one latches) with distinct
-      // live-spaced sequences, so the recovery frame below is judged on
-      // spacing, not on the latch.
+      // Ordinary live-spaced deliveries with distinct sequences establish
+      // a paint history before the recovery frame below.
       for (let sequence = 2; sequence <= 6; sequence += 1) {
         clock += 83;
         props.set('projection', sequenced(sequence)); flushSync();
@@ -2635,7 +2621,7 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(push).toHaveBeenCalledWith(frame.pixels);
     } finally { push.mockRestore(); }
   });
-  it('wires the waterfall freshness gate into the waterfallPush registration (MOR-3471)', async () => {
+  it('consolidates backlog handling into the rAF pump: a burst before one animation frame paints only the latest delivery (MOR-4206)', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
@@ -2647,38 +2633,43 @@ describe('managed scope projection (MOR-2367)', () => {
     try {
       mountPanel();
       let id = 0;
-      const deliver = async (spacing: number): Promise<void> => {
-        clock += spacing;
+      // One delivery per id, NO paint flush in between: every delivery that
+      // reaches the registration must replace the pump's pending frame, so
+      // the single animation frame that follows paints only the final one.
+      const deliver = (): void => {
+        clock += 1;
         emitFrame({ pixels: new Uint8Array(475).fill(++id) });
-        // MOR-4206: one timer turn per delivery, so each gate-admitted
-        // frame paints in its own animation frame instead of collapsing
-        // into the latest one.
-        await flushWaterfallPaint();
       };
       const painted = () => push.mock.calls.map(([pixels]) => pixels[0]);
-      // Fresh registration: the first delivery paints and the first
-      // live-spaced delivery latches steady painting.
-      await deliver(0);
-      for (let index = 0; index < 5; index += 1) await deliver(83);
-      expect(painted()).toEqual([1, 2, 3, 4, 5, 6]);
-      // A >3 s delivery gap re-opens skip mode: the entering frame
-      // paints, the back-to-back burst that follows is suppressed at the
-      // registration, and the first live-spaced delivery latches again.
+      // Fresh registration: the burst is not suppressed at the
+      // registration — the pump coalesces it and paints the LATEST frame,
+      // not the first (the MOR-3471 spacing gate painted the first).
+      for (let index = 0; index < 6; index += 1) deliver();
+      await flushWaterfallPaint();
+      expect(painted()).toEqual([6]);
+      // A live-spaced delivery gets its own animation frame and paints.
+      clock += 83; deliver(); await flushWaterfallPaint();
+      expect(painted()).toEqual([6, 7]);
+      // A post-gap (>3 s) burst: same consolidation — one rAF paints only
+      // the final delivered frame; nothing is suppressed at the boundary.
       clock += 2 * 60 * 60 * 1000;
-      for (let index = 0; index < 8; index += 1) await deliver(1);
-      for (let index = 0; index < 5; index += 1) await deliver(83);
-      expect(painted()).toEqual([1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19]);
-      // A burst straddling a provider-switch remount hits a fresh gate:
-      // it paints at most one row (the first delivery on the fresh
-      // registration) while the rest drains at burst spacing inside the
-      // skip budget.
+      for (let index = 0; index < 8; index += 1) deliver();
+      await flushWaterfallPaint();
+      expect(painted()).toEqual([6, 7, 15]);
+      // A burst straddling a provider-switch remount hits the remounted
+      // canvas's fresh registration, which is likewise unfiltered: one
+      // animation frame paints only its latest delivery.
       clock += 2 * 60 * 60 * 1000;
-      await deliver(1);
-      await deliver(1);
+      deliver(); await flushWaterfallPaint();
       generations.set('current', 18); flushSync();
-      await deliver(1);
-      for (let index = 0; index < 3; index += 1) await deliver(1);
-      expect(painted()).toEqual([1, 2, 3, 4, 5, 6, 7, 15, 16, 17, 18, 19, 20, 22]);
+      for (let index = 0; index < 4; index += 1) deliver();
+      await flushWaterfallPaint();
+      expect(painted()).toEqual([6, 7, 15, 16, 20]);
+      // Live-spaced streaming after the burst paints every frame.
+      for (let index = 0; index < 3; index += 1) {
+        clock += 83; deliver(); await flushWaterfallPaint();
+      }
+      expect(painted()).toEqual([6, 7, 15, 16, 20, 21, 22, 23]);
     } finally {
       Object.defineProperty(runtimeHarness.state, 'currentState', original);
       nowSpy.mockRestore();
@@ -3146,8 +3137,8 @@ describe('center panorama motion (MOR-2464)', () => {
     vi.stubGlobal('performance', { now: () => panoramaNow });
     try {
       const { target, props } = mountPanorama(panoramaProjection());
-      // MOR-3471: warm the fresh gate to steady painting with
-      // live-spaced sequences so the asserted rows below paint.
+      // Ordinary live-spaced deliveries establish the paint history the
+      // asserted recentered row below follows.
       for (let sequence = 2; sequence <= 5; sequence += 1) {
         panoramaNow += 83;
         props.set('projection', panoramaProjection(14_050_000, 50_000, sequence)); flushSync();
