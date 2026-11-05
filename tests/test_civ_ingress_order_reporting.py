@@ -20,6 +20,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.transport import IcomCivTransport, IcomTransport
 from rigplane.runtime.radio_reconnect import watchdog_loop
 from rigplane.testing.timing import VirtualClock
+from rigplane.web.api_contract import RESPONSE_FIELD_CONTRACTS, CivIngressPayload
 from rigplane.web.server import WebConfig, WebServer
 
 from lan_reorder_fake import LanRadioFake
@@ -62,13 +63,15 @@ def _radio(civ_transport: object) -> SimpleNamespace:
 async def test_runtime_reports_the_lan_civ_order_counters() -> None:
     data = await _runtime(_radio(_civ_transport_with_one_of_each()))
 
-    assert data["civIngress"] == {
-        "ordered": True,
-        "reordered": 1,
-        "duplicate": 1,
-        "lost": 0,
-        "late": 0,
-    }
+    civ_ingress = data["civIngress"]
+    assert set(civ_ingress) == CivIngressPayload.__required_keys__
+    assert civ_ingress == CivIngressPayload(
+        ordered=True, reordered=1, duplicate=1, lost=0, late=0
+    )
+
+
+def test_civ_ingress_is_a_stable_runtime_field() -> None:
+    assert "civIngress" in RESPONSE_FIELD_CONTRACTS["/api/v1/runtime"]["required"]
 
 
 @pytest.mark.parametrize("serial", [False, True], ids=["none", "serial"])

@@ -55,9 +55,6 @@ MAX_MISSING = 50
 # so the hold stays bounded. At the CI-V port's ~120-225 packets/s it is
 # about 1-2 s, longer than the retransmit budget that normally gives up first.
 REORDER_WINDOW = 256
-# A packet numbered this far behind the next one to deliver is no late copy:
-# the radio restarted its numbering, so delivery restarts at that packet.
-_RESYNC_DISTANCE = 4 * REORDER_WINDOW
 PACKET_QUEUE_MAXSIZE = 4096
 # Non-scope overflow must not log once per packet. The first eviction logs
 # immediately; while evictions continue, at most one summary per interval.
@@ -877,11 +874,9 @@ class IcomTransport:
         self, data: bytes, ptype: int, seq: int, sender_id: int
     ) -> None:
         """Track the sequence of a data packet, then route it (in order)."""
-        if ptype == 0x00 and (
-            seq != 0 or (self.ordered_ingress and self._rx_next == 0)
-        ):
-            # Number 0 is untracked, except where ordered delivery waits for
-            # it: the packet after 0xFFFF when the radio's numbering wraps.
+        # Number 0 is untracked where packets pass on as they arrive; where
+        # they are ordered it is the number after 0xFFFF like any other.
+        if ptype == 0x00 and (seq != 0 or self.ordered_ingress):
             last = self.rx_last_seq
             arrived_after_later = (
                 last is not None and 0 < ((last - seq) & 0xFFFF) < 0x8000
@@ -900,24 +895,18 @@ class IcomTransport:
         nxt = seq if self._rx_next is None else self._rx_next
         behind = (nxt - seq) & 0xFFFF
         if 0 < behind < 0x8000:
-            if behind <= _RESYNC_DISTANCE:
-                if seq in self._rx_given_up:
-                    self._rx_late += 1
-                else:
-                    self._rx_duplicate += 1
-                return
-            logger.warning(
-                "Rx sequence restarted: %d while expecting %d; resyncing", seq, nxt
-            )
-            arrived_after_later = False
-            for held_seq in sorted(self._rx_held, key=lambda s: (s - nxt) & 0xFFFF):
-                self._route_data_packet(*self._rx_held[held_seq])
-            self._rx_held.clear()
-            self._rx_given_up.clear()
-            self.rx_missing.clear()
-            self.rx_last_seq = seq
-            nxt = seq
-        elif seq in self._rx_held:
+            # Older than the next number, however far: within one session the
+            # radio never numbers backwards. Its numbering restarts only with
+            # a new session, and a new session is a new transport (or
+            # ``connect``, which resets this state); a radio that restarted
+            # without one delivers nothing new here, and the CI-V data
+            # watchdog's soft reconnect builds that new transport.
+            if seq in self._rx_given_up:
+                self._rx_late += 1
+            else:
+                self._rx_duplicate += 1
+            return
+        if seq in self._rx_held:
             self._rx_duplicate += 1
             return
         if arrived_after_later:

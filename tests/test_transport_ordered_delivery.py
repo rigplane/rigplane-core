@@ -11,6 +11,7 @@ runs out. Timeouts run on the shared ``VirtualClock``.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,6 +27,7 @@ from rigplane.core.transport import (
 from rigplane.testing.timing import VirtualClock
 
 from lan_reorder_fake import LanRadioFake, drain_seqs
+from test_transport import _FakeLoop
 
 pytestmark = pytest.mark.timeout(10)
 
@@ -144,19 +146,80 @@ async def test_order_holds_across_the_sequence_wrap(transport: IcomTransport) ->
     assert transport.rx_order_stats == RxOrderStats(reordered=2)
 
 
-async def test_a_restarted_numbering_resyncs_instead_of_reading_as_duplicates(
+async def test_zero_is_ordered_like_any_number_at_the_wrap(
     transport: IcomTransport,
 ) -> None:
-    radio = _radio(transport, 3, first_seq=5000)
-    radio.deliver(5000, 5001, 5002)
-    restarted = LanRadioFake(transport, first_seq=1)
-    for n in range(2):
-        restarted.packet(_frame(n))
+    radio = _radio(transport, 3, first_seq=0xFFFE)
 
-    restarted.deliver(1, 2)
+    radio.deliver(0xFFFE, 0x0000, 0xFFFF)
 
-    assert drain_seqs(transport) == [5000, 5001, 5002, 1, 2]
-    assert transport.rx_order_stats == RxOrderStats()
+    assert drain_seqs(transport) == [0xFFFE, 0xFFFF, 0x0000]
+    assert transport.rx_order_stats == RxOrderStats(reordered=1)
+
+
+async def test_a_duplicate_zero_is_dropped(transport: IcomTransport) -> None:
+    radio = _radio(transport, 3, first_seq=0xFFFF)
+
+    radio.deliver(0xFFFF, 0x0000, 0x0000, 0x0001, 0x0000)
+
+    assert drain_seqs(transport) == [0xFFFF, 0x0000, 0x0001]
+    assert transport.rx_order_stats == RxOrderStats(duplicate=2)
+
+
+async def test_a_zero_resent_after_it_was_given_up_is_late(
+    transport: IcomTransport, virtual_clock: VirtualClock
+) -> None:
+    radio = _radio(transport, 4, first_seq=0xFFFE)
+
+    radio.deliver(0xFFFE, 0xFFFF, 0x0001)
+    await virtual_clock.elapse(_BUDGET)
+    assert drain_seqs(transport) == [0xFFFE, 0xFFFF, 0x0001]
+
+    radio.deliver(0x0000)
+
+    assert drain_seqs(transport) == []
+    assert transport.rx_order_stats == RxOrderStats(lost=1, late=1)
+
+
+async def test_an_old_duplicate_far_behind_is_never_redelivered(
+    transport: IcomTransport,
+) -> None:
+    radio = _radio(transport, 1100)
+    radio.deliver(*range(1, 1101))
+    assert drain_seqs(transport) == list(range(1, 1101))
+
+    radio.deliver(1)
+
+    assert drain_seqs(transport) == []
+    assert transport.rx_order_stats == RxOrderStats(duplicate=1)
+
+
+async def test_a_restarted_numbering_starts_with_the_new_session(
+    transport: IcomTransport,
+) -> None:
+    """The radio numbers afresh only for a new session, and a new session
+    goes through ``connect``; within the old one a low number is old."""
+    radio = _radio(transport, 500)
+    radio.deliver(*range(1, 501))
+    assert drain_seqs(transport) == list(range(1, 501))
+    radio.deliver(1)
+    assert drain_seqs(transport) == []
+
+    with (
+        patch(
+            "rigplane.transport.asyncio.get_running_loop",
+            return_value=_FakeLoop(("192.168.2.194", 50002)),
+        ),
+        patch.object(transport, "_discover", new=AsyncMock()),
+        patch.object(transport, "_ready_handshake", new=AsyncMock()),
+    ):
+        await transport.connect("192.168.2.1", 50002)
+    fresh = _radio(transport, 500)
+
+    fresh.deliver(*range(1, 501))
+
+    assert drain_seqs(transport) == list(range(1, 501))
+    assert transport.rx_order_stats == RxOrderStats(duplicate=1)
 
 
 async def test_the_control_and_audio_ports_keep_arrival_order() -> None:

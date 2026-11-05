@@ -131,7 +131,7 @@ from ._delta_encoder import (  # noqa: TID251
     copy_state_tree,
     top_level_delta,
 )
-from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
+from .api_contract import WEB_API_CONTRACT_VERSION, CivIngressPayload  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
 from .handlers import (  # noqa: TID251
@@ -4941,7 +4941,7 @@ class WebServer:
             return broadcaster.capture_diagnostics()
         return {"schemaVersion": 1, "lastFailureCategory": None}
 
-    def _runtime_civ_ingress_payload(self) -> dict[str, Any] | None:
+    def _runtime_civ_ingress_payload(self) -> CivIngressPayload | None:
         """Inbound CI-V sequence-order counters of a LAN radio (MOR-4205).
 
         ``None`` when the radio has no LAN CI-V transport (serial radios, no
@@ -4950,10 +4950,14 @@ class WebServer:
         transport = getattr(self._radio, "_civ_transport", None)
         if not isinstance(transport, IcomTransport):
             return None
-        return {
-            "ordered": transport.ordered_ingress,
-            **asdict(transport.rx_order_stats),
-        }
+        stats = transport.rx_order_stats
+        return CivIngressPayload(
+            ordered=transport.ordered_ingress,
+            reordered=stats.reordered,
+            duplicate=stats.duplicate,
+            lost=stats.lost,
+            late=stats.late,
+        )
 
     def _runtime_process_payload(self) -> dict[str, Any]:
         """Process metrics; a value this platform cannot report is ``None``."""
