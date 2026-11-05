@@ -26,6 +26,7 @@ import { resolveFilterModeConfig, toMemoryPanelProps } from '../../props/panel-p
 import {
   toRadioViewModel, type MetersTxAuthority,
 } from '../radio-view-model-adapter';
+import { editState } from '../../../transport/__tests__/support/state-edit';
 import { PROFILES } from './conformance/profiles';
 import { FTX1_STATE_FULLY_UNOBSERVED } from './fixtures/ftx1-profile';
 import strictProjectionGolden from './fixtures/strict-projection.golden.json';
@@ -163,13 +164,14 @@ describe('qualified VFO display observations', () => {
     });
   });
   it('accepts zero frequency/filter and rejects non-scalar or empty values', () => {
-    const state = ds(true);
-    state.main = { ...state.main, freqHz: 0, filter: 0 };
+    // MOR-4213: every change is a new snapshot, built as the client builds a delta.
+    let state = ds(true);
+    state = editState(state, (s) => { s.main = { ...s.main, freqHz: 0, filter: 0 }; });
     expect(display(state)?.frequencyHz).toEqual({ state: 'stale', value: 0 });
     expect(display(state)?.filter).toEqual({ state: 'stale', value: 'FIL0' });
-    state.main = { ...state.main, freqHz: NaN, mode: '', filter: Infinity };
+    state = editState(state, (s) => { s.main = { ...s.main, freqHz: NaN, mode: '', filter: Infinity }; });
     expect(Object.values(display(state)!)).toEqual(Array(3).fill({ state: 'unknown', reason: 'invalid-value' }));
-    state.main.freqHz = false as unknown as number;
+    state = editState(state, (s) => { s.main.freqHz = false as unknown as number; });
     expect(display(state)?.frequencyHz).toEqual({ state: 'unknown', reason: 'invalid-value' });
   });
   it.each([
@@ -177,16 +179,16 @@ describe('qualified VFO display observations', () => {
     { ...fresh, lastObservedMonotonic: -1 },
     { ...fresh, lastObservedMonotonic: 1, availability: 'unavailable' },
   ])('rejects missing or invalid leaf evidence %#', (status) => {
-    const state = ds();
-    state.fieldStatus!['main.freqHz'] = status as FieldStatus;
+    const state = editState(ds(), (s) => { s.fieldStatus!['main.freqHz'] = status as FieldStatus; });
     expect(display(state)?.frequencyHz.state).toBe('unknown');
   });
   it.each(['main', 'main.vfoA'])('honors ancestor veto and ancestor staleness at %s', (path) => {
     const c = { ...dc, vfoScheme: 'ab' as const, vfoReadback: 'absolute' as const };
-    const state = ds();
-    state.fieldStatus![path] = { ...fresh, observed: false, lastObservedMonotonic: 0 };
+    let state = editState(ds(), (s) => {
+      s.fieldStatus![path] = { ...fresh, observed: false, lastObservedMonotonic: 0 };
+    });
     expect(display(state, c)?.frequencyHz).toEqual({ state: 'unknown', reason: 'not-observed' });
-    state.fieldStatus![path] = { ...stale, lastObservedMonotonic: 0 };
+    state = editState(state, (s) => { s.fieldStatus![path] = { ...stale, lastObservedMonotonic: 0 }; });
     expect(display(state, c)?.frequencyHz).toEqual({ state: 'stale', value: 14250000 });
   });
   it('fences capability generation, contract, reset and unresolved slot identity without caching', () => {
@@ -195,8 +197,7 @@ describe('qualified VFO display observations', () => {
       expect(display(ds(), c)?.frequencyHz).toEqual({ state: 'unknown', reason: 'identity-unresolved' });
     }
     expect(display(null)?.frequencyHz.state).toBe('unknown');
-    const state = ds();
-    state.main = { ...state.main, vfoA: undefined, vfoB: undefined };
+    const state = editState(ds(), (s) => { s.main = { ...s.main, vfoA: undefined, vfoB: undefined }; });
     expect(display(state, { ...dc, vfoScheme: 'ab', vfoReadback: 'absolute' })?.frequencyHz)
       .toEqual({ state: 'unknown', reason: 'identity-unresolved' });
     expect(display(ds(true))?.frequencyHz).toEqual({ state: 'stale', value: 14250000 });
@@ -210,16 +211,13 @@ describe('qualified VFO display observations', () => {
   });
   it('does not carry a receiver display into a new generation or fabricate a missing value', () => {
     const first = ds(true);
-    const next = ds(true);
-    next.providerGeneration = 2;
-    next.main.freqHz = 7100000;
+    let next = editState(ds(true), (s) => { s.providerGeneration = 2; s.main.freqHz = 7100000; });
     const nextCaps = { ...dc, providerGeneration: 2 };
     expect(display(first)?.frequencyHz).toEqual({ state: 'stale', value: 14250000 });
     expect(display(next, nextCaps)?.frequencyHz).toEqual({ state: 'stale', value: 7100000 });
-    next.fieldStatus = {};
+    next = editState(next, (s) => { s.fieldStatus = {}; });
     expect(display(next, nextCaps)?.frequencyHz).toEqual({ state: 'unknown', reason: 'not-observed' });
-    const missing = ds();
-    missing.main.freqHz = undefined as unknown as number;
+    const missing = editState(ds(), (s) => { s.main.freqHz = undefined as unknown as number; });
     expect(display(missing)?.frequencyHz).toEqual({ state: 'unknown', reason: 'invalid-value' });
   });
   it.each(Object.keys(TOPOLOGY_CAPS))('uses each %s position path and preserves strict baseline', (id) => {
@@ -240,19 +238,20 @@ describe('qualified VFO display observations', () => {
     }
   });
   it('keeps relative selected/unselected provenance separate from absolute A/B', () => {
-    const state = ds(true);
-    delete state.fieldStatus!['main.activeSlot'];
-    state.main.unselectedVfo = slot(7100000, 'LSB');
-    for (const leaf of ['freqHz', 'mode', 'filterNum']) {
-      state.fieldStatus![`main.unselectedVfo.${leaf}`] = { ...stale, lastObservedMonotonic: 0 };
-    }
+    let state = editState(ds(true), (s) => {
+      delete s.fieldStatus!['main.activeSlot'];
+      s.main.unselectedVfo = slot(7100000, 'LSB');
+      for (const leaf of ['freqHz', 'mode', 'filterNum']) {
+        s.fieldStatus![`main.unselectedVfo.${leaf}`] = { ...stale, lastObservedMonotonic: 0 };
+      }
+    });
     const c = { ...dc, vfoScheme: 'ab' as const, vfoReadback: 'selected_unselected' as const };
     const view = toRadioViewModel(state, c)!;
     expect(view.vfos.map((vfo) => [vfo.slot, vfo.display?.frequencyHz, vfo.isActiveSlot])).toEqual([
       [{ kind: 'relative', role: 'selected' }, { state: 'stale', value: 14250000 }, true],
       [{ kind: 'relative', role: 'unselected' }, { state: 'stale', value: 7100000 }, false],
     ]);
-    state.main.unselectedVfo = undefined;
+    state = editState(state, (s) => { s.main.unselectedVfo = undefined; });
     expect(toRadioViewModel(state, c)!.vfos[1].display?.frequencyHz.state).toBe('unknown');
   });
 });
