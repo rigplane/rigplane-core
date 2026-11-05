@@ -341,3 +341,37 @@ def test_default_baud_keeps_the_radio_profile_positional_bindings() -> None:
     assert rebuilt.hamlib_model_id == 4242
     assert rebuilt.protocol_type == base.protocol_type
     assert rebuilt.default_baud == _SCOPE_BAUD
+
+
+# ---------------------------------------------------------------------------
+# The serialized result is a producer-owned contract
+# ---------------------------------------------------------------------------
+
+
+def test_serialized_result_contract_matches_the_result_fields() -> None:
+    contract = discovery.RadioDiscoveryResultDict
+    keys = contract.__required_keys__ | contract.__optional_keys__
+    assert keys == {f.name for f in dataclasses.fields(RadioDiscoveryResult)}
+
+
+def test_setup_json_reads_the_baud_fields_from_the_serialized_result() -> None:
+    low = RadioDiscoveryResult(
+        port=_DEVICE,
+        protocol="civ",
+        model="IC-7300",
+        profile_id="icom_ic7300",
+        baudrate=19200,
+        address=0x94,
+        preferred_baudrate=_SCOPE_BAUD,
+        low_baud_hint="hint",
+    )
+    serialized = low.to_dict()
+    assert serialized == dataclasses.asdict(low)
+
+    grouped = discovery.dedupe_radios([], [serialized])
+    payload = discovery.build_setup_discovery_payload(grouped)
+    [connection] = payload["radios"][0]["connections"]
+    assert connection["baudrate"] == 19200
+    assert connection["preferredBaudrate"] == _SCOPE_BAUD
+    assert connection["lowBaud"] is True
+    assert connection["lowBaudHint"] == "hint"
