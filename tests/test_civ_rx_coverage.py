@@ -44,6 +44,7 @@ from rigplane.testing.timing import await_until
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
+from rigplane.core.transport import IcomTransport
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.commands import (
@@ -4601,8 +4602,11 @@ async def test_route_civ_frame_contains_observation_decode_failures(
 
     assert len(published) == 1
     assert published[0].frame == frame
+    # MockTransport carries the LAN ingress-order contract (MOR-4209).
     radio._civ_request_tracker.resolve.assert_called_once_with(
-        published[0], generation=radio._civ_epoch
+        published[0],
+        generation=radio._civ_epoch,
+        ordered_ingress=IcomTransport.ordered_ingress,
     )
     assert radio._state_store.snapshot().observation_seq == expected_observation_seq
 
