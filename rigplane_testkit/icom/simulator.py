@@ -2031,9 +2031,11 @@ class MockIcomRadio(AudioPortMixin):
             # Recorded IC-7610 LAN behaviour: the request CI-V frame comes
             # back byte-identical immediately before the reply — including
             # requests answered with NAK (``civ_pairs.jsonl`` records CI-V
-            # frames only). Through the same outbound funnel as the reply,
-            # so a fault plan sees both packets.
-            self._send(proto, data, addr, "civ")
+            # frames only), numbered in the radio's own sequence like the
+            # reply after it (``retransmit_gaps.jsonl``: echo r2c 351, reply
+            # 352). Through the same outbound funnel as the reply, so a
+            # fault plan sees both packets.
+            self._send(proto, self._wrap_civ(bytes(civ), sender_id), addr, "civ")
 
         if (
             self._scope_stream

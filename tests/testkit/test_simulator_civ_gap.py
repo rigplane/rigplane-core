@@ -54,6 +54,7 @@ from testkit.test_simulator_faults import (
     _conninfo,
     _freq_get,
     _header,
+    _is_echo_of,
     _is_freq_reply,
     _login,
     _openclose,
@@ -222,7 +223,7 @@ async def test_lost_tracked_packet_gets_single_requests_then_fill(
     for seq in (130, 131, 132):
         req = _freq_get(seq=seq)
         client.send(req, server.civ_port)
-        assert await client.recv() == req  # LAN echo
+        assert _is_echo_of(await client.recv(), req)  # LAN echo
         assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
     assert server.civ_retransmit_requests == 0
@@ -237,7 +238,7 @@ async def test_lost_tracked_packet_gets_single_requests_then_fill(
     # (an idle) stays silent.
     resend = _freq_get(seq=133)
     client.send(resend, server.civ_port)
-    assert await client.recv() == resend
+    assert _is_echo_of(await client.recv(), resend)
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
 
@@ -341,7 +342,7 @@ async def test_idle_fills_release_held_request_in_order(
     await _open_stream(client, server, 129)
     req130 = _freq_get(seq=130)
     client.send(req130, server.civ_port)
-    assert await client.recv() == req130
+    assert _is_echo_of(await client.recv(), req130)
     assert _is_freq_reply(await client.recv())
 
     client.send(_idle(134), server.civ_port)
@@ -375,7 +376,7 @@ async def test_idle_fills_release_held_request_in_order(
     deadline = time.monotonic() + 2.0
     while not (got_echo and got_reply):
         pkt = await client.recv(timeout=max(0.1, deadline - time.monotonic()))
-        if pkt == held:
+        if _is_echo_of(pkt, held):
             got_echo = True
         elif _is_freq_reply(pkt):
             got_reply = True
@@ -420,7 +421,7 @@ async def test_single_gap_fill_resumes(server, client) -> None:
 
     req = _freq_get(seq=201)
     client.send(req, server.civ_port)
-    assert await client.recv() == req
+    assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
 
 
@@ -445,7 +446,7 @@ async def test_reopened_stream_ignores_stale_numbers_until_passing_last(
     for seq in range(1, last + 1):
         req = _freq_get(seq=seq)
         client.send(req, server.civ_port)
-        assert await client.recv() == req
+        assert _is_echo_of(await client.recv(), req)
         assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
 
@@ -463,7 +464,7 @@ async def test_reopened_stream_ignores_stale_numbers_until_passing_last(
 
     req = _freq_get(seq=last + 1)
     client.send(req, server.civ_port)
-    assert await client.recv() == req
+    assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
 
@@ -488,7 +489,7 @@ async def test_tracked_openclose_consumes_its_number(
     for seq in (1, 2, 3):
         req = _freq_get(seq=seq)
         client.send(req, server.civ_port)
-        assert await client.recv() == req
+        assert _is_echo_of(await client.recv(), req)
         assert _is_freq_reply(await client.recv())
 
     client.send(_openclose(seq=4), server.civ_port)
@@ -497,7 +498,7 @@ async def test_tracked_openclose_consumes_its_number(
 
     req = _freq_get(seq=5)
     client.send(req, server.civ_port)
-    assert await client.recv() == req
+    assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
 
@@ -558,7 +559,7 @@ async def test_out_of_order_fills_release_held_request(
     for seq in (131, 132, 133):
         req = _freq_get(seq=seq)
         client.send(req, server.civ_port)
-        assert await client.recv() == req
+        assert _is_echo_of(await client.recv(), req)
         assert _is_freq_reply(await client.recv())
     opener = _idle(137)
     client.send(opener, server.civ_port)
@@ -579,7 +580,7 @@ async def test_out_of_order_fills_release_held_request(
     deadline = time.monotonic() + 2.0
     while not (got_echo and got_reply):
         pkt = await client.recv(timeout=max(0.1, deadline - time.monotonic()))
-        if pkt == held:
+        if _is_echo_of(pkt, held):
             got_echo = True
         elif _is_freq_reply(pkt):
             got_reply = True
@@ -613,7 +614,7 @@ async def test_reboot_clears_gap_tracking(
     for seq in (1, 2, 3):
         req = _freq_get(seq=seq)
         client.send(req, server.civ_port)
-        assert await client.recv() == req
+        assert _is_echo_of(await client.recv(), req)
         assert _is_freq_reply(await client.recv())
     client.send(_idle(5), server.civ_port)
     pair = [await client.recv() for _ in range(2)]
@@ -633,7 +634,7 @@ async def test_reboot_clears_gap_tracking(
     await _open_stream(client, server, 0)
     req = _freq_get(seq=1)
     client.send(req, server.civ_port)
-    assert await client.recv() == req
+    assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
 
@@ -651,7 +652,7 @@ async def test_drop_session_clears_gap_tracking(
     for seq in (1, 2, 3):
         req = _freq_get(seq=seq)
         client.send(req, server.civ_port)
-        assert await client.recv() == req
+        assert _is_echo_of(await client.recv(), req)
         assert _is_freq_reply(await client.recv())
     client.send(_idle(5), server.civ_port)
     pair = [await client.recv() for _ in range(2)]
@@ -671,7 +672,7 @@ async def test_drop_session_clears_gap_tracking(
     await _open_stream(client, server, 0)
     req = _freq_get(seq=1)
     client.send(req, server.civ_port)
-    assert await client.recv() == req
+    assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
 
@@ -696,7 +697,7 @@ async def test_new_claim_clears_gap_tracking() -> None:
         for seq in (1, 2, 3):
             req = _freq_get(seq=seq)
             proto.send(req, sim.civ_port)
-            assert await proto.recv() == req
+            assert _is_echo_of(await proto.recv(), req)
             assert _is_freq_reply(await proto.recv())
 
         # The session is released (close, no tracking clear) and a new
@@ -711,7 +712,7 @@ async def test_new_claim_clears_gap_tracking() -> None:
         await _open_stream(proto, sim, 0)
         req = _freq_get(seq=1)
         proto.send(req, sim.civ_port)
-        assert await proto.recv() == req
+        assert _is_echo_of(await proto.recv(), req)
         assert _is_freq_reply(await proto.recv())
         assert sim.civ_gap_open is False
     finally:
@@ -812,7 +813,7 @@ async def _replay_rounds(window: str) -> tuple[int, list[float]]:
         if pre:  # the window's last processed number before the gap opens
             req = _freq_get(seq=130)
             proto.send(req, sim.civ_port)
-            assert await proto.recv() == req
+            assert _is_echo_of(await proto.recv(), req)
             assert _is_freq_reply(await proto.recv())
         base = script[0][0]
         starts: list[float] = []
@@ -871,7 +872,7 @@ async def test_round_rate_matches_recording() -> None:
         await _open_stream(proto, sim, 129)
         req = _freq_get(seq=130)
         proto.send(req, sim.civ_port)
-        assert await proto.recv() == req
+        assert _is_echo_of(await proto.recv(), req)
         assert _is_freq_reply(await proto.recv())
         proto.send(_idle(134), sim.civ_port)
         pair = [await proto.recv() for _ in range(2)]
@@ -909,12 +910,12 @@ async def test_tracked_openclose_close_consumes_its_number(
     for seq in (1, 2, 3):
         req = _freq_get(seq=seq)
         client.send(req, server.civ_port)
-        assert await client.recv() == req
+        assert _is_echo_of(await client.recv(), req)
         assert _is_freq_reply(await client.recv())
     client.send(_close(4), server.civ_port)
     req = _freq_get(seq=5)
     client.send(req, server.civ_port)
-    assert await client.recv() == req
+    assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
     assert server.civ_gap_open is False
     await _collect(client, 0.15)
@@ -934,7 +935,7 @@ async def test_new_gap_never_remarks_held_numbers(
     await _open_stream(client, server, 129)
     req = _freq_get(seq=130)
     client.send(req, server.civ_port)
-    assert await client.recv() == req
+    assert _is_echo_of(await client.recv(), req)
     assert _is_freq_reply(await client.recv())
     client.send(_idle(134), server.civ_port)
     pair = [await client.recv() for _ in range(2)]

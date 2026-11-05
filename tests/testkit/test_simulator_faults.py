@@ -165,14 +165,25 @@ async def _recv_reply(
 ) -> bytes:
     """Read the radio's reply to ``request``, skipping its LAN CI-V echo.
 
-    ``MockIcomRadio`` echoes every CI-V request packet back byte-identical
-    immediately before the reply, like the recorded IC-7610 on the LAN CI-V
-    port; raw-UDP tests that want "the reply" skip that echo here.
+    ``MockIcomRadio`` echoes every CI-V request back immediately before the
+    reply, like the recorded IC-7610 on the LAN CI-V port; raw-UDP tests that
+    want "the reply" skip that echo here.
     """
     while True:
         pkt = await client.recv(timeout)
-        if pkt != request:
+        if not _is_echo_of(pkt, request):
             return pkt
+
+
+def _is_echo_of(pkt: bytes, request: bytes) -> bool:
+    """The radio's LAN echo of ``request``: the same CI-V bytes in a type-0
+    datagram numbered in the radio's own sequence (``retransmit_gaps.jsonl``:
+    the echo and the reply carry consecutive radio numbers, MOR-4205)."""
+    return (
+        len(pkt) == len(request)
+        and pkt[4:6] == request[4:6]
+        and pkt[0x15:] == request[0x15:]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +221,12 @@ async def test_no_plan_behaves_as_before(server, client):
 
 
 async def test_echo_precedes_every_reply_by_default(server, client):
-    """The LAN CI-V echo: the request packet comes back byte-identical
-    first, the reply second (recorded IC-7610 behaviour; the conformance
-    suite replays all recorded requests against this)."""
+    """The LAN CI-V echo: the request's CI-V frame comes back first, the
+    reply second (recorded IC-7610 behaviour; the conformance suite replays
+    all recorded requests against this)."""
     request = _freq_get()
     client.send(request, server.civ_port)
-    assert await client.recv() == request
+    assert _is_echo_of(await client.recv(), request)
     assert _is_freq_reply(await client.recv())
 
     server.lan_civ_echo = False
