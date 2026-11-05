@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import struct
 from collections.abc import Callable
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from ....core.exceptions import CommandError
 from ....types import PacketType
@@ -131,6 +131,11 @@ class SerialControlTransport:
 
 class SerialCivTransport:
     """Shared-core transport adapter over a raw serial CI-V link."""
+
+    #: A serial line delivers bytes in the order the radio sent them, so a
+    #: CI-V answer here proves every earlier request was already answered or
+    #: lost (MOR-4209; the LAN contract is ``IcomTransport.ordered_ingress``).
+    ordered_ingress: ClassVar[bool] = True
 
     def __init__(self, civ_link: _LifecycleCivLink) -> None:
         self._civ_link = civ_link

@@ -11,7 +11,11 @@ import SpectrumCanvas from '../SpectrumCanvas.svelte';
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.innerHTML = ''; });
 
 describe('actual canvas trace callbacks', () => {
-  it('counts synchronous rows separately from coalesced latest-token RAF draws', async () => {
+  // MOR-4206: the waterfall no longer paints synchronously per push — like
+  // the spectrum it coalesces latest-wins to one paint per rAF, tracing the
+  // dropped frame as `coalesced`. This characterization pins that contract:
+  // two same-tick pushes, one rAF flush, one paint per canvas.
+  it('coalesces waterfall rows and spectrum draws to one paint per rAF each', async () => {
     const callbacks: FrameRequestCallback[] = [];
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callbacks.push(callback); return callbacks.length; });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
@@ -41,17 +45,20 @@ describe('actual canvas trace callbacks', () => {
         waterfallPush?.(frame.pixels, undefined, token);
         spectrumPush?.(frame.pixels, token);
       }
-      expect(rows).toHaveBeenCalledTimes(2);
+      // Nothing paints synchronously anymore — both canvases await the rAF.
+      expect(rows).not.toHaveBeenCalled();
       expect(renders).not.toHaveBeenCalled();
-      const pending = callbacks.at(-1)!;
-      pending(performance.now());
+      for (const pending of [...callbacks]) pending(performance.now());
+      expect(rows).toHaveBeenCalledTimes(1);
       expect(renders).toHaveBeenCalledTimes(1);
       trace.stop();
       const output = JSON.parse(trace.export()!);
-      expect(output.buckets[0].stages.waterfall_push.count).toBe(2);
-      expect(output.buckets[0].stages.waterfall_options.count).toBe(2);
+      expect(output.buckets[0].stages.waterfall_push.count).toBe(1);
+      expect(output.buckets[0].stages.waterfall_options.count).toBe(1);
       expect(output.buckets[0].stages.spectrum_push.count).toBe(2);
-      expect(output.buckets[0].stages.coalesced.count).toBe(1);
+      // Both canvases dropped the first frame: spectrum's rAF coalescing and
+      // the waterfall pump's latest-wins replacement each trace one.
+      expect(output.buckets[0].stages.coalesced.count).toBe(2);
       expect(output.buckets[0].stages.spectrum_render.count).toBe(1);
       expect(Object.keys(output.geometry).sort()).toEqual(['spectrum', 'waterfall']);
       expect(output.burst.some((event: { stage: string; acceptedSequence?: number }) =>

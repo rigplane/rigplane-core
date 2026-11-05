@@ -16,7 +16,7 @@ import asyncio
 import struct
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import ClassVar, TYPE_CHECKING
 
 import pytest
 
@@ -1023,6 +1023,9 @@ class _GuardedUdpTransport:
     window (a separate task cannot be timed into it — the runtime's
     pre-send check and this guard run in one event-loop slice).
     """
+
+    #: The LAN transport's ingress-order contract (MOR-4209).
+    ordered_ingress: ClassVar[bool] = IcomTransport.ordered_ingress
 
     def __init__(self) -> None:
         self.my_id = 0x00010001

@@ -9,6 +9,7 @@ import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from 
 import { fetchCapabilities } from './http-client';
 import { authenticatedWsUrl, withoutWsAuthToken, withWsSearchParam } from './ws-url';
 import { controllerClient, ControllerClientError } from './controller-client';
+import { applyStateDelta, stateDeltaOps } from './state-delta';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -1048,20 +1049,20 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     return commitCurrentState() ? _fullState : null;
   }
 
-  if (!isRecord(envelope.changed)) return null;
-  if (envelope.removed !== undefined && (!Array.isArray(envelope.removed) || !envelope.removed.every((key) => typeof key === 'string'))) return null;
+  const ops = stateDeltaOps(envelope);
+  if (!ops) return null;
+  const epochKeys = ['stateContractVersion', 'providerGeneration'];
   if (
-    (envelope.changed.stateContractVersion !== undefined && envelope.changed.stateContractVersion !== 1)
-    || (envelope.changed.providerGeneration !== undefined && envelope.changed.providerGeneration !== generation)
-    || (envelope.removed ?? []).includes('stateContractVersion')
-    || (envelope.removed ?? []).includes('providerGeneration')
+    ops.unset.some((path) => epochKeys.includes(path[0]))
+    || ops.set.some(([path, value]) => (
+      (path[0] === 'stateContractVersion' && (path.length > 1 || value !== 1))
+      || (path[0] === 'providerGeneration' && (path.length > 1 || value !== generation))
+    ))
   ) return null;
-  const changed = envelope.changed;
-  const removed = (envelope.removed ?? []) as string[];
   const currentState = _fullState;
-  const candidate = currentState ? { ...currentState, ...changed } : null;
+  const candidate = currentState ? applyStateDelta(currentState, ops) : null;
+  if (currentState && !candidate) return null;
   if (candidate) {
-    for (const key of removed) delete candidate[key];
     syncEnvelopeRevisions(candidate, envelope);
     if (!isValidServerState(candidate)) {
       console.error('[rigplane] state: rejected a delta state envelope that failed contract validation');
@@ -1115,7 +1116,8 @@ _ctrl.onMessage((msg) => {
 });
 
 export function connect(url: string = '/api/v1/ws') {
-  _ctrl.connect(url);
+  // MOR-4206: ask for leaf deltas (`StateUpdateEnvelope.deltaVersion` 2).
+  _ctrl.connect(withWsSearchParam(url, 'state_delta', '2'));
 }
 
 /** Send a raw JSON message (e.g. subscribe) and register it for re-send on reconnect. */

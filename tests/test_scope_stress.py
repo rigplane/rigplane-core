@@ -9,10 +9,11 @@ Uses mock transport and scope helpers; no real hardware.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import ClassVar, TYPE_CHECKING
 
 import pytest
 
+from rigplane.core.transport import IcomTransport
 from rigplane import IC_7610_ADDR
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.radio import IcomRadio
@@ -64,6 +65,9 @@ def _scope_civ_frame(receiver: int, payload_after_receiver: bytes) -> bytes:
 
 class MockTransport:
     """Minimal mock transport: queue responses for receive_packet."""
+
+    #: The LAN transport's ingress-order contract (MOR-4209).
+    ordered_ingress: ClassVar[bool] = IcomTransport.ordered_ingress
 
     def __init__(self) -> None:
         self._responses: asyncio.Queue[bytes] = asyncio.Queue()

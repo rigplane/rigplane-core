@@ -858,6 +858,30 @@ def test_snapshot_output_cannot_mutate_store_owned_state() -> None:
     assert store.snapshot().field(path).value == {"nested": ["initial"]}
 
 
+def test_field_reads_one_field_as_the_snapshot_projects_it() -> None:
+    """MOR-4211: ``StateStore.field`` equals ``snapshot().field`` for one path."""
+    store = StateStore()
+    path = FieldPath.global_("health", "state")
+    other = FieldPath.global_("tx_state", "ptt")
+    store.apply(_observation(path, {"nested": ["initial"]}, at=1.0, max_age=5.0))
+    store.apply(_observation(other, False, at=2.0))
+
+    assert store.field(path) == store.snapshot().field(path)
+    assert store.field(str(other)) == store.snapshot().field(other)
+    with pytest.raises(KeyError):
+        store.field(FieldPath.global_("tx_state", "split"))
+
+
+def test_field_output_cannot_mutate_store_owned_state() -> None:
+    store = StateStore()
+    path = FieldPath.global_("health", "state")
+    store.apply(_observation(path, {"nested": ["initial"]}, at=1.0))
+
+    store.field(path).value["nested"].append("field")
+
+    assert store.field(path).value == {"nested": ["initial"]}
+
+
 def test_returned_changes_cannot_mutate_delta_history() -> None:
     store = StateStore()
     path = FieldPath.global_("health", "state")

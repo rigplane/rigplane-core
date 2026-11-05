@@ -169,6 +169,24 @@ def _strip_property_titles(node: object) -> None:
             _strip_property_titles(item)
 
 
+def _prefix_items_as_tuple_items(node: object) -> None:
+    """Rewrite pydantic's tuple ``prefixItems`` as the ``items`` list json2ts reads.
+
+    pydantic emits a fixed tuple (``tuple[list[str], object]``) as draft
+    2020-12 ``prefixItems``, which json2ts ignores, leaving ``[unknown,
+    unknown]``. The same tuple as an ``items`` list keeps each member's type.
+    """
+    if isinstance(node, dict):
+        prefix_items = node.pop("prefixItems", None)
+        if prefix_items is not None:
+            node["items"] = prefix_items
+        for value in node.values():
+            _prefix_items_as_tuple_items(value)
+    elif isinstance(node, list):
+        for item in node:
+            _prefix_items_as_tuple_items(item)
+
+
 def _combined_schema() -> dict[str, object]:
     """Build one JSON-Schema document holding every model as a shared ``$defs``.
 
@@ -201,6 +219,7 @@ def _combined_schema() -> dict[str, object]:
 
 def _run_json2ts(schema: dict[str, object]) -> str:
     _strip_property_titles(schema)
+    _prefix_items_as_tuple_items(schema)
     with tempfile.NamedTemporaryFile(
         "w", suffix=".json", delete=False, encoding="utf-8"
     ) as handle:

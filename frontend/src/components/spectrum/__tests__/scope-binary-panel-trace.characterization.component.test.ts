@@ -52,14 +52,6 @@ function channel() {
   };
 }
 
-// A valid scope frame with an arbitrary wire sequence (uint16 LE at
-// offset 11), used for pre-trace warm-up deliveries.
-function warmFrame(wireSequence: number): string {
-  const wire = [wireSequence & 0xff, wireSequence >> 8]
-    .map((byte) => byte.toString(16).padStart(2, '0')).join('');
-  return `010000809fd5002026d700${wire}0003000080ff`;
-}
-
 describe('binary → actual controller → actual panel → actual canvases', () => {
   it.each([
     ['hardware', 'ordinary', false], ['hardware', 'ordinary', true],
@@ -109,17 +101,11 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       // Literal Python-encoder golden: seed connection liveness before opt-in.
       transport.receive('010000809fd5002026d700ff000003000080ff');
       flushSync(); drawPending();
-      // MOR-3471: warm the waterfall freshness gate to steady painting
-      // (the fresh gate paints its first delivery and the first
-      // live-spaced delivery latches steady painting) so trace-window
-      // frames paint on their own spacing merit. Pre-trace warm-ups are
-      // invisible to the trace but shift the controller's accepted-sequence
-      // counter: trace-window frames below are accepted 7, 8, 9.
-      for (let warm = 0; warm < 5; warm += 1) {
-        now += 83;
-        transport.receive(warmFrame(100 + warm));
-        flushSync(); drawPending();
-      }
+      // MOR-4206: no warm-up — backlog handling is consolidated into the
+      // waterfall's rAF pump, so the trace window below starts on a FRESH
+      // registration and every delivery reaches the pump unfiltered. The
+      // seed delivery is the controller's first acceptance, so the
+      // trace-window frames below are accepted 2, 3, 4.
       expect(channelFactory).toHaveBeenCalledWith(source === 'audio_fft' ? 'audio-scope' : 'scope');
       if (mode === 'disabled') {
         expect(button('Start trace')).toBeUndefined();
@@ -179,26 +165,34 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         ]);
         for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push']) {
           expect(events(stage)).toMatchObject([
-            { atMs: 10, source, wireSequence: 65535, acceptedSequence: 7, document: { hidden: false } },
-            { atMs: mode === 'continued-hidden' ? 40 : 540, source, wireSequence: 0, acceptedSequence: 8,
+            { atMs: 10, source, wireSequence: 65535, acceptedSequence: 2, document: { hidden: false } },
+            { atMs: mode === 'continued-hidden' ? 40 : 540, source, wireSequence: 0, acceptedSequence: 3,
               document: { hidden: mode === 'continued-hidden' } },
-            { atMs: 540, source, wireSequence: 1, acceptedSequence: 9, document: { hidden: false, hasFocus: false } },
+            { atMs: 540, source, wireSequence: 1, acceptedSequence: 4, document: { hidden: false, hasFocus: false } },
           ]);
         }
-        // MOR-3471 freshness gate: with the gate warmed to steady
-        // painting, painting keeps the original characterization. In
-        // continued-hidden only seq 8 is withheld (delivered while
-        // hidden); in deferred-return all three paint (visible,
-        // live-spaced once the gap resolves).
+        // MOR-4206 rAF coalescing, consolidated: every visible delivery
+        // reaches the waterfall pump unfiltered (no spacing gate upstream),
+        // and the pump paints the latest frame per rAF, tracing the
+        // dropped stale one as `coalesced`. In continued-hidden seq 3 is
+        // withheld (delivered while hidden, never reaches the pump); in
+        // deferred-return seq 3 and seq 4 land in the same task after the
+        // gap resolves, so the pump paints only seq 4 and drops seq 3.
         expect(events('waterfall_push').map((e: { acceptedSequence: number }) => e.acceptedSequence))
-          .toEqual(mode === 'continued-hidden' ? [7, 9] : [7, 8, 9]);
+          .toEqual([2, 4]);
         for (const stage of ['raf', 'spectrum_render']) {
           expect(events(stage)).toMatchObject([
-            { atMs: 10, wireSequence: 65535, acceptedSequence: 7 },
-            { atMs: 550, wireSequence: 1, acceptedSequence: 9, document: { hidden: false } },
+            { atMs: 10, wireSequence: 65535, acceptedSequence: 2 },
+            { atMs: 550, wireSequence: 1, acceptedSequence: 4, document: { hidden: false } },
           ]);
         }
-        expect(events('coalesced')).toEqual([]);
+        if (mode === 'deferred-return') {
+          // The waterfall pump's latest-wins drop of seq 3; the spectrum
+          // side stays silent — its scheduling is suppressed while hidden.
+          expect(events('coalesced')).toMatchObject([{ wireSequence: 0, acceptedSequence: 3 }]);
+        } else {
+          expect(events('coalesced')).toEqual([]);
+        }
         expect(report.timeline.every((e: { document?: unknown }) => e.document !== undefined)).toBe(true);
         return;
       }
@@ -213,15 +207,18 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         expect(report.timeline.filter((e: { stage: string }) => e.stage === stage)
           .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535, 0]);
       }
-      // The gate is warmed to steady painting before the trace, so the
-      // back-to-back pair stays below the discontinuity threshold and
-      // both rows paint (status quo for sub-threshold spacing).
+      // Fresh registration, no spacing gate upstream (MOR-4206): both
+      // frames land inside one rAF window and reach the pump unfiltered,
+      // so the waterfall pump paints only the LATEST row and traces the
+      // dropped one as `coalesced` — one waterfall_push for the pair, two
+      // coalesced records (the spectrum's rAF coalescing and the waterfall
+      // pump's drop), both naming the first frame.
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'waterfall_push')
-        .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535, 0]);
+        .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([0]);
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'spectrum_render'))
-        .toMatchObject([{ wireSequence: 0, acceptedSequence: 8, transportEpoch: 1 }]);
+        .toMatchObject([{ wireSequence: 0, acceptedSequence: 3, transportEpoch: 1 }]);
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'coalesced'))
-        .toMatchObject([{ wireSequence: 65535, acceptedSequence: 7 }]);
+        .toMatchObject([{ wireSequence: 65535, acceptedSequence: 2 }, { wireSequence: 65535, acceptedSequence: 2 }]);
       expect(report.reason).toBe('operator');
       expect(report.timelineOverflow).toBe(false);
       if (exportThrows) expect(target.textContent).toContain('Trace export callback failed');
