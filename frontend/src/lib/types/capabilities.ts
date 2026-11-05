@@ -694,6 +694,10 @@ export function validateCapabilities(value: unknown): Capabilities {
   if (raw.receivers !== expectedReceivers) {
     invalid('$.vfoScheme', `${String(raw.vfoScheme)} with receivers=${expectedReceivers}`);
   }
+  if (Object.prototype.hasOwnProperty.call(raw, 'rxAudioLevelMenu')
+    && raw.rxAudioLevelMenu !== null && typeof raw.rxAudioLevelMenu !== 'string') {
+    invalid('$.rxAudioLevelMenu', 'a string or null');
+  }
   if (Object.prototype.hasOwnProperty.call(raw, 'vfoReadback')) {
     const readbacks: readonly VfoReadback[] = ['absolute', 'selected_unselected', 'none'];
     if (!readbacks.includes(raw.vfoReadback as VfoReadback)) {

@@ -5139,6 +5139,7 @@ class WebServer:
                     # leaving ``power_on`` undeclared (a level-only profile, see
                     # ``RadioProfile.infers_power_on_from_liveness``).
                     "powerOnCommand": profile.supports_command("power_on"),
+                    "rxAudioLevelMenu": profile.rx_audio_level_menu,
                     "cwText": _serialize_cw_text(profile, self._radio),
                     "vfoScheme": profile.vfo_scheme,
                     "vfoReadback": profile.vfo_readback,
