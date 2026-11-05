@@ -874,23 +874,26 @@ class StateStore:
             generated_at_monotonic=self._freshness_clock.now(),
             provider_generation=self._provider_generation,
             fields=tuple(
-                FieldSnapshot(
-                    path=path,
-                    value=_copy_value(entry.value),
-                    freshness=entry.freshness,
-                    last_observed_monotonic=entry.last_observed_monotonic,
-                    max_age=entry.max_age,
-                    source=entry.source,
-                    quality=entry.quality,
-                    provider_generation=entry.provider_generation,
-                    clock_domain=entry.clock_domain,
-                )
+                _field_snapshot(path, entry)
                 for path, entry in sorted(
                     self._entries.items(),
                     key=lambda item: str(item[0]),
                 )
             ),
         )
+
+    def field(self, path: FieldPath | str) -> FieldSnapshot:
+        """Return one field as :meth:`snapshot` projects it; ``KeyError`` if absent.
+
+        Reads one entry instead of copying every field, for callers that need
+        a single path.
+        """
+
+        needle = FieldPath.parse(path) if isinstance(path, str) else path
+        entry = self._entries.get(needle)
+        if entry is None:
+            raise KeyError(str(needle))
+        return _field_snapshot(needle, entry)
 
     def delta_since(self, snapshot: StateSnapshot) -> SnapshotDelta:
         """Return all semantic and freshness deltas after ``snapshot``."""
@@ -1023,6 +1026,20 @@ class StateStore:
 
 def _copy_value(value: Any) -> Any:
     return copy.deepcopy(value)
+
+
+def _field_snapshot(path: FieldPath, entry: _FieldEntry) -> FieldSnapshot:
+    return FieldSnapshot(
+        path=path,
+        value=_copy_value(entry.value),
+        freshness=entry.freshness,
+        last_observed_monotonic=entry.last_observed_monotonic,
+        max_age=entry.max_age,
+        source=entry.source,
+        quality=entry.quality,
+        provider_generation=entry.provider_generation,
+        clock_domain=entry.clock_domain,
+    )
 
 
 def _copy_changes(changes: tuple[FieldChange, ...]) -> tuple[FieldChange, ...]:
