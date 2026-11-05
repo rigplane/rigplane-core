@@ -112,6 +112,7 @@ async def clocked_rx(
     server = MockIcomRadio(enable_audio=True, rx_source=WavSource(wav))
     await server.start()
     client = await _udp()
+    client.expect_from(server.audio_port)  # the tests start the RX stream directly
     clock = _AudioClock()
     clock.install(monkeypatch)
     try:
@@ -351,6 +352,7 @@ async def test_pending_pcm_is_invalidated_on_reopen_or_retarget(
 ) -> None:
     server, old_client, clock, raw = clocked_rx
     new_client = await _udp()
+    new_client.expect_from(server.audio_port)
     try:
         assert old_client.transport is not None
         assert new_client.transport is not None

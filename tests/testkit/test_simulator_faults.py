@@ -32,32 +32,34 @@ _ERR_PREV_SESSION_ACTIVE = 0xFFFFFFFF
 
 
 class _UdpClient(asyncio.DatagramProtocol):
-    """Bare datagram client: everything received lands in ``queue``.
+    """Bare datagram client: what the ports it talks to send lands in ``queue``.
 
-    ``recv_from(port)`` reads only what one sender port sent: under xdist a
-    simulator in another worker can still be streaming audio to a client
-    port this client was given again after its owner closed it.
+    A datagram from any other port is dropped: under xdist a simulator in
+    another worker can still be sending (retransmit rounds to a client it
+    let die, an audio stream) to a client port the OS handed this client
+    again. A port counts once ``send`` addressed it, or ``expect_from``
+    names it for a stream the simulator starts on its own.
     """
 
     def __init__(self) -> None:
         self.queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.transport: asyncio.DatagramTransport | None = None
-        self._by_sender: dict[int, asyncio.Queue[bytes]] = {}
+        self._peers: set[int] = set()
 
     def connection_made(self, transport) -> None:  # type: ignore[override]
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr) -> None:
-        self.queue.put_nowait(data)
-        self._by_sender.setdefault(addr[1], asyncio.Queue()).put_nowait(data)
+        if addr[0] == _HOST and addr[1] in self._peers:
+            self.queue.put_nowait(data)
 
-    async def recv_from(self, port: int, timeout: float = 2.0) -> bytes:
-        """The next datagram that sender ``port`` sent."""
-        queue = self._by_sender.setdefault(port, asyncio.Queue())
-        return await asyncio.wait_for(queue.get(), timeout)
+    def expect_from(self, port: int) -> None:
+        """Accept datagrams from ``port`` without sending to it first."""
+        self._peers.add(port)
 
     def send(self, data: bytes, port: int) -> None:
         assert self.transport is not None
+        self._peers.add(port)
         self.transport.sendto(data, (_HOST, port))
 
     async def recv(self, timeout: float = 2.0) -> bytes:
@@ -260,10 +262,8 @@ async def test_duplicate_sends_two_identical_copies(server, client):
     )
     request = _freq_get()
     client.send(request, server.civ_port)
-    # Read the CI-V port only: "the next datagram" from any sender can be a
-    # stray audio packet from another worker's simulator (see _UdpClient).
-    first = await client.recv_from(server.civ_port)
-    second = await client.recv_from(server.civ_port)
+    first = await _recv_reply(client, request)
+    second = await client.recv()
     assert _is_freq_reply(first)
     assert first == second
 
