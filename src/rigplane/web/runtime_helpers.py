@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import functools
 import time
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import replace
@@ -423,25 +424,22 @@ def _observed_field_status(field: FieldSnapshot) -> dict[str, Any]:
 
 
 def _set_missing_field_status(
-    statuses: dict[str, dict[str, Any]],
+    statuses: dict[str, FieldPath],
     public_path: str,
     path: FieldPath,
-    absence: Callable[[FieldPath], str],
 ) -> None:
-    statuses.setdefault(public_path, _missing_field_status(path, absence(path)))
+    statuses.setdefault(public_path, path)
 
 
 def _default_receiver_field_status(
-    statuses: dict[str, dict[str, Any]],
+    statuses: dict[str, FieldPath],
     receiver_key: str,
-    absence: Callable[[FieldPath], str],
 ) -> None:
     for name, state_key in _RECEIVER_FREQ_MODE_FIELDS.items():
         _set_missing_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(state_key)),
             FieldPath.active(receiver_key, "freq_mode", name),
-            absence,
         )
     for slot_name, slot_key in (("A", "vfoA"), ("B", "vfoB")):
         for name, state_key in _VFO_SLOT_FIELDS.items():
@@ -453,7 +451,6 @@ def _default_receiver_field_status(
                     _receiver_public_key(state_key),
                 ),
                 FieldPath.vfo_slot(receiver_key, slot_name, "freq_mode", name),
-                absence,
             )
     for name, state_key in _VFO_SLOT_FIELDS.items():
         _set_missing_field_status(
@@ -464,33 +461,28 @@ def _default_receiver_field_status(
                 _receiver_public_key(state_key),
             ),
             FieldPath.unselected(receiver_key, "freq_mode", name),
-            absence,
         )
     _set_missing_field_status(
         statuses,
         _public_field_path(receiver_key, "activeSlot"),
         FieldPath.active_slot(receiver_key),
-        absence,
     )
     _set_missing_field_status(
         statuses,
         _public_field_path(receiver_key, "sMeter"),
         FieldPath.receiver(receiver_key, "meters", "s_meter"),
-        absence,
     )
     for name in _RECEIVER_OPERATOR_CONTROL_FIELDS:
         _set_missing_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(name)),
             FieldPath.receiver(receiver_key, "operator_controls", name),
-            absence,
         )
     for name in _RECEIVER_OPERATOR_TOGGLE_FIELDS:
         _set_missing_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(name)),
             FieldPath.receiver(receiver_key, "operator_toggles", name),
-            absence,
         )
         if name == "dcd":
             # DEPRECATED alias (MOR-466): remove after migration window. Seed the
@@ -501,7 +493,6 @@ def _default_receiver_field_status(
                 statuses,
                 _public_field_path(receiver_key, "sMeterSqlOpen"),
                 FieldPath.receiver(receiver_key, "operator_toggles", "dcd"),
-                absence,
             )
     for name in _RECEIVER_SLOW_STATE_FIELDS:
         if name in {"vfo_a", "vfo_b"}:
@@ -514,38 +505,38 @@ def _default_receiver_field_status(
             statuses,
             _public_field_path(receiver_key, _receiver_public_key(name)),
             FieldPath.receiver(receiver_key, "slow_state", name),
-            absence,
         )
 
 
-def _default_snapshot_field_status(
-    receiver_count: int,
-    absence: Callable[[FieldPath], str],
-) -> dict[str, dict[str, Any]]:
-    statuses: dict[str, dict[str, Any]] = {}
-    _default_receiver_field_status(statuses, "main", absence)
+@functools.lru_cache(maxsize=4)
+def _field_status_seeds(receiver_count: int) -> tuple[tuple[str, FieldPath], ...]:
+    """Every public path seeded as unobserved, with its store path, in order.
+
+    The list depends only on the receiver count, so it is built once
+    (MOR-4212); ``_default_snapshot_field_status`` fills in the absence.
+    """
+
+    statuses: dict[str, FieldPath] = {}
+    _default_receiver_field_status(statuses, "main")
     if receiver_count >= 2:
-        _default_receiver_field_status(statuses, "sub", absence)
+        _default_receiver_field_status(statuses, "sub")
     for name in _GLOBAL_TX_FIELDS:
         _set_missing_field_status(
             statuses,
             _to_camel(name),
             FieldPath.global_("tx_state", name),
-            absence,
         )
     for name in _GLOBAL_OPERATOR_CONTROL_FIELDS:
         _set_missing_field_status(
             statuses,
             _to_camel(name),
             FieldPath.global_("operator_controls", name),
-            absence,
         )
     for name in _GLOBAL_METER_FIELDS:
         _set_missing_field_status(
             statuses,
             _to_camel(f"{name}_meter"),
             FieldPath.global_("meters", name),
-            absence,
         )
     for name in _GLOBAL_SLOW_STATE_FIELDS:
         if name == "scope_controls":
@@ -561,7 +552,6 @@ def _default_snapshot_field_status(
             statuses,
             _to_camel(name),
             FieldPath.global_("slow_state", name),
-            absence,
         )
     # PR-A compatibility fallback: until PR B publishes lifecycle observations,
     # an empty snapshot keeps the legacy alias seed. An observed canonical
@@ -570,16 +560,24 @@ def _default_snapshot_field_status(
         statuses,
         "vfoSelect",
         FieldPath.global_("slow_state", "vfo_select"),
-        absence,
     )
     for public_suffix, control_name in _SCOPE_CONTROL_PUBLIC_FIELDS.items():
         _set_missing_field_status(
             statuses,
             f"scopeControls.{public_suffix}",
             FieldPath.scope_control("display", control_name),
-            absence,
         )
-    return statuses
+    return tuple(statuses.items())
+
+
+def _default_snapshot_field_status(
+    receiver_count: int,
+    absence: Callable[[FieldPath], str],
+) -> dict[str, dict[str, Any]]:
+    return {
+        public_path: _missing_field_status(path, absence(path))
+        for public_path, path in _field_status_seeds(receiver_count)
+    }
 
 
 def _build_snapshot_field_status(
@@ -1152,6 +1150,7 @@ def _radio_infers_power_on_from_liveness(radio: "Radio | None") -> bool:
     return getattr(profile, "infers_power_on_from_liveness", False) is True
 
 
+@functools.lru_cache(maxsize=4096)
 def _to_camel(s: str) -> str:
     parts = s.split("_")
     return parts[0] + "".join(p.capitalize() for p in parts[1:])
@@ -1554,7 +1553,11 @@ def _build_public_state_payload_from_dict(
     health_revision: int = 0,
     monitor_mute: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    state = copy.deepcopy(state)
+    """Build the public payload from ``state``, which it takes over and edits.
+
+    Callers pass a dict of their own: the snapshot projection builds a new
+    one per call, so it is not deep-copied again here (MOR-4212).
+    """
     for receiver in (state.get("main"), state.get("sub")):
         if not isinstance(receiver, dict):
             continue
@@ -1717,7 +1720,7 @@ def build_public_state_payload(
     should be derived here.
     """
     return _build_public_state_payload_from_dict(
-        radio_state.to_dict(),
+        copy.deepcopy(radio_state.to_dict()),
         radio=radio,
         revision=revision,
         state_revision=revision if state_revision is None else state_revision,

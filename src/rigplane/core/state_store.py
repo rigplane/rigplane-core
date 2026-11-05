@@ -8,7 +8,9 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
-from enum import StrEnum
+from dataclasses import field as dataclass_field
+from dataclasses import fields as dataclass_fields
+from enum import Enum, StrEnum
 from typing import Any
 
 from rigplane.core.state_pipeline_contracts import (
@@ -123,6 +125,10 @@ class StateSnapshot:
     generated_at_monotonic: float
     fields: tuple[FieldSnapshot, ...]
     provider_generation: int = 0
+    # Path index for field(), built on first lookup; replace() starts it over.
+    _by_path: dict[FieldPath, FieldSnapshot] | None = dataclass_field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def empty(cls) -> StateSnapshot:
@@ -137,10 +143,16 @@ class StateSnapshot:
 
     def field(self, path: FieldPath | str) -> FieldSnapshot:
         needle = FieldPath.parse(path) if isinstance(path, str) else path
-        for field in self.fields:
-            if field.path == needle:
-                return field
-        raise KeyError(str(needle))
+        index = self._by_path
+        if index is None:
+            index = {}
+            for item in self.fields:
+                index.setdefault(item.path, item)
+            object.__setattr__(self, "_by_path", index)
+        found = index.get(needle)
+        if found is None:
+            raise KeyError(str(needle))
+        return found
 
     def as_dict(self) -> dict[str, dict[str, Any]]:
         return {str(field.path): field.to_dict() for field in self.fields}
@@ -198,6 +210,10 @@ class _FieldEntry:
     quality: tuple[str, ...]
     provider_generation: int
     clock_domain: str | None
+    # This entry as snapshot() projects it, shared by every snapshot until the
+    # entry changes (MOR-4212). Never set for a mutable value: that one is
+    # still copied per snapshot.
+    projected: FieldSnapshot | None = None
 
 
 @dataclass(slots=True)
@@ -261,6 +277,8 @@ class StateStore:
         "_history_floor_state_revision",
         "_max_history_count",
         "_observation_seq",
+        "_ordered_paths",
+        "_projected_fields",
         "_provider_generation_notifications",
         "_provider_generation_notifying",
         "_provider_generation_subscribers",
@@ -290,6 +308,11 @@ class StateStore:
         self._provider_generation_notifying = False
         self._relative_vfo_retention: _RelativeVfoRetention | None = None
         self._entries: dict[FieldPath, _FieldEntry] = {}
+        # Snapshot caches (MOR-4212): the entry paths in snapshot order, and
+        # the projected fields while every value is shareable. Every entry
+        # write goes through _entry_changed / _paths_changed.
+        self._ordered_paths: tuple[FieldPath, ...] | None = None
+        self._projected_fields: tuple[FieldSnapshot, ...] | None = None
         self._history: list[SnapshotDelta] = []
         self._history_floor_state_revision = 0
         self._history_floor_freshness_revision = 0
@@ -315,6 +338,7 @@ class StateStore:
             )
         )
         self._entries.clear()
+        self._paths_changed()
         if removed:
             self._state_revision += 1
             self._append_history(
@@ -417,6 +441,10 @@ class StateStore:
         else:
             changes = ()
 
+        if previous_entry is None:
+            self._paths_changed()
+        else:
+            self._entry_changed(previous_entry)
         self._entries[observation.path] = _FieldEntry(
             value=_copy_value(observation.value),
             freshness=FreshnessState.FRESH,
@@ -624,6 +652,7 @@ class StateStore:
                 entry = self._entries.get(path)
                 if entry is not None:
                     entry.max_age = retention.expires_at - entry.last_observed_monotonic
+                    self._entry_changed(entry)
                 alias_path = self._bound_relative_vfo_alias_path(path)
                 alias_entry = (
                     None if alias_path is None else self._entries.get(alias_path)
@@ -632,6 +661,7 @@ class StateStore:
                     alias_entry.max_age = (
                         retention.expires_at - alias_entry.last_observed_monotonic
                     )
+                    self._entry_changed(alias_entry)
 
         retention.pending.clear()
         return self._merge_changesets(changesets)
@@ -778,6 +808,7 @@ class StateStore:
             entry = self._entries.pop(path, None)
             if entry is None:
                 continue
+            self._paths_changed()
             removed.append(
                 FieldChange(
                     path=path,
@@ -817,7 +848,8 @@ class StateStore:
         transitions: list[FreshnessTransition] = []
         requests: list[ReconciliationRequest] = []
         relative_due = set(self._expire_relative_vfo(now=timestamp))
-        for path, entry in sorted(self._entries.items(), key=lambda item: str(item[0])):
+        for path in self._paths_in_order():
+            entry = self._entries[path]
             if entry.freshness is not FreshnessState.FRESH:
                 continue
             if path not in relative_due:
@@ -828,6 +860,7 @@ class StateStore:
 
             self._freshness_revision += 1
             entry.freshness = FreshnessState.STALE
+            self._entry_changed(entry)
             transition = FreshnessTransition(
                 path=path,
                 previous=FreshnessState.FRESH,
@@ -865,7 +898,12 @@ class StateStore:
         return delta
 
     def snapshot(self) -> StateSnapshot:
-        """Return a full immutable projection of the current store state."""
+        """Return a full immutable projection of the current store state.
+
+        Only fields written since the previous snapshot are projected again;
+        an unchanged field is the same immutable ``FieldSnapshot`` object in
+        both (MOR-4212). A mutable value is still copied per snapshot.
+        """
 
         return StateSnapshot(
             state_revision=self._state_revision,
@@ -873,14 +911,39 @@ class StateStore:
             observation_seq=self._observation_seq,
             generated_at_monotonic=self._freshness_clock.now(),
             provider_generation=self._provider_generation,
-            fields=tuple(
-                _field_snapshot(path, entry)
-                for path, entry in sorted(
-                    self._entries.items(),
-                    key=lambda item: str(item[0]),
-                )
-            ),
+            fields=self._snapshot_fields(),
         )
+
+    def _snapshot_fields(self) -> tuple[FieldSnapshot, ...]:
+        cached = self._projected_fields
+        if cached is not None:
+            return cached
+        shared = True
+        projected: list[FieldSnapshot] = []
+        for path in self._paths_in_order():
+            entry = self._entries[path]
+            item = _projected_field(path, entry)
+            shared = shared and item is entry.projected
+            projected.append(item)
+        result = tuple(projected)
+        if shared:
+            self._projected_fields = result
+        return result
+
+    def _paths_in_order(self) -> tuple[FieldPath, ...]:
+        paths = self._ordered_paths
+        if paths is None:
+            paths = tuple(sorted(self._entries, key=str))
+            self._ordered_paths = paths
+        return paths
+
+    def _entry_changed(self, entry: _FieldEntry) -> None:
+        entry.projected = None
+        self._projected_fields = None
+
+    def _paths_changed(self) -> None:
+        self._ordered_paths = None
+        self._projected_fields = None
 
     def field(self, path: FieldPath | str) -> FieldSnapshot:
         """Return one field as :meth:`snapshot` projects it; ``KeyError`` if absent.
@@ -893,7 +956,7 @@ class StateStore:
         entry = self._entries.get(needle)
         if entry is None:
             raise KeyError(str(needle))
-        return _field_snapshot(needle, entry)
+        return _projected_field(needle, entry)
 
     def delta_since(self, snapshot: StateSnapshot) -> SnapshotDelta:
         """Return all semantic and freshness deltas after ``snapshot``."""
@@ -1026,6 +1089,35 @@ class StateStore:
 
 def _copy_value(value: Any) -> Any:
     return copy.deepcopy(value)
+
+
+_IMMUTABLE_LEAVES = (type(None), bool, int, float, complex, str, bytes, Enum)
+
+
+def _is_immutable(value: Any) -> bool:
+    """True when nothing reachable from ``value`` can be changed in place."""
+
+    if isinstance(value, _IMMUTABLE_LEAVES):
+        return True
+    if isinstance(value, (tuple, frozenset)):
+        return all(_is_immutable(item) for item in value)
+    params = getattr(type(value), "__dataclass_params__", None)
+    if params is not None and params.frozen:
+        return all(
+            _is_immutable(getattr(value, item.name)) for item in dataclass_fields(value)
+        )
+    return False
+
+
+def _projected_field(path: FieldPath, entry: _FieldEntry) -> FieldSnapshot:
+    """``entry`` as a snapshot projects it, kept on the entry when shareable."""
+
+    projected = entry.projected
+    if projected is None:
+        projected = _field_snapshot(path, entry)
+        if _is_immutable(entry.value):
+            entry.projected = projected
+    return projected
 
 
 def _field_snapshot(path: FieldPath, entry: _FieldEntry) -> FieldSnapshot:
