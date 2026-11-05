@@ -2159,10 +2159,32 @@ class TestStartupBusyLiveHolder:
             first_owner = sim.owner
             logins_before = sim.login_count
             busy_before = sim.busy_rejects
+            # The live-holder rule compares attempt start times, and on the
+            # wall clock a slow login (a loaded host) pushes the third start
+            # past +1.5 s. The lifecycle's own clock and cooldown sleep run on
+            # a virtual clock that moves only by the cooldowns, so the starts
+            # are exactly +0/+0.5/+1.0/+1.5 s; the sockets stay real.
+            lifecycle_clock = _VirtualMonotonic()
+
+            class _LifecycleAsyncio:
+                def __getattr__(self, name: str) -> object:
+                    return getattr(asyncio, name)
+
+                async def sleep(self, seconds: float) -> None:
+                    lifecycle_clock.advance(seconds)
+                    await asyncio.sleep(0)
+
             with (
                 patch.object(ControlPhaseRuntime, "_STATUS_REJECT_COOLDOWN", 0.5),
                 patch.object(
                     ControlPhaseRuntime, "STARTUP_BUSY_LIVE_HOLDER_AFTER_S", 1.5
+                ),
+                patch(
+                    "rigplane.runtime.session_lifecycle.time",
+                    SimpleNamespace(monotonic=lifecycle_clock.monotonic),
+                ),
+                patch(
+                    "rigplane.runtime.session_lifecycle.asyncio", _LifecycleAsyncio()
                 ),
             ):
                 second = IcomRadio(**self._client_args(sim))  # type: ignore[arg-type]
