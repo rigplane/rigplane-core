@@ -195,6 +195,7 @@ _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
+_SUB_SQUELCH = 0x03
 _SUB_S_METER = 0x02
 _SUB_SWR_METER = 0x12
 _SUB_ALC_METER = 0x13
@@ -568,6 +569,7 @@ class MockIcomRadio(AudioPortMixin):
         # "0F <state>", SET 00/01 ACKs).
         self._split_on: bool = False
         self._power: int = 100  # 0-255 level
+        self._squelch: int = 0  # 0-255 squelch level, 0 = fully open
         self._s_meter: int = 120  # 0-255
         self._swr: int = 10  # 0-255
         self._alc: int = 0
@@ -1408,6 +1410,10 @@ class MockIcomRadio(AudioPortMixin):
     def set_swr(self, value: int) -> None:
         """Set SWR meter readback value (0-255)."""
         self._swr = value
+
+    def set_squelch(self, level: int) -> None:
+        """Set the squelch level read back by CI-V 0x14 0x03 (0-255)."""
+        self._squelch = level
 
     def set_attenuator(self, db: int) -> None:
         """Set attenuator dB value (0, 3, 6, …, 45)."""
@@ -2432,6 +2438,17 @@ class MockIcomRadio(AudioPortMixin):
                         sub=_SUB_RF_POWER,
                         data=_level_bcd_encode(self._power),
                     )
+            if sub == _SUB_SQUELCH:  # 0x03 squelch level (single receiver)
+                if rest:  # set
+                    self._squelch = _bcd_decode_value(rest)
+                    return self._civ_ack(to, frm)
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_LEVEL,
+                    sub=_SUB_SQUELCH,
+                    data=_level_bcd_encode(self._squelch),
+                )
             return self._civ_nak(to, frm)
 
         # --- Meter (0x15) ---

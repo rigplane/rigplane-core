@@ -444,6 +444,15 @@
     border-radius: 0 2px 2px 0;
     background: var(--v2-accent-cyan, #22d3ee);
   }
+  /* The SQL tag uses the same neutral amber as VfoPanel's lamp (the AGC
+     treatment): the text, and on the phone the lit edge bar. Never red, never
+     the cyan used for the other chips. */
+  .fact[data-indicator-fact='sql'][data-state='on'] {
+    color: var(--dl-vfo-amber-text, var(--dl-vfo-amber, #ffd47a));
+  }
+  [data-indicator-appearance='chips'] .fact[data-indicator-fact='sql'][data-state='on']::before {
+    background: var(--dl-vfo-amber-text, var(--dl-vfo-amber, #ffd47a));
+  }
   /* Owner ruling 2026-09-23: the RFG fact keeps its slot whether or not it
      prints. The widest lit text is `RFG 99%` (7 characters in this mono
      face); the reservation (8, in FACT_SLOT_RESERVATIONS) stays

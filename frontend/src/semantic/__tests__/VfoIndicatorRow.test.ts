@@ -160,6 +160,27 @@ describe('VfoIndicatorRow', () => {
       }
     });
 
+    it('styles the lit SQL tag amber in the row and on the phone, never cyan or red', () => {
+      const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
+      // The text colour, for every appearance that draws the fact.
+      expect(source).toMatch(
+        /\.fact\[data-indicator-fact='sql'\]\[data-state='on'\]\s*\{[^}]*color:\s*var\(--dl-vfo-amber-text/,
+      );
+      // The phone's lit edge bar, which the other chips draw in cyan.
+      expect(source).toMatch(
+        /\[data-indicator-appearance='chips'\] \.fact\[data-indicator-fact='sql'\]\[data-state='on'\]::before\s*\{[^}]*background:\s*var\(--dl-vfo-amber-text/,
+      );
+      // And the rendered tags carry the state those rules key on.
+      const row = render({ indicator: indicator({ squelch: known(40) }) });
+      expect(row.querySelector('[data-indicator-fact="sql"]')?.getAttribute('data-state')).toBe('on');
+      unmount(component!);
+      component = null;
+      const chips = render({ indicator: indicator({ squelch: known(40) }),
+        appearance: 'chips', facts: ['sql'] });
+      expect(chips.querySelector('[data-indicator-appearance="chips"] [data-indicator-fact="sql"]')
+        ?.getAttribute('data-state')).toBe('on');
+    });
+
     it('keeps an empty SQL slot transparent, like the RFG slot', () => {
       const source = readFileSync('src/semantic/VfoIndicatorRow.svelte', 'utf8');
       expect(source).toMatch(
