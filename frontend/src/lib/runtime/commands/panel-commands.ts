@@ -33,6 +33,7 @@ import {
   resolveNrLevelContract,
 } from '$lib/radio/filter-controls';
 import { audioManager } from '$lib/audio/audio-manager';
+import { RX_AF_LEVEL_MAX } from '$lib/audio/rx-player';
 import { adjustTuningStep, getTuningStep } from '$lib/stores/tuning.svelte';
 import { currentControlSessionEpoch, dispatchRadioIntent, isNormalizedLevel } from './radio-intents';
 import { getCommandLifecycles } from '$lib/stores/commands.svelte';
@@ -1231,11 +1232,13 @@ export function makeRxAudioHandlers() {
       }
     },
     onAfLevelChange: (level: number) => {
-      if (!isNormalizedLevel(level)) return;
       if (runtime.rxEnabled) {
+        // MOR-4210: the browser AF level goes above 1 into makeup gain.
+        if (!Number.isFinite(level) || level < 0 || level > RX_AF_LEVEL_MAX) return;
         runtime.setRxVolume(level);
         runtime.setVolume(Math.round(level * 100));
       } else {
+        if (!isNormalizedLevel(level)) return;
         const receiver = knownReceiverField('afLevel');
         if (!hasCapability('af_level') || receiver === null) return;
         dispatchRadioIntent({ name: 'set_af_level', params: { level, receiver } });
