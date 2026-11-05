@@ -8,7 +8,7 @@ import logging
 import struct
 import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
@@ -40,6 +40,8 @@ __all__ = [
     "ProbeOptions",
     "ProbeResult",
     "RadioDiscoveryResult",
+    "RadioDiscoveryResultDict",
+    "GroupedRadio",
     "SerialPortCandidate",
     "SetupLanConnection",
     "SetupSerialConnection",
@@ -196,6 +198,45 @@ class RadioDiscoveryResult:
             self.preferred_baudrate is not None
             and self.baudrate < self.preferred_baudrate
         )
+
+    def to_dict(self) -> RadioDiscoveryResultDict:
+        """The result's fields by name: the form discovery output is grouped in."""
+        return cast(RadioDiscoveryResultDict, asdict(self))
+
+
+class RadioDiscoveryResultDict(TypedDict, total=False):
+    """:meth:`RadioDiscoveryResult.to_dict` — one key per result field (MOR-4207).
+
+    The serialized serial result :func:`dedupe_radios` groups and
+    :func:`build_setup_discovery_payload` reads. Keys never drift from the
+    dataclass (``tests/test_discovery_probe_baud_order.py`` pins them).
+    """
+
+    port: str
+    protocol: str
+    model: str
+    profile_id: str
+    baudrate: int
+    address: int | str
+    description: str | None
+    hwid: str | None
+    usb_audio: dict[str, Any] | None
+    vid: int | None
+    pid: int | None
+    manufacturer: str | None
+    product: str | None
+    serial_number: str | None
+    preferred_baudrate: int | None
+    low_baud_hint: str | None
+    low_baud: bool
+
+
+class GroupedRadio(TypedDict):
+    """One radio of :func:`dedupe_radios`: its LAN and serial results."""
+
+    model: object
+    lan: list[dict[str, Any]]
+    serial: list[RadioDiscoveryResultDict]
 
 
 @dataclass
@@ -1448,8 +1489,8 @@ def _resolve_usb_audio_metadata(
 
 
 def dedupe_radios(
-    lan_radios: list[dict[str, Any]], serial_radios: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+    lan_radios: list[dict[str, Any]], serial_radios: list[RadioDiscoveryResultDict]
+) -> list[GroupedRadio]:
     """Group LAN and serial discovery results by radio identity.
 
     Two entries are considered the same radio when their ``model`` **and**
@@ -1458,13 +1499,14 @@ def dedupe_radios(
 
     Args:
         lan_radios: Dicts from :func:`discover_lan_radios`.
-        serial_radios: Dicts from :func:`discover_serial_radios`.
+        serial_radios: :meth:`RadioDiscoveryResult.to_dict` of the
+            :func:`discover_serial_radios` results.
 
     Returns:
         List of dicts, each with keys ``model``, ``lan`` (list), ``serial``
         (list).  ``model`` is the display name of the radio.
     """
-    radios: dict[tuple[object, ...], dict[str, Any]] = {}
+    radios: dict[tuple[object, ...], GroupedRadio] = {}
     _counter = 0
 
     for lan in lan_radios:
@@ -1481,9 +1523,7 @@ def dedupe_radios(
                 "lan": [],
                 "serial": [],
             }
-        cast_list = radios[key]["lan"]
-        assert isinstance(cast_list, list)
-        cast_list.append(lan)
+        radios[key]["lan"].append(lan)
 
     for serial in serial_radios:
         model = serial.get("model")
@@ -1495,9 +1535,7 @@ def dedupe_radios(
             key = (f"__unid_serial_{_counter}",)
         if key not in radios:
             radios[key] = {"model": model or "Unknown", "lan": [], "serial": []}
-        cast_list = radios[key]["serial"]
-        assert isinstance(cast_list, list)
-        cast_list.append(serial)
+        radios[key]["serial"].append(serial)
 
     return list(radios.values())
 
@@ -1545,13 +1583,12 @@ class SetupSerialConnection(TypedDict):
 
 
 def build_setup_discovery_payload(
-    grouped_radios: list[dict[str, Any]],
+    grouped_radios: list[GroupedRadio],
 ) -> dict[str, Any]:
     """Build stable discovery JSON for setup wizards and managed supervisors.
 
-    Serial entries are :class:`RadioDiscoveryResult` field dicts
-    (``dataclasses.asdict``); each connection is a :class:`SetupLanConnection`
-    or :class:`SetupSerialConnection`.
+    Serial entries are :class:`RadioDiscoveryResultDict`; each connection is a
+    :class:`SetupLanConnection` or :class:`SetupSerialConnection`.
     """
     radios: list[dict[str, Any]] = []
     for index, radio in enumerate(grouped_radios, start=1):
@@ -1571,7 +1608,7 @@ def build_setup_discovery_payload(
 
         for serial in radio.get("serial", []):
             port = str(serial.get("port", ""))
-            baudrate = serial.get("baudrate", serial.get("baud"))
+            baudrate = serial.get("baudrate")
             protocol = serial.get("protocol", "civ")
             backend: Literal["serial", "yaesu-cat"] = (
                 "yaesu-cat" if protocol == "yaesu_cat" else "serial"
