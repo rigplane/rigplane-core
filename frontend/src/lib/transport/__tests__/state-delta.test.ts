@@ -77,6 +77,8 @@ describe('applyStateDelta (MOR-4206)', () => {
     expect(stateDeltaOps({ type: 'delta', deltaVersion: 3, set: [] })).toBeNull();
     expect(stateDeltaOps({ type: 'delta', deltaVersion: 2, set: [[[], 1]] })).toBeNull();
     expect(stateDeltaOps({ type: 'delta', deltaVersion: 2, set: [[['a', 1], 1]] })).toBeNull();
+    expect(stateDeltaOps({ type: 'delta', deltaVersion: 2, set: [[42, 1]] })).toBeNull();
+    expect(stateDeltaOps({ type: 'delta', changed: {}, set: [[42, 1]] })).toBeNull();
     expect(stateDeltaOps({ type: 'delta', deltaVersion: 2, set: [], unset: ['a'] })).toBeNull();
     expect(stateDeltaOps({ type: 'delta', changed: [] })).toBeNull();
     expect(stateDeltaOps({ type: 'delta', changed: {}, removed: [1] })).toBeNull();

@@ -25,6 +25,15 @@
  * (the lamp disappears on that surface), or stop the generator from
  * ingesting the polled reply (the Open/Closed payloads read unobserved).
  *
+ * MOR-4206: `polledDcdLeafStreamOpen` is the closed-to-open flip as a control
+ * client that asked for leaf deltas receives it: the baseline
+ * `WebServer.register_control_event_queue(..., leaf_deltas=True)` returns, then
+ * the `deltaVersion: 2` frame the next broadcast queues for it. The Python
+ * counterpart on the same golden is
+ * `tests/web/test_state_wire_goldens.py::test_polled_dcd_leaf_stream_rebuilds_what_the_top_level_delta_rebuilds`.
+ * It turns red when `connect` stops asking for `state_delta=2` or when the
+ * client stops applying `set` operations (the lamp stays dark).
+ *
  * Named `*.isolated.test.ts`: it mocks `http-client` and needs a fresh module
  * graph per test, so the components and the stores share one graph.
  */
@@ -88,6 +97,7 @@ interface GoldenEntry {
   polledDcdOpen?: Record<string, unknown>;
   polledDcdClosed?: Record<string, unknown>;
   polledDcdUnanswered?: Record<string, unknown>;
+  polledDcdLeafStreamOpen?: [Record<string, unknown>, Record<string, unknown>];
 }
 
 const goldens = goldenFile as unknown as Record<string, GoldenEntry>;
@@ -249,5 +259,42 @@ describe('polled squelch-status wire goldens → BUSY lamp', () => {
     expect(mainPanel(await mountDesktop(viewModel)).querySelector('[data-chip="busy"]'))
       .toBeNull();
     expect((await mountMobile()).querySelector('[data-indicator-fact="busy"]')).toBeNull();
+  });
+});
+
+describe('leaf state deltas (MOR-4206) → BUSY lamp', () => {
+  it.each(polledModels)('%s: the client asks for leaf deltas and lights the lamp from one', async (model) => {
+    const entry = goldens[model];
+    const [baseline, leaf] = structuredClone(entry.polledDcdLeafStreamOpen!);
+    const caps = validateCapabilities(structuredClone(entry.polledDcdCapabilities!));
+    fetchCapabilities.mockResolvedValue(caps);
+    const wsClient = await import('$lib/transport/ws-client');
+    loadedWsClient = wsClient;
+    const store = await import('$lib/stores/radio.svelte');
+    const capabilities = await import('$lib/stores/capabilities.svelte');
+    const { toRadioViewModel } = await import('$lib/runtime/adapters/radio-view-model-adapter');
+    expect(capabilities.setCapabilities(caps)).toBe(true);
+
+    wsClient.connect('ws://test/api/v1/ws');
+    expect(new URL(instances[0].url).searchParams.get('state_delta')).toBe('2');
+    instances[0].simulateOpen();
+    instances[0].simulateMessage(JSON.stringify({ type: 'state_update', data: baseline }));
+    const before = store.getRadioState()!;
+    expect(before.main.dcd).toBe(false);
+    instances[0].simulateMessage(JSON.stringify({ type: 'state_update', data: leaf }));
+    const after = store.getRadioState()!;
+
+    expect(after.main.dcd).toBe(true);
+    const touched = new Set((leaf.set as [string[], unknown][])
+      .filter(([path]) => path[0] === 'fieldStatus')
+      .map(([path]) => path[1]));
+    const untouched = Object.keys(before.fieldStatus!).filter((key) => !touched.has(key));
+    expect(untouched.length).toBeGreaterThan(0);
+    for (const key of untouched) expect(after.fieldStatus![key]).toBe(before.fieldStatus![key]);
+    const viewModel = toRadioViewModel(after, capabilities.getCapabilities())!;
+    const main = viewModel.receiverIndicators!.find((rx) => rx.receiver === 'MAIN')!;
+    expect(main.squelchOpen?.reading).toEqual(LAMP.polledDcdOpen.reading);
+    const busy = mainPanel(await mountDesktop(viewModel)).querySelector('[data-chip="busy"]');
+    expect(busy?.getAttribute('data-lit')).toBe(LAMP.polledDcdOpen.lit);
   });
 });

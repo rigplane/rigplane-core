@@ -8,6 +8,7 @@ import json
 from typing import Any
 
 import aiohttp
+import pydantic
 import pytest
 
 from rigplane._bounded_queue import BoundedQueue
@@ -17,7 +18,12 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
-from rigplane.web._delta_encoder import DeltaEncoder, apply_delta, top_level_delta
+from rigplane.web._delta_encoder import (
+    DeltaEncoder,
+    StateUpdateFrame,
+    apply_delta,
+    top_level_delta,
+)
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.state_schema import StateUpdateEnvelope
@@ -77,7 +83,7 @@ class TestDeltaEncoder:
         delta = encoder.encode(state2)
 
         assert delta["type"] == "delta"
-        assert delta["set"] == [[["freq"], 14200100]]
+        assert delta["set"] == [(["freq"], 14200100)]
         assert "unset" not in delta
 
     def test_multiple_changed_fields(self):
@@ -91,9 +97,9 @@ class TestDeltaEncoder:
 
         assert delta["type"] == "delta"
         assert delta["set"] == [
-            [["freq"], 14200100],
-            [["mode"], "CW"],
-            [["power"], 75],
+            (["freq"], 14200100),
+            (["mode"], "CW"),
+            (["power"], 75),
         ]
 
     def test_new_field_in_delta(self):
@@ -106,7 +112,7 @@ class TestDeltaEncoder:
         delta = encoder.encode(state2)
 
         assert delta["type"] == "delta"
-        assert delta["set"] == [[["power"], 100]]
+        assert delta["set"] == [(["power"], 100)]
 
     def test_first_observation_delta_carries_the_real_value_from_null(self):
         """MOR-2513: an unobserved leaf publishes null, and the delta for
@@ -129,7 +135,7 @@ class TestDeltaEncoder:
         delta = encoder.encode(observed)
 
         assert delta["type"] == "delta"
-        assert [["main", "freqHz"], 14_074_000] in delta["set"]
+        assert (["main", "freqHz"], 14_074_000) in delta["set"]
 
     def test_removed_field_in_delta(self):
         """Removed fields should appear in 'removed' list."""
@@ -154,9 +160,9 @@ class TestDeltaEncoder:
 
         assert delta["type"] == "delta"
         assert delta["set"] == [
-            [["freq"], 14200100],
-            [["mode"], "CW"],
-            [["agc"], "SLOW"],
+            (["freq"], 14200100),
+            (["mode"], "CW"),
+            (["agc"], "SLOW"),
         ]
         assert delta["unset"] == [["power"]]
 
@@ -282,7 +288,7 @@ class TestDeltaEncoder:
 
         assert delta["type"] == "delta"
         # Only the changed leaf is sent (MOR-4206).
-        assert delta["set"] == [[["radio", "version"], 2]]
+        assert delta["set"] == [(["radio", "version"], 2)]
 
     def test_empty_state(self):
         """Empty states should be handled."""
@@ -308,7 +314,7 @@ class TestDeltaEncoder:
 
         assert delta["type"] == "delta"
         # Only the changed field should be in delta
-        assert delta["set"] == [[["field_50"], 500]]
+        assert delta["set"] == [(["field_50"], 500)]
 
 
 class TestApplyDelta:
@@ -413,12 +419,12 @@ def _status_entry(index: int, observed_at: float) -> dict[str, Any]:
         "availability": "available",
         "lastObservedMonotonic": observed_at,
         "maxAge": 1.5,
-        "source": {
-            "source": "poll_response",
-            "provider": "icom",
-            "transport": "lan",
-            "native_id": f"0x14 0x{index:02x}",
-        },
+        "source": SourceMetadata(
+            source="poll_response",
+            provider="icom",
+            transport="lan",
+            native_id=f"0x14 0x{index:02x}",
+        ).to_dict(),
         "quality": ["direct"],
     }
 
@@ -437,6 +443,47 @@ def _station_state(observed_at: dict[int, float]) -> dict[str, Any]:
 class TestLeafDelta:
     """MOR-4206: a delta carries the changed leaves, not whole top-level maps."""
 
+    def test_source_metadata_change_is_a_native_id_leaf(self):
+        """A re-read through another command moves only ``source.nativeId``."""
+
+        def public_state(native_id: str) -> dict[str, Any]:
+            store = StateStore()
+            store.apply(
+                Observation(
+                    path=FieldPath.active("0", "freq_mode", "freq_hz"),
+                    value=14_074_000,
+                    source=SourceMetadata(
+                        source="poll_response",
+                        provider="test",
+                        transport="fake",
+                        native_id=native_id,
+                    ),
+                    timestamp_monotonic=1.0,
+                    max_age=None,
+                )
+            )
+            return build_public_state_payload_from_snapshot(
+                store.snapshot(), radio=None, receiver_count=1
+            )
+
+        before = public_state("0x03")
+        after = public_state("0x25 0x00")
+        encoder = DeltaEncoder()
+        encoder.encode(before)
+
+        delta = encoder.encode(after)
+
+        # ``updatedAt`` follows the wall clock; every other op is the source's.
+        assert [op for op in delta["set"] if op[0] != ["updatedAt"]] == [
+            (["fieldStatus", "main.freqHz", "source", "nativeId"], "0x25 0x00")
+        ]
+        rebuilt = apply_delta(before, json.loads(json.dumps(delta)))
+        assert rebuilt == after
+        assert rebuilt["fieldStatus"]["main.freqHz"]["source"] == {
+            **before["fieldStatus"]["main.freqHz"]["source"],
+            "nativeId": "0x25 0x00",
+        }
+
     def test_one_field_status_leaf_change_is_a_sub_kilobyte_delta(self):
         encoder = DeltaEncoder()
         times = {index: 1.0 for index in range(110)}
@@ -448,7 +495,7 @@ class TestLeafDelta:
         delta = encoder.encode(after)
 
         assert delta["set"] == [
-            [["fieldStatus", "main.field7", "lastObservedMonotonic"], 2.0]
+            (["fieldStatus", "main.field7", "lastObservedMonotonic"], 2.0)
         ]
         assert len(json.dumps(delta)) < 1024
 
@@ -523,6 +570,45 @@ class TestLeafDelta:
         assert envelope.changed is None
         assert apply_delta(before, wire) == after
         assert apply_delta(before, top_level_delta(wire, after)) == after
+
+
+def test_frame_contract_has_the_wire_schema_keys() -> None:
+    """``StateUpdateFrame`` (the encoder's typed frame) and the published
+    ``StateUpdateEnvelope`` schema name the same keys, required alike."""
+    schema_required = {
+        name
+        for name, field in StateUpdateEnvelope.model_fields.items()
+        if field.is_required()
+    }
+
+    assert StateUpdateFrame.__annotations__.keys() == (
+        StateUpdateEnvelope.model_fields.keys()
+    )
+    assert StateUpdateFrame.__required_keys__ == schema_required
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        [42, 1],
+        [[42], 1],
+        [["main", 0], 1],
+        [["main"]],
+    ],
+)
+def test_wire_schema_rejects_a_set_operation_without_a_key_path(
+    operation: list[Any],
+) -> None:
+    frame = {
+        "type": "delta",
+        "revision": 1,
+        "transportSeq": 1,
+        "deltaVersion": 2,
+        "set": [operation],
+    }
+
+    with pytest.raises(pydantic.ValidationError):
+        StateUpdateEnvelope.model_validate(frame)
 
 
 def _store_observation(at: float) -> Observation:

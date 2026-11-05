@@ -9,12 +9,19 @@
  * state keeps its object identity.
  */
 
-export type StatePath = readonly string[];
+import type { StateUpdateEnvelope } from '../types/state';
+
+/** One leaf `set` operation, as `scripts/gen_state_types.py` generates it. */
+type LeafSetOperation = NonNullable<StateUpdateEnvelope['set']>[number];
+export type StatePath = LeafSetOperation[0];
 
 export interface StateDeltaOps {
   set: Array<readonly [StatePath, unknown]>;
   unset: StatePath[];
 }
+
+/** The delta fields of a parsed `StateUpdateEnvelope`. */
+type DeltaFields = Pick<StateUpdateEnvelope, 'changed' | 'removed' | 'deltaVersion' | 'set' | 'unset'>;
 
 const LEAF_DELTA_VERSION = 2;
 
@@ -26,26 +33,38 @@ function isPath(value: unknown): value is StatePath {
   return Array.isArray(value) && value.length > 0 && value.every((key) => typeof key === 'string');
 }
 
+function isSetOperation(value: unknown): value is LeafSetOperation {
+  return Array.isArray(value) && value.length === 2 && isPath(value[0]);
+}
+
+function isListOf<T>(value: unknown, isItem: (item: unknown) => item is T): value is T[] {
+  return Array.isArray(value) && value.every(isItem);
+}
+
+const isKey = (value: unknown): value is string => typeof value === 'string';
+
+/** Parse the delta fields against the generated envelope contract. */
+function hasDeltaFields(envelope: Record<string, unknown>): envelope is Record<string, unknown> & DeltaFields {
+  const { changed, removed, deltaVersion, set, unset } = envelope;
+  return (changed == null || isRecord(changed))
+    && (removed == null || isListOf(removed, isKey))
+    && (deltaVersion == null || deltaVersion === LEAF_DELTA_VERSION)
+    && (set == null || isListOf(set, isSetOperation))
+    && (unset == null || isListOf(unset, isPath));
+}
+
 /** The operations a delta envelope carries, or null when it is malformed. */
 export function stateDeltaOps(envelope: Record<string, unknown>): StateDeltaOps | null {
-  if (envelope.deltaVersion === undefined) {
-    const { changed, removed } = envelope;
-    if (!isRecord(changed)) return null;
-    if (removed !== undefined && (!Array.isArray(removed) || !removed.every((key) => typeof key === 'string'))) return null;
+  if (!hasDeltaFields(envelope)) return null;
+  if (envelope.deltaVersion == null) {
+    if (!envelope.changed) return null;
     return {
-      set: Object.entries(changed).map(([key, value]) => [[key], value] as const),
-      unset: ((removed ?? []) as string[]).map((key) => [key]),
+      set: Object.entries(envelope.changed).map(([key, value]) => [[key], value] as const),
+      unset: (envelope.removed ?? []).map((key) => [key]),
     };
   }
-  if (envelope.deltaVersion !== LEAF_DELTA_VERSION) return null;
-  const { set, unset } = envelope;
-  if (!Array.isArray(set)) return null;
-  if (!set.every((op) => Array.isArray(op) && op.length === 2 && isPath(op[0]))) return null;
-  if (unset !== undefined && (!Array.isArray(unset) || !unset.every(isPath))) return null;
-  return {
-    set: set.map((op) => [op[0] as StatePath, op[1]] as const),
-    unset: (unset ?? []) as StatePath[],
-  };
+  if (!envelope.set) return null;
+  return { set: envelope.set, unset: envelope.unset ?? [] };
 }
 
 /**

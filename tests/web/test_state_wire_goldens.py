@@ -30,6 +30,7 @@ import pytest
 
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
+from rigplane.web._delta_encoder import apply_delta
 from rigplane.web.runtime_helpers import declared_field_paths
 from rigplane.web.state_schema import StateUpdateEnvelope
 
@@ -65,7 +66,11 @@ _ENVELOPE_CASES = [
     if case in entry
 ]
 _POLLED_DCD_CASES = ("polledDcdOpen", "polledDcdClosed", "polledDcdUnanswered")
-_POLLED_DCD_DELTA_CASES = ("polledDcdDeltaOpen", "polledDcdDeltaClosed")
+_POLLED_DCD_DELTA_CASES = (
+    "polledDcdDeltaOpen",
+    "polledDcdDeltaClosed",
+    "polledDcdLeafStreamOpen",
+)
 _POLLED_DCD_MODELS = _GENERATOR.polled_dcd_models()
 _POLLED_DCD_ENVELOPES = [
     (model, case) for model in _POLLED_DCD_MODELS for case in _POLLED_DCD_CASES
@@ -240,7 +245,7 @@ def test_polled_dcd_envelope_matches_wire_schema(model: str, case: str) -> None:
     assert validated.type == "full"
 
 
-@pytest.mark.parametrize("case", _POLLED_DCD_DELTA_CASES)
+@pytest.mark.parametrize("case", ("polledDcdDeltaOpen", "polledDcdDeltaClosed"))
 @pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
 def test_polled_dcd_delta_is_a_wire_delta_carrying_the_flipped_leaf(
     model: str, case: str
@@ -304,3 +309,29 @@ def test_polled_squelch_reply_publishes_dcd_in_the_envelope(
     assert data["main"].get("sMeterSqlOpen") is value
     assert row["observed"] is (value is not None)
     assert row["availability"] == ("available" if value is not None else "missing")
+
+
+@pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
+def test_polled_dcd_leaf_stream_rebuilds_what_the_top_level_delta_rebuilds(
+    model: str,
+) -> None:
+    """MOR-4206: the frames a ``?state_delta=2`` client gets on the squelch flip.
+
+    ``state-wire-goldens.busy-lamp.isolated.test.ts`` feeds the same two
+    frames through the frontend ws-client into the BUSY lamp.
+    """
+    baseline, leaf = _GOLDENS[model]["polledDcdLeafStreamOpen"]
+    top_level = _GOLDENS[model]["polledDcdDeltaOpen"]
+    validated = StateUpdateEnvelope.model_validate(leaf)
+    paths = [path for path, _value in leaf["set"]]
+
+    assert StateUpdateEnvelope.model_validate(baseline).type == "full"
+    assert validated.type == "delta"
+    assert validated.deltaVersion == 2
+    assert validated.changed is None
+    assert ["main", "dcd"] in paths
+    assert ["fieldStatus"] not in paths
+    assert baseline["data"]["main"]["dcd"] is False
+    assert apply_delta(baseline["data"], leaf) == apply_delta(
+        baseline["data"], top_level
+    )

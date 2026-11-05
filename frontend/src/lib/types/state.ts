@@ -379,7 +379,7 @@ export interface StateUpdateEnvelope {
   } | null;
   removed?: string[] | null;
   deltaVersion?: 2 | null;
-  set?: [unknown, unknown][] | null;
+  set?: [string[], unknown][] | null;
   unset?: string[][] | null;
   stateRevision?: number | null;
   freshnessRevision?: number | null;

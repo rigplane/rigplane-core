@@ -124,7 +124,11 @@ from ..env_config import (
     get_audio_rx_jitter_ceiling_ms,
     get_audio_rx_jitter_floor_ms,
 )
-from ._delta_encoder import DeltaEncoder, top_level_delta  # noqa: TID251
+from ._delta_encoder import (  # noqa: TID251
+    DeltaEncoder,
+    StateUpdateFrame,
+    top_level_delta,
+)
 from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
@@ -2218,7 +2222,7 @@ class WebServer:
         *,
         session_id: str | None = None,
         leaf_deltas: bool = False,
-    ) -> dict[str, Any]:
+    ) -> StateUpdateFrame:
         """Register a client and return its shared-encoder full baseline."""
         existing_queues = set(self._control_event_queues)
         self._control_event_queues.add(q)
@@ -2397,7 +2401,6 @@ class WebServer:
 
         delta = self._encode_state_update(snapshot, body)
         self._last_broadcast_state_key = state_key
-        event = {"type": "state_update", "data": delta}
         self._state_diagnostics.record(
             "web_delivery_trigger",
             "web.ws_state",
@@ -2411,7 +2414,7 @@ class WebServer:
         )
 
         target_queues = self._control_event_queues if queues is None else queues
-        self._fanout_state_update(target_queues, event, body)
+        self._fanout_state_update(target_queues, delta, body)
 
     def enqueue_control_state_baseline(self, q: BoundedQueue[dict[str, Any]]) -> None:
         """Queue a full baseline for one already-running control client."""
@@ -2425,7 +2428,7 @@ class WebServer:
         *,
         peers: Collection[BoundedQueue[dict[str, Any]]],
         queue_baseline: bool = False,
-    ) -> dict[str, Any]:
+    ) -> StateUpdateFrame:
         """Encode once, fan out normally, and derive one client's full base."""
         snapshot, body = self._build_public_state_for_delivery()
         if self.command_state_store.provider_generation != snapshot.provider_generation:
@@ -2434,8 +2437,7 @@ class WebServer:
         self._last_broadcast_state_key = self._public_state_delivery_key(
             snapshot, health_revision=int(body.get("healthRevision", 0))
         )
-        event = {"type": "state_update", "data": encoded}
-        self._fanout_state_update(peers, event, body)
+        self._fanout_state_update(peers, encoded, body)
         baseline = self._derive_full_state_update(encoded, body)
         if queue_baseline:
             q.replace_matching_with_front(
@@ -2447,13 +2449,14 @@ class WebServer:
     def _fanout_state_update(
         self,
         queues: Collection[BoundedQueue[dict[str, Any]]],
-        event: dict[str, Any],
+        encoded: StateUpdateFrame,
         body: dict[str, Any],
     ) -> None:
         """Deliver one shared state encode, recovering only overflowed queues.
 
         A queue outside ``_leaf_delta_queues`` gets a delta rendered top-level.
         """
+        event: dict[str, Any] = {"type": "state_update", "data": encoded}
         top_level_event: dict[str, Any] | None = None
         for q in list(queues):
             queued = event
@@ -2461,7 +2464,7 @@ class WebServer:
                 if top_level_event is None:
                     top_level_event = {
                         "type": "state_update",
-                        "data": top_level_delta(event["data"], body),
+                        "data": top_level_delta(encoded, body),
                     }
                 queued = top_level_event
             try:
@@ -2470,20 +2473,23 @@ class WebServer:
                 q.replace_matching_with_front(
                     {
                         "type": "state_update",
-                        "data": self._derive_full_state_update(event["data"], body),
+                        "data": self._derive_full_state_update(encoded, body),
                     },
                     lambda queued: queued.get("type") == "state_update",
                 )
 
     @staticmethod
     def _derive_full_state_update(
-        encoded: dict[str, Any], body: dict[str, Any]
-    ) -> dict[str, Any]:
+        encoded: StateUpdateFrame, body: dict[str, Any]
+    ) -> StateUpdateFrame:
         """Convert one shared encode into a same-sequence full envelope."""
         full = copy.deepcopy(encoded)
         full["type"] = "full"
-        for key in ("changed", "removed", "deltaVersion", "set", "unset"):
-            full.pop(key, None)
+        full.pop("changed", None)
+        full.pop("removed", None)
+        full.pop("deltaVersion", None)
+        full.pop("set", None)
+        full.pop("unset", None)
         full["data"] = body
         return full
 
@@ -2657,7 +2663,7 @@ class WebServer:
 
     def build_state_update_envelope(
         self, *, force_full: bool = False
-    ) -> dict[str, Any]:
+    ) -> StateUpdateFrame:
         """Return a WS state-update envelope from the canonical StateStore view.
 
         A delta comes in the top-level rendering a default client receives.
@@ -2693,12 +2699,12 @@ class WebServer:
         body: dict[str, Any],
         *,
         force_full: bool = False,
-    ) -> dict[str, Any]:
+    ) -> StateUpdateFrame:
         """Encode one Store snapshot with its non-optional wire epoch."""
         generation_changed = (
             self._last_delta_encoder_generation != snapshot.provider_generation
         )
-        result: dict[str, Any] = self._delta_encoder.encode(
+        result = self._delta_encoder.encode(
             body,
             force_full=force_full or generation_changed,
             state_revision=snapshot.state_revision,

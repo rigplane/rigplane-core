@@ -18,31 +18,69 @@ Usage::
     encoder.encode({"freq": 14200000, "mode": "USB"})
     # {"type": "full", "data": {"freq": 14200000, "mode": "USB"}, ...}
     encoder.encode({"freq": 14200100, "mode": "USB"})
-    # {"type": "delta", "deltaVersion": 2, "set": [[["freq"], 14200100]], ...}
+    # {"type": "delta", "deltaVersion": 2, "set": [(["freq"], 14200100)], ...}
 """
 
 from __future__ import annotations
 
 import copy
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Final, Literal, Required, TypedDict
 
-__all__ = ["DeltaEncoder", "apply_delta", "top_level_delta"]
+__all__ = [
+    "DeltaEncoder",
+    "LeafSetOp",
+    "StatePath",
+    "StateUpdateFrame",
+    "apply_delta",
+    "top_level_delta",
+]
 
-LEAF_DELTA_VERSION = 2
+LEAF_DELTA_VERSION: Final = 2
+
+#: Object keys from the state root to one value.
+StatePath = list[str]
+#: One leaf ``set`` operation; a JSON array ``[path, value]`` on the wire.
+LeafSetOp = tuple[StatePath, Any]
+
+
+# The ``state_update`` envelope the encoder and its renderings exchange. Its
+# keys are the fields of ``state_schema.StateUpdateEnvelope``
+# (``tests/test_delta_encoder.py::test_frame_contract_has_the_wire_schema_keys``).
+StateUpdateFrame = TypedDict(
+    "StateUpdateFrame",
+    {
+        "type": Required[Literal["full", "delta"]],
+        "revision": Required[int],
+        "transportSeq": Required[int],
+        "stateContractVersion": Literal[1],
+        "providerGeneration": int,
+        "data": dict[str, Any],
+        "changed": dict[str, Any],
+        "removed": list[str],
+        "deltaVersion": Literal[2],
+        "set": list[LeafSetOp],
+        "unset": list[StatePath],
+        "stateRevision": int,
+        "freshnessRevision": int,
+        "observationSeq": int,
+    },
+    total=False,
+)
 
 
 def _diff(
-    prev: dict[str, Any],
-    cur: dict[str, Any],
-    prefix: list[str],
-    set_ops: list[list[Any]],
-    unset_ops: list[list[str]],
+    prev: Mapping[str, Any],
+    cur: Mapping[str, Any],
+    prefix: StatePath,
+    set_ops: list[LeafSetOp],
+    unset_ops: list[StatePath],
 ) -> None:
     """Append the leaf operations that turn ``prev`` into ``cur``."""
     for key, value in cur.items():
         path = [*prefix, key]
         if key not in prev:
-            set_ops.append([path, value])
+            set_ops.append((path, value))
             continue
         old = prev[key]
         if old == value:
@@ -50,7 +88,7 @@ def _diff(
         if isinstance(old, dict) and isinstance(value, dict):
             _diff(old, value, path, set_ops, unset_ops)
         else:
-            set_ops.append([path, value])
+            set_ops.append((path, value))
     for key in prev:
         if key not in cur:
             unset_ops.append([*prefix, key])
@@ -83,7 +121,7 @@ class DeltaEncoder:
         state_revision: int | None = None,
         freshness_revision: int | None = None,
         observation_seq: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> StateUpdateFrame:
         """Encode a state snapshot as a leaf delta or a full state.
 
         Returns a ``full`` envelope (``data`` is the whole state) on the first
@@ -96,21 +134,28 @@ class DeltaEncoder:
             self._transport_seq if state_revision is None else int(state_revision)
         )
 
-        result: dict[str, Any]
+        result: StateUpdateFrame
         if (
             force_full
             or self._previous_state is None
             or self._delta_count >= self._full_state_interval
         ):
             self._delta_count = 0
-            result = {"type": "full", "data": dict(current_state)}
+            result = {
+                "type": "full",
+                "revision": revision_value,
+                "transportSeq": self._transport_seq,
+                "data": dict(current_state),
+            }
         else:
-            set_ops: list[list[Any]] = []
-            unset_ops: list[list[str]] = []
+            set_ops: list[LeafSetOp] = []
+            unset_ops: list[StatePath] = []
             _diff(self._previous_state, current_state, [], set_ops, unset_ops)
             self._delta_count += 1
             result = {
                 "type": "delta",
+                "revision": revision_value,
+                "transportSeq": self._transport_seq,
                 "deltaVersion": LEAF_DELTA_VERSION,
                 "set": set_ops,
             }
@@ -118,8 +163,6 @@ class DeltaEncoder:
                 result["unset"] = unset_ops
         self._previous_state = copy.deepcopy(current_state)
 
-        result["revision"] = revision_value
-        result["transportSeq"] = self._transport_seq
         if state_revision is not None:
             result["stateRevision"] = revision_value
         if freshness_revision is not None:
@@ -141,29 +184,28 @@ class DeltaEncoder:
 
 
 def top_level_delta(
-    envelope: dict[str, Any], current_state: dict[str, Any]
-) -> dict[str, Any]:
+    envelope: StateUpdateFrame, current_state: Mapping[str, Any]
+) -> StateUpdateFrame:
     """Render a leaf delta as the top-level delta older clients read.
 
     ``current_state`` is the snapshot the leaf delta was encoded from. A full
     envelope is returned unchanged.
     """
-    if envelope.get("type") != "delta":
+    if envelope["type"] != "delta":
         return envelope
     changed: dict[str, Any] = {}
     removed: list[str] = []
-    for path, _value in envelope["set"]:
+    for path, _value in envelope.get("set", []):
         changed[path[0]] = current_state[path[0]]
-    for path in envelope.get("unset", ()):
+    for path in envelope.get("unset", []):
         if len(path) == 1:
             removed.append(path[0])
         else:
             changed[path[0]] = current_state[path[0]]
-    result = {
-        key: value
-        for key, value in envelope.items()
-        if key not in ("deltaVersion", "set", "unset")
-    }
+    result = envelope.copy()
+    result.pop("deltaVersion", None)
+    result.pop("set", None)
+    result.pop("unset", None)
     result["changed"] = changed
     if removed:
         result["removed"] = removed
@@ -189,7 +231,9 @@ def _parent_for_write(
     return node
 
 
-def apply_delta(full_state: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
+def apply_delta(
+    full_state: Mapping[str, Any], delta: Mapping[str, Any]
+) -> dict[str, Any]:
     """Apply a ``state_update`` envelope (either delta rendering) to a snapshot.
 
     Returns a new snapshot; ``full_state`` is not modified.
@@ -197,7 +241,7 @@ def apply_delta(full_state: dict[str, Any], delta: dict[str, Any]) -> dict[str, 
     Raises:
         ValueError: If delta format is invalid.
     """
-    if not isinstance(delta, dict):
+    if not isinstance(delta, Mapping):
         raise ValueError(f"Invalid delta format: {type(delta)}")
 
     delta_type = delta.get("type")
