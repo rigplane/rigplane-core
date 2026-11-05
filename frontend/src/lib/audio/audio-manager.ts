@@ -134,6 +134,7 @@ class AudioManager {
   private backoff = BACKOFF_MIN;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private _publishedRxSourceLevelLow = false;
   private _listeners: Set<() => void> = new Set();
   // Stable identity for reconnect coalescing (MOR-924); see makeClientId.
   private readonly clientId = makeClientId();
@@ -320,6 +321,14 @@ class AudioManager {
 
   setRxVolume(v: number): void {
     this.rxPlayer.volume = v;
+  }
+
+  /** MOR-4210: RX is running over an open audio link and its decoded source
+   *  has stayed quiet (RxPlayer.sourceLevelLow). Published to onChange on the
+   *  stats tick; the link's close notifies on its own. */
+  get rxSourceLevelLow(): boolean {
+    return this._rxEnabled && this.ws?.readyState === WebSocket.OPEN
+      && this.rxPlayer.sourceLevelLow === true;
   }
 
   // ── TX ──
@@ -775,6 +784,11 @@ class AudioManager {
   }
 
   private _sendAudioStats(): void {
+    const sourceLow = this.rxSourceLevelLow;
+    if (sourceLow !== this._publishedRxSourceLevelLow) {
+      this._publishedRxSourceLevelLow = sourceLow;
+      this.notify();
+    }
     if (!this._rxEnabled || this.ws?.readyState !== WebSocket.OPEN) return;
     const stats = this.rxPlayer.stats();
     const error = stats.playback?.contextState === 'suspended' && stats.playback.resumeOutcome === 'rejected'
