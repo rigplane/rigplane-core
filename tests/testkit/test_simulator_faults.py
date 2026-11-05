@@ -32,17 +32,29 @@ _ERR_PREV_SESSION_ACTIVE = 0xFFFFFFFF
 
 
 class _UdpClient(asyncio.DatagramProtocol):
-    """Bare datagram client: everything received lands in ``queue``."""
+    """Bare datagram client: everything received lands in ``queue``.
+
+    ``recv_from(port)`` reads only what one sender port sent: under xdist a
+    simulator in another worker can still be streaming audio to a client
+    port this client was given again after its owner closed it.
+    """
 
     def __init__(self) -> None:
         self.queue: asyncio.Queue[bytes] = asyncio.Queue()
         self.transport: asyncio.DatagramTransport | None = None
+        self._by_sender: dict[int, asyncio.Queue[bytes]] = {}
 
     def connection_made(self, transport) -> None:  # type: ignore[override]
         self.transport = transport
 
     def datagram_received(self, data: bytes, addr) -> None:
         self.queue.put_nowait(data)
+        self._by_sender.setdefault(addr[1], asyncio.Queue()).put_nowait(data)
+
+    async def recv_from(self, port: int, timeout: float = 2.0) -> bytes:
+        """The next datagram that sender ``port`` sent."""
+        queue = self._by_sender.setdefault(port, asyncio.Queue())
+        return await asyncio.wait_for(queue.get(), timeout)
 
     def send(self, data: bytes, port: int) -> None:
         assert self.transport is not None
@@ -248,8 +260,10 @@ async def test_duplicate_sends_two_identical_copies(server, client):
     )
     request = _freq_get()
     client.send(request, server.civ_port)
-    first = await _recv_reply(client, request)
-    second = await client.recv()
+    # Read the CI-V port only: "the next datagram" from any sender can be a
+    # stray audio packet from another worker's simulator (see _UdpClient).
+    first = await client.recv_from(server.civ_port)
+    second = await client.recv_from(server.civ_port)
     assert _is_freq_reply(first)
     assert first == second
 
