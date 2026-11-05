@@ -247,3 +247,95 @@ async def test_yaesu_probe_order_and_low_baud_flag_come_from_its_profile(
     assert result.preferred_baudrate == 38400
     assert result.low_baud is low_baud
     assert result.low_baud_hint is None  # the CI-V scope guidance is not Yaesu's
+
+
+# ---------------------------------------------------------------------------
+# The setup JSON carries the baud fields (`rigplane discover --json`)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("fake_kw", "baudrate", "low_baud"),
+    [
+        pytest.param({"answers_at_baud": 19200}, 19200, True, id="low-baud"),
+        pytest.param({"locks_to_first_baud": True}, _SCOPE_BAUD, False, id="scope-baud"),
+    ],
+)
+async def test_discover_json_carries_the_baud_fields_to_setup(
+    capsys: pytest.CaptureFixture[str],
+    fake_kw: dict[str, Any],
+    baudrate: int,
+    low_baud: bool,
+) -> None:
+    import json
+
+    from rigplane.cli import _cmd_discover
+
+    fake = _icom_fake(0x94, **fake_kw)
+    args = SimpleNamespace(serial_only=True, lan_only=False, timeout=0.1, json=True)
+    with (
+        _one_port(),
+        patch(
+            "rigplane.discovery.discover_serial_radios",
+            partial(discover_serial_radios, _open_serial=fake.opener),
+        ),
+    ):
+        assert await _cmd_discover(None, args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    [connection] = payload["radios"][0]["connections"]
+    assert connection["baudrate"] == baudrate
+    assert connection["preferredBaudrate"] == _SCOPE_BAUD
+    assert connection["lowBaud"] is low_baud
+    if low_baud:
+        assert f"set CI-V USB Baud Rate to {_SCOPE_BAUD}" in connection["lowBaudHint"]
+    else:
+        assert connection["lowBaudHint"] is None
+
+
+# ---------------------------------------------------------------------------
+# RadioProfile's positional constructor contract does not shift
+# ---------------------------------------------------------------------------
+
+# The positional (non keyword-only) fields of RadioProfile as on origin/main
+# before MOR-4207; a new field is appended keyword-only, never inserted.
+_RADIO_PROFILE_POSITIONAL = (
+    "id model civ_addr receiver_count capabilities cmd29_routes vfo_main_code "
+    "vfo_sub_code swap_ab_code equal_ab_code swap_main_sub_code equal_main_sub_code "
+    "vfo_scheme vfo_readback tx_receiver_rule split_tx_target has_lan freq_ranges "
+    "modes filters command_names absent_command_names absent_command_sources "
+    "command_map reverse_index filter_width_min filter_width_max "
+    "filter_width_encoding filter_width_first_code filter_width_radio_default_code "
+    "filter_config max_watts min_watts att_values att_labels pre_values pre_labels "
+    "agc_modes agc_labels agc_readback_modes agc_auto_mode agc_auto_speed_labels "
+    "break_in_modes break_in_labels notch_width_values notch_width_labels "
+    "ssb_tx_bw_values ssb_tx_bw_labels filter_shape_values filter_shape_labels "
+    "scan_type_values scan_type_labels scan_resume_values scan_resume_labels "
+    "rf_sql_control_model data_mode_count data_mode_labels data_mode_inputs "
+    "data_mode_modes set_mode_via_selected protocol_type hamlib_model_id controls "
+    "meter_calibrations meter_redlines rules keyboard antenna_tx_count "
+    "antenna_has_rx_ant transceiver_count scope_ref_min_db scope_ref_max_db "
+    "scope_ref_step_db scope_span_presets_hz codec_preference tx_codec "
+    "default_sample_rate_hz supported_sample_rates_hz sample_rate_by_codec "
+    "browser_rx_transport browser_rx_transcode_to_opus write_only_controls "
+    "fixed_value_checks state_acquisition tx_policy ctcss_tones_centihz "
+    "tone_squelch_types expected_identity_ids"
+).split()
+
+
+def test_default_baud_keeps_the_radio_profile_positional_bindings() -> None:
+    positional = tuple(
+        f.name
+        for f in dataclasses.fields(profiles.RadioProfile)
+        if f.init and not f.kw_only
+    )
+    assert positional == tuple(_RADIO_PROFILE_POSITIONAL)
+
+    # A positional constructor call still binds hamlib_model_id where it did.
+    base = profiles.get_radio_profile("icom_ic7300")
+    args = [getattr(base, name) for name in positional]
+    args[positional.index("hamlib_model_id")] = 4242
+    rebuilt = profiles.RadioProfile(*args, default_baud=base.default_baud)
+    assert rebuilt.hamlib_model_id == 4242
+    assert rebuilt.protocol_type == base.protocol_type
+    assert rebuilt.default_baud == _SCOPE_BAUD
