@@ -3,14 +3,20 @@
 
   interface Props {
     open: boolean;
-    targetLabel: string;
+    targetLabel?: string;
+    /** The heading; defaults to the frequency-entry wording (MOR-4220: Memory reuses the dialog). */
+    title?: string;
+    closeLabel?: string;
     returnFocus?: HTMLElement | null;
     status?: string;
     onclose?: () => void;
     children: Snippet;
   }
 
-  let { open, targetLabel, returnFocus = null, status, onclose, children }: Props = $props();
+  let {
+    open, targetLabel = '', title, closeLabel = 'Close frequency entry', returnFocus = null, status,
+    onclose, children,
+  }: Props = $props();
   const titleId = $props.id();
   let panel: HTMLElement | undefined = $state();
   let wasOpen = false;
@@ -61,10 +67,29 @@
     }
   }
 
+  // Focus can leave the dialog without the user moving it: a control that
+  // removes itself when pressed (the memory list's Store, MOR-4220) drops
+  // focus to <body>. Escape still closes and Tab comes back inside. This
+  // runs in the window's capture phase, ahead of the global shortcuts, so
+  // the Escape that closes the dialog is not also a shortcut (Escape is
+  // bound to "clear RIT/XIT" by default).
+  function handleWindowKeydown(event: KeyboardEvent): void {
+    if (!open || panel?.contains(event.target as Node)) return;
+    if (event.key === 'Escape') {
+      requestClose(event);
+    } else if (event.key === 'Tab') {
+      event.preventDefault();
+      event.stopPropagation();
+      initialFocus()?.focus();
+    }
+  }
+
   function handleBackdrop(event: MouseEvent): void {
     if (event.target === event.currentTarget) requestClose(event);
   }
 </script>
+
+<svelte:window onkeydowncapture={handleWindowKeydown} />
 
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -73,8 +98,8 @@
     <div class="frequency-entry-dialog" data-testid="frequency-entry-dialog-panel"
       role="dialog" aria-modal="true" aria-labelledby={titleId} tabindex="-1" bind:this={panel}>
       <header>
-        <h2 id={titleId}>Set frequency — {targetLabel}</h2>
-        <button type="button" class="close" aria-label="Close frequency entry"
+        <h2 id={titleId}>{title ?? `Set frequency — ${targetLabel}`}</h2>
+        <button type="button" class="close" aria-label={closeLabel}
           onclick={requestClose}>×</button>
       </header>
       <div class="content">{@render children()}</div>
@@ -93,6 +118,8 @@
     width: min(480px, 100%); border: 1px solid var(--v2-border-cyan);
     border-radius: 12px; background: var(--v2-panel-bg, #12141b);
     color: var(--v2-text-primary, #f4f6fa); box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+    /* A long body (the memory list, MOR-4220) scrolls inside the viewport. */
+    max-height: calc(100dvh - var(--rp-chrome-top, 0px) - 40px); overflow: auto;
   }
   header { display: flex; align-items: center; justify-content: space-between; gap: 16px;
     padding: 14px 16px; border-bottom: 1px solid var(--v2-border-panel, #333); }

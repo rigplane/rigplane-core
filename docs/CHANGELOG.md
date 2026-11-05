@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Memory recall now puts the radio on the channel. `set_memory_mode` with `group` (the RECALL button of the memory list) selected the group and the channel but never sent the bare `08` "Select the Memory mode", so a radio in the VFO mode acknowledged both frames and stayed where it was. The recall now ends with that `08`, requires an ACK for every frame (a NAK or any other answer fails the command), and works on the channel-addressed IC-7300, IC-7300MK2 and IC-7610 as well (group 0). Not yet verified on hardware. (MOR-4219)
 - Windows USB audio: selection failures now offer explicit audio device candidates when USB topology or endpoint name matching is unavailable, and matching accounts for Windows' numbered endpoint prefixes. (MOR-4119)
+- Web UI: the memory list (local channels and the radio's own list with Reload, More and Recall) is no longer shown inline on the station page. The Memory panel now holds a Memory button that opens the list in the shared dialog. Escape, the close button or a backdrop click close it, Tab stays inside, and the list scrolls within the window. The radio's list still loads with the page. The frequency-entry dialog it reuses now also closes on Escape after focus fell out of it, without the Escape also clearing RIT/XIT. (MOR-4220)
 
 ## [3.1.2rc4] — 2026-11-03
 

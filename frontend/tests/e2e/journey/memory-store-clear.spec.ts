@@ -38,6 +38,13 @@ import { startJourneyServer, type JourneyServerHandle } from './server-process';
  * - The panel refuses an out-of-range channel (its own 1-99 catalogue
  *   bound) before anything reaches the WebSocket, and the server holds the
  *   profile bound (IC-7610: 1-101) one seam deeper, before enqueue.
+ *
+ * - MOR-4220: the memory list is not on the page; the zone's Memory button
+ *   opens it in a dialog, which a modal backdrop covers the rest of the page
+ *   with, so the steps that tune the VFO close it first (Escape). A recall
+ *   from the radio's own list inside the dialog (IC-705) crosses the same
+ *   seam: set_memory_mode{group, channel} -> server -> the simulator, whose
+ *   operating frequency and mode become the stored channel's.
  */
 
 interface WsCommandRecord {
@@ -232,13 +239,29 @@ async function tuneViaEntry(page: Page, mhz: string): Promise<void> {
   await page.getByTestId('band-entry-set').click();
 }
 
+/** MOR-4220: open the memory dialog from the zone's Memory button. */
+async function openMemory(page: Page): Promise<Locator> {
+  await page.getByTestId('memory-open').click();
+  const surface = page.getByRole('dialog', { name: 'Memory' }).getByTestId('memory-surface');
+  await expect(surface).toBeVisible();
+  return surface;
+}
+
+/** Escape closes the memory dialog and hands the page back. */
+async function closeMemory(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Memory' })).toHaveCount(0);
+  await expect(page.getByTestId('memory-surface')).toHaveCount(0);
+}
+
 async function openMemorySurface(page: Page) {
   await installWebSocketInterceptor(page);
   await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
   await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
-  const surface = page.getByTestId('memory-surface');
-  await expect(surface).toBeVisible();
-  return surface;
+  // The list is not inline any more: only the Memory button is on the page.
+  await expect(page.getByTestId('memory-open')).toBeVisible();
+  await expect(page.getByTestId('memory-surface')).toHaveCount(0);
+  return openMemory(page);
 }
 
 const MEMORY_SCRIPT = 'tests/e2e/memory_journey_web_server.py';
@@ -289,9 +312,11 @@ test.describe('memory seam, IC-7610 simulator (channel-addressed, verified write
     // DOM. The mode leg makes the recall's set_mode load-bearing — a
     // frequency-only recall would pass with mode restoration dropped.
     const modeKey = (name: string) => page.locator(`[data-testid="standard-mode-${name}"]`).getByRole('radio');
+    await closeMemory(page);
     await tuneViaEntry(page, '7.100');
     await modeKey('LSB').click();
     await expectServerMain(page, { freqHz: 7_100_000, mode: 'LSB' });
+    await openMemory(page);
     await surface.getByTestId('memory-channel-1-recall').click();
     await expect.poll(() => sentMemoryCommands(page)).toEqual([
       { name: 'set_memory_mode', params: { channel: 1 } },
@@ -300,6 +325,7 @@ test.describe('memory seam, IC-7610 simulator (channel-addressed, verified write
       { name: 'memory_to_vfo', params: { channel: 1 } },
     ]);
     await expectServerMain(page, { freqHz: 14_074_000, mode: 'USB' });
+    await closeMemory(page);
     await expectReadoutHz(readout, 14_074_000);
     await expect(modeKey('USB')).toHaveAttribute('aria-checked', 'true');
 
@@ -307,6 +333,7 @@ test.describe('memory seam, IC-7610 simulator (channel-addressed, verified write
     // group; on this channel-addressed radio the server defaults it to 0.
     await tuneViaEntry(page, '7.100');
     await expectServerMain(page, { freqHz: 7_100_000, mode: 'USB' });
+    await openMemory(page);
     await surface.getByTestId('memory-channel-1-clear').click();
     await surface.locator('[data-channel="1"]').getByRole('button', { name: 'Yes' }).click();
     await expect.poll(async () => (await sentCommands(page, ['memory_clear'])).map(({ params }) => params))
@@ -431,6 +458,88 @@ test.describe('memory seam, IC-705 simulator (group-addressed, verified write la
     const reply = await sendRawCommand(page, 'memory_clear', { channel: 5, group: 0 });
     expect(reply).toMatchObject({ ok: true, result: { channel: 5 } });
     await expect.poll(() => readMemoryEntry(page, 5)).toEqual({ group: 0, channel: 5, empty: true });
+  });
+});
+
+const IC705_RECALL_PORT = 18774;
+
+test.describe('memory seam, IC-705 simulator: recall from the memory dialog', () => {
+  const port = IC705_RECALL_PORT;
+  test.use({ baseURL: `http://127.0.0.1:${port}` });
+
+  let server: JourneyServerHandle | undefined;
+  test.beforeAll(async () => {
+    server = await startMemoryServer(port, 'IC-705');
+  });
+  test.afterAll(async () => {
+    await server?.kill();
+  });
+
+  test('RECALL in the dialog puts the radio on the listed channel', async ({ page }) => {
+    const surface = await openMemorySurface(page);
+    await expectServerMain(page, { freqHz: 14_074_000, mode: 'USB' });
+
+    // A stored channel to recall: 14.074.000 USB into group 0 channel 5.
+    await surface.getByTestId('memory-store-toggle').click();
+    await surface.locator('.store-input').fill('5');
+    await surface.getByTestId('memory-store-confirm').click();
+    await expect.poll(() => readMemoryEntry(page, 5)).toMatchObject({ channel: 5, empty: false });
+
+    // Move the VFO away on a control socket of its own; the dialog stays open.
+    expect(await sendRawCommand(page, 'set_freq', { freq: 7_100_000, receiver: 0 })).toMatchObject({ ok: true });
+    expect(await sendRawCommand(page, 'set_mode', { mode: 'LSB', receiver: 0 })).toMatchObject({ ok: true });
+    await expectServerMain(page, { freqHz: 7_100_000, mode: 'LSB' });
+    const dialogSurface = surface;
+
+    // The radio's own list, reloaded, shows the channel; RECALL sends the
+    // grouped recall through the WebSocket to the server and the simulator.
+    await dialogSurface.getByTestId('radio-memories-reload').click();
+    const recall = dialogSurface.getByTestId('radio-memory-5-recall');
+    await expect(recall).toBeEnabled();
+    await recall.click();
+    await expect.poll(async () => (await sentCommands(page, ['set_memory_mode'])).map(({ params }) => params))
+      .toEqual([{ channel: 5 }, { group: 0, channel: 5 }]);
+    const recallCommand = (await sentCommands(page, ['set_memory_mode']))[1];
+    await expect.poll(async () => (await receivedAcks(page)).includes(recallCommand.id)).toBe(true);
+    await expectServerMain(page, { freqHz: 14_074_000, mode: 'USB' });
+  });
+});
+
+// The smallest desktop window: below 640 px on either side the mobile
+// layout takes over (App.svelte), and it shows no memory surface at all.
+const NARROW = { width: 660, height: 660 };
+
+test.describe('memory dialog at a narrow width', () => {
+  test.use({ baseURL: `http://127.0.0.1:${IC705_RECALL_PORT}`, viewport: NARROW });
+
+  let server: JourneyServerHandle | undefined;
+  test.beforeAll(async () => {
+    server = await startMemoryServer(IC705_RECALL_PORT, 'IC-705');
+  });
+  test.afterAll(async () => {
+    await server?.kill();
+  });
+
+  test('the dialog fits the viewport and its list scrolls inside it', async ({ page }) => {
+    await installWebSocketInterceptor(page);
+    await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
+    await page.getByTestId('memory-open').scrollIntoViewIfNeeded();
+    const surface = await openMemory(page);
+    await surface.locator('.show-empty input').check();  // all 99 rows: taller than the screen
+    const box = await page.getByRole('dialog', { name: 'Memory' }).boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(NARROW.width);
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(NARROW.height);
+    // The 99 rows scroll inside the dialog, not the page behind it.
+    const scrolls = await page.getByRole('dialog', { name: 'Memory' })
+      .evaluate((node) => node.scrollHeight > node.clientHeight);
+    expect(scrolls).toBe(true);
+    await expect(page.getByRole('dialog', { name: 'Memory' }).getByRole('button', { name: 'Close' }))
+      .toBeInViewport();
+    await closeMemory(page);
   });
 });
 

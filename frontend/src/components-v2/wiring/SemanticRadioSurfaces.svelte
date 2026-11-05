@@ -739,6 +739,8 @@
    * legacy `MemoryPanel.svelte` wires to, not a second instance.
    */
   let memoryFacts = $derived(deriveMemoryPanelProps());
+  /** MOR-4220: the memory list opens in a dialog from the Memory button. */
+  let memoryDialogOpen = $state(false);
   const memoryHandlers = getMemoryHandlers();
   /** MOR-3627: the radio's stored channels, read-only. */
   const radioMemoryList = new MemoryListController(memoryHandlers.fetchPage);
@@ -2738,14 +2740,33 @@
     legacy panel — nothing in `panel-commands.ts` owns a rename intent.
   -->
   {#snippet memorySurface()}
+    <!-- MOR-4220 (owner): the memory list is not shown inline; the Memory
+         button opens it in the shared dialog. The list host stays outside
+         the dialog, so the radio's list loads exactly as before. -->
     <MemoryListHost controller={radioMemoryList} readable={memoryReadable}>
-      <MemorySurface
-        facts={memoryFacts}
-        onRecall={memoryHandlers.onRecall}
-        onStore={memoryHandlers.onStore}
-        onClear={memoryHandlers.onClear}
-        {radioMemories}
-      />
+      <button
+        type="button" class="memory-open" data-testid="memory-open"
+        aria-haspopup="dialog" aria-expanded={memoryDialogOpen}
+        onclick={() => { memoryDialogOpen = true; }}
+      >
+        {t('core.memory.open')}
+      </button>
+      <FrequencyEntryDialog
+        open={memoryDialogOpen}
+        title={t('core.memory.open')}
+        closeLabel={t('common.action.close')}
+        onclose={() => { memoryDialogOpen = false; }}
+      >
+        {#snippet children()}
+          <MemorySurface
+            facts={memoryFacts}
+            onRecall={memoryHandlers.onRecall}
+            onStore={memoryHandlers.onStore}
+            onClear={memoryHandlers.onClear}
+            {radioMemories}
+          />
+        {/snippet}
+      </FrequencyEntryDialog>
     </MemoryListHost>
   {/snippet}
 
