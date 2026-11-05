@@ -1,10 +1,10 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-09-29T12:53:56.273Z",
-  "commit": "3653da0880d1f39b027e12898401a048f0049431",
-  "commitShort": "3653da08",
-  "branch": "codex/mor-3008-repin-drifted-baselines",
-  "platform": "linux-arm64",
+  "generatedAt": "2026-11-05T20:13:14.817Z",
+  "commit": "dc88c963a8e343a8a273908add9d216ed7512ee7",
+  "commitShort": "dc88c963",
+  "branch": "codex/sql-tag-instead-of-busy",
+  "platform": "linux-x64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
   "comparator": {

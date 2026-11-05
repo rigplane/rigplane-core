@@ -2,7 +2,54 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
-## Linux re-pin provenance — 2026-09-29 MOR-3008 S-meter ladder numerals (current)
+## Linux re-pin provenance — 2026-11-05 MOR-4223 BUSY lamp removed (current)
+
+The BUSY lamp (MOR-3630) is gone; the SQL tag that replaces it is an empty
+reserved slot at the end of the lamp row (and the end of the phone chips)
+while the squelch level is 0, so nothing else moves. Twelve PNGs and
+`manifest.json` come from the Linux regeneration run
+[42100695625](https://github.com/rigplane/rigplane-core/actions/runs/42100695625)
+(`visual.yml` with `regenerate=true`) on branch `codex/sql-tag-instead-of-busy`
+at `dc88c963a8e343a8a273908add9d216ed7512ee7`. A second regeneration run on
+`main` at `e277db52267ffb62e1a8094dbe84dd04e2e1e04f`, the exact base the branch
+merged
+([42100700854](https://github.com/rigplane/rigplane-core/actions/runs/42100700854)),
+was the control: only scenes whose pixels differ by more than 8/255 between
+the two regenerations were copied (same-tree antialiasing noise elsewhere was
+left as committed). In each of the twelve the difference is one 8 px text row
+(the fact or lamp row): the BUSY label is gone and the neighbouring labels in
+that row shift left by its slot width; nothing above or below it moves.
+
+Copied: `dual-main-sub--desktop`, `dual-main-sub--desktop--fieldline`,
+`dual-main-sub--desktop--studioline`, `dual-main-sub--desktop--studioline--light`,
+`dual-main-sub--phone-portrait`, `mobile-portrait--phone`,
+`topology-2-ab-shared--desktop`, `tx-phase-fault--desktop`,
+`tx-phase-fault--desktop--fieldline`, `tx-phase-rx--desktop`,
+`tx-phase-tx--desktop`, `tx-phase-tx--desktop--studioline`.
+
+## Linux re-pin provenance — 2026-10-29 MOR-3630 BUSY lamp (superseded)
+
+The BUSY squelch lamp is a new reserved lamp slot in the standard receiver
+annunciator row and a leading fact in the mobile chips. Twelve PNGs and
+`manifest.json` come from the Linux regeneration run
+[40962882233](https://github.com/rigplane/rigplane-core/actions/runs/40962882233)
+(`visual.yml` with `regenerate=true`) on branch `codex/mor-3630-busy-lamp` at
+`560a3aff8f3cb7eb8ff9bd9df0524a4783db02b1`. A second regeneration run on `main`
+([40963353388](https://github.com/rigplane/rigplane-core/actions/runs/40963353388))
+was used as the control: only scenes whose pixels differ by more than 8/255
+between the two regenerations were copied (same-tree antialiasing noise elsewhere
+was left as committed). The copied scenes show the BUSY lamp in the lamp row;
+in the desktop scenes the receiver panels also grow in height (everything
+below the lamp row moves down), which needs visual acceptance.
+
+Copied: `dual-main-sub--desktop`, `dual-main-sub--desktop--fieldline`,
+`dual-main-sub--desktop--studioline`, `dual-main-sub--desktop--studioline--light`,
+`dual-main-sub--phone-portrait`, `mobile-portrait--phone`,
+`topology-2-ab-shared--desktop`, `tx-phase-fault--desktop`,
+`tx-phase-fault--desktop--fieldline`, `tx-phase-rx--desktop`,
+`tx-phase-tx--desktop`, `tx-phase-tx--desktop--studioline`.
+
+## Linux re-pin provenance — 2026-09-29 MOR-3008 S-meter ladder numerals (superseded)
 
 MOR-2790 (#3831, commit `a2da350f`): the IC-7300 S-meter draws the S-unit
 numerals its linear calibration places. The radio declares three knots (S0,
