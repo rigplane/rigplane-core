@@ -67,7 +67,21 @@ function canonical(value: unknown): unknown {
     Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonical(item)]));
   return value;
 }
+// MOR-4213: capability snapshots are replaced as a whole, never edited, so
+// one canonical walk per snapshot is enough; this ran on every state
+// delivery and scope frame. DEV recomputes so fixtures that edit a snapshot
+// in place still see the edit (same rule as `toRadioViewModel`).
+const capabilityIdentities = new WeakMap<Capabilities, string>();
 function capabilityIdentity(caps: Capabilities): string {
+  if (import.meta.env.DEV) return computeCapabilityIdentity(caps);
+  let identity = capabilityIdentities.get(caps);
+  if (identity === undefined) {
+    identity = computeCapabilityIdentity(caps);
+    capabilityIdentities.set(caps, identity);
+  }
+  return identity;
+}
+function computeCapabilityIdentity(caps: Capabilities): string {
   const tags = ['scope', 'dual_rx', 'filter_width', 'if_shift', 'pbt', 'data_mode'];
   return JSON.stringify(canonical({
     scheme: caps.vfoScheme, receivers: caps.receivers, readback: caps.vfoReadback,
