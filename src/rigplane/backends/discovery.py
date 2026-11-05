@@ -304,11 +304,56 @@ def serial_probe_baud_rates(
     speed the radio then runs at. The loaded profiles' ``default_baud`` values
     come first, highest first (115200 for the Icom CI-V profiles: the serial
     scope minimum), then the protocol's other documented rates in their
-    documented order. Also the retry order of a serial connect that gets
-    silence at the configured baud (MOR-3620).
+    documented order. A serial connect tries its own profile baud and the
+    configured baud ahead of it (:func:`serial_connect_baud_rates`).
     """
     preferred = preferred_serial_bauds(protocol_type)
     return tuple(dict.fromkeys((*preferred, *_DOCUMENTED_PROBE_BAUDS[protocol_type])))
+
+
+def serial_connect_baud_rates(
+    protocol_type: Literal["civ", "yaesu_cat"], profile_baud: int, hint: int
+) -> tuple[int, ...]:
+    """The order a serial connect contacts its radio at (MOR-4207).
+
+    The discovery rule for one known radio: its profile ``default_baud``
+    first, so an Icom on ``CI-V USB Baud Rate = Auto`` locks there; then
+    *hint*, the baud the caller passed (``--serial-baud``, a saved route),
+    so a radio fixed at it answers after one miss; then the rest of
+    :func:`serial_probe_baud_rates`.
+    """
+    return tuple(
+        dict.fromkeys((profile_baud, hint, *serial_probe_baud_rates(protocol_type)))
+    )
+
+
+async def sweep_serial_bauds(
+    bauds: tuple[int, ...],
+    *,
+    start: int,
+    retune: Callable[[int], bool],
+    heard_at: Callable[[int], Awaitable[bool]],
+    usable: Callable[[], bool],
+) -> int | None:
+    """Ask the radio on an open link at each of *bauds* but *start* (MOR-3620).
+
+    The one connect-time baud search of the serial backends (CI-V and Yaesu
+    CAT). The link is retuned in place, never reopened. Stops as soon as
+    *usable* is false (the attempt was retired or the link died); skips a
+    baud the port refuses (*retune* false); returns the first baud
+    *heard_at* reports heard, or ``None``. Putting *start* back after a miss
+    is the caller's: only it knows whether the attempt is still current.
+    """
+    for baud in bauds:
+        if baud == start:
+            continue
+        if not usable():
+            return None
+        if not retune(baud):
+            continue
+        if await heard_at(baud):
+            return baud
+    return None
 
 
 def _profile_baud(profile_id: str) -> int | None:
