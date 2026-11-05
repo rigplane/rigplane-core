@@ -26,14 +26,13 @@ from unittest.mock import patch
 
 import pytest
 
-from rigplane import profiles
+from rigplane import discovery, profiles
 from rigplane.discovery import (
     RadioDiscoveryResult,
     discover_serial_radios,
     probe_serial_civ,
     probe_serial_yaesu_cat,
     probe_xiegu_model_id,
-    serial_probe_baud_rates,
 )
 from rigplane.radios import SERIAL_RADIO_MAP
 from rigplane_testkit.serial import CivSerialFake
@@ -152,7 +151,7 @@ async def test_radio_fixed_at_19200_is_reported_there_with_the_low_baud_flag(
 
 
 def test_civ_probe_order_is_the_profile_baud_then_the_documented_fallbacks() -> None:
-    assert serial_probe_baud_rates("civ") == (115200, 19200, 9600, 4800)
+    assert discovery.serial_probe_baud_rates("civ") == (115200, 19200, 9600, 4800)
 
 
 async def test_civ_probe_without_explicit_bauds_uses_the_profile_order() -> None:
@@ -163,7 +162,7 @@ async def test_civ_probe_without_explicit_bauds_uses_the_profile_order() -> None
         raise OSError("port busy")
 
     assert await probe_serial_civ(_DEVICE, timeout=0.01, _open_serial=opener) is None
-    assert seen == list(serial_probe_baud_rates("civ"))
+    assert seen == list(discovery.serial_probe_baud_rates("civ"))
 
 
 # ---------------------------------------------------------------------------
@@ -183,17 +182,17 @@ def test_probe_order_follows_the_profile_default_baud_data(monkeypatch) -> None:
     }
     monkeypatch.setattr(profiles, "_profiles", rebased)
 
-    assert serial_probe_baud_rates("civ") == (57600, 19200, 9600, 115200, 4800)
-    assert serial_probe_baud_rates("yaesu_cat") == (38400, 9600, 115200)
+    assert discovery.serial_probe_baud_rates("civ") == (57600, 19200, 9600, 115200, 4800)
+    assert discovery.serial_probe_baud_rates("yaesu_cat") == (38400, 9600, 115200)
 
 
 def test_non_icom_radios_keep_their_own_profile_order() -> None:
     # FTX-1 (yaesu_cat) prefers 38400; its order is unchanged by the CI-V fix.
-    assert serial_probe_baud_rates("yaesu_cat") == (38400, 9600, 115200)
+    assert discovery.serial_probe_baud_rates("yaesu_cat") == (38400, 9600, 115200)
     # Xiegu X6200 (CI-V, default_baud 19200) stays in the CI-V order after the
     # Icom/X6100 115200, so a radio fixed at 19200 is still the second probe.
     assert profiles.get_radio_profile("xiegu_x6200").default_baud == 19200
-    assert serial_probe_baud_rates("civ").index(19200) == 1
+    assert discovery.serial_probe_baud_rates("civ").index(19200) == 1
 
 
 class _YaesuAtBaud:
