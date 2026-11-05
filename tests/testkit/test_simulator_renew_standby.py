@@ -31,6 +31,7 @@ from testkit.test_simulator_faults import (
     _CLIENT_ID,
     _freq_get,
     _header,
+    _is_echo_of,
     _is_freq_reply,
     _login,
     _openclose,
@@ -719,7 +720,7 @@ async def test_standby_out_of_order_resume(server, client) -> None:
 
     request = _freq_get(seq=3)
     client.send(request, server.civ_port)
-    assert await client.recv() == request  # echo
+    assert _is_echo_of(await client.recv(), request)  # echo
     assert _is_freq_reply(await client.recv())  # reply
     await client.expect_silence(0.3)  # no stale held packet answered
     assert server.civ_retransmit_requests == before
@@ -853,7 +854,9 @@ async def _assert_standby_fill_consumed(server, client, filler: bytes) -> None:
 
     request = _freq_get(seq=3)
     client.send(request, server.civ_port)
-    assert await client.recv() == request  # echo of seq 3 only, no stale echo
+    assert _is_echo_of(
+        await client.recv(), request
+    )  # echo of seq 3 only, no stale echo
     assert _is_freq_reply(await client.recv())  # its reply
     await client.expect_silence(0.3)  # no stale held packet answered
     assert server.civ_retransmit_requests == before

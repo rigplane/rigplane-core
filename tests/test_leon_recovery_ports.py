@@ -77,7 +77,7 @@ async def _prepare(monkeypatch: pytest.MonkeyPatch, peer: _PortPeer) -> CoreRadi
     radio._session_lifecycle._max_recovery_attempts = 2
     radio._session_lifecycle._recovery_backoff_s = (0.0,)
     await radio._control_phase._send_conninfo(None, 52002, 52003)
-    monkeypatch.setattr("rigplane.transport.IcomTransport", peer.transport)
+    monkeypatch.setattr("rigplane.transport.IcomCivTransport", peer.transport)
     monkeypatch.setattr(radio._civ_runtime, "start_pump", lambda: None)
     monkeypatch.setattr(radio._civ_runtime, "start_worker", lambda: None)
     monkeypatch.setattr(radio._civ_runtime, "start_data_watchdog", lambda: None)

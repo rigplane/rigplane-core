@@ -318,10 +318,11 @@ async def test_a_refusal_after_a_lost_answer_names_the_refused_read(
 @_RADIO_ADDRS
 @pytest.mark.asyncio
 async def test_an_unordered_transport_keeps_older_sinks_open(radio_addr: int) -> None:
-    """MOR-4209: LAN does not reorder (``IcomTransport.ordered_ingress`` is
-    False), so the read B answered first does not prove read A's answer lost.
-    A's retransmitted FA arriving after B's answer refuses A, and the later
-    read C stays open instead of being refused."""
+    """MOR-4209: on a transport that does not keep the radio's order, the
+    read B answered first does not prove read A's answer lost. A's
+    retransmitted FA arriving after B's answer refuses A, and the later read C
+    stays open instead of being refused. (Both CI-V transports keep the order
+    since MOR-4205; this pins the tracker's side of the contract.)"""
     tracker = CivRequestTracker()
     _register_reads(tracker, _FREQ, _S_METER, _TUNER)
 

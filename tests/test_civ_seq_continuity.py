@@ -142,7 +142,7 @@ def _rebuild_stubs(
 ) -> Iterator[None]:
     """Let ``soft_reconnect`` rebuild CI-V over an offline transport."""
     with ExitStack() as stack:
-        stack.enter_context(patch("rigplane.transport.IcomTransport", transport_cls))
+        stack.enter_context(patch("rigplane.transport.IcomCivTransport", transport_cls))
         stack.enter_context(
             patch.object(radio._control_phase, "_after_reconnect", new=AsyncMock())
         )
@@ -270,7 +270,7 @@ async def test_fresh_login_starts_the_civ_numbering_at_zero() -> None:
     try:
         with (
             _ConnectOnceStubs(radio),
-            patch("rigplane.transport.IcomTransport", _OfflineCivTransport),
+            patch("rigplane.transport.IcomCivTransport", _OfflineCivTransport),
             patch.object(radio, "_gate_lan_identity", new=AsyncMock(return_value=True)),
         ):
             await radio._control_phase._connect_once()

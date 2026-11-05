@@ -30,6 +30,21 @@ class ResponseFieldContract(TypedDict):
     optional: NotRequired[tuple[str, ...]]
 
 
+class CivIngressPayload(TypedDict):
+    """``GET /api/v1/runtime`` ``civIngress``: inbound CI-V order counters of
+    a LAN radio's CI-V transport (MOR-4205), ``null`` without one.
+
+    ``ordered`` is the transport's ``ordered_ingress``; the counters are its
+    ``rx_order_stats`` (``rigplane.core.transport.RxOrderStats``).
+    """
+
+    ordered: bool
+    reordered: int
+    duplicate: int
+    lost: int
+    late: int
+
+
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
     {
         "method": "GET",
@@ -180,6 +195,8 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "bridge",
             "process",
             "lastError",
+            # MOR-4205: ``CivIngressPayload`` or null.
+            "civIngress",
         )
     },
     "/api/v1/station": {
