@@ -277,4 +277,40 @@ describe('hidden-tab burst through the real audio session (MOR-3965)', () => {
     expect((audioManager as any).rxPlayer.stats().droppedFrames).toBe(87);
     audioManager.stopRx();
   });
+
+  it('keeps the late bursts of a visible but stalled window (MOR-4221)', async () => {
+    const { audioManager, ws } = await startRxWithOpenSocket();
+    setHidden(false);
+    // The window is visible but starved (App Nap, unfocused WKWebView): the
+    // audio clock runs on, the WS frames arrive late and all at once.
+    let tick = 0;
+    const FRAME = 0.02;
+    const steady = (frames: number) => {
+      for (let i = 0; i < frames; i++) {
+        tick++; ctx.currentTime = tick * FRAME; ws.onmessage?.({ data: rxFrame() });
+      }
+    };
+    const stall = (seconds: number) => {
+      const burst = Math.round(seconds / FRAME);
+      tick += burst; ctx.currentTime = tick * FRAME;
+      for (let i = 0; i < burst; i++) ws.onmessage?.({ data: rxFrame() });
+    };
+    steady(100);
+    stall(1.0);
+    steady(100);
+    stall(1.0);
+    steady(100);
+    stall(1.0);
+
+    const stats = (audioManager as any).rxPlayer.stats();
+    // Only the first stall runs the buffer dry; nothing is cut at 300 ms.
+    expect(stats.underruns).toBe(1);
+    expect(stats.droppedFrames).toBe(0);
+    expect(stats.playback.scheduledFrames).toBe(100 * 3 + 50 * 3);
+    const starts = startTimes();
+    for (let i = 102; i < starts.length; i++) {
+      expect(starts[i] - starts[i - 1]).toBeCloseTo(FRAME, 6);
+    }
+    audioManager.stopRx();
+  });
 });
