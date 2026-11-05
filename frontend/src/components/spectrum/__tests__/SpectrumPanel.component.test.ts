@@ -473,6 +473,7 @@ import {
 import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
 import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 import bandPlanGoldens from './fixtures/band-plan-responses.json';
 import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte';
 
@@ -2426,16 +2427,24 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it('keeps projector-produced overlays through a stale frequency gap and staggered recovery while tuning', () => {
     authorityHarness.state.useProductionSelector = true;
-    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_STEPPED_CAPABILITIES);
-    const rx = state.main!;
+    // MOR-4213: the test edits `draft`; every present() delivers it as a NEW
+    // snapshot (a JSON round trip, as a `full` envelope arrives), so no snapshot
+    // the projector or the view model already saw is ever edited in place.
+    const draft = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_STEPPED_CAPABILITIES);
+    const rx = draft.main!;
     Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
       filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,
       vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 1, dataMode: 0 } });
     const paths = ['main', ...Object.keys(rx).map((leaf) => `main.${leaf}`),
       ...Object.keys(rx.vfoA!).map((leaf) => `main.vfoA.${leaf}`)];
-    state.fieldStatus = Object.fromEntries(paths.map((path) => [path, { storePath: path,
+    draft.fieldStatus = Object.fromEntries(paths.map((path) => [path, { storePath: path,
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 10 }]));
-    runtimeHarness.state.currentState = state; runtimeHarness.state.currentCaps = caps;
+    function deliver(): ServerState {
+      const snapshot = JSON.parse(JSON.stringify(draft)) as ServerState;
+      runtimeHarness.state.currentState = snapshot;
+      return snapshot;
+    }
+    let state = deliver(); runtimeHarness.state.currentCaps = caps;
     const input: ScopePassbandDisplayInput = { state, caps, selection: { receiver: 'MAIN', slot: 'A' },
       session: { state: 'connected', epoch: 1 }, frame: null };
     let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
@@ -2449,15 +2458,16 @@ describe('managed scope projection (MOR-2367)', () => {
         transportEpoch: 1, demanded: true, transport: 'connected' as const, nowMonotonic: now };
       const frame = toScopeDisplayFrame(envelope, authority);
       const resolution = resolveLcdSpectrumFrame(frame, { source: 'hardware', receiver: 'MAIN' });
+      state = deliver(); input.state = state;
       input.frame = { envelope, authority, resolution }; result = projectScopePassbandDisplay(result, input);
       props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
     }
     present(0, 14_074_000); expect(result.display.state).toBe('current');
-    rx.vfoA!.freqHz = 14_075_000; state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 11;
+    rx.vfoA!.freqHz = 14_075_000; draft.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 11;
     present(100, 14_074_000);
     expect(result.display.state).toBe('stale');
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    rx.freqHz = 14_075_000; state.fieldStatus['main.freqHz'].lastObservedMonotonic = 11.1;
+    rx.freqHz = 14_075_000; draft.fieldStatus['main.freqHz'].lastObservedMonotonic = 11.1;
     for (let now = 200; now <= 5000; now += 100) {
       present(now, 14_075_000);
       expect(result.display.state).toBe('stale');
@@ -2466,22 +2476,22 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(target.querySelector('.passband-resize-zone')).toBeNull();
     }
     for (const [index, leaf] of ['filterWidth', 'pbtInner', 'pbtOuter'].entries()) {
-      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 15.1 + index / 10;
+      draft.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 15.1 + index / 10;
       present(5100 + index * 100, 14_075_000);
       expect(result.display.state).toBe(index === 2 ? 'current' : 'stale');
       expect(target.querySelector('.passband-overlay')).not.toBeNull();
     }
 
     for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
-      Object.assign(state.fieldStatus[path], { freshness: 'stale', availability: 'stale' });
+      Object.assign(draft.fieldStatus[path], { freshness: 'stale', availability: 'stale' });
     }
     for (let step = 0; step < 10; step += 1) {
       const frequency = step % 2 === 0 ? 14_076_000 : 14_075_000;
       rx.freqHz = frequency; rx.vfoA!.freqHz = frequency;
-      state.fieldStatus['main.freqHz'].lastObservedMonotonic = 20 + step;
-      state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 20 + step;
-      if (step === 3) state.fieldStatus['main.filterWidth'].lastObservedMonotonic = 24;
-      if (step === 7) state.fieldStatus['main.pbtInner'].lastObservedMonotonic = 28;
+      draft.fieldStatus['main.freqHz'].lastObservedMonotonic = 20 + step;
+      draft.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 20 + step;
+      if (step === 3) draft.fieldStatus['main.filterWidth'].lastObservedMonotonic = 24;
+      if (step === 7) draft.fieldStatus['main.pbtInner'].lastObservedMonotonic = 28;
       present(6000 + step * 250, frequency);
       expect(result.display).toMatchObject({ state: 'stale', translated: true,
         tuple: { frequencyHz: 14_075_000 } });
@@ -2491,15 +2501,15 @@ describe('managed scope projection (MOR-2367)', () => {
     }
 
     for (const path of ['main.freqHz', 'main.vfoA.freqHz', 'main.mode', 'main.vfoA.mode']) {
-      Object.assign(state.fieldStatus[path], { freshness: 'fresh', availability: 'available',
+      Object.assign(draft.fieldStatus[path], { freshness: 'fresh', availability: 'available',
         lastObservedMonotonic: 40 });
     }
     for (let step = 0; step < 8; step += 1) {
       const frequency = step % 2 === 0 ? 14_076_000 : 14_075_000;
       rx.freqHz = frequency; rx.vfoA!.freqHz = frequency;
-      state.fieldStatus['main.freqHz'].lastObservedMonotonic = 41 + step;
-      state.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 41 + step;
-      if (step === 7) state.fieldStatus['main.pbtOuter'].lastObservedMonotonic = 48;
+      draft.fieldStatus['main.freqHz'].lastObservedMonotonic = 41 + step;
+      draft.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 41 + step;
+      if (step === 7) draft.fieldStatus['main.pbtOuter'].lastObservedMonotonic = 48;
       present(9000 + step * 250, frequency);
       expect(result.display.state).toBe(step === 7 ? 'current' : 'stale');
       expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
@@ -2511,21 +2521,30 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it('recovers selected-slot geometry through canonical alias hydration without a second width reading', () => {
     authorityHarness.state.useProductionSelector = true;
-    const state = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_STEPPED_CAPABILITIES);
-    const rx = state.main!;
+    // MOR-4213: the test edits `draft`; every present() delivers it as a NEW
+    // snapshot (a JSON round trip, as a `full` envelope arrives), so no snapshot
+    // the projector or the view model already saw is ever edited in place.
+    const draft = structuredClone(IC7300_STATE); const caps = structuredClone(IC7300_STEPPED_CAPABILITIES);
+    const rx = draft.main!;
     Object.assign(rx, { freqHz: 14_074_000, mode: 'USB', filter: 1, activeSlot: 'A',
       filterWidth: 2400, pbtInner: 128, pbtOuter: 128, dataMode: 0,
       vfoA: { freqHz: 14_074_000, mode: 'USB', filterNum: 1, dataMode: 0 },
       vfoB: { freqHz: 14_090_000, mode: 'LSB', filterNum: 2, dataMode: 1 } });
     const paths = ['main', ...Object.keys(rx).map((leaf) => `main.${leaf}`),
       ...['vfoA', 'vfoB'].flatMap(slot => Object.keys(rx.vfoA!).map(leaf => `main.${slot}.${leaf}`))];
-    state.fieldStatus = Object.fromEntries(paths.map(path => [path, { storePath: path,
+    draft.fieldStatus = Object.fromEntries(paths.map(path => [path, { storePath: path,
       observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 10 }]));
-    runtimeHarness.state.currentState = state; runtimeHarness.state.currentCaps = caps;
+    function deliver(): ServerState {
+      const snapshot = JSON.parse(JSON.stringify(draft)) as ServerState;
+      runtimeHarness.state.currentState = snapshot;
+      return snapshot;
+    }
+    let state = deliver(); runtimeHarness.state.currentCaps = caps;
     const input: ScopePassbandDisplayInput = { state, caps, selection: null,
       session: { state: 'connected', epoch: 1 }, frame: null };
     const { target, props } = managed(null); let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
     function present(center: number): void {
+      state = deliver(); input.state = state;
       const active = toRadioViewModel(state, caps)!.vfos.filter(vfo => vfo.isActive);
       const vfo = active.length === 1 ? active[0] : null;
       input.selection = vfo?.slot.kind === 'slotted' ? { receiver: vfo.receiver, slot: vfo.slot.id } : null;
@@ -2541,9 +2560,9 @@ describe('managed scope projection (MOR-2367)', () => {
       props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
     }
     present(14_074_000); expect(result.display.state).toBe('current');
-    rx.activeSlot = 'B'; state.fieldStatus['main.activeSlot'].lastObservedMonotonic = 20;
-    for (const leaf of Object.keys(rx.vfoB!)) state.fieldStatus[`main.vfoB.${leaf}`].observed = false;
-    rx.filterWidth = 1800; state.fieldStatus['main.filterWidth'].lastObservedMonotonic = 20.1;
+    rx.activeSlot = 'B'; draft.fieldStatus['main.activeSlot'].lastObservedMonotonic = 20;
+    for (const leaf of Object.keys(rx.vfoB!)) draft.fieldStatus[`main.vfoB.${leaf}`].observed = false;
+    rx.filterWidth = 1800; draft.fieldStatus['main.filterWidth'].lastObservedMonotonic = 20.1;
     present(14_074_000);
     expect(input.selection).toEqual({ receiver: 'MAIN', slot: 'B' });
     expect(result.display.state).toBe('unknown');
@@ -2552,25 +2571,25 @@ describe('managed scope projection (MOR-2367)', () => {
     Object.assign(rx, { freqHz: 14_090_000, mode: 'LSB', filter: 2, dataMode: 1 });
     for (const path of [...Object.keys(rx.vfoB!).map(leaf => `main.vfoB.${leaf}`),
       'main.freqHz', 'main.mode', 'main.filter', 'main.dataMode']) {
-      Object.assign(state.fieldStatus[path], { observed: true, lastObservedMonotonic: 20.2 });
+      Object.assign(draft.fieldStatus[path], { observed: true, lastObservedMonotonic: 20.2 });
     }
     present(14_090_000); expect(result.display.state).toBe('unknown');
     for (const [index, leaf] of ['pbtInner', 'pbtOuter'].entries()) {
-      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 20.3 + index / 10;
+      draft.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 20.3 + index / 10;
       present(14_090_000);
       if (index === 0) expect(target.querySelector('.passband-overlay')).toBeNull();
     }
     expect(result.display).toMatchObject({ state: 'current', tuple: { frequencyHz: 14_090_000, mode: 'LSB', widthHz: 1800 } });
     expect(target.querySelectorAll('.passband-overlay')).toHaveLength(1);
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
-    Object.assign(state.fieldStatus['main.activeSlot'], {
+    Object.assign(draft.fieldStatus['main.activeSlot'], {
       lastObservedMonotonic: 30, source: { source: 'command_response' },
     });
     present(14_090_000);
     expect(result.display.state).toBe('unknown');
     expect(target.querySelector('.passband-overlay')).toBeNull();
     for (const [index, leaf] of ['filterWidth', 'pbtInner', 'pbtOuter'].entries()) {
-      state.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 30.1 + index / 10;
+      draft.fieldStatus[`main.${leaf}`].lastObservedMonotonic = 30.1 + index / 10;
       present(14_090_000);
     }
     expect(result.display).toMatchObject({ state: 'current', tuple: { frequencyHz: 14_090_000, widthHz: 1800 } });

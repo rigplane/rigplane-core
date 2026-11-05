@@ -2094,9 +2094,10 @@ function shareParts(previous: unknown, next: unknown, seen: Map<object, unknown>
  * MOR-4213: a pure function of its arguments, memoized on their identity.
  * Every surface, feedback projection and host asks for the model of the same
  * `(state, caps)` pair on each state delivery; that pair is derived once and
- * the result is shared (production builds; DEV re-derives, see below). A
- * fresh derivation reuses the previous result's unchanged parts
- * (`shareUnchangedViewParts`). Callers must treat the result as immutable.
+ * the result is shared. A fresh derivation reuses the previous result's
+ * unchanged parts (`shareUnchangedViewParts`). Callers must treat the result
+ * as immutable, and producers must replace a snapshot (or at least every
+ * changed branch of it) instead of editing it in place.
  */
 export function toRadioViewModel(
   state: ServerState | null, caps: Capabilities | null,
@@ -2110,10 +2111,7 @@ export function toRadioViewModel(
   const scopeDisplayInput = scopeDisplaySnapshot ?? null;
   const lane = argumentLane(txInput, rxAudioInput, scopeDisplayInput);
   const last = lastDerivationByLane.get(lane);
-  // DEV (and every vitest run) re-derives on each call, like the signature
-  // memo this replaced: fixtures and extensions that edit a snapshot in place
-  // must still see their edit. Production snapshots are immutable.
-  if (!import.meta.env.DEV && last !== undefined && last.state === state && last.caps === caps && last.tx === txInput
+  if (last !== undefined && last.state === state && last.caps === caps && last.tx === txInput
     && last.rxAudio === rxAudioInput && last.scopeDisplay === scopeDisplayInput) return last.view;
   const derived = deriveRadioViewModel(state, caps, txInput, rxAudioInput, scopeDisplayInput);
   const view = last === undefined ? derived : shareUnchangedViewParts(last.view, derived);

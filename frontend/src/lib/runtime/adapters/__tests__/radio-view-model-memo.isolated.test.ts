@@ -11,10 +11,8 @@
  *
  * Derivations are counted through `deriveTxCapabilities`, which the adapter
  * calls exactly once per derivation. Isolated file: it wraps that module.
- * The memo is a production-build property (DEV re-derives so fixtures that
- * edit a snapshot in place keep working), so these tests run with DEV off.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { fixtureById } from '../../../../../fixtures/catalog';
@@ -59,11 +57,7 @@ function metadataOnlyDelivery(state: ServerState): ServerState {
   };
 }
 
-beforeEach(() => {
-  vi.stubEnv('DEV', false);
-  derivations.count = 0;
-});
-afterEach(() => { vi.unstubAllEnvs(); });
+beforeEach(() => { derivations.count = 0; });
 
 describe.each(RADIOS)('toRadioViewModel memo — $name', ({ state: makeState, caps: makeCaps }) => {
   it('serves every caller of one (state, caps) pair from a single derivation', () => {
@@ -137,15 +131,3 @@ describe.each(RADIOS)('toRadioViewModel memo — $name', ({ state: makeState, ca
   });
 });
 
-describe('toRadioViewModel in DEV', () => {
-  it('re-derives on every call so an in-place fixture edit is seen', () => {
-    vi.stubEnv('DEV', true);
-    const state = structuredClone(IC7300_STATE);
-    const caps = structuredClone(IC7300_CAPABILITIES);
-    const first = toRadioViewModel(state, caps)!;
-    state.main.freqHz = (state.main.freqHz ?? 14_000_000) + 5_000;
-    const next = toRadioViewModel(state, caps)!;
-    expect(derivations.count).toBe(2);
-    expect(next.vfos).not.toEqual(first.vfos);
-  });
-});

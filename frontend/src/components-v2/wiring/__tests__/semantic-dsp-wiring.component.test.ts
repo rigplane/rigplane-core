@@ -14,7 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 // @ts-expect-error -- Svelte does not publish types for its reactive test harness.
-import { proxy } from 'svelte/internal/client';
+import { get as readSignal, proxy, set as writeSignal, state as rawSignal } from 'svelte/internal/client';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -245,6 +245,25 @@ import { beginCommand, resetCommandLifecycle } from '$lib/stores/commands.svelte
 import type {
   ContinuousScalarBinding, ContinuousScalarRendererLease, ContinuousScalarView,
 } from '../../../primitives/scalar/continuous-scalar.svelte';
+import { editState } from '$lib/transport/__tests__/support/state-edit';
+
+// MOR-4213: `runtime.state` / `runtime.caps` are raw snapshots in production
+// (`$state.raw` stores), replaced on every change and never edited in place,
+// and `toRadioViewModel` memoizes on their identity. The harness holds them
+// the same way: a raw signal per snapshot, so assigning a new snapshot is what
+// updates the surfaces.
+const stateSignal = rawSignal(null);
+const capsSignal = rawSignal(null);
+Object.defineProperty(h, 'state', {
+  get: () => readSignal(stateSignal), set: (value: unknown) => writeSignal(stateSignal, value),
+});
+Object.defineProperty(h, 'caps', {
+  get: () => readSignal(capsSignal), set: (value: unknown) => writeSignal(capsSignal, value),
+});
+/** A delivery: a new state snapshot built by the client's delta applier. */
+function deliver(change: (state: { main: Record<string, unknown>; fieldStatus: Record<string, unknown> }) => void): void {
+  h.state = editState(h.state as ServerState, change as unknown as (state: ServerState) => void);
+}
 
 
 /** `lastObservedMonotonic` is what `display-observation.ts: validEvidence`
@@ -816,14 +835,13 @@ describe('desktop-v2 declares a real dsp zone; the cockpit does not (MOR-1368, S
  */
 describe('no Notch width control for an undeclared field (MOR-2726)', () => {
   function useUndeclaredNotchWidth(): void {
-    h.state = proxy(liveState(true) as object);
-    const state = h.state as unknown as {
-      main: Record<string, unknown>; fieldStatus: Record<string, unknown>;
-    };
-    state.main.manualNotchWidth = null;
-    state.fieldStatus['main.manualNotchWidth'] = {
-      storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
-    };
+    h.state = liveState(true);
+    deliver((state) => {
+      state.main.manualNotchWidth = null;
+      state.fieldStatus['main.manualNotchWidth'] = {
+        storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
+      };
+    });
     h.caps = {
       ...liveCaps(true),
       notchWidthChoices: [],
@@ -857,7 +875,7 @@ describe('no Notch width control for an undeclared field (MOR-2726)', () => {
   });
 
   it('keeps the WIDE / MID / NAR group there when the receiver declares the field', () => {
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     h.caps = {
       ...liveCaps(true),
       notchWidthChoices: [
@@ -893,7 +911,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
 
   it('moves one hosted set from named Standard seats to grouped SDR without replacing its host', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     const props = renderHosted();
     const root = q('[data-testid="semantic-radio-surfaces"]');
     const staleStandardNr = retainedInvocations.get('NR')!;
@@ -907,7 +925,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     }
     expect(rangeFields()).toEqual([]);
 
-    (h.state as { main: Record<string, unknown> }).main.nr = false;
+    deliver((s) => { s.main.nr = false; });
     props.skinId = 'sdr-test';
     flushSync();
     expect(q('[data-testid="semantic-radio-surfaces"]')).toBe(root);
@@ -942,7 +960,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
    */
   it('keeps the nbWidth binding, its pending evidence and its live lease across Standard→SDR', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     const props = renderHosted();
     vi.useFakeTimers();
     q('[data-testid="external-NB"]')!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
@@ -1007,29 +1025,28 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
 
   it('maps NOTCH to manual, A-NOTCH to auto, and selected clicks to off', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     renderHosted();
 
     retainedInvocations.get('NOTCH')!();
     expect(h.notchMode).toHaveBeenLastCalledWith('manual');
-    (h.state as { main: Record<string, unknown> }).main.manualNotch = true;
+    deliver((s) => { s.main.manualNotch = true; });
     flushSync();
     retainedInvocations.get('NOTCH')!();
     expect(h.notchMode).toHaveBeenLastCalledWith('off');
 
-    (h.state as { main: Record<string, unknown> }).main.manualNotch = false;
-    (h.state as { main: Record<string, unknown> }).main.autoNotch = false;
+    deliver((s) => { s.main.manualNotch = false; s.main.autoNotch = false; });
     flushSync();
     retainedInvocations.get('A-NOTCH')!();
     expect(h.notchMode).toHaveBeenLastCalledWith('auto');
-    (h.state as { main: Record<string, unknown> }).main.autoNotch = true;
+    deliver((s) => { s.main.autoNotch = true; });
     flushSync();
     retainedInvocations.get('A-NOTCH')!();
     expect(h.notchMode).toHaveBeenLastCalledWith('off');
   });
 
   it('keeps AGC mode in the left panel and exposes AGC time once in right DSP', () => {
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     renderHosted();
     expect(q('[data-part="agc"] [data-testid="dsp-nbWidth"]')).toBeNull();
     const agcButtons = [...target.querySelectorAll<HTMLButtonElement>('button')]
@@ -1052,11 +1069,12 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
   // field), and a function the radio does not declare is NOT DRAWN (owner rule
   // 2026-09-21). The field status stays the undeclared absence seed.
   it('draws NO AGC-T key when the receiver is not declared (no agc_time_constant tag, FTX-1 shape)', () => {
-    h.state = proxy(liveState(true) as object);
-    (h.state as unknown as { fieldStatus: Record<string, unknown> })
-      .fieldStatus['main.agcTimeConstant'] = {
+    h.state = liveState(true);
+    deliver((s) => {
+      s.fieldStatus['main.agcTimeConstant'] = {
         storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
       };
+    });
     h.caps = {
       ...liveCaps(true),
       capabilities: liveCaps(true).capabilities
@@ -1071,8 +1089,8 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
   // MOR-2527: a DECLARED-but-unread AGC time keeps the key in place with its
   // label and NO value text — never a `?` placeholder — and the ▾ affordance.
   it('renders AGC-T with no value and no "?" while the reading is unknown', () => {
-    h.state = proxy(liveState(true) as object);
-    (h.state as unknown as { main: Record<string, unknown> }).main.agcTimeConstant = null;
+    h.state = liveState(true);
+    deliver((s) => { s.main.agcTimeConstant = null; });
     renderHosted();
     const agcButton = [...target.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.trim().startsWith('AGC-T'))!;
@@ -1083,7 +1101,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
 
   it('opens and closes NB settings from its chevron without sending an NB command', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     renderHosted();
     const open = q<HTMLButtonElement>('button[title="Open NB settings"]')!;
     expect(open.textContent).toContain('▾');
@@ -1131,7 +1149,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
   });
 
   it('disables an open AGC-time adjustment when its reading becomes stale', () => {
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     renderHosted();
     const agcButton = [...target.querySelectorAll<HTMLButtonElement>('button')]
       .find(button => button.textContent?.trim().startsWith('AGC-T'))!;
@@ -1140,13 +1158,11 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(agcButton.getAttribute('aria-label')).toBe('AGC time settings');
     expect(agcButton.getAttribute('aria-expanded')).toBe('true');
     expect(q(`#${agcButton.getAttribute('aria-controls')}`)).not.toBeNull();
-    const status = (h.state as ServerState).fieldStatus as unknown as Record<string, {
-      storePath: string; observed: boolean; freshness: string; availability: string;
-      lastObservedMonotonic: number;
-    }>;
-    status['main.agcTimeConstant'] = {
-      ...fresh, observed: false, freshness: 'stale', availability: 'unavailable',
-    };
+    deliver((s) => {
+      s.fieldStatus['main.agcTimeConstant'] = {
+        ...fresh, observed: false, freshness: 'stale', availability: 'unavailable',
+      };
+    });
     flushSync();
     const slider = q<HTMLElement>('[data-testid="dsp-agcTimeConstant"] [role="slider"]')!;
     expect(slider.closest('.vc-hbar')?.classList.contains('hw-illum')).toBe(true);
@@ -1160,7 +1176,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
 
   it('opens NR settings after one held Space despite key repeat and suppresses its click', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    h.state = proxy(liveState(true) as object);
+    h.state = liveState(true);
     renderHosted();
     const nr = q<HTMLButtonElement>('[data-testid="external-NR"]')!;
     vi.useFakeTimers();
@@ -1214,16 +1230,17 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
 
   it('keeps context through value, pending, slot, and label changes while views stay current', () => {
     h.selectedFiniteAppearance = finiteAppearance;
-    h.state = proxy(liveState(true) as object);
-    h.caps = proxy(liveCaps(true) as object);
+    h.state = liveState(true);
+    h.caps = liveCaps(true);
     render();
     const retainedNr = retainedInvocations.get('NR')!;
     const retainedAgc = retainedInvocations.get('AGC mode')!;
 
-    (h.state as { main: Record<string, unknown> }).main = {
-      ...(h.state as { main: Record<string, unknown> }).main, nr: false, activeSlot: 'B',
-    };
-    (h.caps as { agcLabels: Record<string, string> }).agcLabels['1'] = 'QUICK';
+    deliver((s) => { s.main = { ...s.main, nr: false, activeSlot: 'B' }; });
+    // A capability refresh installs a new parsed body.
+    const caps = structuredClone(h.caps) as { agcLabels: Record<string, string> };
+    caps.agcLabels['1'] = 'QUICK';
+    h.caps = caps;
     beginCommand({ id: 'pending-nr', name: 'set_nr', params: { on: true, receiver: 0 }, originalEpoch: 1 });
     publishAuthority();
     flushSync();
