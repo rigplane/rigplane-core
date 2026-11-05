@@ -891,82 +891,27 @@
     hardwareConnected: runtime.scope.hardwareScopeConnected,
   });
 
-  type RadioViewProjection = Readonly<{
-    stateSignature: string | null;
-    caps: ControlAuthorityPublication['caps'];
-    tx: typeof txState;
-    rxAudio: typeof rxAudioSnapshot;
-    scopeDisplay: typeof scopeDisplaySnapshot;
-    view: RadioViewModel | null;
-  }>;
-  let lastRadioViewProjection: RadioViewProjection | null = null;
+  let lastProjectedView: RadioViewModel | null = null;
   let radioViewProjectionVersion = $state(0);
-
-  const VIEW_METADATA_KEYS = new Set([
-    'connection', 'freshnessRevision', 'healthRevision', 'observationSeq',
-    'publicStateSeq', 'radioHealth', 'revision', 'stateRevision', 'transportSeq',
-    'updatedAt', 'wsClients',
-  ]);
-  const immutableStateSignatures = new WeakMap<object, string>();
-
-  /**
-   * Revisions are transport admission evidence, not a complete view-model
-   * identity: test publishers and compatibility sources may deliver a
-   * distinct same-revision snapshot, while meter freshness updates replace
-   * the large fieldStatus map without changing any visible fact.  Hash only
-   * adapter inputs, reducing each status entry to the four properties the
-   * adapter reads.  Production snapshots are immutable, so their signatures
-   * are memoized by identity; DEV deliberately recomputes to catch accidental
-   * in-place mutation in fixtures and extensions.
-   */
-  function radioViewStateSignature(state: ControlAuthorityPublication['state']): string | null {
-    if (state === null) return null;
-    if (!import.meta.env.DEV) {
-      const memoized = immutableStateSignatures.get(state);
-      if (memoized !== undefined) return memoized;
-    }
-    const record = state as unknown as Record<string, unknown>;
-    const values = Object.keys(record).sort()
-      .filter((key) => key !== 'fieldStatus' && !VIEW_METADATA_KEYS.has(key))
-      .map((key) => [key, record[key]]);
-    const statuses = Object.entries(state.fieldStatus ?? {}).sort(([left], [right]) =>
-      left.localeCompare(right)).map(([path, status]) => [
-        path, status.observed, status.freshness, status.availability, status.quality ?? null,
-      ]);
-    const signature = JSON.stringify([values, statuses]);
-    if (!import.meta.env.DEV) immutableStateSignatures.set(state, signature);
-    return signature;
-  }
 
   /**
    * Every authority host receives the same immutable radio/capability pair.
-   * Keep one fully-qualified projection for that pair and the App-owned TX,
-   * audio, and scope snapshots instead of rebuilding the full semantic model
-   * independently in every host subscription.
+   * `toRadioViewModel` memoizes on its argument identities and reuses the
+   * unchanged parts of its previous result (MOR-4213), so the canonical view
+   * and every host projection of one pair share one derivation, and a
+   * delivery that changes no visible fact yields the same view object.
    */
   function projectRadioView(
     state: ControlAuthorityPublication['state'], caps: ControlAuthorityPublication['caps'],
     publishCanonical = false,
   ): RadioViewModel | null {
-    const txSnapshot = txState;
-    const audioSnapshot = rxAudioSnapshot;
-    const displaySnapshot = scopeDisplaySnapshot;
-    const cached = lastRadioViewProjection;
-    const stateSignature = radioViewStateSignature(state);
-    if (cached !== null
-      && cached.stateSignature === stateSignature
-      && cached.caps === caps
-      && cached.tx === txSnapshot
-      && cached.rxAudio === audioSnapshot
-      && cached.scopeDisplay === displaySnapshot) return cached.view;
     const view = guardRadioViewModel(
-      toRadioViewModel(state, caps, txSnapshot, audioSnapshot, displaySnapshot),
+      toRadioViewModel(state, caps, txState, rxAudioSnapshot, scopeDisplaySnapshot),
     );
-    lastRadioViewProjection = {
-      stateSignature, caps,
-      tx: txSnapshot, rxAudio: audioSnapshot, scopeDisplay: displaySnapshot, view,
-    };
-    if (publishCanonical) radioViewProjectionVersion += 1;
+    if (view !== lastProjectedView) {
+      lastProjectedView = view;
+      if (publishCanonical) radioViewProjectionVersion += 1;
+    }
     return view;
   }
 
