@@ -990,6 +990,19 @@ describe('RxPlayer delivery stalls while the window is not focused (MOR-4221)', 
     p.stop();
   });
 
+  it('does not re-record an ended stall from a burst delivered after the window is back', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 100);
+    tick += 50; ctx.currentTime = at(tick);   // 1 s stall; the buffer ran dry
+    window.dispatchEvent(new Event('focus'));  // focus returns before the burst lands
+    for (let i = 0; i < 50; i++) p.feed(pcm16(960));
+    // Foreground bounds again: the burst is cut at the 300 ms ceiling, the
+    // latency is not held at ~1 s.
+    expect(p.stats().bufferDepthMs).toBeLessThanOrEqual(310);   // 50 ms floor + 13 frames
+    expect(p.stats().playback.scheduledFrames).toBe(100 + 13);
+    p.stop();
+  });
+
   it('returns to the configured latency when the window is back in the foreground', () => {
     const p = new RxPlayer(); p.start();
     steady(p, 100);

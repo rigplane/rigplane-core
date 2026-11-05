@@ -432,7 +432,9 @@ export class RxPlayer {
     if (typeof document !== 'undefined' && !document.hidden) {
       // Back in the foreground the delivery stalls are over: forget them and
       // return to the configured latency.
-      this._stallSec = 0;
+      // The previous frame's time goes too: a burst that arrives after this
+      // point must not re-record the stall that just ended.
+      this._resetStall();
       this._trimToForegroundBounds();
     }
     this._resume();
