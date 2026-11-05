@@ -17,7 +17,10 @@ payloads in ``state-wire-goldens.json`` (``polledDcdOpen``/``Closed``/
 against ``polledDcdDeltaOpen``/``Closed``: the envelope fields (type,
 revisions, state-contract version, provider generation) and the ``dcd``
 value, alias and ``fieldStatus`` rows, and the state a client reconstructs
-from baseline plus delta. The browser spec
+from baseline plus delta. A second client on ``/api/v1/ws?state_delta=2``
+(MOR-4206) gets the same flip as a leaf delta; its baseline and the frame that
+opens the squelch are held to ``polledDcdLeafStreamOpen`` the same way, with
+the ``set`` operations compared in place of ``changed``. The browser spec
 ``frontend/src/components-v2/layout/__tests__/state-wire-goldens.busy-lamp.isolated.test.ts``
 replays those same goldens through the real client, view-model adapter,
 ``VfoSurface`` and ``MobileRadioLayout``, so the lamp is tied to what the
@@ -136,6 +139,69 @@ def _assert_delta_matches_golden(
     )
 
 
+def _leaf_dcd_ops(envelope: dict[str, Any]) -> dict[tuple[str, ...], Any]:
+    """The ``set`` operations of a leaf delta that touch the dcd slice.
+
+    Paths into the volatile row keys are left out, as ``_dcd_slice`` leaves
+    those keys out of a row.
+    """
+    ops: dict[tuple[str, ...], Any] = {}
+    for path, value in envelope["set"]:
+        key = tuple(path)
+        if key[:2] in {("main", "dcd"), ("main", "sMeterSqlOpen")} or (
+            key[:2] in {("fieldStatus", row) for row in _DCD_FIELD_ROWS}
+            and not (len(key) == 3 and key[2] in _VOLATILE_ROW_KEYS)
+        ):
+            ops[key] = value
+    return ops
+
+
+def _assert_leaf_baseline_matches_golden(
+    golden: dict[str, Any], baseline: dict[str, Any]
+) -> None:
+    """Hold the full frame a ``?state_delta=2`` client gets first to its golden."""
+    assert baseline["type"] == "full" == golden["type"]
+    assert set(baseline) == set(golden)
+    assert baseline["stateContractVersion"] == golden["stateContractVersion"]
+    assert _dcd_slice(
+        baseline["data"]["main"], baseline["data"]["fieldStatus"]
+    ) == _dcd_slice(golden["data"]["main"], golden["data"]["fieldStatus"])
+
+
+def _assert_leaf_delta_matches_golden(
+    golden: dict[str, Any],
+    baseline: dict[str, Any],
+    envelope: dict[str, Any],
+    reconstructed: dict[str, Any],
+    expected_state: dict[str, Any],
+) -> None:
+    """Hold one live leaf delta to the ``polledDcdLeafStreamOpen`` delta frame.
+
+    The leaf counterpart of ``_assert_delta_matches_golden``: the same
+    envelope checks, with the dcd ``set`` operations in place of ``changed``.
+    """
+    assert envelope["type"] == "delta" == golden["type"]
+    assert envelope["deltaVersion"] == golden["deltaVersion"] == 2
+    # No extra envelope fields (``unset`` appears only when something was).
+    assert set(envelope) - {"unset"} == set(golden)
+    assert envelope["stateContractVersion"] == golden["stateContractVersion"]
+    assert isinstance(envelope["providerGeneration"], int)
+    assert envelope["providerGeneration"] == baseline["providerGeneration"]
+    assert envelope["stateRevision"] > baseline["stateRevision"]
+    assert envelope["observationSeq"] > baseline["observationSeq"]
+    assert envelope["freshnessRevision"] >= baseline["freshnessRevision"]
+    for path in envelope.get("unset", []):
+        assert path[0] not in {"main", "fieldStatus"}, f"the delta unsets {path}"
+    # The dcd value, its alias and their status rows change leaf by leaf, as
+    # the golden frame's operations change them.
+    assert _leaf_dcd_ops(envelope) == _leaf_dcd_ops(golden)
+    assert reconstructed["main"]["dcd"] is True
+    assert (
+        _dcd_slice(reconstructed["main"], reconstructed["fieldStatus"])
+        == expected_state
+    )
+
+
 async def _wait_until(predicate: Callable[[], Any], what: str) -> None:
     try:
         async with asyncio.timeout(_DEADLINE_S):
@@ -241,13 +307,24 @@ async def test_polled_open_then_closed_squelch_reaches_http_and_ws(model: str) -
         )
 
         # A client already connected holds the full baseline, then sees each
-        # change arrive as a delta on the stream.
-        async with session.ws_connect(base.replace("http", "ws") + "/api/v1/ws") as ws:
+        # change arrive as a delta on the stream. The second client asked for
+        # leaf deltas (MOR-4206) and gets the same flip in that rendering.
+        ws_url = base.replace("http", "ws") + "/api/v1/ws"
+        async with (
+            session.ws_connect(ws_url) as ws,
+            session.ws_connect(ws_url + "?state_delta=2") as leaf_ws,
+        ):
             baseline = await _next_state_envelope(ws)
             assert baseline["type"] == "full"
             assert _dcd_slice(
                 baseline["data"]["main"], baseline["data"]["fieldStatus"]
             ) == _golden_slice(model, "polledDcdClosed")
+            leaf_golden_baseline, leaf_golden_delta = _GOLDENS[model][
+                "polledDcdLeafStreamOpen"
+            ]
+            leaf_baseline = await _next_state_envelope(leaf_ws)
+            _assert_leaf_baseline_matches_golden(leaf_golden_baseline, leaf_baseline)
+            assert leaf_baseline["data"]["main"]["dcd"] is False
 
             stack.sim.set_squelch_open(True)
             open_delta, held = await _await_dcd_delta(ws, baseline["data"], True)
@@ -256,6 +333,16 @@ async def test_polled_open_then_closed_squelch_reaches_http_and_ws(model: str) -
                 baseline,
                 open_delta,
                 held,
+                _golden_slice(model, "polledDcdOpen"),
+            )
+            leaf_delta, leaf_held = await _await_dcd_delta(
+                leaf_ws, leaf_baseline["data"], True
+            )
+            _assert_leaf_delta_matches_golden(
+                leaf_golden_delta,
+                leaf_baseline,
+                leaf_delta,
+                leaf_held,
                 _golden_slice(model, "polledDcdOpen"),
             )
 
@@ -313,6 +400,7 @@ def test_the_goldens_cover_the_radios_exercised_here() -> None:
             "polledDcdUnanswered",
             "polledDcdDeltaOpen",
             "polledDcdDeltaClosed",
+            "polledDcdLeafStreamOpen",
         ):
             assert case in _GOLDENS[model], f"{model}: no {case} golden"
 

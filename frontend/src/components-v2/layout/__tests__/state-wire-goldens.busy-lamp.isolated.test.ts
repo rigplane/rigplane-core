@@ -30,7 +30,10 @@
  * `WebServer.register_control_event_queue(..., leaf_deltas=True)` returns, then
  * the `deltaVersion: 2` frame the next broadcast queues for it. The Python
  * counterpart on the same golden is
- * `tests/web/test_state_wire_goldens.py::test_polled_dcd_leaf_stream_rebuilds_what_the_top_level_delta_rebuilds`.
+ * `tests/test_dcd_busy_wire_e2e.py::test_polled_open_then_closed_squelch_reaches_http_and_ws`:
+ * a client on the real `/api/v1/ws?state_delta=2` socket receives the flip,
+ * and its baseline and the frame that opens the squelch are compared against
+ * this golden's dcd value, alias and status rows.
  * It turns red when `connect` stops asking for `state_delta=2` or when the
  * client stops applying `set` operations (the lamp stays dark).
  *
