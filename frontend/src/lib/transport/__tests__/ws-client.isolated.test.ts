@@ -1367,6 +1367,32 @@ describe('WsChannel', () => {
     ch.disconnect();
   });
 
+  it('a message stream does not re-arm the heartbeat timer per message (MOR-4213)', async () => {
+    const { WsChannel } = await import('../ws-client');
+    const ch = new WsChannel();
+
+    ch.connect('ws://test');
+    instances[0].simulateOpen();
+    const armed = vi.spyOn(globalThis, 'setTimeout');
+    const cleared = vi.spyOn(globalThis, 'clearTimeout');
+    // 40 messages a second for 2 s, the measured state-channel rate.
+    for (let i = 0; i < 80; i++) {
+      vi.advanceTimersByTime(25);
+      instances[0].simulateMessage(JSON.stringify({ type: 'ack', id: `${i}` }));
+    }
+    const heartbeatArms = armed.mock.calls.filter(([, delay]) => delay === 30_000);
+    expect(heartbeatArms).toHaveLength(0);
+    expect(cleared).not.toHaveBeenCalled();
+    armed.mockRestore();
+    cleared.mockRestore();
+    // The deadline still follows the newest frame.
+    vi.advanceTimersByTime(29_999);
+    expect(ch.state).toBe('connected');
+    vi.advanceTimersByTime(1);
+    expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
+    ch.disconnect();
+  });
+
   it('disconnect stops the keepalive and no ping is sent afterwards', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();

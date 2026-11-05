@@ -373,9 +373,15 @@
   let identifyTimer: ReturnType<typeof setTimeout> | null = null;
   let lastIdentifiedFreq = 0;
 
+  // MOR-4213: a derived number, so the effect below re-runs only when the
+  // active frequency changes. Read directly, every state delivery re-ran the
+  // effect, whose cleanup cleared the 800 ms debounce and re-armed it: the
+  // timer never fired while the radio streamed state.
+  let activeFrequencyHz = $derived(getActiveFrequencyHz());
+
   // Poll frequency and identify station
   $effect(() => {
-    const freq = getActiveFrequencyHz();
+    const freq = activeFrequencyHz;
     // `null` is "not observed"; `0` was never a real tuned frequency. Both
     // mean "nothing to identify" — the same short-circuit this guard applied
     // before A15 replaced the store read, so the idle render is unchanged.

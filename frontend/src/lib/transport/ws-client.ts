@@ -158,6 +158,8 @@ export class WsChannel {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `performance.now()` of the newest frame from the current socket. */
+  private lastServerFrameAt = 0;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private attempt = 0;
   private intentionalClose = false;
@@ -779,12 +781,28 @@ export class WsChannel {
     this.commandDeliveryHandlers.forEach((handler) => handler(event));
   }
 
+  /**
+   * A server frame arrived: the silence deadline moves to 30 s from now.
+   * MOR-4213: the frame only records its time. One timer stays armed and, on
+   * waking early, sleeps for the rest of the deadline; clearing and re-arming
+   * a timer on every frame cost two timer calls per message (tens a second).
+   */
   private _resetHeartbeat() {
-    this._clearHeartbeat();
+    this.lastServerFrameAt = performance.now();
+    if (this.heartbeatTimer === null) this._armHeartbeat(HEARTBEAT_TIMEOUT_MS);
+  }
+
+  private _armHeartbeat(delayMs: number) {
     this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      const silentMs = performance.now() - this.lastServerFrameAt;
+      if (silentMs < HEARTBEAT_TIMEOUT_MS) {
+        this._armHeartbeat(HEARTBEAT_TIMEOUT_MS - silentMs);
+        return;
+      }
       console.warn('[ws] heartbeat timeout — closing');
       this.ws?.close();
-    }, HEARTBEAT_TIMEOUT_MS);
+    }, delayMs);
   }
 
   private _clearHeartbeat() {
