@@ -58,6 +58,20 @@ _NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 50.0
 _SERIAL_SCOPE_MIN_BAUD = 115200
 
 
+def low_baud_scope_guidance() -> str:
+    """What to do when a CI-V serial radio runs below the scope baud.
+
+    One text for the backend's scope refusal and for serial discovery's
+    low-baud result (MOR-4207), so setup shows the same advice.
+    """
+    return (
+        f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud and is off at a "
+        f"lower speed: set CI-V USB Baud Rate to {_SERIAL_SCOPE_MIN_BAUD} "
+        "in the radio's CI-V menu (or restart the radio and connect "
+        "rigplane to it first), then connect again."
+    )
+
+
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
     if raw is None:
@@ -1054,12 +1068,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 "override is on, so it is attempted at this speed but may "
                 "time out."
             )
-        return (
-            f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud and is off at a "
-            f"lower speed: set CI-V USB Baud Rate to {_SERIAL_SCOPE_MIN_BAUD} "
-            "in the radio's CI-V menu (or restart the radio and connect "
-            "rigplane to it first), then connect again."
-        )
+        return low_baud_scope_guidance()
 
     async def _sweep_serial_baud(
         self, epoch: int, owner_stop_epoch: int
@@ -1076,7 +1085,7 @@ class _IcomSerialRadioBase(CoreRadio):
         is and warns), unless the attempt was retired meanwhile (its link then
         belongs to the successor). Returns the answered payload, or ``None``.
         """
-        from .discovery import SERIAL_PROBE_BAUD_RATES
+        from .discovery import serial_probe_baud_rates
 
         def retired() -> bool:
             return (
@@ -1093,7 +1102,7 @@ class _IcomSerialRadioBase(CoreRadio):
         start = self._serial_baudrate
         payload: bytes | None = None
         try:
-            for baud in SERIAL_PROBE_BAUD_RATES:
+            for baud in serial_probe_baud_rates("civ"):
                 if baud == start:
                     continue
                 if retired() or not link.connected or not link.healthy:

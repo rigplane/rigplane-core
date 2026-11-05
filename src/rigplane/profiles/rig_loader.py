@@ -962,6 +962,7 @@ class RigConfig:
                 self.commands.get("set_selected_mode"), CivCommandSpec
             ),
             protocol_type=self.protocol_type,
+            default_baud=self.default_baud,
             hamlib_model_id=self.hamlib_model_id,
             controls=controls,
             meter_calibrations=self.meter_calibrations,

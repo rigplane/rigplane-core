@@ -5253,6 +5253,8 @@ async def _cmd_web(
 async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     """Discover radios on LAN and/or serial ports."""
     from rigplane.discovery import (
+        RadioDiscoveryResult,
+        RadioDiscoveryResultDict,
         build_setup_discovery_payload,
         dedupe_radios,
         discover_lan_radios,
@@ -5303,17 +5305,12 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     else:
         lan_result, serial_result = results[0], []
 
-    import dataclasses
-
     lan_radios: list[dict[str, Any]] = (
         lan_result if not isinstance(lan_result, BaseException) else []
     )
     _serial_raw = serial_result if not isinstance(serial_result, BaseException) else []
-    serial_radios: list[dict[str, Any]] = [
-        dataclasses.asdict(r)
-        if dataclasses.is_dataclass(r) and not isinstance(r, type)
-        else r
-        for r in _serial_raw
+    serial_radios: list[RadioDiscoveryResultDict] = [
+        r.to_dict() if isinstance(r, RadioDiscoveryResult) else r for r in _serial_raw
     ]
 
     scan_failed = False
