@@ -250,6 +250,187 @@ async def test_refusal_names_the_oldest_open_read_sink() -> None:
     assert tracker.take_refused_reads() == ()
 
 
+#: CI-V addresses of two radios on the shared tracker (MOR-4209): IC-705, IC-7300.
+_RADIO_ADDRS = pytest.mark.parametrize(
+    "radio_addr", [0xA4, 0x94], ids=["ic705", "ic7300"]
+)
+
+
+def _directed_response(
+    radio_addr: int, command: int, data: bytes, *, sub: int | None = None
+) -> CivFrame:
+    return CivFrame(
+        to_addr=0xE0, from_addr=radio_addr, command=command, sub=sub, data=data
+    )
+
+
+def _nak_from(radio_addr: int) -> CivFrame:
+    return CivFrame(
+        to_addr=0xE0, from_addr=radio_addr, command=0xFA, sub=None, data=b""
+    )
+
+
+def _register_reads(tracker: CivRequestTracker, *keys: CivRequestKey) -> None:
+    for key in keys:
+        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+
+
+_FREQ = CivRequestKey(command=0x03, sub=None)
+_S_METER = CivRequestKey(command=0x15, sub=0x02)
+_PTT = CivRequestKey(command=0x1C, sub=0x00)
+_TUNER = CivRequestKey(command=0x1C, sub=0x01)
+
+
+@_RADIO_ADDRS
+@pytest.mark.asyncio
+async def test_a_refusal_after_a_lost_answer_names_the_refused_read(
+    radio_addr: int,
+) -> None:
+    """MOR-4209: on an ordered transport a read whose answer was lost does
+    not take a later refusal.
+
+    The radio answers in order. Once it has answered a read sent after an
+    older still-open one, the older one's answer is not coming, so a bare FA
+    that follows belongs to a read the radio has not answered yet — not to
+    the lost one. Before the fix the lost read's sink stayed the oldest and
+    took the refusal: a frequency read was reported refused (and withheld)
+    while the tuner read the radio really refused timed out.
+    """
+    tracker = CivRequestTracker()
+    _register_reads(tracker, _FREQ, _S_METER, _TUNER)
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(radio_addr, 0x15, b"\x00\x40", sub=0x02),
+        ),
+        ordered_ingress=True,
+    )
+    assert tracker.resolve(
+        CivEvent(type=CivEventType.NAK, frame=_nak_from(radio_addr)),
+        ordered_ingress=True,
+    )
+
+    assert tracker.take_refused_reads() == (_TUNER,)
+    assert tracker.ack_sink_count == 0
+
+
+@_RADIO_ADDRS
+@pytest.mark.asyncio
+async def test_an_unordered_transport_keeps_older_sinks_open(radio_addr: int) -> None:
+    """MOR-4209: LAN does not reorder (``IcomTransport.ordered_ingress`` is
+    False), so the read B answered first does not prove read A's answer lost.
+    A's retransmitted FA arriving after B's answer refuses A, and the later
+    read C stays open instead of being refused."""
+    tracker = CivRequestTracker()
+    _register_reads(tracker, _FREQ, _S_METER, _TUNER)
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(radio_addr, 0x15, b"\x00\x40", sub=0x02),
+        ),
+        ordered_ingress=False,
+    )
+    tracker.resolve(
+        CivEvent(type=CivEventType.NAK, frame=_nak_from(radio_addr)),
+        ordered_ingress=False,
+    )
+
+    assert tracker.take_refused_reads() == (_FREQ,)
+    assert tracker.ack_sink_count == 1  # C still waits for its own answer
+
+
+@_RADIO_ADDRS
+@pytest.mark.asyncio
+async def test_an_answer_also_retires_an_older_write_sink(radio_addr: int) -> None:
+    """MOR-4209: a write's FB/FA would have arrived before a later read's
+    answer, so that answer retires the older write sink too (its ACK is
+    lost), and the next FA reaches the read the radio is answering."""
+    tracker = CivRequestTracker()
+    tracker.register_ack(wait=False)  # a fire-and-forget write, ACK lost
+    _register_reads(tracker, _FREQ, _TUNER)
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(radio_addr, 0x03, b"\x00\x40\x07\x14\x00"),
+        ),
+        ordered_ingress=True,
+    )
+    assert tracker.ack_sink_count == 1
+    assert tracker.ack_unclaimed_at is not None
+    tracker.resolve(
+        CivEvent(type=CivEventType.NAK, frame=_nak_from(radio_addr)),
+        ordered_ingress=True,
+    )
+
+    assert tracker.take_refused_reads() == (_TUNER,)
+
+
+@_RADIO_ADDRS
+@pytest.mark.asyncio
+async def test_a_broadcast_takes_no_sink(radio_addr: int) -> None:
+    """MOR-4209: an unsolicited broadcast (to 0x00) answers no request.
+
+    A 1C 00 transceive broadcast must neither consume the pending PTT read's
+    sink nor retire the older sinks. When the PTT read's own directed answer
+    then arrives it retires the PTT sink and the lost frequency read before
+    it, so the following FA names only the tuner read.
+    """
+    tracker = CivRequestTracker()
+    _register_reads(tracker, _FREQ, _PTT, _TUNER)
+
+    broadcast = CivFrame(
+        to_addr=0x00, from_addr=radio_addr, command=0x1C, sub=0x00, data=b"\x00"
+    )
+    assert not tracker.resolve(
+        CivEvent(type=CivEventType.RESPONSE, frame=broadcast), ordered_ingress=True
+    )
+    assert tracker.ack_sink_count == 3
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(radio_addr, 0x1C, b"\x00", sub=0x00),
+        ),
+        ordered_ingress=True,
+    )
+    tracker.resolve(
+        CivEvent(type=CivEventType.NAK, frame=_nak_from(radio_addr)),
+        ordered_ingress=True,
+    )
+
+    assert tracker.take_refused_reads() == (_TUNER,)
+    assert tracker.ack_sink_count == 0
+
+
+@_RADIO_ADDRS
+@pytest.mark.asyncio
+async def test_an_answer_leaves_an_older_blocking_waiter_alone(radio_addr: int) -> None:
+    """MOR-4209: only fire-and-forget sinks follow the wire order the
+    commander gives them; a blocking waiter (a raw transaction registers
+    before its own pacing gap) is never retired by someone else's answer."""
+    tracker = CivRequestTracker()
+    blocking = tracker.register_ack(wait=True, consume_backlog=False)
+    assert isinstance(blocking, asyncio.Future)
+    _register_reads(tracker, _FREQ)
+
+    tracker.resolve(
+        CivEvent(
+            type=CivEventType.RESPONSE,
+            frame=_directed_response(radio_addr, 0x03, b"\x00\x40\x07\x14\x00"),
+        ),
+        ordered_ingress=True,
+    )
+    assert not blocking.done()
+    tracker.resolve(
+        CivEvent(type=CivEventType.ACK, frame=_ack_frame_from(radio_addr)),
+        ordered_ingress=True,
+    )
+    assert blocking.done()
+
+
 @pytest.mark.asyncio
 async def test_only_a_refused_read_sink_is_named() -> None:
     tracker = CivRequestTracker()

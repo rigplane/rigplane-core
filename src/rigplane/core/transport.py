@@ -120,7 +120,13 @@ class IcomTransport:
         remote_id: Remote (radio) connection identifier.
         send_seq: Next outgoing tracked sequence number.
         ping_seq: Next outgoing ping sequence number.
+        ordered_ingress: Whether CI-V frames arrive in the order the radio
+            sent them. False: UDP may deliver a retransmitted or delayed
+            datagram after a later one, and the sequence tracking below only
+            detects gaps, it does not reorder (MOR-4209).
     """
+
+    ordered_ingress: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self.state: ConnectionState = ConnectionState.DISCONNECTED
