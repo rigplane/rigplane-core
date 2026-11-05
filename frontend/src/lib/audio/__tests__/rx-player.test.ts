@@ -913,6 +913,98 @@ describe('RxPlayer hidden-tab burst absorption (MOR-3965)', () => {
   });
 });
 
+describe('RxPlayer delivery stalls while the window is not focused (MOR-4221)', () => {
+  // The audio clock keeps running while the page's main thread is starved
+  // (App Nap, an unfocused WKWebView); the WS frames then arrive late and all
+  // at once. FRAME is the 20 ms frame period the server sends at.
+  const FRAME = 0.02;
+  let tick: number;
+  const at = (frames: number) => frames * FRAME;
+  function steady(p: RxPlayer, frames: number): void {
+    for (let i = 0; i < frames; i++) { tick++; ctx.currentTime = at(tick); p.feed(pcm16(960)); }
+  }
+  /** The main thread stalls for `seconds`, then delivers every frame that
+   *  piled up during the stall in one burst. */
+  function stall(p: RxPlayer, seconds: number): void {
+    const burst = Math.round(seconds / FRAME);
+    tick += burst;
+    ctx.currentTime = at(tick);
+    for (let i = 0; i < burst; i++) p.feed(pcm16(960));
+  }
+  beforeEach(() => { tick = 0; setHidden(false); });
+  afterEach(() => { delete (document as any).hidden; });
+
+  it('keeps every late burst and runs dry only on the first stall (visible window, 1 s stalls)', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 100);
+    stall(p, 1.0);
+    // The first stall is unavoidable: nothing is known about stalls yet.
+    expect(p.stats().underruns).toBe(1);
+    steady(p, 100);
+    stall(p, 1.0);
+    steady(p, 100);
+    stall(p, 1.0);
+    // The kept burst deepened the buffer by the stall, so the next two stalls
+    // find audio still queued: no new underrun, and no frame dropped at the
+    // old 300 ms ceiling.
+    expect(p.stats().underruns).toBe(1);
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().playback.scheduledFrames).toBe(100 * 3 + 50 * 3);
+    // After the first stall the timeline is contiguous: no gap, no re-prime.
+    const starts = ctx._srcs.map((src: any) => src.start.mock.calls[0][0]);
+    for (let i = 102; i < starts.length; i++) {
+      expect(starts[i] - starts[i - 1]).toBeCloseTo(FRAME, 6);
+    }
+    p.stop();
+  });
+
+  it('leaves the foreground bounds alone below the stall threshold', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 50);
+    tick += 10; ctx.currentTime = at(tick);   // a 200 ms hiccup: ordinary jitter
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(50 + 13);
+    expect(p.stats().droppedFrames).toBe(87);
+    p.stop();
+  });
+
+  it('forgets the stalls on flush() (reconnect)', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 50);
+    stall(p, 1.0);
+    p.flush();
+    ctx.currentTime += 5;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(50 + 50 + 13);
+    expect(p.stats().droppedFrames).toBe(87);
+    p.stop();
+  });
+
+  it('does not take a paused stream that restarts (audio_start) for a stall', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 50);
+    ctx.currentTime += 10;        // the server stopped the stream for 10 s
+    p.start();                    // audio_start re-invokes start() on the running context
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(50 + 13);
+    p.stop();
+  });
+
+  it('returns to the configured latency when the window is back in the foreground', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 100);
+    stall(p, 1.0);
+    expect(p.stats().bufferDepthMs).toBeGreaterThan(1000);
+    window.dispatchEvent(new Event('focus'));
+    expect(p.stats().bufferDepthMs).toBeLessThanOrEqual(300);
+    // And the next burst is bounded by the configured ceiling again.
+    const before = p.stats().playback.scheduledFrames;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames - before).toBeLessThan(10);
+    p.stop();
+  });
+});
+
 describe('RxPlayer mid-stream codec switch (MOR-588)', () => {
   // Adaptive egress (server-side controller) switches PCM16↔Opus
   // mid-stream; the codec byte travels per frame. The player must

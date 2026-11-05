@@ -58,6 +58,23 @@ const DIAGNOSTIC_MAX_AGE_MS = 2000;
 const BACKGROUND_FLOOR_SEC = 0.4;
 const BACKGROUND_CEILING_SEC = 4.0;
 
+// Delivery stalls (MOR-4221). Playback is scheduled on the audio clock, so it
+// keeps running while the page's main thread is starved (macOS App Nap, an
+// unfocused WKWebView, a throttled background tab); what breaks is the frames
+// arriving late and then all at once. A burst longer than the ceiling used to
+// be dropped down to the ceiling, and a stall longer than the buffered lead
+// ran the buffer dry, so every stall was heard as a gap. A gap between two
+// scheduled frames of at least STALL_MIN_SEC (measured on the audio clock,
+// which does not stall) is a delivery stall; the player then keeps the late
+// burst: the ceiling widens to floor + the longest stall seen + margin, and
+// the kept burst deepens the buffer by the stall, so the next stall of that
+// size no longer runs it dry. Without a stall the configured bounds apply as
+// before; the stall resets on flush(), stop() and when the page is back in
+// the foreground (the existing trim).
+const STALL_MIN_SEC = 0.25;
+const STALL_MAX_SEC = 2.0;
+const STALL_CEILING_MARGIN_SEC = 0.25;
+
 // A scheduled buffer source and its slot on the context clock — the pending
 // backlog _trimToForegroundBounds() walks on the hidden→visible transition.
 type ScheduledSource = {
@@ -185,6 +202,10 @@ export class RxPlayer {
   // Cumulative since start(); reset on stop().
   private _underruns = 0;
   private _droppedFrames = 0;
+  // Delivery-stall tracking (see STALL_MIN_SEC): the audio-clock time of the
+  // previous schedule() call and the longest stall since it was last reset.
+  private _lastScheduleAt: number | null = null;
+  private _stallSec = 0;
   // Scheduled-but-not-yet-ended buffer sources (MOR-3965). Entries remove
   // themselves on 'ended'; stop() clears the list with the context.
   private _scheduledSrcs: ScheduledSource[] = [];
@@ -290,6 +311,8 @@ export class RxPlayer {
    */
   start(): void {
     if (this.ctx) {
+      // A restart (audio_start, reconnect) is not a stall: the stream paused.
+      this._lastScheduleAt = null;
       this._resume();
       return;
     }
@@ -350,6 +373,7 @@ export class RxPlayer {
     this._underruns = 0;
     this._droppedFrames = 0;
     this._scheduledSrcs = [];
+    this._resetStall();
   }
 
   /** Link-quality snapshot for the periodic audio_stats uplink (MOR-585).
@@ -406,6 +430,9 @@ export class RxPlayer {
    *  a stable reference. */
   private _onResumeEvent = (): void => {
     if (typeof document !== 'undefined' && !document.hidden) {
+      // Back in the foreground the delivery stalls are over: forget them and
+      // return to the configured latency.
+      this._stallSec = 0;
       this._trimToForegroundBounds();
     }
     this._resume();
@@ -507,12 +534,18 @@ export class RxPlayer {
       try { entry.src.stop(); } catch { /* already ended */ }
     }
     this._scheduledSrcs = [];
+    this._resetStall();
     // A decoder that still holds pending background work would otherwise
     // deliver old audio into the freshly flushed timeline; the next Opus
     // frame lazily configures a fresh one.
     this.resetDecoder();
     this._resetSourceLevel();
     this.nextPlayTime = 0;
+  }
+
+  private _resetStall(): void {
+    this._lastScheduleAt = null;
+    this._stallSec = 0;
   }
 
   private _resetSourceLevel(): void {
@@ -660,13 +693,26 @@ export class RxPlayer {
    *  is hidden (MOR-3965). Read at schedule time — no cached visibility
    *  state — so a player created while already hidden behaves identically. */
   private _jitterBounds(): { floorSec: number; ceilingSec: number } {
-    if (typeof document === 'undefined' || !document.hidden) {
-      return { floorSec: this._floorSec, ceilingSec: this._ceilingSec };
+    let floorSec = this._floorSec;
+    let ceilingSec = this._ceilingSec;
+    if (typeof document !== 'undefined' && document.hidden) {
+      floorSec = Math.max(floorSec, BACKGROUND_FLOOR_SEC);
+      ceilingSec = Math.max(ceilingSec, BACKGROUND_CEILING_SEC);
     }
-    return {
-      floorSec: Math.max(this._floorSec, BACKGROUND_FLOOR_SEC),
-      ceilingSec: Math.max(this._ceilingSec, BACKGROUND_CEILING_SEC),
-    };
+    if (this._stallSec > 0) {
+      ceilingSec = Math.max(ceilingSec, floorSec + this._stallSec + STALL_CEILING_MARGIN_SEC);
+    }
+    return { floorSec, ceilingSec };
+  }
+
+  /** Record a delivery stall: a gap on the audio clock since the previous
+   *  frame of at least STALL_MIN_SEC (see the constant's comment). */
+  private _observeDeliveryGap(now: number): void {
+    const previous = this._lastScheduleAt;
+    this._lastScheduleAt = now;
+    if (previous === null) return;
+    const gap = now - previous;
+    if (gap >= STALL_MIN_SEC) this._stallSec = Math.max(this._stallSec, Math.min(gap, STALL_MAX_SEC));
   }
 
   private schedule(buf: AudioBuffer): void {
@@ -676,6 +722,7 @@ export class RxPlayer {
     src.connect(this.preGain);
 
     const now = this.ctx.currentTime;
+    this._observeDeliveryGap(now);
     const { floorSec, ceilingSec } = this._jitterBounds();
     if (this.nextPlayTime === 0 || this.nextPlayTime < now) {
       // Preserve a still-future schedule even when its remaining lead is
