@@ -23,6 +23,8 @@ from rigplane.radio import (
 from rigplane.audio.route import AudioConfigSource
 from rigplane.profiles import RadioProfile
 from rigplane.runtime._control_phase import ControlPhaseRuntime, _session_reject_hint
+from rigplane.runtime import session_lifecycle as session_lifecycle_module
+from rigplane.testing.timing import VirtualClock
 from rigplane.runtime.session_lifecycle import (
     AttemptOutcome,
     AttemptResult,
@@ -2142,7 +2144,9 @@ class TestStartupBusyLiveHolder:
         owner._control_phase._stop_watchdog()
 
     @pytest.mark.asyncio
-    async def test_live_owner_second_client_stops_after_four_logins(self) -> None:
+    async def test_live_owner_second_client_stops_after_four_logins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A live owner: busy at +0/+0.5/+1.0, then the +1.5 s attempt stops.
 
         The second client raises the honest error after exactly four logins
@@ -2161,30 +2165,15 @@ class TestStartupBusyLiveHolder:
             busy_before = sim.busy_rejects
             # The live-holder rule compares attempt start times, and on the
             # wall clock a slow login (a loaded host) pushes the third start
-            # past +1.5 s. The lifecycle's own clock and cooldown sleep run on
-            # a virtual clock that moves only by the cooldowns, so the starts
-            # are exactly +0/+0.5/+1.0/+1.5 s; the sockets stay real.
-            lifecycle_clock = _VirtualMonotonic()
-
-            class _LifecycleAsyncio:
-                def __getattr__(self, name: str) -> object:
-                    return getattr(asyncio, name)
-
-                async def sleep(self, seconds: float) -> None:
-                    lifecycle_clock.advance(seconds)
-                    await asyncio.sleep(0)
-
+            # past +1.5 s. The lifecycle module's own clock and cooldown sleep
+            # run on the shared virtual clock, which moves only by the
+            # cooldowns, so the starts are exactly +0/+0.5/+1.0/+1.5 s; the
+            # sockets stay real.
+            VirtualClock(start=1_000.0).scope_to(monkeypatch, session_lifecycle_module)
             with (
                 patch.object(ControlPhaseRuntime, "_STATUS_REJECT_COOLDOWN", 0.5),
                 patch.object(
                     ControlPhaseRuntime, "STARTUP_BUSY_LIVE_HOLDER_AFTER_S", 1.5
-                ),
-                patch(
-                    "rigplane.runtime.session_lifecycle.time",
-                    SimpleNamespace(monotonic=lifecycle_clock.monotonic),
-                ),
-                patch(
-                    "rigplane.runtime.session_lifecycle.asyncio", _LifecycleAsyncio()
                 ),
             ):
                 second = IcomRadio(**self._client_args(sim))  # type: ignore[arg-type]
