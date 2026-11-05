@@ -183,11 +183,11 @@ class FakeRigctldServer:
                 if key in _QUIT:
                     break
 
-                extra = _lookup(self.behavior.extra_lines, line, key)
-                if extra is not None:
-                    await _write_response(writer, extra)
-
-                await _write_response(writer, self._response_for(line, key))
+                # Real rigctld flushes a command's whole reply at once, so a
+                # stray line and the RPRT behind it leave in one write; two
+                # writes let a slow loopback split them across reads.
+                extra = _lookup(self.behavior.extra_lines, line, key) or b""
+                await _write_response(writer, extra + self._response_for(line, key))
         except (ConnectionError, OSError):
             pass
         finally:
