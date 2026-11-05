@@ -105,7 +105,10 @@ async def test_cancelled_disconnect_after_civ_retirement_still_releases(
             assert ctrl._udp_transport is None
             # The token-remove is a datagram: wait for the simulator to
             # handle it rather than assuming next-iteration delivery.
-            await asyncio.wait_for(sim.wait_session_released(), 5.0)
+            released = await asyncio.wait_for(sim.wait_session_released(), 5.0)
+            # The client's token-remove or DISCONNECT (UDP may reorder them), never
+            # a hold expiry.
+            assert released in {"token_remove", "disconnect"}
             assert not sim.session_held
             assert radio.conn_state is RadioConnectionState.DISCONNECTED
 

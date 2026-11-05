@@ -818,7 +818,7 @@ class MockIcomRadio(AudioPortMixin):
         self.released_count: int = 0  # number of sessions freed (any path)
         self.last_release_reason: str | None = None
         # Callers of ``wait_session_released``, woken by ``_release_session``.
-        self._release_waiters: list[asyncio.Future[None]] = []
+        self._release_waiters: list[asyncio.Future[str]] = []
         self._login_count: int = 0  # accepted logins
         self._openclose_open_count: int = 0  # CI-V OpenClose(open) received
         self._audio_init()  # audio-port state (RX streamer, TX sink)
@@ -932,21 +932,23 @@ class MockIcomRadio(AudioPortMixin):
         """True when a session is currently owned (single-owner mode)."""
         return self._owner is not None
 
-    async def wait_session_released(self) -> None:
-        """Return once no session is held: at once if none is, else on release.
+    async def wait_session_released(self) -> str | None:
+        """Wait for the held session to end; return why (``last_release_reason``).
 
-        A client's token-remove, DISCONNECT or OpenClose(close) is a UDP
-        datagram the simulator handles only when it is delivered, which is
-        not always the next loop iteration (WSL2 mirrored loopback adds
-        about 0.1 ms). Wait here instead of reading :attr:`session_held`
-        right after the client's send returns.
+        Returns at once with ``None`` if no session is held. A client's
+        token-remove, DISCONNECT or OpenClose(close) is a UDP datagram the
+        simulator handles only when it is delivered, which is not always the
+        next loop iteration (WSL2 mirrored loopback adds about 0.1 ms). Wait
+        here instead of reading :attr:`session_held` right after the client's
+        send returns, and check the reason: a hold expiry
+        (``keepalive_timeout``) also ends the session.
         """
         if self._owner is None:
-            return
-        waiter = asyncio.get_running_loop().create_future()
+            return None
+        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._release_waiters.append(waiter)
         try:
-            await waiter
+            return await waiter
         finally:
             if waiter in self._release_waiters:
                 self._release_waiters.remove(waiter)
@@ -1248,7 +1250,7 @@ class MockIcomRadio(AudioPortMixin):
             waiters, self._release_waiters = self._release_waiters, []
             for waiter in waiters:
                 if not waiter.done():
-                    waiter.set_result(None)
+                    waiter.set_result(reason)
             # ptt_on_session_loss (opt-in, stateful PTT only): "release"
             # unkeys the simulated radio at the moment the session ends.
             # The real IC-7610 behaviour is UNRECORDED — TX is never

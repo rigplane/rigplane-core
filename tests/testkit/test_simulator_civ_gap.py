@@ -708,7 +708,8 @@ async def test_new_claim_clears_gap_tracking() -> None:
         # does not order them: a close handled after the new claim would
         # open a gap in the new session's numbering. Send the conninfo
         # only once the close has released the session.
-        await asyncio.wait_for(sim.wait_session_released(), 5.0)
+        released = await asyncio.wait_for(sim.wait_session_released(), 5.0)
+        assert released == "openclose_close"
         proto.send(_conninfo(), sim.control_port)
         await proto.recv()
 
