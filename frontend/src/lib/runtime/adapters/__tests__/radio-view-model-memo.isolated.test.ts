@@ -17,6 +17,8 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import { fixtureById } from '../../../../../fixtures/catalog';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
+import { ManagedAppTxHarness } from '../../tx-controller/__tests__/support/managed-app-tx-harness';
+import type { MetersTxAuthority } from '../radio-view-model-adapter';
 
 const derivations = vi.hoisted(() => ({ count: 0 }));
 vi.mock('../tx-capabilities', async (importOriginal) => {
@@ -72,7 +74,9 @@ describe.each(RADIOS)('toRadioViewModel memo — $name', ({ state: makeState, ca
   it('keeps the canonical (snapshot) lane and the bare lane apart', () => {
     const state = makeState();
     const caps = makeCaps();
-    const tx = { radioTx: 'receiving', txRisk: 'none' } as never;
+    // The App's TX snapshot as its producer projects it (a receiving radio).
+    const tx: MetersTxAuthority = new ManagedAppTxHarness().controller.snapshot();
+    expect(tx).toMatchObject({ radioTx: 'off', txRisk: 'none' });
     const bare = toRadioViewModel(state, caps);
     const full = toRadioViewModel(state, caps, tx);
     expect(toRadioViewModel(state, caps)).toBe(bare);

@@ -261,8 +261,8 @@ Object.defineProperty(h, 'caps', {
   get: () => readSignal(capsSignal), set: (value: unknown) => writeSignal(capsSignal, value),
 });
 /** A delivery: a new state snapshot built by the client's delta applier. */
-function deliver(change: (state: { main: Record<string, unknown>; fieldStatus: Record<string, unknown> }) => void): void {
-  h.state = editState(h.state as ServerState, change as unknown as (state: ServerState) => void);
+function deliver(change: (state: ServerState) => void): void {
+  h.state = editState(h.state as ServerState, change);
 }
 
 
@@ -838,7 +838,7 @@ describe('no Notch width control for an undeclared field (MOR-2726)', () => {
     h.state = liveState(true);
     deliver((state) => {
       state.main.manualNotchWidth = null;
-      state.fieldStatus['main.manualNotchWidth'] = {
+      state.fieldStatus!['main.manualNotchWidth'] = {
         storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
       };
     });
@@ -1071,7 +1071,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
   it('draws NO AGC-T key when the receiver is not declared (no agc_time_constant tag, FTX-1 shape)', () => {
     h.state = liveState(true);
     deliver((s) => {
-      s.fieldStatus['main.agcTimeConstant'] = {
+      s.fieldStatus!['main.agcTimeConstant'] = {
         storePath: 'x', observed: false, freshness: 'unknown', availability: 'undeclared',
       };
     });
@@ -1159,7 +1159,7 @@ describe('persistent finite DSP composition and authority (MOR-2425)', () => {
     expect(agcButton.getAttribute('aria-expanded')).toBe('true');
     expect(q(`#${agcButton.getAttribute('aria-controls')}`)).not.toBeNull();
     deliver((s) => {
-      s.fieldStatus['main.agcTimeConstant'] = {
+      s.fieldStatus!['main.agcTimeConstant'] = {
         ...fresh, observed: false, freshness: 'stale', availability: 'unavailable',
       };
     });

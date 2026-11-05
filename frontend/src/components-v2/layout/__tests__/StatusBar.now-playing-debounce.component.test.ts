@@ -40,7 +40,8 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async () => {
   return { getActiveFrequencyHz: () => activeFrequencyProbe.read() };
 });
 
-const identifyFrequency = vi.hoisted(() => vi.fn(async () => null));
+type Identification = { stations: Array<Record<string, string | boolean>> } | null;
+const identifyFrequency = vi.hoisted(() => vi.fn(async (_freq: number): Promise<Identification> => null));
 vi.mock('$lib/runtime', () => ({
   runtime: {
     defaultScopeStatus: {
@@ -118,5 +119,43 @@ describe('StatusBar Now Playing debounce (MOR-4213)', () => {
     vi.advanceTimersByTime(1);
     expect(identifyFrequency).toHaveBeenCalledTimes(1);
     expect(identifyFrequency).toHaveBeenCalledWith(7_074_000);
+  });
+
+  it('a lookup skipped while the popup is open runs for the current frequency once it closes', async () => {
+    const station = (name: string) => ({
+      station: name, city: '', state: '', language_name: 'English', country: 'XX', target: 'XX',
+      on_air: false, freq_khz: '0', time_str: 'local', days: '', band: '40m', remarks: '', source: '',
+    });
+    identifyFrequency.mockResolvedValueOnce({ stations: [station('Station A')] })
+      .mockResolvedValueOnce({ stations: [station('Station B')] });
+    mountBar();
+    await vi.advanceTimersByTimeAsync(800);
+    flushSync();
+    expect(identifyFrequency).toHaveBeenCalledTimes(1);
+    target!.querySelector<HTMLButtonElement>('button.now-playing')!.click();
+    flushSync();
+    expect(target!.querySelector('.np-detail')).not.toBeNull();
+
+    // Tuned elsewhere while the popup is open: the debounce expires, deliveries keep coming.
+    activeFrequencyProbe.frequencyHz = 7_074_000;
+    activeFrequencyProbe.deliver();
+    flushSync();
+    for (let i = 0; i < 40; i += 1) {
+      await vi.advanceTimersByTimeAsync(25);
+      activeFrequencyProbe.deliver();
+      flushSync();
+    }
+    expect(identifyFrequency).toHaveBeenCalledTimes(1);
+
+    target!.querySelector<HTMLButtonElement>('button.np-close')!.click();
+    flushSync();
+    for (let i = 0; i < 40; i += 1) {
+      await vi.advanceTimersByTimeAsync(25);
+      activeFrequencyProbe.deliver();
+      flushSync();
+    }
+    expect(identifyFrequency).toHaveBeenCalledTimes(2);
+    expect(identifyFrequency).toHaveBeenLastCalledWith(7_074_000);
+    expect(target!.querySelector('.np-station')?.textContent).toBe('Station B');
   });
 });

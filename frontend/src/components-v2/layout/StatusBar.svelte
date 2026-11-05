@@ -382,16 +382,18 @@
   // Poll frequency and identify station
   $effect(() => {
     const freq = activeFrequencyHz;
+    // Don't update while the popup is expanded (prevents flicker). Read here,
+    // not inside the timer, so closing the popup re-runs this effect and
+    // identifies whatever frequency is tuned by then (MOR-4213).
+    if (nowPlayingExpanded) return;
     // `null` is "not observed"; `0` was never a real tuned frequency. Both
     // mean "nothing to identify" — the same short-circuit this guard applied
     // before A15 replaced the store read, so the idle render is unchanged.
     if (!freq || Math.abs(freq - lastIdentifiedFreq) < 500) return;
 
     // Debounce: wait 800ms after freq stops changing
-    // Don't update while popup is expanded (prevents flicker)
     if (identifyTimer) clearTimeout(identifyTimer);
     identifyTimer = setTimeout(async () => {
-      if (nowPlayingExpanded) return;
       lastIdentifiedFreq = freq;
       const result = await runtime.system.identifyFrequency(freq);
       nowPlaying = result?.stations?.length ? result.stations[0] : null;
