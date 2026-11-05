@@ -22,6 +22,7 @@ from rigplane.web._delta_encoder import (
     DeltaEncoder,
     StateUpdateFrame,
     apply_delta,
+    copy_state_tree,
     top_level_delta,
 )
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
@@ -705,3 +706,42 @@ async def test_state_delta_query_selects_leaf_deltas_over_the_real_socket() -> N
         assert state.keys() == frames[0]["data"].keys()
     assert {frame.get("deltaVersion") for frame in leaf[1:]} == {2}
     assert all("changed" in frame for frame in default[1:])
+
+
+def test_copy_state_tree_rebuilds_every_container() -> None:
+    """MOR-4211: the wire-state copy isolates nested dicts, lists and tuples."""
+    state: dict[str, Any] = {
+        "freq": 14_074_000,
+        "fieldStatus": {
+            "ptt": {"lastObservedMonotonic": 1.5, "quality": ["confirmed"]}
+        },
+        "pairs": ({"a": [1]},),
+        "mode": None,
+    }
+
+    copied = copy_state_tree(state)
+
+    assert copied == state
+    copied["fieldStatus"]["ptt"]["quality"].append("changed")
+    copied["fieldStatus"]["ptt"]["lastObservedMonotonic"] = 2.0
+    copied["pairs"][0]["a"].append(2)
+    assert state == {
+        "freq": 14_074_000,
+        "fieldStatus": {
+            "ptt": {"lastObservedMonotonic": 1.5, "quality": ["confirmed"]}
+        },
+        "pairs": ({"a": [1]},),
+        "mode": None,
+    }
+
+
+def test_encoder_baseline_is_not_the_caller_body() -> None:
+    """MOR-4211: mutating an encoded body afterwards cannot hide the next change."""
+    encoder = DeltaEncoder()
+    body: dict[str, Any] = {"fieldStatus": {"ptt": {"lastObservedMonotonic": 1.0}}}
+    encoder.encode(body)
+    body["fieldStatus"]["ptt"]["lastObservedMonotonic"] = 2.0
+
+    delta = encoder.encode({"fieldStatus": {"ptt": {"lastObservedMonotonic": 2.0}}})
+
+    assert delta["set"] == [(["fieldStatus", "ptt", "lastObservedMonotonic"], 2.0)]

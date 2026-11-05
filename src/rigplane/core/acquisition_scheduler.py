@@ -2660,7 +2660,7 @@ def derive_active_receiver_value(store: StateStore) -> str | None:
     """
 
     try:
-        field = store.snapshot().field(SLOW_RECEIVER_DEMOTION_PATH)
+        field = store.field(SLOW_RECEIVER_DEMOTION_PATH)
     except KeyError:
         return None
     if field.freshness is not FreshnessState.FRESH or not isinstance(field.value, str):
@@ -2677,7 +2677,7 @@ def derive_tx_active(store: StateStore) -> bool:
     """
 
     try:
-        ptt_field = store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
+        ptt_field = store.field(FieldPath.global_("tx_state", "ptt"))
     except KeyError:
         return False
     return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
