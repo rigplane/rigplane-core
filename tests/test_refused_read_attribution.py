@@ -16,7 +16,7 @@ from typing import ClassVar
 
 import pytest
 
-from rigplane.core.transport import IcomTransport
+from rigplane.core.transport import IcomCivTransport
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.state_pipeline_contracts import FieldPath
@@ -33,7 +33,7 @@ class _SilentTransport:
     """Records outgoing packets; the radio's answers are routed by hand."""
 
     #: The LAN transport's ingress-order contract (MOR-4209).
-    ordered_ingress: ClassVar[bool] = IcomTransport.ordered_ingress
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
 
     my_id = 0x00010001
     remote_id = 0xDEADBEEF

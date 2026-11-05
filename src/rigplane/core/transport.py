@@ -10,8 +10,9 @@ import socket
 import struct
 import sys
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
 
@@ -25,11 +26,14 @@ __all__ = [
     "BUFSIZE",
     "CONTROL_SIZE",
     "ConnectionState",
+    "IcomCivTransport",
     "IcomTransport",
     "MAX_MISSING",
     "PACKET_QUEUE_MAXSIZE",
     "PING_SIZE",
     "PRESSURE_THRESHOLD",
+    "REORDER_WINDOW",
+    "RxOrderStats",
 ]
 
 logger = logging.getLogger(__name__)
@@ -45,10 +49,50 @@ DISCOVERY_RETRIES = 10
 DISCOVERY_TIMEOUT = 1.0  # seconds per attempt
 BUFSIZE = 500
 MAX_MISSING = 50
+# Ordered delivery (MOR-4205): the most sequence numbers that may lie between
+# the oldest undelivered number and the newest one received. Past it the
+# oldest gap is given up even while its retransmit is still being asked for,
+# so the hold stays bounded. At the CI-V port's ~120-225 packets/s it is
+# about 1-2 s, longer than the retransmit budget that normally gives up first.
+REORDER_WINDOW = 256
+# A packet numbered this far behind the next one to deliver is no late copy:
+# the radio restarted its numbering, so delivery restarts at that packet.
+_RESYNC_DISTANCE = 4 * REORDER_WINDOW
 PACKET_QUEUE_MAXSIZE = 4096
 # Non-scope overflow must not log once per packet. The first eviction logs
 # immediately; while evictions continue, at most one summary per interval.
 _OVERFLOW_LOG_INTERVAL = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class RxOrderStats:
+    """Inbound sequence-order counters of one transport (MOR-4205).
+
+    Counted only where the transport delivers in order (``ordered_ingress``:
+    ``IcomCivTransport``), since the transport's creation.
+
+    Attributes:
+        reordered: Packets that arrived after a later-numbered one and were
+            still delivered in their place: a delayed datagram, or the
+            radio's resend after a retransmit request.
+        duplicate: Packets dropped because their number was already
+            delivered or is already held.
+        lost: Numbers delivery moved past without their packet: the
+            retransmit budget ran out, the hold reached ``REORDER_WINDOW``,
+            or a jump wider than ``MAX_MISSING`` skipped them.
+        late: Packets that arrived after their number was given up; dropped,
+            because later packets were already delivered.
+    """
+
+    reordered: int = 0
+    duplicate: int = 0
+    lost: int = 0
+    late: int = 0
+
+
+# One held inbound data packet, as ``_route_data_packet`` takes it:
+# (data, ptype, seq, sender_id).
+_HeldPacket = tuple[bytes, int, int, int]
 
 
 class ConnectionState(StrEnum):
@@ -120,10 +164,16 @@ class IcomTransport:
         remote_id: Remote (radio) connection identifier.
         send_seq: Next outgoing tracked sequence number.
         ping_seq: Next outgoing ping sequence number.
-        ordered_ingress: Whether CI-V frames arrive in the order the radio
-            sent them. False: UDP may deliver a retransmitted or delayed
-            datagram after a later one, and the sequence tracking below only
-            detects gaps, it does not reorder (MOR-4209).
+        ordered_ingress: Whether data packets reach the upper layer in the
+            order the radio sent them (MOR-4209). False here: UDP may deliver
+            a delayed, duplicated or retransmitted datagram out of order, and
+            this transport passes packets on as they arrive. True on
+            ``IcomCivTransport``: it holds every numbered data packet (type 0)
+            that arrives ahead of a missing one, the retransmit loop asks the
+            radio to resend the missing one, and delivery follows the sequence
+            number; a number whose retransmit budget runs out is given up and
+            delivery moves on; duplicates are dropped (MOR-4205,
+            ``rx_order_stats``).
     """
 
     ordered_ingress: ClassVar[bool] = False
@@ -138,6 +188,15 @@ class IcomTransport:
         self._tx_guards: dict[int, Callable[[], bool]] = {}
         self.rx_last_seq: int | None = None
         self.rx_missing: dict[int, int] = {}  # seq -> retry count
+        # Ordered delivery (``ordered_ingress``): the next number to deliver,
+        # the packets held ahead of it, and the numbers recently given up.
+        self._rx_next: int | None = None
+        self._rx_held: dict[int, _HeldPacket] = {}
+        self._rx_given_up: deque[int] = deque(maxlen=REORDER_WINDOW)
+        self._rx_reordered = 0
+        self._rx_duplicate = 0
+        self._rx_lost = 0
+        self._rx_late = 0
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
         self._udp_close_event: asyncio.Event | None = None
@@ -179,6 +238,16 @@ class IcomTransport:
         # Optional callback for a 0x40 token packet (ptype 0x00), also routed
         # before the discard branch.
         self._token_reply_callback: Callable[[bytes], None] | None = None
+
+    @property
+    def rx_order_stats(self) -> RxOrderStats:
+        """Inbound sequence-order counters since this transport was created."""
+        return RxOrderStats(
+            reordered=self._rx_reordered,
+            duplicate=self._rx_duplicate,
+            lost=self._rx_lost,
+            late=self._rx_late,
+        )
 
     @property
     def queue_pressure(self) -> float:
@@ -242,6 +311,9 @@ class IcomTransport:
         self._tx_guards.clear()
         self.rx_last_seq = None
         self.rx_missing.clear()
+        self._rx_next = None
+        self._rx_held.clear()
+        self._rx_given_up.clear()
         self.remote_id = 0
         while True:
             try:
@@ -804,11 +876,91 @@ class IcomTransport:
     def _handle_data_packet(
         self, data: bytes, ptype: int, seq: int, sender_id: int
     ) -> None:
-        """Handle generic data packets: scope fast-path, queueing, overflow."""
-        # Track sequence for data packets
-        if ptype == 0x00 and seq != 0:
+        """Track the sequence of a data packet, then route it (in order)."""
+        if ptype == 0x00 and (
+            seq != 0 or (self.ordered_ingress and self._rx_next == 0)
+        ):
+            # Number 0 is untracked, except where ordered delivery waits for
+            # it: the packet after 0xFFFF when the radio's numbering wraps.
+            last = self.rx_last_seq
+            arrived_after_later = (
+                last is not None and 0 < ((last - seq) & 0xFFFF) < 0x8000
+            )
             self._record_rx_seq(seq)
+            if self.ordered_ingress:
+                self._accept_in_order(
+                    (data, ptype, seq, sender_id), arrived_after_later
+                )
+                return
+        self._route_data_packet(data, ptype, seq, sender_id)
 
+    def _accept_in_order(self, packet: _HeldPacket, arrived_after_later: bool) -> None:
+        """Hold one numbered data packet and deliver what is now in order."""
+        seq = packet[2]
+        nxt = seq if self._rx_next is None else self._rx_next
+        behind = (nxt - seq) & 0xFFFF
+        if 0 < behind < 0x8000:
+            if behind <= _RESYNC_DISTANCE:
+                if seq in self._rx_given_up:
+                    self._rx_late += 1
+                else:
+                    self._rx_duplicate += 1
+                return
+            logger.warning(
+                "Rx sequence restarted: %d while expecting %d; resyncing", seq, nxt
+            )
+            arrived_after_later = False
+            for held_seq in sorted(self._rx_held, key=lambda s: (s - nxt) & 0xFFFF):
+                self._route_data_packet(*self._rx_held[held_seq])
+            self._rx_held.clear()
+            self._rx_given_up.clear()
+            self.rx_missing.clear()
+            self.rx_last_seq = seq
+            nxt = seq
+        elif seq in self._rx_held:
+            self._rx_duplicate += 1
+            return
+        if arrived_after_later:
+            self._rx_reordered += 1
+        self._rx_held[seq] = packet
+        self._rx_next = nxt
+        self._release_in_order()
+
+    def _release_in_order(self) -> None:
+        """Deliver held packets from the next number on, giving up spent gaps.
+
+        The gap at the next number waits while the retransmit loop still asks
+        the radio for it (it is in ``rx_missing``) and the hold is within
+        ``REORDER_WINDOW``; otherwise it is given up together with the other
+        missing numbers before the next held packet.
+        """
+        nxt = self._rx_next
+        held = self._rx_held
+        if nxt is None:
+            return
+        while held:
+            packet = held.pop(nxt, None)
+            if packet is not None:
+                self._route_data_packet(*packet)
+                nxt = (nxt + 1) & 0xFFFF
+                continue
+            newest = nxt if self.rx_last_seq is None else self.rx_last_seq
+            if nxt in self.rx_missing and (newest - nxt) & 0xFFFF <= REORDER_WINDOW:
+                break
+            first_held = min(held, key=lambda s: (s - nxt) & 0xFFFF)
+            skipped = (first_held - nxt) & 0xFFFF
+            for offset in range(skipped):
+                self.rx_missing.pop((nxt + offset) & 0xFFFF, None)
+            for offset in range(max(0, skipped - REORDER_WINDOW), skipped):
+                self._rx_given_up.append((nxt + offset) & 0xFFFF)
+            self._rx_lost += skipped
+            nxt = first_held
+        self._rx_next = nxt
+
+    def _route_data_packet(
+        self, data: bytes, ptype: int, seq: int, sender_id: int
+    ) -> None:
+        """Route one data packet: callbacks, scope fast-path, queue, overflow."""
         # A conninfo notice is routed before the discard branch: after setup
         # the control queue has no consumer, but a "radio free" notice is the
         # signal to recover.
@@ -1021,5 +1173,22 @@ class IcomTransport:
                         self.rx_missing[s] = count + 1
                 for s in to_delete:
                     del self.rx_missing[s]
+                if to_delete and self._rx_held:
+                    # A spent number no longer holds back what came after it.
+                    self._release_in_order()
         except asyncio.CancelledError:
             pass
+
+
+class IcomCivTransport(IcomTransport):
+    """The LAN CI-V port's transport: delivers in the radio's order (MOR-4205).
+
+    Only the CI-V stream needs the order: a CI-V answer retires the requests
+    sent before it (``CivRequestTracker``, MOR-4209). The control port (login,
+    token, conninfo notices, whose header numbers the radio need not keep in
+    one sequence) and the audio port (``LanAudioStream`` orders its packets in
+    its jitter buffer, and holding audio for the retransmit budget would add
+    that wait to the playout) keep arrival order.
+    """
+
+    ordered_ingress: ClassVar[bool] = True

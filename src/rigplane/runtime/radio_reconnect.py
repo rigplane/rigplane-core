@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.core.exceptions import AuthenticationError
-from rigplane.core.transport import IcomTransport
+from rigplane.core.transport import IcomTransport, RxOrderStats
 
 if TYPE_CHECKING:
     # Internal implementation module for IcomRadio — the TID251 ban targets
@@ -103,12 +103,24 @@ async def watchdog_loop(radio: IcomRadio) -> None:
                 audio_t = getattr(radio, "_audio_transport", None)
                 audio_rx = getattr(audio_t, "rx_packet_count", 0) if audio_t else 0
                 audio_err = getattr(audio_t, "_udp_error_count", 0) if audio_t else 0
+                civ_t = radio._civ_transport
+                order = (
+                    civ_t.rx_order_stats
+                    if isinstance(civ_t, IcomTransport)
+                    else RxOrderStats()
+                )
                 logger.info(
-                    "Transport health: ctrl_rx=%d civ_rx=%d audio_rx=%d audio_errors=%d idle=%.1fs",
+                    "Transport health: ctrl_rx=%d civ_rx=%d audio_rx=%d audio_errors=%d "
+                    "civ_reordered=%d civ_duplicate=%d civ_lost=%d civ_late=%d "
+                    "idle=%.1fs",
                     ctrl_count,
                     civ_count,
                     audio_rx,
                     audio_err,
+                    order.reordered,
+                    order.duplicate,
+                    order.lost,
+                    order.late,
                     idle,
                 )
                 last_health_log = now

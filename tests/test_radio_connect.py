@@ -238,7 +238,7 @@ def _busy_hold_patch_stack(
     stack.enter_context(patch.object(radio._civ_runtime, "start_worker"))
     stack.enter_context(
         patch(
-            "rigplane.transport.IcomTransport",
+            "rigplane.transport.IcomCivTransport",
             return_value=ConnectMockTransport(),
         )
     )
@@ -346,7 +346,9 @@ class _ConnectOnceStubs:
             patch.object(radio._civ_runtime, "start_pump"),
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
-            patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
+            patch(
+                "rigplane.transport.IcomCivTransport", return_value=fake_civ_transport
+            ),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
             patch(
                 "rigplane._control_phase.wait_for_radio_startup_ready",
@@ -845,7 +847,9 @@ class TestConnectReadiness:
             patch.object(radio._civ_runtime, "start_pump"),
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
-            patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
+            patch(
+                "rigplane.transport.IcomCivTransport", return_value=fake_civ_transport
+            ),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
             patch.object(
                 radio, "_read_lan_identity_payload", new=AsyncMock(return_value=b"\x98")
@@ -978,7 +982,7 @@ class TestConnectSessionRejection:
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
             patch(
-                "rigplane.transport.IcomTransport",
+                "rigplane.transport.IcomCivTransport",
                 side_effect=[timeout_civ_transport, success_civ_transport],
             ),
             patch(
@@ -1079,7 +1083,7 @@ class TestConnectSessionRejection:
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
             patch(
-                "rigplane.transport.IcomTransport",
+                "rigplane.transport.IcomCivTransport",
                 return_value=ConnectMockTransport(),
             ),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
@@ -1219,7 +1223,7 @@ class TestConnectSessionRejection:
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
             patch(
-                "rigplane.transport.IcomTransport",
+                "rigplane.transport.IcomCivTransport",
                 return_value=ConnectMockTransport(),
             ),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
@@ -1350,7 +1354,7 @@ class TestConnectSessionRejection:
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
             patch(
-                "rigplane.transport.IcomTransport",
+                "rigplane.transport.IcomCivTransport",
                 return_value=ConnectMockTransport(),
             ),
             patch("rigplane._control_phase.asyncio.sleep", new=AsyncMock()),
@@ -1486,7 +1490,7 @@ class TestConnectSessionRejection:
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
             patch(
-                "rigplane.transport.IcomTransport",
+                "rigplane.transport.IcomCivTransport",
                 return_value=ConnectMockTransport(),
             ),
         ):
@@ -1564,7 +1568,7 @@ class TestConnectSessionRejection:
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
             patch(
-                "rigplane.transport.IcomTransport",
+                "rigplane.transport.IcomCivTransport",
                 return_value=ConnectMockTransport(),
             ),
         ):
@@ -1649,7 +1653,7 @@ class TestConnectSessionRejection:
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
             patch(
-                "rigplane.transport.IcomTransport",
+                "rigplane.transport.IcomCivTransport",
                 return_value=ConnectMockTransport(),
             ),
         ):
@@ -2747,7 +2751,9 @@ class TestWifiBindBehavior:
             patch.object(radio._civ_runtime, "start_pump"),
             patch.object(radio._civ_runtime, "start_data_watchdog"),
             patch.object(radio._civ_runtime, "start_worker"),
-            patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
+            patch(
+                "rigplane.transport.IcomCivTransport", return_value=fake_civ_transport
+            ),
             patch.object(radio, "_fetch_initial_state", new=AsyncMock()),
             # Same MOR-3064 seam as the discovery-retry test: the fake CI-V
             # transport runs no rx pump here either.

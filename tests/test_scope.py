@@ -16,7 +16,7 @@ from typing import ClassVar
 import pytest
 import rigplane.commands as raw_commands
 
-from rigplane.core.transport import IcomTransport
+from rigplane.core.transport import IcomCivTransport
 from rigplane import IC_7610_ADDR
 from rigplane.rig_loader import load_rig
 from rigplane.commands import (
@@ -968,7 +968,7 @@ class MockTransport:
     """Minimal mock transport for radio integration tests."""
 
     #: The LAN transport's ingress-order contract (MOR-4209).
-    ordered_ingress: ClassVar[bool] = IcomTransport.ordered_ingress
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
 
     def __init__(self) -> None:
         self._responses: asyncio.Queue[bytes] = asyncio.Queue()

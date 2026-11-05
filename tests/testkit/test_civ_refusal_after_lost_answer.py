@@ -18,9 +18,12 @@ really refused timed out. A serial line keeps the radio's answer order
 (``SerialCivTransport.ordered_ingress``), so the S-meter answer already
 proves the frequency answer is gone.
 
-LAN keeps no such order (``IcomTransport.ordered_ingress``): a delayed or
-retransmitted refusal may arrive after a later read's answer, so there the
-answer order proves nothing and no sink is retired by it.
+On LAN, UDP may deliver a delayed or retransmitted datagram after a later
+one; the LAN transport therefore delivers CI-V datagrams strictly by their
+sequence number (``IcomCivTransport.ordered_ingress``, MOR-4205), so the same
+proof holds there. The LAN cases replay the radio's answers reordered, or
+with one lost, through a real ``IcomCivTransport`` and the production CI-V
+pump.
 """
 
 from __future__ import annotations
@@ -34,13 +37,20 @@ from rigplane.backends.ic705.serial import Ic705SerialRadio
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
 from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.commands.commander import Priority
 from rigplane.core.civ import CivRequestKey, CivRequestTracker
-from rigplane.core.transport import IcomTransport
+from rigplane.core.transport import (
+    RETRANSMIT_PERIOD,
+    ConnectionState,
+    IcomCivTransport,
+    RxOrderStats,
+)
 from rigplane.radio import IcomRadio
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import VirtualClock, await_until
+from rigplane.types import bcd_encode
 
+from lan_reorder_fake import LanRadioFake
 from rigplane_testkit.serial import CivSerialFake
 from testkit.ic705_fakes import ic705_usb_fake
 
@@ -78,7 +88,7 @@ _SERIAL_RADIOS: list[
 
 def test_ingress_order_is_a_transport_contract() -> None:
     assert SerialCivTransport.ordered_ingress is True
-    assert IcomTransport.ordered_ingress is False
+    assert IcomCivTransport.ordered_ingress is True
 
 
 @pytest.mark.parametrize(
@@ -126,37 +136,60 @@ async def test_a_lost_answer_does_not_take_the_next_refusal(
         await radio.disconnect()
 
 
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("wire", ["reordered", "lost"])
 @pytest.mark.parametrize(
     ("model", "radio_addr"),
     [("IC-705", 0xA4), ("IC-7610", 0x98)],
     ids=["ic705", "ic7610"],
 )
-async def test_lan_answer_order_retires_no_older_read(
-    model: str, radio_addr: int
+async def test_lan_answers_reach_the_tracker_in_the_radio_order(
+    model: str, radio_addr: int, wire: str, virtual_clock: VirtualClock
 ) -> None:
-    """Read B's answer arrives before read A's retransmitted FA on LAN: the
-    FA refuses A, and the later read C is not refused."""
+    """The radio answers the frequency read, then the S-meter read, then
+    refuses the tuner read with a bare FA. On the wire the S-meter answer and
+    the FA overtake the frequency answer ("reordered"), or the frequency
+    answer never arrives ("lost"). Either way the FA names the tuner read,
+    and no read is left open to take a later FB/FA."""
     radio = IcomRadio("192.168.1.100", timeout=0.05, model=model)
-    radio._civ_transport = IcomTransport()
+    transport = IcomCivTransport()
+    transport.state = ConnectionState.CONNECTED
+    radio._civ_transport = transport
     radio._radio_addr = radio_addr
+    lan = LanRadioFake(transport, first_seq=9)
     tracker = radio._civ_request_tracker
     named = _record_refusals(tracker)
     for key in (_FREQ, _S_METER, _TUNER):
         tracker.register_ack(wait=False, response_key=key, refused_read=key)
-    runtime = radio._civ_runtime
+    keepalive = lan.idle()
+    freq = lan.packet(
+        build_civ_frame(CONTROLLER_ADDR, radio_addr, 0x03, data=bcd_encode(14_074_000))
+    )
+    s_meter = lan.packet(
+        build_civ_frame(CONTROLLER_ADDR, radio_addr, 0x15, sub=0x02, data=b"\x00\x40")
+    )
+    refusal = lan.packet(build_civ_frame(CONTROLLER_ADDR, radio_addr, 0xFA))
+    transport.start_retransmit_loop()
+    radio._civ_runtime.start_pump()
     try:
-        answer = build_civ_frame(
-            CONTROLLER_ADDR, radio_addr, 0x15, sub=0x02, data=b"\x00\x40"
-        )
-        await runtime._route_civ_frame(
-            parse_civ_frame(answer), generation=radio._civ_epoch
-        )
-        late_refusal = build_civ_frame(CONTROLLER_ADDR, radio_addr, 0xFA)
-        await runtime._route_civ_frame(
-            parse_civ_frame(late_refusal), generation=radio._civ_epoch
-        )
+        lan.deliver(keepalive)
+        if wire == "reordered":
+            lan.deliver(s_meter, refusal, freq)
+        else:
+            lan.deliver(refusal, s_meter)
+        # Past the retransmit budget: a lost answer has been given up.
+        await virtual_clock.elapse(6 * RETRANSMIT_PERIOD)
 
-        assert named == [(_FREQ,)]
-        assert tracker.ack_sink_count == 1  # the tuner read still waits
+        assert named == [(_TUNER,)]
+        assert tracker.ack_sink_count == 0
+        assert transport.rx_order_stats == (
+            RxOrderStats(reordered=1)
+            if wire == "reordered"
+            else RxOrderStats(reordered=1, lost=1)
+        )
     finally:
+        transport.state = ConnectionState.DISCONNECTED
         radio._civ_transport = None
+        for task in (transport._retransmit_task, radio._civ_rx_task):
+            if task is not None:
+                task.cancel()

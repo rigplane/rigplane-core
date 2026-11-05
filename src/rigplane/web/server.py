@@ -88,6 +88,7 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
+from ..core.transport import IcomTransport
 from ..core.tx_observation import (
     ObservedPtt,
     legacy_ptt_bool,
@@ -4940,6 +4941,20 @@ class WebServer:
             return broadcaster.capture_diagnostics()
         return {"schemaVersion": 1, "lastFailureCategory": None}
 
+    def _runtime_civ_ingress_payload(self) -> dict[str, Any] | None:
+        """Inbound CI-V sequence-order counters of a LAN radio (MOR-4205).
+
+        ``None`` when the radio has no LAN CI-V transport (serial radios, no
+        radio, or not connected yet).
+        """
+        transport = getattr(self._radio, "_civ_transport", None)
+        if not isinstance(transport, IcomTransport):
+            return None
+        return {
+            "ordered": transport.ordered_ingress,
+            **asdict(transport.rx_order_stats),
+        }
+
     def _runtime_process_payload(self) -> dict[str, Any]:
         """Process metrics; a value this platform cannot report is ``None``."""
         rss_bytes: int | None = None
@@ -5023,6 +5038,7 @@ class WebServer:
                 "audioPlayback": self._runtime_audio_playback_payload(),
                 "audioCapture": self._runtime_audio_capture_payload(),
                 "connection": self._runtime_connection_payload(),
+                "civIngress": self._runtime_civ_ingress_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 # Additive TX safety evidence (MOR-1015): owner, phase, lease,
                 # watchdog, durable OFF obligation and uncertain shutdown, read

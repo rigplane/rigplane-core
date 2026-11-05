@@ -229,7 +229,7 @@ class TestFailedConnectRetryHygiene:
                     new=AsyncMock(return_value=b"\x98"),
                 ),
                 patch(
-                    "rigplane.transport.IcomTransport",
+                    "rigplane.transport.IcomCivTransport",
                     side_effect=[*timeout_transports, success_transport],
                 ),
                 patch(

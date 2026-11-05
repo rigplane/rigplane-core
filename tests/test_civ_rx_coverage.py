@@ -44,7 +44,7 @@ from rigplane.testing.timing import VirtualClock, await_until
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
-from rigplane.core.transport import IcomTransport
+from rigplane.core.transport import IcomCivTransport
 from rigplane.runtime import _civ_rx as civ_rx_module
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -4604,7 +4604,7 @@ async def test_route_civ_frame_contains_observation_decode_failures(
     radio._civ_request_tracker.resolve.assert_called_once_with(
         published[0],
         generation=radio._civ_epoch,
-        ordered_ingress=IcomTransport.ordered_ingress,
+        ordered_ingress=IcomCivTransport.ordered_ingress,
     )
     assert radio._state_store.snapshot().observation_seq == expected_observation_seq
 
