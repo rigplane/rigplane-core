@@ -55,6 +55,9 @@ class FakeRigctldBehavior:
     malformed_responses: dict[str, bytes] = field(default_factory=dict)
     unsupported_commands: set[str] = field(default_factory=set)
     extra_lines: dict[str, bytes] = field(default_factory=dict)
+    # Send an ``extra_lines`` line as its own write, this long before the
+    # reply behind it: a reply split across TCP segments (a bridge, a slow link).
+    extra_line_gap_s: float | None = None
 
 
 class FakeRigctldServer:
@@ -187,6 +190,11 @@ class FakeRigctldServer:
                 # stray line and the RPRT behind it leave in one write; two
                 # writes let a slow loopback split them across reads.
                 extra = _lookup(self.behavior.extra_lines, line, key) or b""
+                gap = self.behavior.extra_line_gap_s
+                if extra and gap is not None:
+                    await _write_response(writer, extra)
+                    await asyncio.sleep(gap)
+                    extra = b""
                 await _write_response(writer, extra + self._response_for(line, key))
         except (ConnectionError, OSError):
             pass

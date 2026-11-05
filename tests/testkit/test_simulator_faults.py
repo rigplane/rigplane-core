@@ -216,6 +216,21 @@ async def client():
 # ---------------------------------------------------------------------------
 
 
+async def test_udp_client_drops_datagrams_from_ports_it_never_addressed(client):
+    # A stray from another worker's simulator: a port this client never sent to.
+    client.datagram_received(b"stray", (_HOST, 40_001))
+    assert client.queue.empty()
+    client.send(b"hello", 40_002)  # addressing a port admits what it sends back
+    client.datagram_received(b"reply", (_HOST, 40_002))
+    client.datagram_received(b"other host", ("127.0.0.2", 40_002))
+    client.expect_from(40_003)  # a stream the simulator starts on its own
+    client.datagram_received(b"stream", (_HOST, 40_003))
+    assert [client.queue.get_nowait() for _ in range(client.queue.qsize())] == [
+        b"reply",
+        b"stream",
+    ]
+
+
 async def test_no_plan_behaves_as_before(server, client):
     request = _freq_get()
     client.send(request, server.civ_port)

@@ -1477,6 +1477,32 @@ async def test_command_drains_stray_preceding_line() -> None:
             await transport.close()
 
 
+@pytest.mark.realtime(
+    reason="the reply is split by a real 0.3 s gap, against the transport's real 1 ms re-sync"
+)
+@pytest.mark.xfail(
+    strict=True,
+    raises=CommandError,
+    reason=(
+        "known follow-up of MOR-4214: RigctldTransport.command waits only 1 ms "
+        "(transport.py, re-sync readline timeout=0.001) for the RPRT behind a stray "
+        "line, so a reply split across TCP segments reads the stray line as malformed"
+    ),
+)
+async def test_command_drains_stray_line_sent_apart_from_its_rprt() -> None:
+    """The stray-line case of the test above, with the reply in two writes."""
+    behavior = FakeRigctldBehavior(
+        extra_lines={"L AF 0.784": b"0.0392157\n"}, extra_line_gap_s=0.3
+    )
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        try:
+            await transport.command("L AF 0.784")
+        finally:
+            await transport.close()
+
+
 async def test_leftover_line_discarded_between_transactions() -> None:
     """A leftover line in the buffer from transaction A must not corrupt B.
 

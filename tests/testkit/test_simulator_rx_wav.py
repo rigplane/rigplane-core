@@ -205,7 +205,7 @@ async def test_rx_payload_assertions_allow_skipped_source_bursts(
     await clock.tick(0.205)
     await clock.tick(0.22)
     clock.advance_to(0.221)
-    packets = [(clock.time(), await client.recv()) for _ in range(6)]
+    packets = [(clock.time(), p) for p in await _recv_frames(client, 6)]
     bursts = _complete_bursts(packets, _recorded_burst_shape())
     assert len(bursts) == 2
     _assert_wav_payloads(bursts, raw)
