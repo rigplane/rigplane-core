@@ -10,23 +10,21 @@ For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
 - ``allObserved``: the same call after every field path the profile's
   ``[state_acquisition]`` declares has been observed once. A profile with no
   ``[state_acquisition]`` block declares nothing, so it has no ``allObserved``.
-- ``polledDcd*`` (MOR-3630): for every Icom CI-V profile that polls the
-  receiver ``dcd`` leaf, the capabilities body and the ``full`` envelope the
-  web server builds around a real ``IcomRadio`` after one polled CI-V
-  0x15 0x01 SQL-status reply ("Open": 0x01, "Closed": 0x00) or none at all
-  ("Unanswered"). ``polledDcdDeltaOpen``/``polledDcdDeltaClosed`` are the
-  live ``delta`` envelopes the same server builds when a reply flips the
-  squelch after a full baseline built from the opposite one.
-  ``polledDcdLeafStreamOpen`` (MOR-4206) is what a control client that
-  asked for leaf deltas receives on the closed-to-open flip: the baseline
+- ``polledSquelch*`` (MOR-3630): for every Icom CI-V profile that polls the
+  receiver ``squelch`` level, the capabilities body and the ``full`` envelope
+  the web server builds around a real ``IcomRadio`` after one polled CI-V
+  0x14 0x03 squelch-level reply (``Raised``: 128, ``Zero``: 0) or none at all
+  ("Unanswered"). ``polledSquelchDeltaRaised``/``polledSquelchDeltaZero`` are
+  the live ``delta`` envelopes the same server builds when a reply moves the
+  level after a full baseline built from the opposite one.
+  ``polledSquelchLeafStreamRaised`` (MOR-4206) is what a control client that
+  asked for leaf deltas receives when the level rises from 0: the baseline
   ``register_control_event_queue(..., leaf_deltas=True)`` returns, then the
   ``deltaVersion: 2`` frame the next broadcast queues for it. The radio
-  ingests the reply through its own CI-V state-cache path, so the BUSY
-  lamp's wire inputs (the ``dcd`` value, its ``fieldStatus`` row, the
+  ingests the reply through its own CI-V state-cache path, so the SQL tag's
+  wire inputs (the ``squelch`` value, its ``fieldStatus`` row, the
   ``squelch`` capability tag only a radio-backed server publishes) come
   from the producers, not from this script.
-  ``tests/test_dcd_busy_wire_e2e.py`` proves the same fields arrive over
-  the real HTTP and WebSocket API from a polled simulator stack.
 
 ``_EXCLUDED_MODELS`` profiles contribute a ``capabilities`` entry only: their
 state payloads are left out to keep the committed file small.
@@ -63,12 +61,13 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
-from rigplane.core._bounded_queue import BoundedQueue  # noqa: E402
+from rigplane.commands._codec import bcd_encode_value  # noqa: E402
 from rigplane.commands._frame import (  # noqa: E402
     CONTROLLER_ADDR,
     build_civ_frame,
     parse_civ_frame,
 )
+from rigplane.core._bounded_queue import BoundedQueue  # noqa: E402
 from rigplane.core.state_pipeline_contracts import (  # noqa: E402
     DEFAULT_FIELD_REGISTRY,
     FieldFamily,
@@ -120,21 +119,21 @@ _EXCLUDED_MODELS = frozenset({"IC-7300MK2", "X6100"})
 
 # RFC 5737 documentation address: the radios below are never connected.
 _UNCONNECTED_RADIO_HOST = "192.0.2.1"
-# The single-byte CI-V 0x15 0x01 SQL-status payload of a polled reply.
-_SQL_OPEN = 0x01
-_SQL_CLOSED = 0x00
-_POLLED_DCD_CASES = (
-    ("polledDcdOpen", _SQL_OPEN),
-    ("polledDcdClosed", _SQL_CLOSED),
-    ("polledDcdUnanswered", None),
+# The squelch levels a polled CI-V 0x14 0x03 reply carries (0..255).
+_SQUELCH_RAISED = 128
+_SQUELCH_ZERO = 0
+_POLLED_SQUELCH_CASES = (
+    ("polledSquelchRaised", _SQUELCH_RAISED),
+    ("polledSquelchZero", _SQUELCH_ZERO),
+    ("polledSquelchUnanswered", None),
 )
-# (case, squelch byte of the full baseline, squelch byte of the reply that
-# flips it): the live delta a connected client receives on the transition.
-_POLLED_DCD_DELTAS = (
-    ("polledDcdDeltaOpen", _SQL_CLOSED, _SQL_OPEN),
-    ("polledDcdDeltaClosed", _SQL_OPEN, _SQL_CLOSED),
+# (case, squelch level of the full baseline, squelch level of the reply that
+# moves it): the live delta a connected client receives on the transition.
+_POLLED_SQUELCH_DELTAS = (
+    ("polledSquelchDeltaRaised", _SQUELCH_ZERO, _SQUELCH_RAISED),
+    ("polledSquelchDeltaZero", _SQUELCH_RAISED, _SQUELCH_ZERO),
 )
-_DCD_PATH = FieldPath.receiver("main", "operator_toggles", "dcd")
+_SQUELCH_PATH = FieldPath.receiver("main", "operator_controls", "squelch")
 
 _INT_BY_NAME = {"filter_width": 2400, "receiver": 0}
 # The golden width carries a Hz value, so the radio-default flag is False.
@@ -285,8 +284,8 @@ def _capabilities(server: WebServer) -> dict[str, Any]:
 
 
 @functools.cache
-def polled_dcd_models() -> tuple[str, ...]:
-    """The golden models whose profile polls the main receiver ``dcd`` leaf.
+def polled_squelch_models() -> tuple[str, ...]:
+    """The golden models whose profile polls the main receiver ``squelch`` level.
 
     Icom CI-V profiles only: the polled reply is a CI-V frame. The
     capabilities-only ``_EXCLUDED_MODELS`` contribute no state payloads.
@@ -298,14 +297,14 @@ def polled_dcd_models() -> tuple[str, ...]:
             model not in _EXCLUDED_MODELS
             and acquisition is not None
             and acquisition.provider == "icom_civ"
-            and _DCD_PATH in acquisition.pollable_paths()
+            and _SQUELCH_PATH in acquisition.pollable_paths()
         ):
             models.append(model)
     return tuple(models)
 
 
-def _polled_dcd_reply(profile: RadioProfile, sql_byte: int) -> bytes:
-    """The radio's answer to the profile's own polled main-receiver 0x15 0x01.
+def _polled_squelch_reply(profile: RadioProfile, level: int) -> bytes:
+    """The radio's answer to the profile's own polled main-receiver 0x14 0x03.
 
     The wire form (plain, or cmd29-wrapped on dual-receiver Icoms) comes from
     the profile's built state queries, the same ones the scheduler sends.
@@ -313,7 +312,7 @@ def _polled_dcd_reply(profile: RadioProfile, sql_byte: int) -> bytes:
     query = next(
         query
         for query in build_state_queries(profile)
-        if query.command == 0x15 and query.sub == 0x01 and query.receiver in (None, 0)
+        if query.command == 0x14 and query.sub == 0x03 and query.receiver in (None, 0)
     )
     command, sub, data = wire_parts_for_query(query, 0)
     return build_civ_frame(
@@ -321,12 +320,12 @@ def _polled_dcd_reply(profile: RadioProfile, sql_byte: int) -> bytes:
         profile.civ_addr,
         command,
         sub=sub,
-        data=data + bytes([sql_byte]),
+        data=data + bcd_encode_value(level, byte_count=2),
     )
 
 
-def _ingest_polled_reply(radio: IcomRadio, model: str, sql_byte: int) -> None:
-    reply = _polled_dcd_reply(get_radio_profile(model), sql_byte)
+def _ingest_polled_reply(radio: IcomRadio, model: str, level: int) -> None:
+    reply = _polled_squelch_reply(get_radio_profile(model), level)
     # Whether a reply re-stamps the liveness-inferred power_on depends on the
     # receive clock (``_civ_rx.py: CivRuntime._inferred_power_on_due``), so
     # replies arrive on this clock, one second apart, however fast this runs.
@@ -336,42 +335,42 @@ def _ingest_polled_reply(radio: IcomRadio, model: str, sql_byte: int) -> None:
         radio._update_state_cache_from_frame(parse_civ_frame(reply))
 
 
-def _polled_dcd_radio(model: str, sql_byte: int | None) -> IcomRadio:
+def _polled_squelch_radio(model: str, level: int | None) -> IcomRadio:
     """A real, never-connected radio after one polled reply (or none)."""
     radio = IcomRadio(_UNCONNECTED_RADIO_HOST, model=model)
-    if sql_byte is not None:
-        _ingest_polled_reply(radio, model, sql_byte)
+    if level is not None:
+        _ingest_polled_reply(radio, model, level)
     return radio
 
 
-def _polled_dcd_server(model: str, sql_byte: int | None) -> WebServer:
+def _polled_squelch_server(model: str, level: int | None) -> WebServer:
     """A web server around that radio."""
-    return WebServer(_polled_dcd_radio(model, sql_byte), WebConfig(radio_model=model))
+    return WebServer(_polled_squelch_radio(model, level), WebConfig(radio_model=model))
 
 
-def _polled_dcd_delta(
-    model: str, baseline_byte: int, reply_byte: int
+def _polled_squelch_delta(
+    model: str, baseline_level: int, reply_level: int
 ) -> dict[str, Any]:
-    """The live delta after a polled reply flips the squelch from the baseline."""
-    radio = _polled_dcd_radio(model, baseline_byte)
+    """The live delta after a polled reply moves the squelch level from the baseline."""
+    radio = _polled_squelch_radio(model, baseline_level)
     server = WebServer(radio, WebConfig(radio_model=model))
     server.build_state_update_envelope(force_full=True)
-    _ingest_polled_reply(radio, model, reply_byte)
+    _ingest_polled_reply(radio, model, reply_level)
     return _delta_envelope(server)
 
 
-def _polled_dcd_leaf_stream(
-    model: str, baseline_byte: int, reply_byte: int
+def _polled_squelch_leaf_stream(
+    model: str, baseline_level: int, reply_level: int
 ) -> list[dict[str, Any]]:
     """A leaf-delta client's baseline, then the frame queued on the flip."""
-    radio = _polled_dcd_radio(model, baseline_byte)
+    radio = _polled_squelch_radio(model, baseline_level)
     server = WebServer(radio, WebConfig(radio_model=model))
     queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=4)
     baseline = cast(
         "dict[str, Any]",
         server.register_control_event_queue(queue, leaf_deltas=True),
     )
-    _ingest_polled_reply(radio, model, reply_byte)
+    _ingest_polled_reply(radio, model, reply_level)
     server._broadcast_state_update(force=True)
     events = [queue.get_nowait() for _ in range(queue.qsize())]
     if [event["type"] for event in events] != ["state_update"]:
@@ -384,17 +383,19 @@ def _polled_dcd_leaf_stream(
     return [baseline, delta]
 
 
-def _build_polled_dcd_goldens(model: str) -> dict[str, Any]:
+def _build_polled_squelch_goldens(model: str) -> dict[str, Any]:
     golden: dict[str, Any] = {
-        case: _full_envelope(_polled_dcd_server(model, sql_byte))
-        for case, sql_byte in _POLLED_DCD_CASES
+        case: _full_envelope(_polled_squelch_server(model, level))
+        for case, level in _POLLED_SQUELCH_CASES
     }
-    for case, baseline_byte, reply_byte in _POLLED_DCD_DELTAS:
-        golden[case] = _polled_dcd_delta(model, baseline_byte, reply_byte)
-    golden["polledDcdLeafStreamOpen"] = _polled_dcd_leaf_stream(
-        model, _SQL_CLOSED, _SQL_OPEN
+    for case, baseline_level, reply_level in _POLLED_SQUELCH_DELTAS:
+        golden[case] = _polled_squelch_delta(model, baseline_level, reply_level)
+    golden["polledSquelchLeafStreamRaised"] = _polled_squelch_leaf_stream(
+        model, _SQUELCH_ZERO, _SQUELCH_RAISED
     )
-    golden["polledDcdCapabilities"] = _capabilities(_polled_dcd_server(model, None))
+    golden["polledSquelchCapabilities"] = _capabilities(
+        _polled_squelch_server(model, None)
+    )
     return golden
 
 
@@ -412,8 +413,8 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
         observed = WebServer(None, config)
         _observe_declared(observed, profile)
         golden["allObserved"] = _full_envelope(observed)
-    if model in polled_dcd_models():
-        golden.update(_build_polled_dcd_goldens(model))
+    if model in polled_squelch_models():
+        golden.update(_build_polled_squelch_goldens(model))
     return golden
 
 
@@ -426,7 +427,7 @@ def _pinned_liveness() -> Any:
     spuriously carries ``connection`` when a millisecond boundary falls
     between the baseline and the delta build. Freezing the age at the source
     keeps radio-backed full envelopes byte-stable and deltas limited to the
-    squelch flip. Pinned after the fact (``_pin_volatile``) would be too late
+    squelch change. Pinned after the fact (``_pin_volatile``) would be too late
     for the deltas.
     """
     original = _server_module.connection_liveness_payload
