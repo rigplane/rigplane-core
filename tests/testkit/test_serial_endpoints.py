@@ -178,26 +178,34 @@ async def test_tcp_vanish_drops_clients_and_closes_new_opens_until_reappear() ->
 
 
 async def test_tcp_stop_admits_no_handler_queued_before_shutdown() -> None:
-    # Stop right after the connect: depending on scheduling the accepted
-    # handler may or may not have started when stop() runs — both
-    # outcomes must end clean (EOF, no registered client, no leftover
-    # TcpEndpoint task).
+    # A handler accepted before stop() but first run after it began must
+    # end clean: EOF, no registered client, no leftover TcpEndpoint task.
+    # The queued state is held by an event, not left to scheduling: a
+    # client's connect returns at the server's SYN-ACK, before the server
+    # has accepted (a slow loopback such as WSL2 mirrored delivers the final
+    # ACK later), so "stop right after the connect" was not that case.
     endpoint = TcpEndpoint(CivSerialFake())
+    accepted = asyncio.Event()
+    handlers: list[asyncio.Task] = []
+    handle_client = endpoint._handle_client
+
+    async def queued_until_stop(reader, writer) -> None:
+        handlers.append(asyncio.current_task())
+        accepted.set()  # asyncio accepted and attached the socket
+        await _until(lambda: endpoint._stopping)
+        await handle_client(reader, writer)
+
+    endpoint._handle_client = queued_until_stop  # type: ignore[method-assign]
     await endpoint.start()
     reader, _writer = await asyncio.open_connection("127.0.0.1", endpoint.port)
+    await asyncio.wait_for(accepted.wait(), 5.0)
     await asyncio.wait_for(endpoint.stop(), 5.0)
     assert await asyncio.wait_for(reader.read(), 3.0) == b""  # EOF, no hang
-    # stop() may return before the accepted handler has run its first
-    # step, so it can finish one loop iteration after the EOF; wait for
-    # the end conditions instead of asserting them instantly.
-    await _until(lambda: endpoint._clients == {})
-    await _until(
-        lambda: (
-            not any(
-                "TcpEndpoint" in getattr(t.get_coro(), "__qualname__", "")
-                for t in asyncio.all_tasks()
-            )
-        )
+    assert endpoint._clients == {}
+    assert [task.done() for task in handlers] == [True]
+    assert not any(
+        "TcpEndpoint" in getattr(t.get_coro(), "__qualname__", "")
+        for t in asyncio.all_tasks()
     )
 
 

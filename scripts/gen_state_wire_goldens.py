@@ -104,6 +104,14 @@ _PINNED_UPDATED_AT = "2026-01-01T00:00:00+00:00"
 _PINNED_MONOTONIC = 1000.0
 _RECEIVE_CLOCK = VirtualClock(start=_PINNED_MONOTONIC)
 _PINNED_SINCE_MS = 0
+# The web server's own monotonic clock during a render. A delta carries
+# ``radioHealth`` only when its whole-millisecond age changed since the
+# baseline build (``_pin_volatile`` pins ``sinceMs`` only after that change
+# detection), so on the real clock two builds inside one millisecond left it
+# out and slower ones put it in. On this clock nothing moves unless a builder
+# advances it: the two delta builders step it between their two builds.
+_SERVER_CLOCK = VirtualClock(start=_PINNED_MONOTONIC)
+_SERVER_CLOCK_STEP_S = 1.0
 # MOR-3630/MOR-3845: radio-backed envelopes carry the live
 # ``connection.liveness`` block whose frame age is wall-clock dependent.
 _PINNED_LAST_FRAME_AGE_MS = 0
@@ -356,6 +364,7 @@ def _polled_squelch_delta(
     server = WebServer(radio, WebConfig(radio_model=model))
     server.build_state_update_envelope(force_full=True)
     _ingest_polled_reply(radio, model, reply_level)
+    _SERVER_CLOCK.advance(_SERVER_CLOCK_STEP_S)  # the health age moves between builds
     return _delta_envelope(server)
 
 
@@ -371,6 +380,7 @@ def _polled_squelch_leaf_stream(
         server.register_control_event_queue(queue, leaf_deltas=True),
     )
     _ingest_polled_reply(radio, model, reply_level)
+    _SERVER_CLOCK.advance(_SERVER_CLOCK_STEP_S)  # the health age moves between builds
     server._broadcast_state_update(force=True)
     events = [queue.get_nowait() for _ in range(queue.qsize())]
     if [event["type"] for event in events] != ["state_update"]:
@@ -445,7 +455,12 @@ def _pinned_liveness() -> Any:
 
 def _build_goldens() -> dict[str, dict[str, Any]]:
     models = sorted(discover_rigs(_REPO_ROOT / "rigs"))
-    with mock.patch.dict(os.environ), _pinned_liveness():
+    with (
+        mock.patch.dict(os.environ),
+        _pinned_liveness(),
+        pytest.MonkeyPatch.context() as patch,
+    ):
+        _SERVER_CLOCK.scope_to(patch, _server_module)
         for name in _JITTER_ENV_VARS:
             os.environ.pop(name, None)
         return {model: _build_profile_goldens(model) for model in models}

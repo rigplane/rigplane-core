@@ -487,6 +487,11 @@ class MockIcomRadio(AudioPortMixin):
             while the current mode is outside the set (MOR-4036).
     """
 
+    #: Release reasons that mean the client ended the session itself: the
+    #: stream owner's OpenClose(close) (a logout sends it first), the
+    #: token-remove, or the control DISCONNECT. A hold expiry is not one.
+    CLIENT_END_REASONS = frozenset({"openclose_close", "token_remove", "disconnect"})
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -815,6 +820,8 @@ class MockIcomRadio(AudioPortMixin):
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
         self.last_release_reason: str | None = None
+        # Callers of ``wait_session_released``, woken by ``_release_session``.
+        self._release_waiters: list[asyncio.Future[str]] = []
         self._login_count: int = 0  # accepted logins
         self._openclose_open_count: int = 0  # CI-V OpenClose(open) received
         self._audio_init()  # audio-port state (RX streamer, TX sink)
@@ -927,6 +934,29 @@ class MockIcomRadio(AudioPortMixin):
     def session_held(self) -> bool:
         """True when a session is currently owned (single-owner mode)."""
         return self._owner is not None
+
+    async def wait_session_released(self) -> str | None:
+        """Wait for the held session to end; return why (``last_release_reason``).
+
+        If no session is held, returns at once with the reason the last one
+        ended (``None`` if none ever did), so a release that landed before
+        this call keeps its reason. A client's token-remove, DISCONNECT or
+        OpenClose(close) is a UDP datagram the simulator handles only when it
+        is delivered, which is not always the next loop iteration (WSL2
+        mirrored loopback adds about 0.1 ms). Wait here instead of reading
+        :attr:`session_held` right after the client's send returns, and check
+        the reason against :attr:`CLIENT_END_REASONS`: a hold expiry
+        (``keepalive_timeout``) also ends the session.
+        """
+        if self._owner is None:
+            return self.last_release_reason
+        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._release_waiters.append(waiter)
+        try:
+            return await waiter
+        finally:
+            if waiter in self._release_waiters:
+                self._release_waiters.remove(waiter)
 
     @property
     def owner(self) -> tuple[tuple[str, int], int] | None:
@@ -1222,6 +1252,10 @@ class MockIcomRadio(AudioPortMixin):
             self._owner = None
             self.released_count += 1
             self.last_release_reason = reason
+            waiters, self._release_waiters = self._release_waiters, []
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.set_result(reason)
             # ptt_on_session_loss (opt-in, stateful PTT only): "release"
             # unkeys the simulated radio at the moment the session ends.
             # The real IC-7610 behaviour is UNRECORDED — TX is never
