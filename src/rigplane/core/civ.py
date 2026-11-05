@@ -539,8 +539,20 @@ class CivRequestTracker:
         self._generation += 1
         return self._generation
 
-    def resolve(self, event: CivEvent, *, generation: int | None = None) -> bool:
-        """Resolve a pending request from an incoming event."""
+    def resolve(
+        self,
+        event: CivEvent,
+        *,
+        generation: int | None = None,
+        ordered_ingress: bool = False,
+    ) -> bool:
+        """Resolve a pending request from an incoming event.
+
+        ``ordered_ingress`` is the transport's contract that frames arrive in
+        the order the radio sent them (``SerialCivTransport.ordered_ingress``
+        vs ``IcomTransport.ordered_ingress``). Only then does an answer prove
+        that the older fire-and-forget sinks' answers are lost (MOR-4209).
+        """
         if generation is not None and generation != self._generation:
             return False
 
@@ -610,6 +622,11 @@ class CivRequestTracker:
                         pending.future.set_result(frame)
                     return True
                 i += 1
+            # An unsolicited broadcast (transceive) answers no request: it
+            # must not take a pending read's sink (MOR-4209), or the read's
+            # own answer later finds nothing to retire.
+            if frame.to_addr == _BROADCAST_ADDR:
+                return False
             # Otherwise it retires the oldest sink whose ``response_key`` it
             # matches.
             for index, waiter in enumerate(self._ack_waiters):
@@ -617,7 +634,7 @@ class CivRequestTracker:
                     waiter.response_key, frame
                 ):
                     del self._ack_waiters[index]
-                    if frame.to_addr != _BROADCAST_ADDR:
+                    if ordered_ingress:
                         self._retire_sinks_passed_by(index)
                     return True
             return False
@@ -629,7 +646,8 @@ class CivRequestTracker:
 
         MOR-4209: sinks are registered by the commander's single worker right
         before their frame goes out, so their order is the wire order, and the
-        radio answers in that order. An answer to a later request therefore
+        radio answers in that order. On a transport that keeps that order on
+        the way back (``ordered_ingress``) an answer to a later request therefore
         means every older sink's answer (data, FB or FA) was lost. Left open,
         the oldest of them took the next bare FA, which then named the wrong
         read as refused (:meth:`take_refused_reads`, MOR-4058) while the read

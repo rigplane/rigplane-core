@@ -2179,7 +2179,14 @@ class CivRuntime:
             )
         self._publish_civ_event(event)
         claimed: _CivDataTransaction | None = None
-        if self._host._civ_request_tracker.resolve(event, generation=generation):
+        transport = self._host._civ_transport
+        if self._host._civ_request_tracker.resolve(
+            event,
+            generation=generation,
+            # MOR-4209: the transport's typed ingress-order contract; a test
+            # double without it (e.g. a mock) reads as unordered.
+            ordered_ingress=transport is not None and transport.ordered_ingress is True,
+        ):
             claimed = self._claim_civ_data_transaction(event)
         if event.type is CivEventType.NAK:
             self._record_refused_reads()
