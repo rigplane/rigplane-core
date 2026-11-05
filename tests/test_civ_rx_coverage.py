@@ -40,10 +40,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import VirtualClock, await_until
 from test_radio import MockTransport, _wrap_civ_in_udp
 
 from rigplane import IC_7610_ADDR
+from rigplane.runtime import _civ_rx as civ_rx_module
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.commands import (
@@ -3866,14 +3867,11 @@ def test_meter_coalescing_applies_latest_due_sample_and_records_diagnostics(
 
     # After the window elapses the coalesced latest sample lands (raw 222 -> 31).
     assert radio._state_store.snapshot().field("receiver.0.meters.s_meter").value == 31
+    # MOR-4211: the second answer, 0.1 s later, does not re-stamp power_on.
     assert events == [
         (
             "state_store_changed",
             {"coalesced": False, "paths": ["receiver.0.meters.s_meter"]},
-        ),
-        (
-            "state_store_changed",
-            {"coalesced": False, "paths": ["global.tx_state.power_on"]},
         ),
         (
             "state_store_changed",
@@ -6865,6 +6863,113 @@ async def test_power_on_inferred_true_and_kept_fresh_while_civ_answers_arrive(
         radio._state_store.snapshot().field(_POWER_ON_PATH).freshness  # noqa: SLF001
         is FreshnessState.STALE
     )
+
+
+def _power_on_events(
+    events: list[tuple[str, dict[str, Any]]],
+) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        event
+        for event in events
+        if event[0] == "state_store_changed" and _POWER_ON_PATH in event[1]["paths"]
+    ]
+
+
+def test_inferred_power_on_is_not_restamped_by_every_answer(
+    radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MOR-4211: answers inside half the 30 s TTL do not re-apply power_on.
+
+    An unchanged re-stamp is still a ``state_store_changed`` event, and
+    each such event drives a state broadcast.
+    """
+    clock = VirtualClock(start=100.0)
+    clock.scope_to(monkeypatch, civ_rx_module)
+    events: list[tuple[str, dict[str, Any]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+    answer = _make_frame(cmd=0x16, sub=0x22, data=b"\x01")
+
+    for _ in range(10):
+        radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+        clock.advance(1.0)
+
+    assert len(_power_on_events(events)) == 1
+    field = radio._state_store.snapshot().field(_POWER_ON_PATH)  # noqa: SLF001
+    assert field.value is True
+    assert field.last_observed_monotonic == 100.0
+
+
+def test_inferred_power_on_is_restamped_once_half_its_ttl_has_passed(
+    radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MOR-4211: the first answer at half the TTL re-stamps power_on."""
+    clock = VirtualClock(start=100.0)
+    clock.scope_to(monkeypatch, civ_rx_module)
+    answer = _make_frame(cmd=0x16, sub=0x22, data=b"\x01")
+    radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+
+    clock.advance(14.9)
+    radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+    store = radio._state_store  # noqa: SLF001
+    assert store.snapshot().field(_POWER_ON_PATH).last_observed_monotonic == 100.0
+
+    clock.advance(0.1)
+    radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+    assert store.snapshot().field(_POWER_ON_PATH).last_observed_monotonic == 115.0
+
+
+def test_stale_inferred_power_on_is_restamped_by_the_next_answer(
+    radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MOR-4211: a real freshness change (STALE -> FRESH) still lands and notifies."""
+    clock = VirtualClock(start=100.0)
+    clock.scope_to(monkeypatch, civ_rx_module)
+    events: list[tuple[str, dict[str, Any]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+    answer = _make_frame(cmd=0x16, sub=0x22, data=b"\x01")
+    store = radio._state_store  # noqa: SLF001
+    radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+
+    clock.advance(31.0)
+    store.mark_stale_due(now=clock())
+    assert store.snapshot().field(_POWER_ON_PATH).freshness is FreshnessState.STALE
+    radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+
+    field = store.snapshot().field(_POWER_ON_PATH)
+    assert field.freshness is FreshnessState.FRESH
+    assert field.last_observed_monotonic == 131.0
+    assert len(_power_on_events(events)) == 2
+
+
+def test_unchanged_reread_of_a_polled_field_still_publishes_its_observation(
+    radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MOR-4211: a same-value re-read keeps notifying with its own path.
+
+    The web client confirms a pending command on the commanded field's own
+    post-ack observation, whatever value it carries
+    (``pending-intent-table.ts: latestPendingParam`` reads
+    ``fieldStatus[path].lastObservedMonotonic``), so a polled field's
+    unchanged re-read must still move its marker and announce the path.
+    """
+    clock = VirtualClock(start=100.0)
+    clock.scope_to(monkeypatch, civ_rx_module)
+    events: list[tuple[str, dict[str, Any]]] = []
+    radio._on_state_change = lambda name, data: events.append((name, data))
+    answer = _make_frame(cmd=0x16, sub=0x22, data=b"\x01")
+    path = "receiver.0.operator_toggles.nb"
+
+    radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+    clock.advance(1.0)
+    events.clear()
+    radio._civ_runtime._apply_state_store_observations(answer)  # noqa: SLF001
+
+    assert events == [
+        ("state_store_changed", {"coalesced": False, "paths": [path]}),
+    ]
+    field = radio._state_store.snapshot().field(path)  # noqa: SLF001
+    assert field.value is True
+    assert field.last_observed_monotonic == 101.0
 
 
 @pytest.mark.asyncio

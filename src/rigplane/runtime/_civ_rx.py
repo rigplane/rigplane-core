@@ -119,6 +119,7 @@ _FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
+_POWER_ON_PATH = FieldPath.global_("tx_state", "power_on")
 
 #: Fallback freshness TTLs for CI-V observations, keyed ``(scope, family,
 #: name)`` — rig-blind, and read by ``_observation_max_age`` only for a path
@@ -2536,13 +2537,15 @@ class CivRuntime:
         elif self._host._profile.infers_power_on_from_liveness:
             # MOR-2544: the profile declares power control but no power-status
             # query, so a decoded frame from the radio is itself the power
-            # evidence — a powered-off radio answers nothing. Re-stamp
-            # ``power_on=True`` on every response that reaches this point
-            # (the relative-VFO early return above — 0x00/0x01/0x03/0x04/
-            # 0x25/0x26 on ``selected_unselected`` profiles such as
-            # IC-7300/IC-705 — observes no power and clears no retained
-            # command) so the 30 s fallback TTL never decays it while
-            # answers keep arriving. 0x18 readbacks are excluded: they
+            # evidence — a powered-off radio answers nothing. A response
+            # that reaches this point re-stamps ``power_on=True`` whenever
+            # ``_inferred_power_on_due`` says so (the relative-VFO early
+            # return above — 0x00/0x01/0x03/0x04/0x25/0x26 on
+            # ``selected_unselected`` profiles such as IC-7300/IC-705 —
+            # observes no power and clears no retained command) so the
+            # 30 s fallback TTL never decays it while answers keep
+            # arriving at least once per half TTL. 0x18 readbacks are
+            # excluded: they
             # carry the explicit truth and must not be clobbered. 0xFA/0xFB
             # and our own echo never reach this function:
             # ``_route_civ_frame`` turns them into ACK/NAK events and drops
@@ -2556,16 +2559,17 @@ class CivRuntime:
             # only its retention paths and would silently drop this global
             # observation.
             self._host._last_commanded_powerstat = None
-            observations = observations + (
-                _replace_dataclass(
-                    self._observation(
-                        FieldPath.global_("tx_state", "power_on"),
-                        True,
-                        frame=frame,
+            if self._inferred_power_on_due(generation=store_provider_generation):
+                observations = observations + (
+                    _replace_dataclass(
+                        self._observation(
+                            _POWER_ON_PATH,
+                            True,
+                            frame=frame,
+                        ),
+                        provider_generation=store_provider_generation,
                     ),
-                    provider_generation=store_provider_generation,
-                ),
-            )
+                )
 
         for observation in observations:
             try:
@@ -2584,6 +2588,27 @@ class CivRuntime:
                     observation.path,
                     exc_info=True,
                 )
+
+    def _inferred_power_on_due(self, *, generation: int) -> bool:
+        """Whether this answer must re-stamp the liveness-inferred ``power_on``.
+
+        MOR-4211: the re-stamp only keeps the field from decaying, so an
+        answer skips it while the store already holds a FRESH ``True`` of
+        this provider generation stamped less than half its TTL ago.
+        """
+
+        try:
+            field = self._host._state_store.field(_POWER_ON_PATH)
+        except KeyError:
+            return True
+        if (
+            field.value is not True
+            or field.freshness is not FreshnessState.FRESH
+            or field.provider_generation != generation
+            or field.max_age is None
+        ):
+            return True
+        return time.monotonic() - field.last_observed_monotonic >= field.max_age / 2
 
     def _record_coalesced_meter_observation(self, observation: Observation) -> bool:
         if observation.path.family.value != "meters":
@@ -2657,7 +2682,7 @@ class CivRuntime:
         coalesced "burst".
         """
         try:
-            field = self._host._state_store.snapshot().field(path)
+            field = self._host._state_store.field(path)
         except KeyError:
             return False
         return now - field.last_observed_monotonic < window
@@ -3210,7 +3235,7 @@ class CivRuntime:
         elif frame.command == 0x18 and len(frame.data) == 1:
             observations.append(
                 self._observation(
-                    FieldPath.global_("tx_state", "power_on"),
+                    _POWER_ON_PATH,
                     bool(frame.data[0]),
                     frame=frame,
                 )
