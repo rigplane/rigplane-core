@@ -469,6 +469,32 @@ describe('quiet RX source detection (MOR-4210)', () => {
     p.stop();
   });
 
+  // Review round 1: the 20 s are audible audio, not wall time since the
+  // first frame — closed-squelch silence counts for nothing.
+  it('does not call one quiet frame after 20 s of silence low', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 20_000, 0);
+    feedFor(p, 20, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    feedFor(p, 19_900, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    feedFor(p, 100, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(true);
+    p.feed(pcm16Peak(960, dbfs(-6)));
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  it('counts audible time across squelch gaps', () => {
+    const p = new RxPlayer(); p.start();
+    for (let burst = 0; burst < 4; burst += 1) {
+      feedFor(p, 5_000, dbfs(-20));
+      feedFor(p, 10_000, 0);
+    }
+    expect(p.sourceLevelLow).toBe(true);
+    p.stop();
+  });
+
   it('restarts the window on flush', () => {
     const p = new RxPlayer(); p.start();
     feedFor(p, 19_000, dbfs(-20));

@@ -323,10 +323,12 @@ class AudioManager {
     this.rxPlayer.volume = v;
   }
 
-  /** MOR-4210: RX is running and its decoded source has stayed quiet
-   *  (RxPlayer.sourceLevelLow). Published to onChange on the stats tick. */
+  /** MOR-4210: RX is running over an open audio link and its decoded source
+   *  has stayed quiet (RxPlayer.sourceLevelLow). Published to onChange on the
+   *  stats tick; the link's close notifies on its own. */
   get rxSourceLevelLow(): boolean {
-    return this._rxEnabled && this.rxPlayer.sourceLevelLow === true;
+    return this._rxEnabled && this.ws?.readyState === WebSocket.OPEN
+      && this.rxPlayer.sourceLevelLow === true;
   }
 
   // ── TX ──
