@@ -1298,12 +1298,12 @@ export interface ReceiverIndicatorViewModel {
   rfGain: DisplayObservedField<number>;
   digiSel: ReceiverIndicatorField<boolean>;
   ipPlus: ReceiverIndicatorField<boolean>;
-  /** MOR-3630: squelch-open (BUSY) lamp state from the receiver's own `dcd`
-   *  leaf. Absent exactly when the radio declares no `squelch` capability
-   *  (the `bandwidthMaxHz` precedent: capability-derived indicator facts
-   *  are optional keys, never structural-false placeholders); a
-   *  never-observed leaf reads `unknown`, never `false`. */
-  squelchOpen?: ReceiverIndicatorField<boolean>;
+  /** The receiver's own squelch LEVEL (the value the squelch slider shows),
+   *  behind the SQL tag: the tag shows while the level is above 0. Absent
+   *  exactly when the radio declares no `squelch` capability (the
+   *  `bandwidthMaxHz` precedent); a never-observed leaf reads `unknown`,
+   *  never 0. */
+  squelch?: ReceiverIndicatorField<number>;
 }
 
 /**
@@ -1854,7 +1854,7 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz',
     'bandwidthMaxHz', 'agcMode',
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
-    'digiSel', 'ipPlus', 'squelchOpen',
+    'digiSel', 'ipPlus', 'squelch',
   ], path);
   const receiver = oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`);
   return {
@@ -1882,8 +1882,8 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     rfGain: validateDisplayObservedField(v.rfGain, `${path}.rfGain`, num),
     digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
     ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
-    ...(v.squelchOpen !== undefined
-      ? { squelchOpen: validateTxAuxField(v.squelchOpen, `${path}.squelchOpen`, bool) }
+    ...(v.squelch !== undefined
+      ? { squelch: validateTxAuxField(v.squelch, `${path}.squelch`, num) }
       : {}),
   };
 }

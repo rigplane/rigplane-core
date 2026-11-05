@@ -1456,49 +1456,61 @@ describe('RF gain additive display observation', () => {
 });
 
 
-describe('MOR-3630 squelch-open (BUSY) lamp fact', () => {
-  const lampCaps = { ...INDICATOR_CAPS, capabilities: [...INDICATOR_CAPS.capabilities, 'squelch'] };
-  function lampState(mainDcd?: boolean, subDcd?: boolean): ServerState {
+describe('SQL tag squelch-level fact (replaces the BUSY lamp)', () => {
+  const sqlCaps = { ...INDICATOR_CAPS, capabilities: [...INDICATOR_CAPS.capabilities, 'squelch'] };
+  function sqlState(main?: number, sub?: number, mainHz = 14_250_000): ServerState {
     const state = indicatorState();
-    if (mainDcd !== undefined) {
-      state.main!.dcd = mainDcd;
-      state.fieldStatus!['main.dcd'] = fresh;
+    state.main!.freqHz = mainHz;
+    if (main !== undefined) {
+      state.main!.squelch = main;
+      state.fieldStatus!['main.squelch'] = fresh;
     }
-    if (subDcd !== undefined) {
-      state.sub!.dcd = subDcd;
-      state.fieldStatus!['sub.dcd'] = fresh;
+    if (sub !== undefined) {
+      state.sub!.squelch = sub;
+      state.fieldStatus!['sub.squelch'] = fresh;
     }
     return state;
   }
-  const lamps = (state: ServerState, c: Capabilities = lampCaps) =>
+  const squelchFacts = (state: ServerState, c: Capabilities = sqlCaps) =>
     toRadioViewModel(state, c, RECEIVING)!.receiverIndicators!;
 
-  it('lights MAIN when the MAIN dcd leaf reads true', () => {
-    expect(lamps(lampState(true))[0].squelchOpen).toEqual({
-      reading: { status: 'known', value: true },
+  it('carries the receiver squelch level as a known reading, preserving 0', () => {
+    expect(squelchFacts(sqlState(40))[0].squelch).toEqual({
+      reading: { status: 'known', value: 40 },
       availability: { structural: true, operational: true },
     });
-  });
-
-  it('shows closed when the MAIN dcd leaf reads false, preserving false', () => {
-    expect(lamps(lampState(false))[0].squelchOpen?.reading).toEqual({ status: 'known', value: false });
+    expect(squelchFacts(sqlState(0))[0].squelch?.reading).toEqual({ status: 'known', value: 0 });
   });
 
   it('reads unknown until the receiver leaf is observed', () => {
-    expect(lamps(lampState())[0].squelchOpen).toEqual({
+    const state = indicatorState();
+    expect(squelchFacts(state)[0].squelch).toEqual({
       reading: { status: 'unknown' },
       availability: { structural: true, operational: false },
     });
   });
 
   it('addresses each receiver from its own leaf only', () => {
-    const view = lamps(lampState(false, true));
-    expect(view[0].squelchOpen?.reading).toEqual({ status: 'known', value: false });
-    expect(view[1].squelchOpen?.reading).toEqual({ status: 'known', value: true });
+    const view = squelchFacts(sqlState(0, 90));
+    expect(view[0].squelch?.reading).toEqual({ status: 'known', value: 0 });
+    expect(view[1].squelch?.reading).toEqual({ status: 'known', value: 90 });
+  });
+
+  it('reads the same level on HF and on VHF/UHF: no band gate', () => {
+    for (const hz of [3_700_000, 14_250_000, 50_100_000, 145_500_000, 435_000_000]) {
+      expect(squelchFacts(sqlState(25, undefined, hz))[0].squelch?.reading, `${hz} Hz`)
+        .toEqual({ status: 'known', value: 25 });
+    }
   });
 
   it('omits the fact when the radio declares no squelch capability', () => {
-    expect(lamps(lampState(true), INDICATOR_CAPS)[0].squelchOpen).toBeUndefined();
+    expect(squelchFacts(sqlState(40), INDICATOR_CAPS)[0].squelch).toBeUndefined();
+  });
+
+  it('has no squelch-open (BUSY) fact any more', () => {
+    const state = sqlState(40);
+    state.main!.dcd = true;
+    expect(squelchFacts(state)[0]).not.toHaveProperty('squelchOpen');
   });
 });
 

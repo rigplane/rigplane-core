@@ -1182,14 +1182,6 @@ function deriveReceiverIndicators(
             }
           : null,
       },
-      // MOR-3630: the BUSY lamp seat exists wherever the radio has a
-      // squelch control to report on. Unlike attenuator/preamp (MOR-2588),
-      // no per-receiver declared-field tag gates this: the reading comes
-      // from the receiver's own strictly-addressed `dcd` leaf and stays
-      // unknown until that leaf is observed, so an undeclared field can
-      // never light it — and Icom observes `dcd` from spontaneous 0x15
-      // frames without declaring a polled field at all.
-      ...(hasSquelch ? { squelchOpen: strictField(true, 'dcd', boolOrUndef(rx?.dcd)) } : {}),
       bandwidthHz: strictField(hasWidth, 'filterWidth', numOrUndef(rx?.filterWidth)),
       // MOR-2706: the structural ceiling the BW fact's slot reservation
       // derives from — fixed when the capabilities load, never a reading.
@@ -1209,6 +1201,10 @@ function deriveReceiverIndicators(
       },
       digiSel: strictField(hasDigiSel, 'digisel', boolOrUndef(rx?.digisel)),
       ipPlus: strictField(hasIpPlus, 'ipplus', boolOrUndef(rx?.ipplus)),
+      // The SQL tag reads the receiver's own squelch level, the leaf the
+      // squelch slider shows; unknown until observed. The seat exists
+      // wherever the radio declares a squelch control, on every band.
+      ...(hasSquelch ? { squelch: strictField(true, 'squelch', numOrUndef(rx?.squelch)) } : {}),
     };
   });
 }

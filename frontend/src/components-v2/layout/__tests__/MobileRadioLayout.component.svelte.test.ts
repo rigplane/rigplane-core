@@ -254,7 +254,10 @@ import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import mobileLayoutSource from '../MobileRadioLayout.svelte?raw';
 import { hasTx, hasDualReceiver, hasSpectrum, getCapabilities, getScopeSource } from '$lib/stores/capabilities.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
-import type { ServerState } from '$lib/types/state';
+import type { FieldStatus, ServerState } from '$lib/types/state';
+import {
+  FTX1_CAPABILITIES, FTX1_STATE_FULLY_UNOBSERVED,
+} from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
 // MOR-2895: the surface-plan seam App uses to hand SemanticRadioSurfaces the
 // resolved plan — without it a standalone test mount renders the scope
 // surface bare (NO_PLAN) and never reproduces the production defect.
@@ -531,105 +534,126 @@ describe('MobileRadioLayout structure', () => {
     });
   });
 
-  // MOR-3630 — the BUSY lamp on the real mobile layout mount: the phone
-  // meta row carries the same receiver-owned squelch-open fact as the
-  // desktop, first of the chips, through the existing VfoFactKind/factSpan
-  // mechanism. Radios without the squelch capability draw no chip.
-  describe('meta row BUSY lamp (MOR-3630)', () => {
+  // The SQL tag on the real mobile layout mount: the phone meta row carries
+  // the receiver-owned squelch level as its last chip, through the existing
+  // VfoFactKind/factSpan mechanism. The tag prints while the level is above
+  // 0 and nothing at 0; radios without the squelch capability draw no chip.
+  describe('meta row SQL tag', () => {
+    // Built from the producer's own types and captures: the FTX-1 capabilities
+    // body the real handler served, and the fully unobserved state a radio that
+    // has read nothing publishes (every leaf null, every status unobserved).
+    // Only what the case needs is then observed.
     const squelchCaps = (withSquelch: boolean): Capabilities => ({
-      freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'], stateContractVersion: 1,
-      providerGeneration: 1,
-      receivers: 2, vfoScheme: 'main_sub',
-      capabilities: withSquelch
-        ? ['dual_rx', 'filter_width', 'agc', 'nb', 'nr', 'squelch']
-        : ['dual_rx', 'filter_width', 'agc', 'nb', 'nr'],
-      agcModes: [0, 1, 2],
-      agcLabels: { 0: 'OFF', 1: 'FAST', 2: 'SLOW' },
-    } as unknown as Capabilities);
-    const seen = () => ({ observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 });
-    function squelchFacts(dcd: boolean | undefined, withSquelch: boolean) {
+      ...FTX1_CAPABILITIES,
+      capabilities: [
+        ...FTX1_CAPABILITIES.capabilities.filter((tag) => tag !== 'squelch'),
+        ...(withSquelch ? ['squelch'] : []),
+      ],
+    });
+    const observed = (storePath: string): FieldStatus => ({
+      storePath, observed: true, freshness: 'fresh', availability: 'available',
+      lastObservedMonotonic: 1,
+    });
+    function squelchFacts(level: number | null, withSquelch: boolean, freqHz = 14_250_000) {
       const caps = squelchCaps(withSquelch);
-      vi.mocked(hasDualReceiver).mockReturnValue(true);
-      (radio as unknown as { current: ServerState | null }).current = {
-        active: 'MAIN', providerGeneration: 1,
+      const base = structuredClone(FTX1_STATE_FULLY_UNOBSERVED);
+      const fieldStatus: Record<string, FieldStatus> = { ...base.fieldStatus };
+      for (const key of ['main', 'sub'] as const) {
+        for (const leaf of ['filterWidth', 'agc', 'nb', 'nr']) {
+          fieldStatus[`${key}.${leaf}`] = observed(`receiver.${key}.${leaf}`);
+        }
+        // An unread level keeps the producer's null leaf and unobserved status.
+        if (level !== null) fieldStatus[`${key}.squelch`] = observed(`receiver.${key}.squelch`);
+      }
+      // `Capabilities` is open-ended (index signature), so the generation is
+      // narrowed to the number the state contract carries.
+      const generation = typeof caps.providerGeneration === 'number'
+        ? caps.providerGeneration : undefined;
+      const state: ServerState = {
+        ...base,
+        active: 'MAIN',
+        providerGeneration: generation,
         main: {
-          freqHz: 14_250_000, mode: 'USB', filter: 0, dataMode: 0, activeSlot: 'A', sMeter: -12,
-          vfoA: {}, vfoB: {}, filterWidth: 2400, agc: 1, nb: false, nr: false,
-          ...(dcd === undefined ? {} : { dcd }),
-        } as unknown,
+          ...base.main, freqHz, mode: 'USB', filterWidth: 2400, agc: 1, nb: false, nr: false,
+          squelch: level,
+        },
         sub: {
-          freqHz: 7_100_000, mode: 'LSB', filter: 1, dataMode: 0, activeSlot: 'A', sMeter: -12,
-          vfoA: {}, vfoB: {}, filterWidth: 500, agc: 2, nb: true, nr: true,
-          ...(dcd === undefined ? {} : { dcd }),
-        } as unknown,
-        connection: {} as ServerState['connection'],
-        fieldStatus: {
-          'main.filterWidth': seen(), 'main.agc': seen(), 'main.nb': seen(), 'main.nr': seen(),
-          'sub.filterWidth': seen(), 'sub.agc': seen(), 'sub.nb': seen(), 'sub.nr': seen(),
-          ...(dcd === undefined ? {} : { 'main.dcd': seen(), 'sub.dcd': seen() }),
-        } as unknown as ServerState['fieldStatus'],
-      } as unknown as ServerState;
+          ...base.sub, freqHz: 7_100_000, mode: 'LSB', filterWidth: 500, agc: 2, nb: true,
+          nr: true, squelch: level,
+        },
+        fieldStatus,
+      };
+      vi.mocked(hasDualReceiver).mockReturnValue(true);
+      radio.current = state;
       vi.mocked(getCapabilities).mockReturnValue(caps);
     }
     function restore(previous: Capabilities | null) {
       vi.mocked(getCapabilities).mockReturnValue(previous);
       vi.mocked(hasDualReceiver).mockReturnValue(false);
     }
+    const sqlChip = (t: HTMLElement) =>
+      t.querySelector('.m-vfo-meta')!.querySelector('[data-indicator-fact="sql"]');
 
-    it('lights BUSY first while the squelch reads open', () => {
+    it.each([
+      ['HF', 14_250_000],
+      ['VHF/UHF', 145_500_000],
+    ])('shows SQL last while the level is above 0 on %s', (_band, freqHz) => {
       const previous = getCapabilities();
-      squelchFacts(true, true);
+      squelchFacts(40, true, freqHz);
       try {
         const t = mountMobile();
-        const meta = t.querySelector('.m-vfo-meta')!;
-        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
+        const facts = [...t.querySelector('.m-vfo-meta')!.querySelectorAll('[data-indicator-fact]')];
         expect(facts.map((node) => node.getAttribute('data-indicator-fact')))
-          .toEqual(['busy', 'bandwidth', 'agc', 'nb', 'nr']);
-        expect(facts.map((node) => node.textContent?.trim()))
-          .toEqual(['BUSY', 'BW 2400 Hz', 'AGC FAST', 'NB', 'NR']);
-        expect(meta.querySelector('[data-indicator-fact="busy"]')?.getAttribute('data-state')).toBe('on');
+          .toEqual(['bandwidth', 'agc', 'nb', 'nr', 'sql']);
+        expect(facts[facts.length - 1].textContent?.trim()).toBe('SQL');
       } finally {
         restore(previous);
       }
     });
 
-    it('darkens BUSY while the squelch reads closed, keeping the label', () => {
+    it('shows nothing at level 0, keeping an empty hidden slot', () => {
       const previous = getCapabilities();
-      squelchFacts(false, true);
+      squelchFacts(0, true);
       try {
-        const t = mountMobile();
-        const meta = t.querySelector('.m-vfo-meta')!;
-        const busy = meta.querySelector('[data-indicator-fact="busy"]');
-        expect(busy?.textContent?.trim()).toBe('BUSY');
-        expect(busy?.getAttribute('data-state')).toBe('off');
+        const chip = sqlChip(mountMobile());
+        expect(chip?.textContent?.trim()).toBe('');
+        expect(chip?.getAttribute('aria-hidden')).toBe('true');
       } finally {
         restore(previous);
       }
     });
 
-    it('dims BUSY while the squelch is unread', () => {
+    it('shows nothing while the level is unread (null leaf, unobserved status)', () => {
       const previous = getCapabilities();
-      squelchFacts(undefined, true);
+      squelchFacts(null, true);
       try {
-        const t = mountMobile();
-        const meta = t.querySelector('.m-vfo-meta')!;
-        const busy = meta.querySelector('[data-indicator-fact="busy"]');
-        expect(busy?.textContent?.trim()).toBe('BUSY');
-        expect(busy?.getAttribute('data-state')).toBe('unknown');
+        expect(radio.current?.main.squelch).toBeNull();
+        expect(radio.current?.fieldStatus?.['main.squelch']?.observed).toBe(false);
+        const chip = sqlChip(mountMobile());
+        expect(chip?.textContent?.trim()).toBe('');
+        expect(chip?.getAttribute('data-state')).toBe('off');
       } finally {
         restore(previous);
       }
     });
 
-    it('draws no BUSY chip when the radio declares no squelch fact', () => {
+    it('draws no SQL chip when the radio declares no squelch fact', () => {
       const previous = getCapabilities();
-      squelchFacts(true, false);
+      squelchFacts(40, false);
+      try {
+        expect(sqlChip(mountMobile())).toBeNull();
+      } finally {
+        restore(previous);
+      }
+    });
+
+    it('renders no BUSY element on the phone layout', () => {
+      const previous = getCapabilities();
+      squelchFacts(40, true);
       try {
         const t = mountMobile();
-        const meta = t.querySelector('.m-vfo-meta')!;
-        const facts = [...meta.querySelectorAll('[data-indicator-fact]')];
-        expect(facts.map((node) => node.getAttribute('data-indicator-fact')))
-          .toEqual(['bandwidth', 'agc', 'nb', 'nr']);
+        expect(t.querySelector('[data-indicator-fact="busy"], [data-chip="busy"]')).toBeNull();
+        expect(t.textContent ?? '').not.toContain('BUSY');
       } finally {
         restore(previous);
       }
