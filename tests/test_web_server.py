@@ -3427,30 +3427,6 @@ class TestScopeDemandGeneration:
 
         assert not server._command_queue.has_commands
 
-    async def test_scope_health_recovery_uses_current_generation(self) -> None:
-        server, _ = self._make_server()
-        handler = MagicMock()
-        commands = await _drive_scope_pipeline(
-            server, server.ensure_scope_enabled(handler)
-        )
-
-        from rigplane.web.radio_poller import EnableScope
-
-        (initial_enable,) = commands
-        assert isinstance(initial_enable, EnableScope)
-        server._scope_health_interval = 0
-        server._scope_health_max_retries = 1
-        server._scope_last_nonzero = -1
-
-        monitor = asyncio.create_task(server._scope_health_monitor())
-        recovery_commands = await _drive_scope_pipeline(server, asyncio.sleep(0.01))
-        monitor.cancel()
-        await monitor
-
-        (recovery,) = [c for c in recovery_commands if isinstance(c, EnableScope)]
-        assert isinstance(recovery, EnableScope)
-        assert recovery.generation == initial_enable.generation > 0
-
     async def test_reconnect_enable_uses_current_generation(self) -> None:
         server, radio = self._make_server()
         radio._fetch_initial_state = AsyncMock()

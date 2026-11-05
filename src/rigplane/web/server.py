@@ -1442,7 +1442,7 @@ class WebServer:
         self._scope_last_nonzero: float = 0.0
         self._scope_health_task: asyncio.Task[None] | None = None
         self._scope_health_interval: float = (
-            10.0  # seconds of zero frames before re-enable
+            10.0  # seconds of missing/blank frames before the hidden verdict
         )
         self._scope_reenable_task: asyncio.Task[None] | None = None
         self._scope_reenable_poll_interval: float = 0.5
@@ -1453,16 +1453,22 @@ class WebServer:
         self._managed_tx_rebind_lock: asyncio.Lock = asyncio.Lock()
         # Unsubscribes the managed TX authority invalidation listener on stop.
         self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
-        self._scope_health_max_retries: int = 3  # give up after N failed re-enables
-        # MOR-3690: the watchdog tells "frames arrive" apart from "frames
-        # carry data". All-zero frames that keep arriving mean the radio
-        # deliberately shows another screen (front-panel menu); only a full
-        # stop of frames while the link is up is a transport fault.
+        # MOR-3690 (reopened): the monitor tells "frames arrive" apart from
+        # "frames carry data". All-zero frames that keep arriving — or NO
+        # frames at all while CI-V traffic keeps flowing (an IC-705 over USB
+        # serial sends nothing while in its own menu) — mean the radio
+        # deliberately shows another screen: a valid state, never a
+        # transport fault, and never a reason to write scope-enable (that
+        # write kicks the operator out of the menu).
         self._scope_last_frame: float = 0.0  # last arrival of any scope frame
-        self._scope_health_attempts: int = 0  # transport-stall writes used
-        self._scope_health_next_retry_at: float = 0.0  # backoff gate (monotonic)
-        self._scope_healthy_since: float | None = None  # start of healthy flow
         self._scope_hidden_published: bool | None = None  # last fact verdict
+        self._scope_hidden_at: float | None = None  # when last confirmed
+        # The reconnect path is the only automatic scope re-enable left; it
+        # fires at most once per viewing session (demand generation) AND
+        # connection epoch (provider generation), and never while the menu
+        # guard is active. None = never sent.
+        self._scope_reenable_generation: int | None = None
+        self._scope_reenable_provider_generation: int | None = None
         # Band plan registry
         from .band_plan import DEFAULT_BAND_PLANS_DIR, BandPlanRegistry  # noqa: TID251
 
@@ -1774,12 +1780,9 @@ class WebServer:
             was_registered = handler in self._scope_handlers
             self._scope_handlers.add(handler)
             if was_empty and not was_registered:
+                # A fresh viewing session: the generation bump also re-arms
+                # the once-per-session reconnect re-enable (MOR-3690).
                 self._scope_demand_generation += 1
-                # MOR-3690: a fresh viewing session gets a fresh attempt
-                # budget — the previous session's exhaustion does not leak.
-                self._scope_health_attempts = 0
-                self._scope_health_next_retry_at = 0.0
-                self._scope_healthy_since = None
             generation = self._scope_demand_generation
             if not was_registered:
                 self._broadcast_ws_client_state_update()
@@ -3509,14 +3512,18 @@ class WebServer:
                         "reconnect: scan facts seed failed",
                         exc_info=True,
                     )
-        # Re-enable scope after refetch completes.
+        # Re-enable scope after refetch completes — at most once per
+        # viewing session, and never while the menu guard says the radio
+        # shows its own menu (MOR-3690 reopened: an IC-705 over USB sends
+        # no scope frames in its menu, and an unguarded write here kicked
+        # the operator out of it on every reconnect cycle).
         # Do NOT gate on self._radio_ready(): that property waits for
         # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
         # state broadcast may only resume once a scope-enable command
         # is sent — creating a deadlock where scope re-enable waits
         # for the very signal it would itself trigger.  The session
         # is already up at this point (soft_reconnect completed auth +
-        # discovery), so queue EnableScope unconditionally; if the
+        # discovery), so queue EnableScope without waiting; if the
         # radio is genuinely unreachable the command will fail on its
         # own, which is strictly better than a silent 30-second wait
         # every reconnect cycle.
@@ -3526,15 +3533,55 @@ class WebServer:
             and self._hardware_scope_available
             and not self._scope_enable_failed
         ):
-            self._set_scope_data_callback(self._on_hardware_scope_frame)
-            if await self._execute_scope_command(
-                EnableScope(generation=self._scope_demand_generation)
-            ):
-                self._scope_enabled = True
-                logger.info(
-                    "scope: re-enable confirmed after reconnect (%d handlers)",
-                    len(self._scope_handlers),
-                )
+            # The existing scope-enable lock serialises the attempt check
+            # and the awaited command: overlapping refetch tasks cannot
+            # both pass the generation check before either enable lands,
+            # so the ordered queue never sees the claimed bound exceeded.
+            async with self._scope_enable_lock:
+                if self._scope_menu_guard_active(now=time.monotonic()):
+                    logger.info(
+                        "scope: reconnect re-enable skipped — radio is in its "
+                        "own menu (scope hidden on the radio)"
+                    )
+                elif self._scope_reenable_recorded_for(
+                    self.command_state_store.provider_generation
+                ):
+                    logger.info(
+                        "scope: reconnect re-enable already sent for this "
+                        "viewing session (generation %d), skipping",
+                        self._scope_demand_generation,
+                    )
+                else:
+                    self._set_scope_data_callback(self._on_hardware_scope_frame)
+                    if await self._execute_scope_command(
+                        EnableScope(generation=self._scope_demand_generation)
+                    ):
+                        self._scope_enabled = True
+                        self._scope_reenable_generation = self._scope_demand_generation
+                        self._scope_reenable_provider_generation = (
+                            self.command_state_store.provider_generation
+                        )
+                        logger.info(
+                            "scope: re-enable confirmed after reconnect (%d handlers)",
+                            len(self._scope_handlers),
+                        )
+
+    def _scope_reenable_recorded_for(self, provider_generation: int) -> bool:
+        """Whether the once-per-session reconnect enable already fired for
+        THIS connection epoch.
+
+        The bound is per viewing session AND per provider epoch: a genuinely
+        new connection (the backend's generation advance reached the shared
+        store's provider generation — the invalidation edge
+        ``_on_provider_generation`` already subscribes to) re-arms it, so a
+        second real outage while the same viewer stays connected still gets
+        its scope output restored; repeated refetches inside one epoch do
+        not.
+        """
+        return (
+            self._scope_reenable_generation == self._scope_demand_generation
+            and self._scope_reenable_provider_generation == provider_generation
+        )
 
     def _cancel_scope_reenable_task(self) -> None:
         """Cancel readiness work invalidated by a last-viewer transition."""
@@ -3560,8 +3607,6 @@ class WebServer:
 
     async def _wait_and_enable_scope(self, *, reason: str, generation: int) -> None:
         """Wait until radio_ready before queuing EnableScope."""
-        import time
-
         current_task = asyncio.current_task()
         deadline = time.monotonic() + self._scope_reenable_timeout
         try:
@@ -3618,13 +3663,9 @@ class WebServer:
     def _scope_health_check(self, frame: Any) -> None:
         """Track scope frame arrival and whether frames carry real data.
 
-        MOR-3690: every frame arrival refreshes ``_scope_last_frame`` first —
-        an all-zero frame still proves the transport is alive, so only a
-        full stop of frames is a transport fault. Non-zero pixels refresh
-        ``_scope_last_nonzero`` as before.
+        MOR-3690: every frame arrival refreshes ``_scope_last_frame``
+        (monotonic), non-zero pixels also refresh ``_scope_last_nonzero``.
         """
-        import time
-
         try:
             # ScopeFrame has .pixels (bytes-like)
             pixels = getattr(frame, "pixels", None) or b""
@@ -3634,8 +3675,12 @@ class WebServer:
         except (AttributeError, TypeError):
             logger.debug("scope health check: unexpected frame type", exc_info=True)
 
-    _SCOPE_HEALTH_RECOVERY_WINDOWS = 3  # healthy monitor windows to reset budget
     _SCOPE_HIDDEN_PATH = FieldPath.parse("health.health.scope_hidden")
+    #: MOR-3690: the hidden verdict blocks the automatic reconnect re-enable
+    #: only while fresh. A verdict older than this may predate a radio
+    #: power-cycle (which also closes the menu) and no longer counts as
+    #: "known to be in the menu".
+    _SCOPE_HIDDEN_RECONNECT_GRACE = 300.0
 
     def _scope_health_source(self) -> SourceMetadata:
         """Source qualifier for the scope-health state facts (MOR-3690)."""
@@ -3645,19 +3690,67 @@ class WebServer:
             transport="web",
         )
 
-    def _publish_scope_hidden(self, hidden: bool, *, now: float) -> None:
+    def _civ_link_flowing(self, now: float) -> bool:
+        """Whether the radio answered within one monitor window.
+
+        Reads the Radio contract's public decode-point liveness stamp
+        (:attr:`rigplane.core.radio_protocol.Radio.last_valid_frame_monotonic`)
+        — the same evidence ``connection.liveness`` serves
+        (``runtime_helpers.connection_liveness_payload``), so this stays
+        radio-agnostic with no per-model branch. A missing or non-numeric
+        stamp (a producer that never answered on this connection
+        generation) means "cannot tell" and counts as not flowing.
+        """
+        radio = self._radio
+        last = (
+            getattr(radio, "last_valid_frame_monotonic", None)
+            if radio is not None
+            else None
+        )
+        if not isinstance(last, (int, float)) or isinstance(last, bool):
+            return False
+        return now - float(last) <= self._scope_health_interval
+
+    def _scope_menu_guard_active(self, *, now: float) -> bool:
+        """Whether the radio is known to show its own menu (scope hidden).
+
+        MOR-3690 (reopened): the ONE guard every automatic scope-enable
+        write must pass — no automatic path may kick the operator out of
+        the radio's menu. The explicit user-demand enable (a web client
+        opening the scope view) is deliberately not gated: it is the
+        operator's own request and the escape hatch for a stale verdict.
+        """
+        if self._scope_hidden_published is not True:
+            return False
+        published_at = self._scope_hidden_at
+        if published_at is None:
+            return False
+        return now - published_at <= self._SCOPE_HIDDEN_RECONNECT_GRACE
+
+    def _publish_scope_hidden(
+        self, hidden: bool, *, now: float, detail: str = ""
+    ) -> None:
         """Publish the scope-hidden verdict as a state fact, on change only.
 
-        MOR-3690: ``True`` means all-zero frames keep arriving, so the radio
-        deliberately shows another screen (front-panel menu) — a valid
-        state the UI can report as "scope hidden on the radio". ``False``
-        means non-zero frames flow again. No verdict is published while the
-        monitor cannot tell (transport stall, TX, link down, no viewers),
-        so the last verdict never flaps.
+        MOR-3690: ``True`` means the radio deliberately shows another
+        screen (front-panel menu): all-zero frames keep arriving, or — an
+        IC-705 over USB serial — no frames arrive at all while CI-V traffic
+        keeps flowing. ``False`` means non-zero frames flow again. No
+        verdict is published while the monitor cannot tell (CI-V silent
+        too, TX, link down, no viewers), so the last verdict never flaps.
         """
         if self._scope_hidden_published is hidden:
+            # A repeated definite observation of the SAME verdict refreshes
+            # its evidence clock BEFORE the duplicate publication is
+            # suppressed: a menu held open past the reconnect grace window
+            # keeps re-confirming itself every monitor window, and the
+            # reconnect guard must keep reading that as fresh evidence —
+            # otherwise the still-open menu goes stale and the next
+            # reconnect ejects the operator from it.
+            self._scope_hidden_at = now
             return
         self._scope_hidden_published = hidden
+        self._scope_hidden_at = now
         self.command_state_store.apply_current(
             Observation(
                 path=self._SCOPE_HIDDEN_PATH,
@@ -3667,33 +3760,37 @@ class WebServer:
             )
         )
         logger.info(
-            "scope-health: scope %s",
-            "hidden on the radio (menu), not re-enabling"
-            if hidden
-            else "visible again (non-zero frames flowing)",
+            "scope-health: scope %s%s",
+            (
+                "hidden on the radio (menu), not re-enabling"
+                if hidden
+                else "visible again (non-zero frames flowing)"
+            ),
+            f" ({detail})" if detail else "",
         )
 
     async def _scope_health_monitor(self) -> None:
-        """Background task: bounded scope re-enable on transport stall only.
+        """Background task: publish the scope-hidden verdict; never writes.
 
-        MOR-3690: all-zero frames that keep arriving are a valid radio
-        state (the operator opened a front-panel menu), never a reason to
-        write scope-enable — that write kicks the operator out of the
-        menu. Only a full stop of frames while the link is up is a
-        transport fault, and even then re-enable is bounded per session
-        with backoff: the attempt counter never resets just because an
-        attempt was made. It resets only after healthy non-zero frames
-        have flowed for a while, on a new viewing session, or while
-        transmit is known (MOR-2859).
+        MOR-3690 (reopened): absence of scope frames while CI-V traffic
+        keeps flowing is NOT a transport fault — an IC-705 over USB serial
+        sends no scope frames at all while the operator sits in its menu.
+        Writing scope-enable there kicks the operator out of the menu, so
+        this monitor publishes the verdict and leaves every enable to the
+        guarded reconnect path. The states:
 
-        For serial-only radios (has_lan=False), scope data delivery differs
-        significantly — the radio may need CI-V output enabled, higher baud
-        rates, etc.  Limit re-enable attempts to avoid flooding the serial
-        link and logs.
+        * non-zero frames flowing → ``scope_hidden = False``;
+        * frames arriving but all zero → ``scope_hidden = True`` (menu);
+        * no frames, CI-V healthy → ``scope_hidden = True`` (menu);
+        * no frames and CI-V silent too, or the link down → no verdict: a
+          real link fault the link layer repairs with a reconnect, and the
+          guarded reconnect path re-enables the scope at most once per
+          viewing session.
+
+        All elapsed times use the one monotonic clock, sampled once per
+        window, and clamp at zero: a frame can always land between the
+        sample and the comparison (the beta.13 "no scope frames for -1s").
         """
-        import time
-
-        max_retries = self._scope_health_max_retries
         try:
             while True:
                 await asyncio.sleep(self._scope_health_interval)
@@ -3701,23 +3798,20 @@ class WebServer:
                     continue
                 if not self._hardware_scope_available:
                     continue
-                # Don't re-enable scope while radio is disconnected
+                # Link down: the frame clock means nothing. Keep the last
+                # verdict — the reconnect guard bounds its freshness.
                 if not self._radio_ready():
                     self._scope_last_frame = time.monotonic()
                     self._scope_last_nonzero = time.monotonic()
-                    self._scope_healthy_since = None
                     continue
                 if not self._scope_enabled:
                     continue
                 if self._scope_tx_known():
                     # MOR-2859: all-zero frames are expected during transmit
                     # (an IC-7300 with scope-during-TX off sends blanks), so
-                    # pause the stall timer instead of re-enabling mid-TX.
+                    # pause the frame clock instead of judging mid-TX.
                     self._scope_last_frame = time.monotonic()
                     self._scope_last_nonzero = time.monotonic()
-                    self._scope_health_attempts = 0
-                    self._scope_health_next_retry_at = 0.0
-                    self._scope_healthy_since = None
                     continue
                 now = time.monotonic()
                 if self._scope_last_frame == 0.0:
@@ -3726,56 +3820,35 @@ class WebServer:
                     self._scope_last_nonzero = now
                     continue
                 interval = self._scope_health_interval
-                frames_flowing = now - self._scope_last_frame <= interval
+                frames_idle = max(0.0, now - self._scope_last_frame)
                 data_flowing = (
                     self._scope_last_nonzero != 0.0
                     and now - self._scope_last_nonzero <= interval
                 )
                 if data_flowing:
-                    if self._scope_healthy_since is None:
-                        self._scope_healthy_since = now
-                    elif (
-                        now - self._scope_healthy_since
-                        >= self._SCOPE_HEALTH_RECOVERY_WINDOWS * interval
-                    ):
-                        # Healthy non-zero frames for a while: fresh budget.
-                        self._scope_health_attempts = 0
-                        self._scope_health_next_retry_at = 0.0
                     self._publish_scope_hidden(False, now=now)
                     continue
-                self._scope_healthy_since = None
-                if frames_flowing:
+                if frames_idle <= interval:
                     # Frames arrive but carry no data: the radio shows
                     # another screen. Valid state — never write scope-enable.
-                    self._publish_scope_hidden(True, now=now)
+                    self._publish_scope_hidden(
+                        True, now=now, detail="all-zero frames flowing"
+                    )
                     continue
-                # Transport fault: no scope frames at all while the link is
-                # up. Bounded re-enables with backoff, then silence.
-                if self._scope_health_attempts >= max_retries:
-                    if self._scope_health_attempts == max_retries:
-                        logger.warning(
-                            "scope-health: giving up after %d retries "
-                            "(scope may not be available on this backend)",
-                            max_retries,
-                        )
-                        self._scope_health_attempts += 1  # log once
+                if self._civ_link_flowing(now):
+                    # No scope frames at all while CI-V is otherwise
+                    # healthy: the radio is in its own menu (an IC-705 over
+                    # USB sends nothing then). Never a transport fault.
+                    self._publish_scope_hidden(
+                        True,
+                        now=now,
+                        detail=(
+                            f"no scope frames for {frames_idle:.0f}s, CI-V link healthy"
+                        ),
+                    )
                     continue
-                if now < self._scope_health_next_retry_at:
-                    continue
-                await self._execute_scope_command(
-                    EnableScope(generation=self._scope_demand_generation)
-                )
-                self._scope_health_attempts += 1
-                self._scope_health_next_retry_at = now + interval * (
-                    2**self._scope_health_attempts
-                )
-                logger.warning(
-                    "scope-health: no scope frames for %.0fs while link up, "
-                    "re-enabling scope (attempt %d/%d)",
-                    now - self._scope_last_frame,
-                    self._scope_health_attempts,
-                    max_retries,
-                )
+                # No frames and CI-V silent: a real link fault. The link
+                # layer reconnects; the guarded reconnect path re-enables.
         except asyncio.CancelledError:
             pass
 
