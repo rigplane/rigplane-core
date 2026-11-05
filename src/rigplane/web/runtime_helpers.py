@@ -16,6 +16,7 @@ from ..core.state_store import (
     FreshnessState,
     StateSnapshot,
     StateStore,
+    is_immutable_value,
 )
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
@@ -1521,6 +1522,10 @@ def _project_snapshot_state_dict(
 ) -> dict[str, Any]:
     state = copy.deepcopy(_EMPTY_STATE_DICT)
     for field in snapshot.fields:
+        if not is_immutable_value(field.value):
+            # The payload owns its containers: a caller editing it must not
+            # reach the snapshot, whose immutable values are shared (MOR-4212).
+            field = replace(field, value=copy.deepcopy(field.value))
         _apply_snapshot_field(state, field, radio=radio)
     required_relative_fields = frozenset(_VFO_SLOT_FIELDS.values())
     for receiver_key in ("main", "sub"):

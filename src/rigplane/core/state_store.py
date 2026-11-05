@@ -34,6 +34,7 @@ __all__ = [
     "SnapshotDelta",
     "StateSnapshot",
     "StateStore",
+    "is_immutable_value",
 ]
 
 
@@ -1094,17 +1095,18 @@ def _copy_value(value: Any) -> Any:
 _IMMUTABLE_LEAVES = (type(None), bool, int, float, complex, str, bytes, Enum)
 
 
-def _is_immutable(value: Any) -> bool:
+def is_immutable_value(value: Any) -> bool:
     """True when nothing reachable from ``value`` can be changed in place."""
 
     if isinstance(value, _IMMUTABLE_LEAVES):
         return True
     if isinstance(value, (tuple, frozenset)):
-        return all(_is_immutable(item) for item in value)
+        return all(is_immutable_value(item) for item in value)
     params = getattr(type(value), "__dataclass_params__", None)
     if params is not None and params.frozen:
         return all(
-            _is_immutable(getattr(value, item.name)) for item in dataclass_fields(value)
+            is_immutable_value(getattr(value, item.name))
+            for item in dataclass_fields(value)
         )
     return False
 
@@ -1115,7 +1117,7 @@ def _projected_field(path: FieldPath, entry: _FieldEntry) -> FieldSnapshot:
     projected = entry.projected
     if projected is None:
         projected = _field_snapshot(path, entry)
-        if _is_immutable(entry.value):
+        if is_immutable_value(entry.value):
             entry.projected = projected
     return projected
 

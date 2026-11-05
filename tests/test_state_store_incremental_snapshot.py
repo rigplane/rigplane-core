@@ -22,20 +22,27 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.radio_state import RadioState, TxBandEdge
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
+from rigplane.core.types import ScopeFixedEdge
 from rigplane.core.state_store import (
     FreshnessClock,
     StateSnapshot,
     StateStore,
 )
 from rigplane.web import runtime_helpers
-from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+from rigplane.web.monitor_mute import MonitorMuteState
+from rigplane.web.runtime_helpers import (
+    build_public_state_payload,
+    build_public_state_payload_from_snapshot,
+)
 
 _FREQ = FieldPath.receiver("0", "freq_mode", "freq_hz")
 _SMETER = FieldPath.receiver("0", "meters", "s_meter")
 _PTT = FieldPath.global_("tx_state", "ptt")
 _TX_TARGET = FieldPath.global_("tx_state", "tx_target")
 _FIXED_EDGE = FieldPath.scope_control("display", "fixed_edge")
+_TX_BAND_EDGES = FieldPath.global_("slow_state", "tx_band_edges")
 
 # Paths across every public-state section, including the relative-VFO
 # retention paths (which mutate max_age in place) and dict-valued fields.
@@ -45,6 +52,7 @@ _PATHS = (
     _PTT,
     _TX_TARGET,
     _FIXED_EDGE,
+    _TX_BAND_EDGES,
     FieldPath.receiver("0", "freq_mode", "mode"),
     FieldPath.receiver("main", "freq_mode", "freq_hz"),
     FieldPath.receiver("1", "freq_mode", "freq_hz"),
@@ -63,7 +71,17 @@ _PATHS = (
     FieldPath.scope_control("display", "span"),
     FieldPath.parse("connection.connection.connected"),
 )
-_SCALAR_PATHS = tuple(path for path in _PATHS if path not in (_TX_TARGET, _FIXED_EDGE))
+_SCALAR_PATHS = tuple(
+    path for path in _PATHS if path not in (_TX_TARGET, _FIXED_EDGE, _TX_BAND_EDGES)
+)
+_MONITOR_MUTE = MonitorMuteState(on=True, saved_af={"main": 0.25, "sub": 0.5})
+
+
+def _band_edges(*ranges: tuple[int, int]) -> Any:
+    """The store value the web server observes for TX band edges (RadioState)."""
+
+    edges = [TxBandEdge(start_hz=start, end_hz=end) for start, end in ranges]
+    return RadioState(tx_band_edges=edges).to_dict()["tx_band_edges"]
 
 
 def _source(name: str = "poll_response") -> SourceMetadata:
@@ -104,7 +122,7 @@ def _public(snapshot: StateSnapshot) -> dict[str, Any]:
         availability={_SMETER: False},
         declared=frozenset(_PATHS) - {FieldPath.global_("meters", "swr")},
         updated_at="2026-11-05T00:00:00+00:00",
-        monitor_mute={"on": False},
+        monitor_mute=_MONITOR_MUTE.public(2),
     )
 
 
@@ -166,15 +184,16 @@ def test_a_stale_mark_reprojects_only_the_aged_field(
 
 def test_mutable_values_are_still_copied_per_snapshot() -> None:
     store = StateStore()
-    edge = {"range_index": 1, "edge": 2, "start_hz": 14_000_000, "end_hz": 14_350_000}
-    store.apply(_observation(_FIXED_EDGE, dict(edge), at=1.0))
+    edges = _band_edges((14_000_000, 14_350_000), (7_000_000, 7_300_000))
+    store.apply(_observation(_TX_BAND_EDGES, edges, at=1.0))
     store.apply(_observation(_PTT, False, at=1.0))
 
     first = store.snapshot()
-    first.field(_FIXED_EDGE).value["edge"] = 3
+    first.field(_TX_BAND_EDGES).value[0]["start_hz"] = 1
+    first.field(_TX_BAND_EDGES).value.clear()
 
-    assert store.snapshot().field(_FIXED_EDGE).value == edge
-    assert store.field(_FIXED_EDGE).value == edge
+    assert store.snapshot().field(_TX_BAND_EDGES).value == edges
+    assert store.field(_TX_BAND_EDGES).value == edges
     assert store.snapshot().field(_PTT) is first.field(_PTT)
 
 
@@ -187,8 +206,49 @@ def test_frozen_dataclass_values_are_shared() -> None:
             at=1.0,
         )
     )
+    edge = ScopeFixedEdge(range_index=1, edge=2, start_hz=14_000_000, end_hz=14_350_000)
+    store.apply(_observation(_FIXED_EDGE, edge, at=1.0))
 
-    assert store.snapshot().field(_TX_TARGET) is store.snapshot().field(_TX_TARGET)
+    first, second = store.snapshot(), store.snapshot()
+    assert second.field(_TX_TARGET) is first.field(_TX_TARGET)
+    assert second.field(_FIXED_EDGE) is first.field(_FIXED_EDGE)
+    assert first.field(_FIXED_EDGE).value == edge
+
+
+def test_public_state_keeps_producer_output_and_owns_its_containers() -> None:
+    store = StateStore()
+    edges = _band_edges((14_000_000, 14_350_000), (7_000_000, 7_300_000))
+    edge = ScopeFixedEdge(range_index=1, edge=2, start_hz=14_000_000, end_hz=14_350_000)
+    store.apply(_observation(_TX_BAND_EDGES, edges, at=1.0))
+    store.apply(_observation(_FIXED_EDGE, edge, at=1.0))
+    snapshot = store.snapshot()
+
+    payload = _public(snapshot)
+
+    legacy = build_public_state_payload(
+        RadioState(tx_band_edges=[TxBandEdge(14_000_000, 14_350_000)]),
+        radio=None,
+        revision=0,
+        receiver_count=2,
+    )
+    assert type(payload["txBandEdges"]) is type(legacy["txBandEdges"])
+    assert payload["txBandEdges"] == edges
+    assert payload["scopeControls"]["fixedEdge"] == {
+        "rangeIndex": edge.range_index,
+        "edge": edge.edge,
+        "startHz": edge.start_hz,
+        "endHz": edge.end_hz,
+    }
+    assert payload["monitorMute"] == _MONITOR_MUTE.public(2)
+
+    expected = json.dumps(payload)
+    payload["txBandEdges"][0]["start_hz"] = 1
+    payload["txBandEdges"].clear()
+    payload["monitorMute"]["savedAf"].clear()
+
+    assert snapshot.field(_TX_BAND_EDGES).value == edges
+    assert json.dumps(_public(snapshot)) == expected
+    assert json.dumps(_public(store.snapshot())) == expected
 
 
 def test_snapshot_field_lookup_matches_a_scan_also_after_replace() -> None:
@@ -217,7 +277,13 @@ def _value(rng: random.Random, path: FieldPath) -> Any:
             ]
         )
     if path == _FIXED_EDGE:
-        return {"range_index": rng.randint(0, 3), "edge": 1, "start_hz": 1, "end_hz": 2}
+        return ScopeFixedEdge(
+            range_index=rng.randint(0, 3), edge=1, start_hz=1, end_hz=2
+        )
+    if path == _TX_BAND_EDGES:
+        return _band_edges(
+            *[(rng.randint(1, 9) * 1_000_000, 10_000_000)] * rng.randint(0, 2)
+        )
     if path.name == "mode":
         return rng.choice(["USB", "LSB", "CW", "FM_N", None])
     if path.name == "active_slot":
