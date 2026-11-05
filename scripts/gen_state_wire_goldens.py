@@ -16,7 +16,11 @@ For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
   0x15 0x01 SQL-status reply ("Open": 0x01, "Closed": 0x00) or none at all
   ("Unanswered"). ``polledDcdDeltaOpen``/``polledDcdDeltaClosed`` are the
   live ``delta`` envelopes the same server builds when a reply flips the
-  squelch after a full baseline built from the opposite one. The radio
+  squelch after a full baseline built from the opposite one.
+  ``polledDcdLeafStreamOpen`` (MOR-4206) is what a control client that
+  asked for leaf deltas receives on the closed-to-open flip: the baseline
+  ``register_control_event_queue(..., leaf_deltas=True)`` returns, then the
+  ``deltaVersion: 2`` frame the next broadcast queues for it. The radio
   ingests the reply through its own CI-V state-cache path, so the BUSY
   lamp's wire inputs (the ``dcd`` value, its ``fieldStatus`` row, the
   ``squelch`` capability tag only a radio-backed server publishes) come
@@ -57,6 +61,7 @@ from unittest import mock
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+from rigplane.core._bounded_queue import BoundedQueue  # noqa: E402
 from rigplane.commands._frame import (  # noqa: E402
     CONTROLLER_ADDR,
     build_civ_frame,
@@ -245,6 +250,23 @@ def _delta_envelope(server: WebServer) -> dict[str, Any]:
     return cast("dict[str, Any]", envelope)
 
 
+def _pin_leaf_volatile(envelope: dict[str, Any]) -> None:
+    """Pin the clock-derived values a leaf delta's ``set`` operations carry."""
+    pinned = []
+    for path, value in envelope["set"]:
+        holder: dict[str, Any] = {}
+        node = holder
+        for key in path[:-1]:
+            node = node.setdefault(key, {})
+        node[path[-1]] = value
+        _pin_volatile(holder)
+        node = holder
+        for key in path[:-1]:
+            node = node[key]
+        pinned.append([path, node[path[-1]]])
+    envelope["set"] = pinned
+
+
 def _capabilities(server: WebServer) -> dict[str, Any]:
     writer = _CaptureWriter()
     asyncio.run(server._serve_capabilities(cast("asyncio.StreamWriter", writer)))
@@ -327,6 +349,30 @@ def _polled_dcd_delta(
     return _delta_envelope(server)
 
 
+def _polled_dcd_leaf_stream(
+    model: str, baseline_byte: int, reply_byte: int
+) -> list[dict[str, Any]]:
+    """A leaf-delta client's baseline, then the frame queued on the flip."""
+    radio = _polled_dcd_radio(model, baseline_byte)
+    server = WebServer(radio, WebConfig(radio_model=model))
+    queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=4)
+    baseline = cast(
+        "dict[str, Any]",
+        server.register_control_event_queue(queue, leaf_deltas=True),
+    )
+    _ingest_polled_reply(radio, model, reply_byte)
+    server._broadcast_state_update(force=True)
+    events = [queue.get_nowait() for _ in range(queue.qsize())]
+    if [event["type"] for event in events] != ["state_update"]:
+        raise RuntimeError(f"expected one queued state update, got {events!r}")
+    delta = cast("dict[str, Any]", events[0]["data"])
+    if delta.get("deltaVersion") != 2:
+        raise RuntimeError(f"expected a leaf delta, got {delta!r}")
+    _pin_volatile(baseline["data"])
+    _pin_leaf_volatile(delta)
+    return [baseline, delta]
+
+
 def _build_polled_dcd_goldens(model: str) -> dict[str, Any]:
     golden: dict[str, Any] = {
         case: _full_envelope(_polled_dcd_server(model, sql_byte))
@@ -334,6 +380,9 @@ def _build_polled_dcd_goldens(model: str) -> dict[str, Any]:
     }
     for case, baseline_byte, reply_byte in _POLLED_DCD_DELTAS:
         golden[case] = _polled_dcd_delta(model, baseline_byte, reply_byte)
+    golden["polledDcdLeafStreamOpen"] = _polled_dcd_leaf_stream(
+        model, _SQL_CLOSED, _SQL_OPEN
+    )
     golden["polledDcdCapabilities"] = _capabilities(_polled_dcd_server(model, None))
     return golden
 
