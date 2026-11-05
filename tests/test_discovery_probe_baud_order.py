@@ -258,7 +258,9 @@ async def test_yaesu_probe_order_and_low_baud_flag_come_from_its_profile(
     ("fake_kw", "baudrate", "low_baud"),
     [
         pytest.param({"answers_at_baud": 19200}, 19200, True, id="low-baud"),
-        pytest.param({"locks_to_first_baud": True}, _SCOPE_BAUD, False, id="scope-baud"),
+        pytest.param(
+            {"locks_to_first_baud": True}, _SCOPE_BAUD, False, id="scope-baud"
+        ),
     ],
 )
 async def test_discover_json_carries_the_baud_fields_to_setup(

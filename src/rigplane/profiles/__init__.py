@@ -515,10 +515,6 @@ class RadioProfile:
     # the unchanged 0x06 path for every rig that does not declare it.
     set_mode_via_selected: bool = False
     protocol_type: str = "civ"
-    # MOR-4207: ``[radio].default_baud`` — the serial baud the radio is run at
-    # (for the Icom CI-V profiles 115200, the serial scope minimum). Serial
-    # discovery probes these bauds first (:func:`preferred_serial_bauds`).
-    default_baud: int = 19200
     # Hamlib rig_model integer (from rigs_list.h). Used by the validate
     # ``--provider hamlib`` path to launch stock rigctld with ``-m <id>``.
     hamlib_model_id: int = 2028
@@ -617,6 +613,11 @@ class RadioProfile:
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
     usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
+    # MOR-4207: ``[radio].default_baud`` — the serial baud the radio is run at
+    # (for the Icom CI-V profiles 115200, the serial scope minimum). Serial
+    # discovery probes these bauds first (:func:`preferred_serial_bauds`).
+    # Keyword-only and appended so no positional argument shifts.
+    default_baud: int = field(default=19200, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:

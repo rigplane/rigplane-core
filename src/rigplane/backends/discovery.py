@@ -9,7 +9,7 @@ import struct
 import threading
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
 from rigplane.core.usb_identity import UsbAudioIdentity
@@ -41,6 +41,8 @@ __all__ = [
     "ProbeResult",
     "RadioDiscoveryResult",
     "SerialPortCandidate",
+    "SetupLanConnection",
+    "SetupSerialConnection",
     "dedupe_radios",
     "discover_lan_radios",
     "discover_serial_radios",
@@ -1500,17 +1502,64 @@ def dedupe_radios(
     return list(radios.values())
 
 
+class SetupLanConnection(TypedDict):
+    """A LAN connection in the ``rigplane.discovery.v1`` setup JSON."""
+
+    type: Literal["lan"]
+    backend: Literal["lan"]
+    label: str
+    host: str
+    remoteId: object
+    requiresCredentials: bool
+
+
+class SetupSerialConnection(TypedDict):
+    """A USB serial connection in the ``rigplane.discovery.v1`` setup JSON.
+
+    ``baudrate`` is the rate the radio answered at. ``preferredBaudrate``,
+    ``lowBaud`` and ``lowBaudHint`` carry :class:`RadioDiscoveryResult`'s
+    ``preferred_baudrate`` / ``low_baud`` / ``low_baud_hint`` (MOR-4207), so
+    setup can show the scope-baud guidance.
+    """
+
+    type: Literal["serial"]
+    backend: Literal["serial", "yaesu-cat"]
+    label: str
+    port: str
+    protocol: object
+    profileId: object
+    baudrate: object
+    preferredBaudrate: int | None
+    lowBaud: bool
+    lowBaudHint: str | None
+    address: object
+    description: object
+    hwid: object
+    vid: object
+    pid: object
+    manufacturer: object
+    product: object
+    serialNumber: object
+    requiresCredentials: bool
+    usbAudio: NotRequired[dict[str, object]]
+
+
 def build_setup_discovery_payload(
     grouped_radios: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Build stable discovery JSON for setup wizards and managed supervisors."""
+    """Build stable discovery JSON for setup wizards and managed supervisors.
+
+    Serial entries are :class:`RadioDiscoveryResult` field dicts
+    (``dataclasses.asdict``); each connection is a :class:`SetupLanConnection`
+    or :class:`SetupSerialConnection`.
+    """
     radios: list[dict[str, Any]] = []
     for index, radio in enumerate(grouped_radios, start=1):
-        connections: list[dict[str, Any]] = []
+        connections: list[SetupLanConnection | SetupSerialConnection] = []
         for lan in radio.get("lan", []):
             host = str(lan.get("host", ""))
             remote_id = lan.get("remote_id")
-            connection: dict[str, Any] = {
+            lan_connection: SetupLanConnection = {
                 "type": "lan",
                 "backend": "lan",
                 "label": f"LAN {host}" if host else "LAN",
@@ -1518,14 +1567,16 @@ def build_setup_discovery_payload(
                 "remoteId": remote_id,
                 "requiresCredentials": True,
             }
-            connections.append(connection)
+            connections.append(lan_connection)
 
         for serial in radio.get("serial", []):
             port = str(serial.get("port", ""))
             baudrate = serial.get("baudrate", serial.get("baud"))
             protocol = serial.get("protocol", "civ")
-            backend = "yaesu-cat" if protocol == "yaesu_cat" else "serial"
-            connection = {
+            backend: Literal["serial", "yaesu-cat"] = (
+                "yaesu-cat" if protocol == "yaesu_cat" else "serial"
+            )
+            connection: SetupSerialConnection = {
                 "type": "serial",
                 "backend": backend,
                 "label": f"USB serial {port}" if port else "USB serial",
@@ -1533,6 +1584,9 @@ def build_setup_discovery_payload(
                 "protocol": protocol,
                 "profileId": serial.get("profile_id"),
                 "baudrate": baudrate,
+                "preferredBaudrate": serial.get("preferred_baudrate"),
+                "lowBaud": serial.get("low_baud") is True,
+                "lowBaudHint": serial.get("low_baud_hint"),
                 "address": serial.get("address"),
                 "description": serial.get("description"),
                 "hwid": serial.get("hwid"),
