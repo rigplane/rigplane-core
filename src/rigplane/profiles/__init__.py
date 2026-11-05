@@ -48,6 +48,7 @@ __all__ = [
     "RuleSpec",
     "TxPolicy",
     "get_radio_profile",
+    "preferred_serial_bauds",
     "resolve_radio_profile",
     "KeyboardBinding",
     "KeyboardConfig",
@@ -514,6 +515,10 @@ class RadioProfile:
     # the unchanged 0x06 path for every rig that does not declare it.
     set_mode_via_selected: bool = False
     protocol_type: str = "civ"
+    # MOR-4207: ``[radio].default_baud`` — the serial baud the radio is run at
+    # (for the Icom CI-V profiles 115200, the serial scope minimum). Serial
+    # discovery probes these bauds first (:func:`preferred_serial_bauds`).
+    default_baud: int = 19200
     # Hamlib rig_model integer (from rigs_list.h). Used by the validate
     # ``--provider hamlib`` path to launch stock rigctld with ``-m <id>``.
     hamlib_model_id: int = 2028
@@ -877,6 +882,21 @@ def get_radio_profile(name_or_id: str) -> RadioProfile:
         known = ", ".join(sorted(_ensure_loaded().keys()))
         raise KeyError(f"Unknown radio profile {name_or_id!r}. Known models: {known}")
     return profile
+
+
+def preferred_serial_bauds(protocol_type: str) -> tuple[int, ...]:
+    """The loaded profiles' ``default_baud`` values for *protocol_type*, highest first.
+
+    MOR-4207: the bauds serial discovery opens a port at before the
+    protocol's other documented rates. Profile data, so a new radio changes
+    the order through its TOML only.
+    """
+    bauds = {
+        profile.default_baud
+        for profile in _ensure_loaded().values()
+        if profile.protocol_type == protocol_type
+    }
+    return tuple(sorted(bauds, reverse=True))
 
 
 def resolve_radio_profile(

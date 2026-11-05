@@ -172,17 +172,18 @@ async def test_civ_probe_without_explicit_bauds_uses_the_profile_order() -> None
 
 def test_probe_order_follows_the_profile_default_baud_data(monkeypatch) -> None:
     """Change the data, not the code: the order follows ``default_baud``."""
-    loaded = profiles._ensure_loaded()
     rebased = {
-        name: dataclasses.replace(
-            profile,
-            default_baud=57600 if profile.protocol_type == "civ" else profile.default_baud,
+        name: (
+            dataclasses.replace(profile, default_baud=57600)
+            if profile.protocol_type == "civ"
+            else profile
         )
-        for name, profile in loaded.items()
+        for name, profile in profiles._ensure_loaded().items()
     }
     monkeypatch.setattr(profiles, "_profiles", rebased)
 
-    assert discovery.serial_probe_baud_rates("civ") == (57600, 19200, 9600, 115200, 4800)
+    civ_order = (57600, 19200, 9600, 115200, 4800)
+    assert discovery.serial_probe_baud_rates("civ") == civ_order
     assert discovery.serial_probe_baud_rates("yaesu_cat") == (38400, 9600, 115200)
 
 
@@ -224,7 +225,10 @@ async def _no_civ(*, url: str, baudrate: int, **_kw: Any) -> tuple[Any, Any]:
 
 @pytest.mark.parametrize(
     ("answers_at", "low_baud"),
-    [pytest.param(38400, False, id="profile-baud"), pytest.param(9600, True, id="lower")],
+    [
+        pytest.param(38400, False, id="profile-baud"),
+        pytest.param(9600, True, id="lower"),
+    ],
 )
 async def test_yaesu_probe_order_and_low_baud_flag_come_from_its_profile(
     answers_at: int, low_baud: bool
