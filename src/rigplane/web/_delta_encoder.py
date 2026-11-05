@@ -23,9 +23,8 @@ Usage::
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Mapping
-from typing import Any, Final, Literal, Required, TypedDict
+from typing import Any, Final, Literal, Required, TypedDict, TypeVar, cast
 
 __all__ = [
     "DeltaEncoder",
@@ -33,10 +32,12 @@ __all__ = [
     "StatePath",
     "StateUpdateFrame",
     "apply_delta",
+    "copy_state_tree",
     "top_level_delta",
 ]
 
 LEAF_DELTA_VERSION: Final = 2
+_T = TypeVar("_T")
 
 #: Object keys from the state root to one value.
 StatePath = list[str]
@@ -67,6 +68,21 @@ StateUpdateFrame = TypedDict(
     },
     total=False,
 )
+
+
+def copy_state_tree(value: _T) -> _T:
+    """Copy a JSON state tree: every dict, list and tuple is rebuilt.
+
+    Any other value is shared, not copied; for a JSON tree those are the
+    immutable scalars. A cheaper stand-in for ``copy.deepcopy`` (MOR-4211).
+    """
+    if isinstance(value, dict):
+        return cast(_T, {key: copy_state_tree(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return cast(_T, [copy_state_tree(item) for item in value])
+    if isinstance(value, tuple):
+        return cast(_T, tuple(copy_state_tree(item) for item in value))
+    return value
 
 
 def _diff(
@@ -161,7 +177,7 @@ class DeltaEncoder:
             }
             if unset_ops:
                 result["unset"] = unset_ops
-        self._previous_state = copy.deepcopy(current_state)
+        self._previous_state = copy_state_tree(current_state)
 
         if state_revision is not None:
             result["stateRevision"] = revision_value
