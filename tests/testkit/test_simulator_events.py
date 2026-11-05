@@ -435,6 +435,9 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
                     assert server.session_held is True
                     assert radio._token == server.token
                 await radio.disconnect()
+                # The token-remove is a datagram: wait for the simulator to
+                # handle it rather than assuming next-iteration delivery.
+                await asyncio.wait_for(server.wait_session_released(), 5.0)
                 assert server.session_held is False
             finally:
                 radio_reconnect.logger.removeHandler(handler)

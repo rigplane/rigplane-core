@@ -704,6 +704,11 @@ async def test_new_claim_clears_gap_tracking() -> None:
         close = bytearray(_openclose())
         close[0x15] = 0x00
         proto.send(bytes(close), sim.civ_port)
+        # The close and the conninfo go to different sockets, so delivery
+        # does not order them: a close handled after the new claim would
+        # open a gap in the new session's numbering. Send the conninfo
+        # only once the close has released the session.
+        await asyncio.wait_for(sim.wait_session_released(), 5.0)
         proto.send(_conninfo(), sim.control_port)
         await proto.recv()
 

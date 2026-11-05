@@ -103,6 +103,9 @@ async def test_cancelled_disconnect_after_civ_retirement_still_releases(
             assert worker.done()
             assert civ_rx_task.done()
             assert ctrl._udp_transport is None
+            # The token-remove is a datagram: wait for the simulator to
+            # handle it rather than assuming next-iteration delivery.
+            await asyncio.wait_for(sim.wait_session_released(), 5.0)
             assert not sim.session_held
             assert radio.conn_state is RadioConnectionState.DISCONNECTED
 
