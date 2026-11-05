@@ -1559,6 +1559,7 @@ first_group = 0
 last_group = 0
 first_channel = 1
 last_channel = 101
+recall = true  # 08 + channel selects the channel, the bare 08 "Select the Memory mode" (CI-V Reference Guide Rev. 4 p.3); not yet bench-verified (MOR-4219)
 
 # The legacy record, declared in the shared layout vocabulary so ONE
 # table-driven encoder builds every radio's record (offsets are relative

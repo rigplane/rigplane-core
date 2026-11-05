@@ -4535,7 +4535,10 @@ class CivRuntime:
             # Memory channel read: 1A 00 + band/group and channel. A clear
             # writes FF after the address, a write carries a whole record.
             return True
-        if frame.command == 0x17:
+        if frame.command in (0x08, 0x17):
+            # 0x08: every form selects (the bare 08 is "Select the Memory
+            # mode", MOR-4219) and is answered with an ACK/NAK; no shipped
+            # profile declares a memory-mode read.
             return False
         if frame.command == 0x27:
             # Scope-control GETs for subs 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A,

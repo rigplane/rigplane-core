@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Memory recall now puts the radio on the channel. `set_memory_mode` with `group` (the RECALL button of the memory list) selected the group and the channel but never sent the bare `08` "Select the Memory mode", so a radio in the VFO mode acknowledged both frames and stayed where it was. The recall now ends with that `08`, requires an ACK for every frame (a NAK or any other answer fails the command), and works on the channel-addressed IC-7300, IC-7300MK2 and IC-7610 as well (group 0). Not yet verified on hardware. (MOR-4219)
 - Windows USB audio: selection failures now offer explicit audio device candidates when USB topology or endpoint name matching is unavailable, and matching accounts for Windows' numbered endpoint prefixes. (MOR-4119)
 
 ## [3.1.2rc4] — 2026-11-03
