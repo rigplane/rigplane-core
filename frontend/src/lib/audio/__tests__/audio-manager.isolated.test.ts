@@ -23,6 +23,7 @@ const playback = {
   scheduledFrames: 0, suspendedDrops: 2, resumeOutcome: 'rejected', lastResumeError: 'NotAllowedError',
 };
 const rxStats = vi.fn(() => ({ underruns: 3, bufferDepthMs: 140, droppedFrames: 2, playback }));
+let rxSourceLevelLow = false;
 const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
@@ -48,6 +49,7 @@ vi.mock('../rx-player', () => ({
     get mainGainDb() { return 0; }
     get subGainDb() { return 0; }
     set volume(_value: number) {}
+    get sourceLevelLow() { return rxSourceLevelLow; }
   },
 }));
 
@@ -830,6 +832,30 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
     vi.advanceTimersByTime(10000);
     expect(statsMessages(ws)).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('publishes a quiet RX source on the stats tick, only while RX runs (MOR-4210)', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const changed = vi.fn();
+    const unsubscribe = audioManager.onChange(changed);
+    try {
+      audioManager.startRx();
+      FakeWebSocket.instances[0].open();
+      changed.mockClear();
+      rxSourceLevelLow = true;
+      expect(changed).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1500);
+      expect(audioManager.rxSourceLevelLow).toBe(true);
+      expect(changed).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1500);
+      expect(changed).toHaveBeenCalledTimes(1);  // unchanged: no repeat notify
+      audioManager.stopRx();
+      expect(audioManager.rxSourceLevelLow).toBe(false);
+    } finally {
+      rxSourceLevelLow = false;
+      unsubscribe();
+      audioManager.stopRx();
+    }
   });
 });
 
