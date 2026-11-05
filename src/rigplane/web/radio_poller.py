@@ -3916,7 +3916,7 @@ class RadioPoller:
         max_age = self._tx_target_max_age()
         now = self._clock()
         try:
-            current = self._state_store.snapshot().field(path)
+            current = self._state_store.field(path)
         except KeyError:
             current = None
         if (
