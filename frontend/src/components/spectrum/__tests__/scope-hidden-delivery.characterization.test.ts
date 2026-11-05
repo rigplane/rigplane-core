@@ -73,10 +73,23 @@ describe('same-session scope delivery across hidden rendering', () => {
       }
     }
     vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
-    // No RAF callback runs: delivery and synchronous waterfall painting remain distinct.
-    const raf = vi.fn(() => 1);
+    // MOR-4206: the waterfall paints from a requestAnimationFrame callback
+    // (latest-wins per animation frame). The test owns the rAF queue and
+    // flushes it after every delivery, so each gate-admitted frame paints
+    // in its own animation frame and receipt vs paint stay observable.
+    const rafCallbacks = new Map<number, FrameRequestCallback>();
+    let rafId = 0;
+    const raf = vi.fn((callback: FrameRequestCallback) => {
+      rafCallbacks.set(++rafId, callback);
+      return rafId;
+    });
     vi.stubGlobal('requestAnimationFrame', raf);
-    vi.stubGlobal('cancelAnimationFrame', vi.fn());
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafCallbacks.delete(id); });
+    const flushPaint = (): void => {
+      const pending = [...rafCallbacks.values()];
+      rafCallbacks.clear();
+      for (const callback of pending) callback(now);
+    };
     vi.stubGlobal('ResizeObserver', class {
       observe() {} unobserve() {} disconnect() {}
     });
@@ -139,6 +152,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       arrivals.push(new DataView(buffer).getUint16(11, true));
       socket.deliver(buffer);
       flushSync();
+      flushPaint();
     };
     try {
       expect(push).toBeTypeOf('function');
@@ -187,7 +201,10 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(host.snapshotPresentation().resolution.state).toBe('live');
       expect(socket.sessionEpoch).toBe(1);
       expect(socket.connect).toHaveBeenCalledTimes(1);
-      expect(raf).not.toHaveBeenCalled();
+      // Painting went through rAF scheduling and nothing is left pending:
+      // every admitted frame painted in its own animation frame, no backlog.
+      expect(raf).toHaveBeenCalled();
+      expect(rafCallbacks.size).toBe(0);
     } finally {
       unsubscribe();
       await controller.hardwareScopeDriver.stop(handle);
