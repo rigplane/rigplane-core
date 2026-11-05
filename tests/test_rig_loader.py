@@ -3123,6 +3123,26 @@ browser_rx_transcode_to_opus = true
         assert profile.tx_codec is None
         assert profile.default_sample_rate_hz is None
 
+    @pytest.mark.parametrize(
+        ("name", "menu"),
+        [
+            ("ic705.toml", "SET > Connectors > USB AF/IF Output > AF Output Level"),
+            ("ic7300.toml", "SET > Connectors > ACC/USB AF Output Level"),
+            ("ic7610.toml", None),
+        ],
+    )
+    def test_rx_audio_level_menu_reaches_the_profile(self, name, menu):
+        """MOR-4210: the USB AF output menu item is profile data."""
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.rx_audio_level_menu == menu
+        assert rig.to_profile().rx_audio_level_menu == menu
+
+    @pytest.mark.parametrize("value", ['""', '"   "', "100", "true"])
+    def test_rx_audio_level_menu_must_be_a_non_empty_string(self, tmp_path, value):
+        toml = _MINIMAL_TOML + f"\n[audio]\nrx_audio_level_menu = {value}\n"
+        with pytest.raises(RigLoadError, match=r"\[audio\].rx_audio_level_menu"):
+            load_rig(_write_toml(tmp_path, toml))
+
     def test_unknown_tx_codec_rejected(self, tmp_path):
         toml = _MINIMAL_TOML + '\n[audio]\ntx_codec = "BOGUS_CODEC"\n'
         with pytest.raises(RigLoadError, match=r"\[audio\].tx_codec.*unknown codec"):

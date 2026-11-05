@@ -456,6 +456,29 @@ class TestCapabilitiesEndpoint:
         assert data["powerOnCommand"] is expected
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [
+            ("IC-7300", "SET > Connectors > ACC/USB AF Output Level"),
+            ("IC-7610", None),
+        ],
+    )
+    async def test_capabilities_serve_the_profile_rx_audio_level_menu(
+        self, model: str, expected: str | None
+    ):
+        """rxAudioLevelMenu is the profile's [audio].rx_audio_level_menu,
+        null when the profile declares none (MOR-4210)."""
+        radio = _make_radio(model)
+        srv = WebServer(radio)
+        writer = _FakeWriter()
+
+        await srv._serve_capabilities(writer)  # noqa: SLF001
+
+        data = _parse_json_body(writer)
+        assert "rxAudioLevelMenu" in data
+        assert data["rxAudioLevelMenu"] == expected
+
+    @pytest.mark.asyncio
     async def test_capabilities_ic7300_4m_receive_without_tx_band(self):
         """MOR-3782: the 4 m range is tunable but offers no TX band.
 
