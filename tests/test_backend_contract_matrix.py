@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 import pytest
 
+from rigplane.core.transport import IcomTransport
 from rigplane import IC_7610_ADDR
 from serial_stub import SerialMockRadio
 from rigplane.commands import (
@@ -43,6 +44,9 @@ def _power_response(level: int) -> bytes:
 
 
 class _MockLanTransport:
+    #: The LAN transport's ingress-order contract (MOR-4209).
+    ordered_ingress: ClassVar[bool] = IcomTransport.ordered_ingress
+
     def __init__(self) -> None:
         self.connected = False
         self.disconnected = False
