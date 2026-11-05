@@ -45,6 +45,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from rigplane.core.radio_protocol import Radio
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.scope import ScopeFrame
 from rigplane.testing.timing import VirtualClock, await_until
@@ -56,7 +57,6 @@ from test_web_server import (
     _add_scope_capable_attrs,
     _addr,
     _close_ws,
-    _del_poller_factory_attrs,
     _ws_connect,
     _ws_recv_frame,
 )
@@ -463,15 +463,17 @@ async def test_new_viewing_session_allows_one_reconnect_enable(
 def _e2e_scope_radio() -> MagicMock:
     """A scope-capable fake radio for the real-server scope pipeline tests.
 
-    Mirrors test_web_server.py's mock_radio fixture: a MagicMock with every
-    ScopeCapable member set in ``__dict__`` (Python 3.12+ runtime-checkable
-    Protocol reads them via ``inspect.getattr_static``) and the poller
-    factory attrs deleted, so the web stack takes the real RadioPoller
-    branch — the same branch the Icom CI-V backends run in production. Only
-    the hardware is faked; the server, poller, command queue and WebSocket
-    transport are all real.
+    Mirrors test_web_server.py's mock_radio fixture but spec'd to the
+    producer's ``Radio`` protocol (the mock-spec meta gate): every
+    ScopeCapable member is set in ``__dict__`` (Python 3.12+ runtime-checkable
+    Protocol reads them via ``inspect.getattr_static``), and the spec itself
+    keeps the ObservationPollable/StatePollable factory attrs off the fake —
+    they are not ``Radio`` members — so the web stack takes the real
+    RadioPoller branch, the same branch the Icom CI-V backends run in
+    production. Only the hardware is faked; the server, poller, command
+    queue and WebSocket transport are all real.
     """
-    radio = MagicMock(name="radio")
+    radio = MagicMock(name="radio", spec=Radio)
     radio.connected = True
     radio.radio_ready = True
     radio.control_connected = True
@@ -491,7 +493,6 @@ def _e2e_scope_radio() -> MagicMock:
         "nr",
     }
     _add_scope_capable_attrs(radio)
-    _del_poller_factory_attrs(radio)
     # No managed TX runtime on this fake (same reasoning as the fixture).
     radio.managed_tx = None
     # The Radio contract's public liveness stamp — "never answered" until the
