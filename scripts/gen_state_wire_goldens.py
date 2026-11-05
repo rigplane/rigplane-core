@@ -57,6 +57,8 @@ from pathlib import Path
 from typing import Any, cast
 from unittest import mock
 
+import pytest
+
 # Repo layout: scripts/ -> repo root; the package lives under src/.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
@@ -78,6 +80,7 @@ from rigplane.core.types import ToneSquelchType  # noqa: E402
 from rigplane.profiles import RadioProfile, get_radio_profile  # noqa: E402
 from rigplane.profiles.rig_loader import discover_rigs  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402
+from rigplane.runtime import _civ_rx  # noqa: E402
 from rigplane.runtime._state_queries import (  # noqa: E402
     build_state_queries,
     wire_parts_for_query,
@@ -85,6 +88,7 @@ from rigplane.runtime._state_queries import (  # noqa: E402
 from rigplane.web.runtime_helpers import declared_field_paths  # noqa: E402
 from rigplane.web import server as _server_module  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
+from rigplane.testing.timing import VirtualClock  # noqa: E402
 
 GOLDEN_PATH = (
     _REPO_ROOT
@@ -99,6 +103,7 @@ GOLDEN_PATH = (
 
 _PINNED_UPDATED_AT = "2026-01-01T00:00:00+00:00"
 _PINNED_MONOTONIC = 1000.0
+_RECEIVE_CLOCK = VirtualClock(start=_PINNED_MONOTONIC)
 _PINNED_SINCE_MS = 0
 # MOR-3630/MOR-3845: radio-backed envelopes carry the live
 # ``connection.liveness`` block whose frame age is wall-clock dependent.
@@ -322,7 +327,13 @@ def _polled_dcd_reply(profile: RadioProfile, sql_byte: int) -> bytes:
 
 def _ingest_polled_reply(radio: IcomRadio, model: str, sql_byte: int) -> None:
     reply = _polled_dcd_reply(get_radio_profile(model), sql_byte)
-    radio._update_state_cache_from_frame(parse_civ_frame(reply))
+    # Whether a reply re-stamps the liveness-inferred power_on depends on the
+    # receive clock (``_civ_rx.py: CivRuntime._inferred_power_on_due``), so
+    # replies arrive on this clock, one second apart, however fast this runs.
+    _RECEIVE_CLOCK.advance(1.0)
+    with pytest.MonkeyPatch.context() as patch:
+        _RECEIVE_CLOCK.scope_to(patch, _civ_rx)
+        radio._update_state_cache_from_frame(parse_civ_frame(reply))
 
 
 def _polled_dcd_radio(model: str, sql_byte: int | None) -> IcomRadio:
