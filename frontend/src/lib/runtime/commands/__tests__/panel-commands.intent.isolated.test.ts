@@ -499,7 +499,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
   it('rejects invalid browser-local AF input before any local or radio effect', () => {
     h.rxEnabled = true;
     const rxAudio = makeRxAudioHandlers();
-    for (const level of [-0.01, 1.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
+    for (const level of [-0.01, 2.01, 10, Number.NaN, Number.POSITIVE_INFINITY]) {
       rxAudio.onAfLevelChange(level);
     }
 
@@ -531,6 +531,18 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(h.setVolume).toHaveBeenNthCalledWith(2, 100);
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('lets the browser-local AF level reach the makeup-gain range up to 2 (MOR-4210)', () => {
+    h.rxEnabled = true;
+    const rxAudio = makeRxAudioHandlers();
+    rxAudio.onAfLevelChange(1.5);
+    rxAudio.onAfLevelChange(2);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(1, 1.5);
+    expect(h.setRxVolume).toHaveBeenNthCalledWith(2, 2);
+    expect(h.setVolume).toHaveBeenNthCalledWith(1, 150);
+    expect(h.setVolume).toHaveBeenNthCalledWith(2, 200);
+    expect(h.sendCommand).not.toHaveBeenCalled();
   });
 
   it('mutes through the server command regardless of the observed AF level (MOR-2583)', () => {

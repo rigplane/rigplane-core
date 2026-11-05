@@ -1895,6 +1895,8 @@ export interface RxAudioSnapshot {
   connected: boolean;
   /** MOR-2792: server RX capture is bit-exact digital silence. */
   rxSilent?: boolean;
+  /** MOR-4210: `runtime.rxSourceLevelLow`, the browser RX source stays quiet. */
+  sourceLevelLow?: boolean;
   routing?: { focus?: AudioFocus; splitStereo?: boolean } | null;
 }
 
@@ -1985,6 +1987,12 @@ function deriveRxAudio(
     modInputChoices,
     modInputReadiness: facts.modInputReadiness,
     rxSilent: audio.rxSilent === true,
+    ...(live && audio.sourceLevelLow === true ? {
+      sourceLow: {
+        menu: typeof caps?.rxAudioLevelMenu === 'string' && caps.rxAudioLevelMenu.trim() !== ''
+          ? caps.rxAudioLevelMenu : null,
+      },
+    } : {}),
   };
 }
 

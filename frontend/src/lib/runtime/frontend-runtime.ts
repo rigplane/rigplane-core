@@ -552,6 +552,12 @@ class FrontendRuntime {
     audioManager.setRxVolume(v);
   }
 
+  /** MOR-4210: browser RX audio is running from a quiet source. */
+  get rxSourceLevelLow(): boolean {
+    this._audioRoutingSubscribe();
+    return audioManager.rxSourceLevelLow;
+  }
+
   async startTx(): Promise<string | null> {
     return audioManager.startTx();
   }

@@ -12,7 +12,9 @@ describe('audio store', () => {
     const s = store.getAudioState();
     expect(s.rxEnabled).toBe(false);
     expect(s.txEnabled).toBe(false);
-    expect(s.volume).toBe(50);
+    // MOR-4210: 100 is unity gain, the level RxPlayer starts at — the
+    // slider must not show one level while the player plays another.
+    expect(s.volume).toBe(100);
     expect(s.muted).toBe(false);
     expect(s.micEnabled).toBe(false);
     expect(s.bridgeRunning).toBe(false);
@@ -34,14 +36,16 @@ describe('audio store', () => {
       expect(store.getAudioState().volume).toBe(0);
     });
 
-    it('clamps to 100 at upper boundary', () => {
-      store.setVolume(100);
-      expect(store.getAudioState().volume).toBe(100);
+    it('keeps the makeup-gain range above 100 (MOR-4210)', () => {
+      store.setVolume(150);
+      expect(store.getAudioState().volume).toBe(150);
+      store.setVolume(200);
+      expect(store.getAudioState().volume).toBe(200);
     });
 
-    it('clamps values above 100 to 100', () => {
-      store.setVolume(150);
-      expect(store.getAudioState().volume).toBe(100);
+    it('clamps values above 200 to 200 (MOR-4210)', () => {
+      store.setVolume(250);
+      expect(store.getAudioState().volume).toBe(200);
     });
 
     it('rounds fractional values', () => {

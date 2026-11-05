@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { RxPlayer } from '../rx-player';
+import {
+  RX_AF_LEVEL_MAX, RX_MAKEUP_GAIN_MAX, RxPlayer, afLevelToRxGain, softLimitCurve,
+} from '../rx-player';
 import { AUDIO_HEADER_SIZE, MSG_TYPE_RX, CODEC_OPUS, CODEC_PCM16, SAMPLE_RATE, FRAME_DURATION_MS } from '../constants';
 
 let ctx: any;
@@ -7,6 +9,7 @@ beforeEach(() => {
   const gains: any[] = [];
   const panners: any[] = [];
   const splitters: any[] = [];
+  const shapers: any[] = [];
   const srcs: any[] = [];
   ctx = {
     state: 'running', sampleRate: SAMPLE_RATE, currentTime: 0, destination: {},
@@ -25,6 +28,11 @@ beforeEach(() => {
       const s = { connect: vi.fn() };
       splitters.push(s);
       return s;
+    }),
+    createWaveShaper: vi.fn(() => {
+      const w = { curve: null, oversample: 'none', connect: vi.fn() };
+      shapers.push(w);
+      return w;
     }),
     createBuffer: vi.fn((ch: number, n: number, sr: number) => {
       const planes = Array.from({ length: ch }, () => new Float32Array(n));
@@ -47,6 +55,7 @@ beforeEach(() => {
     _gains: gains,
     _panners: panners,
     _splitters: splitters,
+    _shapers: shapers,
   };
   (globalThis as any).AudioContext = function () { return ctx; } as any;
 });
@@ -216,11 +225,11 @@ describe('local RX playback diagnostics', () => {
 describe('RxPlayer', () => {
   it('creates AudioContext and routing graph on start', () => {
     const p = new RxPlayer(); p.start();
-    expect(ctx.createGain).toHaveBeenCalledTimes(3);  // preGain + mainGain + subGain
-    // Terminal nodes in the new graph are the two stereo panners.
-    const [mainP, subP] = ctx._panners;
-    expect(mainP.connect).toHaveBeenCalledWith(ctx.destination);
-    expect(subP.connect).toHaveBeenCalledWith(ctx.destination);
+    // preGain + mainGain + subGain + limiter input scale (MOR-4210)
+    expect(ctx.createGain).toHaveBeenCalledTimes(4);
+    // The terminal node is the output limiter.
+    const [shaper] = ctx._shapers;
+    expect(shaper.connect).toHaveBeenCalledWith(ctx.destination);
     expect(p.active).toBe(true); p.stop();
   });
   it('is inactive before start and after stop', () => {
@@ -238,7 +247,7 @@ describe('RxPlayer', () => {
   it('clamps volume and applies to gain', () => {
     const p = new RxPlayer(); p.start();
     p.volume = -1; expect(p.volume).toBe(0);
-    p.volume = 5; expect(p.volume).toBe(1);
+    p.volume = 5; expect(p.volume).toBe(RX_AF_LEVEL_MAX);
     p.volume = 0.3; expect(ctx._gain.gain.value).toBeCloseTo(0.3); p.stop();
   });
   it('processes PCM16 frame and schedules playback', () => {
@@ -262,20 +271,21 @@ describe('RxPlayer audio routing (#753)', () => {
   it('builds splitter + 2 gains + 2 panners graph on start', () => {
     const p = new RxPlayer();
     p.start();
-    // 3 gains: preGain + mainGain + subGain
-    expect(ctx._gains.length).toBe(3);
+    // 4 gains: preGain + mainGain + subGain + limiter input scale
+    expect(ctx._gains.length).toBe(4);
     expect(ctx._panners.length).toBe(2);
     expect(ctx._splitters.length).toBe(1);
     p.stop();
   });
 
-  it('default state: focus=both, split=off → both gains on unity, panners centred', () => {
+  it('default state: focus=both, split=off → both channels at unity after the centre pan, panners centred', () => {
     const p = new RxPlayer();
     p.start();
     const [_pre, mainG, subG] = ctx._gains;
     const [mainP, subP] = ctx._panners;
-    expect(mainG.gain.value).toBe(1);
-    expect(subG.gain.value).toBe(1);
+    // MOR-4210: the gain stage cancels the centre pan's -3 dB.
+    expect(mainG.gain.value * centrePanEar).toBeCloseTo(1, 12);
+    expect(subG.gain.value * centrePanEar).toBeCloseTo(1, 12);
     expect(mainP.pan.value).toBe(0);
     expect(subP.pan.value).toBe(0);
     p.stop();
@@ -286,7 +296,7 @@ describe('RxPlayer audio routing (#753)', () => {
     p.start();
     p.setFocus('main');
     const [_pre, mainG, subG] = ctx._gains;
-    expect(mainG.gain.value).toBe(1);
+    expect(mainG.gain.value * centrePanEar).toBeCloseTo(1, 12);
     expect(subG.gain.value).toBe(0);
     p.stop();
   });
@@ -297,7 +307,7 @@ describe('RxPlayer audio routing (#753)', () => {
     p.setFocus('sub');
     const [_pre, mainG, subG] = ctx._gains;
     expect(mainG.gain.value).toBe(0);
-    expect(subG.gain.value).toBe(1);
+    expect(subG.gain.value * centrePanEar).toBeCloseTo(1, 12);
     p.stop();
   });
 
@@ -309,8 +319,8 @@ describe('RxPlayer audio routing (#753)', () => {
     p.setFocus('main');
     p.setFocus('both');
     const [_pre, mainG, subG] = ctx._gains;
-    expect(mainG.gain.value).toBeCloseTo(0.5012, 3);  // -6 dB
-    expect(subG.gain.value).toBeCloseTo(0.2512, 3);   // -12 dB
+    expect(mainG.gain.value * centrePanEar).toBeCloseTo(0.5012, 3);  // -6 dB
+    expect(subG.gain.value * centrePanEar).toBeCloseTo(0.2512, 3);   // -12 dB
     p.stop();
   });
 
@@ -365,6 +375,205 @@ describe('RxPlayer audio routing (#753)', () => {
     const [preGain] = ctx._gains;
     expect(preGain.gain.value).toBeCloseTo(0.42);
     p.stop();
+  });
+
+  it('split stereo keeps the hard-panned channels at their own gain (no centre compensation)', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.setSplitStereo(true);
+    const [_pre, mainG, subG] = ctx._gains;
+    // A hard pan already sends the mono channel to one ear at full level.
+    expect(mainG.gain.value).toBe(1);
+    expect(subG.gain.value).toBe(1);
+    p.stop();
+  });
+});
+
+/** Ear gain of a StereoPannerNode at pan 0 on mono input: the Web Audio
+ *  spec's equal-power law, cos(pi/4) (about -3 dB). */
+const centrePanEar = Math.cos(Math.PI / 4);
+
+/** WaveShaperNode curve lookup per the Web Audio spec: linear interpolation
+ *  over [-1, 1], inputs beyond the ends take the end values. */
+function shape(curve: Float32Array, x: number): number {
+  const n = curve.length;
+  const v = ((n - 1) / 2) * (x + 1);
+  if (v <= 0) return curve[0];
+  if (v >= n - 1) return curve[n - 1];
+  const k = Math.floor(v);
+  const f = v - k;
+  return (1 - f) * curve[k] + f * curve[k + 1];
+}
+
+/** One sample through the player's output stage as built: preGain → main
+ *  gain → centre pan ear → limiter input scale → shaper curve. */
+function outputSample(p: RxPlayer, x: number): number {
+  const [pre, main, , limiterIn] = ctx._gains;
+  const [shaper] = ctx._shapers;
+  void p;
+  return shape(shaper.curve, x * pre.gain.value * main.gain.value * centrePanEar * limiterIn.gain.value);
+}
+
+/** A mono PCM16 frame whose samples alternate +peak/-peak (peak in 0..1). */
+function pcm16Peak(n: number, peak: number): ArrayBuffer {
+  const buf = pcm16(n);
+  const v = new DataView(buf);
+  const value = Math.round(peak * 32767);
+  for (let i = 0; i < n; i++) v.setInt16(AUDIO_HEADER_SIZE + i * 2, i % 2 ? -value : value, true);
+  return buf;
+}
+
+describe('quiet RX source detection (MOR-4210)', () => {
+  const dbfs = (db: number) => Math.pow(10, db / 20);
+  let now = 0;
+  beforeEach(() => { now = 0; vi.spyOn(performance, 'now').mockImplementation(() => now); });
+  afterEach(() => { vi.restoreAllMocks(); });
+  /** Feed one 20 ms frame per 20 ms of clock for `ms` milliseconds. */
+  const feedFor = (p: RxPlayer, ms: number, peak: number) => {
+    for (let t = 0; t < ms; t += 20) { p.feed(pcm16Peak(960, peak)); now += 20; }
+  };
+
+  it('reports a low source after 20 s of audible audio that never reaches -12 dBFS', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 19_900, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    feedFor(p, 200, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(true);
+    p.stop();
+    expect(p.sourceLevelLow).toBe(false);
+  });
+
+  it('clears on the first frame at or above -12 dBFS', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 20_100, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(true);
+    p.feed(pcm16Peak(960, dbfs(-11)));
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  it('does not call the IC-705 maximum (-7.8 dBFS peak) low', () => {
+    const p = new RxPlayer(); p.start();
+    for (let t = 0; t < 40_000; t += 1000) {
+      feedFor(p, 980, dbfs(-25));
+      p.feed(pcm16Peak(960, dbfs(-7.8))); now += 20;
+    }
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  it('never calls digital silence low (squelch closed says nothing about level)', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 45_000, 0);
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  it('restarts the window on flush', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 19_000, dbfs(-20));
+    p.flush();
+    feedFor(p, 2_000, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+});
+
+describe('RX makeup gain and output limiter (MOR-4210)', () => {
+  it('maps AF level 100% to exact unity and 200% to +20 dB', () => {
+    expect(afLevelToRxGain(0)).toBe(0);
+    expect(afLevelToRxGain(0.5)).toBe(0.5);
+    expect(afLevelToRxGain(1)).toBe(1);
+    expect(20 * Math.log10(afLevelToRxGain(1.5))).toBeCloseTo(10, 9);
+    expect(20 * Math.log10(afLevelToRxGain(2))).toBeCloseTo(20, 9);
+    expect(afLevelToRxGain(2)).toBeCloseTo(RX_MAKEUP_GAIN_MAX, 12);
+    expect(afLevelToRxGain(5)).toBeCloseTo(RX_MAKEUP_GAIN_MAX, 12);
+    expect(afLevelToRxGain(-1)).toBe(0);
+    expect(afLevelToRxGain(Number.NaN)).toBe(0);
+  });
+
+  it('applies the mapped gain to preGain and reports the AF level as volume', () => {
+    const p = new RxPlayer();
+    p.start();
+    const [pre] = ctx._gains;
+    p.volume = 1; expect(pre.gain.value).toBe(1);
+    p.volume = 2; expect(pre.gain.value).toBeCloseTo(10, 12);
+    expect(p.volume).toBe(2);
+    p.stop();
+  });
+
+  it('starts a new graph at the stored makeup gain', () => {
+    const p = new RxPlayer();
+    p.volume = 2;
+    p.start();
+    expect(ctx._gains[0].gain.value).toBeCloseTo(10, 12);
+    p.stop();
+  });
+
+  it('sends the destination only the limiter output', () => {
+    const p = new RxPlayer();
+    p.start();
+    const [, , , limiterIn] = ctx._gains;
+    const [mainP, subP] = ctx._panners;
+    const [shaper] = ctx._shapers;
+    expect(mainP.connect).toHaveBeenCalledWith(limiterIn);
+    expect(subP.connect).toHaveBeenCalledWith(limiterIn);
+    expect(limiterIn.connect).toHaveBeenCalledWith(shaper);
+    expect(shaper.connect).toHaveBeenCalledWith(ctx.destination);
+    const intoDestination = [...ctx._gains, ...ctx._panners, ...ctx._splitters, ...ctx._shapers]
+      .filter(node => node.connect.mock.calls.some((call: unknown[]) => call[0] === ctx.destination));
+    expect(intoDestination).toEqual([shaper]);
+    expect(shaper.curve).toBeInstanceOf(Float32Array);
+    p.stop();
+  });
+
+  it('keeps every output sample at or below 0 dBFS at +20 dB on a full-scale source', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.volume = 2;
+    let peak = 0;
+    for (let i = 0; i < 4800; i++) {
+      const x = Math.sin((2 * Math.PI * 1000 * i) / SAMPLE_RATE);  // 0 dBFS sine
+      peak = Math.max(peak, Math.abs(outputSample(p, x)));
+    }
+    expect(peak).toBeLessThanOrEqual(1);
+    expect(peak).toBeGreaterThan(0.95);  // loud, not muted by the limiter
+    p.stop();
+  });
+
+  it('keeps the IC-705 measured source (-7.8 dBFS peak) under 0 dBFS at every makeup step', () => {
+    const p = new RxPlayer();
+    p.start();
+    const sourcePeak = Math.pow(10, -7.8 / 20);
+    for (let level = 1; level <= RX_AF_LEVEL_MAX + 1e-9; level += 0.05) {
+      p.volume = level;
+      for (const x of [sourcePeak, -sourcePeak]) {
+        expect(Math.abs(outputSample(p, x))).toBeLessThanOrEqual(1);
+      }
+    }
+    p.stop();
+  });
+
+  it('passes quiet audio unchanged at AF 100% (no level jump for existing users)', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.volume = 1;
+    for (const x of [0, 0.001, -0.01, 0.1, -0.3, 0.45]) {
+      expect(outputSample(p, x)).toBeCloseTo(x, 5);
+    }
+    p.stop();
+  });
+
+  it('builds a monotonic, odd-symmetric curve that never exceeds full scale', () => {
+    const curve = softLimitCurve();
+    const mid = (curve.length - 1) / 2;
+    expect(Number.isInteger(mid)).toBe(true);
+    expect(curve[mid]).toBe(0);
+    for (let k = 1; k < curve.length; k++) {
+      expect(curve[k]).toBeGreaterThanOrEqual(curve[k - 1]);
+      expect(Math.abs(curve[k])).toBeLessThan(1);
+      expect(curve[curve.length - 1 - k]).toBeCloseTo(-curve[k], 7);
+    }
   });
 });
 
