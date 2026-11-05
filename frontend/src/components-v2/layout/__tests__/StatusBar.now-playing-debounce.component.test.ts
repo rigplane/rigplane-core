@@ -7,9 +7,17 @@
  * cleanup cleared the 800 ms debounce and it armed a new one. While the radio
  * streamed state the timer never fired (QA trace: 69 timers armed per second,
  * none fired) and the lookup never ran.
+ *
+ * The lookup goes through the REAL `SystemController` and its HTTP request;
+ * only the network is faked. Its replies are the producer's own documents:
+ * Core's `EiBiStation.to_dict()` wrapped the way the `/api/v1/eibi/identify`
+ * route wraps them (`web_routing.py`).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
+import type { EibiResult } from '$lib/runtime/system-controller';
 
 vi.mock('$lib/stores/connection.svelte', () => ({
   getRadioLinkState: vi.fn(() => 'connected'),
@@ -40,31 +48,65 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async () => {
   return { getActiveFrequencyHz: () => activeFrequencyProbe.read() };
 });
 
-type Identification = { stations: Array<Record<string, string | boolean>> } | null;
-const identifyFrequency = vi.hoisted(() => vi.fn(async (_freq: number): Promise<Identification> => null));
-vi.mock('$lib/runtime', () => ({
-  runtime: {
-    defaultScopeStatus: {
-      source: null,
-      available: false,
-      resourceSelected: false,
-      demand: 0,
-      lifecycle: 'inactive',
-      transport: 'disconnected',
-      frameSeen: false,
+vi.mock('$lib/runtime', async () => {
+  const { SystemController } = await import('$lib/runtime/system-controller');
+  return {
+    runtime: {
+      defaultScopeStatus: {
+        source: null,
+        available: false,
+        resourceSelected: false,
+        demand: 0,
+        lifecycle: 'inactive',
+        transport: 'disconnected',
+        frameSeen: false,
+      },
+      system: new SystemController(),
     },
-    system: {
-      disconnect: vi.fn(),
-      connect: vi.fn(),
-      powerOn: vi.fn(async () => {}),
-      powerOff: vi.fn(async () => {}),
-      identifyFrequency,
-    },
-  },
-}));
+  };
+});
 
 import StatusBar from '../StatusBar.svelte';
 import { activeFrequencyProbe } from './support/active-frequency-probe.svelte';
+
+const STATION_A_HZ = 14_074_000;
+const STATION_B_HZ = 7_074_000;
+
+/** `{"stations": [...], "freq_hz": f}` per frequency, built by Core itself. */
+let identifyReplies: Record<number, EibiResult>;
+
+beforeAll(() => {
+  const script = [
+    'import json',
+    'from rigplane.web.eibi import EiBiStation',
+    'def station(khz, name):',
+    '    return EiBiStation(freq_khz=khz, time_start=0, time_end=2400, days="", country="USA",',
+    '        station=name, language="E", target="NAm", remarks="", persistence=1,',
+    '        start_date="", end_date="").to_dict()',
+    'replies = {',
+    `    ${STATION_A_HZ}: {"stations": [station(${STATION_A_HZ / 1000}, "Station A")], "freq_hz": ${STATION_A_HZ}},`,
+    `    ${STATION_B_HZ}: {"stations": [station(${STATION_B_HZ / 1000}, "Station B")], "freq_hz": ${STATION_B_HZ}},`,
+    '}',
+    'print(json.dumps(replies, separators=(",", ":")))',
+  ].join('\n');
+  identifyReplies = JSON.parse(execFileSync('uv', ['run', 'python', '-c', script], {
+    cwd: resolve(import.meta.dirname, '../../../../..'), encoding: 'utf8', timeout: 30_000,
+  })) as Record<number, EibiResult>;
+}, 30_000);
+
+const fetchMock = vi.fn(async (input: string | URL | Request): Promise<Response> => {
+  const url = new URL(String(input), 'http://station.test');
+  const reply = url.pathname === '/api/v1/eibi/identify'
+    ? identifyReplies[Number(url.searchParams.get('freq'))] : undefined;
+  return reply === undefined
+    ? new Response('not found', { status: 404 })
+    : new Response(JSON.stringify(reply), { status: 200, headers: { 'Content-Type': 'application/json' } });
+});
+
+/** The identification requests the status bar sent, in order. */
+const identifyRequests = () => fetchMock.mock.calls
+  .map(([input]) => String(input))
+  .filter((url) => url.startsWith('/api/v1/eibi/identify'));
 
 describe('StatusBar Now Playing debounce (MOR-4213)', () => {
   let target: HTMLElement | null = null;
@@ -72,8 +114,9 @@ describe('StatusBar Now Playing debounce (MOR-4213)', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    identifyFrequency.mockClear();
-    activeFrequencyProbe.frequencyHz = 14_074_000;
+    fetchMock.mockClear();
+    vi.stubGlobal('fetch', fetchMock);
+    activeFrequencyProbe.frequencyHz = STATION_A_HZ;
   });
 
   afterEach(() => {
@@ -81,6 +124,7 @@ describe('StatusBar Now Playing debounce (MOR-4213)', () => {
     instance = null;
     target?.remove();
     target = null;
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -91,71 +135,64 @@ describe('StatusBar Now Playing debounce (MOR-4213)', () => {
     flushSync();
   }
 
-  it('state deliveries with an unchanged frequency do not re-arm the debounce', () => {
-    mountBar();
-    const armed = vi.spyOn(globalThis, 'setTimeout');
-    // 40 deliveries over 1 s, the measured state rate, frequency unchanged.
-    for (let i = 0; i < 40; i += 1) {
+  /** `count` deliveries 25 ms apart (the measured state rate), frequency unchanged. */
+  async function deliveries(count: number): Promise<void> {
+    for (let i = 0; i < count; i += 1) {
+      await vi.advanceTimersByTimeAsync(25);
       activeFrequencyProbe.deliver();
       flushSync();
-      vi.advanceTimersByTime(25);
     }
+  }
+
+  it('state deliveries with an unchanged frequency do not re-arm the debounce', async () => {
+    mountBar();
+    const armed = vi.spyOn(globalThis, 'setTimeout');
+    await deliveries(40);
     const identifyArms = armed.mock.calls.filter(([, delay]) => delay === 800);
     armed.mockRestore();
     expect(identifyArms).toHaveLength(0);
     // The debounce armed at mount fired 800 ms in, while deliveries kept coming.
-    expect(identifyFrequency).toHaveBeenCalledTimes(1);
-    expect(identifyFrequency).toHaveBeenCalledWith(14_074_000);
+    expect(identifyRequests()).toEqual([`/api/v1/eibi/identify?freq=${STATION_A_HZ}`]);
+    flushSync();
+    expect(target!.querySelector('.np-station')?.textContent).toBe('Station A');
   });
 
-  it('a frequency change still restarts the debounce', () => {
+  it('a frequency change still restarts the debounce', async () => {
     mountBar();
-    vi.advanceTimersByTime(400);
-    activeFrequencyProbe.frequencyHz = 7_074_000;
+    await vi.advanceTimersByTimeAsync(400);
+    activeFrequencyProbe.frequencyHz = STATION_B_HZ;
     activeFrequencyProbe.deliver();
     flushSync();
-    vi.advanceTimersByTime(799);
-    expect(identifyFrequency).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
-    expect(identifyFrequency).toHaveBeenCalledTimes(1);
-    expect(identifyFrequency).toHaveBeenCalledWith(7_074_000);
+    await vi.advanceTimersByTimeAsync(799);
+    expect(identifyRequests()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(identifyRequests()).toEqual([`/api/v1/eibi/identify?freq=${STATION_B_HZ}`]);
   });
 
   it('a lookup skipped while the popup is open runs for the current frequency once it closes', async () => {
-    const station = (name: string) => ({
-      station: name, city: '', state: '', language_name: 'English', country: 'XX', target: 'XX',
-      on_air: false, freq_khz: '0', time_str: 'local', days: '', band: '40m', remarks: '', source: '',
-    });
-    identifyFrequency.mockResolvedValueOnce({ stations: [station('Station A')] })
-      .mockResolvedValueOnce({ stations: [station('Station B')] });
     mountBar();
     await vi.advanceTimersByTimeAsync(800);
     flushSync();
-    expect(identifyFrequency).toHaveBeenCalledTimes(1);
+    expect(target!.querySelector('.np-station')?.textContent).toBe('Station A');
     target!.querySelector<HTMLButtonElement>('button.now-playing')!.click();
     flushSync();
     expect(target!.querySelector('.np-detail')).not.toBeNull();
 
     // Tuned elsewhere while the popup is open: the debounce expires, deliveries keep coming.
-    activeFrequencyProbe.frequencyHz = 7_074_000;
+    activeFrequencyProbe.frequencyHz = STATION_B_HZ;
     activeFrequencyProbe.deliver();
     flushSync();
-    for (let i = 0; i < 40; i += 1) {
-      await vi.advanceTimersByTimeAsync(25);
-      activeFrequencyProbe.deliver();
-      flushSync();
-    }
-    expect(identifyFrequency).toHaveBeenCalledTimes(1);
+    await deliveries(40);
+    expect(identifyRequests()).toEqual([`/api/v1/eibi/identify?freq=${STATION_A_HZ}`]);
 
     target!.querySelector<HTMLButtonElement>('button.np-close')!.click();
     flushSync();
-    for (let i = 0; i < 40; i += 1) {
-      await vi.advanceTimersByTimeAsync(25);
-      activeFrequencyProbe.deliver();
-      flushSync();
-    }
-    expect(identifyFrequency).toHaveBeenCalledTimes(2);
-    expect(identifyFrequency).toHaveBeenLastCalledWith(7_074_000);
+    await deliveries(40);
+    flushSync();
+    expect(identifyRequests()).toEqual([
+      `/api/v1/eibi/identify?freq=${STATION_A_HZ}`,
+      `/api/v1/eibi/identify?freq=${STATION_B_HZ}`,
+    ]);
     expect(target!.querySelector('.np-station')?.textContent).toBe('Station B');
   });
 });
