@@ -438,9 +438,8 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
                 # The token-remove is a datagram: wait for the simulator to
                 # handle it rather than assuming next-iteration delivery.
                 released = await asyncio.wait_for(server.wait_session_released(), 5.0)
-                # The client's token-remove or DISCONNECT (UDP may reorder them),
-                # never a hold expiry.
-                assert released in {"token_remove", "disconnect"}
+                # A client end (never a hold expiry).
+                assert released in MockIcomRadio.CLIENT_END_REASONS, released
                 assert server.session_held is False
             finally:
                 radio_reconnect.logger.removeHandler(handler)

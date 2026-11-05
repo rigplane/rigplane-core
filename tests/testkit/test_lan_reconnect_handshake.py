@@ -106,9 +106,8 @@ async def test_cancelled_disconnect_after_civ_retirement_still_releases(
             # The token-remove is a datagram: wait for the simulator to
             # handle it rather than assuming next-iteration delivery.
             released = await asyncio.wait_for(sim.wait_session_released(), 5.0)
-            # The client's token-remove or DISCONNECT (UDP may reorder them), never
-            # a hold expiry.
-            assert released in {"token_remove", "disconnect"}
+            # A client end (never a hold expiry).
+            assert released in MockIcomRadio.CLIENT_END_REASONS, released
             assert not sim.session_held
             assert radio.conn_state is RadioConnectionState.DISCONNECTED
 

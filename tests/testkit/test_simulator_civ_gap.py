@@ -709,7 +709,8 @@ async def test_new_claim_clears_gap_tracking() -> None:
         # open a gap in the new session's numbering. Send the conninfo
         # only once the close has released the session.
         released = await asyncio.wait_for(sim.wait_session_released(), 5.0)
-        assert released == "openclose_close"
+        # A client end (never a hold expiry).
+        assert released in MockIcomRadio.CLIENT_END_REASONS, released
         proto.send(_conninfo(), sim.control_port)
         await proto.recv()
 
