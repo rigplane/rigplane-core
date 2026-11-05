@@ -127,6 +127,7 @@ from ..env_config import (
 from ._delta_encoder import (  # noqa: TID251
     DeltaEncoder,
     StateUpdateFrame,
+    copy_state_tree,
     top_level_delta,
 )
 from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
@@ -2615,7 +2616,7 @@ class WebServer:
             and cache_key == self._cached_public_state_key
             and self._cached_public_state_payload is not None
         ):
-            payload = copy.deepcopy(self._cached_public_state_payload)
+            payload = copy_state_tree(self._cached_public_state_payload)
             # MOR-3845: the liveness frame age is wall-clock dependent — a
             # cache hit must still serve the age at response time, not the
             # value frozen when the payload was built.
@@ -2661,7 +2662,7 @@ class WebServer:
         payload["sdr"] = self._sdr_status_payload()
         if updated_at is None:
             self._cached_public_state_key = cache_key
-            self._cached_public_state_payload = copy.deepcopy(payload)
+            self._cached_public_state_payload = copy_state_tree(payload)
         return payload
 
     def build_state_update_envelope(
