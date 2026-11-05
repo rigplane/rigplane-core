@@ -549,7 +549,8 @@ class RadioProfile:
     browser_rx_transcode_to_opus: bool | None = None
     # ``[audio].rx_audio_level_menu`` (MOR-4210): the radio menu item that sets
     # its RX audio output level to the computer. None = undeclared.
-    rx_audio_level_menu: str | None = None
+    # Keyword-only so the fields after it keep their positions.
+    rx_audio_level_menu: str | None = field(default=None, kw_only=True)
     # Capability names whose validate checks route through the set-and-observe
     # engine path (no read-first) instead of read-modify-verify-restore. Data-
     # driven from ``[validation].write_only_controls`` in the rig TOML (MOR-208).

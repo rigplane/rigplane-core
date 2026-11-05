@@ -734,7 +734,8 @@ class RigConfig:
     rx_audio_channel: str = "mix"
     # Radio menu item that sets its RX audio output level to the computer
     # (MOR-4210), shown when browser RX audio stays quiet. None = undeclared.
-    rx_audio_level_menu: str | None = None
+    # Keyword-only so the fields after it keep their positions.
+    rx_audio_level_menu: str | None = field(default=None, kw_only=True)
     write_only_controls: tuple[str, ...] = ()
     # Per-check_id fixed-value declarations (MOR-2105 part 2): check_id ->
     # source establishing that this radio has only one legal value for that

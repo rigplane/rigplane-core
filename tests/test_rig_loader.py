@@ -5,6 +5,7 @@ TDD: these tests were written FIRST, then the implementation.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import textwrap
@@ -3136,6 +3137,29 @@ browser_rx_transcode_to_opus = true
         rig = load_rig(RIGS_DIR / name)
         assert rig.rx_audio_level_menu == menu
         assert rig.to_profile().rx_audio_level_menu == menu
+
+    @pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
+    def test_rx_audio_level_menu_keeps_existing_positional_arguments(self, cls):
+        """MOR-4210: a caller that passes positionally every field that
+        existed before ``rx_audio_level_menu`` still gets each value in its
+        own field (``write_only_controls`` stays a control set, not the
+        menu string)."""
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        original = rig if cls is RigConfig else rig.to_profile()
+        names = [
+            f.name
+            for f in dataclasses.fields(cls)
+            if f.init and not f.kw_only and f.name != "rx_audio_level_menu"
+        ]
+        keywords = {
+            f.name: getattr(original, f.name)
+            for f in dataclasses.fields(cls)
+            if f.init and f.kw_only and f.name != "rx_audio_level_menu"
+        }
+        rebuilt = cls(*(getattr(original, name) for name in names), **keywords)
+        for name in names:
+            assert getattr(rebuilt, name) == getattr(original, name), name
+        assert rebuilt.rx_audio_level_menu is None
 
     @pytest.mark.parametrize("value", ['""', '"   "', "100", "true"])
     def test_rx_audio_level_menu_must_be_a_non_empty_string(self, tmp_path, value):
