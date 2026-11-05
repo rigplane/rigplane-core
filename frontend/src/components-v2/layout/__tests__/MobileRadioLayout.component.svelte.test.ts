@@ -565,10 +565,14 @@ describe('MobileRadioLayout structure', () => {
         // An unread level keeps the producer's null leaf and unobserved status.
         if (level !== null) fieldStatus[`${key}.squelch`] = observed(`receiver.${key}.squelch`);
       }
+      // `Capabilities` is open-ended (index signature), so the generation is
+      // narrowed to the number the state contract carries.
+      const generation = typeof caps.providerGeneration === 'number'
+        ? caps.providerGeneration : undefined;
       const state: ServerState = {
         ...base,
         active: 'MAIN',
-        providerGeneration: caps.providerGeneration,
+        providerGeneration: generation,
         main: {
           ...base.main, freqHz, mode: 'USB', filterWidth: 2400, agc: 1, nb: false, nr: false,
           squelch: level,
