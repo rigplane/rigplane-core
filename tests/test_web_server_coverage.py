@@ -10,6 +10,7 @@ import pathlib
 import time
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,6 +44,8 @@ from rigplane.core.tx_observation import (
 )
 from rigplane.core.radio_protocol import ScopeCapable
 from rigplane.profiles import resolve_radio_profile
+from rigplane.scope import ScopeFrame
+from rigplane.testing.timing import VirtualClock
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.web import runtime_helpers
@@ -225,8 +228,10 @@ def _store_observation(
     )
 
 
-def _scope_radio(*, ready: bool = True, connected: bool = True) -> MagicMock:
-    radio = MagicMock()
+def _scope_radio(
+    *, ready: bool = True, connected: bool = True, cls: type = MagicMock
+) -> MagicMock:
+    radio = cls()
     radio.radio_ready = ready
     radio.connected = connected
     radio.capabilities = {"scope"}
@@ -3597,67 +3602,38 @@ async def test_ensure_scope_enabled_skips_when_scope_capability_absent() -> None
     assert srv._scope_enabled is False
 
 
-@pytest.mark.asyncio
-async def test_scope_health_monitor_disconnected_and_reenable(
+@pytest.mark.timeout(30)
+async def test_scope_health_monitor_link_down_then_menu_silence(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    radio = _scope_radio(ready=False, connected=False)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._scope_enabled = True
-    srv._scope_health_interval = 0.01
-    srv._scope_last_nonzero = 0.0
+    """MOR-3690: link down resets the frame clock; menu silence (no frames,
+    CI-V healthy) publishes hidden and never enqueues an enable."""
+    srv, radio, queued = _virtual_scope_server(monkeypatch, virtual_clock)
+    radio.connected = False
+    radio.radio_ready = False
+    srv._scope_last_nonzero = 0.0  # noqa: SLF001
 
-    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    monitor = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
-        await asyncio.sleep(0.03)
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-    assert srv._scope_last_nonzero > 0
-
-    radio.connected = True
-    radio.radio_ready = True
-    srv._scope_last_nonzero = time.monotonic() - 1.0
-    enqueued = asyncio.Event()
-    captured = []
-    put_ordered = srv.command_queue.put_ordered
-
-    def observe_put_ordered(command, **kwargs):
-        entry = put_ordered(command, **kwargs)
-        if isinstance(command, EnableScope):
-            captured.append((entry, kwargs["future"]))
-            enqueued.set()
-        return entry
-
-    def is_pending(entry):
-        return any(
-            pending is entry
-            for segment in srv.command_queue._segments
-            for pending in segment.entries()
+        await _elapse_scope_windows(virtual_clock, 2)
+        # Link down: the frame clock is reset inside the monitor window.
+        assert 0.0 <= virtual_clock() - srv._scope_last_nonzero <= 10.0  # noqa: SLF001
+        radio.connected = True
+        radio.radio_ready = True
+        await _elapse_scope_windows(
+            virtual_clock,
+            3,
+            between=lambda: setattr(
+                radio, "last_valid_frame_monotonic", virtual_clock()
+            ),
         )
-
-    monkeypatch.setattr(srv.command_queue, "put_ordered", observe_put_ordered)
-    waiter = asyncio.create_task(enqueued.wait())
-    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
-    try:
-        done, _ = await asyncio.wait(
-            (waiter, task), timeout=5, return_when=asyncio.FIRST_COMPLETED
-        )
-        assert done, "scope re-enable enqueue failure guard expired"
-        assert not task.done(), "scope monitor exited before re-enable enqueue"
-        entry, future = captured[0]
-        assert isinstance(entry.command, EnableScope)
-        assert isinstance(future, asyncio.Future)
-        assert entry.future is future and not future.done()
-        assert is_pending(entry), "re-enable entry must remain unclaimed"
     finally:
-        task.cancel()
-        waiter.cancel()
-        await asyncio.gather(task, waiter, return_exceptions=True)
-    await asyncio.sleep(0)  # Dispatch the ordered reply's cancellation callback.
-    assert future.cancelled()
-    assert not is_pending(entry), "cancelled re-enable entry must leave the queue"
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
+
+    assert queued == []
+    assert _scope_hidden_verdict(srv) is True
 
 
 @pytest.mark.asyncio
@@ -3695,6 +3671,127 @@ def _record_scope_commands_completing_like_a_poller(
         return entry
 
     monkeypatch.setattr(srv.command_queue, "put_ordered", observe_and_complete)
+
+
+SCOPE_HIDDEN_PATH = FieldPath.parse("health.health.scope_hidden")
+
+_ZERO_SCOPE_PIXELS = bytes(479)
+_LIVE_SCOPE_PIXELS = b"\x00" * 200 + b"\x05\x20" + b"\x00" * 277
+
+
+def _zero_scope_frame() -> ScopeFrame:
+    """A producer-typed blank frame: the exact type the radio callback delivers."""
+    return ScopeFrame(
+        receiver=0,
+        mode=0,
+        start_freq_hz=14_000_000,
+        end_freq_hz=14_350_000,
+        pixels=_ZERO_SCOPE_PIXELS,
+        out_of_range=False,
+    )
+
+
+def _live_scope_frame() -> ScopeFrame:
+    """A producer-typed frame carrying real pixel data."""
+    return ScopeFrame(
+        receiver=0,
+        mode=0,
+        start_freq_hz=14_000_000,
+        end_freq_hz=14_350_000,
+        pixels=_LIVE_SCOPE_PIXELS,
+        out_of_range=False,
+    )
+
+
+def test_scope_frame_fixtures_are_producer_typed() -> None:
+    """The scope-health fixtures are the producer's own type — the real
+    ``rigplane.scope.ScopeFrame`` the hardware scope callback delivers, with
+    every field the actual delivery path carries."""
+    for factory in (_zero_scope_frame, _live_scope_frame):
+        frame = factory()
+        assert isinstance(frame, ScopeFrame)
+        assert isinstance(frame.pixels, bytes)
+
+
+def _scope_hidden_verdict(srv: WebServer) -> object:
+    """The published scope-hidden fact value, or None when never published."""
+    for field in srv.command_state_store.snapshot().fields:
+        if field.path == SCOPE_HIDDEN_PATH:
+            return field.value
+    return None
+
+
+def _virtual_scope_server(
+    monkeypatch: pytest.MonkeyPatch,
+    clock: VirtualClock,
+    *,
+    interval: float = 10.0,
+    on_enable: Callable[[], None] | None = None,
+    radio: Any | None = None,
+) -> tuple[WebServer, Any, list[EnableScope]]:
+    """A scope WebServer whose monitor/reconnect paths run on a VirtualClock.
+
+    MOR-3690 (reopened): ``clock.scope_to`` points the server module's own
+    ``time`` / ``asyncio`` names at the clock, so one monitor window is one
+    clock jump, never a real wait. ``on_enable`` fires inside the queue hook
+    when an EnableScope lands — the beta.13 race seam (a frame stamped
+    newer than the window's ``now`` while the write is in flight).
+    ``radio`` lets a test supply a producer with a specific liveness
+    surface (e.g. one that honors only the public Radio contract stamp).
+    """
+    if radio is None:
+        radio = _scope_radio()
+    radio._fetch_initial_state = AsyncMock()  # noqa: SLF001
+    srv = WebServer(radio)
+    srv._scope_handlers.add(MagicMock())  # noqa: SLF001
+    srv._scope_enabled = True  # noqa: SLF001
+    srv._scope_health_interval = interval  # noqa: SLF001
+    queued: list[EnableScope] = []
+    put_ordered = srv.command_queue.put_ordered  # noqa: SLF001
+
+    def observe_and_complete(command: object, **kwargs: object) -> object:
+        entry = put_ordered(command, **kwargs)
+        if isinstance(command, EnableScope):
+            queued.append(command)
+            if on_enable is not None:
+                on_enable()
+        future = kwargs.get("future")
+        if isinstance(future, asyncio.Future) and not future.done():
+            future.set_result(None)
+        return entry
+
+    monkeypatch.setattr(srv.command_queue, "put_ordered", observe_and_complete)
+    clock.scope_to(monkeypatch, server_module)
+    return srv, radio, queued
+
+
+async def _elapse_scope_windows(
+    clock: VirtualClock,
+    windows: int,
+    *,
+    interval: float = 10.0,
+    between: Callable[[], None] | None = None,
+) -> None:
+    """Let the scope-health monitor run ``windows`` windows on the clock.
+
+    The monitor's scoped ``asyncio.sleep`` jumps the clock by one interval
+    and yields once, so each bare loop turn here is one window; ``between``
+    runs before each turn (feed frames, refresh the CI-V stamp).
+    """
+    target = clock() + windows * interval
+    for _ in range(windows * 20 + 100):
+        if clock() >= target:
+            break
+        if between is not None:
+            between()
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("scope-health monitor stopped advancing the clock")
+    # The scoped sleep advances the clock BEFORE the window body runs, so
+    # the last window's body is still parked in its yield: settle it (and
+    # one more turn) now that the target is reached.
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
 
 
 def _observe_scope_ptt(srv: WebServer, value: ObservedPtt, max_age: float) -> None:
@@ -3784,105 +3881,77 @@ async def test_scope_health_monitor_long_tx_never_gives_up(
     assert "giving up" not in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_scope_health_monitor_recovers_after_tx_ends(
+@pytest.mark.timeout(30)
+async def test_scope_health_monitor_verdicts_around_tx(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-2859: de-key with live traffic stays quiet; a later stall re-enables."""
-    radio = _scope_radio(ready=True, connected=True)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._scope_enabled = True
-    srv._scope_health_interval = 0.05
-    srv._scope_last_nonzero = time.monotonic() - 1.0
+    """MOR-2859/MOR-3690: TX pauses judgement; live frames publish visible;
+    a later menu silence publishes hidden — all without a single write."""
+    srv, radio, queued = _virtual_scope_server(monkeypatch, virtual_clock)
     srv._managed_tx_keyed = True  # noqa: SLF001
-    queued: list[EnableScope] = []
-    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
 
-    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    monitor = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
-        await asyncio.sleep(0.3)  # long TX spans the 3-retry budget (6 intervals)
-        assert queued == []
+        await _elapse_scope_windows(virtual_clock, 3)
+        assert _scope_hidden_verdict(srv) is None  # TX: no judgement
         srv._managed_tx_keyed = False  # noqa: SLF001 — de-key, traffic resumes
-        for _ in range(25):  # ~250 ms of live traffic, ~10 ms between frames
-            srv._scope_health_check(SimpleNamespace(pixels=b"\x00\x01"))  # noqa: SLF001
-            await asyncio.sleep(0.01)
-        assert queued == []  # live traffic after TX stays quiet
-        # Genuine RX stall: frames stop again.
-        srv._scope_last_nonzero = time.monotonic() - 1.0
-        await _await_condition(lambda: len(queued) > 0, timeout=5.0)
-    finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-
-    assert any(isinstance(command, EnableScope) for command in queued)
-
-
-@pytest.mark.asyncio
-async def test_scope_health_monitor_tx_resets_retry_budget_after_give_up(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """MOR-2859: a TX pause restores the retry budget exhausted by an RX stall."""
-    caplog.set_level("WARNING", logger="rigplane.web.server")
-    radio = _scope_radio(ready=True, connected=True)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._scope_enabled = True
-    srv._scope_health_interval = 0.05
-    srv._scope_last_nonzero = time.monotonic() - 1.0
-    queued: list[EnableScope] = []
-    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
-
-    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
-    try:
-        # RX stall with zero frames until the monitor exhausts its retries.
-        await _await_condition(
-            lambda: len(queued) >= 3 and "giving up" in caplog.text,
-            timeout=5.0,
+        await _elapse_scope_windows(
+            virtual_clock,
+            2,
+            between=lambda: srv._scope_health_check(_live_scope_frame()),  # noqa: SLF001
         )
-        baseline = len(queued)
-        # TX known for a few intervals: quiet, timer + retries reset.
-        srv._managed_tx_keyed = True  # noqa: SLF001
-        await asyncio.sleep(0.2)
-        assert len(queued) == baseline
-        # De-key with zero frames continuing: fresh budget re-enables.
-        srv._managed_tx_keyed = False  # noqa: SLF001
-        await _await_condition(lambda: len(queued) > baseline, timeout=5.0)
+        assert _scope_hidden_verdict(srv) is False
+        # Menu opens: frames stop entirely, CI-V keeps answering (IC-705).
+        await _elapse_scope_windows(
+            virtual_clock,
+            3,
+            between=lambda: setattr(
+                radio, "last_valid_frame_monotonic", virtual_clock()
+            ),
+        )
+        assert _scope_hidden_verdict(srv) is True
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
 
-    assert any(isinstance(command, EnableScope) for command in queued[baseline:])
+    assert queued == []
 
 
-@pytest.mark.asyncio
-async def test_scope_health_monitor_stale_ptt_still_reenables(
+@pytest.mark.timeout(30)
+async def test_scope_health_monitor_stale_ptt_writes_nothing(
+    virtual_clock: VirtualClock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-2859: stale observed PTT (UNKNOWN) keeps the RX re-enable path."""
-    radio = _scope_radio(ready=True, connected=True)
-    srv = WebServer(radio)
-    srv._scope_handlers.add(MagicMock())
-    srv._scope_enabled = True
-    srv._scope_health_interval = 0.01
-    srv._scope_last_nonzero = time.monotonic() - 1.0
-    _observe_scope_ptt(srv, ObservedPtt.ON, max_age=0.02)
-    await asyncio.sleep(0.05)  # the ON observation goes stale
+    """MOR-2859/MOR-3690: stale observed PTT is not TX — the monitor judges
+    the stall normally (publishes hidden) and still never writes."""
+    srv, radio, queued = _virtual_scope_server(monkeypatch, virtual_clock)
+    # The ON observation is already stale: stamped 100 s behind the clock.
+    srv.command_state_store.apply_current(
+        _store_observation(
+            OBSERVED_PTT_PATH, ObservedPtt.ON, at=virtual_clock() - 100.0, max_age=1.0
+        )
+    )
     assert srv._managed_tx_keyed is False  # noqa: SLF001
     assert (
         project_observed_ptt(srv.command_state_store.snapshot()) is ObservedPtt.UNKNOWN
     )
-    queued: list[EnableScope] = []
-    _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
 
-    task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
+    monitor = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
-        await _await_condition(lambda: len(queued) > 0, timeout=5.0)
+        await _elapse_scope_windows(
+            virtual_clock,
+            3,
+            between=lambda: setattr(
+                radio, "last_valid_frame_monotonic", virtual_clock()
+            ),
+        )
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
 
-    assert any(isinstance(command, EnableScope) for command in queued)
+    assert queued == []
+    assert _scope_hidden_verdict(srv) is True
 
 
 @pytest.mark.asyncio
