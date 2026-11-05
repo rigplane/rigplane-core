@@ -124,7 +124,7 @@ from ..env_config import (
     get_audio_rx_jitter_ceiling_ms,
     get_audio_rx_jitter_floor_ms,
 )
-from ._delta_encoder import DeltaEncoder  # noqa: TID251
+from ._delta_encoder import DeltaEncoder, top_level_delta  # noqa: TID251
 from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
@@ -1386,6 +1386,9 @@ class WebServer:
         self._pending_state_broadcast_task: asyncio.Task[None] | None = None
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
+        # Control queues whose client asked for leaf deltas (MOR-4206); every
+        # other queue gets the same diff rendered as a top-level delta.
+        self._leaf_delta_queues: set[BoundedQueue[dict[str, Any]]] = set()
         # This is an encoder baseline only, derived from Store snapshots.  Web
         # never owns or advances the provider generation itself.
         self._last_delta_encoder_generation: int | None = None
@@ -2214,10 +2217,13 @@ class WebServer:
         q: BoundedQueue[dict[str, Any]],
         *,
         session_id: str | None = None,
+        leaf_deltas: bool = False,
     ) -> dict[str, Any]:
         """Register a client and return its shared-encoder full baseline."""
         existing_queues = set(self._control_event_queues)
         self._control_event_queues.add(q)
+        if leaf_deltas:
+            self._leaf_delta_queues.add(q)
         if session_id is not None:
             self._session_queues[session_id] = q
         try:
@@ -2226,6 +2232,7 @@ class WebServer:
             # Registration is transactional: an unbased queue must never
             # survive a failed/cancelled baseline encode.
             self._control_event_queues.discard(q)
+            self._leaf_delta_queues.discard(q)
             if session_id is not None:
                 self._session_queues.pop(session_id, None)
             raise
@@ -2239,6 +2246,7 @@ class WebServer:
         """Unregister a ControlHandler event queue."""
         was_registered = q in self._control_event_queues
         self._control_event_queues.discard(q)
+        self._leaf_delta_queues.discard(q)
         if session_id is not None and self._session_queues.get(session_id) is q:
             self._session_queues.pop(session_id, None)
         if was_registered:
@@ -2442,10 +2450,22 @@ class WebServer:
         event: dict[str, Any],
         body: dict[str, Any],
     ) -> None:
-        """Deliver one shared state encode, recovering only overflowed queues."""
+        """Deliver one shared state encode, recovering only overflowed queues.
+
+        A queue outside ``_leaf_delta_queues`` gets a delta rendered top-level.
+        """
+        top_level_event: dict[str, Any] | None = None
         for q in list(queues):
+            queued = event
+            if q not in self._leaf_delta_queues:
+                if top_level_event is None:
+                    top_level_event = {
+                        "type": "state_update",
+                        "data": top_level_delta(event["data"], body),
+                    }
+                queued = top_level_event
             try:
-                q.put_nowait(event)
+                q.put_nowait(queued)
             except asyncio.QueueFull:
                 q.replace_matching_with_front(
                     {
@@ -2462,8 +2482,8 @@ class WebServer:
         """Convert one shared encode into a same-sequence full envelope."""
         full = copy.deepcopy(encoded)
         full["type"] = "full"
-        full.pop("changed", None)
-        full.pop("removed", None)
+        for key in ("changed", "removed", "deltaVersion", "set", "unset"):
+            full.pop(key, None)
         full["data"] = body
         return full
 
@@ -2638,11 +2658,16 @@ class WebServer:
     def build_state_update_envelope(
         self, *, force_full: bool = False
     ) -> dict[str, Any]:
-        """Return a WS state-update envelope from the canonical StateStore view."""
+        """Return a WS state-update envelope from the canonical StateStore view.
+
+        A delta comes in the top-level rendering a default client receives.
+        """
         snapshot, body = self._build_public_state_for_delivery()
         if self.command_state_store.provider_generation != snapshot.provider_generation:
             raise RuntimeError("provider generation changed before state encoding")
-        return self._encode_state_update(snapshot, body, force_full=force_full)
+        return top_level_delta(
+            self._encode_state_update(snapshot, body, force_full=force_full), body
+        )
 
     def _build_public_state_for_delivery(
         self,
@@ -8195,6 +8220,7 @@ class WebServer:
                 managed_tx_authority=self._managed_tx_authority(),
                 session_id=ticket.session_id,
                 tx_owner=ticket.tx_owner,
+                leaf_state_deltas=(query or {}).get("state_delta") == ["2"],
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)

@@ -355,10 +355,17 @@ export interface FieldStatusPublic {
 /**
  * WS ``state_update`` delta/full envelope (``_delta_encoder.py``).
  *
- * The full frame carries ``data`` (a complete :class:`ServerStatePublic`); the
- * delta frame carries ``changed`` (a shallow top-level partial of the same
- * shape) and optional ``removed`` keys. Envelope-only sequence fields
- * (``transportSeq`` etc.) live here, not inside the state object.
+ * The full frame carries ``data`` (a complete :class:`ServerStatePublic`).
+ * A delta frame comes in one of two renderings of the same diff:
+ *
+ * - top-level (no ``deltaVersion``): ``changed`` holds each changed
+ *   top-level value whole and ``removed`` the dropped top-level keys;
+ * - leaf (``deltaVersion: 2``, sent to a ``/api/v1/ws?state_delta=2``
+ *   client): ``set`` holds ``[path, value]`` pairs and ``unset`` paths,
+ *   a path being the object keys from the state root.
+ *
+ * Envelope-only sequence fields (``transportSeq`` etc.) live here, not
+ * inside the state object.
  */
 export interface StateUpdateEnvelope {
   type: "full" | "delta";
@@ -371,6 +378,9 @@ export interface StateUpdateEnvelope {
     [k: string]: unknown;
   } | null;
   removed?: string[] | null;
+  deltaVersion?: 2 | null;
+  set?: [unknown, unknown][] | null;
+  unset?: string[][] | null;
   stateRevision?: number | null;
   freshnessRevision?: number | null;
   observationSeq?: number | null;

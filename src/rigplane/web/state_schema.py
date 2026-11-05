@@ -486,10 +486,17 @@ class ServerStatePublic(_Strict):
 class StateUpdateEnvelope(_Strict):
     """WS ``state_update`` delta/full envelope (``_delta_encoder.py``).
 
-    The full frame carries ``data`` (a complete :class:`ServerStatePublic`); the
-    delta frame carries ``changed`` (a shallow top-level partial of the same
-    shape) and optional ``removed`` keys. Envelope-only sequence fields
-    (``transportSeq`` etc.) live here, not inside the state object.
+    The full frame carries ``data`` (a complete :class:`ServerStatePublic`).
+    A delta frame comes in one of two renderings of the same diff:
+
+    - top-level (no ``deltaVersion``): ``changed`` holds each changed
+      top-level value whole and ``removed`` the dropped top-level keys;
+    - leaf (``deltaVersion: 2``, sent to a ``/api/v1/ws?state_delta=2``
+      client): ``set`` holds ``[path, value]`` pairs and ``unset`` paths,
+      a path being the object keys from the state root.
+
+    Envelope-only sequence fields (``transportSeq`` etc.) live here, not
+    inside the state object.
     """
 
     type: Literal["full", "delta"]
@@ -501,6 +508,9 @@ class StateUpdateEnvelope(_Strict):
     data: ServerStatePublic | None = None
     changed: dict[str, object] | None = None
     removed: list[str] | None = None
+    deltaVersion: Literal[2] | None = None
+    set: list[tuple[list[str], object]] | None = None
+    unset: list[list[str]] | None = None
     stateRevision: int | None = None
     freshnessRevision: int | None = None
     observationSeq: int | None = None
