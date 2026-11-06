@@ -130,11 +130,22 @@ def _std_dev(values: list[float]) -> float:
 
 
 def _rms_dbfs(pcm: bytes) -> float:
-    """Compute RMS level of PCM s16le data in dBFS."""
+    """Compute RMS level of PCM s16le data in dBFS.
+
+    Vectorized with numpy (MOR-4227): the per-sample generator loop ran on
+    the event loop for every RX/TX frame. s16 squares and their sums stay
+    exact integers in float64, so the dot-product sum equals the previous
+    left-to-right sum bit for bit (equality pins in
+    ``tests/test_audio_cpu_hotspots_mor4227.py``).
+    """
+    import numpy as np
+
     samples = _pcm16le_samples(pcm)
     if not samples:
         return -96.0
-    rms = math.sqrt(sum(float(s) * float(s) for s in samples) / len(samples))
+    values = np.frombuffer(samples, dtype=np.int16)
+    as_float = values.astype(np.float64)
+    rms = math.sqrt(float(as_float @ as_float) / len(samples))
     if rms < 1.0:
         return -96.0
     return 20.0 * math.log10(rms / _INT16_MAX)
