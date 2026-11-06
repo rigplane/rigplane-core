@@ -1699,7 +1699,18 @@ class _IcomSerialRadioBase(CoreRadio):
 
         def _on_pcm_frame(pcm_frame: bytes) -> None:
             # PortAudio thread: schedule delivery; packet work runs on the
-            # owner loop (MOR-2465).
+            # owner loop (MOR-2465). Already on the owner loop (fake
+            # backends, the UsbAudioDriver's coalesced drain): deliver
+            # inline — call_soon_threadsafe from the loop itself still pays
+            # the self-pipe write, which is the per-frame wake-up MOR-4227
+            # removes.
+            try:
+                on_owner_loop = asyncio.get_running_loop() is owner_loop
+            except RuntimeError:
+                on_owner_loop = False
+            if on_owner_loop:
+                _deliver_rx_frame(pcm_frame)
+                return
             owner_loop.call_soon_threadsafe(_deliver_rx_frame, pcm_frame)
 
         # Arm delivery identity and the user callback before the await:

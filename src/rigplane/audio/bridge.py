@@ -55,6 +55,7 @@ from .backend import (
     RxStreamHealth,
     TxStream,
 )
+from .loop_handoff import CoalescedLoopHandoff
 from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
 from .usb_driver import bounded_portaudio_pool
 
@@ -408,6 +409,9 @@ class AudioBridge:
         self._rx_task: asyncio.Task[None] | None = None
         self._tx_task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Coalesced TX-capture handoff for this loop (MOR-4227); rebuilt if
+        # the bridge restarts on a different loop.
+        self._tx_capture_handoff: CoalescedLoopHandoff | None = None
         self._decoder: Any = None
         # Radio-side demand handles (MOR-577): the bridge declares RX demand
         # + a TX lease on the AudioSession (which wraps the radio's shared
@@ -1118,12 +1122,18 @@ class AudioBridge:
     def _on_tx_capture(self, frame: bytes) -> None:
         """Callback from RxStream — enqueue captured audio for TX processing.
 
-        May be called from a worker thread (PortAudioBackend), so we
-        schedule the enqueue on the event loop to avoid data races.
+        May be called from a worker thread (PortAudioBackend), so we hop to
+        the event loop to avoid data races. The hop is coalesced (MOR-4227):
+        while a drain is already scheduled, further frames only buffer, so
+        one loop wake-up carries every frame that arrived meanwhile.
         """
         loop = self._loop
         if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(self._enqueue_tx, frame)
+            handoff = self._tx_capture_handoff
+            if handoff is None or handoff.loop is not loop:
+                handoff = CoalescedLoopHandoff(loop, self._enqueue_tx)
+                self._tx_capture_handoff = handoff
+            handoff.submit(frame)
 
     async def _tx_gate_is_closed(self) -> bool:
         """Fail-closed (MOR-2863): only an explicit ``True`` opens the gate."""

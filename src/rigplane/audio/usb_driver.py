@@ -29,6 +29,7 @@ from ._portaudio_enum import WASAPI_HOST_API
 from ._usb_pairing import AudioCandidate, candidate_stable_id, same_endpoint_records
 from ._usb_raw_linux import RawLinux
 from ._usb_raw_macos import RawMacos
+from .loop_handoff import CoalescedLoopHandoff
 from ._usb_raw_windows import RawWindows
 from ._usb_snapshot import Flow, UsbSnapshot
 
@@ -2066,6 +2067,11 @@ class UsbAudioDriver:
             if generation == self._rx_generation:
                 watchdog(frame)
 
+        # MOR-4227: a plain per-frame call_soon_threadsafe wakes the loop
+        # once per frame; the coalesced handoff keeps the idle-case latency
+        # but collapses bursts into one drain.
+        handoff = CoalescedLoopHandoff(loop, deliver)
+
         def receive(frame: bytes) -> None:
             try:
                 on_owner_loop = asyncio.get_running_loop() is loop
@@ -2075,7 +2081,7 @@ class UsbAudioDriver:
                 deliver(frame)
                 return
             try:
-                loop.call_soon_threadsafe(deliver, frame)
+                handoff.submit(frame)
             except RuntimeError:
                 if not loop.is_closed():
                     raise
