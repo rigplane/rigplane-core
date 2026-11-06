@@ -2814,6 +2814,8 @@ class StateFreshnessService:
     PRIME_REDERIVE_INTERVAL_SECONDS: float = 30.0
 
     __slots__ = (
+        "_avail_cached",
+        "_avail_counters",
         "_driver_lock",
         "_interval_seconds",
         "_next_prime_monotonic",
@@ -2845,6 +2847,13 @@ class StateFreshnessService:
         # what monotonic clock value the caller starts at.
         self._next_prime_monotonic = float("-inf")
         self._driver_lock: asyncio.Lock = asyncio.Lock()
+        # Availability cache (MOR-4227): the last resolution plus the store
+        # counters it was resolved against; None means "never resolved", so
+        # the first tick always scans.
+        self._avail_cached: Mapping[FieldPath, bool | None] = (
+            _NO_RESOLVED_AVAILABILITY
+        )
+        self._avail_counters: tuple[int, int, int, int] | None = None
 
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
         """Advance freshness once and drive the profile's acquisition cadence.
@@ -2869,7 +2878,7 @@ class StateFreshnessService:
         timestamp = time.monotonic() if now is None else now
         self.flush_due_meter_samples(now=timestamp)
         self._reprime_unobserved_if_due(now=timestamp)
-        self._discard_declared_absent()
+        availability = self._availability_for_tick()
         delta = self._store.mark_stale_due(now=now)
         for request in delta.reconciliation_requests:
             self._queue_reconciliation(request)
@@ -2879,18 +2888,72 @@ class StateFreshnessService:
                 now=timestamp,
                 tx_active=tx_active(self._store, self._tx_active_hint),
                 observed_active=derive_active_receiver_value(self._store),
-                # MOR-2748: recomputed against the current snapshot every
-                # pass; a group whose paths all resolve False is skipped,
+                # MOR-4227: resolved once per tick (shared with the discard
+                # scan) and skipped outright while the store could not have
+                # changed; a group whose paths all resolve False is skipped,
                 # and fires again the first pass the declaration holds.
-                availability=resolve_available_when(
-                    scheduler._profile, self._store.snapshot()
-                ),
+                availability=availability,
             )
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
 
-    def _discard_declared_absent(self) -> None:
+    def _availability_for_tick(self) -> Mapping[FieldPath, bool | None]:
+        """Resolve conditional availability once per tick, or not at all.
+
+        Before MOR-4227 every tick paid TWO independent resolutions: one
+        inside :meth:`_discard_declared_absent` (plus a set build over every
+        stored path) and one for :meth:`AcquisitionScheduler.due_requests`.
+        Both read only stored values and path presence — never freshness —
+        and every value write, observation, discard, freshness transition
+        or provider epoch bump moves at least one ``StateSnapshot`` counter,
+        so while the 4-tuple is unchanged the previous resolution is still
+        exact and both scans are skipped.
+
+        Availability resolution itself ignores freshness state, so resolving
+        before :meth:`StateStore.mark_stale_due` runs (which only flips
+        freshness) yields the same map the previous post-ageing recompute
+        produced.
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return _NO_RESOLVED_AVAILABILITY
+        snapshot = self._store.snapshot()
+        counters = (
+            snapshot.state_revision,
+            snapshot.freshness_revision,
+            snapshot.observation_seq,
+            snapshot.provider_generation,
+        )
+        if self._avail_counters == counters:
+            return self._avail_cached
+        availability = resolve_available_when(scheduler._profile, snapshot)
+        self._discard_declared_absent(snapshot, availability)
+        refreshed = self._store.snapshot()
+        refreshed_counters = (
+            refreshed.state_revision,
+            refreshed.freshness_revision,
+            refreshed.observation_seq,
+            refreshed.provider_generation,
+        )
+        if refreshed_counters == counters:
+            self._avail_cached = availability
+            self._avail_counters = counters
+        else:
+            # The scan itself changed the store (a discard): re-resolve so
+            # due_requests sees the post-discard presence, exactly like the
+            # previous per-tick recompute did.
+            self._avail_cached = resolve_available_when(
+                scheduler._profile, refreshed
+            )
+            self._avail_counters = refreshed_counters
+        return self._avail_cached
+
+    def _discard_declared_absent(
+        self,
+        snapshot: StateSnapshot,
+        availability: Mapping[FieldPath, bool | None],
+    ) -> None:
         """Remove stored fields the profile declares absent in this state.
 
         :func:`resolve_available_when` reports ``False`` only where an
@@ -2901,20 +2964,20 @@ class StateFreshnessService:
         published as unobserved again — ``unavailable`` where the web
         projection is given the profile (``tests/test_web_runtime_helpers.py::
         test_field_status_reports_unavailable_after_the_freshness_tick_discards``).
+
+        The caller supplies the snapshot and its availability resolution
+        (computed once per changed-store tick, MOR-4227).
         """
 
         scheduler = self._scheduler
         if scheduler is None:
             return
-        snapshot = self._store.snapshot()
         stored = {field.path for field in snapshot.fields}
         # The profile spells a receiver ``main``/``sub``, CI-V ingress stores
         # it ``0``/``1``: discard whichever spelling holds the value.
         absent = tuple(
             candidate
-            for path, available in resolve_available_when(
-                scheduler._profile, snapshot
-            ).items()
+            for path, available in availability.items()
             if available is False
             for candidate in (path, path.receiver_alias())
             if candidate is not None and candidate in stored
