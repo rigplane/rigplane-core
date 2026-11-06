@@ -130,7 +130,12 @@ def test_downmix_negative_sums_floor_like_python() -> None:
 @pytest.mark.parametrize("open_channels", [2, 3, 4, 6, 8, 16, 32])
 def test_downmix_matches_reference_random_full_s16(open_channels: int) -> None:
     rng = Random(4227 + open_channels)
-    for channel, deliver_channels in (("mix", 1), ("left", 1), ("right", 1), ("mix", 2)):
+    for channel, deliver_channels in (
+        ("mix", 1),
+        ("left", 1),
+        ("right", 1),
+        ("mix", 2),
+    ):
         frames = rng.randint(1, 9)
         pcm = _pack(_s16_values(rng, frames * open_channels))
         assert _downmix_stereo_to_mono_s16le(
@@ -163,9 +168,7 @@ def test_downmix_empty_and_subframe_inputs() -> None:
     for pcm in (b"", b"\x01", b"\x00\x01", b"\xff" * 3):
         assert _downmix_stereo_to_mono_s16le(pcm) == b""
         assert _downmix_stereo_to_mono_s16le(pcm, open_channels=4) == b""
-        assert (
-            _downmix_stereo_to_mono_s16le(pcm, deliver_channels=2) == b""
-        )
+        assert _downmix_stereo_to_mono_s16le(pcm, deliver_channels=2) == b""
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +191,7 @@ def test_rms_dbfs_edge_cases_match_reference() -> None:
 def test_rms_dbfs_full_scale_and_corner_samples() -> None:
     # A single -32768 sample: rms = 32768 >= 1 → +5.3e-5 dBFS, not the floor.
     assert _rms_dbfs(_pack([-32768])) == _reference_rms_dbfs(_pack([-32768]))
-    assert _rms_dbfs(_pack([32767] * 960)) == _reference_rms_dbfs(
-        _pack([32767] * 960)
-    )
+    assert _rms_dbfs(_pack([32767] * 960)) == _reference_rms_dbfs(_pack([32767] * 960))
     assert _rms_dbfs(_pack([0] * 959 + [32767])) == _reference_rms_dbfs(
         _pack([0] * 959 + [32767])
     )
