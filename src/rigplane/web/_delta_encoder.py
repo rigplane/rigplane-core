@@ -85,6 +85,43 @@ def copy_state_tree(value: _T) -> _T:
     return value
 
 
+_MISSING: Final = object()
+
+
+def _copy_on_write_tree(prev: Any, cur: Any) -> Any:
+    """Snapshot ``cur`` for the encoder, copying only what changed.
+
+    ``prev`` is the encoder's private previous snapshot (nothing outside
+    the encoder can mutate it). Subtrees where ``prev`` already equals
+    ``cur`` are reused as-is — the caller may freely mutate or reuse its
+    own ``cur`` containers afterwards; a changed or caller-identical
+    container is copied with :func:`copy_state_tree`. Immutable scalars are
+    shared, exactly like :func:`copy_state_tree` shares them. Wire output
+    is identical to a full copy (MOR-4227 equality pins in
+    ``tests/test_delta_encoder_cow_mor4227.py``); only the unchanged
+    branches stop being rebuilt on every broadcast.
+    """
+    if not isinstance(cur, (dict, list, tuple)):
+        return cur
+    if isinstance(prev, dict) and isinstance(cur, dict) and prev is not cur:
+        if prev == cur:
+            return prev
+        merged: dict[Any, Any] = {}
+        for key, value in cur.items():
+            old = prev.get(key, _MISSING)
+            if old is _MISSING:
+                merged[key] = copy_state_tree(value)
+            else:
+                merged[key] = _copy_on_write_tree(old, value)
+        return merged
+    if prev is not cur and prev == cur:
+        # Equal but distinct container (a list leaf, a tuple): reuse the
+        # encoder's own old copy rather than rebuilding the caller's.
+        return prev
+    # Changed container, or the very object the caller may keep mutating.
+    return copy_state_tree(cur)
+
+
 def _diff(
     prev: Mapping[str, Any],
     cur: Mapping[str, Any],
@@ -177,7 +214,15 @@ class DeltaEncoder:
             }
             if unset_ops:
                 result["unset"] = unset_ops
-        self._previous_state = copy_state_tree(current_state)
+        if self._previous_state is None:
+            self._previous_state = copy_state_tree(current_state)
+        else:
+            # Copy only the changed branches (MOR-4227): the previous
+            # snapshot is encoder-private, so its unchanged subtrees can be
+            # reused instead of rebuilding the whole tree per broadcast.
+            self._previous_state = _copy_on_write_tree(
+                self._previous_state, current_state
+            )
 
         if state_revision is not None:
             result["stateRevision"] = revision_value
