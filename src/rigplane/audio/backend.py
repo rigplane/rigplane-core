@@ -522,50 +522,47 @@ def _downmix_stereo_to_mono_s16le(
       IC-7610/X6200 etc. are unchanged.
     - ``2`` — keep channels 0 and 1 interleaved, drop the rest.
 
-    Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` but is
-    dependency-free (stdlib ``array``) so it can run on the PortAudio audio
-    thread without importing numpy. Used by :class:`_RxFramer` whenever a
-    device opens at more channels than it delivers: passing the interleaved
-    PCM straight through would misread the delivered layout (wrong effective
-    sample-rate, garbage audio — the same class of bug the bridge downmix
-    guards, issue #1381). Trailing bytes that do not form a whole N-channel
-    frame are dropped (an incomplete frame cannot satisfy the fixed contract).
+    Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` and is
+    vectorized with numpy (a core dependency since #1090; the PortAudio
+    backend already imports it at open time via ``_ensure_portaudio_deps``).
+    The mix path is an int32 widening plus a numpy floor division, which
+    rounds toward negative infinity exactly like the historical Python
+    ``//`` loop — the output is byte-identical (MOR-4227 equality pins in
+    ``tests/test_audio_cpu_hotspots_mor4227.py``). Used by
+    :class:`_RxFramer` whenever a device opens at more channels than it
+    delivers: passing the interleaved PCM straight through would misread the
+    delivered layout (wrong effective sample-rate, garbage audio — the same
+    class of bug the bridge downmix guards, issue #1381). Trailing bytes
+    that do not form a whole N-channel frame are dropped (an incomplete
+    frame cannot satisfy the fixed contract).
 
     Single-channel selection cannot clip: it copies one existing s16 sample
     per frame, so the output stays in range with no widening/averaging.
     """
-    import sys
-    from array import array
+    import numpy as np
 
     frame_bytes = 2 * open_channels  # one N-channel frame of s16 samples
     usable = len(pcm) - (len(pcm) % frame_bytes)
     if usable <= 0:
         return b""
-    samples = array("h")
-    samples.frombytes(pcm[:usable])
-    if sys.byteorder != "little":
-        samples.byteswap()
-    # Extended slices pull L/R at C speed (this runs on the audio thread with
-    # up to 32 open channels).
-    left = samples[0::open_channels]
-    right = samples[1::open_channels]
+    # '<i2' fixes little-endian on any host, replacing the stdlib byteswap
+    # dance; this runs on the audio thread with up to 32 open channels.
+    frames = np.frombuffer(pcm, dtype="<i2", count=usable // 2).reshape(
+        -1, open_channels
+    )
     if deliver_channels == 2:
-        stereo = array("h", bytes(4 * len(left)))  # len(left) L/R pairs
-        stereo[0::2] = left
-        stereo[1::2] = right
-        if sys.byteorder != "little":
-            stereo.byteswap()
-        return stereo.tobytes()
+        stereo = frames[:, :2]
+        return np.ascontiguousarray(stereo).tobytes()
     if channel == "left":
-        mono = left
+        mono: np.ndarray = frames[:, 0]
     elif channel == "right":
-        mono = right
+        mono = frames[:, 1]
     else:  # "mix" — per-frame average (default; legacy behavior)
-        # Average in a wider int to avoid s16 overflow before truncation.
-        mono = array("h", [(lch + rch) // 2 for lch, rch in zip(left, right)])
-    if sys.byteorder != "little":
-        mono.byteswap()
-    return mono.tobytes()
+        # Average in int32 so (L + R) cannot overflow s16 before the floor
+        # division truncates toward -inf like Python's ``//``.
+        total = frames[:, 0].astype(np.int32) + frames[:, 1].astype(np.int32)
+        mono = total // 2
+    return mono.astype("<i2").tobytes()
 
 
 def _callback_status_flag_names(status: Any) -> tuple[str, ...]:
