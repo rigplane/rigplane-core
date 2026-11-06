@@ -11,17 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [3.1.3] — 2026-11-04
 
-- The red BUSY lamp is gone. In its place an SQL tag shows next to the receiver tags whenever the squelch is closed or partly closed (level above 0), on every band, and nothing shows while the squelch is fully open. The radio's squelch-open status is no longer read over CI-V. (MOR-4223)
+This is the first release candidate of 3.1.3. It adds one safety fix on top of
+3.1.2: a transmitter left keyed after a crash is released when Core starts or
+reconnects.
 
 ### Fixed
 
-- Memory recall now puts the radio on the channel. `set_memory_mode` with `group` (the RECALL button of the memory list) selected the group and the channel but never sent the bare `08` "Select the Memory mode", so a radio in the VFO mode acknowledged both frames and stayed where it was. The recall now ends with that `08`, requires an ACK for every frame (a NAK or any other answer fails the command), and works on the channel-addressed IC-7300, IC-7300MK2 and IC-7610 as well (group 0). Not yet verified on hardware. (MOR-4219)
-- Windows USB audio: selection failures now offer explicit audio device candidates when USB topology or endpoint name matching is unavailable, and matching accounts for Windows' numbered endpoint prefixes. (MOR-4119)
-- Web UI: the memory list (local channels and the radio's own list with Reload, More and Recall) is no longer shown inline on the station page. The Memory panel now holds a Memory button that opens the list in the shared dialog. Escape, the close button or a backdrop click close it, Tab stays inside, and the list scrolls within the window. The radio's list still loads with the page. The frequency-entry dialog it reuses now also closes on Escape after focus fell out of it, without the Escape also clearing RIT/XIT. (MOR-4220)
+- Transmitter left keyed after a crash: when Core starts or reconnects, it reads the radio's PTT before the radio is offered to clients; if the radio is transmitting and no one in this Core owns the transmission, Core releases it through the managed-TX authority and logs `managed_tx.startup_unkey`. A failed or unverified read writes nothing. (MOR-4186, #4474)
 
-## [3.1.2rc4] — 2026-11-03
+## [3.1.2] — 2026-11-04
 
 This is the fourth release candidate of 3.1.2. It fixes one thing on top of
 3.1.2rc3: the first shutdown signal now starts the release of a transmitter keyed
@@ -5136,8 +5136,9 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc4...HEAD
-[3.1.2rc4]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2rc4
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.3...HEAD
+[3.1.3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...v3.1.3
+[3.1.2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
 [3.1.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...v3.1.2rc1
