@@ -23,9 +23,7 @@ class FakeLoop:
         self.scheduled: list[Callable[[], None]] = []
         self.closed = False
 
-    def call_soon_threadsafe(
-        self, callback: Callable[[], None], *args: Any
-    ) -> None:
+    def call_soon_threadsafe(self, callback: Callable[[], None], *args: Any) -> None:
         if self.closed:
             raise RuntimeError("Event loop is closed")
         if args:
@@ -89,16 +87,17 @@ def test_frame_after_drain_schedules_new_drain() -> None:
 
 
 def test_submit_from_producer_thread_mid_drain_is_not_lost() -> None:
-    """The drain clears its flag BEFORE popping: a producer appending while
-    the drain is mid-delivery schedules a fresh drain, so its frame is
-    delivered exactly once — here by the still-running drain's pops."""
+    """The drain clears its flag BEFORE taking its batch: a producer
+    appending while the drain delivers schedules a fresh drain, so its
+    frame is delivered exactly once — by that next drain, after every
+    frame of the running batch (it arrived after all of them)."""
     loop = FakeLoop()
     delivered: list[bytes] = []
 
     def deliver(frame: bytes) -> None:
         delivered.append(frame)
         if frame == b"f1":
-            # A producer lands mid-drain, between two pops.
+            # A producer lands mid-drain, during the batch's delivery.
             thread = threading.Thread(target=handoff.submit, args=(b"late",))
             thread.start()
             thread.join()
@@ -107,13 +106,51 @@ def test_submit_from_producer_thread_mid_drain_is_not_lost() -> None:
     handoff.submit(b"f1")
     handoff.submit(b"f2")
 
-    loop.run_scheduled()
-    # Exactly-once, in order; the late frame joined the running drain.
+    # The drain delivers ONLY the frames present when it started; the
+    # late frame cannot join that batch (round-1 P1: bounded batches).
+    assert loop.run_scheduled() == 1
+    assert delivered == [b"f1", b"f2"]
+    # The producer's own scheduling delivers it exactly once, in order.
+    assert loop.run_scheduled() == 1
     assert delivered == [b"f1", b"f2", b"late"]
-    # The producer scheduled a second drain that may or may not find work;
-    # running it must be harmless (no duplicate delivery).
-    loop.run_scheduled()
-    assert delivered == [b"f1", b"f2", b"late"]
+    # Nothing pending, nothing further scheduled.
+    assert loop.scheduled == []
+
+
+def test_drain_is_bounded_under_a_producer_that_keeps_pace() -> None:
+    """Round-1 P1: a drain delivers only the frames present when it
+    started and then returns. The old ``while True`` loop kept consuming
+    the live buffer, so a producer appending during delivery — sustained
+    load — never gave the event loop back. Now such frames ride the next
+    scheduled drain, so other loop callbacks run between drains."""
+    loop = FakeLoop()
+    delivered: list[bytes] = []
+    order: list[str] = []
+    handoff: CoalescedLoopHandoff | None = None
+
+    def deliver(frame: bytes) -> None:
+        delivered.append(frame)
+        # Sustained producer: every delivered frame is replaced mid-drain.
+        if frame in (b"a", b"b"):
+            assert handoff is not None
+            handoff.submit(frame + b"+")
+
+    handoff = CoalescedLoopHandoff(loop, deliver)
+    handoff.submit(b"a")
+    handoff.submit(b"b")
+    # A bystander loop callback queued behind the drain.
+    loop.call_soon_threadsafe(lambda: order.append("bystander"))
+
+    # One drain callback: exactly the two frames present at its start,
+    # then control back — the bystander runs in the same loop pass.
+    assert loop.run_scheduled() == 2
+    assert delivered == [b"a", b"b"]
+    assert order == ["bystander"]
+
+    # Nothing lost or duplicated: the sustained frames ride the next drain.
+    assert loop.run_scheduled() == 1
+    assert delivered == [b"a", b"b", b"a+", b"b+"]
+    assert loop.scheduled == []
 
 
 def test_many_bursts_never_lose_or_reorder() -> None:
@@ -153,7 +190,11 @@ def test_deliver_exception_does_not_lose_remaining_frames() -> None:
     assert delivered == [b"f1", b"f2", b"f3"]
 
 
-def test_closed_loop_raises_and_recovers_without_losing_the_frame() -> None:
+def test_closed_loop_is_terminal_frames_released_and_submits_dropped() -> None:
+    """Round-1 P2: a closed asyncio loop never reopens, so the first
+    failed scheduling is terminal — the buffered frames (which can now
+    never be delivered) are released and further submits are dropped
+    instead of growing the buffer forever."""
     loop = FakeLoop()
     delivered: list[bytes] = []
     handoff = CoalescedLoopHandoff(loop, delivered.append)
@@ -166,55 +207,62 @@ def test_closed_loop_raises_and_recovers_without_losing_the_frame() -> None:
     else:
         raise AssertionError("closed loop must raise RuntimeError")
 
-    loop.closed = False
+    # Terminal: later captures are dropped silently and nothing is kept.
     handoff.submit(b"f2")
-    assert len(loop.scheduled) == 1
+    handoff.submit(b"f3")
+
+    # Even a (non-asyncio) reopen must not resurrect the dropped frames.
+    loop.closed = False
     loop.run_scheduled()
-    assert delivered == [b"f1", b"f2"]
+    assert delivered == []
+    assert loop.scheduled == []
 
 
-async def test_rx_stream_receive_coalesces_worker_thread_bursts() -> None:
+async def test_rx_stream_receive_coalesces_worker_thread_bursts(
+    monkeypatch: Any,
+) -> None:
     """End-to-end through UsbAudioDriver._stream_rx_callback: frames pushed
     from a non-loop thread arrive on the loop in order, every one exactly
-    once, with at least one and at most one wake-up per frame."""
+    once, with at least one and at most one handoff wake-up per frame."""
     from rigplane.audio.backend import FakeAudioBackend
     from rigplane.audio.usb_driver import UsbAudioDriver
 
-    loop = asyncio.get_running_loop()
-    wakeups = 0
-    original = loop.call_soon_threadsafe
+    # Count only the handoff's own wake-ups, through a wrapper on the
+    # handoff itself (round-1 P2): patching the loop's
+    # ``call_soon_threadsafe`` also counted unrelated callers — the
+    # executor completion of ``asyncio.to_thread`` — so the upper bound
+    # was flaky. Every executed ``_drain`` is exactly one handoff
+    # scheduling.
+    drains = 0
+    real_drain = CoalescedLoopHandoff._drain
 
-    def counting_call_soon_threadsafe(callback: Any, *args: Any) -> None:
-        nonlocal wakeups
-        wakeups += 1
-        original(callback, *args)
+    def counting_drain(self: CoalescedLoopHandoff) -> None:
+        nonlocal drains
+        drains += 1
+        real_drain(self)
 
-    loop.call_soon_threadsafe = counting_call_soon_threadsafe  # type: ignore[method-assign]
-    try:
-        driver = UsbAudioDriver(backend=FakeAudioBackend())
-        received: list[bytes] = []
-        driver._rx_callback = received.append
-        receive = driver._stream_rx_callback(frame_ms=20)
+    monkeypatch.setattr(CoalescedLoopHandoff, "_drain", counting_drain)
 
-        frames = [f"frame-{i}".encode() for i in range(6)]
-        await asyncio.to_thread(
-            lambda: [receive(frame) for frame in frames]
-        )
+    driver = UsbAudioDriver(backend=FakeAudioBackend())
+    received: list[bytes] = []
+    driver._rx_callback = received.append
+    receive = driver._stream_rx_callback(frame_ms=20)
 
-        def all_delivered() -> bool:
-            return len(received) == len(frames)
+    frames = [f"frame-{i}".encode() for i in range(6)]
+    await asyncio.to_thread(lambda: [receive(frame) for frame in frames])
 
-        for _ in range(100):
-            if all_delivered():
-                break
-            await asyncio.sleep(0)
-        assert received == frames
-        assert 1 <= wakeups <= len(frames)
+    def all_delivered() -> bool:
+        return len(received) == len(frames)
 
-        # In-loop delivery stays synchronous: no wake-up, immediate order.
-        wakeups = 0
-        receive(b"in-loop")
-        assert received[-1] == b"in-loop"
-        assert wakeups == 0
-    finally:
-        loop.call_soon_threadsafe = original  # type: ignore[method-assign]
+    for _ in range(100):
+        if all_delivered():
+            break
+        await asyncio.sleep(0)
+    assert received == frames
+    assert 1 <= drains <= len(frames)
+
+    # In-loop delivery stays synchronous: no wake-up, immediate order.
+    drains = 0
+    receive(b"in-loop")
+    assert received[-1] == b"in-loop"
+    assert drains == 0
