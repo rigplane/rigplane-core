@@ -126,6 +126,26 @@ AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
 _NO_RESOLVED_AVAILABILITY: Mapping[FieldPath, bool | None] = MappingProxyType({})
 
 
+def _availability_counters(snapshot: StateSnapshot) -> tuple[int, int, int, int]:
+    """The store counters a snapshot's content and path presence depend on.
+
+    Every value write, observation, discard, freshness transition or
+    provider epoch bump moves at least one of these four counters, so
+    within one store's lineage an unchanged tuple means the stored
+    content is unchanged (MOR-4227). The tuple is NOT unique across
+    stores: two fresh stores with the same write pattern collide, which
+    is why only a consumer pinned to one store (the freshness service's
+    discard scan) may skip work off it.
+    """
+
+    return (
+        snapshot.state_revision,
+        snapshot.freshness_revision,
+        snapshot.observation_seq,
+        snapshot.provider_generation,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class AcquisitionQuery:
     """Lossless semantic envelope for one CI-V acquisition query."""
@@ -1181,7 +1201,9 @@ class AcquisitionScheduler:
 
         self._tx_active = tx_active
 
-    def note_availability(self, snapshot: StateSnapshot) -> None:
+    def note_availability(
+        self, snapshot: StateSnapshot
+    ) -> Mapping[FieldPath, bool | None]:
         """Update the cached conditional availability from ``snapshot``.
 
         The dispatching seats' drains call this every pass, with the same
@@ -1190,9 +1212,19 @@ class AcquisitionScheduler:
         rather than as of the last tick -- the availability twin of
         :meth:`note_tx_active`. :meth:`due_requests` records what its
         caller resolved the same way; the later writer wins.
+
+        Returns the resolution it just recorded (MOR-4227): the freshness
+        tick resolves once per tick through this one method and shares
+        that map between its discard scan and ``due_requests`` --
+        extending the existing mechanism instead of the service keeping
+        a second map of its own (round-1 finding 2). The method itself
+        re-resolves on every call: a store-counter skip would be sound
+        only within one store's lineage, and hand-built snapshots (new
+        stores, tests) collide on counters while differing in content.
         """
 
         self._availability = resolve_available_when(self._profile, snapshot)
+        return self._availability
 
     def _contradicted_automatic_request(self, request: AcquisitionRequest) -> bool:
         """Whether ``request`` is automatic and no path may be asked now.
@@ -2814,13 +2846,12 @@ class StateFreshnessService:
     PRIME_REDERIVE_INTERVAL_SECONDS: float = 30.0
 
     __slots__ = (
-        "_avail_cached",
-        "_avail_counters",
         "_driver_lock",
         "_interval_seconds",
         "_next_prime_monotonic",
         "_on_delta",
         "_radio",
+        "_scan_counters",
         "_scheduler",
         "_store",
         "_tx_active_hint",
@@ -2847,13 +2878,13 @@ class StateFreshnessService:
         # what monotonic clock value the caller starts at.
         self._next_prime_monotonic = float("-inf")
         self._driver_lock: asyncio.Lock = asyncio.Lock()
-        # Availability cache (MOR-4227): the last resolution plus the store
-        # counters it was resolved against; None means "never resolved", so
-        # the first tick always scans.
-        self._avail_cached: Mapping[FieldPath, bool | None] = (
-            _NO_RESOLVED_AVAILABILITY
-        )
-        self._avail_counters: tuple[int, int, int, int] | None = None
+        # MOR-4227: the store counters this service's own discard scan
+        # last ran against (None = never). The resolved map itself always
+        # comes from ``AcquisitionScheduler.note_availability`` — the one
+        # existing mechanism, extended (round-1 finding 2); this service
+        # keeps only this scan marker over its own store's lineage, not a
+        # second map cache.
+        self._scan_counters: tuple[int, int, int, int] | None = None
 
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
         """Advance freshness once and drive the profile's acquisition cadence.
@@ -2888,10 +2919,12 @@ class StateFreshnessService:
                 now=timestamp,
                 tx_active=tx_active(self._store, self._tx_active_hint),
                 observed_active=derive_active_receiver_value(self._store),
-                # MOR-4227: resolved once per tick (shared with the discard
-                # scan) and skipped outright while the store could not have
-                # changed; a group whose paths all resolve False is skipped,
-                # and fires again the first pass the declaration holds.
+                # MOR-4227: resolved once per tick through
+                # note_availability (shared with the discard scan, whose
+                # own O(N) snapshot scan is skipped while the store
+                # counters stand still); a group whose paths all resolve
+                # False is skipped, and fires again the first pass the
+                # declaration holds.
                 availability=availability,
             )
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
@@ -2899,55 +2932,50 @@ class StateFreshnessService:
         return delta
 
     def _availability_for_tick(self) -> Mapping[FieldPath, bool | None]:
-        """Resolve conditional availability once per tick, or not at all.
+        """Resolve conditional availability once per tick, through the
+        scheduler's own mechanism.
 
         Before MOR-4227 every tick paid TWO independent resolutions: one
-        inside :meth:`_discard_declared_absent` (plus a set build over every
-        stored path) and one for :meth:`AcquisitionScheduler.due_requests`.
-        Both read only stored values and path presence — never freshness —
-        and every value write, observation, discard, freshness transition
-        or provider epoch bump moves at least one ``StateSnapshot`` counter,
-        so while the 4-tuple is unchanged the previous resolution is still
-        exact and both scans are skipped.
+        inside :meth:`_discard_declared_absent` (plus a set build over
+        every stored path) and one for
+        :meth:`AcquisitionScheduler.due_requests`. The tick now resolves
+        ONCE per tick through :meth:`AcquisitionScheduler.note_availability`
+        and shares that map between the discard scan and ``due_requests``
+        — the one existing map, no service-level second cache (round-1
+        finding 2).
 
-        Availability resolution itself ignores freshness state, so resolving
-        before :meth:`StateStore.mark_stale_due` runs (which only flips
-        freshness) yields the same map the previous post-ageing recompute
-        produced.
+        The discard scan itself is skipped while the store counters this
+        service's own scan last recorded stand still: the scan reads
+        only stored values and path presence, every one of which a store
+        write, observation, discard, freshness transition or provider
+        epoch bump moves a counter for, so an unchanged 4-tuple over the
+        same store means re-running it would remove nothing (its own
+        discards move counters). This marker is sound only over one
+        store's lineage, which is why it lives here and not on the
+        scheduler (hand-built snapshots collide on counters).
+
+        Availability resolution itself ignores freshness state, so
+        resolving before :meth:`StateStore.mark_stale_due` runs (which
+        only flips freshness) yields the same map the previous
+        post-ageing recompute produced.
         """
         scheduler = self._scheduler
         if scheduler is None:
             return _NO_RESOLVED_AVAILABILITY
         snapshot = self._store.snapshot()
-        counters = (
-            snapshot.state_revision,
-            snapshot.freshness_revision,
-            snapshot.observation_seq,
-            snapshot.provider_generation,
-        )
-        if self._avail_counters == counters:
-            return self._avail_cached
-        availability = resolve_available_when(scheduler._profile, snapshot)
+        counters = _availability_counters(snapshot)
+        if self._scan_counters == counters:
+            return scheduler.note_availability(snapshot)
+        availability = scheduler.note_availability(snapshot)
         self._discard_declared_absent(snapshot, availability)
         refreshed = self._store.snapshot()
-        refreshed_counters = (
-            refreshed.state_revision,
-            refreshed.freshness_revision,
-            refreshed.observation_seq,
-            refreshed.provider_generation,
-        )
-        if refreshed_counters == counters:
-            self._avail_cached = availability
-            self._avail_counters = counters
-        else:
+        self._scan_counters = _availability_counters(refreshed)
+        if self._scan_counters != counters:
             # The scan itself changed the store (a discard): re-resolve so
             # due_requests sees the post-discard presence, exactly like the
             # previous per-tick recompute did.
-            self._avail_cached = resolve_available_when(
-                scheduler._profile, refreshed
-            )
-            self._avail_counters = refreshed_counters
-        return self._avail_cached
+            availability = scheduler.note_availability(refreshed)
+        return availability
 
     def _discard_declared_absent(
         self,
@@ -2966,12 +2994,10 @@ class StateFreshnessService:
         test_field_status_reports_unavailable_after_the_freshness_tick_discards``).
 
         The caller supplies the snapshot and its availability resolution
-        (computed once per changed-store tick, MOR-4227).
+        (computed once per changed-store tick through
+        :meth:`AcquisitionScheduler.note_availability`, MOR-4227).
         """
 
-        scheduler = self._scheduler
-        if scheduler is None:
-            return
         stored = {field.path for field in snapshot.fields}
         # The profile spells a receiver ``main``/``sub``, CI-V ingress stores
         # it ``0``/``1``: discard whichever spelling holds the value.
