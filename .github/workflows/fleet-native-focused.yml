@@ -18,6 +18,7 @@ permissions:
 jobs:
   native:
     name: Core CLI / ${{ matrix.host }}
+    # runs-on-allowlist: matrix.selector resolves to registered fleet self-hosted runners (fleet-*), not GitHub-hosted.
     runs-on: ['${{ matrix.selector }}']
     timeout-minutes: 40
     strategy:

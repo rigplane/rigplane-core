@@ -30,7 +30,7 @@ env:
 
 jobs:
   build:
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     steps:
       - uses: actions/checkout@v6
 
@@ -69,7 +69,7 @@ jobs:
     # inspection, and publishes nothing.
     if: github.ref == 'refs/heads/main'
     needs: build
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -80,7 +80,7 @@ jobs:
 
   indexnow:
     needs: deploy
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     steps:
       - name: Set up Python
         uses: actions/setup-python@v5

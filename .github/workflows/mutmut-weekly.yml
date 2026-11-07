@@ -26,7 +26,7 @@ jobs:
   mutmut:
     # Same build-tier runner as quick/visual; the sweep needs the
     # pre-baked audio/Tauri system libraries for the codec tests.
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     # Ceiling over the estimated full-sweep wall time (~15 min with 4
     # children, an estimate from a 590 s bounded window on the Linux
     # test host, see docs/development/mutation-testing.md); to be

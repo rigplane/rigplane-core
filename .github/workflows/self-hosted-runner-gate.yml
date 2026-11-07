@@ -1,0 +1,28 @@
+name: Self-hosted runner guard
+
+# Cheap guard: only when workflow definitions change.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/**"
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: [self-hosted, Linux, ARM64, light]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reject GitHub-hosted runner labels
+        run: python3 .github/scripts/check-workflow-runs-on.py --repo .

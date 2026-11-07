@@ -198,11 +198,10 @@ never because `visual.yml` itself changed.
 
 When every changed path is documentation or documentation metadata — including
 `docs/**` except data files, Markdown/RST anywhere in the tree, `.claude/**`, and
-the doc-citation baseline files — no test job runs. `docs-only-quick.yml`
-(`pull_request_target`, `ubuntu-latest`) publishes the required `quick` status
+the doc-citation baseline files — no test job runs. `docs-only-quick.yml` (`pull_request_target`, `[self-hosted, Linux, ARM64, light]`) publishes the required `quick` status
 as success without a checkout; `quick.yml`'s `paths-ignore` skips such a head,
 and for a docs-only head that still reaches it, the `classify` job
-(`ubuntu-latest`) sets `docs=true` and the `quick` job is skipped by its `if:`
+(`[self-hosted, Linux, ARM64, light]`) sets `docs=true` and the `quick` job is skipped by its `if:`
 (`needs.classify.outputs.docs != 'true'`). No self-hosted runner is allocated.
 Do not run citation, link, Markdown, product, visual,
 or full automation; the exact-head independent review is the substantive gate.

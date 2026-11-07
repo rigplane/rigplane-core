@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted, linux, build, X64]
+    runs-on: [self-hosted, Linux, X64, build]
     timeout-minutes: 25
     steps:
       - name: Check out reviewed workflow controls

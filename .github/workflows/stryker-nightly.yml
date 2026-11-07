@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   stryker:
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
