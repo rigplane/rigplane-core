@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.1.4rc1] — 2026-11-06
+## [3.1.4] — 2026-11-07
 
 This is the first release candidate of 3.1.4. It collects the fixes made on
 `main` after 3.1.3: a lower CPU and bandwidth cost of the web UI and audio path,
@@ -5166,8 +5166,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.4rc1...HEAD
-[3.1.4rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.3...v3.1.4rc1
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.4...HEAD
+[3.1.4]: https://github.com/rigplane/rigplane-core/compare/v3.1.3...v3.1.4
 [3.1.3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
