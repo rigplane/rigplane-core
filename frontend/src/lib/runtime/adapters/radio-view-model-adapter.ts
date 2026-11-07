@@ -1182,14 +1182,6 @@ function deriveReceiverIndicators(
             }
           : null,
       },
-      // MOR-3630: the BUSY lamp seat exists wherever the radio has a
-      // squelch control to report on. Unlike attenuator/preamp (MOR-2588),
-      // no per-receiver declared-field tag gates this: the reading comes
-      // from the receiver's own strictly-addressed `dcd` leaf and stays
-      // unknown until that leaf is observed, so an undeclared field can
-      // never light it — and Icom observes `dcd` from spontaneous 0x15
-      // frames without declaring a polled field at all.
-      ...(hasSquelch ? { squelchOpen: strictField(true, 'dcd', boolOrUndef(rx?.dcd)) } : {}),
       bandwidthHz: strictField(hasWidth, 'filterWidth', numOrUndef(rx?.filterWidth)),
       // MOR-2706: the structural ceiling the BW fact's slot reservation
       // derives from — fixed when the capabilities load, never a reading.
@@ -1209,6 +1201,10 @@ function deriveReceiverIndicators(
       },
       digiSel: strictField(hasDigiSel, 'digisel', boolOrUndef(rx?.digisel)),
       ipPlus: strictField(hasIpPlus, 'ipplus', boolOrUndef(rx?.ipplus)),
+      // The SQL tag reads the receiver's own squelch level, the leaf the
+      // squelch slider shows; unknown until observed. The seat exists
+      // wherever the radio declares a squelch control, on every band.
+      ...(hasSquelch ? { squelch: strictField(true, 'squelch', numOrUndef(rx?.squelch)) } : {}),
     };
   });
 }
@@ -1895,6 +1891,8 @@ export interface RxAudioSnapshot {
   connected: boolean;
   /** MOR-2792: server RX capture is bit-exact digital silence. */
   rxSilent?: boolean;
+  /** MOR-4210: `runtime.rxSourceLevelLow`, the browser RX source stays quiet. */
+  sourceLevelLow?: boolean;
   routing?: { focus?: AudioFocus; splitStereo?: boolean } | null;
 }
 
@@ -1985,7 +1983,102 @@ function deriveRxAudio(
     modInputChoices,
     modInputReadiness: facts.modInputReadiness,
     rxSilent: audio.rxSilent === true,
+    ...(live && audio.sourceLevelLow === true ? {
+      sourceLow: {
+        menu: typeof caps?.rxAudioLevelMenu === 'string' && caps.rxAudioLevelMenu.trim() !== ''
+          ? caps.rxAudioLevelMenu : null,
+      },
+    } : {}),
   };
+}
+
+/**
+ * MOR-4213: the inputs one derivation was computed from, plus its result.
+ * Every input is an immutable snapshot replaced as a whole (`radio.current`
+ * and the capability store are `$state.raw`; the App-owned TX/audio/scope
+ * snapshots are fresh objects per change), so object identity is a complete
+ * cache key.
+ */
+interface RadioViewDerivation {
+  readonly state: ServerState | null;
+  readonly caps: Capabilities;
+  readonly tx: MetersTxAuthority | null;
+  readonly rxAudio: RxAudioSnapshot | null;
+  readonly scopeDisplay: ScopeDisplaySnapshot | null;
+  readonly view: RadioViewModel | null;
+}
+
+/**
+ * One remembered derivation per argument lane. Callers that pass no App
+ * snapshots (feedback projections, media session, instrument hosts) share
+ * one lane; the canonical surface view with TX/audio/scope snapshots has its
+ * own, so the two never evict each other.
+ */
+const lastDerivationByLane = new Map<string, RadioViewDerivation>();
+
+function argumentLane(
+  tx: MetersTxAuthority | null, rxAudio: RxAudioSnapshot | null,
+  scopeDisplay: ScopeDisplaySnapshot | null,
+): string {
+  return `${tx === null ? '-' : 't'}${rxAudio === null ? '-' : 'a'}${scopeDisplay === null ? '-' : 's'}`;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+/**
+ * Structural sharing between two view models (MOR-4213). Returns `previous`
+ * wherever `next` is deep-equal to it, so a group whose facts did not change
+ * keeps its object identity and Svelte's `===` check stops the update there.
+ * Never mutates either argument: a container is copied only when some of its
+ * children were swapped for their previous, equal versions. An object that
+ * `next` references twice (`band.currentBand` is the active receiver's
+ * `band.receiverBands` entry) maps to one result, so the alias survives.
+ */
+function shareUnchangedViewParts<T>(previous: unknown, next: T): T {
+  return shareParts(previous, next, new Map<object, unknown>()) as T;
+}
+
+function shareParts(previous: unknown, next: unknown, seen: Map<object, unknown>): unknown {
+  if (Object.is(previous, next)) return next;
+  const isArray = Array.isArray(previous) && Array.isArray(next);
+  if (!isArray && !(isPlainRecord(previous) && isPlainRecord(next))) return next;
+  const container = next as object;
+  if (seen.has(container)) return seen.get(container);
+  let result: unknown;
+  if (isArray) {
+    const before = previous as unknown[];
+    const after = next as unknown[];
+    let equal = before.length === after.length;
+    let swapped = false;
+    const items = after.map((item, index) => {
+      const shared = index < before.length ? shareParts(before[index], item, seen) : item;
+      if (shared !== before[index]) equal = false;
+      if (shared !== item) swapped = true;
+      return shared;
+    });
+    result = equal ? before : swapped ? items : after;
+  } else {
+    const before = previous as Record<string, unknown>;
+    const after = next as Record<string, unknown>;
+    const keys = Object.keys(after);
+    let equal = keys.length === Object.keys(before).length;
+    let swapped = false;
+    const entries = keys.map((key) => {
+      const item = after[key];
+      const known = Object.hasOwn(before, key);
+      const shared = known ? shareParts(before[key], item, seen) : item;
+      if (!known || shared !== before[key]) equal = false;
+      if (shared !== item) swapped = true;
+      return [key, shared] as const;
+    });
+    result = equal ? before : swapped ? Object.fromEntries(entries) : after;
+  }
+  seen.set(container, result);
+  return result;
 }
 
 /**
@@ -1993,6 +2086,14 @@ function deriveRxAudio(
  * loaded, or they describe a topology that contradicts itself
  * (`derivePresentationCapabilities` diagnoses that, and a contradictory
  * topology must not be guessed into one of the four canonical shapes).
+ *
+ * MOR-4213: a pure function of its arguments, memoized on their identity.
+ * Every surface, feedback projection and host asks for the model of the same
+ * `(state, caps)` pair on each state delivery; that pair is derived once and
+ * the result is shared. A fresh derivation reuses the previous result's
+ * unchanged parts (`shareUnchangedViewParts`). Callers must treat the result
+ * as immutable, and producers must replace a snapshot (or at least every
+ * changed branch of it) instead of editing it in place.
  */
 export function toRadioViewModel(
   state: ServerState | null, caps: Capabilities | null,
@@ -2001,6 +2102,27 @@ export function toRadioViewModel(
   scopeDisplaySnapshot?: ScopeDisplaySnapshot | null,
 ): RadioViewModel | null {
   if (!caps) return null;
+  const txInput = tx ?? null;
+  const rxAudioInput = rxAudioSnapshot ?? null;
+  const scopeDisplayInput = scopeDisplaySnapshot ?? null;
+  const lane = argumentLane(txInput, rxAudioInput, scopeDisplayInput);
+  const last = lastDerivationByLane.get(lane);
+  if (last !== undefined && last.state === state && last.caps === caps && last.tx === txInput
+    && last.rxAudio === rxAudioInput && last.scopeDisplay === scopeDisplayInput) return last.view;
+  const derived = deriveRadioViewModel(state, caps, txInput, rxAudioInput, scopeDisplayInput);
+  const view = last === undefined ? derived : shareUnchangedViewParts(last.view, derived);
+  lastDerivationByLane.set(lane, {
+    state, caps, tx: txInput, rxAudio: rxAudioInput, scopeDisplay: scopeDisplayInput, view,
+  });
+  return view;
+}
+
+function deriveRadioViewModel(
+  state: ServerState | null, caps: Capabilities,
+  tx: MetersTxAuthority | null,
+  rxAudioSnapshot: RxAudioSnapshot | null,
+  scopeDisplaySnapshot: ScopeDisplaySnapshot | null,
+): RadioViewModel | null {
   const presentation = derivePresentationCapabilities(caps);
   const topology = presentation.topology;
   if (!topology) return null;

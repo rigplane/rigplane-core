@@ -46,16 +46,14 @@ const availableAction = { structural: true, operational: true };
 function receiverIndicator(
   receiver: ReceiverId,
   readings: 'known' | 'unknown' = 'known',
-  // MOR-3630: the squelch-open lamp state. Known readings default to a
-  // closed squelch; unknown readings to an unread one.
-  squelch: 'open' | 'closed' | 'unknown' | 'absent' = readings === 'known' ? 'closed' : 'unknown',
+  // The SQL tag's squelch level: a number, 'unknown' (unread) or 'absent'
+  // (the radio declares no squelch fact, the default for every older case).
+  squelch: number | 'unknown' | 'absent' = 'absent',
 ): ReceiverIndicatorViewModel {
   const field = readings === 'known' ? indicatorField : unknownField;
-  const squelchOpen = squelch === 'absent'
+  const squelchField = squelch === 'absent'
     ? undefined
-    : squelch === 'unknown'
-      ? unknownField<boolean>()
-      : indicatorField(squelch === 'open');
+    : squelch === 'unknown' ? unknownField<number>() : indicatorField(squelch);
   return {
     receiver,
     availability: { structural: true, operational: true },
@@ -76,7 +74,7 @@ function receiverIndicator(
     rfGain: field(receiver === 'MAIN' ? 0 : 0.75),
     digiSel: field(receiver === 'SUB'),
     ipPlus: field(receiver === 'MAIN'),
-    ...(squelchOpen === undefined ? {} : { squelchOpen }),
+    ...(squelchField === undefined ? {} : { squelch: squelchField }),
   };
 }
 
@@ -84,7 +82,7 @@ function receiverIndicator(
  *  (single-receiver schemes get no MAIN/SUB selector actions). */
 function standardFixture(
   id: TopologyFixtureId, readings: 'known' | 'unknown' = 'known', antennaPorts = 2,
-  squelch: 'open' | 'closed' | 'unknown' | 'absent' = readings === 'known' ? 'closed' : 'unknown',
+  squelch: number | 'unknown' | 'absent' = 'absent',
 ): RadioViewModel {
   const base = topologyFixtures[id];
   const dual = id.startsWith('2/');
@@ -334,15 +332,13 @@ describe('standard tray tabs (2/main_sub)', () => {
 });
 
 describe('standard annunciator lamps (2/main_sub)', () => {
-  it('AGC, BUSY, P.AMP, ATT, IP+, DIGI-SEL and RFG keep their slots with no placeholder text', () => {
+  it('AGC, P.AMP, ATT, IP+, DIGI-SEL and RFG keep their slots with no placeholder text', () => {
     const root = mountSurface({ viewModel: standardFixture('2/main_sub'), appearance: 'standard' });
     const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
     const receiverRow = row(mainPanel, 'receiver');
     const keys = Array.from(receiverRow.querySelectorAll('.lamp'))
       .map((lamp) => lamp.getAttribute('data-chip'));
-    // MOR-3630: BUSY rides the existing front-lamp mechanism, first of the
-    // group so it sits nearest the meter row above.
-    expect(keys).toEqual(['agc', 'busy', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
+    expect(keys).toEqual(['agc', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
     const text = receiverRow.textContent ?? '';
     for (const forbidden of ['—', '?', 'null', 'undefined', 'NaN', 'UNKNOWN', 'N/A']) {
       expect(text, `receiver row must not print ${forbidden}`).not.toContain(forbidden);
@@ -354,11 +350,11 @@ describe('standard annunciator lamps (2/main_sub)', () => {
     const root = mountSurface({ viewModel: standardFixture('2/main_sub', 'unknown'), appearance: 'standard' });
     const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
     const lamps = row(mainPanel, 'receiver').querySelectorAll('.lamp');
-    expect(lamps.length).toBe(7);
+    expect(lamps.length).toBe(6);
     // Owner ruling 2026-09-23: with the gain unread, RFG shows nothing at
     // all — an empty reserved slot — while the other lamps keep their labels.
     const expected: Record<string, string> = {
-      agc: 'AGC', busy: 'BUSY', preamp: 'P.AMP', att: 'ATT', 'ip-plus': 'IP+', 'digi-sel': 'DIGI-SEL', rfg: '',
+      agc: 'AGC', preamp: 'P.AMP', att: 'ATT', 'ip-plus': 'IP+', 'digi-sel': 'DIGI-SEL', rfg: '',
     };
     for (const lamp of lamps) {
       expect(lamp.getAttribute('data-lit')).toBe('false');
@@ -379,55 +375,6 @@ describe('standard annunciator lamps (2/main_sub)', () => {
     expect(mainPanel.querySelector('[data-chip="ip-plus"]')).toBeNull();
     expect(mainPanel.querySelector('[data-chip="digi-sel"]')).toBeNull();
     expect(mainPanel.querySelector('[data-chip="agc"]')).not.toBeNull();
-    // MOR-3630: the FTX-1 declares the squelch capability but its dcd leaf
-    // is never observed (the RI0 mapping is deferred), so BUSY keeps its
-    // unlit slot with the label — the unknown-until-observed contract.
-    const busy = mainPanel.querySelector('[data-chip="busy"]');
-    expect(busy?.textContent).toBe('BUSY');
-    expect(busy?.getAttribute('data-lit')).toBe('false');
-  });
-});
-
-// MOR-3630: the BUSY lamp on the real standard VfoSurface mount — the
-// desktop-v2 'standard' appearance renders VfoPanel through
-// standardPanelSections (RadioLayout carries no fact of its own, so the
-// surface mount is the integrated seam).
-describe('standard BUSY lamp (2/main_sub)', () => {
-  const busyChip = (squelch: 'open' | 'closed' | 'unknown' | 'absent') => {
-    const root = mountSurface({
-      viewModel: standardFixture('2/main_sub', 'known', 2, squelch), appearance: 'standard',
-    });
-    const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
-    return row(mainPanel, 'receiver').querySelector('[data-chip="busy"]');
-  };
-
-  it('lights while the squelch reads open', () => {
-    const busy = busyChip('open');
-    expect(busy?.textContent).toBe('BUSY');
-    expect(busy?.getAttribute('data-lit')).toBe('true');
-    expect(busy?.getAttribute('role')).toBe('img');
-    expect(busy?.getAttribute('aria-label')).toBe('Squelch open');
-  });
-
-  it('darkens while the squelch reads closed, keeping the label', () => {
-    const busy = busyChip('closed');
-    expect(busy?.textContent).toBe('BUSY');
-    expect(busy?.getAttribute('data-lit')).toBe('false');
-    expect(busy?.getAttribute('role')).toBe('img');
-    expect(busy?.getAttribute('aria-label')).toBe('Squelch closed');
-  });
-
-  it('stays unlit with the label while the squelch is unread', () => {
-    const busy = busyChip('unknown');
-    expect(busy?.textContent).toBe('BUSY');
-    expect(busy?.getAttribute('data-lit')).toBe('false');
-    // Unread: the dimmed label only, no state sentence.
-    expect(busy?.getAttribute('aria-label')).toBeNull();
-  });
-
-  it('draws nothing when the radio declares no squelch fact', () => {
-    const busy = busyChip('absent');
-    expect(busy).toBeNull();
   });
 });
 
@@ -437,6 +384,59 @@ describe('standard BUSY lamp (2/main_sub)', () => {
 // as 100, so it shows nothing. At the maximum and while the reading is
 // unknown the lamp stays in the flow as an empty reserved slot (fixed
 // width by chip key), so the deck never shifts when the gain changes.
+// The SQL tag on the real standard VfoSurface mount: the receiver's own
+// squelch level, shown while above 0 (closed or partly closed) on every band;
+// fully open and unread keep the slot with no text, like RFG.
+describe('standard SQL tag (2/main_sub)', () => {
+  const mainRow = (squelch: number | 'unknown' | 'absent') => {
+    const root = mountSurface({
+      viewModel: standardFixture('2/main_sub', 'known', 2, squelch), appearance: 'standard',
+    });
+    const mainPanel = panels(root).find((panel) => panel.getAttribute('data-receiver-instrument') === 'MAIN')!;
+    return { root, receiverRow: row(mainPanel, 'receiver') };
+  };
+
+  it('lights SQL while the level is above 0, after RFG, in the neutral amber style', () => {
+    const { receiverRow } = mainRow(128);
+    const sql = receiverRow.querySelector('[data-chip="sql"]');
+    expect(sql?.textContent?.trim()).toBe('SQL');
+    expect(sql?.getAttribute('data-lit')).toBe('true');
+    expect(sql?.getAttribute('data-family')).toBe('amber');
+    expect(sql?.getAttribute('aria-hidden')).toBeNull();
+    const keys = Array.from(receiverRow.querySelectorAll('.lamp')).map((lamp) => lamp.getAttribute('data-chip'));
+    expect(keys).toEqual(['agc', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg', 'sql']);
+  });
+
+  it('lights SQL for the smallest raised level, a partly closed squelch', () => {
+    expect(mainRow(1).receiverRow.querySelector('[data-chip="sql"]')?.textContent?.trim()).toBe('SQL');
+  });
+
+  it('shows nothing at level 0: an empty reserved slot, hidden from assistive tech', () => {
+    const sql = mainRow(0).receiverRow.querySelector('[data-chip="sql"]');
+    expect(sql?.textContent?.trim()).toBe('');
+    expect(sql?.getAttribute('data-lit')).toBe('false');
+    expect(sql?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('shows nothing while the level is unread', () => {
+    const sql = mainRow('unknown').receiverRow.querySelector('[data-chip="sql"]');
+    expect(sql?.textContent?.trim()).toBe('');
+    expect(sql?.getAttribute('data-lit')).toBe('false');
+  });
+
+  it('draws no SQL slot when the radio declares no squelch fact', () => {
+    expect(mainRow('absent').receiverRow.querySelector('[data-chip="sql"]')).toBeNull();
+  });
+
+  it('renders no BUSY element anywhere, whatever the squelch says', () => {
+    for (const squelch of [0, 128, 'unknown', 'absent'] as const) {
+      const { root } = mainRow(squelch);
+      expect(root.querySelector('[data-chip="busy"], [data-indicator-fact="busy"]')).toBeNull();
+      expect(root.textContent ?? '').not.toContain('BUSY');
+    }
+  });
+});
+
 describe('standard RFG lamp appears only when RF gain is reduced (2/main_sub)', () => {
   const fixtureWithRfGain = (rfGain: number | 'unknown') => {
     const base = standardFixture('2/main_sub');
@@ -489,7 +489,7 @@ describe('standard RFG lamp appears only when RF gain is reduced (2/main_sub)', 
       const keys = Array.from(row(mainPanel, 'receiver').querySelectorAll('.lamp'))
         .map((lamp) => lamp.getAttribute('data-chip'));
       expect(keys, 'same lamp slots whatever the gain says').toEqual(
-        ['agc', 'busy', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
+        ['agc', 'preamp', 'att', 'ip-plus', 'digi-sel', 'rfg']);
     }
   });
 });
@@ -714,9 +714,11 @@ describe('the live FTX-1 payload (many null leaves) prints no placeholder', () =
             .not.toContain(forbidden);
         }
         // Owner ruling 2026-09-23: the captured radio reports RF gain at the
-        // maximum, so its RFG lamp is deliberately an empty reserved slot —
-        // the one unlit chip allowed to print nothing.
-        if (chip.getAttribute('data-lit') === 'false' && chip.getAttribute('data-chip') !== 'rfg') {
+        // maximum, so its RFG lamp is deliberately an empty reserved slot, and
+        // the SQL tag is the same at squelch level 0 — the only unlit chips
+        // allowed to print nothing.
+        if (chip.getAttribute('data-lit') === 'false'
+          && !['rfg', 'sql'].includes(chip.getAttribute('data-chip') ?? '')) {
           expect(chip.textContent?.trim(), 'an unlit chip keeps its label, never an empty frame')
             .not.toBe('');
         }

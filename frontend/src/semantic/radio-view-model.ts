@@ -376,6 +376,10 @@ export interface RxAudioViewModel {
   /** MOR-2792: the server's RX capture is delivering only digital silence
    *  (bit-exact zeros). Cleared as soon as a non-zero frame arrives. */
   rxSilent: boolean;
+  /** MOR-4210: present while LIVE browser audio runs from a quiet source.
+   *  `menu` is the radio menu item that raises its output level, `null`
+   *  when the profile names none. */
+  readonly sourceLow?: { readonly menu: string | null };
 }
 
 /**
@@ -1294,12 +1298,12 @@ export interface ReceiverIndicatorViewModel {
   rfGain: DisplayObservedField<number>;
   digiSel: ReceiverIndicatorField<boolean>;
   ipPlus: ReceiverIndicatorField<boolean>;
-  /** MOR-3630: squelch-open (BUSY) lamp state from the receiver's own `dcd`
-   *  leaf. Absent exactly when the radio declares no `squelch` capability
-   *  (the `bandwidthMaxHz` precedent: capability-derived indicator facts
-   *  are optional keys, never structural-false placeholders); a
-   *  never-observed leaf reads `unknown`, never `false`. */
-  squelchOpen?: ReceiverIndicatorField<boolean>;
+  /** The receiver's own squelch LEVEL (the value the squelch slider shows),
+   *  behind the SQL tag: the tag shows while the level is above 0. Absent
+   *  exactly when the radio declares no `squelch` capability (the
+   *  `bandwidthMaxHz` precedent); a never-observed leaf reads `unknown`,
+   *  never 0. */
+  squelch?: ReceiverIndicatorField<number>;
 }
 
 /**
@@ -1850,7 +1854,7 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz',
     'bandwidthMaxHz', 'agcMode',
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
-    'digiSel', 'ipPlus', 'squelchOpen',
+    'digiSel', 'ipPlus', 'squelch',
   ], path);
   const receiver = oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`);
   return {
@@ -1878,8 +1882,8 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     rfGain: validateDisplayObservedField(v.rfGain, `${path}.rfGain`, num),
     digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
     ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
-    ...(v.squelchOpen !== undefined
-      ? { squelchOpen: validateTxAuxField(v.squelchOpen, `${path}.squelchOpen`, bool) }
+    ...(v.squelch !== undefined
+      ? { squelch: validateTxAuxField(v.squelch, `${path}.squelch`, num) }
       : {}),
   };
 }
@@ -1949,7 +1953,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'monitorMode', 'liveAudio', 'afLevel', 'receiverAfLevels', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent',
+    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent', 'sourceLow',
   ], path);
   const afLevels = v.receiverAfLevels === undefined
     ? undefined : record(v.receiverAfLevels, `${path}.receiverAfLevels`);
@@ -1974,7 +1978,16 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
     }),
     modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
     rxSilent: v.rxSilent === true,
+    ...(v.sourceLow === undefined ? {} : {
+      sourceLow: validateRxSourceLow(v.sourceLow, `${path}.sourceLow`),
+    }),
   };
+}
+
+function validateRxSourceLow(value: unknown, path: string): { readonly menu: string | null } {
+  const v = record(value, path);
+  exactKeys(v, ['menu'], path);
+  return { menu: nullableString(v.menu, `${path}.menu`) };
 }
 
 /** A capability-derived choice set: plain strings, no field-shape wrapper —

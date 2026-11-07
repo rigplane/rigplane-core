@@ -195,7 +195,7 @@ _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
-_SUB_SQL_STATUS = 0x01
+_SUB_SQUELCH = 0x03
 _SUB_S_METER = 0x02
 _SUB_SWR_METER = 0x12
 _SUB_ALC_METER = 0x13
@@ -487,6 +487,11 @@ class MockIcomRadio(AudioPortMixin):
             while the current mode is outside the set (MOR-4036).
     """
 
+    #: Release reasons that mean the client ended the session itself: the
+    #: stream owner's OpenClose(close) (a logout sends it first), the
+    #: token-remove, or the control DISCONNECT. A hold expiry is not one.
+    CLIENT_END_REASONS = frozenset({"openclose_close", "token_remove", "disconnect"})
+
     def __init__(
         self,
         host: str = "127.0.0.1",
@@ -569,10 +574,8 @@ class MockIcomRadio(AudioPortMixin):
         # "0F <state>", SET 00/01 ACKs).
         self._split_on: bool = False
         self._power: int = 100  # 0-255 level
+        self._squelch: int = 0  # 0-255 squelch level, 0 = fully open
         self._s_meter: int = 120  # 0-255
-        # MOR-3630: squelch-open (RX-busy) readback for the 0x15 0x01 poll.
-        # Idle means closed: no signal, squelch shut.
-        self._squelch_open: bool = False
         self._swr: int = 10  # 0-255
         self._alc: int = 0
         self._attenuator: int = 0  # dB (0, 3, 6, ... 45)
@@ -817,6 +820,8 @@ class MockIcomRadio(AudioPortMixin):
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
         self.last_release_reason: str | None = None
+        # Callers of ``wait_session_released``, woken by ``_release_session``.
+        self._release_waiters: list[asyncio.Future[str]] = []
         self._login_count: int = 0  # accepted logins
         self._openclose_open_count: int = 0  # CI-V OpenClose(open) received
         self._audio_init()  # audio-port state (RX streamer, TX sink)
@@ -929,6 +934,29 @@ class MockIcomRadio(AudioPortMixin):
     def session_held(self) -> bool:
         """True when a session is currently owned (single-owner mode)."""
         return self._owner is not None
+
+    async def wait_session_released(self) -> str | None:
+        """Wait for the held session to end; return why (``last_release_reason``).
+
+        If no session is held, returns at once with the reason the last one
+        ended (``None`` if none ever did), so a release that landed before
+        this call keeps its reason. A client's token-remove, DISCONNECT or
+        OpenClose(close) is a UDP datagram the simulator handles only when it
+        is delivered, which is not always the next loop iteration (WSL2
+        mirrored loopback adds about 0.1 ms). Wait here instead of reading
+        :attr:`session_held` right after the client's send returns, and check
+        the reason against :attr:`CLIENT_END_REASONS`: a hold expiry
+        (``keepalive_timeout``) also ends the session.
+        """
+        if self._owner is None:
+            return self.last_release_reason
+        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._release_waiters.append(waiter)
+        try:
+            return await waiter
+        finally:
+            if waiter in self._release_waiters:
+                self._release_waiters.remove(waiter)
 
     @property
     def owner(self) -> tuple[tuple[str, int], int] | None:
@@ -1224,6 +1252,10 @@ class MockIcomRadio(AudioPortMixin):
             self._owner = None
             self.released_count += 1
             self.last_release_reason = reason
+            waiters, self._release_waiters = self._release_waiters, []
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.set_result(reason)
             # ptt_on_session_loss (opt-in, stateful PTT only): "release"
             # unkeys the simulated radio at the moment the session ends.
             # The real IC-7610 behaviour is UNRECORDED — TX is never
@@ -1409,13 +1441,13 @@ class MockIcomRadio(AudioPortMixin):
         """Set S-meter readback value (0-255)."""
         self._s_meter = value
 
-    def set_squelch_open(self, on: bool) -> None:
-        """Set squelch-open (RX-busy) readback for the 0x15 0x01 poll."""
-        self._squelch_open = on
-
     def set_swr(self, value: int) -> None:
         """Set SWR meter readback value (0-255)."""
         self._swr = value
+
+    def set_squelch(self, level: int) -> None:
+        """Set the squelch level read back by CI-V 0x14 0x03 (0-255)."""
+        self._squelch = level
 
     def set_attenuator(self, db: int) -> None:
         """Set attenuator dB value (0, 3, 6, …, 45)."""
@@ -2031,9 +2063,11 @@ class MockIcomRadio(AudioPortMixin):
             # Recorded IC-7610 LAN behaviour: the request CI-V frame comes
             # back byte-identical immediately before the reply — including
             # requests answered with NAK (``civ_pairs.jsonl`` records CI-V
-            # frames only). Through the same outbound funnel as the reply,
-            # so a fault plan sees both packets.
-            self._send(proto, data, addr, "civ")
+            # frames only), numbered in the radio's own sequence like the
+            # reply after it (``retransmit_gaps.jsonl``: echo r2c 351, reply
+            # 352). Through the same outbound funnel as the reply, so a
+            # fault plan sees both packets.
+            self._send(proto, self._wrap_civ(bytes(civ), sender_id), addr, "civ")
 
         if (
             self._scope_stream
@@ -2440,6 +2474,17 @@ class MockIcomRadio(AudioPortMixin):
                         sub=_SUB_RF_POWER,
                         data=_level_bcd_encode(self._power),
                     )
+            if sub == _SUB_SQUELCH:  # 0x03 squelch level (single receiver)
+                if rest:  # set
+                    self._squelch = _bcd_decode_value(rest)
+                    return self._civ_ack(to, frm)
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_LEVEL,
+                    sub=_SUB_SQUELCH,
+                    data=_level_bcd_encode(self._squelch),
+                )
             return self._civ_nak(to, frm)
 
         # --- Meter (0x15) ---
@@ -2447,8 +2492,6 @@ class MockIcomRadio(AudioPortMixin):
             if not payload:
                 return self._civ_nak(to, frm)
             sub = payload[0]
-            if sub == _SUB_SQL_STATUS:  # 0x01
-                return self._squelch_status_reply(to, frm)
             if sub == _SUB_S_METER:  # 0x02
                 return self._civ_frame(
                     to,
@@ -2903,11 +2946,6 @@ class MockIcomRadio(AudioPortMixin):
                 to, frm, _CMD_CMD29, data=bytes([receiver, _CMD_ATT, bcd])
             )
 
-        # S-meter squelch status (0x15 0x01): dual-receiver Icoms route the
-        # read through Command29, the reply comes back wrapped (MOR-3630).
-        if real_cmd == _CMD_METER and inner[:1] == bytes([_SUB_SQL_STATUS]):
-            return self._squelch_status_reply(to, frm, receiver=receiver)
-
         # PREAMP / DIGI-SEL (0x16)
         if real_cmd == _CMD_PREAMP:
             if not inner:
@@ -2950,25 +2988,6 @@ class MockIcomRadio(AudioPortMixin):
     # ------------------------------------------------------------------
     # CI-V frame builders
     # ------------------------------------------------------------------
-
-    def _squelch_status_reply(
-        self, to: int, frm: int, *, receiver: int | None = None
-    ) -> bytes:
-        """The single-byte squelch-open readback to a 0x15 0x01 poll (MOR-3630).
-
-        The polled counterpart of the spontaneous 0x15 frames real Icoms
-        emit. ``receiver`` is None for the plain frame and the Command29
-        receiver byte when the radio routes the read through Command29.
-        """
-        state = bytes([0x01 if self._squelch_open else 0x00])
-        if receiver is None:
-            return self._civ_frame(to, frm, _CMD_METER, sub=_SUB_SQL_STATUS, data=state)
-        return self._civ_frame(
-            to,
-            frm,
-            _CMD_CMD29,
-            data=bytes([receiver, _CMD_METER, _SUB_SQL_STATUS]) + state,
-        )
 
     def _civ_refused(self, cmd: int, payload: bytes) -> bool:
         """True when the refusal hook matches this (cmd, payload).

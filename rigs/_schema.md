@@ -49,6 +49,7 @@ the caller did not explicitly override codec or sample rate.
 | `sample_rate_by_codec`        | table string→int  | no       | Per-codec default sample rate used by the resolver for RX and TX. Keys must be `AudioCodec` names. |
 | `browser_rx_transport`        | string            | no       | Browser consumer transport policy: `"auto"`, `"pcm"`, or `"opus"`. |
 | `browser_rx_transcode_to_opus`| bool              | no       | Whether browser RX may transcode radio-native audio to Opus. This is not a radio-native codec setting. |
+| `rx_audio_level_menu`         | string            | no       | The radio menu item that sets its RX audio output level to the computer, served as `rxAudioLevelMenu` in `/api/v1/capabilities` (`null` when undeclared). |
 
 Example:
 
@@ -675,7 +676,10 @@ the FTX-1 declares the CAT pair `get_memory_channel` (MR) and `get_memory_tag` (
 `"channel"` (FTX-1, one numbered list, group 0 only); the first two also pick the
 `1A 00` record layout; `first_group`/`last_group` bound the
 group number or band code, `first_channel`/`last_channel` the channel;
-`recall = true` marks profiles whose select commands recall a listed channel.
+`recall = true` marks profiles whose select commands recall a channel: the
+group (`08 A0`, `group_channel` only), the channel (`08` + channel), then the
+Memory mode (bare `08`); allowed for `group_channel` and `channel` addressing
+(MOR-4219).
 `dd_groups` lists groups/bands where mode byte `0x22` is DD;
 `offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
 Both default to `[]` and accept only lists of unique integers within

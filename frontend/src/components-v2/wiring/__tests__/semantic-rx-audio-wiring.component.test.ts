@@ -54,6 +54,7 @@ const h = vi.hoisted(() => ({
   },
   audioConnected: true,
   rxEnabled: true,
+  sourceLevelLow: false,
   guardVisible: false,
   setVolume: vi.fn(),
   setMuted: vi.fn(),
@@ -150,6 +151,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get audioRouting() { return h.audioRouting; },
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
+    get rxSourceLevelLow() { return h.sourceLevelLow; },
     setVolume: h.setVolume, setMuted: h.setMuted,
     setRxLive: h.setRxLive, setRxVolume: h.setRxVolume,
     // MOR-1312 slice 12B: the wiring now also hands the adapter a
@@ -353,6 +355,7 @@ beforeEach(() => {
   h.audioRouting = null;
   h.audioConnected = true;
   h.rxEnabled = true;
+  h.sourceLevelLow = false;
   h.guardVisible = false;
   h.selectedFiniteAppearance = undefined;
   rxAudioScalar.bindings.length = 0;
@@ -608,10 +611,11 @@ describe('the hosted AF owner survives replaceable presentation layouts', () => 
     expect(h.setVolume).not.toHaveBeenCalled();
 
     oldSlider.dispatchEvent(new PointerEvent(
-      'pointerdown', { pointerId: 8, clientX: 70, bubbles: true },
+      'pointerdown', { pointerId: 8, clientX: 35, bubbles: true },
     ));
     flushSync();
-    expect(frame.style.getPropertyValue('--vc-fill-percent')).toBe('70%');
+    // MOR-4210: the browser-volume travel is 0..2, so 35% of it is 0.7.
+    expect(frame.style.getPropertyValue('--vc-fill-percent')).toBe('35%');
     expect(h.setVolume).toHaveBeenCalledExactlyOnceWith(70);
     h.setRxVolume.mockClear();
     h.setVolume.mockClear();
@@ -625,7 +629,7 @@ describe('the hosted AF owner survives replaceable presentation layouts', () => 
     expect([...h.authoritySubscribers]).toEqual(originalSubscribers);
     expect(h.authoritySubscribers.size).toBe(6);
     expect(newSlider.closest<HTMLElement>('.vc-hbar')!.style
-      .getPropertyValue('--vc-fill-percent')).toBe('42%');
+      .getPropertyValue('--vc-fill-percent')).toBe('21%');
     expect(newSlider.getAttribute('aria-valuenow')).toBe('0.42');
     oldSlider.dispatchEvent(new PointerEvent('pointerup', { pointerId: 8, bubbles: true }));
     oldSlider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
@@ -1270,6 +1274,16 @@ describe('MAIN and SUB AF side by side on a dual-receiver radio (MOR-2579)', () 
     expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '42%', 'AF', '0.42']]);
   });
 
+  it('lets the live browser-volume AF row reach 200% makeup gain (MOR-4210)', () => {
+    radioAf();
+    h.rxEnabled = true;
+    h.audio = { muted: false, rxEnabled: true, volume: 150 };
+    renderHostedFace('desktop-v2');
+    expect(rows()).toEqual([['rx-audio-af', 'AF LEVEL', '150%', 'AF', '1.5']]);
+    expect(q<HTMLElement>('[data-testid="rx-audio-af"] [role="slider"]')!
+      .getAttribute('aria-valuemax')).toBe('2');
+  });
+
   // IC-9700 shape: `sub.afLevel` is observed and available, but the radio
   // admits no SUB AF write, so the server does not serve `af_level_sub`.
   it('draws the one AF LEVEL row without af_level_sub, even with sub.afLevel observed', () => {
@@ -1344,5 +1358,45 @@ describe('single composition operational disable (MOR-1342)', () => {
     );
     expect(sub).not.toBeNull();
     expect(sub!.disabled).toBe(false);
+  });
+});
+
+/* ── MOR-4210: quiet RX source names the radio's own menu item ── */
+
+describe('the quiet-source line on the RX audio surface (MOR-4210)', () => {
+  const MENU = 'SET > Connectors > ACC/USB AF Output Level';
+  const withMenu = (menu: string | null) => {
+    h.caps = { ...(h.caps as Capabilities), rxAudioLevelMenu: menu };
+  };
+
+  it('names the profile menu item while LIVE audio stays quiet', () => {
+    withMenu(MENU);
+    h.sourceLevelLow = true;
+    renderHostedFace();
+    expect(text('source-low')).toBe(
+      `Radio audio is quiet. Raise the radio's audio output level: ${MENU}.`,
+    );
+  });
+
+  it('falls back to the generic line when the profile names no menu item', () => {
+    withMenu(null);
+    h.sourceLevelLow = true;
+    renderHostedFace();
+    expect(text('source-low')).toBe("Radio audio is quiet. Raise the radio's audio output level.");
+  });
+
+  it('shows nothing while the source is not quiet', () => {
+    withMenu(MENU);
+    renderHostedFace();
+    expect(el('source-low')).toBeNull();
+  });
+
+  it('shows nothing outside LIVE monitoring', () => {
+    withMenu(MENU);
+    h.sourceLevelLow = true;
+    h.rxEnabled = false;
+    h.audio = { muted: false, rxEnabled: false, volume: 42 };
+    renderHostedFace();
+    expect(el('source-low')).toBeNull();
   });
 });

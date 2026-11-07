@@ -37,6 +37,7 @@ import {
 import { topologyFixtures, withAudioOnlyScope, withBand, type TopologyFixtureId } from '../fixtures/topologies';
 import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+import { editState } from '$lib/transport/__tests__/support/state-edit';
 import {
   FTX1_CAPABILITIES,
   FTX1_STATE,
@@ -179,8 +180,9 @@ describe('VFO qualified display continuity', () => {
     const primitive = root.querySelector('.freq')!;
     const digit = primitive.querySelectorAll('.digit').item(7);
     digit.dispatchEvent(new MouseEvent('click', { bubbles: true })); flushSync();
-    state.fieldStatus!.main.freshness = 'stale';
-    const staleView = toRadioViewModel(state, caps)!;
+    // MOR-4213: the stale ancestor arrives as a new snapshot, as the client builds it.
+    const staleState = editState(state, (s) => { s.fieldStatus!.main.freshness = 'stale'; });
+    const staleView = toRadioViewModel(staleState, caps)!;
     expect(staleView.vfos[0].frequencyHz).toBe(14250000);
     expect(staleView.vfos[0].display?.frequencyHz.state).toBe('stale');
     model.set(staleView); flushSync();

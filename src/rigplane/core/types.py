@@ -815,7 +815,8 @@ class MemoryProfile:
     ``group_channel`` is the IC-705 shape, ``band_channel`` the IC-9700's and
     ``channel`` a single numbered list (FTX-1, group 0 only); the
     bounds limit the group number (or band code) and the channel, and
-    ``recall`` says the profile's select commands recall a listed channel.
+    ``recall`` says the profile's select commands recall a channel (the
+    group+channel and channel-only shapes; MOR-4219).
     """
 
     addressing: MemoryAddressing

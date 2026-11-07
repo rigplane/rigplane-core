@@ -613,7 +613,7 @@ _COLD_STUBS_EXCLUDED = frozenset(
         "start_pump",
         "start_data_watchdog",
         "start_worker",
-        "IcomTransport",
+        "IcomCivTransport",
         "sleep",
         "wait_for_radio_startup_ready",
     }
@@ -635,7 +635,7 @@ class _ColdConnectPatches(_ConnectOnceStubs):
                 "_receive_guid",
                 new=AsyncMock(return_value=None),
             ),
-            patch("rigplane.transport.IcomTransport", return_value=civ),
+            patch("rigplane.transport.IcomCivTransport", return_value=civ),
         )
 
 

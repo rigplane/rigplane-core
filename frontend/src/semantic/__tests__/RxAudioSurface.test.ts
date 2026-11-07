@@ -461,12 +461,16 @@ describe('AF level is 0..1 end to end — converted exactly once, in the adapter
     r.dispose();
   });
 
-  // Kills: a range whose bounds silently rescale the fact.
-  it('declares the slider on the contract`s own 0..1 scale', () => {
-    const r = render(base());
+  // Kills: a range whose bounds silently rescale the fact. The radio AF
+  // stays 0..1; the LIVE browser volume runs to 2 (MOR-4210 makeup gain).
+  it.each([
+    ['local', '1'],
+    ['live', '2'],
+  ] as const)('declares the %s slider on the contract`s own 0..%s scale', (monitorMode, max) => {
+    const r = render(withRx({ monitorMode }));
     expect([
       r.slider()!.getAttribute('aria-valuemin'), r.slider()!.getAttribute('aria-valuemax'),
-    ]).toEqual(['0', '1']);
+    ]).toEqual(['0', max]);
     r.dispose();
   });
 });

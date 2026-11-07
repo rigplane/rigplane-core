@@ -478,9 +478,9 @@ class ControlPhaseRuntime:
             logger.debug("No status packet received, using default ports")
             logger.warning("Audio port not in status, using default %d", h._audio_port)
 
-        from rigplane.transport import IcomTransport
+        from rigplane.transport import IcomCivTransport
 
-        h._civ_transport = IcomTransport()
+        h._civ_transport = IcomCivTransport()
         h._civ_transport._scope_shed_callback = h._scope_assembler.shed_incomplete
         civ_sock = getattr(h, "_civ_sock_pending", None)
         try:
@@ -988,10 +988,10 @@ class ControlPhaseRuntime:
             except Exception:
                 logger.debug("soft_reconnect: audio teardown failed", exc_info=True)
 
-        from rigplane.transport import IcomTransport
+        from rigplane.transport import IcomCivTransport
 
         requested_local_port = getattr(h, "_civ_local_port", 0)
-        h._civ_transport = IcomTransport()
+        h._civ_transport = IcomCivTransport()
         try:
             await h._civ_transport.connect(
                 h._host,

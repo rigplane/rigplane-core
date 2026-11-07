@@ -1,8 +1,11 @@
-"""Recall of a listed memory channel (MOR-3627): ``set_memory_mode`` with a group.
+"""Recall of a memory channel (MOR-3627, MOR-4219): ``set_memory_mode`` with a group.
 
-IC-705: ``08 A0 gggg`` selects the memory group, ``08 cccc`` the channel; both
-are answered with an ACK. The operation selects memory; it writes no contents
-and sends no transmit-start command.
+IC-705: ``08 A0 gggg`` selects the memory group, ``08 cccc`` the channel, and
+the bare ``08`` switches the radio to the Memory mode; the channel-addressed
+radios (IC-7300, IC-7610) send ``08 cccc`` and the bare ``08``. Every frame is
+answered with an ACK. Before MOR-4219 the bare ``08`` was never sent, so a
+radio in the VFO mode acknowledged both selects and stayed where it was. The
+operation writes no contents and sends no transmit-start command.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import pytest
 from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
 from rigplane.commands import CONTROLLER_ADDR, _CMD_ACK
 from rigplane.commands._frame import build_civ_frame
-from rigplane.core.exceptions import CommandError
+from rigplane.core.exceptions import CommandError, CommandRejectedError
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -44,20 +47,93 @@ def _radio(model: str, transport: MockTransport) -> IcomRadio:
     return radio
 
 
+def _ack_each(transport: MockTransport, count: int, addr: int = 0xA4) -> None:
+    for send in range(1, count + 1):
+        transport.queue_response_on_send(send, _answer(_CMD_ACK, addr))
+
+
 @pytest.mark.asyncio
-async def test_ic705_recall_selects_the_group_then_the_channel() -> None:
+async def test_ic705_recall_selects_group_channel_then_memory_mode() -> None:
     transport = MockTransport()
-    transport.queue_response_on_send(1, _answer(_CMD_ACK))
-    transport.queue_response_on_send(2, _answer(_CMD_ACK))
+    _ack_each(transport, 3)
     radio = _radio("IC-705", transport)
     try:
         await radio.set_memory_mode(4, group=12)
     finally:
         radio._connected = False
-    expected = ["fefea4e008a00012fd", "fefea4e0080004fd"]
-    assert len(transport.sent_packets) == 2
+    expected = ["fefea4e008a00012fd", "fefea4e0080004fd", "fefea4e008fd"]
+    assert len(transport.sent_packets) == 3
     for packet, frame in zip(transport.sent_packets, expected, strict=True):
         assert packet.endswith(bytes.fromhex(frame))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "addr", "channel", "channel_frame"),
+    [
+        ("IC-7300", 0x94, 4, "fefe94e0080004fd"),
+        ("IC-7300MK2", 0xB6, 99, "fefeb6e0080099fd"),
+        ("IC-7610", 0x98, 101, "fefe98e0080101fd"),
+    ],
+)
+async def test_channel_addressed_recall_selects_the_channel_then_the_memory_mode(
+    model: str, addr: int, channel: int, channel_frame: str
+) -> None:
+    transport = MockTransport()
+    _ack_each(transport, 2, addr)
+    radio = _radio(model, transport)
+    assert radio._radio_addr == addr
+    try:
+        await radio.set_memory_mode(channel, group=0)
+    finally:
+        radio._connected = False
+    expected = [channel_frame, f"fefe{addr:02x}e008fd"]
+    assert [p[CIV_HEADER_SIZE:] for p in transport.sent_packets] == [
+        bytes.fromhex(frame) for frame in expected
+    ]
+
+
+@pytest.mark.asyncio
+async def test_channel_addressed_recall_refuses_a_group_it_does_not_have() -> None:
+    transport = MockTransport()
+    radio = _radio("IC-7300", transport)
+    try:
+        with pytest.raises(ValueError, match="memory group must be 0, got 1"):
+            await radio.set_memory_mode(4, group=1)
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_memory_mode_switch_is_an_error() -> None:
+    """The last frame (bare 08) NAKed: the recall fails, it is not silent."""
+    transport = MockTransport()
+    _ack_each(transport, 2)
+    transport.queue_response_on_send(3, _answer(_NAK))
+    radio = _radio("IC-705", transport)
+    try:
+        with pytest.raises(CommandRejectedError, match="rejected memory recall 12/4"):
+            await radio.set_memory_mode(4, group=12)
+    finally:
+        radio._connected = False
+    assert len(transport.sent_packets) == 3
+
+
+@pytest.mark.asyncio
+async def test_an_answer_that_is_not_an_ack_is_an_error() -> None:
+    radio = _radio("IC-705", MockTransport())
+
+    async def fake_expect(civ: bytes, **_: object):
+        # A data reply (03 + frequency) where an ACK is due.
+        return CivFrame(CONTROLLER_ADDR, 0xA4, 0x03, None, b"\x00\x40\x07\x14\x00", 0)
+
+    radio._send_civ_expect = fake_expect  # type: ignore[method-assign]
+    try:
+        with pytest.raises(CommandError, match="Expected ACK for memory recall"):
+            await radio.set_memory_mode(4, group=12)
+    finally:
+        radio._connected = False
 
 
 @pytest.mark.asyncio
@@ -74,7 +150,7 @@ async def test_ic705_recall_reports_a_rejection() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["IC-9700", "IC-7610"])
+@pytest.mark.parametrize("model", ["IC-9700"])
 async def test_recall_needs_a_profile_that_declares_it(model: str) -> None:
     transport = MockTransport()
     radio = _radio(model, transport)
@@ -121,8 +197,10 @@ async def test_two_recalls_never_interleave_their_group_and_channel_selects() ->
     assert [frame[4:-1].hex() for frame in sent] == [
         "08a00001",
         "080004",
+        "08",
         "08a00002",
         "080007",
+        "08",
     ]
 
 
@@ -179,9 +257,9 @@ async def recall_web():
 async def test_ic705_web_recall_executes_group_then_channel(
     recall_web, protocol: str, channel: int, channel_frame: str
 ) -> None:
+    """Group, then channel, then the Memory mode (name kept: realtime baseline)."""
     web, transport, entries, consumer = recall_web
-    transport.queue_response_on_send(1, _answer(_CMD_ACK))
-    transport.queue_response_on_send(2, _answer(_CMD_ACK))
+    _ack_each(transport, 3)
 
     status, result = await _request(
         web, protocol, "set_memory_mode", {"group": 12, "channel": channel}
@@ -195,6 +273,7 @@ async def test_ic705_web_recall_executes_group_then_channel(
     assert [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets] == [
         bytes.fromhex("fefea4e008a00012fd"),
         bytes.fromhex(channel_frame),
+        bytes.fromhex("fefea4e008fd"),
     ]
 
 
@@ -266,8 +345,7 @@ async def test_ic705_web_recall_keeps_integer_coercion(
     recall_web, protocol: str, group: int | float | str, channel: int | float | str
 ) -> None:
     web, transport, entries, consumer = recall_web
-    transport.queue_response_on_send(1, _answer(_CMD_ACK))
-    transport.queue_response_on_send(2, _answer(_CMD_ACK))
+    _ack_each(transport, 3)
 
     status, result = await _request(
         web, protocol, "set_memory_mode", {"group": group, "channel": channel}
@@ -281,6 +359,7 @@ async def test_ic705_web_recall_keeps_integer_coercion(
     assert [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets] == [
         bytes.fromhex("fefea4e008a00012fd"),
         bytes.fromhex("fefea4e0080004fd"),
+        bytes.fromhex("fefea4e008fd"),
     ]
 
 
@@ -293,12 +372,13 @@ async def test_ic705_http_recall_stops_after_group_nak(recall_web) -> None:
     status, result = await _request(
         web, "http", "set_memory_mode", {"group": 12, "channel": 4}
     )
-    with pytest.raises(CommandError, match="rejected memory recall 12/4"):
+    with pytest.raises(CommandRejectedError, match="rejected memory recall 12/4"):
         await asyncio.wait_for(consumer, 2)
 
-    assert status == 500
+    # MOR-4219: the radio's refusal reaches the client as ``radio_nak``.
+    assert status == 409
     assert result["ok"] is False
-    assert result["error"] == "command_failed"
+    assert result["error"] == "radio_nak"
     assert result["message"] == "Radio rejected memory recall 12/4"
     assert [entry.command for entry in entries] == [SetMemoryMode(4, 12)]
     assert [packet[CIV_HEADER_SIZE:] for packet in transport.sent_packets] == [
@@ -346,19 +426,23 @@ class TestRecallThroughTheControlHandler:
         assert queue.drain() == [SetMemoryMode(5)]
 
     @pytest.mark.asyncio
-    async def test_a_profile_without_recall_keeps_the_ic7610_form(self) -> None:
+    async def test_a_channel_addressed_profile_recalls_in_its_one_group(self) -> None:
         handler, queue = self._handler("IC-7610")
         assert await handler._enqueue_command("set_memory_mode", {"channel": 5}) == {
             "channel": 5
         }
         assert queue.drain() == [SetMemoryMode(5)]
-        # MOR-3644 gave ic7610.toml a [memory] section (write layout only),
-        # so the group form now reaches the recall check instead of the
-        # no-section refusal; recall stays undeclared and refused.
-        with pytest.raises(ValueError, match="does not support recall"):
+        # MOR-4219: ic7610.toml declares recall; its only group is 0.
+        assert await handler._enqueue_command(
+            "set_memory_mode", {"group": 0, "channel": 5}
+        ) == {"group": 0, "channel": 5}
+        assert queue.drain() == [SetMemoryMode(5, 0)]
+        with pytest.raises(ValueError, match="group must be 0-0, got 1"):
             await handler._enqueue_command(
-                "set_memory_mode", {"group": 0, "channel": 5}
+                "set_memory_mode", {"group": 1, "channel": 5}
             )
+        assert queue.drain() == []
+        # The band-addressed IC-9700 still has no recall.
         handler, _ = self._handler("IC-9700")
         with pytest.raises(ValueError, match="does not support recall"):
             await handler._enqueue_command(

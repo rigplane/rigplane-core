@@ -16,7 +16,7 @@ import asyncio
 import struct
 import time
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING
+from typing import ClassVar, TYPE_CHECKING
 
 import pytest
 
@@ -32,7 +32,7 @@ from rigplane.core.exceptions import (
 from rigplane.core.types import CivFrame, Mode
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.runtime.radio import IcomRadio
-from rigplane.transport import IcomTransport
+from rigplane.transport import IcomCivTransport, IcomTransport
 from test_serial_civ_link import _FakeReader, _FakeWriter
 
 if TYPE_CHECKING:
@@ -1023,6 +1023,9 @@ class _GuardedUdpTransport:
     window (a separate task cannot be timed into it — the runtime's
     pre-send check and this guard run in one event-loop slice).
     """
+
+    #: The LAN transport's ingress-order contract (MOR-4209).
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
 
     def __init__(self) -> None:
         self.my_id = 0x00010001

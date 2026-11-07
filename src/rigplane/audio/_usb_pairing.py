@@ -101,14 +101,24 @@ def pairing_refusal_error(refusal: PairRefused) -> WindowsAudioTopologyError:
 def _matches(
     snapshot: UsbSnapshot, record: PortAudioDeviceRecord, api: HostApiRecord, flow: Flow
 ) -> tuple[AudioEndpoint, ...]:
+    exact = tuple(
+        endpoint
+        for endpoint in snapshot.endpoints
+        if endpoint.flow == flow
+        and endpoint_name_key(record.name, strip_instance=False)
+        == endpoint_name_key(endpoint.name, strip_instance=False)
+    )
+    if exact:
+        return exact
     return tuple(
         endpoint
         for endpoint in snapshot.endpoints
         if endpoint.flow == flow
         and (
-            mme_listed_matches(record.name, endpoint.name)
+            mme_listed_matches(record.name, endpoint.name, strip_instance=True)
             if api.name == "MME"
-            else endpoint_name_key(record.name) == endpoint_name_key(endpoint.name)
+            else endpoint_name_key(record.name, strip_instance=True)
+            == endpoint_name_key(endpoint.name, strip_instance=True)
         )
     )
 
@@ -181,9 +191,12 @@ def _candidates(
     hub: UsbNode | None,
     nodes: dict[str, UsbNode],
     prefer: str | None = None,
+    include_unmatched: bool = False,
 ) -> tuple[AudioCandidate, ...]:
+    fallback: tuple[AudioCandidate, ...] = ()
     for api in _hostapis(snapshot, prefer):
         candidates = []
+        matched = False
         for record in snapshot.portaudio.devices:
             if record.hostapi != api.index:
                 continue
@@ -195,8 +208,9 @@ def _candidates(
                 if channels <= 0:
                     continue
                 matches = _matches(snapshot, record, api, flow)
-                if not matches:
+                if not matches and not include_unmatched:
                     continue
+                matched |= bool(matches)
                 candidates.append(
                     AudioCandidate(
                         candidate_stable_id(snapshot, record, api, flow),
@@ -211,13 +225,17 @@ def _candidates(
                     )
                 )
         if candidates:
-            return tuple(
+            result = tuple(
                 sorted(
                     candidates,
                     key=lambda item: (not item.near_radio, item.portaudio_index),
                 )
             )
-    return ()
+            if matched:
+                return result
+            if not fallback:
+                fallback = result
+    return fallback
 
 
 def _complete(nodes: dict[str, UsbNode]) -> bool:
@@ -269,7 +287,13 @@ def pair(
         return PairRefused(
             reason,
             wire,
-            _candidates(snapshot, hub, nodes, prefer_hostapi),
+            _candidates(
+                snapshot,
+                hub,
+                nodes,
+                prefer_hostapi,
+                include_unmatched=snapshot.os == "windows",
+            ),
             (*evidence, "refused:" + reason),
         )
 
