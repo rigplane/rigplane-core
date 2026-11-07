@@ -28,6 +28,7 @@ from testkit.test_simulator_faults import (
     _UdpClient,
     _conninfo,
     _header,
+    _is_echo_of,
     _login,
     _openclose,
     _recv_reply,
@@ -191,7 +192,7 @@ async def test_stateful_set_echo_precedes_the_fb(client: _UdpClient) -> None:
         request = _civ_packet(_PTT_ON_FRAME, seq.take())
         client.send(request, server.civ_port)
         echo = await client.recv()
-        assert echo == request  # recorded IC-7610 LAN behaviour: echo first
+        assert _is_echo_of(echo, request)  # recorded IC-7610 LAN behaviour: echo first
         reply = await client.recv()
         assert reply[0x15:] == _FB_FRAME
     finally:

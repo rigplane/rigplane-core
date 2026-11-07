@@ -437,7 +437,8 @@ class TestProbeSerialCiv:
             return _FakeReader([]), _FakeWriter()
 
         await probe_serial_civ("/dev/ttyUSB0", timeout=0.01, _open_serial=_open)
-        assert seen_bauds == [19200, 9600, 115200, 4800]
+        # The profile baud first (MOR-4207), then the documented fallbacks.
+        assert seen_bauds == [115200, 19200, 9600, 4800]
 
 
 class TestParseProbeResponse:

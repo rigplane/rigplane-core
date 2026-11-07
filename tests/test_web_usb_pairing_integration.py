@@ -51,6 +51,91 @@ W1_RX_ID = r"MME|SWD\MMDEVAPI\{0.0.1.00000000}.{963D478C-4D8C-412E-A32C-387169AF
 W1_TX_ID = r"MME|SWD\MMDEVAPI\{0.0.0.00000000}.{9082644E-6A88-4638-B416-E1788AAC0FDF}"
 
 
+@pytest.mark.parametrize("refusal", ["timeout", "unmatched-names"])
+async def test_generated_picker_candidates_reach_audio_start_api(monkeypatch, refusal):
+    session = _w3_padded_session()
+    if refusal == "unmatched-names":
+        for row in session["raw"]["windows"]["devnodes"]:
+            if row["class_name"] == "AudioEndpoint":
+                row["friendly_name"] = "Unmatched " + row["friendly_name"]
+    backend, _ = _inject_windows(monkeypatch, session)
+    monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
+    if refusal == "timeout":
+        original_run = usb_driver.bounded_portaudio_pool.run_bounded
+
+        async def timed_out(fn, *, what, direction, timeout, **kwargs):
+            if what == "optional USB topology":
+                assert timeout == 5.0
+                raise usb_driver.AudioCaptureOpenTimeoutError("topology timed out")
+            return await original_run(
+                fn, what=what, direction=direction, timeout=timeout, **kwargs
+            )
+
+        monkeypatch.setattr(usb_driver.bounded_portaudio_pool, "run_bounded", timed_out)
+    radio = Ic7300SerialRadio(
+        device="COM3",
+        profile=get_radio_profile("IC-7300"),
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        civ_link=_FakeSerialCivLink(model_id=0x94),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    writer = None
+    try:
+        await radio.connect()
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/audio")
+        await _ws_send_text(
+            writer,
+            json.dumps(
+                {
+                    "type": "audio_start",
+                    "direction": "rx",
+                    "preferred_rx_codec": "pcm16",
+                }
+            ),
+        )
+        messages = []
+        async with asyncio.timeout(5):
+            while True:
+                opcode, payload = await _ws_recv_frame(reader)
+                assert opcode == WS_OP_TEXT
+                messages.append(json.loads(payload))
+                if messages[-1]["type"] == "audio_format":
+                    break
+        assert any(message["type"] == "error" for message in messages)
+        status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
+        assert status == 200
+        failure = json.loads(body)["audioReceive"]["failure"]
+        assert failure["reason"] == (
+            "usb_topology_unavailable" if refusal == "timeout" else "usb_topology_names"
+        )
+        candidates = failure["candidates"]
+        expected = {(1, "capture"), (2, "capture"), (5, "render"), (6, "render")}
+        assert {(c["portAudioIndex"], c["direction"]) for c in candidates} == expected
+        devices = {d["index"]: d for d in session["raw"]["portaudio"]["devices"]}
+        for candidate in candidates:
+            assert (
+                candidate["displayName"] == devices[candidate["portAudioIndex"]]["name"]
+            )
+            assert candidate["stableId"] == "MME|name:" + candidate["displayName"]
+            assert candidate["hostApi"] == "MME"
+            assert candidate["nearRadio"] is False
+        assert radio.audio_session.rx_demand == 0
+        assert not (backend.rx_streams or backend.tx_streams or backend.duplex_streams)
+    finally:
+        try:
+            if writer is not None:
+                await _close_ws(writer)
+        finally:
+            try:
+                await server.stop()
+            finally:
+                await radio.disconnect()
+
+
 @pytest.mark.parametrize(
     "os_name", ["windows", "macos", "macos-frozen", "linux", "linux-frozen"]
 )

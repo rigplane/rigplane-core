@@ -2150,7 +2150,10 @@ async def test_control_run_skips_non_utf8_text_frame() -> None:
             self.unregistered = 0
 
         def register_control_event_queue(
-            self, queue: object, session_id: str | None = None
+            self,
+            queue: object,
+            session_id: str | None = None,
+            leaf_deltas: bool = False,
         ) -> dict[str, object]:
             self.registered += 1
             return {"type": "full", "data": {}}

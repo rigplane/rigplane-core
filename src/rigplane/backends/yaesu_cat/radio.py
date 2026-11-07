@@ -262,6 +262,10 @@ class YaesuCatRadio:
         self._cw_text_generation = 0
         self._tuner_provider_generation: Callable[[], int] | None = None
         self._device = device
+        # MOR-4207: the baud the caller passed (``--serial-baud``, a saved
+        # route) is a hint, tried right after the profile baud the connect
+        # opens at (``discovery.serial_connect_baud_rates``).
+        self._serial_configured_baudrate = baudrate
         # MOR-3677: the reply-line vocabulary this profile declares — the
         # literal head of every parse template. The transport pairs a data
         # reply with the whole request body, widened by any declared head
@@ -409,6 +413,10 @@ class YaesuCatRadio:
         self._cancel_identity_reread()
         self._identity_generation += 1
         generation = self._identity_generation
+        # MOR-4207: the first open and the first byte at the head of the
+        # connect order (the profile baud); the rest is asked on silence.
+        connect_bauds = self._serial_connect_bauds()
+        self._transport.set_baudrate(connect_bauds[0])
         await self._transport.connect()
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING,
@@ -417,6 +425,8 @@ class YaesuCatRadio:
         self._identity_gate_running = True
         try:
             answered = await self._read_identity_answer()
+            if answered is None:
+                answered = await self._sweep_identity_bauds(connect_bauds, generation)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -564,6 +574,61 @@ class YaesuCatRadio:
             and self._transport.connected
             and self._identity_hold_has_owner()
         )
+
+    def _serial_connect_bauds(self) -> tuple[int, ...]:
+        """This radio's connect order: profile baud, configured baud, the rest."""
+        from ..discovery import serial_connect_baud_rates
+
+        return serial_connect_baud_rates(
+            "yaesu_cat", self.profile.default_baud, self._serial_configured_baudrate
+        )
+
+    async def _sweep_identity_bauds(
+        self, bauds: tuple[int, ...], generation: int
+    ) -> str | None:
+        """Ask ``ID;`` at the rest of the connect order on the open port (MOR-4207).
+
+        Yaesu CAT has no auto-baud: the profile-baud attempt before the
+        configured one is one read timeout on a radio set to another rate.
+        The port is retuned in place (``discovery.sweep_serial_bauds``, the
+        Icom connect's search too) and keeps the baud that answers. Without
+        an answer the starting baud is put back for the hold's re-reads,
+        unless the attempt was retired meanwhile.
+        """
+        from ..discovery import sweep_serial_bauds
+
+        transport = self._transport
+        start = transport.baudrate
+        answered: str | None = None
+
+        def retired() -> bool:
+            return generation != self._identity_generation
+
+        async def heard_at(_baud: int) -> bool:
+            nonlocal answered
+            answered = await self._read_identity_answer()
+            return retired() or answered is not None
+
+        try:
+            found = await sweep_serial_bauds(
+                bauds,
+                start=start,
+                retune=transport.set_baudrate,
+                heard_at=heard_at,
+                usable=lambda: not retired() and transport.connected,
+            )
+            if found is not None and answered is not None:
+                logger.info(
+                    "rigplane (%s): %s answered at %d baud (configured %d)",
+                    self.model,
+                    self._device,
+                    found,
+                    self._serial_configured_baudrate,
+                )
+            return answered
+        finally:
+            if answered is None and not retired() and transport.baudrate != start:
+                transport.set_baudrate(start)
 
     async def _read_identity_answer(self) -> str | None:
         """Send the profile's ``get_id`` read; ``None`` means no usable answer.
@@ -793,6 +858,11 @@ class YaesuCatRadio:
         if self._profile_cache is None:
             self._profile_cache = self._config.to_profile()
         return self._profile_cache
+
+    @property
+    def serial_baudrate(self) -> int:
+        """The baud the port runs at: the profile baud, or the one that answered."""
+        return self._transport.baudrate
 
     @property
     def radio_state(self) -> RadioState:

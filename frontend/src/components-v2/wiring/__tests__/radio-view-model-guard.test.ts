@@ -64,8 +64,9 @@ describe('guardRadioViewModel', () => {
     expect(projection).toBeDefined();
     expect(projection).toContain('guardRadioViewModel(');
     expect(projection?.match(/toRadioViewModel\(/g)).toHaveLength(1);
-    expect(projection).toContain('radioViewStateSignature(state)');
-    expect(projection).toContain('cached.stateSignature === stateSignature');
+    // MOR-4213: memoization lives in `toRadioViewModel` itself (one mechanism
+    // for every caller), not in a second, signature-keyed cache here.
+    expect(source).not.toContain('radioViewStateSignature');
   });
 
   it('reuses one projected view model across authority consumers', () => {

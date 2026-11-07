@@ -1,8 +1,12 @@
 // Audio state — volume, mute, RX/TX bridge
+import { RX_AF_LEVEL_MAX } from '../audio/rx-player';
+
 let audioState = $state({
   rxEnabled: false,
   txEnabled: false,
-  volume: 50,
+  // Browser AF level in percent, 0..RX_AF_LEVEL_MAX * 100; 100 is unity,
+  // the level RxPlayer starts at (MOR-4210).
+  volume: 100,
   muted: false,
   micEnabled: false,
   bridgeRunning: false,
@@ -66,7 +70,7 @@ export function getAudioState(): typeof audioState {
 }
 
 export function setVolume(v: number): void {
-  audioState.volume = Math.max(0, Math.min(100, Math.round(v)));
+  audioState.volume = Math.max(0, Math.min(RX_AF_LEVEL_MAX * 100, Math.round(v)));
 }
 
 export function toggleMute(): void {

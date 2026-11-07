@@ -404,7 +404,7 @@ def test_s5_requires_exactly_one_input_and_output(indices):
     )
 
 
-def test_s5_no_endpoint_matched_names_produces_no_candidates():
+def test_s5_no_endpoint_matched_names_returns_name_candidates():
     snapshot = _snapshot()
     devices = tuple(
         replace(record, name="Unmatched mapper")
@@ -414,7 +414,60 @@ def test_s5_no_endpoint_matched_names_produces_no_candidates():
         replace(snapshot, portaudio=replace(snapshot.portaudio, devices=devices)),
         "endpoint_names",
     )
-    assert result.candidates == ()
+    assert [(c.stable_id, c.direction, c.near_radio) for c in result.candidates] == [
+        ("MME|name:Unmatched mapper", "capture", False),
+        ("MME|name:Unmatched mapper", "render", False),
+    ]
+
+
+def test_ambiguous_refusal_includes_unmatched_input_and_output():
+    snapshot = _snapshot()
+    devices = snapshot.portaudio.devices + (
+        _record(7, "Extra input", inputs=2),
+        _record(8, "Extra output", outputs=2),
+    )
+    snapshot = replace(
+        snapshot,
+        serial_ports=snapshot.serial_ports + (SerialPortRef("COM4", "C"),),
+        portaudio=replace(snapshot.portaudio, devices=devices),
+    )
+    refusal = _assert_refused(snapshot, "serial_ambiguous")
+    assert {(c.stable_id, c.direction, c.near_radio) for c in refusal.candidates} >= {
+        ("MME|name:Extra input", "capture", False),
+        ("MME|name:Extra output", "render", False),
+    }
+
+
+@pytest.mark.parametrize("api", ["MME", "Windows WASAPI", "Other"])
+@pytest.mark.parametrize("prefix_endpoint", [True, False])
+def test_windows_duplicate_prefix_matches_both_directions(api, prefix_endpoint):
+    snapshot = _snapshot()
+    endpoints = tuple(
+        replace(e, name=e.name.replace("(USB", "(5- USB")) for e in snapshot.endpoints
+    )
+    devices = tuple(
+        replace(d, name=d.name.replace("(USB", "(5- USB"))
+        for d in snapshot.portaudio.devices
+    )
+    snapshot = replace(
+        snapshot,
+        endpoints=endpoints if prefix_endpoint else snapshot.endpoints,
+        portaudio=replace(
+            snapshot.portaudio,
+            hostapis=(replace(snapshot.portaudio.hostapis[0], name=api),),
+            devices=snapshot.portaudio.devices if prefix_endpoint else devices,
+        ),
+    )
+    _assert_paired(snapshot)
+
+
+def test_duplicate_prefix_does_not_match_different_device():
+    assert endpoint_name_key("Microphone (5- USB Audio CODEC)") != endpoint_name_key(
+        "Microphone (USB Audio Other)"
+    )
+    assert endpoint_name_key("Microphone (5-USB Audio CODEC)") != endpoint_name_key(
+        "Microphone (USB Audio CODEC)"
+    )
 
 
 def test_s5_partial_first_api_skips_to_first_complete_api_in_enumeration_order():

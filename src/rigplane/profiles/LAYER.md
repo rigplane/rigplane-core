@@ -18,6 +18,9 @@ runtime/backend layers consult for routing, validation, and UI surfacing.
   consumed by runtime adapters.
 - `KeyboardBinding`, `KeyboardConfig` — UI-surfaced shortcut config.
 - `get_radio_profile(name_or_id)` — registry lookup by model or id.
+- `preferred_serial_bauds(protocol_type)` — the profiles' `default_baud`
+  values for one protocol, highest first: serial discovery's first probe
+  bauds (MOR-4207).
 - `resolve_radio_profile(profile=, model=, radio_addr=)` — unified
   resolution entry; raises `ValueError` when none of the three identifies
   the radio (plan §8.1 Q5 — no silent default profile).

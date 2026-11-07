@@ -414,7 +414,7 @@ async def test_soft_reconnect_recovers_audio(monkeypatch) -> None:
     # the CI-V rebuild; swap it for the fake so no live radio is required.
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     runtime = _TestControlPhaseRuntime(host)  # type: ignore[arg-type]
@@ -445,7 +445,7 @@ async def test_soft_reconnect_reports_and_retries_a_failed_audio_rebuild(
     """One failed rebuild: WARNING with the cause, retry, then recovery."""
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     host.ensure_failures = 1
@@ -478,7 +478,7 @@ async def test_soft_reconnect_stops_retrying_audio_rebuild_after_the_bound(
     """A rebuild that always fails stops after the bound and reports FAILED."""
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     host.ensure_failures = 10  # more than the retry bound
@@ -507,7 +507,7 @@ async def test_soft_reconnect_owner_stop_during_backoff_stops_audio_rebuild_retr
     """
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     host.ensure_failures = 10
@@ -533,7 +533,7 @@ async def test_soft_reconnect_civ_epoch_change_during_backoff_stops_audio_rebuil
     """
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     host.ensure_failures = 10
@@ -559,7 +559,7 @@ async def test_soft_reconnect_failed_rebuild_with_no_audio_demand_stays_quiet(
     """
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     host.ensure_failures = 10
@@ -584,7 +584,7 @@ async def test_soft_reconnect_failed_rebuild_with_auto_recover_off_stays_quiet(
     """
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     host.ensure_failures = 10
@@ -610,7 +610,7 @@ async def test_soft_reconnect_owner_stop_during_successful_rebuild_skips_recover
     """
     import rigplane.transport as _transport_mod
 
-    monkeypatch.setattr(_transport_mod, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(_transport_mod, "IcomCivTransport", _FakeCivTransport)
 
     host = _SoftReconnectHost()
     host.stop_owner_during_success = True

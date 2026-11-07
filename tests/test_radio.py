@@ -7,9 +7,11 @@ from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from typing import ClassVar
 
 import pytest
 
+from rigplane.core.transport import IcomCivTransport
 from rigplane import IC_7610_ADDR
 from rigplane.backends.icom7610.drivers import serial_session as serial
 from rigplane.commands import (
@@ -262,6 +264,9 @@ def _scope_response(sub: int, payload: bytes) -> bytes:
 
 class MockTransport:
     """Mock transport that queues responses for receive_packet."""
+
+    #: The LAN transport's ingress-order contract (MOR-4209).
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
 
     def __init__(self) -> None:
         self.connected = False

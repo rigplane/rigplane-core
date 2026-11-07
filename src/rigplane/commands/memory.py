@@ -111,6 +111,23 @@ def build_memory_mode_set(
     )
 
 
+@expose_command_key(lambda cmd_map: "set_memory_mode")
+@require_cmd_map
+def build_memory_mode_select(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
+) -> bytes:
+    """Build the CI-V frame that switches the radio to the Memory mode (bare 0x08).
+
+    The Icom guides list ``08`` with no data as "Select the Memory mode" and
+    ``08`` + channel as "Select the Memory channel": the channel select alone
+    leaves a radio in the VFO mode (the IC-7300 manual selects the channel to
+    store into while in the VFO mode), so a recall sends this frame too.
+    """
+    return _build_from_map(
+        cmd_map, "set_memory_mode", to_addr=to_addr, from_addr=from_addr
+    )
+
+
 @expose_command_key(lambda cmd_map: "set_memory_group")
 @require_cmd_map
 def build_memory_group_set(

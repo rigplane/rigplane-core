@@ -9,6 +9,7 @@ import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from 
 import { fetchCapabilities } from './http-client';
 import { authenticatedWsUrl, withoutWsAuthToken, withWsSearchParam } from './ws-url';
 import { controllerClient, ControllerClientError } from './controller-client';
+import { applyStateDelta, stateDeltaOps } from './state-delta';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -157,6 +158,8 @@ export class WsChannel {
   private ws: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  /** `performance.now()` of the newest frame from the current socket. */
+  private lastServerFrameAt = 0;
   private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private attempt = 0;
   private intentionalClose = false;
@@ -778,12 +781,28 @@ export class WsChannel {
     this.commandDeliveryHandlers.forEach((handler) => handler(event));
   }
 
+  /**
+   * A server frame arrived: the silence deadline moves to 30 s from now.
+   * MOR-4213: the frame only records its time. One timer stays armed and, on
+   * waking early, sleeps for the rest of the deadline; clearing and re-arming
+   * a timer on every frame cost two timer calls per message (tens a second).
+   */
   private _resetHeartbeat() {
-    this._clearHeartbeat();
+    this.lastServerFrameAt = performance.now();
+    if (this.heartbeatTimer === null) this._armHeartbeat(HEARTBEAT_TIMEOUT_MS);
+  }
+
+  private _armHeartbeat(delayMs: number) {
     this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
+      const silentMs = performance.now() - this.lastServerFrameAt;
+      if (silentMs < HEARTBEAT_TIMEOUT_MS) {
+        this._armHeartbeat(HEARTBEAT_TIMEOUT_MS - silentMs);
+        return;
+      }
       console.warn('[ws] heartbeat timeout — closing');
       this.ws?.close();
-    }, HEARTBEAT_TIMEOUT_MS);
+    }, delayMs);
   }
 
   private _clearHeartbeat() {
@@ -1048,20 +1067,20 @@ function applyDeltaEnvelope(envelope: Record<string, unknown>): Record<string, u
     return commitCurrentState() ? _fullState : null;
   }
 
-  if (!isRecord(envelope.changed)) return null;
-  if (envelope.removed !== undefined && (!Array.isArray(envelope.removed) || !envelope.removed.every((key) => typeof key === 'string'))) return null;
+  const ops = stateDeltaOps(envelope);
+  if (!ops) return null;
+  const epochKeys = ['stateContractVersion', 'providerGeneration'];
   if (
-    (envelope.changed.stateContractVersion !== undefined && envelope.changed.stateContractVersion !== 1)
-    || (envelope.changed.providerGeneration !== undefined && envelope.changed.providerGeneration !== generation)
-    || (envelope.removed ?? []).includes('stateContractVersion')
-    || (envelope.removed ?? []).includes('providerGeneration')
+    ops.unset.some((path) => epochKeys.includes(path[0]))
+    || ops.set.some(([path, value]) => (
+      (path[0] === 'stateContractVersion' && (path.length > 1 || value !== 1))
+      || (path[0] === 'providerGeneration' && (path.length > 1 || value !== generation))
+    ))
   ) return null;
-  const changed = envelope.changed;
-  const removed = (envelope.removed ?? []) as string[];
   const currentState = _fullState;
-  const candidate = currentState ? { ...currentState, ...changed } : null;
+  const candidate = currentState ? applyStateDelta(currentState, ops) : null;
+  if (currentState && !candidate) return null;
   if (candidate) {
-    for (const key of removed) delete candidate[key];
     syncEnvelopeRevisions(candidate, envelope);
     if (!isValidServerState(candidate)) {
       console.error('[rigplane] state: rejected a delta state envelope that failed contract validation');
@@ -1115,7 +1134,8 @@ _ctrl.onMessage((msg) => {
 });
 
 export function connect(url: string = '/api/v1/ws') {
-  _ctrl.connect(url);
+  // MOR-4206: ask for leaf deltas (`StateUpdateEnvelope.deltaVersion` 2).
+  _ctrl.connect(withWsSearchParam(url, 'state_delta', '2'));
 }
 
 /** Send a raw JSON message (e.g. subscribe) and register it for re-send on reconnect. */

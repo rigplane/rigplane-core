@@ -87,6 +87,12 @@
     {#if rx.rxSilent}
       <p class="rx-audio-silence" data-testid="rx-audio-silence">{t('core.overlay.rxSilence')}</p>
     {/if}
+    <!-- MOR-4210: LIVE audio from a quiet source names the radio's own menu item. -->
+    {#if rx.sourceLow}
+      <p class="rx-audio-silence" data-testid="rx-audio-source-low">{rx.sourceLow.menu === null
+        ? t('core.overlay.rxSourceLow')
+        : t('core.overlay.rxSourceLowMenu', { menu: rx.sourceLow.menu })}</p>
+    {/if}
     <!-- Monitor-mode radiogroup and the paired link-lost annotation
          (MOR-1384) are one `RxAudioInstrumentHost` handle: the annotation
          must never separate from the control it explains. When `finiteLayout`

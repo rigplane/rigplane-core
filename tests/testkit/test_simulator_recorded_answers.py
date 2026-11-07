@@ -19,7 +19,7 @@ from rigplane_testkit.icom.replay import extract_civ_frame
 
 from testkit.ic7610_fakes import ic7610_lan_fake
 from testkit.test_ic7610_conformance import _civ_packet, _lan_sim
-from testkit.test_simulator_faults import _UdpClient
+from testkit.test_simulator_faults import _UdpClient, _is_echo_of
 
 # Recorded LAN facts of the split-frequency command (0x0F), from the
 # ``lan`` rows of tests/fixtures/ic7610/civ_pairs.jsonl: the bare ``0F``
@@ -49,7 +49,7 @@ async def _ask_frame(
     pkt = _civ_packet(frame, seq=seq)
     client.send(pkt, port)
     echo = await client.recv()
-    assert echo == pkt, "the LAN CI-V echo precedes the reply"
+    assert _is_echo_of(echo, pkt), "the LAN CI-V echo precedes the reply"
     return extract_civ_frame(await client.recv())
 
 

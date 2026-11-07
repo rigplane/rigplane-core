@@ -8,12 +8,12 @@ import logging
 import struct
 import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any, Literal, cast
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
 from rigplane.core.usb_identity import UsbAudioIdentity
-from rigplane.profiles import get_radio_profile
+from rigplane.profiles import get_radio_profile, preferred_serial_bauds
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -40,7 +40,11 @@ __all__ = [
     "ProbeOptions",
     "ProbeResult",
     "RadioDiscoveryResult",
+    "RadioDiscoveryResultDict",
+    "GroupedRadio",
     "SerialPortCandidate",
+    "SetupLanConnection",
+    "SetupSerialConnection",
     "dedupe_radios",
     "discover_lan_radios",
     "discover_serial_radios",
@@ -162,6 +166,13 @@ class RadioDiscoveryResult:
         usb_audio: Optional USB audio resolution metadata. Keys match
             :class:`rigplane.usb_audio_resolve.AudioDeviceMapping` field names
             when topology resolution is available.
+        preferred_baudrate: The identified profile's ``default_baud``
+            (``None`` without a known profile), MOR-4207.
+        low_baud_hint: For a CI-V radio below its profile baud, what to set
+            on the radio — the serial backend's own scope guidance.
+        low_baud: Derived: the radio answered only below
+            ``preferred_baudrate``. For an Icom CI-V radio the scope is then
+            off; setup can show ``low_baud_hint``.
     """
 
     port: str
@@ -178,6 +189,54 @@ class RadioDiscoveryResult:
     manufacturer: str | None = None
     product: str | None = None
     serial_number: str | None = None
+    preferred_baudrate: int | None = None
+    low_baud_hint: str | None = None
+    low_baud: bool = field(init=False, default=False)
+
+    def __post_init__(self) -> None:
+        self.low_baud = (
+            self.preferred_baudrate is not None
+            and self.baudrate < self.preferred_baudrate
+        )
+
+    def to_dict(self) -> RadioDiscoveryResultDict:
+        """The result's fields by name: the form discovery output is grouped in."""
+        return cast(RadioDiscoveryResultDict, asdict(self))
+
+
+class RadioDiscoveryResultDict(TypedDict, total=False):
+    """:meth:`RadioDiscoveryResult.to_dict` — one key per result field (MOR-4207).
+
+    The serialized serial result :func:`dedupe_radios` groups and
+    :func:`build_setup_discovery_payload` reads. Keys never drift from the
+    dataclass (``tests/test_discovery_probe_baud_order.py`` pins them).
+    """
+
+    port: str
+    protocol: str
+    model: str
+    profile_id: str
+    baudrate: int
+    address: int | str
+    description: str | None
+    hwid: str | None
+    usb_audio: dict[str, Any] | None
+    vid: int | None
+    pid: int | None
+    manufacturer: str | None
+    product: str | None
+    serial_number: str | None
+    preferred_baudrate: int | None
+    low_baud_hint: str | None
+    low_baud: bool
+
+
+class GroupedRadio(TypedDict):
+    """One radio of :func:`dedupe_radios`: its LAN and serial results."""
+
+    model: object
+    lan: list[dict[str, Any]]
+    serial: list[RadioDiscoveryResultDict]
 
 
 @dataclass
@@ -227,9 +286,89 @@ class CivProbeDiagnostic:
     open_failure_codes: tuple[_ProbeCode, ...] = ()
 
 
-# Documented CI-V baud rates, in the order a port is swept (MOR-3620: also the
-# retry order of a serial connect that gets silence at the configured baud).
-SERIAL_PROBE_BAUD_RATES: tuple[int, ...] = (19200, 9600, 115200, 4800)
+# Documented serial baud rates per protocol: the fallbacks a port is swept at
+# after the profile bauds, in this order (MOR-4207, see serial_probe_baud_rates).
+_DOCUMENTED_PROBE_BAUDS: dict[str, tuple[int, ...]] = {
+    "civ": (19200, 9600, 115200, 4800),
+    "yaesu_cat": (38400, 9600, 115200),
+}
+
+
+def serial_probe_baud_rates(
+    protocol_type: Literal["civ", "yaesu_cat"],
+) -> tuple[int, ...]:
+    """The order a serial port is probed at for *protocol_type* (MOR-4207).
+
+    An Icom radio on ``CI-V USB Baud Rate = Auto`` keeps the baud of the first
+    access to its port until it is restarted, so the first probe decides the
+    speed the radio then runs at. The loaded profiles' ``default_baud`` values
+    come first, highest first (115200 for the Icom CI-V profiles: the serial
+    scope minimum), then the protocol's other documented rates in their
+    documented order. A serial connect tries its own profile baud and the
+    configured baud ahead of it (:func:`serial_connect_baud_rates`).
+    """
+    preferred = preferred_serial_bauds(protocol_type)
+    return tuple(dict.fromkeys((*preferred, *_DOCUMENTED_PROBE_BAUDS[protocol_type])))
+
+
+def serial_connect_baud_rates(
+    protocol_type: Literal["civ", "yaesu_cat"], profile_baud: int, hint: int
+) -> tuple[int, ...]:
+    """The order a serial connect contacts its radio at (MOR-4207).
+
+    The discovery rule for one known radio: its profile ``default_baud``
+    first, so an Icom on ``CI-V USB Baud Rate = Auto`` locks there; then
+    *hint*, the baud the caller passed (``--serial-baud``, a saved route),
+    so a radio fixed at it answers after one miss; then the rest of
+    :func:`serial_probe_baud_rates`.
+    """
+    return tuple(
+        dict.fromkeys((profile_baud, hint, *serial_probe_baud_rates(protocol_type)))
+    )
+
+
+async def sweep_serial_bauds(
+    bauds: tuple[int, ...],
+    *,
+    start: int,
+    retune: Callable[[int], bool],
+    heard_at: Callable[[int], Awaitable[bool]],
+    usable: Callable[[], bool],
+) -> int | None:
+    """Ask the radio on an open link at each of *bauds* but *start* (MOR-3620).
+
+    The one connect-time baud search of the serial backends (CI-V and Yaesu
+    CAT). The link is retuned in place, never reopened. Stops as soon as
+    *usable* is false (the attempt was retired or the link died); skips a
+    baud the port refuses (*retune* false); returns the first baud
+    *heard_at* reports heard, or ``None``. Putting *start* back after a miss
+    is the caller's: only it knows whether the attempt is still current.
+    """
+    for baud in bauds:
+        if baud == start:
+            continue
+        if not usable():
+            return None
+        if not retune(baud):
+            continue
+        if await heard_at(baud):
+            return baud
+    return None
+
+
+def _profile_baud(profile_id: str) -> int | None:
+    """The ``default_baud`` of *profile_id*, or ``None`` without a usable profile.
+
+    Result metadata, like the USB audio lookup: a profile lookup failure
+    never fails discovery.
+    """
+    if not profile_id:
+        return None
+    try:
+        return get_radio_profile(profile_id).default_baud
+    except Exception as exc:
+        logger.debug("discover_serial_radios: profile baud lookup failed: %s", exc)
+        return None
 
 
 async def probe_serial_civ(
@@ -248,7 +387,7 @@ async def probe_serial_civ(
     Args:
         port: Serial device path (e.g. ``/dev/ttyUSB0``).
         baud_rates: Baud rates to try, in order. Defaults to
-            :data:`SERIAL_PROBE_BAUD_RATES`.
+            :func:`serial_probe_baud_rates` for ``"civ"``.
         timeout: Per-baud timeout in seconds.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
             post-open control-line deassert still applies (used in tests).
@@ -258,7 +397,7 @@ async def probe_serial_civ(
         :class:`CivProbeResult` on success, or ``None`` if no radio responded.
     """
     if baud_rates is None:
-        baud_rates = list(SERIAL_PROBE_BAUD_RATES)
+        baud_rates = list(serial_probe_baud_rates("civ"))
 
     if diagnostics is not None:
         diagnostics.status = "not_attempted"
@@ -613,8 +752,6 @@ _YAESU_CAT_MODEL_MAP: dict[str, tuple[str, str]] = {
     "0840": ("FTX-1", "yaesu_ftx1"),
 }
 
-_YAESU_CAT_PROBE_BAUDS = [38400, 9600, 115200]
-
 _YaesuTransportFactory = Callable[..., Any]
 
 
@@ -639,7 +776,7 @@ async def probe_serial_yaesu_cat(
     Args:
         port: Serial device path (e.g. ``/dev/ttyUSB0``).
         baud_rates: Baud rates to try, in order. Defaults to
-            ``[38400, 9600, 115200]``.
+            :func:`serial_probe_baud_rates` for ``"yaesu_cat"``.
         timeout: Per-baud timeout in seconds.
         _transport_factory: Override for ``YaesuCatTransport`` constructor
             (used in tests).
@@ -648,7 +785,7 @@ async def probe_serial_yaesu_cat(
         :class:`RadioDiscoveryResult` on success, or ``None`` if no Yaesu radio responded.
     """
     if baud_rates is None:
-        baud_rates = _YAESU_CAT_PROBE_BAUDS
+        baud_rates = list(serial_probe_baud_rates("yaesu_cat"))
 
     try:
         factory = _transport_factory or _default_yaesu_transport_factory()
@@ -738,6 +875,7 @@ def _parse_yaesu_id_response(
         profile_id=profile_id,
         baudrate=baud,
         address=model_id_str,
+        preferred_baudrate=_profile_baud(profile_id),
     )
 
 
@@ -1257,7 +1395,7 @@ async def _discover_one_port(
         model, profile_id = await resolve_civ_radio_identity(
             civ, port, _open_serial=_open_serial
         )
-        return RadioDiscoveryResult(
+        result = RadioDiscoveryResult(
             port=civ.port,
             protocol="civ",
             model=model,
@@ -1272,7 +1410,15 @@ async def _discover_one_port(
             product=port.product,
             serial_number=port.serial_number,
             usb_audio=await _resolve_profile_usb_audio_metadata(civ.port, profile_id),
+            preferred_baudrate=_profile_baud(profile_id),
         )
+        if result.low_baud:
+            # Below the profile baud a CI-V radio has no scope: hand setup the
+            # serial backend's own advice (MOR-4207).
+            from ._icom_serial_base import low_baud_scope_guidance
+
+            result.low_baud_hint = low_baud_scope_guidance()
+        return result
 
     # --- Yaesu CAT probe ---
     yaesu = await probe_serial_yaesu_cat(
@@ -1388,8 +1534,8 @@ def _resolve_usb_audio_metadata(
 
 
 def dedupe_radios(
-    lan_radios: list[dict[str, Any]], serial_radios: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+    lan_radios: list[dict[str, Any]], serial_radios: list[RadioDiscoveryResultDict]
+) -> list[GroupedRadio]:
     """Group LAN and serial discovery results by radio identity.
 
     Two entries are considered the same radio when their ``model`` **and**
@@ -1398,13 +1544,14 @@ def dedupe_radios(
 
     Args:
         lan_radios: Dicts from :func:`discover_lan_radios`.
-        serial_radios: Dicts from :func:`discover_serial_radios`.
+        serial_radios: :meth:`RadioDiscoveryResult.to_dict` of the
+            :func:`discover_serial_radios` results.
 
     Returns:
         List of dicts, each with keys ``model``, ``lan`` (list), ``serial``
         (list).  ``model`` is the display name of the radio.
     """
-    radios: dict[tuple[object, ...], dict[str, Any]] = {}
+    radios: dict[tuple[object, ...], GroupedRadio] = {}
     _counter = 0
 
     for lan in lan_radios:
@@ -1421,9 +1568,7 @@ def dedupe_radios(
                 "lan": [],
                 "serial": [],
             }
-        cast_list = radios[key]["lan"]
-        assert isinstance(cast_list, list)
-        cast_list.append(lan)
+        radios[key]["lan"].append(lan)
 
     for serial in serial_radios:
         model = serial.get("model")
@@ -1435,24 +1580,68 @@ def dedupe_radios(
             key = (f"__unid_serial_{_counter}",)
         if key not in radios:
             radios[key] = {"model": model or "Unknown", "lan": [], "serial": []}
-        cast_list = radios[key]["serial"]
-        assert isinstance(cast_list, list)
-        cast_list.append(serial)
+        radios[key]["serial"].append(serial)
 
     return list(radios.values())
 
 
+class SetupLanConnection(TypedDict):
+    """A LAN connection in the ``rigplane.discovery.v1`` setup JSON."""
+
+    type: Literal["lan"]
+    backend: Literal["lan"]
+    label: str
+    host: str
+    remoteId: object
+    requiresCredentials: bool
+
+
+class SetupSerialConnection(TypedDict):
+    """A USB serial connection in the ``rigplane.discovery.v1`` setup JSON.
+
+    ``baudrate`` is the rate the radio answered at. ``preferredBaudrate``,
+    ``lowBaud`` and ``lowBaudHint`` carry :class:`RadioDiscoveryResult`'s
+    ``preferred_baudrate`` / ``low_baud`` / ``low_baud_hint`` (MOR-4207), so
+    setup can show the scope-baud guidance.
+    """
+
+    type: Literal["serial"]
+    backend: Literal["serial", "yaesu-cat"]
+    label: str
+    port: str
+    protocol: object
+    profileId: object
+    baudrate: object
+    preferredBaudrate: int | None
+    lowBaud: bool
+    lowBaudHint: str | None
+    address: object
+    description: object
+    hwid: object
+    vid: object
+    pid: object
+    manufacturer: object
+    product: object
+    serialNumber: object
+    requiresCredentials: bool
+    usbAudio: NotRequired[dict[str, object]]
+
+
 def build_setup_discovery_payload(
-    grouped_radios: list[dict[str, Any]],
+    grouped_radios: list[GroupedRadio],
 ) -> dict[str, Any]:
-    """Build stable discovery JSON for setup wizards and managed supervisors."""
+    """Build stable discovery JSON for setup wizards and managed supervisors.
+
+    Serial entries are :class:`RadioDiscoveryResultDict`; each connection is a
+    :class:`SetupLanConnection` or :class:`SetupSerialConnection`.
+    """
     radios: list[dict[str, Any]] = []
     for index, radio in enumerate(grouped_radios, start=1):
-        connections: list[dict[str, Any]] = []
+        connections: list[SetupLanConnection | SetupSerialConnection] = []
         for lan in radio.get("lan", []):
             host = str(lan.get("host", ""))
             remote_id = lan.get("remote_id")
-            connection: dict[str, Any] = {
+            lan_connection: SetupLanConnection = {
                 "type": "lan",
                 "backend": "lan",
                 "label": f"LAN {host}" if host else "LAN",
@@ -1460,14 +1649,16 @@ def build_setup_discovery_payload(
                 "remoteId": remote_id,
                 "requiresCredentials": True,
             }
-            connections.append(connection)
+            connections.append(lan_connection)
 
         for serial in radio.get("serial", []):
             port = str(serial.get("port", ""))
-            baudrate = serial.get("baudrate", serial.get("baud"))
+            baudrate = serial.get("baudrate")
             protocol = serial.get("protocol", "civ")
-            backend = "yaesu-cat" if protocol == "yaesu_cat" else "serial"
-            connection = {
+            backend: Literal["serial", "yaesu-cat"] = (
+                "yaesu-cat" if protocol == "yaesu_cat" else "serial"
+            )
+            connection: SetupSerialConnection = {
                 "type": "serial",
                 "backend": backend,
                 "label": f"USB serial {port}" if port else "USB serial",
@@ -1475,6 +1666,9 @@ def build_setup_discovery_payload(
                 "protocol": protocol,
                 "profileId": serial.get("profile_id"),
                 "baudrate": baudrate,
+                "preferredBaudrate": serial.get("preferred_baudrate"),
+                "lowBaud": serial.get("low_baud") is True,
+                "lowBaudHint": serial.get("low_baud_hint"),
                 "address": serial.get("address"),
                 "description": serial.get("description"),
                 "hwid": serial.get("hwid"),

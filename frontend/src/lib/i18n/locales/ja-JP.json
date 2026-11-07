@@ -145,6 +145,8 @@
   "core.overlay.scopeTransmitting": "送信中 — 送信中は無線機からパノラマが送られません",
   "core.overlay.audioLinkLost": "音声リンクが切断されました — 再接続中…",
   "core.overlay.rxSilence": "ラジオからの音声がありません: サーバーはデジタル無音のみを受信しています。macOS では、サーバーを起動するプログラムにマイクの使用を許可するか、ラジオの USB オーディオ出力を確認してください。Windows では、Windows のサウンド設定でこの入力の「オーディオ拡張」をオフにしてください。",
+  "core.overlay.rxSourceLow": "無線機からの音声が小さいです。無線機の音声出力レベルを上げてください。",
+  "core.overlay.rxSourceLowMenu": "無線機からの音声が小さいです。無線機の音声出力レベルを上げてください：{menu}。",
 
   "core.diagnostics.sendReport.title": "診断レポートを送信",
   "core.diagnostics.sendReport.confirm": "レポートを送信",
@@ -217,6 +219,8 @@
   "core.toast.rxAudioStationDeviceNeeded": "無線機の音声デバイスを自動でペアリングできませんでした。ステーションの音声デバイスはステーションのコンピューターで選択する必要があります。ステーションを運用している方が音声デバイス設定から選択できます。",
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
+
+  "core.memory.open": "メモリー",
 
   "core.mobile.nav.label": "トランシーバーのナビゲーション",
   "core.mobile.nav.tab.vfo": "VFO",

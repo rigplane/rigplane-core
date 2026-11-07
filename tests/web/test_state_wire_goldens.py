@@ -30,6 +30,7 @@ import pytest
 
 from rigplane.profiles import get_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
+from rigplane.web._delta_encoder import apply_delta
 from rigplane.web.runtime_helpers import declared_field_paths
 from rigplane.web.state_schema import StateUpdateEnvelope
 
@@ -64,11 +65,19 @@ _ENVELOPE_CASES = [
     for case in ("allObserved", "allUnobserved")
     if case in entry
 ]
-_POLLED_DCD_CASES = ("polledDcdOpen", "polledDcdClosed", "polledDcdUnanswered")
-_POLLED_DCD_DELTA_CASES = ("polledDcdDeltaOpen", "polledDcdDeltaClosed")
-_POLLED_DCD_MODELS = _GENERATOR.polled_dcd_models()
-_POLLED_DCD_ENVELOPES = [
-    (model, case) for model in _POLLED_DCD_MODELS for case in _POLLED_DCD_CASES
+_POLLED_SQUELCH_CASES = (
+    "polledSquelchRaised",
+    "polledSquelchZero",
+    "polledSquelchUnanswered",
+)
+_POLLED_SQUELCH_DELTA_CASES = (
+    "polledSquelchDeltaRaised",
+    "polledSquelchDeltaZero",
+    "polledSquelchLeafStreamRaised",
+)
+_POLLED_SQUELCH_MODELS = _GENERATOR.polled_squelch_models()
+_POLLED_SQUELCH_ENVELOPES = [
+    (model, case) for model in _POLLED_SQUELCH_MODELS for case in _POLLED_SQUELCH_CASES
 ]
 _ALL_RIG_MODELS = sorted(discover_rigs(_ROOT / "rigs"))
 # The generator keeps these profiles' state payloads out of the golden; their
@@ -208,99 +217,126 @@ def test_all_unobserved_observes_only_lifecycle_paths(model: str) -> None:
     assert _declared_store_paths(model) & observed == set()
 
 
-def test_polled_dcd_cases_exist_exactly_for_the_profiles_that_poll_dcd() -> None:
-    """The BUSY-lamp cases exist for every profile that polls ``dcd``, no more."""
+def test_polled_squelch_cases_exist_exactly_for_profiles_that_poll_squelch() -> None:
+    """The SQL-tag cases exist for every profile that polls the level, no more."""
     with_cases = {
         model
         for model, entry in _GOLDENS.items()
         if any(
             case in entry
             for case in (
-                *_POLLED_DCD_CASES,
-                *_POLLED_DCD_DELTA_CASES,
-                "polledDcdCapabilities",
+                *_POLLED_SQUELCH_CASES,
+                *_POLLED_SQUELCH_DELTA_CASES,
+                "polledSquelchCapabilities",
             )
         )
     }
 
-    assert with_cases == set(_POLLED_DCD_MODELS)
+    assert with_cases == set(_POLLED_SQUELCH_MODELS)
     assert {"IC-705", "IC-7300"} <= with_cases
     for model in with_cases:
         assert set(_GOLDENS[model]) >= {
-            *_POLLED_DCD_CASES,
-            *_POLLED_DCD_DELTA_CASES,
-            "polledDcdCapabilities",
+            *_POLLED_SQUELCH_CASES,
+            *_POLLED_SQUELCH_DELTA_CASES,
+            "polledSquelchCapabilities",
         }
 
 
-@pytest.mark.parametrize(("model", "case"), _POLLED_DCD_ENVELOPES)
-def test_polled_dcd_envelope_matches_wire_schema(model: str, case: str) -> None:
+@pytest.mark.parametrize(("model", "case"), _POLLED_SQUELCH_ENVELOPES)
+def test_polled_squelch_envelope_matches_wire_schema(model: str, case: str) -> None:
     validated = StateUpdateEnvelope.model_validate(_GOLDENS[model][case])
 
     assert validated.type == "full"
 
 
-@pytest.mark.parametrize("case", _POLLED_DCD_DELTA_CASES)
-@pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
-def test_polled_dcd_delta_is_a_wire_delta_carrying_the_flipped_leaf(
+@pytest.mark.parametrize("case", ("polledSquelchDeltaRaised", "polledSquelchDeltaZero"))
+@pytest.mark.parametrize("model", _POLLED_SQUELCH_MODELS)
+def test_polled_squelch_delta_is_a_wire_delta_carrying_the_moved_leaf(
     model: str, case: str
 ) -> None:
-    """The live squelch-change frame: a schema-valid delta with dcd and its status."""
+    """The live squelch-change frame: a schema-valid delta with the level and its status."""
     envelope = _GOLDENS[model][case]
     validated = StateUpdateEnvelope.model_validate(envelope)
-    opened = case == "polledDcdDeltaOpen"
+    raised = case == "polledSquelchDeltaRaised"
     changed = envelope["changed"]
 
     assert validated.type == "delta"
-    assert changed["main"]["dcd"] is opened
-    assert changed["main"]["sMeterSqlOpen"] is opened
-    assert changed["fieldStatus"]["main.dcd"]["observed"] is True
-    assert changed["fieldStatus"]["main.dcd"]["availability"] == "available"
+    assert (changed["main"]["squelch"] > 0) is raised
+    assert changed["fieldStatus"]["main.squelch"]["observed"] is True
+    assert changed["fieldStatus"]["main.squelch"]["availability"] == "available"
     # The delta belongs to the same stream as the polled full envelopes.
-    full = _GOLDENS[model]["polledDcdOpen"]
+    full = _GOLDENS[model]["polledSquelchRaised"]
     assert envelope["stateContractVersion"] == full["stateContractVersion"]
     assert envelope["providerGeneration"] == full["providerGeneration"]
 
 
-@pytest.mark.parametrize(("model", "case"), _POLLED_DCD_ENVELOPES)
-def test_polled_dcd_envelope_and_capabilities_share_one_epoch(
+@pytest.mark.parametrize(("model", "case"), _POLLED_SQUELCH_ENVELOPES)
+def test_polled_squelch_envelope_and_capabilities_share_one_epoch(
     model: str, case: str
 ) -> None:
     entry = _GOLDENS[model]
     envelope = entry[case]
-    capabilities = entry["polledDcdCapabilities"]
+    capabilities = entry["polledSquelchCapabilities"]
 
     assert envelope["stateContractVersion"] == capabilities["stateContractVersion"]
     assert envelope["providerGeneration"] == capabilities["providerGeneration"]
     assert capabilities["model"] == model
 
 
-@pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
-def test_polled_dcd_capabilities_declare_the_squelch_fact(model: str) -> None:
-    """The BUSY lamp exists only with the ``squelch`` tag a radio-backed server serves."""
+@pytest.mark.parametrize("model", _POLLED_SQUELCH_MODELS)
+def test_polled_squelch_capabilities_declare_the_squelch_fact(model: str) -> None:
+    """The SQL tag exists only with the ``squelch`` tag a radio-backed server serves."""
     entry = _GOLDENS[model]
 
-    assert "squelch" in entry["polledDcdCapabilities"]["capabilities"]
+    assert "squelch" in entry["polledSquelchCapabilities"]["capabilities"]
     assert "squelch" not in entry["capabilities"]["capabilities"]
 
 
 @pytest.mark.parametrize(
-    ("case", "value"),
+    ("case", "raised"),
     [
-        ("polledDcdOpen", True),
-        ("polledDcdClosed", False),
-        ("polledDcdUnanswered", None),
+        ("polledSquelchRaised", True),
+        ("polledSquelchZero", False),
+        ("polledSquelchUnanswered", None),
     ],
 )
-@pytest.mark.parametrize("model", _POLLED_DCD_MODELS)
-def test_polled_squelch_reply_publishes_dcd_in_the_envelope(
-    model: str, case: str, value: bool | None
+@pytest.mark.parametrize("model", _POLLED_SQUELCH_MODELS)
+def test_polled_squelch_reply_publishes_the_level_in_the_envelope(
+    model: str, case: str, raised: bool | None
 ) -> None:
-    """A polled 0x15 0x01 reply moves dcd; no reply leaves it unobserved."""
+    """A polled 0x14 0x03 reply moves the level; no reply leaves it unobserved."""
     data = _GOLDENS[model][case]["data"]
-    row = data["fieldStatus"]["main.dcd"]
+    row = data["fieldStatus"]["main.squelch"]
 
-    assert data["main"].get("dcd") is value
-    assert data["main"].get("sMeterSqlOpen") is value
-    assert row["observed"] is (value is not None)
-    assert row["availability"] == ("available" if value is not None else "missing")
+    if raised is None:
+        assert data["main"].get("squelch") is None
+    else:
+        assert (data["main"]["squelch"] > 0) is raised
+    assert row["observed"] is (raised is not None)
+    assert row["availability"] == ("available" if raised is not None else "missing")
+
+
+@pytest.mark.parametrize("model", _POLLED_SQUELCH_MODELS)
+def test_polled_squelch_leaf_stream_rebuilds_what_the_top_level_delta_rebuilds(
+    model: str,
+) -> None:
+    """MOR-4206: the frames a ``?state_delta=2`` client gets when the level rises.
+
+    ``view-model-memo-delta.integration.isolated.test.ts`` feeds the same two
+    frames through the frontend ws-client into the view model.
+    """
+    baseline, leaf = _GOLDENS[model]["polledSquelchLeafStreamRaised"]
+    top_level = _GOLDENS[model]["polledSquelchDeltaRaised"]
+    validated = StateUpdateEnvelope.model_validate(leaf)
+    paths = [path for path, _value in leaf["set"]]
+
+    assert StateUpdateEnvelope.model_validate(baseline).type == "full"
+    assert validated.type == "delta"
+    assert validated.deltaVersion == 2
+    assert validated.changed is None
+    assert ["main", "squelch"] in paths
+    assert ["fieldStatus"] not in paths
+    assert baseline["data"]["main"]["squelch"] == 0
+    assert apply_delta(baseline["data"], leaf) == apply_delta(
+        baseline["data"], top_level
+    )

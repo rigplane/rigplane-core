@@ -83,17 +83,17 @@ describe('validateRadioViewModel', () => {
     expect(model.receiverIndicators?.[0].digiSel.reading).toEqual({ status: 'known', value: false });
   });
 
-  it('round-trips the optional squelch-open lamp fact and rejects a non-boolean (MOR-3630)', () => {
-    const open = validateRadioViewModel({ ...valid(), receiverIndicators: [{
+  it('round-trips the optional squelch level fact and rejects a non-number', () => {
+    const level = validateRadioViewModel({ ...valid(), receiverIndicators: [{
       ...receiverIndicator(),
-      squelchOpen: { reading: { status: 'known' as const, value: true }, availability: { structural: true, operational: true } },
+      squelch: { reading: { status: 'known' as const, value: 0 }, availability: { structural: true, operational: true } },
     }] });
-    expect(open.receiverIndicators?.[0].squelchOpen?.reading).toEqual({ status: 'known', value: true });
+    expect(level.receiverIndicators?.[0].squelch?.reading).toEqual({ status: 'known', value: 0 });
     expect(validateRadioViewModel({ ...valid(), receiverIndicators: [receiverIndicator()] })
-      .receiverIndicators?.[0]).not.toHaveProperty('squelchOpen');
+      .receiverIndicators?.[0]).not.toHaveProperty('squelch');
     expect(() => validateRadioViewModel({ ...valid(), receiverIndicators: [{
       ...receiverIndicator(),
-      squelchOpen: { reading: { status: 'known' as const, value: 1 }, availability: { structural: true, operational: true } },
+      squelch: { reading: { status: 'known' as const, value: true }, availability: { structural: true, operational: true } },
     }] })).toThrow(TypeError);
   });
 

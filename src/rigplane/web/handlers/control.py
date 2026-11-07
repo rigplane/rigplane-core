@@ -934,8 +934,11 @@ class ControlHandler:
         managed_tx_authority: "ManagedTxAuthority | None" = None,
         clock: Callable[[], float] = time.monotonic,
         tx_owner: str | None = None,
+        leaf_state_deltas: bool = False,
     ) -> None:
         self._ws = ws
+        # MOR-4206: the client asked for leaf state deltas (``?state_delta=2``).
+        self._leaf_state_deltas = leaf_state_deltas
         self._radio = radio
         self._version = server_version
         self._radio_model = radio_model
@@ -1007,7 +1010,9 @@ class ControlHandler:
         # and before the recv loop — no interleaving with command responses.
         if self._server is not None:
             initial = self._server.register_control_event_queue(
-                self._event_queue, session_id=self._session_id
+                self._event_queue,
+                session_id=self._session_id,
+                leaf_deltas=self._leaf_state_deltas,
             )
             # Old focused handler doubles have no StateStore-backed
             # registration API and return a MagicMock/None.  Production
