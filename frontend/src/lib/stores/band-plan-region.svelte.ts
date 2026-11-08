@@ -5,7 +5,6 @@
 // portrait layout hides it), so the overlay never guesses a region.
 
 import { getAuthHeaders } from '$lib/auth';
-import { invalidateCapabilities } from '$lib/transport/ws-client';
 
 const CONFIG_URL = '/api/v1/band-plan/config';
 
@@ -62,14 +61,6 @@ export async function selectBandPlanRegion(next: string): Promise<boolean> {
     if (!resp.ok) return false;
     epoch += 1;
     region = next;
-    // MOR-4300: the capabilities payload publishes region-gated
-    // band-selector rows (4 m — display only), so a region change asks
-    // the session-owned capabilities refresh (ws-client) to re-read the
-    // document. Superseded reads, session identity and retries are
-    // handled there — this store does not keep a second fetch path; a
-    // failed re-read is swallowed there, and the region switch itself
-    // still stands.
-    invalidateCapabilities();
     return true;
   } catch {
     return false;

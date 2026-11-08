@@ -141,9 +141,9 @@ describe('getFrequencyPermit', () => {
   });
   // MOR-3782 → MOR-4300/MOR-4303: the IC-7300 golden is the shipped
   // capabilities payload. Since MOR-4300 its txBands carries the 4 m row
-  // (default region US hides only the band-selector entry, never the TX
-  // data), so 70.2 MHz is tunable and permitted by data — the row is
-  // information; the radio itself decides whether it transmits there.
+  // (plain profile data, shown in every band-plan region), so 70.2 MHz
+  // is tunable and permitted by data — the row is information; the
+  // radio itself decides whether it transmits there.
   it('IC-7300 golden: 4 m (70 MHz) is tunable and a TX band row carrying maxPowerW 50', () => {
     const { capabilities } = (goldenFile as unknown as Record<string, {
       capabilities: {

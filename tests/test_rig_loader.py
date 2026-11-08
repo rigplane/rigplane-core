@@ -1121,15 +1121,7 @@ class TestPublishedRxCoverage:
             inside = any(s <= rng.start and rng.end <= e for s, e in published)
             assert inside, (filename, rng.label, rng.start, rng.end)
             if rng.label in ("VHF RX", "UHF RX"):
-                # MOR-3782 refused an unconditional band row on these
-                # tune/receive-only ranges. MOR-4300 allows exactly one
-                # exception: a row that declares ``regions`` — a
-                # variant-dependent band shown per band-plan region
-                # (display only). An ungated row here is still refused.
-                assert rng.bands == () or all(band.regions for band in rng.bands), (
-                    filename,
-                    rng.label,
-                )
+                assert rng.bands == (), (filename, rng.label)
 
 
 class TestTxPolicy:

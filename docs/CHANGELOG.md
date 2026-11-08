@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Experimental** — 4 m (70 MHz) band for the IC-7300, IC-7300MK2 and FTX-1: the 4 m band button (tunes 70.200 MHz) and the IARU Region 1 band-plan overlay appear when the band-plan region is IARU Region 1; the band's rated power (50 W on the IC-7300/IC-7300MK2) is published in every region, and whether the radio transmits on 70 MHz is left to the radio. Experimental until a real European radio confirms it. The FTX-1 4 m button now appears only in IARU Region 1. (MOR-4300)
+- **Experimental** — 4 m (70 MHz) band for the IC-7300 and IC-7300MK2: a 4 m band button (tunes 70.200 MHz) with the band's rated power (50 W), and 4 m segments in the IARU Region 1 band-plan overlay. Whether the radio transmits on 70 MHz is left to the radio (only European versions do). Experimental until a real European radio confirms it. (MOR-4300)
 
 ### Removed
 

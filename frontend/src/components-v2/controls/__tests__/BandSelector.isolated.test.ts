@@ -3,7 +3,7 @@ import { createRawSnippet, mount, unmount, flushSync, type Snippet } from 'svelt
 import { flattenBands, findActiveBand } from '../band-utils';
 import { validateCapabilities } from '$lib/types/capabilities';
 import type { FreqRange } from '$lib/types/capabilities';
-import regionDocuments from './fixtures/ic7300-4m-region-capabilities.json';
+import goldenFile from '../../../lib/transport/__tests__/fixtures/state-wire-goldens.json';
 
 // ── Fixtures (must be declared before vi.mock factories) ──────────────────
 
@@ -327,18 +327,18 @@ describe('BandSelector HAM/broadcast split (hamBands prop)', () => {
   });
 });
 
-// ── 4 m region rows from the real handler (MOR-4300) ───────────────────────
+// ── 4 m button from the golden capabilities document (MOR-4300) ────────────
 //
-// The two capability documents are what the production IC-7300 server
-// serves over `GET /api/v1/capabilities` with the band-plan region set
-// to US and to IARU-R1. They are produced and pinned by the Python
-// fixture test in tests/test_band_regions_4m.py (regenerate with
-// UPDATE_4M_REGION_GOLDENS=1) and pass through the real
-// validateCapabilities before the store mock serves them, so the
-// buttons render from contract-valid payloads, not hand-rolled ones.
-describe('BandSelector 4 m region rows (MOR-4300)', () => {
-  type RegionDocuments = Record<'US' | 'IARU-R1', unknown>;
-
+// The document is what the production IC-7300 server serves over
+// `GET /api/v1/capabilities`. It is produced and pinned by the Python
+// test tests/web/test_state_wire_goldens.py (regenerate with
+// scripts/gen_state_wire_goldens.py) and passes through the real
+// validateCapabilities before the store mock serves it, so the button
+// renders from a contract-valid payload, not a hand-rolled one. The
+// 4 m row is plain profile data: the button is shown in every
+// band-plan region, and the radio itself decides whether it transmits
+// on 70 MHz (MOR-4303).
+describe('BandSelector 4 m button (MOR-4300)', () => {
   function findButtonByText(container: HTMLElement, text: string): HTMLButtonElement | null {
     const buttons = container.querySelectorAll<HTMLButtonElement>('button');
     for (const btn of buttons) {
@@ -347,18 +347,15 @@ describe('BandSelector 4 m region rows (MOR-4300)', () => {
     return null;
   }
 
-  /** Serve a real-handler region document through the real parse. */
-  function serveRegion(region: 'US' | 'IARU-R1'): void {
-    const docs = regionDocuments as unknown as RegionDocuments;
-    capabilitiesDocument = validateCapabilities(structuredClone(docs[region]));
-  }
-
   afterEach(() => {
     capabilitiesDocument = { freqRanges: HF_RANGES };
   });
 
-  it('IARU-R1 renders the 4 m button and tunes its published default', () => {
-    serveRegion('IARU-R1');
+  it('renders the 4 m button and tunes its published default', () => {
+    const { capabilities } = (goldenFile as unknown as Record<string, {
+      capabilities: unknown;
+    }>)['IC-7300'];
+    capabilitiesDocument = validateCapabilities(structuredClone(capabilities));
     const target = mountPanel();
 
     const fourMetre = findButtonByText(target, '4m');
@@ -369,14 +366,5 @@ describe('BandSelector 4 m region rows (MOR-4300)', () => {
     // The IC-7300 4 m row has no bsrCode: the selection is the band
     // name, the published default (70.200 MHz) and no code.
     expect(mockBandHandlers.onBandSelect).toHaveBeenCalledWith('4m', 70_200_000, undefined);
-  });
-
-  it('US renders no 4 m button while the region-independent bands stay', () => {
-    serveRegion('US');
-    const target = mountPanel();
-
-    expect(findButtonByText(target, '4m')).toBeNull();
-    expect(findButtonByText(target, '6m')).not.toBeNull();
-    expect(findButtonByText(target, '20m')).not.toBeNull();
   });
 });

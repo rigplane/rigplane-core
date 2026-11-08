@@ -460,10 +460,9 @@ class TestCapabilitiesEndpoint:
         """MOR-3782 kept the 4 m range tunable; MOR-4300 added its band
         row. The profile's receive envelope covers 70.2 MHz (receiver
         0.030–74.800 MHz per the Advanced Manual 11a §16), and
-        ``txBands`` publishes the 4 m row with its rated maximum in
-        every region (the default here is US) — information, not a
-        permit: whether the radio actually transmits on 70 MHz is the
-        radio's own decision (MOR-4303).
+        ``txBands`` publishes the 4 m row with its rated maximum —
+        information, not a permit: whether the radio actually
+        transmits on 70 MHz is the radio's own decision (MOR-4303).
         """
         radio = _make_radio("IC-7300")
         srv = WebServer(radio)

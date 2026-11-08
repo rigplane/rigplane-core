@@ -1171,21 +1171,6 @@ export function getControlSession(): ControlSessionTransition {
 }
 
 /**
- * The server's capabilities document changed underneath this session
- * (MOR-4300: a band-plan region change re-gates its band-selector
- * rows). Re-read it through the session-owned refresh above, so any
- * read still in flight is superseded and its reply discarded by the
- * refresh's own identity check. With no accepted provider generation
- * there is nothing to re-read — the normal connect bootstrap owns the
- * fetch — so this is a no-op, not a second fetch path.
- */
-export function invalidateCapabilities(): void {
-  if (_acceptedProviderGeneration === null || !_hasReceivedFullState) return;
-  cancelCapabilitiesRefresh();
-  refreshCapabilities(_acceptedProviderGeneration);
-}
-
-/**
  * MOR-1422: the refusal below fires per COMMAND — a held control (a
  * jog wheel, a repeated keypress) can call `sendCommand` many times a
  * second, and a toast per call would bury the one useful signal ("your

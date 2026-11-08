@@ -2,13 +2,6 @@
  * Component-level authority tests for SpectrumToolbar.svelte.
  * Mounts the real component and proves that confirmed radio truth comes only
  * from the merged spectrum selector while actions use the bound scope family.
- *
- * MOR-4300: a successful band-plan region switch delegates the
- * capabilities re-read to ws-client's invalidateCapabilities (mocked
- * here as a spy); what that re-read stores is pinned in
- * src/lib/transport/__tests__/ws-client.isolated.test.ts, and the
- * region-dependent documents themselves are pinned by the Python suite
- * tests/test_band_regions_4m.py.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte';
@@ -87,10 +80,6 @@ const radioStoreAlarm = vi.hoisted(() => ({
   } as any,
 }));
 const sendCommandAlarm = vi.hoisted(() => vi.fn());
-// MOR-4300: a successful band-plan region switch delegates the
-// capabilities re-read to ws-client's invalidateCapabilities; mocked
-// here (its behaviour is pinned in ws-client.isolated.test.ts).
-const invalidateCapabilitiesSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({ runtime: runtimeHarness.runtime }));
 
@@ -109,10 +98,7 @@ vi.mock('$lib/stores/radio.svelte', () => ({
   patchRadioState: vi.fn(),
 }));
 
-vi.mock('$lib/transport/ws-client', () => ({
-  sendCommand: sendCommandAlarm,
-  invalidateCapabilities: invalidateCapabilitiesSpy,
-}));
+vi.mock('$lib/transport/ws-client', () => ({ sendCommand: sendCommandAlarm }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasCapability: vi.fn((name: string) => name === 'scope' && capabilityHarness.scope),
@@ -822,13 +808,6 @@ describe('band-plan credential-free HTTP', () => {
         body: JSON.stringify({ region: 'CA' }),
       });
     });
-    // MOR-4300: the switch delegated the capabilities re-read to the
-    // refresh owner instead of fetching here. The POST observation fires
-    // at call time; the invalidation happens once the response resolves.
-    await vi.waitFor(() =>
-      expect(invalidateCapabilitiesSpy).toHaveBeenCalledTimes(1),
-    );
-    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/capabilities'))).toHaveLength(0);
   });
 });
 

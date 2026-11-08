@@ -205,23 +205,6 @@ class BandInfo:
     #: ``txBands`` payload publishes it and the power slider's range or watts
     #: label follows it; it never changes a power value that is written.
     max_power_w: int | None = None
-    #: Band-plan regions this band row's band-selector entry is shown in
-    #: (MOR-4300), as ids from ``band-plans/_config.toml`` ``[settings]``
-    #: region — the same vocabulary ``rigplane.web.band_plan._REGION_HAM_FILE``
-    #: keys. Display only: it gates the band selector entry (``freqRanges``
-    #: bands) and nothing else — ``txBands`` and ``max_power_w`` publication
-    #: are unaffected by region. Empty, the default, shows in every region.
-    #: Data only: no region id or frequency lives in code.
-    regions: tuple[str, ...] = ()
-
-    def applies_in_region(self, region: str) -> bool:
-        """True when this band row is shown in *region*'s band selector.
-
-        Empty ``regions`` applies everywhere; otherwise the band-selector
-        entry appears only while the effective band-plan region is one of
-        the listed ids. Display only — never a TX gate (MOR-4303).
-        """
-        return not self.regions or region in self.regions
 
 
 @dataclass(frozen=True, slots=True)
