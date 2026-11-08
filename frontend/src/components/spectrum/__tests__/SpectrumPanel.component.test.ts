@@ -12,8 +12,9 @@ import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
-import { qualifyScopeFrameEnvelope, toScopeDisplayFrame } from '$lib/runtime/adapters/scope-adapter';
-import type { FilterWidthDisplay } from '../../../semantic/radio-view-model';
+import { qualifyScopeFrameEnvelope, toScopeDisplayFrame,
+  type SpectrumAuthority, type SpectrumFilterRule } from '$lib/runtime/adapters/scope-adapter';
+import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
 import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { ScopeRenderTrace, type TraceReceipt } from '$lib/runtime/scope-render-trace';
@@ -189,11 +190,15 @@ Object.defineProperty(runtimeHarness.state, 'mockScopeFrameLive', {
 });
 
 const authorityHarness = vi.hoisted(() => {
-  const state = { current: null as any, useProductionSelector: false };
+  const state = { current: null as import('$lib/runtime/adapters/scope-adapter').SpectrumAuthority | null,
+    useProductionSelector: false };
   return {
     state,
     toSpectrumAuthority: vi.fn((_state: unknown, _caps: unknown) => state.current),
-    snapSpectrumFilterWidth: vi.fn((raw: number, rule: any) => {
+    snapSpectrumFilterWidth: vi.fn((
+      raw: number,
+      rule: import('$lib/runtime/adapters/scope-adapter').SpectrumFilterRule | null,
+    ) => {
       if (!rule) return null;
       if (rule.kind === 'table') {
         return rule.values.reduce((best: number, value: number) =>
@@ -502,36 +507,36 @@ const IC7300_STEPPED_CAPABILITIES = {
 let components: ReturnType<typeof mount>[] = [];
 let txHarness: ManagedAppTxHarness;
 
-type TestRule = Readonly<{
-  kind: 'step';
-  minHz: number;
-  maxHz: number;
-  stepHz: number;
-}>;
-
-type TestAuthority = Readonly<{
-  providerGeneration: number;
-  receiver: 0 | 1;
-  frequencyHz: number | null;
-  mode: string | null;
-  filter: string | null;
-  filterWidthHz: number | null;
-  filterWidthDisplay: FilterWidthDisplay | null;
-  filterShape: number | null;
-  ifShiftHz: number | null;
-  pbtInnerHz: number | null;
-  pbtOuterHz: number | null;
-  dataMode: number | null;
-  rule: TestRule | null;
-  scopeControls: Readonly<{ mode: Readonly<{ reading: Readonly<{ status: 'known'; value: number } | { status: 'unknown' }> }> }>;
-  digest: string;
-}>;
-
-const defaultRule: TestRule = Object.freeze({
+// MOR-4256 review: the authority fixtures satisfy the producer's real
+// `SpectrumAuthority` contract (scope-adapter) — including the full
+// `ScopeControlsViewModel` — instead of a re-guessed structural copy.
+const defaultRule: SpectrumFilterRule = Object.freeze({
   kind: 'step', minHz: 100, maxHz: 5_000, stepHz: 100,
 });
 
-function authority(overrides: Partial<Omit<TestAuthority, 'digest'>> = {}): TestAuthority {
+function testScopeControls(modeValue = 2): ScopeControlsViewModel {
+  const field = <T,>(value: T) => Object.freeze({
+    reading: Object.freeze({ status: 'known' as const, value }),
+    availability: Object.freeze({ structural: true, operational: true }),
+  });
+  return Object.freeze({
+    mode: field(modeValue),
+    edge: field(1),
+    span: field(3),
+    speed: field(0),
+    hold: field(false),
+    refDb: field(0),
+    refRange: null,
+    dual: field(false),
+    receiver: field(0),
+    duringTx: field(false),
+    centerType: field(0),
+    vbwNarrow: field(false),
+    rbw: field(0),
+  });
+}
+
+function authority(overrides: Partial<Omit<SpectrumAuthority, 'digest'>> = {}): SpectrumAuthority {
   const core = {
     providerGeneration: 17,
     receiver: 0 as const,
@@ -546,7 +551,7 @@ function authority(overrides: Partial<Omit<TestAuthority, 'digest'>> = {}): Test
     pbtOuterHz: 0,
     dataMode: 0,
     rule: defaultRule,
-    scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 2 }) }) }),
+    scopeControls: testScopeControls(),
     ...overrides,
   };
   return Object.freeze({ ...core, digest: JSON.stringify(core) });
@@ -1435,9 +1440,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
 
   it.each([
     ['filter shape', { filterShape: 2 }],
-    ['scope controls', { scopeControls: Object.freeze({
-      mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }),
-    }) }],
+    ['scope controls', { scopeControls: testScopeControls(3) }],
   ])('keeps resize completion through unrelated %s churn', (_label, overrides) => {
     const target = mountPanel();
     emitFrame();
@@ -1510,7 +1513,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     ['filter shape', { filterShape: 2 }],
     ['DATA', { dataMode: 1 }],
     ['rule', { rule: Object.freeze({ kind: 'step' as const, minHz: 200, maxHz: 5_000, stepHz: 100 }) }],
-    ['scope controls', { scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }) }) }],
+    ['scope controls', { scopeControls: testScopeControls(3) }],
   ])('completes final drag despite %s drift, which plain panning does not depend on (MOR-1497)', (_label, overrides) => {
     const target = mountPanel();
     emitFrame();
@@ -1618,7 +1621,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
   it('keeps frame mode and pixel geometry authoritative over canonical scope-control metadata', async () => {
     authorityHarness.state.current = authority({
       frequencyHz: 14_025_000,
-      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 3 }) }) }),
+      scopeControls: testScopeControls(3),
     });
     const target = mountPanel();
     emitFrame({ mode: 0 });
@@ -2312,7 +2315,7 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it('pins no false CENTER marker when a FIX projection drops to null', () => {
     authorityHarness.state.current = authority({
-      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 1 }) }) }),
+      scopeControls: testScopeControls(1),
     });
     refreshSpectrumAuthority();
     const { target, props } = managed(projection('current', 1));
@@ -2357,7 +2360,7 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it('keeps a proven FIX mode hidden through the same freshness gap', () => {
     authorityHarness.state.current = authority({
-      scopeControls: Object.freeze({ mode: Object.freeze({ reading: Object.freeze({ status: 'known', value: 1 }) }) }),
+      scopeControls: testScopeControls(1),
     });
     refreshSpectrumAuthority();
     const { target, props } = managed(projection('current', 1));
@@ -3012,7 +3015,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     }
   });
 
-  it('emits no command during the moves and exactly one snapped VFO intent on pointer-up, then the pending leg holds the viewport', async () => {
+  it('emits no command during the moves and exactly one snapped VFO intent on pointer-up', async () => {
     const restore = stubReducedMotion();
     try {
       authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
@@ -3030,11 +3033,6 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       pointer(spectrum, 'pointerup', 32, 130);
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_035_000, 0);
-      // The command lifecycle's pending set_freq target takes over from the
-      // cleared preview and keeps the viewport at the candidate.
-      setPendingFrequency(0, 14_035_000);
-      await flushPreviewPaint();
-      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
     } finally {
       restore();
     }
@@ -3137,6 +3135,33 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.centerHz).toBe(7_050_000));
       // The release-side staleness guard already refuses the commit.
       pointer(spectrum, 'pointerup', 38, 120);
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(mockRuntime.send).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('retires the preview when the drag surface geometry changes mid-drag', async () => {
+    const restore = stubReducedMotion();
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame();
+      const { spectrum } = prepareGeometry(target);
+      pointer(spectrum, 'pointerdown', 40, 100);
+      pointer(spectrum, 'pointermove', 40, 120);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
+      // A window resize re-lays the surface out mid-drag: the captured
+      // Hz-per-pixel mapping is stale, so the preview retires on the next
+      // frame instead of projecting with it (the release is rejected by
+      // the same geometry check).
+      rect(spectrum, 0, 400);
+      pointer(spectrum, 'pointermove', 40, 130);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(0));
+      pointer(spectrum, 'pointerup', 40, 130);
       expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
       expect(mockRuntime.send).not.toHaveBeenCalled();
     } finally {

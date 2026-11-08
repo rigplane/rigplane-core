@@ -116,10 +116,15 @@ export class WaterfallRenderer {
   private rowData: Uint8ClampedArray | null = null;
   private destroyed = false;
   // MOR-2464: history reprojects by viewport-center deltas only; the
-  // sampling offset places new rows.
+  // sampling offset places new rows. MOR-4256: the anchor tracks the
+  // SAMPLE-WINDOW center (`centerHz - panoramaShiftHz`); a display-only
+  // preview never moves it, a real retune does (rebase below).
   private anchoredViewportHz: number;
   private appliedViewportPx = 0;
   private viewportAnchorValid = false;
+  // Sub-pixel residue of the last rebase, so repeated retunes do not
+  // accumulate rounding drift in the retained plane.
+  private rebaseResiduePx = 0;
   // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
   // detect a genuine SPAN change (MOR-1479) vs. a same-value re-observation
   // or the initial 0→real transition (first frame / reconnect), neither of
@@ -136,7 +141,8 @@ export class WaterfallRenderer {
     this.lut = buildColorLut(options.colorScheme);
     this.width = canvas.width;
     this.height = canvas.height;
-    this.anchoredViewportHz = this.options.centerHz;
+    this.anchoredViewportHz = this.options.centerHz
+      - (Number.isFinite(this.options.panoramaShiftHz) ? this.options.panoramaShiftHz : 0);
     if (this.width > 0 && this.height > 0) {
       this._initBuffers();
       this._initHistory();
@@ -198,17 +204,55 @@ export class WaterfallRenderer {
     return Math.round(((centerHz - this.anchoredViewportHz) / spanHz) * this.width);
   }
 
+  // Rebase the retained plane when the SAMPLE WINDOW moves (a real retune
+  // with recentered frames; a display-only preview keeps the sample window
+  // constant, so it never lands here). History keeps its frequencies:
+  // content shifts against the window delta and the strip that left the
+  // window blanks honestly — then fresh rows cover the full viewport again.
+  private _shiftHistory(rebasePx: number): void {
+    const ctx = this.history;
+    if (!ctx) return;
+    const canvas = ctx.canvas;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w <= 0 || h <= 0) return;
+    ctx.fillStyle = WATERFALL_BACKGROUND;
+    if (Math.abs(rebasePx) >= w) {
+      ctx.fillRect(0, 0, w, h);
+      return;
+    }
+    if (rebasePx > 0) {
+      ctx.drawImage(canvas, rebasePx, 0, w - rebasePx, h, 0, 0, w - rebasePx, h);
+      ctx.fillRect(w - rebasePx, 0, rebasePx, h);
+    } else {
+      ctx.drawImage(canvas, 0, 0, w + rebasePx, h, -rebasePx, 0, w + rebasePx, h);
+      ctx.fillRect(0, 0, -rebasePx, h);
+    }
+  }
+
   // Reproject the drawn history onto the current viewport (MOR-2464):
   // integer delta between rounded viewport offsets, composited from the
   // RETAINED history (MOR-4256) so the projection is lossless and
   // reversible; the first binding of a real sample window anchors silently.
   private _applyViewportShift(): void {
-    const { spanHz, centerHz } = this.options;
+    const { spanHz, centerHz, panoramaShiftHz } = this.options;
     if (!(spanHz > 0)) return;
+    const sampleWindowHz = centerHz - (Number.isFinite(panoramaShiftHz) ? panoramaShiftHz : 0);
     if (!this.viewportAnchorValid) {
-      this.anchoredViewportHz = centerHz;
+      this.anchoredViewportHz = sampleWindowHz;
       this.appliedViewportPx = 0;
       this.viewportAnchorValid = true;
+      return;
+    }
+    if (sampleWindowHz !== this.anchoredViewportHz) {
+      const exactPx = ((sampleWindowHz - this.anchoredViewportHz) / spanHz) * this.width
+        + this.rebaseResiduePx;
+      const rebasePx = Math.round(exactPx);
+      this.rebaseResiduePx = exactPx - rebasePx;
+      if (rebasePx !== 0) this._shiftHistory(rebasePx);
+      this.anchoredViewportHz = sampleWindowHz;
+      this.appliedViewportPx = this.viewportOffsetPx();
+      this._composite();
       return;
     }
     const target = this.viewportOffsetPx();
@@ -296,22 +340,19 @@ export class WaterfallRenderer {
     this.height = height;
     this.rowBuf = null;
     this.rowData = null;
-    // Scaled content no longer matches the old pixel anchor.
-    this.anchoredViewportHz = this.options.centerHz;
-    this.appliedViewportPx = 0;
-    this.viewportAnchorValid = this.options.spanHz > 0;
     if (width > 0 && height > 0) {
       this.ctx.canvas.width = width;
       this.ctx.canvas.height = height;
       this._initBuffers();
       this._initHistory();
       if (oldHistory && prevW > 0 && prevH > 0) {
-        // Restore the preserved history scaled to the new dimensions, then
-        // re-anchor the projection.
+        // Restore the preserved history scaled to the new dimensions. The
+        // scaled copy keeps the OLD anchor plane — scaling maps the same
+        // frequencies onto the same span edges at any width — so the anchor
+        // survives and only the viewport's pixel offset is recomputed at
+        // the new width (MOR-4256 round 2).
         this.history!.drawImage(oldHistory, 0, 0, width, height);
-        this.anchoredViewportHz = this.options.centerHz;
-        this.appliedViewportPx = 0;
-        this.viewportAnchorValid = this.options.spanHz > 0;
+        this.appliedViewportPx = this.viewportOffsetPx();
         this._composite();
       } else {
         this.clear();
@@ -363,8 +404,10 @@ export class WaterfallRenderer {
   /** Fill the canvas with the background color and re-anchor the viewport. */
   clear(): void {
     if (this.destroyed || this.width <= 0 || this.height <= 0) return;
-    this.anchoredViewportHz = this.options.centerHz;
+    this.anchoredViewportHz = this.options.centerHz
+      - (Number.isFinite(this.options.panoramaShiftHz) ? this.options.panoramaShiftHz : 0);
     this.appliedViewportPx = 0;
+    this.rebaseResiduePx = 0;
     this.viewportAnchorValid = this.options.spanHz > 0;
     if (this.history) {
       this.history.fillStyle = WATERFALL_BACKGROUND;

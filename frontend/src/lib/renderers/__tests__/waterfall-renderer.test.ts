@@ -248,11 +248,11 @@ describe('history clearing on confirmed span change', () => {
 
 // ── panorama viewport reprojection (MOR-2464) ────────────────────────────────
 //
-// History reprojects by viewport-center deltas (centerHz) only; the sampling
-// offset (panoramaShiftHz) places new rows. Uncovered edges stay blank; hit
-// tests map through the displayed viewport center. MOR-4256: the projection
-// is composited from the RETAINED history canvas, so a later return to the
-// origin restores the columns a destructive shift used to blank.
+// The retained history plane (MOR-4256) tracks the SAMPLE-WINDOW center
+// (centerHz - panoramaShiftHz): a display-only viewport move composites
+// from it reversibly, a recentered frame (real retune) rebases it — content
+// keeps its frequencies and fresh rows cover the full viewport again. Hit
+// tests map through the displayed viewport center.
 describe('panorama viewport reprojection (MOR-2464)', () => {
   function trackedCanvas(w = 100, h = 50) {
     const rows: Array<{ width: number; height: number; data: Uint8ClampedArray }> = [];
@@ -272,8 +272,8 @@ describe('panorama viewport reprojection (MOR-2464)', () => {
   }
 
   // Rows land in the retained history plane now (MOR-4256); the factory
-  // keeps every created history canvas so assertions read the CURRENT one
-  // (resize replaces it).
+  // keeps every created history canvas (resize replaces it) and the
+  // accessors read across them all, in order.
   function trackedRenderer(w = 100, h = 50, opts?: Partial<WaterfallOptions>) {
     const tracked = trackedCanvas(w, h);
     const historyCanvases: ReturnType<typeof trackedCanvas>[] = [];
@@ -289,7 +289,9 @@ describe('panorama viewport reprojection (MOR-2464)', () => {
       renderer,
       ...tracked,
       historyCanvas: () => historyCanvases.at(-1)!.canvas,
-      historyRows: () => historyCanvases.at(-1)!.rows,
+      historyRows: () => historyCanvases.flatMap((c) => c.rows),
+      historyDraws: () => historyCanvases.flatMap((c) => c.draws),
+      historyFills: () => historyCanvases.flatMap((c) => c.fills),
     };
   }
 
@@ -313,13 +315,11 @@ describe('panorama viewport reprojection (MOR-2464)', () => {
   };
   const isRed = (row: { data: Uint8ClampedArray }, x: number): boolean =>
     row.data[x * 4] === 255 && row.data[x * 4 + 1] === 0 && row.data[x * 4 + 2] === 0;
-  const isBlank = (row: { data: Uint8ClampedArray }, x: number): boolean =>
-    row.data[x * 4] === 0x00 && row.data[x * 4 + 1] === 0x10 && row.data[x * 4 + 2] === 0x20;
 
   const VIEWPORT_A = 14_050_000;
   const VIEWPORT_B = 14_051_000;
 
-  it('reprojects history by the viewport-center delta, never by the sampling offset', () => {
+  it('reprojects history by the viewport-center delta while the sample window holds', () => {
     const { renderer, draws, fills } = trackedRenderer();
     renderer.updateOptions({ centerHz: VIEWPORT_B, panoramaShiftHz: 1_000 });
     expect(reprojectDraws(draws)).toEqual([
@@ -327,21 +327,26 @@ describe('panorama viewport reprojection (MOR-2464)', () => {
     ]);
     // The strip the draw does not cover stays the background fill.
     expect(fills).toContainEqual([0, 0, 100, 50]);
-    // A sampling-offset change alone (same viewport) must not reproject.
-    renderer.updateOptions({ panoramaShiftHz: 2_000 });
-    expect(reprojectDraws(draws)).toHaveLength(1);
+    // A same-sample-window update with only a SUB-PIXEL offset change
+    // projects nothing new.
+    renderer.updateOptions({ centerHz: VIEWPORT_B + 400, panoramaShiftHz: 1_400 });
+    expect(reprojectOffsets(draws)).toEqual([1]);
   });
-  it('reprojects a negative viewport delta to the right and blanks the left strip', () => {
-    const { renderer, draws, fills } = trackedRenderer();
+  it('rebases retained history on a sample-window move and blanks the strip that left', () => {
+    const { renderer, historyDraws, historyFills } = trackedRenderer();
+    // A recentered frame 10 kHz lower (a real retune): the retained plane
+    // shifts so frequencies keep their columns; the strip that left the
+    // window blanks honestly — in the history plane, not destructively on
+    // screen, so a later preview excursion still projects from what is left.
     renderer.updateOptions({ centerHz: VIEWPORT_A - 10_000 });
-    expect(reprojectDraws(draws)).toEqual([
+    expect(reprojectDraws(historyDraws())).toEqual([
       [expect.anything(), 0, 0, 90, 50, 10, 0, 90, 50],
     ]);
-    expect(fills).toContainEqual([0, 0, 100, 50]);
+    expect(historyFills()).toContainEqual([0, 0, 10, 50]);
   });
 
-  it('does not move history when recentered samples arrive at an unchanged viewport', () => {
-    const { renderer, historyRows, draws } = trackedRenderer();
+  it('rebases on recentered samples and keeps fresh rows covering the full viewport', () => {
+    const { renderer, historyRows, historyDraws, draws } = trackedRenderer();
     // Samples centered on A; the viewport glides A→B (1 px at this span).
     renderer.pushRow(peakRow(50));
     renderer.updateOptions({ centerHz: VIEWPORT_B, panoramaShiftHz: 1_000 });    renderer.pushRow(peakRow(50));
@@ -351,37 +356,47 @@ describe('panorama viewport reprojection (MOR-2464)', () => {
     expect(reprojectDraws(draws)[0]).toEqual([
       expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50,
     ]);
-    // Recentered samples (center B) at the unchanged viewport B: history stays.
+    // Recentered samples (center B) at the unchanged viewport B: the
+    // sample window moved, so the retained plane rebases by the same 1 px
+    // and the viewport offset settles back — on screen nothing jumps.
     renderer.updateOptions({ centerHz: VIEWPORT_B, panoramaShiftHz: 0 });
-    expect(reprojectOffsets(draws)).toEqual([1]);
-    renderer.pushRow(peakRow(49, 50));
-    // The row lands in the ANCHOR plane (MOR-4256): the recentered samples
-    // sit 1 px above their indices there, exactly where the B-viewport
-    // projection (offset 1) puts them back at 49/50 on screen.
-    const row = historyRows().at(-1)!;
-    expect(isRed(row, 50)).toBe(true);
-    expect(isRed(row, 51)).toBe(true);
-    expect(isRed(row, 49)).toBe(false);
-  });
-
-  it('rounds fractional viewport deltas without cumulative drift', () => {
-    const { renderer, draws } = trackedRenderer();
-    renderer.updateOptions({ centerHz: VIEWPORT_A + 400 });
-    expect(reprojectDraws(draws)).toHaveLength(0);
-    renderer.updateOptions({ centerHz: VIEWPORT_A + 1_000 });
-    renderer.updateOptions({ centerHz: VIEWPORT_A + 1_400 });
-    expect(reprojectDraws(draws)).toEqual([
+    expect(reprojectDraws(historyDraws())).toEqual([
       [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
     ]);
+    renderer.pushRow(peakRow(49, 50));
+    // New rows rest at their indices in the rebased plane — full width,
+    // nothing clipped at the anchor-plane edge.
+    const row = historyRows().at(-1)!;
+    expect(isRed(row, 49)).toBe(true);
+    expect(isRed(row, 50)).toBe(true);
+    expect(isRed(row, 51)).toBe(false);
   });
-  it('re-anchors after resize without a spurious shift', () => {
-    const { renderer, draws } = trackedRenderer();
+
+  it('rounds fractional sample-window moves without cumulative drift', () => {
+    const { renderer, historyDraws } = trackedRenderer();
+    renderer.updateOptions({ centerHz: VIEWPORT_A + 400 });
+    expect(reprojectDraws(historyDraws())).toHaveLength(0);
+    renderer.updateOptions({ centerHz: VIEWPORT_A + 1_000 });
+    expect(reprojectDraws(historyDraws())).toEqual([
+      [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
+    ]);
+    // 1.4 px of total travel rounds to the same 1 px — the carried
+    // residue keeps repeated retunes drift-free.
+    renderer.updateOptions({ centerHz: VIEWPORT_A + 1_400 });
+    expect(reprojectDraws(historyDraws())).toHaveLength(1);
+  });
+  it('keeps the frequency anchor across resize without a spurious shift', () => {
+    const { renderer, historyDraws } = trackedRenderer();
     renderer.updateOptions({ centerHz: VIEWPORT_B });
-    expect(reprojectDraws(draws)).toHaveLength(1);
+    expect(reprojectDraws(historyDraws())).toEqual([
+      [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
+    ]);
     renderer.resize(200, 100);    renderer.updateOptions({ centerHz: VIEWPORT_B });
-    expect(reprojectDraws(draws)).toHaveLength(1);
+    // No rebase and no reprojection: the scaled plane still answers the
+    // same anchor, only the pixel offset is recomputed at the new width.
+    expect(reprojectDraws(historyDraws())).toHaveLength(1);
     renderer.updateOptions({ centerHz: VIEWPORT_B + 1_000 });
-    expect(reprojectDraws(draws).at(-1)).toEqual([
+    expect(reprojectDraws(historyDraws()).at(-1)).toEqual([
       expect.anything(), 2, 0, 198, 100, 0, 0, 198, 100,
     ]);
   });
@@ -395,25 +410,22 @@ describe('panorama viewport reprojection (MOR-2464)', () => {
     expect(renderer.pixelToFreq(100)).toBe(VIEWPORT_B + 50_000);
   });
 
-  it('samples new rows at the exact offset, resting mapping intact, edges blank', () => {
-    const { renderer, historyRows, draws } = trackedRenderer();
-    renderer.updateOptions({ panoramaShiftHz: 10_000 });
-    expect(reprojectDraws(draws)).toHaveLength(0);
+  it('rests new rows at their indices in the anchor plane under a preview shift', () => {
+    const { renderer, historyRows, historyDraws, draws } = trackedRenderer();
+    // A display-only viewport move keeps the sample window: NO rebase —
+    // the projection carries the shift instead.
+    renderer.updateOptions({ centerHz: VIEWPORT_A + 10_000, panoramaShiftHz: 10_000 });
+    expect(reprojectOffsets(draws)).toEqual([10]);
+    expect(reprojectDraws(historyDraws())).toHaveLength(0);
     renderer.pushRow(peakRow(50));
     const row = historyRows().at(-1)!;
-    expect(isRed(row, 40)).toBe(true);
-    expect(isRed(row, 50)).toBe(false);
-    expect(isBlank(row, 95)).toBe(true);
-    const resting = trackedRenderer();
-    resting.renderer.pushRow(peakRow(50));
-    const restRow = resting.historyRows()[0];
-    expect(isRed(restRow, 50)).toBe(true);
-    expect(isRed(restRow, 49)).toBe(false);
-    expect(isRed(restRow, 51)).toBe(false);
+    expect(isRed(row, 50)).toBe(true);
+    expect(isRed(row, 49)).toBe(false);
+    expect(isRed(row, 51)).toBe(false);
   });
 
   it('anchors the first real sample window without a huge reproject and keeps its first row', () => {
-    const { renderer, historyRows, draws, fills } = trackedRenderer(100, 50, { centerHz: 0, spanHz: 0 });
+    const { renderer, historyRows, draws, fills, historyDraws } = trackedRenderer(100, 50, { centerHz: 0, spanHz: 0 });
     // First frame: real RF center lands while the constructor default was 0/0.
     const clearFills = fills.length;    renderer.updateOptions({ centerHz: 14_050_000, spanHz: 100_000, panoramaShiftHz: 0 });
     expect(reprojectDraws(draws)).toHaveLength(0);
@@ -422,7 +434,7 @@ describe('panorama viewport reprojection (MOR-2464)', () => {
     expect(historyRows().length).toBeGreaterThan(0);
     expect(isRed(historyRows()[0], 50)).toBe(true);
     renderer.updateOptions({ centerHz: 14_051_000 });
-    expect(reprojectDraws(draws)).toEqual([
+    expect(reprojectDraws(historyDraws())).toEqual([
       [expect.anything(), 1, 0, 99, 50, 0, 0, 99, 50],
     ]);
     const tiny = makeRenderer(0, 0);
@@ -471,10 +483,26 @@ describe('retained history projection (MOR-4256)', () => {
   const BG = [0x00, 0x10, 0x20, 255];
   const RED = [255, 0, 0, 255];
 
+  // A minimal pixel-true canvas: a real backing array, cleared on resize
+  // like a real canvas, with drawImage snapshots (self-copies do not
+  // smear) and nearest-neighbor scaling for the resize path.
   function pixelCanvas(w: number, h: number) {
-    const pixels = new Uint8ClampedArray(w * h * 4);
-    const canvas = { width: w, height: h } as unknown as HTMLCanvasElement
-      & { __pixels: Uint8ClampedArray };
+    let pixels = new Uint8ClampedArray(w * h * 4);
+    let canvasW = w;
+    let canvasH = h;
+    const canvas = {} as HTMLCanvasElement & { __pixels: Uint8ClampedArray };
+    for (const prop of ['width', 'height'] as const) {
+      Object.defineProperty(canvas, prop, {
+        get: () => (prop === 'width' ? canvasW : canvasH),
+        set: (value: number) => {
+          if (prop === 'width') canvasW = value;
+          else canvasH = value;
+          // A real canvas clears its backing store when resized.
+          pixels = new Uint8ClampedArray(canvasW * canvasH * 4);
+        },
+      });
+    }
+    Object.defineProperty(canvas, '__pixels', { get: () => pixels });
     const blit = (
       src: { width: number; height: number; __pixels: Uint8ClampedArray },
       sx: number, sy: number, sw: number, sh: number,
@@ -518,6 +546,9 @@ describe('retained history projection (MOR-4256)', () => {
         if (args.length === 3) {
           const [, dx, dy] = args as [unknown, number, number];
           blit(src, 0, 0, src.width, src.height, dx, dy, src.width, src.height);
+        } else if (args.length === 5) {
+          const [, dx, dy, dw, dh] = args as [unknown, number, number, number, number];
+          blit(src, 0, 0, src.width, src.height, dx, dy, dw, dh);
         } else {
           const [, sx, sy, sw, sh, dx, dy, dw, dh] = args as
             [unknown, number, number, number, number, number, number, number, number];
@@ -535,10 +566,8 @@ describe('retained history projection (MOR-4256)', () => {
         }
       },
     };
-    const canvasWithContext = canvas as HTMLCanvasElement & { __pixels: Uint8ClampedArray };
-    canvasWithContext.__pixels = pixels;
     (canvas as { getContext?: unknown }).getContext = () => ctx;
-    return canvasWithContext;
+    return canvas;
   }
 
   function pixelRenderer(w = 100, h = 50) {
@@ -607,6 +636,51 @@ describe('retained history projection (MOR-4256)', () => {
     expect(pxAt(50, 0)).toEqual(RED);
     expect(pxAt(50, 1)).toEqual(RED);
     expect(pxAt(95, 0)).toEqual(BG);
+  });
+
+  it('covers the full viewport with fresh rows after a real retune, including one of a whole span', () => {
+    const { renderer, visible } = pixelRenderer();
+    const pxAt = (x: number, y: number) =>
+      Array.from(visible.__pixels.subarray((y * visible.width + x) * 4, (y * visible.width + x) * 4 + 4));
+    const fullRow = () => new Uint8Array(100).fill(80);
+
+    renderer.pushRow(peakRow(50));
+    // Confirmed retune: recentered samples at the settled viewport. The
+    // retained plane rebases — the old marker keeps its frequency (x=40)
+    // and the strip that left the window blanks honestly.
+    renderer.updateOptions({ centerHz: 14_060_000, panoramaShiftHz: 0 });
+    expect(pxAt(40, 0)).toEqual(RED);
+    expect(pxAt(95, 0)).toEqual(BG);
+    // …but fresh recentered rows cover the FULL viewport again (the
+    // round-1 design clipped them at the anchor plane's edge).
+    renderer.pushRow(fullRow());
+    expect(pxAt(0, 0)).toEqual(RED);
+    expect(pxAt(99, 0)).toEqual(RED);
+    // A retune of a whole span leaves no recoverable history, yet fresh
+    // rows still paint — never a permanently blank waterfall.
+    renderer.updateOptions({ centerHz: 14_160_000, panoramaShiftHz: 0 });
+    renderer.pushRow(fullRow());
+    expect(pxAt(0, 0)).toEqual(RED);
+    expect(pxAt(99, 0)).toEqual(RED);
+  });
+
+  it('keeps the frequency anchor across a resize at a nonzero viewport offset', () => {
+    const { renderer, visible } = pixelRenderer();
+    const pxAt = (x: number, y: number) =>
+      Array.from(visible.__pixels.subarray((y * visible.width + x) * 4, (y * visible.width + x) * 4 + 4));
+
+    renderer.pushRow(peakRow(50));
+    // Preview offset 10 px: the marker shows at x=40.
+    renderer.updateOptions({ centerHz: 14_060_000, panoramaShiftHz: 10_000 });
+    expect(pxAt(40, 0)).toEqual(RED);
+    // Doubling the canvas scales the marker to anchor x=100 and the
+    // viewport offset to 20 px: the marker must show at x=80, not drift
+    // to x=100 through a re-anchor.
+    renderer.resize(200, 100);
+    expect(pxAt(80, 0)).toEqual(RED);
+    // Returning to the original viewport shows it at the scaled anchor.
+    renderer.updateOptions({ centerHz: 14_050_000, panoramaShiftHz: 0 });
+    expect(pxAt(100, 0)).toEqual(RED);
   });
 });
 

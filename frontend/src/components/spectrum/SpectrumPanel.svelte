@@ -461,8 +461,12 @@
   // `null` means "no frame pending", not "preview the original frequency".
   let dragPreviewHz = $state<number | null>(null);
   const dragPreviewPump = new LatestFramePump<Readonly<{ hz: number | null }>>((frame) => {
-    // A gesture that already ended publishes nothing.
-    dragPreviewHz = dragCapture !== null ? frame.hz : null;
+    // A gesture that already ended — or whose captured identity/geometry
+    // (element width included) no longer matches, the same check the
+    // release commit applies — publishes nothing.
+    const capture = dragCapture;
+    dragPreviewHz = capture !== null && dragSurface !== null
+      && captureFrequencyStillCurrent(capture, dragSurface) ? frame.hz : null;
   });
   let dragging = $state(false);
 
