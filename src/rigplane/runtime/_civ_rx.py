@@ -4371,16 +4371,16 @@ class CivRuntime:
         self._notify_state_store_changed(changeset)
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
-        """Publish a complete scope frame to callback and bounded queue."""
-        queue = self._host._scope_frame_queue
-        if queue is not None:
-            queue.put_drop_oldest(frame)
+        """Publish a frame to the registered callback and SDK adapters."""
         callback = self._host._scope_callback
         if callback is not None:
             try:
                 callback(frame)
             except Exception:
                 logger.exception("Scope callback raised an exception")
+        if self._host._scope_stream_callbacks:
+            for stream_callback in tuple(self._host._scope_stream_callbacks):
+                stream_callback(frame)
 
     def _check_connected(self) -> None:
         """Raise ConnectionError if not connected."""

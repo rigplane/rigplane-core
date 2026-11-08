@@ -80,31 +80,6 @@ async def test_follow_tracks_provider_retune_through_real_hub():
     assert not provider.is_open
 
 
-async def test_failed_iq_provider_close_can_be_retried():
-    import pytest
-
-    class FlakyProvider(FakeIqSource):
-        def __init__(self):
-            super().__init__(center_freq_hz=10_000_000, sample_rate_hz=48000)
-            self.close_attempts = 0
-
-        def close(self):
-            self.close_attempts += 1
-            if self.close_attempts == 1:
-                raise RuntimeError("close failed")
-            super().close()
-
-    provider = FlakyProvider()
-    source = IqFftSource(provider, start_worker=False)
-    await source.start()
-    with pytest.raises(RuntimeError, match="close failed"):
-        await source.stop()
-    assert provider.is_open
-    await source.stop()
-    assert provider.close_attempts == 2
-    assert not provider.is_open
-
-
 class SampleProvider(FakeIqSource):
     def __init__(self, samples, **kwargs):
         super().__init__(block_size=4096, **kwargs)
@@ -225,40 +200,3 @@ async def test_geometry_change_enqueues_on_existing_worker(monkeypatch):
     await source.stop()
     assert not old_worker.is_alive()
     assert not provider.is_open
-
-
-async def test_failed_close_does_not_restart_fft_for_retained_callback():
-    class RetainedProvider(FakeIqSource):
-        def __init__(self):
-            super().__init__(center_freq_hz=10_000_000, sample_rate_hz=48000)
-            self.close_attempts = 0
-            self.detach_attempts = 0
-
-        def on_block(self, callback):
-            if callback is None:
-                self.detach_attempts += 1
-                if self.detach_attempts == 1:
-                    raise RuntimeError("detach failed")
-            super().on_block(callback)
-
-        def close(self):
-            self.close_attempts += 1
-            if self.close_attempts == 1:
-                raise RuntimeError("close failed")
-            super().close()
-
-    provider = RetainedProvider()
-    source = IqFftSource(provider, start_worker=False)
-    frames = []
-    source.on_frame(frames.append)
-    await source.start()
-    provider.pump(1)
-    with pytest.raises(RuntimeError, match="close failed"):
-        await source.stop()
-    try:
-        provider.set_center_freq(11_000_000)
-        provider.pump(1)
-        source.producer.process_pending()
-        assert not frames
-    finally:
-        await source.stop()

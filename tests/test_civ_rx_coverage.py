@@ -6223,28 +6223,6 @@ def test_notify_change_no_callback_debug_log(radio: IcomRadio) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_publish_scope_frame_drops_oldest_when_full(radio: IcomRadio) -> None:
-    """When scope_frame_queue is full, oldest frame is dropped (lines 640-643)."""
-    from rigplane.core._bounded_queue import BoundedQueue
-
-    radio._scope_frame_queue = BoundedQueue(maxsize=64)
-    dummy_frame = ScopeFrame(
-        receiver=0,
-        mode=1,
-        start_freq_hz=14_000_000,
-        end_freq_hz=14_350_000,
-        pixels=bytes([50] * 10),
-        out_of_range=False,
-    )
-    while not radio._scope_frame_queue.full():
-        radio._scope_frame_queue.put_nowait(dummy_frame)
-
-    # Now publish a new frame — should drop oldest and add new
-    radio._civ_runtime._publish_scope_frame(dummy_frame)
-    # Queue should still be at max
-    assert radio._scope_frame_queue.full()
-
-
 def test_publish_scope_frame_invokes_callback(radio: IcomRadio) -> None:
     """_publish_scope_frame invokes the scope callback if set."""
     received = []

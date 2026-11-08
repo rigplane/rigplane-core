@@ -374,34 +374,6 @@ def get_scope_data_output_enabled(
     )
 
 
-@expose_command_key(lambda cmd_map: "scope_data_output")
-@require_cmd_map
-def scope_data_output_on(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
-) -> bytes:
-    return _build_from_map(
-        cmd_map,
-        "scope_data_output",
-        to_addr=to_addr,
-        from_addr=from_addr,
-        data=b"\x01",
-    )
-
-
-@expose_command_key(lambda cmd_map: "scope_data_output")
-@require_cmd_map
-def scope_data_output_off(
-    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
-) -> bytes:
-    return _build_from_map(
-        cmd_map,
-        "scope_data_output",
-        to_addr=to_addr,
-        from_addr=from_addr,
-        data=b"\x00",
-    )
-
-
 @expose_command_key(lambda cmd_map: "get_scope_main_sub")
 @require_cmd_map
 def get_scope_main_sub(
@@ -418,11 +390,10 @@ def get_scope_main_sub(
 # scope_set_hold, scope_set_ref, scope_set_speed, scope_set_during_tx,
 # scope_set_center_type, scope_set_vbw, scope_set_fixed_edge,
 # scope_set_rbw) still resolve their paired get_* key -- the known,
-# tracked defect (MOR-2113). The remaining 5 (scope_on, scope_off,
-# scope_data_output, scope_data_output_on, scope_data_output_off) are
+# tracked defect (MOR-2113). The remaining 3 (scope_on, scope_off, scope_data_output) are
 # NOT instances of that defect: no scope-capable profile (ic705,
 # ic7300, ic7610, ic9700) declares a get_*/set_*-prefixed variant of
-# scope_on/scope_off/scope_data_output at all, so each of the five
+# scope_on/scope_off/scope_data_output at all, so each of the three
 # already resolves the only key its profile declares -- the same
 # "resolves its own declaration" shape MOR-2106 established as
 # correct.

@@ -14,7 +14,6 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 if TYPE_CHECKING:
-    from rigplane._bounded_queue import BoundedQueue
     from rigplane._civ_rx import CivRuntime
     from rigplane._state_cache import StateCache
     from rigplane.audio import AudioPacket, AudioStream
@@ -72,7 +71,7 @@ class CivRuntimeHost(Protocol):
 
     # Scope delivery
     _scope_assembler: "ScopeAssembler"
-    _scope_frame_queue: "BoundedQueue[ScopeFrame] | None"
+    _scope_stream_callbacks: list[Callable[[ScopeFrame], None]]
     _scope_callback: "Callable[[ScopeFrame], Any] | None"
     _raw_civ_listeners: "list[Callable[[bytes], Any]]"
     _scope_activity_event: asyncio.Event

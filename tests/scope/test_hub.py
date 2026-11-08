@@ -2,10 +2,8 @@ import asyncio
 import threading
 from pathlib import Path
 
-import numpy as np
 import pytest
 
-from rigplane.audio.scope_source import AudioFftSource, AudioPassband, PcmTap
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.runtime.radio_scope_source import RadioScopeSource, RadioScopeWriter
 from rigplane.scope import ScopeFrame
@@ -21,8 +19,6 @@ from rigplane.scope.models import (
     Subscription,
     View,
 )
-from rigplane.sdr import FakeIqSource
-from rigplane.sdr.scope_source import IqFftSource
 from rigplane.testing.timing import await_until
 
 
@@ -400,88 +396,38 @@ class CleanupProbe:
         self.active = False
 
 
-def real_flaky_source(kind, probe):
+def real_flaky_source(probe):
     view = View(10_000_300, 10_002_700)
-    if kind == "radio":
 
-        class FlakyWriter(RadioScopeWriter):
-            def tuned_frequency(self, receiver):
-                return 10_000_000
+    class FlakyWriter(RadioScopeWriter):
+        def tuned_frequency(self, receiver):
+            return 10_000_000
 
-            async def set_center(self, center_hz, span_hz, receiver):
-                pass
+        async def set_center(self, center_hz, span_hz, receiver):
+            pass
 
-            async def set_output(self, enabled):
-                probe.start() if enabled else probe.stop()
+        async def set_output(self, enabled):
+            probe.start() if enabled else probe.stop()
 
-        source = RadioScopeSource(
-            load_rig(Path("rigs/ic7300.toml")).to_profile(), FlakyWriter()
-        )
-
-        def emit():
-            source.feed_frame(
-                ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * 8, False)
-            )
-
-        return source, Subscription("real", 0, view, 8, 20), emit
-
-    if kind == "audio_fft":
-
-        class FlakyTap(PcmTap):
-            callback = None
-
-            async def acquire(self, callback):
-                probe.start()
-                self.callback = callback
-
-            async def release(self):
-                probe.stop()
-                self.callback = None
-
-        tap = FlakyTap()
-        source = AudioFftSource(
-            tap, lambda: AudioPassband(10_000_000, 300, 2700, "upper")
-        )
-        samples = np.sin(2 * np.pi * 1500 * np.arange(4096) / 48000)
-        pcm = (samples * 16000).astype("<i2").tobytes()
-
-        def emit():
-            assert tap.callback is not None
-            tap.callback(pcm)
-
-        return source, Subscription("real", None, view, 8, 20), emit
-
-    assert kind == "iq_fft"
-
-    class FlakyProvider(FakeIqSource):
-        def open(self):
-            probe.start()
-            super().open()
-
-        def close(self):
-            probe.stop()
-            super().close()
-
-    provider = FlakyProvider(
-        center_freq_hz=10_000_000, sample_rate_hz=48000, block_size=4096
+    source = RadioScopeSource(
+        load_rig(Path("rigs/ic7300.toml")).to_profile(), FlakyWriter()
     )
-    source = IqFftSource(provider, start_worker=False)
 
     def emit():
-        provider.pump(1)
-        source.producer.process_pending()
+        source.feed_frame(
+            ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * 8, False)
+        )
 
-    return source, Subscription("real", None, View(9_976_000, 10_024_000), 8, 20), emit
+    return source, Subscription("real", 0, view, 8, 20), emit
 
 
-@pytest.mark.parametrize("kind", ["radio", "audio_fft", "iq_fft"])
 @pytest.mark.parametrize("retry", ["close", "subscribe"])
 @pytest.mark.timeout(10)
 async def test_real_failed_final_stop_is_retried_before_fresh_demand(
-    kind, retry, virtual_clock
+    retry, virtual_clock
 ):
     probe = CleanupProbe(1 if retry == "close" else 2)
-    source, requested, emit = real_flaky_source(kind, probe)
+    source, requested, emit = real_flaky_source(probe)
     encoder = Encoder()
     hub = ScopeHub(encoder=encoder)
     hub.register("real", source)

@@ -45,11 +45,11 @@ async def test_profile_center_span_and_partial(model):
     assert plugin.capabilities().view_modes == ("center",)
     assert plugin.capabilities().span_choices_hz == profile.scope_span_presets_hz
     view = View(14_090_000, 14_105_000)
-    assert plugin.coverage_for(view) == Coverage(14_085_000, 14_110_000)
+    assert plugin.coverage_for(view) == Coverage(14_087_500, 14_112_500)
     await plugin.set_view(view)
-    assert writer.writes[-1] == (14_097_500, 25000, 0)
+    assert writer.writes[-1] == (14_100_000, 25000, 0)
     wide = View(13_000_000, 15_000_000)
-    assert (await plugin.set_view(wide)).coverage == Coverage(13_750_000, 14_250_000)
+    assert (await plugin.set_view(wide)).coverage == Coverage(13_850_000, 14_350_000)
     writer.frequency = 7_100_000
     assert (await plugin.set_view(FollowView("vfo", 5000))).view == View(
         7_097_500, 7_102_500

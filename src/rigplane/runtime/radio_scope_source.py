@@ -1,4 +1,4 @@
-"""Profile-backed CENTER scope source over one injected control writer."""
+"""Profile-backed VFO-centered scope source over one control writer."""
 
 from __future__ import annotations
 
@@ -69,10 +69,10 @@ class RadioScopeSource:
 
     def coverage_for(self, view: ViewRequest, receiver: int | None = None) -> Coverage:
         resolved = self.resolve_view(view, receiver)
-        needed = resolved.end_hz - resolved.start_hz
+        center = self._writer.tuned_frequency(self._receiver(receiver))
+        needed = 2 * max(abs(resolved.start_hz - center), abs(resolved.end_hz - center))
         spans = self._caps.span_choices_hz
         span = next((span for span in spans if span >= needed), spans[-1])
-        center = (resolved.start_hz + resolved.end_hz) / 2
         return Coverage(center - span / 2, center + span / 2)
 
     async def set_view(
