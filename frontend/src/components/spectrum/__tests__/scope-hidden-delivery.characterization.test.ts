@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { get } from 'svelte/store';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import WaterfallCanvas from '../WaterfallCanvas.svelte';
@@ -117,8 +118,6 @@ describe('same-session scope delivery across hidden rendering', () => {
     const pushed = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     const socket = channel();
     const controller = new ScopeController(() => socket as never, timing);
-    let geometryState: import('$lib/runtime/scope-frame').ScopeGeometry | null = null;
-    controller.stream('hardware').geometry.subscribe((geometry) => { geometryState = geometry; });
     const target = document.createElement('div');
     document.body.append(target);
     let push: ((pixels: Uint8Array) => void) | undefined;
@@ -173,7 +172,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(arrivals).toEqual(mode === 'continued' ? [...baselineIds, ...ids] : baselineIds);
       advance(2 * 60 * 60 * 1000);
       flushSync();
-      expect(geometryState?.freshness).toBe('stale');
+      expect(get(controller.stream('hardware').geometry)?.freshness).toBe('stale');
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
@@ -205,7 +204,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(paint).toHaveBeenCalledTimes(paintedIds.length);
       expect(accepted[0].receivedAt).toBe(0);
       expect(accepted.at(-1)?.receivedAt).toBe(now);
-      expect(geometryState?.freshness).toBe('fresh');
+      expect(get(controller.stream('hardware').geometry)?.freshness).toBe('fresh');
       expect(socket.sessionEpoch).toBe(1);
       expect(socket.connect).toHaveBeenCalledTimes(1);
       // Painting went through rAF scheduling and nothing is left pending:

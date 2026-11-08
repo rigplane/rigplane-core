@@ -57,6 +57,7 @@
 
 <div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible}>
   <AudioSpectrumCanvas
+    data={null}
     onRegisterPush={(fn) => { fftPush = fn; }}
     bandwidth={fftBandwidth}
     filterWidth={p.filterWidth}

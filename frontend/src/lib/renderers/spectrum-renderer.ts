@@ -70,6 +70,7 @@ export function spectrumColorRolesToOptions(roles: SpectrumColorRoles) {
 
 export interface SpectrumOptions {
   showRfOverlays?: boolean;
+  showTuneIndicator?: boolean;
   bgColor: string;
   lineColor: string;
   fillColor: string;
@@ -360,13 +361,14 @@ export function renderSpectrum(
       }
     }
 
-    // Center frequency line (carrier)
-    ctx.strokeStyle = options.tuneLineColor;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(tunePx, 0);
-    ctx.lineTo(tunePx, height);
-    ctx.stroke();
+    if (options.showTuneIndicator !== false) {
+      ctx.strokeStyle = options.tuneLineColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(tunePx, 0);
+      ctx.lineTo(tunePx, height);
+      ctx.stroke();
+    }
   }
 }
 

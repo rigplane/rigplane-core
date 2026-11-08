@@ -12,13 +12,14 @@
     data: Uint8Array | null;
     options?: SpectrumOptions;
     spanHz?: number;
+    absoluteLabels?: boolean;
     enableAvg?: boolean;
     enablePeakHold?: boolean;
     trace?: ScopeRenderTrace | null;
     onRegisterPush?: (fn: (data: Uint8Array, token?: TraceToken | null) => void) => void;
   }
 
-  let { data, options = defaultSpectrumOptions, spanHz = 0, enableAvg = true, enablePeakHold = true, onRegisterPush, trace = null }: Props = $props();
+  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, trace = null }: Props = $props();
 
   const renderer = new SpectrumRenderer();
 
@@ -139,8 +140,8 @@
   <canvas bind:this={canvas}></canvas>
   {#if options.showRfOverlays !== false && spanHz > 0}
     <div class="span-indicators">
-      <span class="span-left">{formatOffset(spanHz / -2)}</span>
-      <span class="span-right">{formatOffset(spanHz / 2)}</span>
+      <span class="span-left">{absoluteLabels ? `${((options.centerHz - spanHz / 2) / 1e6).toFixed(3)} MHz` : formatOffset(spanHz / -2)}</span>
+      <span class="span-right">{absoluteLabels ? `${((options.centerHz + spanHz / 2) / 1e6).toFixed(3)} MHz` : formatOffset(spanHz / 2)}</span>
     </div>
   {/if}
 </div>

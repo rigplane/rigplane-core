@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import type { ScopePreset } from '$lib/runtime/scope-presets';
   import { getTuningStep, adjustTuningStep, isAutoStep, setAutoStep, formatStep } from '../../lib/stores/tuning.svelte';
   import { t } from '$lib/i18n';
   import { type ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
@@ -39,8 +40,8 @@
     onScopeDemandChange?: (enabled: boolean) => void;
     /** MOR-4270: band-plan presets derived from profile data; selecting one
      * edits the View (display-only until the server grants views, R4). */
-    scopePresets?: { readonly kind: string; readonly label: string }[];
-    onScopePresetSelect?: (preset: { readonly kind: string; readonly label: string }) => void;
+    scopePresets?: readonly ScopePreset[];
+    onScopePresetSelect?: (preset: ScopePreset) => void;
     onScopeZoom?: (factor: number) => void;
     hideSourceControls?: boolean;
     hideScopeControls?: boolean;
@@ -343,7 +344,7 @@
 {#snippet viewControls()}
     {#if scopePresets.length > 0}
       <select
-        class="scope-capsule-select"
+        class="toolbar-select scope-capsule-select"
         data-testid="scope-preset-select"
         aria-label={t('core.scope.presets')}
         title={t('core.scope.presets')}
@@ -359,9 +360,9 @@
           <option value={index}>{preset.kind === 'follow' ? t('core.scope.preset.follow') : preset.label}</option>
         {/each}
       </select>
-      <button type="button" class="scope-flat-key" data-testid="scope-zoom-out"
+      <button type="button" class="toolbar-btn scope-flat-key" data-testid="scope-zoom-out"
         onclick={() => onScopeZoom?.(2)} title={t('core.scope.zoomOut')}>ZOOM−</button>
-      <button type="button" class="scope-flat-key" data-testid="scope-zoom-in"
+      <button type="button" class="toolbar-btn scope-flat-key" data-testid="scope-zoom-in"
         onclick={() => onScopeZoom?.(0.5)} title={t('core.scope.zoomIn')}>ZOOM+</button>
     {/if}
 {/snippet}

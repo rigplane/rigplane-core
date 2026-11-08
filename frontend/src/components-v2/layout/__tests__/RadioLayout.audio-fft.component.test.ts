@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { get } from 'svelte/store';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { setCapabilities, clearCapabilities, getCapabilities } from '$lib/stores/capabilities.svelte';
@@ -265,9 +266,7 @@ describe('MOR-2355 central default scope source', () => {
     const renderCountAfterFrame = render.mock.calls.length;
     draw();
     expect(render).toHaveBeenCalledTimes(renderCountAfterFrame);
-    let geometry: import('$lib/runtime/scope-frame').ScopeGeometry | null = null;
-    const stop = scope.stream('audio_fft').geometry.subscribe(value => { geometry = value; }); stop();
-    expect(geometry?.view.startHz).toBe(14176000);
+    expect(get(scope.stream('audio_fft').geometry)?.view.startHz).toBe(14176000);
     const latest = scope.stream('audio_fft').latest('audio-scope:0');
     expect(latest?.pixels).toHaveLength(2049);
     expect(Math.max(...latest!.pixels!)).toBe(160);
