@@ -54,7 +54,6 @@ const h = vi.hoisted(() => ({
   },
   audioConnected: true,
   rxEnabled: true,
-  sourceLevelLow: false,
   guardVisible: false,
   setVolume: vi.fn(),
   setMuted: vi.fn(),
@@ -151,7 +150,6 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     get audioRouting() { return h.audioRouting; },
     get connectionAudio() { return h.audioConnected; },
     get rxEnabled() { return h.rxEnabled; },
-    get rxSourceLevelLow() { return h.sourceLevelLow; },
     setVolume: h.setVolume, setMuted: h.setMuted,
     setRxLive: h.setRxLive, setRxVolume: h.setRxVolume,
     // MOR-1312 slice 12B: the wiring now also hands the adapter a
@@ -355,7 +353,6 @@ beforeEach(() => {
   h.audioRouting = null;
   h.audioConnected = true;
   h.rxEnabled = true;
-  h.sourceLevelLow = false;
   h.guardVisible = false;
   h.selectedFiniteAppearance = undefined;
   rxAudioScalar.bindings.length = 0;
@@ -1358,26 +1355,5 @@ describe('single composition operational disable (MOR-1342)', () => {
     );
     expect(sub).not.toBeNull();
     expect(sub!.disabled).toBe(false);
-  });
-});
-
-describe('quiet RX audio (MOR-4294)', () => {
-  it('shows no quiet-source hint while LIVE audio stays quiet', () => {
-    h.sourceLevelLow = true;
-    renderHostedFace();
-    expect(el('source-low')).toBeNull();
-  });
-
-  it('shows nothing while the source is not quiet', () => {
-    renderHostedFace();
-    expect(el('source-low')).toBeNull();
-  });
-
-  it('shows nothing outside LIVE monitoring', () => {
-    h.sourceLevelLow = true;
-    h.rxEnabled = false;
-    h.audio = { muted: false, rxEnabled: false, volume: 42 };
-    renderHostedFace();
-    expect(el('source-low')).toBeNull();
   });
 });
