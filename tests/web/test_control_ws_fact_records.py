@@ -600,7 +600,41 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
 
     radio = _FactsRadio()
     radio.radio_ready = True
-    server = _server(radio=radio, authority=_Authority())
+    from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+    from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
+    from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+    from rigplane.runtime.managed_tx_fence import TxAbortFence
+    from rigplane.runtime.managed_tx_state import ActuationResult
+
+    class _AcceptingActuator:
+        async def actuate(self, *_args: object, **_kwargs: object) -> object:
+            return ActuationResult.ACCEPTED
+
+    class _MemoryConfig:
+        def __init__(self) -> None:
+            self._config = ManagedTxTotConfig(10.0)
+
+        @property
+        def config(self) -> ManagedTxTotConfig:
+            return self._config
+
+        def set_timeout_seconds(self, value: object) -> ManagedTxTotConfig:
+            del value
+            return self._config
+
+    authority = ManagedTxAuthority(
+        ManagedTxEffectLane(_AcceptingActuator()),
+        _MemoryConfig(),  # type: ignore[arg-type]
+        TxAbortFence(),
+        provider_generation=7,
+    )
+    # The REAL authority is both the change listener and the document
+    # producer: `_production_managed_tx_port` feeds `_managed_tx_document`.
+    server = _server(radio=radio)
+    server._production_managed_tx_port = type(  # noqa: SLF001
+        "_Port", (), {"authority": authority}
+    )()
+    server._bind_managed_tx_hint(authority)  # noqa: SLF001
     _observe_ptt(server, ObservedPtt.OFF)
     server._server = await asyncio.start_server(  # noqa: SLF001
         server._accept_client,
@@ -631,62 +665,37 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
                 ):
                     document_seen = True
                     assert message["data"]["txObservation"] == {"observedPtt": "off"}
+                    assert message["data"]["managedTransmit"]["intent"] == {
+                        "kind": "rx"
+                    }
                 if hello_seen and baseline_seen and document_seen:
                     break
             assert hello_seen and baseline_seen and document_seen
 
-            # A managed-TX change through the real authority listener (the
+            # A managed-TX key through the real authority listener (the
             # production wiring: subscribe_changes -> _on_managed_tx_changed)
-            # reaches the connected client within one event.
-            from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
-            from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
-            from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
-            from rigplane.runtime.managed_tx_fence import TxAbortFence
-            from rigplane.runtime.managed_tx_state import ActuationResult
-
-            class _AcceptingActuator:
-                async def actuate(self, *_args: object, **_kwargs: object) -> object:
-                    return ActuationResult.ACCEPTED
-
-            class _MemoryConfig:
-                def __init__(self) -> None:
-                    self._config = ManagedTxTotConfig(10.0)
-
-                @property
-                def config(self) -> ManagedTxTotConfig:
-                    return self._config
-
-                def set_timeout_seconds(self, value: object) -> ManagedTxTotConfig:
-                    del value
-                    return self._config
-
-            authority = ManagedTxAuthority(
-                ManagedTxEffectLane(_AcceptingActuator()),
-                _MemoryConfig(),  # type: ignore[arg-type]
-                TxAbortFence(),
-                provider_generation=7,
-            )
-            server._bind_managed_tx_hint(authority)  # noqa: SLF001
-            try:
-                _observe_ptt(server, ObservedPtt.ON)
-                await authority.ptt_down("e2e-owner")
-                for _ in range(6):
-                    _, payload = await _ws_recv_frame(reader, timeout=5.0)
-                    message = json.loads(payload)
-                    if (
-                        message.get("type") == "event"
-                        and message.get("name") == "managed_transmit_changed"
-                    ):
-                        assert message["data"]["txObservation"] == {"observedPtt": "on"}
-                        managed = message["data"]["managedTransmit"]
-                        assert managed["status"] == "available"
-                        assert managed["intent"]["kind"] in ("ptt", "transmit")
-                        break
-                else:
-                    pytest.fail("managed_transmit_changed never arrived")
-            finally:
-                await authority.ptt_up("e2e-owner")
-                await authority.close()
+            # reaches the connected client within one event, with the exact
+            # resulting intent and owner from the authority itself.
+            _observe_ptt(server, ObservedPtt.ON)
+            await authority.ptt_down("e2e-owner")
+            document = None
+            for _ in range(6):
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if (
+                    message.get("type") == "event"
+                    and message.get("name") == "managed_transmit_changed"
+                ):
+                    document = message["data"]
+                    break
+            assert document is not None
+            assert document["txObservation"] == {"observedPtt": "on"}
+            assert document["managedTransmit"]["status"] == "available"
+            assert document["managedTransmit"]["intent"] == {
+                "kind": "ptt",
+                "owner": "e2e-owner",
+            }
+            await authority.ptt_up("e2e-owner")
 
             # An identity change through the production reconnect-status
             # entry re-delivers the connection record to the socket.
@@ -706,13 +715,58 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
                     break
             else:
                 pytest.fail("identity delta never arrived")
+
+            # The busy-session hold clearing (the connect completing fires
+            # the runtime's reconnect-status entry) re-delivers the session.
+            radio.startup_busy_hold_event.clear()
+            server._on_reconnect_status({"state": "connected", "attempt": 1})  # noqa: SLF001
+            for _ in range(6):
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message.get("type") == "state_update":
+                    connection = message["data"]["changed"]["connection"]
+                    assert connection["session"] == {
+                        "busy": False,
+                        "retryInSeconds": None,
+                    }
+                    break
+            else:
+                pytest.fail("session delta never arrived")
+
+            # RX failure and recovery through the production tap-only relay
+            # entrypoint reach the control socket as audioReceive deltas.
+            radio.audio_session.fail = True
+            await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
+            for _ in range(6):
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message.get("type") == "state_update":
+                    audio_receive = message["data"]["changed"]["audioReceive"]
+                    assert audio_receive["failure"]["reason"] == "other"
+                    break
+            else:
+                pytest.fail("rx failure delta never arrived")
+
+            radio.audio_session.fail = False
+            await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
+            for _ in range(6):
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message.get("type") == "state_update":
+                    audio_receive = message["data"]["changed"]["audioReceive"]
+                    assert audio_receive["failure"] is None
+                    break
+            else:
+                pytest.fail("rx recovery delta never arrived")
         finally:
+            radio.audio_session._drained.set()  # noqa: SLF001
             writer.close()
             await writer.wait_closed()
     finally:
         server._server.close()  # noqa: SLF001
         await server._server.wait_closed()  # noqa: SLF001
         await server.stop()
+        await authority.close()
 
 
 async def test_connect_document_seeds_the_observed_ptt_baseline() -> None:
@@ -763,6 +817,14 @@ async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None
         assert len(updates) == 1, updates
         audio_receive = updates[0]["data"]["changed"]["audioReceive"]
         assert audio_receive["failure"]["reason"] == "other"
+
+        # A retry producing the SAME failure record stays silent: the
+        # delivery key suppresses unchanged facts (change-driven contract).
+        await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
+        updates = [
+            event for event in _drain(queue) if event.get("type") == "state_update"
+        ]
+        assert updates == []
 
         # A retry that succeeds drops the retained failure and delivers the
         # recovered record (the relay keeps running on the fake source).

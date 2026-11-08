@@ -2200,16 +2200,18 @@ class WebServer:
         """Deliver a public-state update when the RX-start record changed.
 
         MOR-4279: the retained ``audioReceive`` failure is set on a relay
-        start failure and dropped on invalidation even when no audio client
-        came or went (tap-only relays), so the client-count hook alone
-        would miss the change. Force one delivery; the delivery key keeps
-        unchanged facts silent on every other path.
+        start failure and dropped on a later success even when no audio
+        client came or went (tap-only relays), so the client-count hook
+        alone would miss the change. Routed through the normal (non-forced)
+        delivery so the delivery key decides: a retry producing the SAME
+        failure record stays silent, a changed record delivers once.
         """
         if self._stopping:
             return
         if not self._control_event_queues:
             return
-        self._broadcast_state_update(force=True)
+        self._last_state_broadcast = 0.0
+        self._broadcast_state_update()
 
     def _broadcast_state_update(
         self,
