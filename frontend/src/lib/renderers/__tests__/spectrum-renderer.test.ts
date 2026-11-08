@@ -599,8 +599,18 @@ describe('requested View coordinates (MOR-4270)', () => {
       spanHz: 200_000, sampleSpanHz: 100_000, centerHz: 14_050_000,
       showRfOverlays: false,
     }));
-    const tracePoints = log.lineTo.filter(([, y]) => y === 0);
+    const tracePoints = log.lineTo.slice(17).filter(([, y]) => y === 0);
     expect(Math.min(...tracePoints.map(([x]) => x))).toBe(25);
     expect(Math.max(...tracePoints.map(([x]) => x))).toBe(74);
+  });
+});
+
+describe('central audio sample interpretation (MOR-4270)', () => {
+  it('crops and scales inside the renderer exactly like the former pre-sink conversion', () => {
+    const actual = createMockCtx(); const expected = createMockCtx();
+    renderSpectrum(actual.ctx, new Uint8Array([255, 255, 40, 160]), 100, 40,
+      opts({ sampleOffset: 2, sampleAmplitudeMax: 160 }));
+    renderSpectrum(expected.ctx, new Uint8Array([20, 80]), 100, 40, opts());
+    expect(actual.log).toEqual(expected.log);
   });
 });

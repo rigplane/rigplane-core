@@ -12,7 +12,6 @@ import { SvelteMap } from 'svelte/reactivity';
 import * as svelteClient from 'svelte/internal/client';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display-projection';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -983,7 +982,21 @@ describe('SpectrumPanel component', () => {
     const changed = [...panelEffects.runs].map(([id, runs]) => runs - (baseline.get(id) ?? 0));
     expect(Math.max(...changed), JSON.stringify([...panelEffects.origins])).toBeLessThanOrEqual(1);
     expect(changed.some((runs) => runs === 1)).toBe(true);
-    console.info('MOR-4270 SpectrumPanel effects', { registered: baseline.size, pixelOnly: 0, geometryMaximum: Math.max(...changed) });
+    console.info('MOR-4270 SpectrumPanel effects', { registered: baseline.size, pixelOnly: 0, geometryMaximum: Math.max(...changed), geometryTotal: changed.reduce((sum, runs) => sum + runs, 0) });
+  });
+
+  it('delivers the central audio FFT payload to both renderer sinks without a copy', async () => {
+    runtimeHarness.state.currentCaps = { scopeSource: 'audio_fft' };
+    mountPanel();
+    const bytes = encodeScopeWire({ startFreq: 0, endFreq: 48_000, pixels: new Uint8Array([1, 2, 40, 160]) });
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    harnessChannels['audio-scope'].fire(bytes); flushSync(); await flushWaterfallPaint();
+    const pixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
+    expect(pixels.buffer).toBe(bytes.buffer);
+    expect(pixels.byteOffset).toBe(16);
+    expect([...pixels]).toEqual([1, 2, 40, 160]);
+    expect(push.mock.calls.at(-1)![0]).toBe(pixels);
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ sampleOffset: 2, sampleAmplitudeMax: 160 });
   });
 
   it.each([0, 1] as const)('requests the numeric receiver %s from authority', (receiver) => {
@@ -1009,6 +1022,19 @@ describe('SpectrumPanel component', () => {
     expect(spectrumRendererHarness.lastOptions.spanHz).toBe(25_000);
   });
 
+  it('places the carrier proportionally when a band preset is centered away from the VFO', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+    select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync(); await flushWaterfallPaint();
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.view.endHz - request.view.startHz).toBeGreaterThan(100_000);
+    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(1);
+    const expectedLeft = (14_050_250 - request.view.startHz) / (request.view.endHz - request.view.startHz) * 100;
+    expect(parseFloat(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left)).toBeCloseTo(expectedLeft);
+  });
+
   it('maps a click through the zoomed View and retains it after a non-drag release', async () => {
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
@@ -1017,7 +1043,7 @@ describe('SpectrumPanel component', () => {
     flushSync(); await flushWaterfallPaint();
     const { spectrum } = prepareGeometry(target);
     pointer(spectrum, 'pointerdown', 90, 150); pointer(spectrum, 'pointerup', 90, 150);
-    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledExactlyOnceWith(14_062_000, 0);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledExactlyOnceWith(14_063_000, 0);
     const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     expect(request.view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
   });
@@ -2982,7 +3008,7 @@ describe('managed scope projection (MOR-2367)', () => {
       }
       expect(push).toHaveBeenCalledTimes(6);
       const afterLoop = 6;
-      silenceFrames(); const afterClear = afterLoop;
+      silenceFrames();
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
       emitFrame({ pixels }); await flushWaterfallPaint(); expect(push).toHaveBeenCalledTimes(afterLoop);
       clock += 83;
@@ -4472,6 +4498,11 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
     try {
       const goldenState = structuredClone(IC7300_STATE);
       goldenState.main!.filterWidth = 2400;
+      goldenState.main!.activeSlot = 'A';
+      goldenState.main!.vfoA = { freqHz: 14_050_000, mode: 'USB', filterNum: 1, dataMode: 0 };
+      for (const path of ['main.activeSlot', ...Object.keys(goldenState.main!.vfoA).map((leaf) => `main.vfoA.${leaf}`)]) {
+        goldenState.fieldStatus[path] = { ...goldenState.fieldStatus['main.freqHz'], storePath: path, observed: true, freshness: 'fresh', availability: 'available' };
+      }
       runtimeHarness.state.currentState = goldenState;
       runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
       const hardwareStream = scopeControllerHarness.stream('hardware');

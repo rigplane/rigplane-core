@@ -407,3 +407,14 @@ describe('requested View coordinates (MOR-4270)', () => {
     expect(pixel(74)).toEqual(pixel(25));
   });
 });
+
+describe('central audio sample interpretation (MOR-4270)', () => {
+  it('crops and scales inside the renderer exactly like the former pre-sink conversion', () => {
+    const actual = mockCanvas(100, 20); const expected = mockCanvas(100, 20);
+    const a = new WaterfallRenderer(actual, { ...defaultWaterfallOptions, sampleOffset: 2, sampleAmplitudeMax: 160 });
+    const b = new WaterfallRenderer(expected, defaultWaterfallOptions);
+    a.pushRow(new Uint8Array([255, 255, 40, 160])); b.pushRow(new Uint8Array([20, 80]));
+    expect(vi.mocked(actual.getContext('2d')!.putImageData).mock.calls.at(-1)![0].data)
+      .toEqual(vi.mocked(expected.getContext('2d')!.putImageData).mock.calls.at(-1)![0].data);
+  });
+});
