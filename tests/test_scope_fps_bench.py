@@ -179,3 +179,91 @@ async def test_collect_accepts_native_capped_grant(
         result = await bench.collect(Session(), "http://127.0.0.1", (), request, 1)
         assert result["width"] == granted_width
         assert result["pixel_frames"] == 8
+
+
+class GrantReplaySession:
+    def __init__(self, messages, clock):
+        self.messages = list(messages)
+        self.clock = clock
+
+    def ws_connect(self, *_args, **_kwargs):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def send_str(self, _text):
+        pass
+
+    async def receive(self, **_kwargs):
+        if not self.messages:
+            raise TimeoutError
+        delay, message = self.messages.pop(0)
+        if delay:
+            await self.clock.elapse(delay)
+        return message
+
+
+def grant_message(grant):
+    return aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, encode_scope_granted(grant), "")
+
+
+def pixel_message(width, seq, view=View(14_100_000, 14_200_000)):
+    native = replace(
+        frame(width=width, seq=seq),
+        view_start_hz=view.start_hz,
+        view_end_hz=view.end_hz,
+        coverage_start_hz=view.start_hz,
+        coverage_end_hz=view.end_hz,
+    )
+    return aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, encode_scope_frame_v2(native), "")
+
+
+async def test_collect_follows_observed_width_and_geometry_grant_updates(
+    virtual_clock, monkeypatch
+):
+    virtual_clock.scope_to(monkeypatch, bench)
+    view = View(14_100_000, 14_200_000)
+    provisional = GrantedSubscription("radio", 0, view, Coverage(view.start_hz, view.end_hz), 2800, 10)
+    observed = replace(provisional, width=689)
+    changed_view = View(14_110_000, 14_190_000)
+    changed = replace(observed, width=475, view=changed_view, coverage=Coverage(changed_view.start_hz, changed_view.end_hz))
+    messages = [(0, grant_message(provisional)), (0, grant_message(observed))]
+    messages += [(0, pixel_message(689, seq)) for seq in range(1, 5)]
+    messages += [(0, grant_message(changed))]
+    messages += [(0, pixel_message(475, seq, changed_view)) for seq in range(5, 9)]
+    result = await bench.collect(GrantReplaySession(messages, virtual_clock), "http://127.0.0.1", (), Subscription("radio", 0, view, 2800, 10), 1)
+    assert result["width"] == 475
+    assert result["pixel_frames"] == 8
+    assert result["view"] == {"start_hz": changed_view.start_hz, "end_hz": changed_view.end_hz}
+    assert result["coverage"] == result["view"]
+
+
+@pytest.mark.parametrize("initial_fps,updated_fps", [(2, 10), (10, 2)])
+async def test_collect_integrates_changed_granted_fps_over_measurement(
+    initial_fps, updated_fps, virtual_clock, monkeypatch
+):
+    virtual_clock.scope_to(monkeypatch, bench)
+    view = View(14_100_000, 14_200_000)
+    initial = GrantedSubscription("radio", 0, view, Coverage(view.start_hz, view.end_hz), 1024, initial_fps)
+    messages = [(0, grant_message(initial)), (0.5, grant_message(replace(initial, max_fps=updated_fps)))]
+    messages += [(0, pixel_message(1024, seq)) for seq in range(1, 6)]
+    result = await bench.collect(GrantReplaySession(messages, virtual_clock), "http://127.0.0.1", (), Subscription("radio", 0, view, 1024, 10), 1)
+    assert result["max_fps"] == updated_fps
+    assert result["pixel_delivery_ratio"] == pytest.approx(5 / 6)
+
+
+async def test_collect_refuses_error_control_after_usable_frames(
+    virtual_clock, monkeypatch
+):
+    virtual_clock.scope_to(monkeypatch, bench)
+    view = View(14_100_000, 14_200_000)
+    initial = GrantedSubscription("radio", 0, view, Coverage(view.start_hz, view.end_hz), 1024, 10)
+    messages = [(0, grant_message(initial))]
+    messages += [(0, pixel_message(1024, seq)) for seq in range(1, 9)]
+    messages += [(0, aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, '{"type":"error","message":"source unavailable"}', ""))]
+    with pytest.raises(ValueError, match="source unavailable"):
+        await bench.collect(GrantReplaySession(messages, virtual_clock), "http://127.0.0.1", (), Subscription("radio", 0, view, 1024, 10), 1)
