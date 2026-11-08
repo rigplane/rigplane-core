@@ -97,3 +97,26 @@ async def test_pcm_frame_routes_through_real_hub_and_releases_on_last_close():
     assert tap.releases == 0
     await second.close()
     assert tap.releases == 1
+
+
+async def test_failed_pcm_tap_release_can_be_retried():
+    class FlakyTap(Tap):
+        def __init__(self):
+            super().__init__()
+            self.attempts = 0
+
+        async def release(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("release failed")
+            await super().release()
+
+    tap = FlakyTap()
+    source = AudioFftSource(tap, lambda: AudioPassband(7_100_000, 0, 2400, "upper"))
+    await source.start()
+    with pytest.raises(RuntimeError, match="release failed"):
+        await source.stop()
+    await source.stop()
+    assert tap.attempts == 2
+    assert tap.releases == 1
+    assert tap.callback is None
