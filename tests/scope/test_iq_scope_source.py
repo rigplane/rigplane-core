@@ -204,7 +204,9 @@ async def test_shared_iq_keeps_full_capture_for_both_views(
     assert not provider.is_open
 
 
-async def test_geometry_replacement_closes_old_worker_and_stop_closes_new_worker():
+async def test_geometry_change_enqueues_on_existing_worker(monkeypatch):
+    from unittest.mock import MagicMock
+
     provider = FakeIqSource(center_freq_hz=10_000_000, sample_rate_hz=48000)
     source = IqFftSource(provider)
     assert source.producer._thread is None
@@ -213,14 +215,15 @@ async def test_geometry_replacement_closes_old_worker_and_stop_closes_new_worker
     old_producer = source.producer
     old_worker = old_producer._thread
     assert old_worker is not None and old_worker.is_alive()
+    close = MagicMock(wraps=old_producer.close)
+    monkeypatch.setattr(old_producer, "close", close)
     provider.set_center_freq(11_000_000)
     provider.pump(1)
-    assert not old_worker.is_alive()
-    assert old_producer._closed
-    new_worker = source.producer._thread
-    assert new_worker is not None and new_worker.is_alive()
+    close.assert_not_called()
+    assert source.producer is old_producer
+    assert old_worker.is_alive()
     await source.stop()
-    assert not new_worker.is_alive()
+    assert not old_worker.is_alive()
     assert not provider.is_open
 
 
