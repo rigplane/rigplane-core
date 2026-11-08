@@ -14,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import goldenScopeWire from '../../../lib/runtime/__tests__/fixtures/scope-wire.json';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
-  type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
+  type ScopePassbandDisplay, type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { WsChannel } from '$lib/transport/ws-client';
@@ -2545,7 +2545,7 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(refs).toHaveLength(0);
     }
   }
-  function managed(initial: ReturnType<typeof projection> | null | undefined) {
+  function managed(initial: ScopePassbandDisplay | null | undefined) {
     // The wiring's managed lease, stood in for by the harness: frames must
     // flow through the shared stream exactly as they do under SRS.
     harnessLeases.push(sharedLeaseAcquisitions());
@@ -2584,7 +2584,7 @@ describe('managed scope projection (MOR-2367)', () => {
       flushSync(); await flushWaterfallPaint();
       const { renderSpectrum } = await vi.importActual<typeof import('$lib/renderers/spectrum-renderer')>('$lib/renderers/spectrum-renderer');
       const fills: string[] = [];
-      const ctx = { ...noopCanvas, setLineDash: noop, fillRect() { fills.push(this.fillStyle as string); } };
+      const ctx = { ...noopCanvas, fillStyle: '', setLineDash: noop, fillRect() { fills.push(this.fillStyle); } };
       const options = spectrumRendererHarness.lastOptions;
       renderSpectrum(ctx as unknown as CanvasRenderingContext2D, new Uint8Array(100).fill(80), 400, 100, options);
       expect(options).toMatchObject({ sampleSpanHz: 100_000, spanHz: 40_000, tuneHz: 0, showTuneIndicator: false });

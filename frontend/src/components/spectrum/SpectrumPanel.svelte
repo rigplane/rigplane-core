@@ -1216,7 +1216,7 @@
     // FIX marker.
     const changed = dragCandidate !== null || gestureCandidateHz !== null;
     gestureCandidateHz = dragCandidate;
-    if (changed) vfoHandlers.onFreqChange(candidate, capture.authority.receiver, 'drag');
+    if (changed && candidate !== null) vfoHandlers.onFreqChange(candidate, capture.authority.receiver, 'drag');
     if (panoramaActive) {
       const base = capture.view ?? untrack(() => scopeView.confirmed);
       scopeView.set('gesture', dragCandidate !== null && base.endHz > base.startHz
