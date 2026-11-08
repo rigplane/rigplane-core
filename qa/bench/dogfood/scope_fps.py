@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 import json
 import math
 import os
@@ -25,7 +26,12 @@ import aiohttp
 # The simulator is a repository testkit, not part of the installed SDK wheel.
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from rigplane.scope.models import FollowView, ScopeWireFrame, Subscription
+from rigplane.scope.models import (
+    FollowView,
+    GrantedSubscription,
+    ScopeWireFrame,
+    Subscription,
+)
 from rigplane.web.protocol import (  # noqa: TID251
     decode_scope_frame_v2,
     decode_scope_granted,
@@ -134,23 +140,33 @@ async def collect(
         message = await ws.receive(timeout=15)
         if message.type is not aiohttp.WSMsgType.TEXT:
             raise ValueError("scope did not grant subscription")
-        try:
-            granted = decode_scope_granted(message.data)
-        except ValueError as error:
-            raise ValueError(f"scope subscription refused: {message.data}") from error
-        # The hub grants at most the source native width: a request wider
-        # than native is granted at native resolution, never upsampled.
-        if (granted.source_id, granted.receiver) != (
-            request.source_id,
-            request.receiver,
-        ) or not 1 <= granted.width <= request.width:
-            raise ValueError("unexpected granted subscription")
+
+        def read_grant(text: str) -> GrantedSubscription:
+            try:
+                grant = decode_scope_granted(text)
+            except ValueError as error:
+                raise ValueError(f"scope subscription refused: {text}") from error
+            if (
+                (grant.source_id, grant.receiver)
+                != (
+                    request.source_id,
+                    request.receiver,
+                )
+                or not 1 <= grant.width <= request.width
+                or grant.max_fps > request.max_fps
+            ):
+                raise ValueError("unexpected granted subscription")
+            return grant
+
+        granted = read_grant(message.data)
         arrivals: list[float] = []
         byte_count = 0
         previous: int | None = None
         native_steps = 0
         pixel_frames = null_frames = out_of_range_frames = 0
         started = time.monotonic()
+        expected_frames = 0.0
+        rate_changed_at = 0.0
         while (remaining := duration - (time.monotonic() - started)) > 0:
             try:
                 message = await ws.receive(timeout=remaining)
@@ -169,6 +185,12 @@ async def collect(
                 out_of_range_frames += frame.out_of_range
                 arrivals.append(time.monotonic() - started)
                 byte_count += len(message.data)
+            elif message.type is aiohttp.WSMsgType.TEXT:
+                updated = read_grant(message.data)
+                elapsed = min(duration, time.monotonic() - started)
+                expected_frames += (elapsed - rate_changed_at) * granted.max_fps
+                rate_changed_at = elapsed
+                granted = updated
             elif message.type in (
                 aiohttp.WSMsgType.CLOSE,
                 aiohttp.WSMsgType.CLOSED,
@@ -177,18 +199,23 @@ async def collect(
                 raise ValueError("scope socket closed before measurement ended")
         if not arrivals or not pixel_frames:
             raise ValueError("no in-range pixel frames received")
-        if granted.max_fps <= 0:
+        expected_frames += (duration - rate_changed_at) * granted.max_fps
+        if expected_frames <= 0:
             raise ValueError("a paused grant cannot measure delivery")
-        delivery_ratio = pixel_frames / (duration * granted.max_fps)
+        delivery_ratio = pixel_frames / expected_frames
         if delivery_ratio < MIN_PIXEL_DELIVERY_RATIO:
             raise ValueError(
                 f"delivery below 80% of granted fps: {delivery_ratio:.1%} "
-                f"({pixel_frames} usable frames in {duration:g}s at {granted.max_fps:g} fps)"
+                f"({pixel_frames} usable frames in {duration:g}s; {expected_frames:g} expected)"
             )
         return {
             "source_id": granted.source_id,
             "width": granted.width,
             "max_fps": granted.max_fps,
+            "view": asdict(granted.view),
+            "coverage": asdict(granted.coverage)
+            if granted.coverage is not None
+            else None,
             "native_sequence_steps": native_steps,
             "pixel_frames": pixel_frames,
             "null_frames": null_frames,

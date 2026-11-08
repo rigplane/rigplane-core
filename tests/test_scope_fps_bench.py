@@ -219,7 +219,9 @@ def pixel_message(width, seq, view=View(14_100_000, 14_200_000)):
         coverage_start_hz=view.start_hz,
         coverage_end_hz=view.end_hz,
     )
-    return aiohttp.WSMessage(aiohttp.WSMsgType.BINARY, encode_scope_frame_v2(native), "")
+    return aiohttp.WSMessage(
+        aiohttp.WSMsgType.BINARY, encode_scope_frame_v2(native), ""
+    )
 
 
 async def test_collect_follows_observed_width_and_geometry_grant_updates(
@@ -227,18 +229,34 @@ async def test_collect_follows_observed_width_and_geometry_grant_updates(
 ):
     virtual_clock.scope_to(monkeypatch, bench)
     view = View(14_100_000, 14_200_000)
-    provisional = GrantedSubscription("radio", 0, view, Coverage(view.start_hz, view.end_hz), 2800, 10)
+    provisional = GrantedSubscription(
+        "radio", 0, view, Coverage(view.start_hz, view.end_hz), 2800, 10
+    )
     observed = replace(provisional, width=689)
     changed_view = View(14_110_000, 14_190_000)
-    changed = replace(observed, width=475, view=changed_view, coverage=Coverage(changed_view.start_hz, changed_view.end_hz))
+    changed = replace(
+        observed,
+        width=475,
+        view=changed_view,
+        coverage=Coverage(changed_view.start_hz, changed_view.end_hz),
+    )
     messages = [(0, grant_message(provisional)), (0, grant_message(observed))]
     messages += [(0, pixel_message(689, seq)) for seq in range(1, 5)]
     messages += [(0, grant_message(changed))]
     messages += [(0, pixel_message(475, seq, changed_view)) for seq in range(5, 9)]
-    result = await bench.collect(GrantReplaySession(messages, virtual_clock), "http://127.0.0.1", (), Subscription("radio", 0, view, 2800, 10), 1)
+    result = await bench.collect(
+        GrantReplaySession(messages, virtual_clock),
+        "http://127.0.0.1",
+        (),
+        Subscription("radio", 0, view, 2800, 10),
+        1,
+    )
     assert result["width"] == 475
     assert result["pixel_frames"] == 8
-    assert result["view"] == {"start_hz": changed_view.start_hz, "end_hz": changed_view.end_hz}
+    assert result["view"] == {
+        "start_hz": changed_view.start_hz,
+        "end_hz": changed_view.end_hz,
+    }
     assert result["coverage"] == result["view"]
 
 
@@ -248,10 +266,21 @@ async def test_collect_integrates_changed_granted_fps_over_measurement(
 ):
     virtual_clock.scope_to(monkeypatch, bench)
     view = View(14_100_000, 14_200_000)
-    initial = GrantedSubscription("radio", 0, view, Coverage(view.start_hz, view.end_hz), 1024, initial_fps)
-    messages = [(0, grant_message(initial)), (0.5, grant_message(replace(initial, max_fps=updated_fps)))]
+    initial = GrantedSubscription(
+        "radio", 0, view, Coverage(view.start_hz, view.end_hz), 1024, initial_fps
+    )
+    messages = [
+        (0, grant_message(initial)),
+        (0.5, grant_message(replace(initial, max_fps=updated_fps))),
+    ]
     messages += [(0, pixel_message(1024, seq)) for seq in range(1, 6)]
-    result = await bench.collect(GrantReplaySession(messages, virtual_clock), "http://127.0.0.1", (), Subscription("radio", 0, view, 1024, 10), 1)
+    result = await bench.collect(
+        GrantReplaySession(messages, virtual_clock),
+        "http://127.0.0.1",
+        (),
+        Subscription("radio", 0, view, 1024, 10),
+        1,
+    )
     assert result["max_fps"] == updated_fps
     assert result["pixel_delivery_ratio"] == pytest.approx(5 / 6)
 
@@ -261,9 +290,26 @@ async def test_collect_refuses_error_control_after_usable_frames(
 ):
     virtual_clock.scope_to(monkeypatch, bench)
     view = View(14_100_000, 14_200_000)
-    initial = GrantedSubscription("radio", 0, view, Coverage(view.start_hz, view.end_hz), 1024, 10)
+    initial = GrantedSubscription(
+        "radio", 0, view, Coverage(view.start_hz, view.end_hz), 1024, 10
+    )
     messages = [(0, grant_message(initial))]
     messages += [(0, pixel_message(1024, seq)) for seq in range(1, 9)]
-    messages += [(0, aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, '{"type":"error","message":"source unavailable"}', ""))]
+    messages += [
+        (
+            0,
+            aiohttp.WSMessage(
+                aiohttp.WSMsgType.TEXT,
+                '{"type":"error","message":"source unavailable"}',
+                "",
+            ),
+        )
+    ]
     with pytest.raises(ValueError, match="source unavailable"):
-        await bench.collect(GrantReplaySession(messages, virtual_clock), "http://127.0.0.1", (), Subscription("radio", 0, view, 1024, 10), 1)
+        await bench.collect(
+            GrantReplaySession(messages, virtual_clock),
+            "http://127.0.0.1",
+            (),
+            Subscription("radio", 0, view, 1024, 10),
+            1,
+        )
