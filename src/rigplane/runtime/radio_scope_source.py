@@ -91,12 +91,12 @@ class RadioScopeSource:
     async def start(self) -> None:
         if self._active:
             return
+        self._active = True
         try:
             await self._writer.set_output(True)
         except BaseException:
-            await self._writer.set_output(False)
+            await self.stop()
             raise
-        self._active = True
 
     async def stop(self) -> None:
         if self._active:
