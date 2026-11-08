@@ -301,7 +301,8 @@ async def test_cleanup_failure_does_not_retain_demand(failure, virtual_clock):
     setattr(source, failure, False)
     fresh = await hub.subscribe(request())
     await fresh.close()
-    assert source.starts == source.stops == 2
+    assert source.starts == 2
+    assert source.stops == (3 if failure == "fail_stop" else 2)
 
 
 @pytest.mark.asyncio
@@ -402,6 +403,7 @@ class CleanupProbe:
 def real_flaky_source(kind, probe):
     view = View(10_000_300, 10_002_700)
     if kind == "radio":
+
         class FlakyWriter(RadioScopeWriter):
             def tuned_frequency(self, receiver):
                 return 10_000_000
@@ -412,14 +414,19 @@ def real_flaky_source(kind, probe):
             async def set_output(self, enabled):
                 probe.start() if enabled else probe.stop()
 
-        source = RadioScopeSource(load_rig(Path("rigs/ic7300.toml")).to_profile(), FlakyWriter())
+        source = RadioScopeSource(
+            load_rig(Path("rigs/ic7300.toml")).to_profile(), FlakyWriter()
+        )
 
         def emit():
-            source.feed_frame(ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * 8, False))
+            source.feed_frame(
+                ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * 8, False)
+            )
 
         return source, Subscription("real", 0, view, 8, 20), emit
 
     if kind == "audio_fft":
+
         class FlakyTap(PcmTap):
             callback = None
 
@@ -432,7 +439,9 @@ def real_flaky_source(kind, probe):
                 self.callback = None
 
         tap = FlakyTap()
-        source = AudioFftSource(tap, lambda: AudioPassband(10_000_000, 300, 2700, "upper"))
+        source = AudioFftSource(
+            tap, lambda: AudioPassband(10_000_000, 300, 2700, "upper")
+        )
         samples = np.sin(2 * np.pi * 1500 * np.arange(4096) / 48000)
         pcm = (samples * 16000).astype("<i2").tobytes()
 
@@ -453,7 +462,9 @@ def real_flaky_source(kind, probe):
             probe.stop()
             super().close()
 
-    provider = FlakyProvider(center_freq_hz=10_000_000, sample_rate_hz=48000, block_size=4096)
+    provider = FlakyProvider(
+        center_freq_hz=10_000_000, sample_rate_hz=48000, block_size=4096
+    )
     source = IqFftSource(provider, start_worker=False)
 
     def emit():
@@ -466,7 +477,9 @@ def real_flaky_source(kind, probe):
 @pytest.mark.parametrize("kind", ["radio", "audio_fft", "iq_fft"])
 @pytest.mark.parametrize("retry", ["close", "subscribe"])
 @pytest.mark.timeout(10)
-async def test_real_failed_final_stop_is_retried_before_fresh_demand(kind, retry, virtual_clock):
+async def test_real_failed_final_stop_is_retried_before_fresh_demand(
+    kind, retry, virtual_clock
+):
     probe = CleanupProbe(1 if retry == "close" else 2)
     source, requested, emit = real_flaky_source(kind, probe)
     encoder = Encoder()
@@ -474,6 +487,7 @@ async def test_real_failed_final_stop_is_retried_before_fresh_demand(kind, retry
     hub.register("real", source)
     old = await hub.subscribe(requested)
     emit()
+    assert len(encoder.frames) == 1
     assert await old.receive() == b"1"
     with pytest.raises(RuntimeError, match="resource release failed"):
         await old.close()
@@ -492,6 +506,7 @@ async def test_real_failed_final_stop_is_retried_before_fresh_demand(kind, retry
     await old.close()
     assert probe.active
     emit()
+    assert len(encoder.frames) == 2
     assert await fresh.receive() == b"2"
     assert encoder.frames[-1].pixels is not None
     await fresh.close()
@@ -514,7 +529,9 @@ async def test_failed_start_cleanup_is_retried_before_starting_again(virtual_clo
     await fresh.close()
 
 
-async def test_stop_retry_serializes_with_new_demand_and_repeated_cancellation(virtual_clock):
+async def test_stop_retry_serializes_with_new_demand_and_repeated_cancellation(
+    virtual_clock,
+):
     hub, source, encoder = setup()
     old = await hub.subscribe(request())
     source.fail_stop = True

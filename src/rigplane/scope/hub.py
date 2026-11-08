@@ -34,6 +34,7 @@ class _Source:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     clients: set[HubSubscription] = field(default_factory=set)
     unsubscribe: Callable[[], None] | None = None
+    stop_pending: bool = False
     generation: int = 0
     sequences: dict[int | None, int] = field(default_factory=dict)
     health: dict[int | None, ScopeHealth] = field(default_factory=dict)
@@ -154,6 +155,8 @@ class ScopeHub:
             if request.receiver not in caps.receivers:
                 raise ValueError("receiver is not supported by this source")
             first = not source.clients
+            if first and source.stop_pending:
+                await _finish(self._stop(source))
             try:
                 if first:
                     source.generation += 1
@@ -185,7 +188,7 @@ class ScopeHub:
                     try:
                         self._detach(source)
                     finally:
-                        await _finish(source.plugin.stop())
+                        await _finish(self._stop(source))
                 raise
 
     @staticmethod
@@ -199,6 +202,8 @@ class ScopeHub:
         source = client._source
         async with source.lock:
             if client._closed:
+                if not source.clients and source.stop_pending:
+                    await _finish(self._stop(source))
                 return
             client._discard()
             source.clients.remove(client)
@@ -206,7 +211,13 @@ class ScopeHub:
                 try:
                     self._detach(source)
                 finally:
-                    await _finish(source.plugin.stop())
+                    await _finish(self._stop(source))
+
+    @staticmethod
+    async def _stop(source: _Source) -> None:
+        source.stop_pending = True
+        await source.plugin.stop()
+        source.stop_pending = False
 
     def _receive_frame(
         self, source_id: str, source: _Source, generation: int, frame: NativeFrame
