@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import TypeVar
 
 from ...core.priority_exchange import ExchangeTier, PriorityExchangeGate
 from ...exceptions import CommandError
@@ -13,6 +17,24 @@ from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
 
 _LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+
+@dataclass(frozen=True)
+class RigctldFreshRead:
+    """Trusted provider evidence for one decoded physical-radio read.
+
+    Standard rigctld has no such evidence. An optional provider must attest
+    the exact command/value and captured connection identity, using this
+    process's monotonic clock at physical read completion. Cached responses
+    must return no proof, never a new timestamp for an old physical read.
+    """
+
+    command: str
+    value: object
+    connection_generation: object
+    timestamp_monotonic: float
+
 
 _ERROR_HINTS = {
     -1: "invalid parameter",
@@ -38,7 +60,16 @@ class RigctldCommandError(CommandError):
 class RigctldTransport:
     """Serialized line-oriented TCP client for external ``rigctld``."""
 
-    def __init__(self, *, host: str, port: int = 4532, timeout: float = 5.0) -> None:
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int = 4532,
+        timeout: float = 5.0,
+        fresh_read_provenance: (
+            Callable[[str, object, object], RigctldFreshRead | None] | None
+        ) = None,
+    ) -> None:
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -48,6 +79,7 @@ class RigctldTransport:
         self._lifecycle_lock = asyncio.Lock()
         self._provider_generation_advance: Callable[[], int] | None = None
         self._connection_retired = True
+        self._fresh_read_provenance = fresh_read_provenance
         self.last_valid_frame_monotonic: float | None = None
 
     def bind_provider_generation(
@@ -187,6 +219,7 @@ class RigctldTransport:
         response_lines: int,
         is_current: Callable[[], bool] | None = None,
         urgent: bool = False,
+        _on_admitted: Callable[[object, float], None] | None = None,
     ) -> list[str]:
         """Send a command and read a fixed number of response lines.
 
@@ -215,6 +248,8 @@ class RigctldTransport:
             guard = read_is_current if is_current is not None else None
             self._require_write_currency(guard)
             await self._drain_stale(command, reader, writer)
+            if _on_admitted is not None and writer is not None:
+                _on_admitted(writer, time.monotonic())
             await self._write_line(command, reader, writer, is_current=guard)
             lines: list[str] = []
             for _ in range(response_lines):
@@ -229,6 +264,63 @@ class RigctldTransport:
                     )
                 lines.append(line)
         return lines
+
+    async def query_decoded(
+        self,
+        command: str,
+        *,
+        response_lines: int,
+        decode: Callable[[list[str]], _T],
+        is_current: Callable[[], bool] | None = None,
+        urgent: bool = False,
+    ) -> _T:
+        """Decode a query, then validate optional physical-read provenance.
+
+        The writer identity is the existing connection-generation fence.
+        Neither daemon traffic, ACKs nor successfully decoded cache hits
+        imply radio liveness without independent trusted provider evidence.
+        This contract does not confer managed-TX verified-readback authority.
+        """
+        generation: object | None = None
+        started = 0.0
+
+        def record_admission(writer: object, timestamp: float) -> None:
+            nonlocal generation, started
+            generation, started = writer, timestamp
+
+        lines = await self.query(
+            command,
+            response_lines=response_lines,
+            is_current=is_current,
+            urgent=urgent,
+            _on_admitted=record_admission,
+        )
+        value = decode(lines)
+        provenance = self._fresh_read_provenance
+        if provenance is None or generation is None:
+            return value
+        try:
+            proof = provenance(command, value, generation)
+            now = time.monotonic()
+            previous = self.last_valid_frame_monotonic
+            if (
+                isinstance(proof, RigctldFreshRead)
+                and self.connected
+                and self._writer is generation
+                and proof.connection_generation is generation
+                and proof.command == command
+                and type(proof.value) is type(value)
+                and proof.value == value
+                and math.isfinite(proof.timestamp_monotonic)
+                and started <= proof.timestamp_monotonic <= now
+                and (previous is None or proof.timestamp_monotonic > previous)
+            ):
+                self.last_valid_frame_monotonic = proof.timestamp_monotonic
+        except Exception:
+            # An unavailable evidence source must not break an ordinary read
+            # or invent liveness. Existing accepted evidence ages naturally.
+            _LOGGER.debug("rigctld fresh-read provenance unavailable", exc_info=True)
+        return value
 
     async def command(
         self,

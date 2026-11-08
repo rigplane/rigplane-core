@@ -535,6 +535,7 @@ class YaesuCatTransport:
         expect_rejection: bool = False,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
+        on_committed: Callable[[], None] | None = None,
     ) -> str:
         """Send a GET command and return the matching response.
 
@@ -556,6 +557,8 @@ class YaesuCatTransport:
             tier: Admission tier for the exchange gate. A managed
                 confirming read rides its own write's tier so it is never
                 queued behind ordinary polls.
+            on_committed: Capture the connection after admission, once the
+                request bytes have been accepted by the writer.
 
         Returns:
             Response line (without trailing ``;``).
@@ -567,7 +570,12 @@ class YaesuCatTransport:
         """
         async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
-            await self._raw_write(command, is_current=is_current)
+            if on_committed is None:
+                await self._raw_write(command, is_current=is_current)
+            else:
+                await self._raw_write(
+                    command, is_current=is_current, on_committed=on_committed
+                )
             self._stats.queries += 1
 
             # Expected reply prefixes (MOR-3677): a data reply starts with
