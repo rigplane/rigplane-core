@@ -34,7 +34,7 @@ vi.mock('../../panels/EssentialsPanel.svelte', () => ({ default: function S() { 
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     onChange: () => () => {}, getAppliedAudioConfig: () => null,
-    start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), setOperatorNotifier: vi.fn(),
+    setOperatorNotifier: vi.fn(),
   } satisfies Partial<(typeof import('$lib/audio/audio-manager'))['audioManager']>,
 }));
 vi.mock('$lib/stores/audio.svelte', () => ({
