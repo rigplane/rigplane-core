@@ -139,14 +139,16 @@ describe('getFrequencyPermit', () => {
     );
     expect(bands).toEqual(before);
   });
-  // MOR-3782: the IC-7300 golden is the shipped capabilities payload —
-  // its freqRanges cover the 4 m receive range while its txBands declare
-  // no 4 m entry, so 70 MHz denies TX by data even though it is tunable.
-  it('IC-7300 golden: 4 m (70 MHz) is tunable but not a TX band', () => {
+  // MOR-3782 → MOR-4300/MOR-4303: the IC-7300 golden is the shipped
+  // capabilities payload. Since MOR-4300 its txBands carries the 4 m row
+  // (default region US hides only the band-selector entry, never the TX
+  // data), so 70.2 MHz is tunable and permitted by data — the row is
+  // information; the radio itself decides whether it transmits there.
+  it('IC-7300 golden: 4 m (70 MHz) is tunable and a TX band row carrying maxPowerW 50', () => {
     const { capabilities } = (goldenFile as unknown as Record<string, {
       capabilities: {
         freqRanges: { start: number; end: number }[];
-        txBands: { name: string; start: number; end: number }[];
+        txBands: { name: string; start: number; end: number; maxPowerW?: number }[];
       };
     }>)['IC-7300'];
     const { freqRanges, txBands } = capabilities;
@@ -154,8 +156,11 @@ describe('getFrequencyPermit', () => {
     expect(
       freqRanges.some((range) => range.start <= 70_200_000 && range.end >= 70_200_000),
     ).toBe(true);
+    expect(txBands).toContainEqual(
+      { name: '4m', start: 70_000_000, end: 70_500_000, maxPowerW: 50 },
+    );
     expect(getFrequencyPermit(70_200_000, txBands)).toEqual(
-      { status: 'denied', reason: 'outside-configured-ranges' },
+      { status: 'allowed', band: '4m' },
     );
     expect(getFrequencyPermit(14_074_000, txBands)).toEqual(
       { status: 'allowed', band: '20m' },

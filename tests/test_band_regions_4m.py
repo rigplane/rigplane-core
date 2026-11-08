@@ -11,43 +11,77 @@ affects ``txBands`` — the 4 m row is published there in every region,
 like any other band, and the radio itself decides whether it transmits
 on 70 MHz.
 
-Covers, in order: loader parsing/validation, shipped profile data, the
-capabilities payload display gate (``freqRanges`` bands), and the
-simulated IC-7300 over the profile fake (``tests/testkit/ic7300_fakes.py:
-ic7300_profile_fake`` through the documented ``SerialCivLink`` opener seam,
-the lightest harness that really drives the simulated radio — no OS port,
-no subprocess).
+Covers, in order: loader parsing/validation, shipped profile data, and
+the region flow end to end where a client enters — a real ``WebServer``
+on real sockets, the serial radio Core builds from the CLI options over
+the testkit ``CivSerialFake`` (only the OS open step is replaced; see
+``tests/testkit/test_memory_recall_wire.py`` for the harness), HTTP
+``GET /api/v1/capabilities``, ``POST /api/v1/band-plan/config``, ``GET
+/api/v1/band-plan/segments`` and ``POST /api/v1/commands`` against the
+real routing and command queue.
+
+Failing-first: on origin/main no profile carries a 4 m row, so the US
+``txBands`` assertion (the 4 m row with ``maxPowerW`` 50) fails before
+anything else; the IARU-R1 selector-entry and segment assertions fail
+there for the same reason.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from rigplane.backends.factory import create_radio
+from rigplane.cli import _build_backend_config, _build_parser
+from rigplane.core import serial_open
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import RigLoadError, discover_rigs, load_rig
 from rigplane.web.band_plan import _REGION_HAM_FILE
-
-from test_band_plan_vhf import _copy_plans, _write_region
-from test_rig_loader import _MINIMAL_TOML, _write_toml
-from test_web_capability_guards import (
-    _FakeWriter,
-    _make_radio,
-    _parse_json_body,
+from rigplane.web.radio_poller import RadioPoller
+from rigplane.web.server import WebConfig, WebServer
+from rigplane_testkit.serial import CivSerialFake
+from test_band_plan_vhf import (
+    _copy_plans,
+    _get_segments_json,
+    _ham_only,
+    _http_post_json,
+    _write_region,
 )
+from test_rig_loader import _MINIMAL_TOML, _write_toml
+from test_web_server import _addr, _http_get
+from test_web_split_writes import _request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RIGS_DIR = REPO_ROOT / "rigs"
 
 _FOUR_METRE_START = 70_000_000
 _FOUR_METRE_END = 70_500_000
+_FOUR_METRE_DEFAULT = 70_200_000
 
-# These suites also drive ``RadioPoller._execute`` directly to exercise
-# dispatch bodies; the RF premise is the conftest fixture's (see its
-# docstring — the seat's own matrix lives in test_radio_poller_tx_interlock.py).
-pytestmark = pytest.mark.usefixtures("observed_rx_dispatch_premise")
+# The IC-7300 station (see ``_station`` below).
+_DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
+_ANSWER_WINDOW_S = 0.2  # compressed CI-V answer window (production: 2.0 s)
+_VFO_FREQ_HZ = 14_074_000
+
+# The five IARU-R1 4 m overlay segments (band-plans/iaru-r1.toml).
+_FOUR_METRE_R1_SEGMENTS = [
+    (70_000_000, 70_090_000, "BCN"),
+    (70_090_000, 70_100_000, "BCN"),
+    (70_100_000, 70_250_000, "SSB"),
+    (70_250_000, 70_294_000, "AM/FM"),
+    (70_294_000, 70_500_000, "FM"),
+]
 
 
 def _band_in(profile, name: str):
@@ -56,6 +90,18 @@ def _band_in(profile, name: str):
             if band.name == name:
                 return band
     return None
+
+
+def _payload_bands(data: dict) -> list[dict]:
+    return [band for freq_range in data["freqRanges"] for band in freq_range["bands"]]
+
+
+_FOUR_METRE_TX_ROW = {
+    "name": "4m",
+    "start": _FOUR_METRE_START,
+    "end": _FOUR_METRE_END,
+    "maxPowerW": 50,
+}
 
 
 # ── Loader: optional per-band ``regions`` ───────────────────────────
@@ -118,7 +164,7 @@ class TestShippedFourMetreRows:
         assert band is not None, f"{model}: no 4m band row"
         assert band.start == _FOUR_METRE_START
         assert band.end == _FOUR_METRE_END
-        assert band.default == 70_200_000
+        assert band.default == _FOUR_METRE_DEFAULT
         assert band.regions == ("IARU-R1",)
 
     @pytest.mark.parametrize("model", ["IC-7300", "IC-7300MK2"])
@@ -158,202 +204,235 @@ class TestShippedFourMetreRows:
         }
 
 
-# ── Capabilities payload: the band-selector display gate ───────────
+# ── End to end: a client against the real server ───────────────────
 
 
-async def _capabilities(model: str, region: str, plans_root: Path) -> dict:
-    from rigplane.web.server import WebConfig, WebServer
+@contextlib.asynccontextmanager
+async def _station(
+    monkeypatch: pytest.MonkeyPatch, plans: Path
+) -> AsyncIterator[
+    tuple[WebServer, Any, CivSerialFake, list[Any], asyncio.Event]
+]:
+    """The memory-recall harness (``test_memory_recall_wire._station``)
+    over a band-plans copy: a real IC-7300 built from the CLI options on
+    the testkit ``CivSerialFake``, a real ``WebServer`` on a real socket,
+    and a queue consumer that executes each submitted command through
+    the poller (the role the running poller loop plays in production)."""
+    fake = CivSerialFake(model="IC-7300", frequency_hz=_VFO_FREQ_HZ)
 
-    plans_root.mkdir(parents=True)
-    plans = _copy_plans(plans_root)
-    _write_region(plans, region)
-    srv = WebServer(
-        _make_radio(model),
-        WebConfig(host="127.0.0.1", port=0, band_plans_dir=plans),
+    async def opener(*, url: str, baudrate: int, **kw: Any) -> Any:
+        return await fake.opener(url=url, baudrate=baudrate, **kw)
+
+    monkeypatch.setattr(serial_open, "_open_with_idle_lines", opener)
+    args = _build_parser().parse_args(
+        ["--model", "IC-7300", "--serial-port", _DEVICE, "status"]
     )
-    # The registry loads at server start(); these tests call
-    # _serve_capabilities directly, so load it the same way here.
-    srv._band_plan.load(plans)  # noqa: SLF001
-    writer = _FakeWriter()
-    await srv._serve_capabilities(writer)  # noqa: SLF001
-    return _parse_json_body(writer)
-
-
-def _payload_bands(data: dict) -> list[dict]:
-    return [band for freq_range in data["freqRanges"] for band in freq_range["bands"]]
-
-
-_FOUR_METRE_TX_ROW = {
-    "name": "4m",
-    "start": _FOUR_METRE_START,
-    "end": _FOUR_METRE_END,
-    "maxPowerW": 50,
-}
-
-
-class TestCapabilitiesDisplayGate:
-    @pytest.mark.asyncio
-    async def test_ic7300_iaru_r1_shows_the_band_button(self, tmp_path: Path):
-        data = await _capabilities("IC-7300", "IARU-R1", tmp_path / "r1")
-        band = next((b for b in _payload_bands(data) if b["name"] == "4m"), None)
-        assert band == {
-            "name": "4m",
-            "start": _FOUR_METRE_START,
-            "end": _FOUR_METRE_END,
-            "default": 70_200_000,
-        }
-        # MOR-4303: the TX row is not region-gated — published in every
-        # region, like any other band.
-        assert _FOUR_METRE_TX_ROW in (data["txBands"] or [])
-
-    @pytest.mark.asyncio
-    async def test_ic7300_us_hides_the_button_not_the_tx_row(self, tmp_path: Path):
-        """MOR-4303: ``regions`` is display-only — the band-selector
-        entry disappears outside IARU-R1 while ``txBands`` keeps the
-        4 m row; the radio itself decides whether it transmits there."""
-        data = await _capabilities("IC-7300", "US", tmp_path / "us")
-        assert not any(b["name"] == "4m" for b in _payload_bands(data))
-        assert _FOUR_METRE_TX_ROW in (data["txBands"] or [])
-        # Still tunable for RX: the VHF RX receive range covers 70.2 MHz.
-        assert any(r["start"] <= 70_200_000 <= r["end"] for r in data["freqRanges"])
-        # 70.6 MHz is inside the receive range but covered by no band row.
-        assert not any(
-            b["start"] <= 70_600_000 <= b["end"] for b in _payload_bands(data)
+    radio = create_radio(await _build_backend_config(args))
+    radio._civ_get_timeout = _ANSWER_WINDOW_S
+    radio._enumerate_serial_ports_fn = lambda: []  # no OS port enumeration
+    await asyncio.wait_for(radio.connect(), 30)
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0, band_plans_dir=plans))
+    # Production startup (``web_startup._start_web_server``) loads the
+    # configured band-plan directory before binding; this harness binds
+    # the socket itself, so the same startup load happens here.
+    web._band_plan.load(plans)  # noqa: SLF001
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
         )
-
-    @pytest.mark.asyncio
-    async def test_ftx1_button_follows_region_tx_row_does_not(self, tmp_path: Path):
-        r1 = await _capabilities("FTX-1", "IARU-R1", tmp_path / "r1")
-        band = next((b for b in _payload_bands(r1) if b["name"] == "4m"), None)
-        assert band is not None and band["bsrCode"] == 0x0B
-        assert any(b["name"] == "4m" for b in r1["txBands"])
-
-        us = await _capabilities("FTX-1", "US", tmp_path / "us")
-        assert not any(b["name"] == "4m" for b in _payload_bands(us))
-        assert any(b["name"] == "4m" for b in (us["txBands"] or []))
-        # The tune/receive range itself is not region-gated.
-        assert any(
-            r["start"] == _FOUR_METRE_START and r["end"] == _FOUR_METRE_END
-            for r in us["freqRanges"]
-        )
-
-
-# ── Simulator: the simulated IC-7300 over the profile fake ─────────
-
-
-@pytest.fixture
-def simulated_ic7300():
-    from rigplane.backends.ic7300 import Ic7300SerialRadio
-    from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
-
-    from testkit.ic7300_fakes import ic7300_profile_fake
-
-    fake = ic7300_profile_fake()
-    link = SerialCivLink(
-        device="civ-serial-fake",
-        open_serial_connection=fake.open_serial_connection,
     )
-    radio = Ic7300SerialRadio(
-        device="civ-serial-fake",
-        civ_link=link,
-        _enumerate_serial_ports_fn=lambda: [],
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    entries: list[Any] = []
+    executed = asyncio.Event()
+
+    async def consume() -> None:
+        while True:
+            await web.command_queue.wait(2)
+            entry = web.command_queue.take_entry()
+            assert entry is not None
+            entries.append(entry)
+            await poller._execute_queued_entry(entry)
+            executed.set()
+
+    consumer = asyncio.create_task(consume())
+    try:
+        yield web, radio, fake, entries, executed
+    finally:
+        web._server.close()
+        await web._server.wait_closed()
+        web._server = None
+        tasks = (consumer, *tuple(web._client_tasks))
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await radio.disconnect()
+
+
+async def _capabilities_over_http(web: WebServer) -> dict:
+    host, port = _addr(web)
+    status, _, body = await _http_get(host, port, "/api/v1/capabilities")
+    assert status == 200, f"GET capabilities: HTTP {status}"
+    return json.loads(body)
+
+
+async def _post_region(web: WebServer, region: str) -> dict:
+    host, port = _addr(web)
+    status, _, raw = await _http_post_json(
+        host, port, "/api/v1/band-plan/config", {"region": region}
     )
-    return fake, radio
+    assert status == 200, f"POST region {region}: HTTP {status}"
+    reply = json.loads(raw)
+    assert reply["region"] == region
+    return reply
 
 
-class TestSimulatedIc7300FourMetre:
-    @pytest.mark.asyncio
-    async def test_band_button_path_lands_on_70200(self, simulated_ic7300):
-        """The UI's band-button path for a band without ``bsrCode`` is an
-        absolute frequency write (``set_freq`` intent → the poller's
-        ``SetFreq`` arm); it must end with the simulated radio on the
-        band's default, 70.200 MHz."""
-        from rigplane.runtime._poller_types import CommandQueue, SetFreq
-        from rigplane.web.radio_poller import RadioPoller
-
-        fake, radio = simulated_ic7300
-        poller = RadioPoller(radio, CommandQueue())
-        try:
-            await asyncio.wait_for(radio.connect(), 20)
-            await poller._execute(SetFreq(70_200_000, receiver=0))  # noqa: SLF001
-            assert fake.frequency_hz == 70_200_000
-        finally:
-            await radio.disconnect()
+class TestFourMetreRegionFlowOverRealHttp:
+    """MOR-4300 from the client's seat: the band-selector entry follows
+    the band-plan region through the real routes, while ``txBands`` and
+    the tune range do not (MOR-4303)."""
 
     @pytest.mark.asyncio
-    async def test_above_receive_coverage_is_refused(self, simulated_ic7300):
-        """75 MHz is outside every declared receive range: the existing
-        receive-range check refuses it before anything reaches the wire."""
-        from rigplane.core.state_pipeline_contracts import (
-            FieldPath,
-            Observation,
-            SourceMetadata,
-        )
-        from rigplane.core.state_store import StateStore
-        from rigplane.exceptions import CommandError
-        from rigplane.runtime._poller_types import CommandQueue, SetFreq, SetVfoFreq
-        from rigplane.web.radio_poller import RadioPoller
-
-        fake, radio = simulated_ic7300
-        store = StateStore()
-        store.begin_provider_generation()
-        # A fixed poller clock (never a real-clock read, MOR-4075): the
-        # observation below is stamped on the same 0.0 base and stays FRESH
-        # for the identity check the refusal path runs past.
-        store.apply(
-            Observation(
-                path=FieldPath.active_slot("0"),
-                value="A",
-                source=SourceMetadata(
-                    source="command_response", provider="vfo_binding"
-                ),
-                timestamp_monotonic=0.0,
-                max_age=5,
-                provider_generation=store.provider_generation,
+    async def test_us_hides_the_selector_row_not_the_tx_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plans = _copy_plans(tmp_path)
+        _write_region(plans, "US")
+        async with _station(monkeypatch, plans) as (web, _r, _f, _e, _x):
+            data = await _capabilities_over_http(web)
+            assert not any(b["name"] == "4m" for b in _payload_bands(data))
+            assert _FOUR_METRE_TX_ROW in (data["txBands"] or [])
+            # Still tunable for RX: the VHF RX receive range covers
+            # 70.2 MHz, and no band row covers 70.6 MHz (US).
+            assert any(
+                r["start"] <= _FOUR_METRE_DEFAULT <= r["end"]
+                for r in data["freqRanges"]
             )
-        )
-        poller = RadioPoller(
-            radio, CommandQueue(), state_store=store, clock=lambda: 0.0
-        )
-        try:
-            await asyncio.wait_for(radio.connect(), 20)
-            await poller._execute(SetFreq(70_200_000, receiver=0))  # noqa: SLF001
-            assert fake.frequency_hz == 70_200_000
-            seen_frames = len(fake.commands)
-
-            with pytest.raises(CommandError, match="outside profile receive ranges"):
-                await poller._execute(  # noqa: SLF001
-                    SetVfoFreq(
-                        freq=75_000_000,
-                        receiver=0,
-                        slot="A",
-                        expected_active_slot="A",
-                        provider_generation=store.provider_generation,
-                    )
-                )
-            assert fake.frequency_hz == 70_200_000
-            assert len(fake.commands) == seen_frames
-        finally:
-            await radio.disconnect()
+            assert not any(
+                b["start"] <= 70_600_000 <= b["end"] for b in _payload_bands(data)
+            )
 
     @pytest.mark.asyncio
-    async def test_70600_tunable_outside_the_4m_band_row(self, simulated_ic7300):
-        """70.6 MHz lies inside the VHF RX receive range (tunable) but
-        outside the 4 m band row: no band row of the profile covers it."""
-        from rigplane.runtime._poller_types import CommandQueue, SetFreq
-        from rigplane.web.radio_poller import RadioPoller
+    async def test_iaru_r1_shows_the_selector_entry_and_segments(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plans = _copy_plans(tmp_path)
+        _write_region(plans, "US")
+        async with _station(monkeypatch, plans) as (web, _r, _f, _e, _x):
+            await _post_region(web, "IARU-R1")
 
-        fake, radio = simulated_ic7300
-        poller = RadioPoller(radio, CommandQueue())
+            data = await _capabilities_over_http(web)
+            band = next(
+                (b for b in _payload_bands(data) if b["name"] == "4m"), None
+            )
+            assert band == {
+                "name": "4m",
+                "start": _FOUR_METRE_START,
+                "end": _FOUR_METRE_END,
+                "default": _FOUR_METRE_DEFAULT,
+            }
+            assert _FOUR_METRE_TX_ROW in (data["txBands"] or [])
+
+            host, port = _addr(web)
+            segments = _ham_only(
+                await _get_segments_json(
+                    host, port, _FOUR_METRE_START, _FOUR_METRE_END
+                )
+            )
+            assert [(s["start"], s["end"], s["label"]) for s in segments] == (
+                _FOUR_METRE_R1_SEGMENTS
+            )
+
+            # Back to US: the band-selector entry is gone again; the TX
+            # row stays (MOR-4303).
+            await _post_region(web, "US")
+            data = await _capabilities_over_http(web)
+            assert not any(b["name"] == "4m" for b in _payload_bands(data))
+            assert _FOUR_METRE_TX_ROW in (data["txBands"] or [])
+
+    @pytest.mark.asyncio
+    async def test_band_button_default_tunes_the_radio(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The UI's band-button path for a band without ``bsrCode``: the
+        frontend's ``onBandSelect`` jumps the tuning accumulator, which
+        emits a ``set_freq`` intent — the same command this test submits
+        through ``POST /api/v1/commands``. The published ``default``
+        (70.200 MHz) must land on the simulated radio."""
+        plans = _copy_plans(tmp_path)
+        _write_region(plans, "US")
+        async with _station(monkeypatch, plans) as (web, radio, fake, entries, executed):
+            await _post_region(web, "IARU-R1")
+            data = await _capabilities_over_http(web)
+            band = next(
+                (b for b in _payload_bands(data) if b["name"] == "4m"), None
+            )
+            assert band is not None and "bsrCode" not in band
+            target = band["default"]
+
+            status, result = await _request(
+                web, "http", "set_freq", {"freq": target, "receiver": 0}
+            )
+            await asyncio.wait_for(executed.wait(), 5)
+
+            assert status == 200
+            assert result["ok"] is True
+            assert len(entries) == 1
+            assert fake.frequency_hz == target
+            assert await radio.get_freq() == target
+
+
+class TestFtx1DisplayGateOverRealHttp:
+    """The FTX-1 4 m row has a ``bsrCode``; its selector entry follows
+    the region the same way, over a radio-less server started through
+    production ``start()`` (the ``test_band_plan_vhf`` pattern)."""
+
+    @pytest.mark.asyncio
+    async def test_selector_entry_follows_region_tx_row_does_not(
+        self, tmp_path: Path
+    ) -> None:
+        plans = _copy_plans(tmp_path)
+        _write_region(plans, "US")
+        srv = WebServer(
+            None,
+            WebConfig(
+                host="127.0.0.1",
+                port=0,
+                band_plans_dir=plans,
+                radio_model="FTX-1",
+            ),
+        )
         try:
-            await asyncio.wait_for(radio.connect(), 20)
-            await poller._execute(SetFreq(70_600_000, receiver=0))  # noqa: SLF001
-            assert fake.frequency_hz == 70_600_000
+            await srv.start()
+            host, port = _addr(srv)
 
-            profile = resolve_radio_profile(model="IC-7300")
-            bands = [
-                band for freq_range in profile.freq_ranges for band in freq_range.bands
-            ]
-            assert not any(band.start <= 70_600_000 <= band.end for band in bands)
+            async def caps() -> dict:
+                status, _, body = await _http_get(host, port, "/api/v1/capabilities")
+                assert status == 200
+                return json.loads(body)
+
+            us = await caps()
+            assert not any(b["name"] == "4m" for b in _payload_bands(us))
+            assert any(b["name"] == "4m" for b in (us["txBands"] or []))
+            # The tune/receive range itself is not region-gated.
+            assert any(
+                r["start"] == _FOUR_METRE_START and r["end"] == _FOUR_METRE_END
+                for r in us["freqRanges"]
+            )
+
+            status, _, raw = await _http_post_json(
+                host, port, "/api/v1/band-plan/config", {"region": "IARU-R1"}
+            )
+            assert status == 200
+
+            r1 = await caps()
+            band = next((b for b in _payload_bands(r1) if b["name"] == "4m"), None)
+            assert band is not None and band["bsrCode"] == 0x0B
+            assert any(b["name"] == "4m" for b in (r1["txBands"] or []))
         finally:
-            await radio.disconnect()
+            await srv.stop()

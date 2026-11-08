@@ -65,10 +65,17 @@ export async function selectBandPlanRegion(next: string): Promise<boolean> {
     region = next;
     // MOR-4300: the capabilities payload publishes region-gated
     // band-selector rows (4 m — display only), so a region change
-    // re-reads it once. The capabilities store rejects a stale-epoch
-    // payload itself; a failed re-read is swallowed like every other
-    // error here — the region switch still stands.
-    void fetchCapabilities().then(setCapabilities).catch(() => {});
+    // re-reads it once. The read is discarded when a newer region
+    // change happened while it was in flight (the epoch it started
+    // under must still be current when it resolves); a failed re-read
+    // is swallowed like every other error here — the region switch
+    // still stands.
+    const readEpoch = epoch;
+    void fetchCapabilities()
+      .then((caps) => {
+        if (epoch === readEpoch) setCapabilities(caps);
+      })
+      .catch(() => {});
     return true;
   } catch {
     return false;
