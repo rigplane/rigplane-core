@@ -76,6 +76,7 @@ from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
     ObservedPtt,
     normalize_observed_ptt,
+    project_observed_ptt,
 )
 from rigplane.core.state_pipeline_contracts import (
     RECEIVER_ID_ALIASES,
@@ -2296,8 +2297,12 @@ class CivRuntime:
                         len(frame.data),
                     )
                 else:
-                    freq = parse_frequency_response(frame)
-                    host._state_cache.update_freq(freq)
+                    receiver_id, _ = self._receiver_context(frame)
+                    if self._operating_frequency_path(frame) == self._freq_mode_path(
+                        receiver_id=receiver_id, name="freq_hz"
+                    ):
+                        freq = parse_frequency_response(frame)
+                        host._state_cache.update_freq(freq)
             elif frame.command in (0x04, 0x01):
                 mode_val, filt = parse_mode_response(frame)
                 host._state_cache.update_mode(mode_val.name, filt)
@@ -2866,13 +2871,11 @@ class CivRuntime:
             return ()
 
         if frame.command in (0x00, 0x03):
-            if len(frame.data) == _FREQ_BCD_LEN:
+            path = self._operating_frequency_path(frame)
+            if len(frame.data) == _FREQ_BCD_LEN and path is not None:
                 observations.append(
                     self._observation(
-                        self._freq_mode_path(
-                            receiver_id=receiver_id,
-                            name="freq_hz",
-                        ),
+                        path,
                         parse_frequency_response(frame),
                         frame=frame,
                     )
@@ -3529,6 +3532,44 @@ class CivRuntime:
             return None, "contradiction"
         return ("SUB" if split.value else "MAIN"), None
 
+    def _operating_frequency_path(self, frame: CivFrame) -> FieldPath | None:
+        receiver_id, _ = self._receiver_context(frame)
+        active = self._freq_mode_path(receiver_id=receiver_id, name="freq_hz")
+        store = getattr(self._host, "_state_store", None)
+        if frame.receiver is not None or store is None:
+            return active
+        snapshot = store.snapshot()
+
+        def fresh_value(path: FieldPath) -> Any:
+            try:
+                field = snapshot.field(path)
+            except KeyError:
+                return None
+            if (
+                field.freshness is not FreshnessState.FRESH
+                or field.provider_generation != snapshot.provider_generation
+                or field.max_age is None
+                or not 0 <= snapshot.generated_at_monotonic
+                - field.last_observed_monotonic < field.max_age
+            ):
+                return None
+            return field.value
+
+        split_path = FieldPath.global_("tx_state", "split")
+        if (
+            project_observed_ptt(snapshot) is ObservedPtt.OFF
+            or fresh_value(split_path) is False
+        ):
+            return active
+        for path, on_value in ((OBSERVED_PTT_PATH, ObservedPtt.ON), (split_path, True)):
+            try:
+                field = snapshot.field(path)
+            except KeyError:
+                continue
+            if field.value is on_value:
+                return None
+        return active
+
     @staticmethod
     def _decode_level(data: bytes) -> int:
         from rigplane.commands import _level_bcd_decode
@@ -3721,7 +3762,11 @@ class CivRuntime:
             )
             return
         freq = parse_frequency_response(frame)
-        rx.freq = freq
+        receiver_id, _ = self._receiver_context(frame)
+        if self._operating_frequency_path(frame) == self._freq_mode_path(
+            receiver_id=receiver_id, name="freq_hz"
+        ):
+            rx.freq = freq
 
     def _handle_mode(
         self,
