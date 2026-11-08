@@ -86,7 +86,7 @@ async function recentPeak(page: Page, windowMs = 400): Promise<number> {
 /** Wait until the output peak settles within `tolerance` of `expected`
  *  (the first frames after LIVE starts arrive louder than the source). */
 async function expectSettledPeak(page: Page, expected: number, tolerance: number): Promise<void> {
-  await expect.poll(async () => Math.abs((await recentPeak(page)) / expected - 1), {
+  await expect.poll(async () => Math.abs((await recentPeak(page, 1000)) / expected - 1), {
     message: `output peak settles at ${expected.toFixed(4)} within ${tolerance * 100}%`,
     timeout: 15_000,
   }).toBeLessThan(tolerance);
