@@ -21,18 +21,16 @@ vi.mock('../radio-view-model-adapter', async (importOriginal) => {
 });
 
 import {
-  parseScopeFrame, SCOPE_FRAME_SILENCE_MS, snapSpectrumFilterWidth,
-  qualifyScopeFrameEnvelope, toScopeDisplayFrame, toSpectrumAuthority,
+  ingressScopeFrame, parseCurrentScopeFrame, SCOPE_FRAME_SILENCE_MS, snapSpectrumFilterWidth, toSpectrumAuthority,
 } from '../scope-adapter';
-import type {
-  QualifiedScopeFrameEnvelope, ScopeFrameProjectionAuthority,
-} from '../scope-adapter';
+import { ScopeController } from '../../scope-controller.svelte';
+import fixtures from '../../__tests__/fixtures/scope-wire.json';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import {
   deriveIfShift, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
 } from '$lib/radio/filter-controls';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
-import { resolveLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
+import { resolveLcdSpectrumFrame, toLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
 
 // MOR-3677: `lastObservedMonotonic` is part of every observed FieldStatus
 // the server publishes (the FTX-1/IC-7300 captures carry it), and the
@@ -547,17 +545,20 @@ describe('MOR-1409 A06a1 deterministic filter-width snapping', () => {
 });
 
 describe('MOR-1409 A06a1 decoder and purity boundary', () => {
-  it('keeps parseScopeFrame decoding unchanged', () => {
+  it('keeps wire receiver, mode, span and pixels unchanged', () => {
     const buffer = new ArrayBuffer(17);
     const view = new DataView(buffer);
     view.setUint8(0, 0x01); view.setUint8(1, 1); view.setUint8(2, 2);
     view.setUint32(3, 14_000_000, true); view.setUint32(7, 14_350_000, true);
     view.setUint16(14, 1, true); view.setUint8(16, 0xff);
-    expect(parseScopeFrame(buffer)).toEqual({
-      receiver: 1, mode: 2, startFreq: 14_000_000, endFreq: 14_350_000,
-      outOfRange: false,
-      pixels: new Uint8Array([0xff]),
-    });
+    const parsed = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 3 });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error(parsed.reason);
+    expect(parsed.frame).toEqual({ source: 'radio', sourceId: 'scope', epoch: 3, receiver: 1,
+      seq: 0, sentAtMs: null, viewStartHz: 14_000_000, viewEndHz: 14_350_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_350_000, width: 1, outOfRange: false,
+      pixels: new Uint8Array([0xff]) });
+    expect(parsed.geometry.mode).toBe(2);
   });
 
   it('keeps frame/pixel/runtime/store/transport inputs outside the selector permission path', () => {
@@ -568,108 +569,67 @@ describe('MOR-1409 A06a1 decoder and purity boundary', () => {
   });
 });
 
-describe('MOR-2326 pure scope display-frame projection', () => {
-  const envelope = (
-    overrides: Partial<QualifiedScopeFrameEnvelope> = {},
-  ): QualifiedScopeFrameEnvelope => ({
-    source: 'hardware', receiver: 0, providerGeneration: 7, transportEpoch: 3,
-    receivedAt: 1_000, acceptedSequence: 1, wireSequence: 65_535,
-    frame: Object.freeze({
-      receiver: 0, mode: 1, startFreq: 14_000_000, endFreq: 14_100_000,
-      outOfRange: false,
-      pixels: new Uint8Array([0, 128, 255]),
-    }),
-    ...overrides,
-  });
-  const authority = (
-    overrides: Partial<ScopeFrameProjectionAuthority> = {},
-  ): ScopeFrameProjectionAuthority => ({
-    source: 'hardware', receiver: 0, providerGeneration: 7, transportEpoch: 3,
-    demanded: true, transport: 'connected', nowMonotonic: 1_499,
-    ...overrides,
+function wireBuffer(bytes: readonly number[]): ArrayBuffer { return Uint8Array.from(bytes).buffer; }
+
+describe('MOR-2326 typed scope geometry and authority boundaries', () => {
+  it('preserves captured OOR metadata as a distinct display state without pixels', () => {
+    const parsed = ingressScopeFrame(wireBuffer(fixtures.outOfRange), { source: 'radio', sourceId: 'scope', epoch: 3 });
+    expect(parsed.ok).toBe(true); if (!parsed.ok) throw new Error(parsed.reason);
+    expect(parsed.frame).toMatchObject({ outOfRange: true, viewStartHz: 144_000_000, viewEndHz: 148_000_000, pixels: null });
+    expect(parsed.geometry).toMatchObject({ outOfRange: true, hasPixels: false });
+    const candidate = toLcdSpectrumFrame(parsed.frame, parsed.geometry);
+    expect(candidate).toMatchObject({ state: 'out-of-range', startHz: 144_000_000, endHz: 148_000_000, pixels: null });
+    expect(resolveLcdSpectrumFrame(candidate, { source: 'hardware', receiver: 'SUB' }).state).toBe('out-of-range');
+    expect(resolveLcdSpectrumFrame(toLcdSpectrumFrame(parsed.frame, { ...parsed.geometry, freshness: 'stale' }),
+      { source: 'hardware', receiver: 'SUB' }).state).toBe('ghost');
   });
 
-  it('preserves captured OOR metadata as a distinct display state with no bins', () => {
-    // Pinned to ScopeAssembler + encode_scope_frame by the Python replay test.
-    const buffer = Uint8Array.from(Buffer.from('0100010044950820e59c080100010000', 'hex')).buffer;
-    const frame = parseScopeFrame(buffer)!;
-    expect(frame).toMatchObject({ outOfRange: true, startFreq: 144_000_000, endFreq: 144_500_000 });
-    expect(frame.pixels).toHaveLength(0);
-    const candidate = toScopeDisplayFrame(envelope({ frame }), authority());
-    expect(candidate).toMatchObject({ state: 'out-of-range', startHz: 144_000_000,
-      endHz: 144_500_000, normalizedBins: [] });
-    expect(resolveLcdSpectrumFrame(candidate, { source: 'hardware', receiver: 'MAIN' }).state)
-      .toBe('out-of-range');
-    expect(resolveLcdSpectrumFrame(toScopeDisplayFrame(envelope({ frame }),
-      authority({ nowMonotonic: 1_500 })), { source: 'hardware', receiver: 'MAIN' }).state).toBe('ghost');
-  });
-
-  it.each([
-    ['hardware', 'hardware'], ['audio_fft', 'audio-fft'],
-  ] as const)('projects nominal %s bins without fabricating samples', (source, displaySource) => {
-    const result = toScopeDisplayFrame(envelope({ source }), authority({ source }));
-    expect(result).toEqual({
-      source: displaySource, receiver: 'MAIN', freshness: 'fresh',
-      startHz: 14_000_000, endHz: 14_100_000,
-      normalizedBins: [0, 128 / 255, 1],
+  it.each([['radio', 'hardware'], ['audio_fft', 'audio-fft']] as const)(
+    'projects nominal %s bytes without normalization or copying', (source, displaySource) => {
+      const buffer = wireBuffer(fixtures.radio);
+      const parsed = ingressScopeFrame(buffer, { source, sourceId: 'scope', epoch: 3 });
+      expect(parsed.ok).toBe(true); if (!parsed.ok) throw new Error(parsed.reason);
+      const result = toLcdSpectrumFrame(parsed.frame, parsed.geometry);
+      expect(result).toEqual({ source: displaySource, receiver: 'MAIN', freshness: 'fresh',
+        startHz: 14_000_000, endHz: 14_100_000, pixels: new Uint8Array([0, 64, 128, 255]) });
+      expect(Object.isFrozen(parsed.frame)).toBe(true);
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(result!.pixels!.buffer).toBe(buffer);
+      expect(SCOPE_FRAME_SILENCE_MS).toBe(500);
     });
-    expect(Object.isFrozen(result)).toBe(true);
-    expect(Object.isFrozen(result?.normalizedBins)).toBe(true);
+
+  it.each([0, 65_535])('keeps wire sequence %i diagnostic independently of session identity', seq => {
+    const buffer = wireBuffer(fixtures.radio); new DataView(buffer).setUint16(11, seq, true);
+    const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 3 });
+    expect(parsed.ok).toBe(true); if (!parsed.ok) throw new Error(parsed.reason);
+    expect(parsed.frame.seq).toBe(seq); expect(parsed.frame.epoch).toBe(3);
   });
 
-  it('uses monotonic age with an exclusive 500 ms live interval', () => {
-    expect(SCOPE_FRAME_SILENCE_MS).toBe(500);
-    expect(toScopeDisplayFrame(envelope(), authority({ nowMonotonic: 1_499 }))?.freshness)
-      .toBe('fresh');
-    expect(toScopeDisplayFrame(envelope(), authority({ nowMonotonic: 1_500 }))?.freshness)
-      .toBe('stale');
-  });
-
-  it.each([
-    ['source', envelope({ source: 'audio_fft' }), authority()],
-    ['receiver', envelope({ receiver: 1 }), authority()],
-    ['provider', envelope({ providerGeneration: 8 }), authority()],
-    ['transport epoch', envelope({ transportEpoch: 4 }), authority()],
-    ['demand', envelope(), authority({ demanded: false })],
-    ['transport state', envelope(), authority({ transport: 'reconnecting' })],
-    ['unknown receiver', envelope(), authority({ receiver: null })],
-    ['unknown provider', envelope(), authority({ providerGeneration: null })],
-  ] as const)('fails a %s authority boundary closed', (_label, candidate, current) => {
-    expect(toScopeDisplayFrame(candidate, current)).toBeNull();
-  });
-
-  it.each([
-    envelope({ acceptedSequence: 0 }),
-    envelope({ receivedAt: Number.NaN }),
-    envelope({ frame: { ...envelope().frame, receiver: 1 } }),
-    envelope({ frame: { ...envelope().frame, endFreq: 14_000_000 } }),
-    envelope({ frame: { ...envelope().frame, pixels: new Uint8Array([1]) } }),
-  ])('rejects malformed receipts and geometry instead of zero-filling', (candidate) => {
-    expect(toScopeDisplayFrame(candidate, authority())).toBeNull();
-  });
-
-  it('keeps the uint16 wire sequence diagnostic rather than generation authority', () => {
-    expect(toScopeDisplayFrame(envelope({ wireSequence: 0 }), authority())).not.toBeNull();
-    expect(toScopeDisplayFrame(envelope({ wireSequence: 65_535 }), authority())).not.toBeNull();
-  });
-
-  it('retains exact accepted bytes independently of mutable raw subscribers', () => {
-    const raw = envelope().frame;
-    const qualified = qualifyScopeFrameEnvelope(raw, {
-      source: 'hardware', receiver: 0, providerGeneration: 7, transportEpoch: 3,
-      receivedAt: 1_000, acceptedSequence: 1,
-    }, 17)!;
-    raw.pixels[0] = 255;
-    expect(qualified.frame.pixels).toEqual(new Uint8Array([0, 128, 255]));
-    expect(qualified.frame.pixels).not.toBe(raw.pixels);
-  });
-
-  it('contains no wall clock, caller freshness, fallback, or long stale threshold', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/lib/runtime/adapters/scope-adapter.ts'), 'utf8');
-    const start = source.indexOf('export function toScopeDisplayFrame');
-    const end = source.indexOf("\n\nimport type { Capabilities", start);
-    const implementation = source.slice(start, end);
-    expect(implementation).not.toMatch(/Date\.now|freshness\s*:\s*authority|5_000|10_000|fallback/i);
-    expect(implementation).not.toMatch(/new Uint8Array\([^)]*length/);
-  });
+  it.each(['source', 'receiver', 'provider', 'transport epoch', 'demand', 'transport state'] as const)(
+    'invalidates %s geometry without retaining the deleted evidence envelope', async boundary => {
+      const binary = new Set<(buffer: ArrayBuffer) => void>();
+      const states = new Set<(state: string) => void>();
+      const sessions = new Set<(event: { state: string; epoch: number }) => void>();
+      let state = 'disconnected'; let epoch = 1;
+      const transition = (next: string) => { state = next; for (const f of states) f(next); for (const f of sessions) f({ state, epoch }); };
+      const channel = { get state() { return state; }, get sessionEpoch() { return epoch; },
+        connect: () => transition('connecting'), disconnect: () => transition('disconnected'),
+        onBinary: (f: (buffer: ArrayBuffer) => void) => { binary.add(f); return () => binary.delete(f); },
+        onStateChange: (f: (state: string) => void) => { states.add(f); return () => states.delete(f); },
+        onSessionTransition: (f: (event: { state: string; epoch: number }) => void) => { sessions.add(f); return () => sessions.delete(f); } };
+      const controller = new ScopeController(() => channel as never);
+      controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 7 });
+      const stream = controller.stream('hardware'); const geometry = vi.fn(); stream.geometry.subscribe(geometry);
+      const handle = await controller.hardwareScopeDriver.start(); transition('connected');
+      for (const f of binary) f(wireBuffer(fixtures.radio));
+      expect(geometry.mock.lastCall?.[0]).toMatchObject({ freshness: 'fresh', receiver: 0 });
+      if (boundary === 'source') controller.setFrameAuthority({ source: 'audio_fft', receiver: 0, providerGeneration: 7 });
+      if (boundary === 'receiver') controller.setFrameAuthority({ source: 'hardware', receiver: 1, providerGeneration: 7 });
+      if (boundary === 'provider') controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 8 });
+      if (boundary === 'transport epoch') { epoch += 1; transition('connected'); }
+      if (boundary === 'demand') await controller.hardwareScopeDriver.stop(handle);
+      if (boundary === 'transport state') transition('reconnecting');
+      expect(geometry.mock.lastCall?.[0]).toBeNull();
+      await controller.hardwareScopeDriver.stop(handle);
+    });
 });
