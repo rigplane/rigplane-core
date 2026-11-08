@@ -239,6 +239,7 @@ async def test_passive_observer_receives_live_pcm_but_does_not_retain_rx(
     from test_handlers_coverage import _RelayRadio
     from rigplane.audio import AudioPacket
     from rigplane.audio.bus import STAGE_RX_POST_DSP
+    from rigplane.testing.timing import await_until
     from rigplane.web.handlers.audio import AudioBroadcaster
 
     radio = _RelayRadio()
@@ -276,6 +277,7 @@ async def test_passive_observer_receives_live_pcm_but_does_not_retain_rx(
             registry.unregister(demanding)
             await broadcaster.release_relay_if_idle()
         assert broadcaster._subscription is None
+        await await_until(lambda: radio._stop_rx.await_count == 1)
         radio._stop_rx.assert_awaited_once()
     finally:
         await broadcaster._stop_relay()

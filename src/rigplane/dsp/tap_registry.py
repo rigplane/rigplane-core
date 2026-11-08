@@ -46,12 +46,14 @@ class TapRegistry:
     __slots__ = ("_taps",)
 
     def __init__(self) -> None:
-        self._taps: dict[int, tuple[str, Callable[[bytes], None]]] = {}
+        self._taps: dict[int, tuple[str, Callable[[bytes], None], bool]] = {}
 
-    def register(self, name: str, callback: Callable[[bytes], None]) -> TapHandle:
+    def register(
+        self, name: str, callback: Callable[[bytes], None], *, passive: bool = False
+    ) -> TapHandle:
         """Register a named tap. Returns an opaque handle for :meth:`unregister`."""
         tap_id = _alloc_id()
-        self._taps[tap_id] = (name, callback)
+        self._taps[tap_id] = (name, callback, passive)
         logger.debug(
             "tap-registry: registered '%s' (id=%d, total=%d)",
             name,
@@ -76,7 +78,7 @@ class TapRegistry:
 
         Exceptions are logged per-tap and do not propagate.
         """
-        for tap_id, (name, callback) in self._taps.items():
+        for tap_id, (name, callback, _passive) in self._taps.items():
             try:
                 callback(pcm)
             except Exception:
@@ -91,3 +93,8 @@ class TapRegistry:
     def active(self) -> bool:
         """True if any taps are registered."""
         return len(self._taps) > 0
+
+    @property
+    def demand(self) -> bool:
+        """True if any non-passive taps are registered."""
+        return any(not passive for _name, _callback, passive in self._taps.values())

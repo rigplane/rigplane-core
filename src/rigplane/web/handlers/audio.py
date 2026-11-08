@@ -435,7 +435,6 @@ class AudioBroadcaster:
         # same AudioPacket|None stream via ``async for``.
         self._subscription: _AudioSubscription | RxSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
-        self._passive_tap_registry = TapRegistry()
         self._passive_tap_handle: TapHandle | None = None
         self._rx_start_attempt = 0
         self._rx_start_failure: (
@@ -620,7 +619,7 @@ class AudioBroadcaster:
             if (
                 not self._clients
                 and self._subscription is not None
-                and not self._tap_registry.active
+                and not self._tap_registry.demand
             ):
                 await self._stop_relay()
         if removed:
@@ -794,17 +793,17 @@ class AudioBroadcaster:
     def set_passive_pcm_tap(self, callback: Callable[[bytes], None] | None) -> None:
         """Observe active RX without keeping the relay alive."""
         if self._passive_tap_handle is not None:
-            self._passive_tap_registry.unregister(self._passive_tap_handle)
+            self._tap_registry.unregister(self._passive_tap_handle)
             self._passive_tap_handle = None
         if callback is not None:
-            self._passive_tap_handle = self._passive_tap_registry.register(
-                "passive-analyzer", callback
+            self._passive_tap_handle = self._tap_registry.register(
+                "passive-analyzer", callback, passive=True
             )
 
     async def release_relay_if_idle(self) -> None:
         """Release scope-only RX demand after its tap is removed."""
         async with self._lock:
-            if not self._clients and not self._tap_registry.active:
+            if not self._clients and not self._tap_registry.demand:
                 await self._stop_relay()
 
     async def ensure_relay(self) -> None:
@@ -835,7 +834,7 @@ class AudioBroadcaster:
             if (
                 not self._clients
                 and self._subscription is not None
-                and not self._tap_registry.active
+                and not self._tap_registry.demand
             ):
                 await self._stop_relay()
             remaining = len(self._clients)
@@ -1443,15 +1442,11 @@ class AudioBroadcaster:
                 # Fan out PCM data to all registered taps (FFT scope, analyzers, etc.).
                 # Opus-native radios do not feed taps — consumers get silence.
                 # Same rationale as the DSP gate above.  Issue #762.
-                if (
-                    self._tap_registry.active or self._passive_tap_registry.active
-                ) and self._radio_codec not in (
+                if self._tap_registry.active and self._radio_codec not in (
                     AudioCodec.OPUS_1CH,
                     AudioCodec.OPUS_2CH,
                 ):
                     self._tap_registry.feed(audio_data)
-                    if self._passive_tap_registry.active:
-                        self._passive_tap_registry.feed(audio_data)
 
                 # frame_ms is derived from the actual payload size (issue #765).
                 # The hardcoded 20 ms here was the root cause of the 2026-04-16
