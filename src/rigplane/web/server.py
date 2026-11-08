@@ -5253,6 +5253,11 @@ class WebServer:
             },
         }
         if profile is not None:
+            # MOR-4300: the effective band-plan region decides which
+            # band-selector entries are published here — display only.
+            # ``txBands`` is not region-gated: the radio itself decides
+            # where it transmits.
+            band_plan_region = self._band_plan.region
             freq_ranges = [
                 {
                     "start": r.start,
@@ -5272,6 +5277,7 @@ class WebServer:
                             ),
                         }
                         for b in r.bands
+                        if b.applies_in_region(band_plan_region)
                     ],
                 }
                 for r in profile.freq_ranges

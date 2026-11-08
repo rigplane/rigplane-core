@@ -5,6 +5,8 @@
 // portrait layout hides it), so the overlay never guesses a region.
 
 import { getAuthHeaders } from '$lib/auth';
+import { setCapabilities } from '$lib/stores/capabilities.svelte';
+import { fetchCapabilities } from '$lib/transport/http-client';
 
 const CONFIG_URL = '/api/v1/band-plan/config';
 
@@ -61,6 +63,12 @@ export async function selectBandPlanRegion(next: string): Promise<boolean> {
     if (!resp.ok) return false;
     epoch += 1;
     region = next;
+    // MOR-4300: the capabilities payload publishes region-gated
+    // band-selector rows (4 m — display only), so a region change
+    // re-reads it once. The capabilities store rejects a stale-epoch
+    // payload itself; a failed re-read is swallowed like every other
+    // error here — the region switch still stands.
+    void fetchCapabilities().then(setCapabilities).catch(() => {});
     return true;
   } catch {
     return false;

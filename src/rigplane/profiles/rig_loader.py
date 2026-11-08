@@ -783,6 +783,7 @@ class RigConfig:
                         rx_only=b.get("rx_only", False),
                         default_mode=b.get("default_mode"),
                         max_power_w=b.get("max_power_w"),
+                        regions=tuple(b["regions"]) if "regions" in b else (),
                     )
                     for b in r.get("bands", ())
                 ),
@@ -2995,6 +2996,32 @@ def load_rig(path: Path) -> RigConfig:
                     f"{filename}: freq_ranges.ranges[{range_index}]."
                     f"bands[{band_index}].default_mode {mode_value!r} "
                     "must name a mode from [modes].list"
+                )
+
+    # MOR-4300: the optional per-band ``regions`` list names the band-plan
+    # regions a band row's band-selector entry is shown in (empty = every
+    # region; display only — never a TX gate, MOR-4303). It must be a
+    # non-empty list of non-empty strings, so a typo cannot silently hide
+    # the entry in every region; whether an id is a known region is
+    # checked over the shipped profiles by tests, not here (the loader
+    # validates shape, not membership in the band-plan vocabulary).
+    for range_index, rng in enumerate(freq_ranges_data):
+        if not isinstance(rng, dict):
+            continue
+        for band_index, band in enumerate(rng.get("bands", [])):
+            if not isinstance(band, dict) or "regions" not in band:
+                continue
+            value = band["regions"]
+            if (
+                not isinstance(value, list)
+                or not value
+                or not all(isinstance(item, str) and item for item in value)
+            ):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{range_index}]."
+                    f"bands[{band_index}].regions must be a non-empty list "
+                    f"of non-empty strings "
+                    f"(band {band.get('name', band_index)!r})"
                 )
 
     # Parse VFO bytes — explicit split (issue #710)

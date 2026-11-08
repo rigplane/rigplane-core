@@ -103,6 +103,10 @@ vi.mock('$lib/transport/ws-client', () => ({ sendCommand: sendCommandAlarm }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   hasCapability: vi.fn((name: string) => name === 'scope' && capabilityHarness.scope),
   hasDualReceiver: vi.fn(() => capabilityHarness.dual),
+  // MOR-4300: the band-plan-region store re-reads capabilities through the
+  // real setCapabilities after a region switch; this file's region test
+  // lets that re-read resolve instead of throwing.
+  setCapabilities: vi.fn(),
 }));
 
 const tuningHarness = vi.hoisted(() => {
@@ -772,6 +776,17 @@ describe('band-plan credential-free HTTP', () => {
         return {
           ok: true,
           json: async () => ({ region: 'US', availableRegions: ['US', 'CA'] }),
+        } as Response;
+      }
+      // MOR-4300: a successful region switch re-reads capabilities; the
+      // body passes validateCapabilities so the re-read resolves.
+      if (url.endsWith('/capabilities')) {
+        return {
+          ok: true,
+          json: async () => ({
+            model: 'IC-7300', scope: true, audio: true, tx: true,
+            capabilities: ['scope'], receivers: 1,
+          }),
         } as Response;
       }
       throw new Error(`unexpected fetch ${url}`);

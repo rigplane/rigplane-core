@@ -1121,7 +1121,15 @@ class TestPublishedRxCoverage:
             inside = any(s <= rng.start and rng.end <= e for s, e in published)
             assert inside, (filename, rng.label, rng.start, rng.end)
             if rng.label in ("VHF RX", "UHF RX"):
-                assert rng.bands == (), (filename, rng.label)
+                # MOR-3782 refused an unconditional band row on these
+                # tune/receive-only ranges. MOR-4300 allows exactly one
+                # exception: a row that declares ``regions`` — a
+                # variant-dependent band shown per band-plan region
+                # (display only). An ungated row here is still refused.
+                assert rng.bands == () or all(band.regions for band in rng.bands), (
+                    filename,
+                    rng.label,
+                )
 
 
 class TestTxPolicy:
@@ -2235,8 +2243,12 @@ class TestToProfile:
         [
             # IC-9700 manuals: 144 MHz 100 W, 430 MHz 75 W, 1.2 GHz 10 W.
             ("ic9700.toml", {"2m": 100, "70cm": 75, "23cm": 10}),
+            # MOR-4300: IC-7300 Advanced Manual (11a) §16, "70 MHz band*2
+            # SSB/CW/RTTY/FM 2~50 W" (same 50 W row on the MK2, its own
+            # manual 11 SPECIFICATIONS).
+            ("ic7300.toml", {"4m": 50}),
+            ("ic7300mk2.toml", {"4m": 50}),
             # Flat-maximum radios declare no per-band row.
-            ("ic7300.toml", {}),
             ("ic705.toml", {}),
             ("ftx1.toml", {}),
         ],

@@ -4867,10 +4867,15 @@ async def test_radio_that_does_not_declare_a_power_unit_publishes_none() -> None
 
 
 async def test_flat_maximum_radio_publishes_no_per_band_max_power_over_http() -> None:
-    """The IC-7300 declares only the flat maximum: no band row carries maxPowerW."""
-    served = await _capabilities_by_endpoint("ic7300.toml", "raw_255")
+    """The IC-705 declares only the flat maximum: no band row carries maxPowerW.
+
+    The IC-7300 left this list — MOR-4300 gave it exactly one per-band
+    row (4 m, 50 W), so the flat-maximum case is pinned on a radio that
+    is still flat.
+    """
+    served = await _capabilities_by_endpoint("ic705.toml", "raw_255")
     for path, capabilities in served.items():
-        assert capabilities["maxPowerW"] == 100, path
+        assert capabilities["maxPowerW"] == 10, path
         assert capabilities["powerUnit"] == "raw_255", path
         assert capabilities["txBands"], path
         assert all("maxPowerW" not in band for band in capabilities["txBands"]), path

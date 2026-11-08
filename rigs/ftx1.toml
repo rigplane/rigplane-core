@@ -1107,12 +1107,20 @@ label = "4m"
 start_hz = 70000000
 end_hz = 70500000
 
+# MOR-4300: the 4 m band button is shown while the band-plan region
+# is IARU-R1 (the market variant is not reported by an identity read,
+# so the user's band-plan region decides what is displayed); the
+# row's TX/max-power data is published in every region, and the radio
+# itself decides whether it transmits there — FTX-1_OM_ENG_EH084M201_2506E-DS,
+# Specifications: "Tx Frequency Range … 70MHz - 70.5MHz (Specified
+# performance, UK Amateur bands only)".
 [[freq_ranges.ranges.bands]]
 name = "4m"
 start_hz = 70000000
 end_hz = 70500000
 default_hz = 70200000
 bsr_code = 0x0B
+regions = ["IARU-R1"]
 
 [[freq_ranges.ranges]]
 label = "2m"
