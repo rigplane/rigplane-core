@@ -398,3 +398,25 @@ async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previo
     finally:
         await handler._unsubscribe()
     assert writer.output == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_server_drains_scope_before_stopping_command_executor(monkeypatch):
+    from rigplane.web import web_startup
+    server = WebServer(None)
+    writer = Writer()
+    server.scope_hub.register('radio', RadioScopeSource(resolve_radio_profile(model='ic705'), writer))
+    handler = ScopeHandler(Socket(), server)
+    server.register_scope_handler(handler)
+    await handler._handle_control(encode_scope_subscription(Subscription('radio', 0, View(14_090_000, 14_110_000), 1024, 10)))
+
+    async def stop_executor(received):
+        assert received is server
+        assert writer.output == [True, False]
+        assert handler._subscription is None
+
+    monkeypatch.setattr(web_startup, 'stop_web_server', stop_executor)
+    try:
+        await server.stop()
+    finally:
+        await handler._unsubscribe()
