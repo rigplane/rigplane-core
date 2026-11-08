@@ -857,7 +857,6 @@
     volume: runtime.audio.volume,
     connected: runtime.connectionAudio,
     rxSilent: runtime.rxSilent,
-    sourceLevelLow: runtime.rxSourceLevelLow,
     routing: runtime.audioRouting == null ? null : {
       focus: runtime.audioRouting.focus,
       splitStereo: runtime.audioRouting.split_stereo,

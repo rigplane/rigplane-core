@@ -49,7 +49,6 @@ the caller did not explicitly override codec or sample rate.
 | `sample_rate_by_codec`        | table string→int  | no       | Per-codec default sample rate used by the resolver for RX and TX. Keys must be `AudioCodec` names. |
 | `browser_rx_transport`        | string            | no       | Browser consumer transport policy: `"auto"`, `"pcm"`, or `"opus"`. |
 | `browser_rx_transcode_to_opus`| bool              | no       | Whether browser RX may transcode radio-native audio to Opus. This is not a radio-native codec setting. |
-| `rx_audio_level_menu`         | string            | no       | The radio menu item that sets its RX audio output level to the computer, served as `rxAudioLevelMenu` in `/api/v1/capabilities` (`null` when undeclared). |
 
 Example:
 

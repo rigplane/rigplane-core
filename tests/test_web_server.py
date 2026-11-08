@@ -4680,20 +4680,12 @@ async def test_ftx1_mode_families_reach_both_capability_endpoints_over_http() ->
 
 
 @pytest.mark.parametrize(
-    ("rig_file", "expected"),
-    [
-        ("ic705.toml", "SET > Connectors > USB AF/IF Output > AF Output Level"),
-        ("ic7300.toml", "SET > Connectors > ACC/USB AF Output Level"),
-        ("ic7610.toml", None),
-    ],
+    "rig_file",
+    ["ic705.toml", "ic7300.toml", "ic7610.toml"],
 )
-async def test_rx_audio_level_menu_reaches_capabilities_over_http(
-    rig_file: str, expected: str | None
+async def test_rx_audio_level_menu_absent_from_capabilities_over_http(
+    rig_file: str,
 ) -> None:
-    """``rxAudioLevelMenu`` is the shipped profile's
-    ``[audio].rx_audio_level_menu`` on a live listener, ``null`` for a profile
-    that declares none (IC-7610). Only the radio is faked; the profile comes
-    from ``load_rig`` and the reply from a real TCP request."""
     profile = load_rig(_RIGS_DIR / rig_file).to_profile()
     radio = SimpleNamespace(
         model=profile.model,
@@ -4712,8 +4704,7 @@ async def test_rx_audio_level_menu_reaches_capabilities_over_http(
         status, _, body = await _http_get(host, port, "/api/v1/capabilities")
         assert status == 200
         payload = json.loads(body)
-        assert "rxAudioLevelMenu" in payload
-        assert payload["rxAudioLevelMenu"] == expected
+        assert "rxAudioLevelMenu" not in payload
     finally:
         await srv.stop()
 

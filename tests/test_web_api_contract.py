@@ -421,11 +421,9 @@ def test_capabilities_contract_requires_mode_families() -> None:
     )
 
 
-def test_capabilities_contract_lists_the_rx_audio_level_menu_as_optional() -> None:
-    """MOR-4210: ``rxAudioLevelMenu`` is a stable capabilities field, absent
-    only when no profile is resolved."""
+def test_capabilities_contract_excludes_the_removed_rx_audio_level_menu() -> None:
     optional = RESPONSE_FIELD_CONTRACTS["/api/v1/capabilities"].get("optional", ())
-    assert "rxAudioLevelMenu" in optional
+    assert "rxAudioLevelMenu" not in optional
 
 
 def test_capabilities_contract_lists_the_scope_ref_range_as_optional() -> None:
