@@ -255,10 +255,23 @@ runtimeHarness.state.driverBridge.stopAudio = (lease: unknown) => {
 };
 // Observes trace-receipt subscriptions through the real controller.
 const traceReceiptSubscriptions: Array<(receipt: TraceReceipt) => void> = [];
+let traceReceiptCreations = 0;
+const streamSubscriptions = { hardware: vi.fn(), audio_fft: vi.fn() };
+const streamUnsubscriptions = { hardware: vi.fn(), audio_fft: vi.fn() };
+for (const source of ['hardware', 'audio_fft'] as const) {
+  const stream = scopeControllerHarness.stream(source);
+  const original = stream.subscribe.bind(stream);
+  stream.subscribe = (...args) => {
+    streamSubscriptions[source]();
+    const stop = original(...args);
+    return () => { streamUnsubscriptions[source](); stop(); };
+  };
+}
 {
   const realSubscribe = scopeControllerHarness.subscribeTraceReceipt.bind(scopeControllerHarness);
   (scopeControllerHarness as unknown as { subscribeTraceReceipt: typeof realSubscribe })
     .subscribeTraceReceipt = (observer) => {
+    traceReceiptCreations += 1;
     traceReceiptSubscriptions.push(observer);
     const stop = realSubscribe(observer);
     return () => {
@@ -799,6 +812,7 @@ function mountPanel(props: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   components = [];
+  traceReceiptCreations = 0;
   for (const name of Object.keys(harnessChannels)) {
     const channel = harnessChannels[name]!;
     channel.disconnect();
@@ -851,8 +865,12 @@ describe('SpectrumPanel component', () => {
   it('keeps trace controls absent in an ordinary build', () => {
     const target = mountPanel();
     expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
+    expect(traceReceiptSubscriptions).toHaveLength(0);
+    expect(traceReceiptCreations).toBe(0);
     emitFrame();
     expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
+    expect(traceReceiptSubscriptions).toHaveLength(0);
+    expect(traceReceiptCreations).toBe(0);
   });
 
   it('starts and stops a candidate trace only on explicit clicks without opening a source', () => {
@@ -917,8 +935,43 @@ describe('SpectrumPanel component', () => {
     expect(push).not.toHaveBeenCalled();
     // The stopped trace released its receipt subscription and nothing
     // resubscribed without another frame.
-    expect(traceReceiptSubscriptions.splice(0)).toHaveLength(0);
+    expect(traceReceiptSubscriptions).toHaveLength(0);
+    expect(traceReceiptCreations).toBe(1);
   });
+  it.each([0, 1] as const)('requests the numeric receiver %s from authority', (receiver) => {
+    authorityHarness.state.current = authority({ receiver });
+    const target = mountPanel();
+    emitFrame({ receiver });
+    const subscription = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(subscription.receiver).toBe(receiver);
+  });
+
+  it('zooms the effective View repeatedly and updates displayed bounds without new pixels', async () => {
+    const target = mountPanel();
+    emitFrame();
+    await flushWaterfallPaint();
+    const zoom = target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!;
+    const subscription = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    zoom.click(); flushSync(); await flushWaterfallPaint();
+    expect(subscription().view.endHz - subscription().view.startHz).toBe(50_000);
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+    zoom.click(); flushSync(); await flushWaterfallPaint();
+    expect(subscription().view.endHz - subscription().view.startHz).toBe(25_000);
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(25_000);
+  });
+
+  it('hatches both uncovered requested margins with a typed reason', async () => {
+    const target = mountPanel();
+    emitFrame();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
+    expect(hatches).toHaveLength(2);
+    expect([...hatches].map((hatch) => [hatch.style.left, hatch.style.width])).toEqual([['0%', '25%'], ['75%', '25%']]);
+    expect([...hatches].every((hatch) => hatch.title === 'View wider than source coverage')).toBe(true);
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
+  });
+
   it('mounts without errors', () => {
     const target = mountPanel();
     expect(target.querySelector('.spectrum-panel')).not.toBeNull();
@@ -961,6 +1014,8 @@ describe('SpectrumPanel component', () => {
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledWith('SpectrumPanel');
     expect(harnessChannels.scope?.connect).toHaveBeenCalledTimes(1);
     expect(mockRuntime.subscribeDx).toHaveBeenCalledTimes(1);
+    expect(streamSubscriptions.hardware).toHaveBeenCalledTimes(1);
+    expect(streamSubscriptions.audio_fft).not.toHaveBeenCalled();
   });
 
   it('releases the exact lease on OFF and acquires a fresh lease on ON', () => {
@@ -991,6 +1046,7 @@ describe('SpectrumPanel component', () => {
     expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledTimes(2);
     expect(mockRuntime.releaseHardwareScope).toHaveBeenLastCalledWith(currentLease);
     expect(runtimeHarness.state.dxUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(streamUnsubscriptions.hardware).toHaveBeenCalledTimes(1);
   });
 
   it('keeps OFF intent inert across runtime health, teardown, and remount', () => {
@@ -1794,7 +1850,9 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     const owners = authorityPluginSource.match(
       /const SCOPE_METADATA_OWNERS = new Set\(\[([\s\S]*?)\]\);/,
     )!;
-    expect(owners[1]).toContain('src/lib/runtime/adapters/scope-adapter.ts');
+    expect([...owners[1].matchAll(/'([^']+)'/g)].map((match) => match[1])).toEqual([
+      'src/lib/runtime/adapters/scope-adapter.ts',
+    ]);
     expect(owners[1]).not.toContain('SpectrumPanel.svelte');
     expect(owners[1]).not.toContain('AmberScope');
     expect(owners[1]).not.toContain('AmberCockpit');
@@ -1802,7 +1860,12 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(owners[1]).not.toContain('scope-stream.ts');
     expect(owners[1]).not.toContain('scope-frame.ts');
     expect(authorityContractSource).toContain('id = "spectrum_payload"');
-    expect(authorityContractSource).toContain('id = "scope_metadata_owner"');
+    const guard = authorityContractSource.split('id = "scope_metadata_owner"')[1].split('[[guards]]')[0];
+    expect([...guard.matchAll(/path = "([^"]+)", count = (\d+)/g)].map((match) => [match[1], Number(match[2])])).toEqual([
+      ['src/lib/runtime/adapters/scope-adapter.ts', 1],
+    ]);
+    const payload = authorityContractSource.split('id = "spectrum_payload"')[1].split('[[families]]')[0];
+    expect(payload.match(/surfaces = \[(.*?)\]/)?.[1]).toBe('"frontend/src/components/spectrum/SpectrumPanel.svelte"');
   });
 });
 
@@ -1999,7 +2062,7 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
     expect(target.querySelector('.tune-line')).toBeNull();
     const viewer = target.querySelector<HTMLButtonElement>('[aria-label="Scope viewer"]')!;
     expect(viewer.textContent).toContain('Viewer ON'); viewer.click(); flushSync(); expect(viewer.textContent).toContain('Viewer OFF');
-    expect(scopeControllerHarness.stream('hardware').receipt).toBe(0);
+    expect(streamSubscriptions.hardware).not.toHaveBeenCalled();
   });
 });
 
@@ -2033,6 +2096,8 @@ describe('SDR scope source routing (MOR-3158)', () => {
     // Hardware transport routing: the IQ-derived ScopeFrames arrive on the
     // hardware channel with its leases (MOR-3158 contract assumption).
     expect(harnessChannels.scope?.connect).toHaveBeenCalledOnce();
+    expect(streamSubscriptions.hardware).toHaveBeenCalledTimes(1);
+    expect(streamSubscriptions.audio_fft).not.toHaveBeenCalled();
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
     expect(target.querySelector('.audio-source-label')).toBeNull();
     expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
@@ -2245,11 +2310,9 @@ describe('SDR scope source routing (MOR-3158)', () => {
         },
         scopeDemanded: true,
       });
-      emitFrame();
       props.set('projection', sdrProjection(1));
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalled();
-      const afterFirst = push.mock.calls.length;
+      expect(push).toHaveBeenCalledTimes(1);
       // The first delivered frame paints (fresh gate) and the next
       // live-spaced one latches steady painting.
       for (let sequence = 2; sequence <= 6; sequence += 1) {
@@ -2257,14 +2320,14 @@ describe('SDR scope source routing (MOR-3158)', () => {
         props.set('projection', sdrProjection(sequence)); flushSync();
         await flushWaterfallPaint();
       }
-      expect(push).toHaveBeenCalledTimes(afterFirst + 5);
+      expect(push).toHaveBeenCalledTimes(6);
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
       clock += 83;
       props.set('projection', sdrProjection(7, true)); flushSync();
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledTimes(afterFirst + 5);
+      expect(push).toHaveBeenCalledTimes(6);
       expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
       expect(target.querySelector<HTMLElement>('.waterfall-history')!.style.visibility).toBe('visible');
       expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
@@ -2273,7 +2336,7 @@ describe('SDR scope source routing (MOR-3158)', () => {
       clock += 83;
       props.set('projection', sdrProjection(8)); flushSync();
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledTimes(afterFirst + 6);
+      expect(push).toHaveBeenCalledTimes(7);
     } finally {
       nowSpy.mockRestore();
       push.mockRestore();
@@ -2436,12 +2499,16 @@ describe('managed scope projection (MOR-2367)', () => {
   it('keeps unmanaged mounts on their own hardware lease', () => {
     mountPanel(); mountPanel({ scopeRegion: undefined });
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(2);
-    expect(harnessChannels.scope?.connect).toHaveBeenCalledTimes(2);
+    expect(harnessChannels.scope?.connect).toHaveBeenCalledTimes(1);
+    expect(streamSubscriptions.hardware).toHaveBeenCalledTimes(2);
   });
   it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
-    const shared = mockRuntime.acquireHardwareScope();
     const { target, props, onScopeDemandChange } = managed(projection());
+    const shared = harnessLeases.at(-1)!;
+    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(1);
+    emitFrame({ pixels: new Uint8Array([0, 128, 255]) });
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([0, 128, 255]);
     const { waterfall } = prepareGeometry(target);
     const zone = waterfall.querySelector('.passband-resize-zone')!;
     pointer(zone, 'pointerdown', 80, 100); pointer(waterfall, 'pointermove', 80, 130);
@@ -2652,7 +2719,7 @@ describe('managed scope projection (MOR-2367)', () => {
         pixels: new Uint8Array([10, 100, 200]), sequence: ++sequence });
       state = deliver(); input.state = state;
       input.frame = { source: 'hardware', receiver: 0, providerGeneration: 1,
-        demanded: true, transport: 'connected', geometry: streamGeometry, receipt: hardwareStream.receipt };
+        demanded: true, transport: 'connected', transportEpoch: hardwareStream.sessionEpoch, geometry: streamGeometry, receipt: hardwareStream.receipt };
       result = projectScopePassbandDisplay(result, input);
       props.set('projection', result.display); flushSync();
     }
@@ -2748,7 +2815,7 @@ describe('managed scope projection (MOR-2367)', () => {
       emitFrame({ startFreq: center - 50_000, endFreq: center + 50_000,
         pixels: new Uint8Array([10, 100, 200]), sequence: ++sequence });
       input.frame = { source: 'hardware', receiver: 0, providerGeneration: 1,
-        demanded: true, transport: 'connected', geometry: streamGeometry, receipt: hardwareStream.receipt };
+        demanded: true, transport: 'connected', transportEpoch: hardwareStream.sessionEpoch, geometry: streamGeometry, receipt: hardwareStream.receipt };
       result = projectScopePassbandDisplay(result, input);
       props.set('projection', result.display); flushSync();
     }
@@ -2801,6 +2868,7 @@ describe('managed scope projection (MOR-2367)', () => {
       emitFrame({ pixels, sequence: 1 });
       await flushWaterfallPaint();
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
+      expect(push).toHaveBeenCalledTimes(1);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
       // Ordinary live-spaced deliveries with distinct sequences establish
       // a paint history before the recovery frame below.
@@ -2809,7 +2877,8 @@ describe('managed scope projection (MOR-2367)', () => {
         sequenced(sequence);
         await flushWaterfallPaint();
       }
-      const afterLoop = push.mock.calls.length;
+      expect(push).toHaveBeenCalledTimes(6);
+      const afterLoop = 6;
       silenceFrames(); const afterClear = afterLoop;
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
       emitFrame({ pixels }); await flushWaterfallPaint(); expect(push).toHaveBeenCalledTimes(afterLoop);
@@ -3185,6 +3254,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
       // viewportStartFreq = centerHz - spanHz / 2 tracks the candidate.
+      expect(spectrumRendererHarness.render).toHaveBeenCalledTimes(settledCalls + 1);
+      expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view).toEqual({ startHz: 13_990_000, endHz: 14_090_000 });
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_040_000);
       expect(spectrumRendererHarness.lastOptions.centerHz
         - spectrumRendererHarness.lastOptions.spanHz / 2).toBe(13_990_000);
@@ -3192,6 +3263,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       pointer(spectrum, 'pointermove', 31, 140);
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-20_000));
+      expect(spectrumRendererHarness.render).toHaveBeenCalledTimes(settledCalls + 2);
+      expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view).toEqual({ startHz: 13_980_000, endHz: 14_080_000 });
 
       // Every repaint since the press drew the SAME cached frame pixels —
       // the preview never waits for a new scope frame — and no command left.

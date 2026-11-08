@@ -591,3 +591,16 @@ describe('spectrum colour roles', () => {
     expect(second.paint.gradientStops).toEqual([[0, PREVIOUS_LITERALS.fillTop], [1, '#090909']]);
   });
 });
+
+describe('requested View coordinates (MOR-4270)', () => {
+  it('places a narrower sample plane inside the requested view without stretching', () => {
+    const { ctx, log } = createMockCtx();
+    renderSpectrum(ctx, new Uint8Array([80, 80, 80, 80]), 100, 40, opts({
+      spanHz: 200_000, sampleSpanHz: 100_000, centerHz: 14_050_000,
+      showRfOverlays: false,
+    }));
+    const tracePoints = log.lineTo.filter(([, y]) => y === 0);
+    expect(Math.min(...tracePoints.map(([x]) => x))).toBe(25);
+    expect(Math.max(...tracePoints.map(([x]) => x))).toBe(74);
+  });
+});

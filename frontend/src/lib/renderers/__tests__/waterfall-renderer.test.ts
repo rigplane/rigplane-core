@@ -391,3 +391,19 @@ describe('destroy', () => {
     expect(() => r.clear()).not.toThrow();
   });
 });
+
+describe('requested View coordinates (MOR-4270)', () => {
+  it('leaves uncovered margins blank rather than stretching the sample row', () => {
+    const canvas = mockCanvas(100, 20);
+    const ctx = canvas.getContext('2d')!;
+    const renderer = new WaterfallRenderer(canvas, { ...defaultWaterfallOptions,
+      spanHz: 200_000, sampleSpanHz: 100_000, centerHz: 14_050_000 });
+    renderer.pushRow(new Uint8Array([80, 80, 80, 80]));
+    const row = vi.mocked(ctx.putImageData).mock.calls.at(-1)![0].data;
+    const pixel = (x: number) => [...row.slice(x * 4, x * 4 + 3)];
+    expect(pixel(0)).toEqual(pixel(24));
+    expect(pixel(75)).toEqual(pixel(99));
+    expect(pixel(25)).not.toEqual(pixel(0));
+    expect(pixel(74)).toEqual(pixel(25));
+  });
+});
