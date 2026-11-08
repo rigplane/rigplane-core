@@ -848,3 +848,65 @@ async def test_observed_native_width_regrants_before_binary_for_existing_client(
             assert frame.pixels == bytes([160]) * width
     finally:
         await handler._unsubscribe()
+
+
+async def test_one_real_scope_socket_multiplexes_radio_and_audio():
+    import aiohttp
+    import numpy as np
+    from rigplane.audio.bus import STAGE_RX_POST_DSP
+    from rigplane.audio.scope_source import AudioFftSource
+    from rigplane.scope import ScopeAssembler
+    from rigplane.web.handlers.audio import AudioBroadcaster
+    from rigplane.web.protocol import decode_scope_frame_v2
+    from rigplane.web.scope_sources import WebScopePcmTap
+    from rigplane.web.server import WebConfig
+    from rigplane_testkit.icom import MockIcomRadio
+    from test_handlers_coverage import _RelayRadio
+    from test_audio_scope_dispatch import _seed_audio_facts
+    from test_web_server import _addr
+
+    writer = Writer()
+    server = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    radio = RadioScopeSource(resolve_radio_profile(model="ic7610"), writer)
+    server.scope_hub.register("radio", radio)
+    server._audio_broadcaster = AudioBroadcaster(_RelayRadio())
+    _seed_audio_facts(server)
+    tap = WebScopePcmTap(server)
+    server.scope_hub.register("audio_fft", AudioFftSource(tap, tap.facts, fft_size=2048))
+    simulator = MockIcomRadio(scope_stream=True)
+    assembler = ScopeAssembler()
+    native = None
+    for raw in simulator._scope_templates[0]:
+        native = assembler.feed(raw[7:-1], raw[6]) or native
+    assert native is not None
+    await server.start()
+    host, port = _addr(server)
+    try:
+        async with aiohttp.ClientSession() as client:
+            async with client.ws_connect(f"http://{host}:{port}/api/v1/scope") as ws:
+                for source_id, receiver, view in (
+                    ("radio", 0, View(native.start_freq_hz, native.end_freq_hz)),
+                    ("audio_fft", None, View(14_074_000, 14_076_400)),
+                ):
+                    await ws.send_str(encode_scope_subscription(Subscription(source_id, receiver, view, 1024, 20)))
+                    assert (await ws.receive_json(timeout=5))["sourceId"] == source_id
+                assert writer.output == [True]
+                radio.feed_frame(native)
+                server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(np.ones(8192, dtype=np.int16).tobytes())
+                received = set()
+                while len(received) < 2:
+                    message = await ws.receive(timeout=5)
+                    if message.type == aiohttp.WSMsgType.BINARY:
+                        received.add(decode_scope_frame_v2(message.data).source_id)
+                    else:
+                        assert message.type == aiohttp.WSMsgType.TEXT
+                assert received == {"radio", "audio_fft"}
+                await ws.send_json({"type": "unsubscribe", "sourceId": "audio_fft", "receiver": None})
+                await await_until(lambda: server._audio_broadcaster._subscription is None)
+                assert writer.output == [True]
+                radio.feed_frame(native)
+                message = await ws.receive(timeout=5)
+                assert decode_scope_frame_v2(message.data).source_id == "radio"
+        await await_until(lambda: writer.output == [True, False])
+    finally:
+        await server.stop()
