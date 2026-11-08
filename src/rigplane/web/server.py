@@ -176,6 +176,7 @@ from .runtime_helpers import (  # noqa: TID251
     store_has_radio_observation,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
+from .protocol import ScopeFrameLike, encode_scope_frame  # noqa: TID251
 from ..ws import WS_KEEPALIVE_INTERVAL, WebSocketConnection  # noqa: TID251
 from ..radio_protocol import (
     CivTransactionCapable,
@@ -1383,6 +1384,8 @@ class WebServer:
         self._state_store_freshness_task: asyncio.Task[None] | None = None
         # Control handler event queues
         self._control_event_queues: set[BoundedQueue[dict[str, Any]]] = set()
+        self._scope_sequence = 0
+        self._audio_scope_sequence = 0
         # session_id -> that session's event queue, for targeted (non-broadcast)
         # sends — e.g. a post-ack command-failure notification belongs only to
         # the session that issued the command (MOR-1445/MOR-1422 doctrine).
@@ -1895,7 +1898,7 @@ class WebServer:
                 self._scope_enable_failed = False
                 logger.info("scope: pre-session state restored (no active handlers)")
 
-    def _dispatch_audio_fft_frame(self, frame: Any) -> None:
+    def _dispatch_audio_fft_frame(self, frame: ScopeFrameLike) -> None:
         """Fan out an audio FFT frame to the relevant scope channels.
 
         Single registered callback for :class:`AudioFftScope` (whose
@@ -1908,11 +1911,12 @@ class WebServer:
         While the SDR scope is selected and its frames flow, the SDR owns
         ``/api/v1/scope`` (MOR-3157).
         """
-        self._broadcast_audio_scope(frame)
         if not self._hardware_scope_available and not self._sdr_scope_active():
-            self._broadcast_scope(frame)
+            self._broadcast_scope(frame, include_audio=True)
+        else:
+            self._broadcast_audio_scope(frame)
 
-    def _on_hardware_scope_frame(self, frame: Any) -> None:
+    def _on_hardware_scope_frame(self, frame: ScopeFrameLike) -> None:
         """Hardware scope data sink for ``/api/v1/scope``: broadcast
         unless the SDR scope owns the channel (MOR-3202). Wired instead
         of ``_broadcast_scope`` at every hardware wire point, so a scope
@@ -1923,21 +1927,37 @@ class WebServer:
             return
         self._broadcast_scope(frame)
 
-    def _broadcast_scope(self, frame: Any) -> None:
-        """Broadcast scope frame to all registered handlers.
-
-        Also extract VFO frequency from scope center mode frames
-        and update state cache — bypasses CI-V polling for freq.
-        """
-        for h in list(self._scope_handlers):
-            h.enqueue_frame(frame)
+    def _broadcast_scope(
+        self, frame: ScopeFrameLike, *, include_audio: bool = False
+    ) -> None:
+        """Broadcast one shared wire frame and track scope health."""
+        handlers = self._scope_handlers
+        if include_audio:
+            handlers = handlers | self._audio_scope_handlers
+            self._scope_sequence = max(self._scope_sequence, self._audio_scope_sequence)
+        self._scope_sequence = self._enqueue_scope_frame(
+            frame, handlers, self._scope_sequence
+        )
+        if include_audio:
+            self._audio_scope_sequence = self._scope_sequence
         # Scope health: track whether frames carry real data
         self._scope_health_check(frame)
 
-    def _broadcast_audio_scope(self, frame: Any) -> None:
+    def _broadcast_audio_scope(self, frame: ScopeFrameLike) -> None:
         """Broadcast audio FFT scope frame to /api/v1/audio-scope handlers only."""
-        for h in list(self._audio_scope_handlers):
-            h.enqueue_frame(frame)
+        self._audio_scope_sequence = self._enqueue_scope_frame(
+            frame, self._audio_scope_handlers, self._audio_scope_sequence
+        )
+
+    @staticmethod
+    def _enqueue_scope_frame(
+        frame: ScopeFrameLike, handlers: Collection["ScopeHandler"], sequence: int
+    ) -> int:
+        if handlers:
+            encoded = encode_scope_frame(frame, sequence)
+            for handler in list(handlers):
+                handler.enqueue_frame(encoded)
+        return sequence + 1
 
     async def ensure_audio_scope_enabled(self, handler: "ScopeHandler") -> None:
         """Register an audio scope handler. Lazy PCM tap + relay enable."""
@@ -8324,13 +8344,13 @@ class WebServer:
                 leaf_state_deltas=(query or {}).get("state_delta") == ["2"],
             )
         elif path == "/api/v1/scope":
-            handler = ScopeHandler(ws, self._radio, server=self)
+            handler = ScopeHandler(ws, server=self)
         elif path == "/api/v1/audio-scope":
             if self._audio_fft_scope is None:
                 self._controller.detach(ticket)
                 await ws.close(1008, "audio FFT scope not available")
                 return
-            handler = ScopeHandler(ws, self._radio, server=self, audio_mode=True)
+            handler = ScopeHandler(ws, server=self, audio_mode=True)
         elif path == "/api/v1/audio":
             audio_source = object()
             handler = AudioHandler(

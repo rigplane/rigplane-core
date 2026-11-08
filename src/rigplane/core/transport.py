@@ -214,8 +214,6 @@ class IcomTransport:
         self._udp_error_count: int = 0
         # Lifetime UDP error count, used only to throttle the warning log.
         self._udp_error_total: int = 0
-        # Optional fast-path callback for scope data — bypasses packet queue
-        self._scope_fast_path: Callable[[bytes], None] | None = None
         self._scope_dropped: int = 0  # scope packets dropped under queue pressure
         # Non-scope evictions since the last overflow warning, and when that
         # warning was logged. Zero means no warning has been logged yet.
@@ -986,13 +984,6 @@ class IcomTransport:
             and data[HEADER_SIZE + 4] == 0x27
             and data[HEADER_SIZE + 5] == 0x00
         )
-
-        # Fast-path: route scope data directly to callback, bypassing the queue.
-        # Scope frames are high-volume (~225 pkt/sec) and would otherwise fill
-        # the queue, starving CI-V control commands.
-        if is_scope and self._scope_fast_path is not None:
-            self._scope_fast_path(data)
-            return
 
         # Queue for consumer with bounded capacity.
         # On overflow: drop scope packets first (visual only), never CI-V control.

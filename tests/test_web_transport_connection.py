@@ -88,7 +88,7 @@ async def test_scope_handler_recv_loop_runs_against_minimal_fake() -> None:
     the loop — proving the receive side needs nothing beyond ``recv``.
     """
     fake = FakeConnection(incoming=[(WS_OP_TEXT, b'{"type":"hello"}')])
-    handler = ScopeHandler(fake, radio=None, server=None)
+    handler = ScopeHandler(fake, server=None)
 
     await asyncio.wait_for(handler.run(), timeout=2.0)
 
@@ -105,7 +105,7 @@ async def test_scope_handler_sender_uses_only_send_binary() -> None:
     ``send_binary`` — proving the send side depends only on the protocol.
     """
     fake = FakeConnection()
-    handler = ScopeHandler(fake, radio=None, server=None)
+    handler = ScopeHandler(fake, server=None)
     handler._frame_queue.put_nowait(b"\x00\x01scope-bytes")
 
     sender = asyncio.create_task(handler._sender())

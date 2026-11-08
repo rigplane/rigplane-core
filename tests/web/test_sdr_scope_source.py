@@ -24,6 +24,7 @@ from rigplane.cli import _build_parser, _cmd_web
 
 from rigplane.audio.bus import STAGE_RX_POST_DSP
 from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
+from rigplane.scope import ScopeFrame
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -74,8 +75,10 @@ class _Handler:
     def __init__(self) -> None:
         self.frames: list[Any] = []
 
-    def enqueue_frame(self, frame) -> None:
-        self.frames.append(frame)
+    def enqueue_frame(self, frame: bytes) -> None:
+        from _helpers import scope_frame_from_wire
+
+        self.frames.append(scope_frame_from_wire(frame))
 
 
 class _HwScopeRadio(_AudioRadio, ScopeCapable):
@@ -328,7 +331,7 @@ async def test_sdr_scope_lifecycle_and_selection_guards() -> None:
     assert plain._sdr_runtime is None
     plain_handler = _Handler()
     await plain.ensure_scope_enabled(plain_handler)
-    frame = object()
+    frame = ScopeFrame(0, 0, _VFO1 - 50_000, _VFO1 + 50_000, b"\x01", False)
     plain._dispatch_audio_fft_frame(frame)
     assert plain_handler.frames == [frame]  # audio FFT still feeds the channel
     assert (await _capabilities(plain))["scopeSource"] == "audio_fft"
@@ -342,12 +345,6 @@ async def test_sdr_scope_lifecycle_and_selection_guards() -> None:
 # ---------------------------------------------------------------------------
 # Runtime SDR↔hardware-scope fallback (MOR-3202)
 # ---------------------------------------------------------------------------
-
-
-class _HwFrame:
-    """Marker object standing in for one radio-delivered hardware frame."""
-
-    pixels = b"\x01"
 
 
 async def _drain_command_queue(server: WebServer) -> None:
@@ -426,9 +423,9 @@ async def test_sdr_stale_on_hardware_scope_radio_falls_back_and_recovers() -> No
         await _wait_hardware_fallback(server, radio)
         assert len(radio.enable_calls) == 1
         assert radio.scope_callback is not None
-        hw1 = _HwFrame()
+        hw1 = ScopeFrame(0, 0, _VFO1 - 50_000, _VFO1 + 50_000, b"\x01", False)
         radio.scope_callback(hw1)
-        assert handler.frames[-1] is hw1
+        assert handler.frames[-1] == hw1
 
         # SDR recovers: SDR frames return, hardware frames are dropped
         # at the gate, and the radio's scope is NOT disabled over CI-V.
@@ -440,7 +437,7 @@ async def test_sdr_stale_on_hardware_scope_radio_falls_back_and_recovers() -> No
         while not server._sdr_scope_active() and time.monotonic() < deadline:
             await asyncio.sleep(0.05)
         assert server._sdr_scope_active()
-        hw2 = _HwFrame()
+        hw2 = ScopeFrame(0, 0, _VFO1 - 50_000, _VFO1 + 50_000, b"\x02", False)
         radio.scope_callback(hw2)
         await asyncio.sleep(0.1)
         assert hw2 not in handler.frames
@@ -483,9 +480,9 @@ async def test_sdr_silent_from_start_falls_back_to_hardware_scope() -> None:
         assert radio.enable_calls == []
         await _wait_hardware_fallback(server, radio)
         assert len(radio.enable_calls) == 1
-        hw = _HwFrame()
+        hw = ScopeFrame(0, 0, _VFO1 - 50_000, _VFO1 + 50_000, b"\x01", False)
         radio.scope_callback(hw)
-        assert handler.frames[-1] is hw
+        assert handler.frames[-1] == hw
     finally:
         drainer.cancel()
         server._stop_sdr_scope()

@@ -31,13 +31,12 @@ async def test_blocked_send_distinguished_from_queue_loss_and_wrap() -> None:
     events = []
     handler = ScopeHandler(ws, trace_observer=events.append)
     handler._running = True
-    handler._seq = 65535
-    handler.enqueue_frame(frame())
+    handler.enqueue_frame(encode_scope_frame(frame(), 65535))
     sender = asyncio.create_task(handler._sender())
     try:
         await asyncio.wait_for(ws.started.wait(), 1)
         for value in range(1, 13):
-            handler.enqueue_frame(frame(value))
+            handler.enqueue_frame(encode_scope_frame(frame(value), value - 1))
         assert [e["wire_sequence"] for e in events if e["stage"] == "drop_oldest"] == [
             0,
             1,
@@ -86,8 +85,8 @@ async def test_observer_failure_disables_only_diagnostics() -> None:
     ws.release.set()
     handler = ScopeHandler(ws, trace_observer=broken)
     handler._running = True
-    handler.enqueue_frame(frame(1))
-    handler.enqueue_frame(frame(2))
+    handler.enqueue_frame(encode_scope_frame(frame(1), 0))
+    handler.enqueue_frame(encode_scope_frame(frame(2), 1))
     sender = asyncio.create_task(handler._sender())
     try:
         async with asyncio.timeout(1):
@@ -110,7 +109,7 @@ async def test_cancelled_send_is_not_success_or_error() -> None:
     events = []
     handler = ScopeHandler(ws, audio_mode=True, trace_observer=events.append)
     handler._running = True
-    handler.enqueue_frame(frame())
+    handler.enqueue_frame(encode_scope_frame(frame(), 0))
     sender = asyncio.create_task(handler._sender())
     await asyncio.wait_for(ws.started.wait(), 1)
     sender.cancel()
@@ -130,7 +129,7 @@ async def test_send_error_remains_terminal_and_has_no_success() -> None:
     events = []
     handler = ScopeHandler(BrokenConnection(), trace_observer=events.append)
     handler._running = True
-    handler.enqueue_frame(frame())
+    handler.enqueue_frame(encode_scope_frame(frame(), 0))
     await asyncio.wait_for(handler._sender(), 1)
     assert [e["stage"] for e in events] == ["enqueue", "send_start", "send_error"]
 
@@ -143,7 +142,7 @@ def test_default_off_does_not_read_diagnostic_clock(monkeypatch) -> None:
     handler = ScopeHandler(None)
     handler._running = True
     for value in range(12):
-        handler.enqueue_frame(frame(value))
+        handler.enqueue_frame(encode_scope_frame(frame(value), value))
     assert [handler._frame_queue.get_nowait() for _ in range(10)] == [
         encode_scope_frame(frame(value), value) for value in range(2, 12)
     ]
