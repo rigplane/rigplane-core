@@ -267,6 +267,20 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: 0, freshness: 'fresh' });
     expect(h.events).toEqual(['acquire:audio-fft']);
   });
+  it('releases only its own scope lease on unmount while an independent live consumer retains geometry', async () => {
+    render('hardware'); await settle();
+    const independent = h.resources.acquire('hardware-scope', 'independent');
+    channels.scope.connected(); const buffer = channels.scope.frame();
+    const stream = h.scope.stream('hardware'), before = geometry(stream);
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    component!.$destroy(); component = null; flushSync(); await settle();
+    expect(authority).not.toHaveBeenCalled();
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
+    expect(geometry(stream)).toBe(before);
+    expect(stream.latest('scope:0')?.pixels?.buffer).toBe(buffer);
+    expect(channels.scope.count()).toBe(1); expect(channels.scope.disconnect).not.toHaveBeenCalled();
+    h.resources.release(independent);
+  });
   it('owns one selected-source lease, preserves stream/pixel identity, and switches sources without fallback', async () => {
     const authority = vi.spyOn(h.scope, 'setFrameAuthority');
     render('audio-fft'); await settle();
