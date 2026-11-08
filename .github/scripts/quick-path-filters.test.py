@@ -245,6 +245,13 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
+    def test_frontend_check_step_sets_the_node_heap_svelte_check_needs(self) -> None:
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        step = quick.split("      - name: Frontend install + check + tests + build\n", 1)[1]
+        step = step.split("      - name:", 1)[0]
+        self.assertIn("NODE_OPTIONS: --max-old-space-size=3072", step)
+        self.assertIn("npm run check", step)
+
     def test_release_gate_changes_select_the_route_that_runs_receipt_tests(
         self,
     ) -> None:
@@ -457,11 +464,16 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertEqual(
             set(jobs), {"classify", "quick-frontend", "quick-python", "quick"}
         )
+        # MOR-4214: both halves need more memory than the 2 GiB gate pool gives.
+        pools = {
+            "quick-frontend": "[self-hosted, Linux, ARM64, build]",
+            "quick-python": "[self-hosted, Linux, X64, build]",
+        }
         for half in ("quick-frontend", "quick-python"):
             with self.subTest(job=half):
                 block = jobs[half]
                 self.assertIn("    needs: classify\n", block)
-                self.assertIn("    runs-on: [self-hosted, Linux, ARM64, gate]\n", block)
+                self.assertIn(f"    runs-on: {pools[half]}\n", block)
                 self.assertIn("    timeout-minutes: 25\n", block)
                 self.assertIn("needs.classify.outputs.docs != 'true'", block)
                 self.assertIn("needs.classify.outputs.reuse != 'true'", block)
