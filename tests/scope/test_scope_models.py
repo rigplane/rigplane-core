@@ -40,3 +40,7 @@ def test_capability_contract():
     assert caps.native_width == 512
     with pytest.raises(ValueError):
         SourceCapabilities((0,), ('fixed',), (), None, 0, 30, 'native')
+
+
+def test_capabilities_do_not_offer_unused_edge_limits():
+    assert 'edge_limits_hz' not in {f.name for f in fields(SourceCapabilities)}
