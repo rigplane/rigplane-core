@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
+import { audioScopeGoldenNames, loadAudioScopeGolden, scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { ScopeStream } from '../../../lib/runtime/scope-stream';
 import LcdAfFft from '../LcdAfFft.svelte';
 import LcdRfPanadapter from '../LcdRfPanadapter.svelte';
@@ -9,6 +9,16 @@ import type { ServerState } from '$lib/types/state';
 import observedState from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 
 vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+
+function audioState(freqHz: number, mode = 'USB', cwPitch = 600): ServerState {
+  const state = structuredClone(observedState) as unknown as ServerState;
+  state.main.freqHz = freqHz; state.main.mode = mode; state.cwPitch = cwPitch;
+  for (const path of ['main.freqHz', 'main.mode', 'cwPitch']) {
+    state.fieldStatus![path] = { ...state.fieldStatus!['main.freqHz']!, observed: true,
+      freshness: 'fresh', availability: 'available' };
+  }
+  return state;
+}
 
 function source(kind: 'radio' | 'audio_fft') {
   let receive = (_buffer: ArrayBuffer) => {};
@@ -38,7 +48,7 @@ describe('LCD leaves consume ScopeStream directly', () => {
       expect(publish).toHaveBeenCalledTimes(1);
       stream.handleMessage({ type: 'error', message: 'audio mapping unavailable' }); flushSync();
       expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
-      const usable = structuredClone(observedState) as unknown as ServerState;
+      const usable = audioState(14_200_000);
       usable.main.filterWidth = 2400;
       usable.fieldStatus!['main.filterWidth'] = { ...usable.fieldStatus!['main.freqHz']!,
         storePath: 'receiver.main.active.freq_mode.filter_width' };
@@ -81,6 +91,7 @@ describe('LCD leaves consume ScopeStream directly', () => {
   it('paints audio pixels without a reactive frame carrier and clears stale geometry', async () => {
     const target = document.createElement('div'); document.body.append(target);
     const wire = source('audio_fft');
+    const previous = radio.current; radio.current = audioState(14_200_000);
     const component = mount(LcdAfFft, { target, props: {
       scopeStream: wire.stream, receiver: 'MAIN', inputState: 'live', receiverActivity: 'active',
     } as never });
@@ -90,7 +101,31 @@ describe('LCD leaves consume ScopeStream directly', () => {
       expect(target.querySelector('.fft-trace')?.getAttribute('d')).toBe('M0.00,92.00 L250.00,50.84 L500.00,10.00');
       wire.stream.setFreshness('stale'); flushSync();
       expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
-    } finally { await unmount(component); wire.stream.dispose(); target.remove(); }
+    } finally { await unmount(component); wire.stream.dispose(); target.remove(); radio.current = previous; }
+  });
+  it.each(audioScopeGoldenNames)('projects real %s producer pixels to the AF tone position', async name => {
+    const { buffer, expected } = loadAudioScopeGolden(name);
+    const previous = radio.current;
+    radio.current = audioState(expected.audioPassband.tunedHz, expected.input.mode, expected.input.cwPitchHz ?? 600);
+    let receive = (_buffer: ArrayBuffer) => {};
+    const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
+      { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed');
+    const target = document.createElement('div'); document.body.append(target);
+    const component = mount(LcdAfFft, { target, props: {
+      scopeStream: stream, receiver: 'MAIN', inputState: 'live', receiverActivity: 'active',
+    } });
+    try {
+      flushSync(); receive(buffer); flushSync();
+      expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('live');
+      const path = target.querySelector('.fft-trace')!.getAttribute('d')!;
+      const points = [...path.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map(match => [Number(match[1]), Number(match[2])]);
+      const peak = points.reduce((best, point) => point[1] < best[1] ? point : best);
+      const carrier = expected.audioPassband.tunedHz + expected.audioPassband.carrierOffsetHz;
+      const span = expected.audioPassband.sideband === 'lower'
+        ? carrier - expected.frame.view_start_hz : expected.frame.view_end_hz - carrier;
+      expect(peak[0] / 500 * span).toBeCloseTo(expected.input.toneHz, -2);
+      expect(stream.latest(stream.selectedSlot!)?.pixels?.buffer).toBe(buffer);
+    } finally { await unmount(component); stream.dispose(); target.remove(); radio.current = previous; }
   });
   it('paints exact RF samples from the selected receiver and rejects other receivers', async () => {
     const target = document.createElement('div'); document.body.append(target);
