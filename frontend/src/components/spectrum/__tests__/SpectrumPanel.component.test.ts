@@ -22,6 +22,7 @@ import { controllerClient } from '$lib/transport/controller-client';
 import PanadapterDisplay from '../../../skins/segmentline/PanadapterDisplay.svelte';
 import { projectPeerSplitDisplay } from '../../../semantic/radio-display-model';
 import AudioSpectrumPanel from '../../../components-v2/panels/audio-scope/AudioSpectrumPanel.svelte';
+import VfoSurface from '../../../semantic/VfoSurface.svelte';
 import {
   type ScopeFrame, type SpectrumAuthority, type SpectrumFilterRule } from '$lib/runtime/adapters/scope-adapter';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
@@ -3497,7 +3498,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       const previewCalls = spectrumRendererHarness.render.mock.calls.slice(settledCalls);
       expect(previewCalls.length).toBeGreaterThan(0);
       for (const call of previewCalls) expect(call[1]).toBe(paintedFrame);
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
       expect(mockRuntime.send).not.toHaveBeenCalled();
       pointer(spectrum, 'pointerup', 31, 140);
     } finally {
@@ -3505,7 +3507,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     }
   });
 
-  it('emits no command during the moves and exactly one snapped VFO intent on pointer-up', async () => {
+  it('submits paced absolute targets during moves and an exact snapped target on pointer-up', async () => {
     const restore = stubReducedMotion();
     try {
       authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
@@ -3518,17 +3520,18 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       pointer(spectrum, 'pointermove', 32, 130);
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
       expect(mockRuntime.send).not.toHaveBeenCalled();
       pointer(spectrum, 'pointerup', 32, 130);
-      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(3);
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_035_000, 0);
     } finally {
       restore();
     }
   });
 
-  it('hands the real VFO release command to pending without losing the preview viewport', async () => {
+  it('keeps actual VFO digits on every drag target through coalescing and stale post-release readbacks', async () => {
     const restore = stubReducedMotion();
     const adapters = await import('$lib/runtime/adapters/panel-adapters');
     const actualAdapters = await vi.importActual<typeof adapters>('$lib/runtime/adapters/panel-adapters');
@@ -3557,6 +3560,16 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       authorityHarness.state.current = authority({ frequencyHz: 14_050_000,
         providerGeneration: state.providerGeneration });
       const target = mountPanel();
+      const readout = document.createElement('div'); document.body.append(readout);
+      const viewModel = toRadioViewModel(state, IC7300_STEPPED_CAPABILITIES)!;
+      components.push(mount(VfoSurface, { target: readout, props: {
+        viewModel,
+        get pendingFrequencyHz() {
+          const hz = actualAdapters.getTuningBurstFrequencyHz(0) ?? actualAdapters.getPendingFrequencyHz(0);
+          return hz === null ? {} : { MAIN: hz };
+        },
+      } }));
+      const digits = () => readout.querySelector('[data-vfo-freq]')!.textContent!.replace(/\D/g, '');
       emitFrame();
       const { spectrum } = prepareGeometry(target);
       pointer(spectrum, 'pointerdown', 42, 100);
@@ -3565,20 +3578,29 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
         await flushPreviewPaint();
         await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz)
           .toBe(x === 120 ? -10_000 : -16_000));
-        expect(send).not.toHaveBeenCalled();
-        expect(commands.getCommandLifecycles()).toHaveLength(0);
+        expect(digits()).toContain(String(x === 120 ? 14_040_000 : 14_034_000));
+        expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBe(x === 120 ? 14_040_000 : 14_034_000);
+        expect(send).toHaveBeenCalledTimes(1);
       }
       pointer(spectrum, 'pointerup', 42, 133);
-      expect(send).toHaveBeenCalledExactlyOnceWith('set_freq',
+      expect(send).toHaveBeenLastCalledWith('set_freq',
         { freq: 14_034_000, receiver: 0 }, expect.any(String));
-      expect(commands.getCommandLifecycles()).toHaveLength(1);
+      expect(commands.getCommandLifecycles()).toHaveLength(2);
       expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
       await vi.waitFor(() => expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBeNull());
       await flushPreviewPaint();
       expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
       expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(-16_000);
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
-      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(2);
+      const stale = structuredClone(state);
+      stale.main!.freqHz = 14_040_000;
+      expect(radio.setRadioState(stale)).toBe(true);
+      runtimeHarness.state.currentState = radio.getRadioState();
+      authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration });
+      refreshSpectrumAuthority(); await flushPreviewPaint();
+      expect(digits()).toContain('14034000');
+      expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
     } finally {
       send.mockRestore();
       scopeCommandHarness.dispatch.mockReset();
@@ -3608,7 +3630,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
         pointer(spectrum, ending, 33, 120);
         await flushPreviewPaint();
         await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(0));
-        expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+        expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(1);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
         expect(mockRuntime.send).not.toHaveBeenCalled();
       } finally {
         restore();
@@ -3632,9 +3655,10 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
         expect(options?.centerHz).toBe(14_040_000);
         expect(options?.panoramaShiftHz).toBe(-10_000);
       });
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(1);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
       pointer(waterfall, 'pointerup', 34, 120);
-      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
     } finally {
       restore();
@@ -3661,9 +3685,10 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       pointer(canvas, 'pointermove', 37, 130);
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
       pointer(canvas, 'pointerup', 37, 130);
-      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(3);
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_035_000, 0);
     } finally {
       restore();
@@ -3689,7 +3714,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.centerHz).toBe(7_050_000));
       // The release-side staleness guard already refuses the commit.
       pointer(spectrum, 'pointerup', 38, 120);
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(1);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
       expect(mockRuntime.send).not.toHaveBeenCalled();
     } finally {
       restore();
@@ -3716,7 +3742,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(0));
       pointer(spectrum, 'pointerup', 40, 130);
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(1);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
       expect(mockRuntime.send).not.toHaveBeenCalled();
     } finally {
       restore();
@@ -3741,9 +3768,10 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left).toBe('50%');
       expect(target.querySelector<HTMLElement>('.waterfall-content .passband-overlay')!.style.left).toBe('38%');
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.tuneHz).toBe(14_050_000));
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(1);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
       pointer(spectrum, 'pointerup', 39, 400);
-      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
       // Released: the marker hides again until the radio confirms a
       // frequency inside the window.
@@ -3774,10 +3802,11 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(overlay().style.left).toBe('28%');
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.tuneHz).toBe(14_040_000));
       expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(0);
-      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(1);
+      expect(handlerHarness.vfo.onFreqChange.mock.calls.every((call) => call[2] === 'drag')).toBe(true);
 
       pointer(spectrum, 'pointerup', 35, 120);
-      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
       // The preview dies with the gesture: the marker returns to the
       // confirmed frequency until the radio reports the new one.
@@ -4792,7 +4821,7 @@ describe('review corrections for requested View and sample retirement', () => {
       const initial = requested(target); const { spectrum } = prepareGeometry(target);
       pointer(spectrum, 'pointerdown', 206, 100); pointer(spectrum, 'pointermove', 206, 120); pointer(spectrum, ending, 206, 120);
       expect(requested(target)).toEqual(initial);
-      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(ending === 'pointerup' ? 1 : 0);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(ending === 'pointerup' ? 2 : 1);
     } finally { restore(); }
   });
 
