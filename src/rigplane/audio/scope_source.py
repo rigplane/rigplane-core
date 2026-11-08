@@ -25,16 +25,18 @@ class AudioPassband:
     tuned_hz: float
     low_offset_hz: float
     high_offset_hz: float
-    sideband: Literal["upper", "lower"]
+    sideband: Literal["upper", "lower", "both"]
     carrier_offset_hz: float = 0
 
     def __post_init__(self) -> None:
         Coverage(
             self.tuned_hz + self.low_offset_hz, self.tuned_hz + self.high_offset_hz
         )
-        if self.sideband not in ("upper", "lower") or not math.isfinite(
+        if self.sideband not in ("upper", "lower", "both") or not math.isfinite(
             self.carrier_offset_hz
         ):
+            raise ValueError("invalid audio passband mapping")
+        if self.sideband == "both" and self.carrier_offset_hz != 0:
             raise ValueError("invalid audio passband mapping")
 
 
@@ -93,6 +95,11 @@ class AudioFftSource:
     ) -> Coverage | None:
         self.resolve_view(view, receiver)
         facts = self._facts()
+        if facts.sideband == "both":
+            return Coverage(
+                facts.tuned_hz + facts.low_offset_hz,
+                facts.tuned_hz + facts.high_offset_hz,
+            )
         sign = 1 if facts.sideband == "upper" else -1
         a = facts.carrier_offset_hz
         b = a + sign * self._sample_rate / 2
@@ -162,6 +169,9 @@ class AudioFftSource:
         facts = self._frame_facts
         if facts is None:
             return
+        if facts.sideband == "both":
+            self._emit_symmetric(frame, facts)
+            return
         positive = frame.pixels[len(frame.pixels) // 2 :]
         sign = 1 if facts.sideband == "upper" else -1
         step = self._sample_rate / self._fft_size
@@ -181,6 +191,36 @@ class AudioFftSource:
         end = facts.tuned_hz + facts.carrier_offset_hz + sign * selected[-1] * step
         native = NativeFrame(
             None, Coverage(start, end), bytes(positive[i] for i in selected)
+        )
+        for callback in tuple(self._callbacks):
+            callback(native)
+
+    def _emit_symmetric(self, frame: ScopeFrame, facts: AudioPassband) -> None:
+        """Emit the VFO-centered symmetric crop, exactly like AudioFftScope.
+
+        The producer always delivers its full symmetric spectrum here (the
+        source never sets a mode bandwidth on it); this slices the same
+        center window AudioFftScope would emit for the mode rule, so both
+        the true image and its mirror stay visible. Selecting the correct
+        sideband per mode is a follow-up (MOR-4288).
+        """
+        full = frame.pixels
+        center = len(full) // 2
+        step = self._sample_rate / self._fft_size
+        half = max(-facts.low_offset_hz, facts.high_offset_hz)
+        bins = int(half / step)
+        lo = max(0, center - bins)
+        hi = min(len(full), center + bins + 1)
+        selected = full[lo:hi]
+        if len(selected) < 2:
+            return
+        native = NativeFrame(
+            None,
+            Coverage(
+                facts.tuned_hz + facts.low_offset_hz,
+                facts.tuned_hz + facts.high_offset_hz,
+            ),
+            bytes(selected),
         )
         for callback in tuple(self._callbacks):
             callback(native)

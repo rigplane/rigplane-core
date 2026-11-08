@@ -66,6 +66,29 @@ def test_ambiguous_modes_map_main_symmetric_crop(model, mode, half):
     )
 
 
+@pytest.mark.parametrize(
+    "model,mode",
+    [
+        ("IC-7610", "DV"),
+        ("IC-7300", "DV"),
+        ("FTX-1", "DV"),
+        ("FTX-1", "CW"),
+        ("FTX-1", "CW-R"),
+        ("FTX-1", "RTTY"),
+        ("FTX-1", "RTTY-R"),
+    ],
+)
+def test_unruled_modes_map_full_spectrum(model, mode):
+    """Modes with no profile filter rule keep main's full-spectrum placement."""
+    from rigplane.audio.scope_source import AudioPassband
+
+    server = WebServer(None, WebConfig(radio_model=model))
+    _seed_audio_facts(server, mode=mode)
+    assert WebScopePcmTap(server, sample_rate=48000).facts() == AudioPassband(
+        14_074_000, -24000, 24000, "both"
+    )
+
+
 @pytest.mark.parametrize("receiver", ["0", "main"])
 @pytest.mark.parametrize(
     "code,sideband,offset", [("3", "upper", -650), ("7", "lower", 650)]

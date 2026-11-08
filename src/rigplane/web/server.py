@@ -1312,7 +1312,7 @@ class WebServer:
         self._audio_scope_source: AudioFftSource | None = None
         pcm_tap_source = self._audio_broadcaster.rx_pcm_tap_source
         if pcm_tap_source is not None:
-            tap = WebScopePcmTap(self)
+            tap = WebScopePcmTap(self, sample_rate=pcm_tap_source.sample_rate)
             self._audio_scope_source = AudioFftSource(
                 tap, tap.facts, fft_size=2048, sample_rate=pcm_tap_source.sample_rate
             )

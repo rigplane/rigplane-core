@@ -51,8 +51,13 @@ class WebRadioScopeWriter:
 
 
 class WebScopePcmTap:
-    def __init__(self, server: WebServer) -> None:
+    def __init__(self, server: WebServer, *, sample_rate: int | None = None) -> None:
+        if sample_rate is not None and (
+            type(sample_rate) is not int or sample_rate <= 0
+        ):
+            raise ValueError("sample rate must be a positive integer")
         self._server = server
+        self._sample_rate = sample_rate
         self._handle: TapHandle | None = None
 
     def facts(self) -> AudioPassband:
@@ -89,10 +94,32 @@ class WebScopePcmTap:
                 "lower" if lower else "upper",
                 pitch if lower else -pitch,
             )
-        if mode in ("CW", "CW-R"):
-            raise ValueError(
-                "audio FFT RF mapping unavailable: CW normal-side setting is not observed"
+        if mode in ("CW", "CW-R", "RTTY", "RTTY-R", "DV"):
+            # Main behaviour (AudioFftScope): a symmetric VFO-centered crop
+            # by the mode filter rule, full spectrum when the profile
+            # declares no rule. Correct-side selection is MOR-4288.
+            profile = self._server._get_profile_unless_provider_owned()
+            data_mode = self._server._active_primary_freq_mode_value(
+                snapshot, "data_mode"
             )
+            if not isinstance(data_mode, int):
+                data_mode = 0
+            rule = (
+                profile.resolve_filter_rule(mode, data_mode=data_mode)
+                if profile is not None
+                else None
+            )
+            max_hz = rule.max_hz if rule is not None else None
+            if max_hz is None:
+                if self._sample_rate is None:
+                    raise ValueError(
+                        f"audio FFT requires observed sample rate for mode {mode}: "
+                        "no filter rule declares its bandwidth"
+                    )
+                half = self._sample_rate / 2
+            else:
+                half = max_hz / 2
+            return AudioPassband(frequency, -half, half, "both")
         if mode not in ("USB", "LSB", "AM", "FM", "WFM"):
             raise ValueError(
                 f"audio FFT RF mapping unavailable for mode {mode}: carrier offset is not observed"
