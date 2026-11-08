@@ -1,6 +1,6 @@
 import importlib.util
 import json
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -113,13 +113,27 @@ def test_golden_fixtures_and_standalone_decoder():
     names = sorted(FIXTURES.glob("*.json"))
     assert len(names) == 8
     for path in names:
-        expected = json.loads(path.read_text())
+        expected = parse_fixture_json(path.read_text())
         wire = path.with_suffix(".bin").read_bytes()
         actual = decode_scope_frame_v2(wire)
-        mapping = asdict(actual)
-        mapping["pixels"] = list(actual.pixels) if actual.pixels is not None else None
-        assert mapping == expected
-        assert module.decode(wire) == expected
+        assert actual == expected
+        decoded = module.decode(wire)
+        reference = ScopeWireFrame(
+            decoded["source"],
+            decoded["source_id"],
+            decoded["receiver"],
+            decoded["view_start_hz"],
+            decoded["view_end_hz"],
+            decoded["coverage_start_hz"],
+            decoded["coverage_end_hz"],
+            decoded["width"],
+            None if decoded["pixels"] is None else bytes(decoded["pixels"]),
+            decoded["out_of_range"],
+            decoded["epoch"],
+            decoded["seq"],
+            decoded["sent_at_ms"],
+        )
+        assert reference == expected
         assert encode_scope_frame_v2(actual) == wire
 
 
@@ -185,3 +199,23 @@ def test_reference_decoder_rejects_malformed_messages():
             module.decode(wire)
         with pytest.raises(ValueError):
             decode_scope_frame_v2(wire)
+
+
+def parse_fixture_json(text: str) -> ScopeWireFrame:
+    fields = json.loads(text)
+    pixels = fields["pixels"]
+    return ScopeWireFrame(
+        fields["source"],
+        fields["source_id"],
+        fields["receiver"],
+        fields["view_start_hz"],
+        fields["view_end_hz"],
+        fields["coverage_start_hz"],
+        fields["coverage_end_hz"],
+        fields["width"],
+        None if pixels is None else bytes(pixels),
+        fields["out_of_range"],
+        fields["epoch"],
+        fields["seq"],
+        fields["sent_at_ms"],
+    )
