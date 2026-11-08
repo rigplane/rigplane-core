@@ -884,6 +884,8 @@ def _owned_socket_fd_count(
             except ValueError:
                 continue
             try:
+                if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+                    continue
                 dup = os.dup(fd)
             except OSError:
                 # The listing can name its own, already closed, directory
