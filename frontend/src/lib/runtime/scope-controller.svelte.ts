@@ -68,6 +68,7 @@ export class ScopeController {
 
   private readonly _streams: Partial<Record<ScopeSource, ScopeStream>> = {};
   private _authority: ScopeFrameAuthority | null = null;
+  private _additionalSources = new Set<ScopeSource>();
   private _authorityRevision = 0;
   private readonly _slotArrivals: Record<ScopeSource, Map<string, number>> = { hardware: new Map(), audio_fft: new Map() };
   private _healthSubscribers = new Map<number, HealthHandler>();
@@ -111,27 +112,38 @@ export class ScopeController {
   }
 
   /** Control-plane identity qualifies geometry; pixel delivery stays on the shared stream. */
-  setFrameAuthority(authority: ScopeFrameAuthority | null): void {
+  setFrameAuthority(authority: ScopeFrameAuthority | null, additionalSources: readonly ScopeSource[] = []): void {
     const previous = this._authority;
-    if (previous?.source === authority?.source && previous?.receiver === authority?.receiver
-      && previous?.providerGeneration === authority?.providerGeneration) return;
-    if (previous?.providerGeneration !== authority?.providerGeneration) {
+    const additional = new Set(authority ? additionalSources.filter(source => source !== authority.source) : []);
+    const sameAuthority = previous?.source === authority?.source && previous?.receiver === authority?.receiver
+      && previous?.providerGeneration === authority?.providerGeneration;
+    if (sameAuthority && additional.size === this._additionalSources.size
+      && [...additional].every(source => this._additionalSources.has(source))) return;
+    const providerChanged = previous?.providerGeneration !== authority?.providerGeneration;
+    if (providerChanged) {
       this._authorityRevision += 1;
       for (const stream of Object.values(this._streams)) stream?.reset();
     }
+    const newlyQualified = [...additional].filter(source => !this._additionalSources.has(source));
+    this._additionalSources = additional;
     this._authority = authority === null ? null : Object.freeze({ ...authority });
-    if (previous) this._streams[previous.source]?.reset();
+    if (!sameAuthority && previous) this._streams[previous.source]?.reset();
     if (!authority) return;
     const stream = this.stream(authority.source);
-    stream.setSlotFilter(authority.receiver === null ? null
-      : `${authority.source === 'hardware' ? 'scope' : 'audio-scope'}:${authority.receiver}`);
-    stream.reset();
-    const binding = [...this._bindings.values()].find(item => item.source === authority.source);
-    if (authority.receiver !== null && binding && binding.revision !== this._authorityRevision) {
+    if (!sameAuthority) {
+      stream.setSlotFilter(authority.receiver === null ? null
+        : `${authority.source === 'hardware' ? 'scope' : 'audio-scope'}:${authority.receiver}`);
+      stream.reset();
+    }
+    for (const source of [authority.source, ...additional]) {
+      if (newlyQualified.includes(source)) this._streams[source]?.reset();
+      const binding = [...this._bindings.values()].find(item => item.source === source);
+      if ((source === authority.source && authority.receiver === null)
+        || !binding || binding.revision === this._authorityRevision) continue;
       this._retire(binding);
       try { this._installBinding(binding); }
       catch (error) {
-        this._setHealth(authority.source, { demanded: true, transport: 'disconnected', frameSeen: false });
+        this._setHealth(source, { demanded: true, transport: 'disconnected', frameSeen: false });
         console.warn('Scope authority rebind failed', error);
       }
     }

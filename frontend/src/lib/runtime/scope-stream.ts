@@ -68,6 +68,18 @@ export class ScopeStream {
     return () => { this.sinks.delete(id); };
   }
 
+  /** Wait for one new selected geometry receipt without replaying the shared cache. */
+  subscribeNextGeometry(afterReceipt: number, sink: (geometry: ScopeGeometry) => void): () => void {
+    let unsubscribe = () => {};
+    unsubscribe = this.subscribe((_frame, slotKey) => {
+      const geometry = this.geometryValue;
+      if (this.accepted <= afterReceipt || slotKey !== this.geometryKey || geometry?.freshness !== 'fresh') return;
+      unsubscribe();
+      sink(geometry);
+    });
+    return unsubscribe;
+  }
+
   /** Frames of the bound slot publish geometry; `null` accepts every slot (unknown authority). */
   setSlotFilter(key: string | null): void {
     if (!this.disposed && this.slotFilter !== key) { this.slotFilter = key; this.reset(); }
