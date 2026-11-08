@@ -61,6 +61,8 @@ from test_web_server import (
     _close_ws,
     _ws_connect,
     _ws_recv_frame,
+    _ws_send_text,
+    _ws_skip_handshake,
 )
 from test_web_server_coverage import (
     _elapse_scope_windows,
@@ -613,6 +615,68 @@ def _scope_frame_sink(radio: MagicMock) -> Callable[[ScopeFrame], None]:
     calls = [c for c in radio.on_scope_data.call_args_list if c.args[0] is not None]
     assert calls, "scope data callback not wired on the radio"
     return calls[-1].args[0]
+
+
+@pytest.mark.realtime(reason="real control and scope WebSocket handlers")
+@pytest.mark.timeout(30)
+async def test_scope_ctr_control_and_scope_wire_replay() -> None:
+    """Shared browser documents, replayed through both real WS handlers."""
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/ic705/scope_out_of_range.json").read_text()
+    )
+    radio = _e2e_scope_radio()
+    radio.get_freq = AsyncMock(return_value=146_520_000)
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    recovered = ScopeFrame(
+        receiver=0,
+        mode=0,
+        start_freq_hz=fixture["inRangeStartHz"],
+        end_freq_hz=fixture["inRangeEndHz"],
+        pixels=b"\x00\x40\x80",
+        out_of_range=False,
+    )
+
+    async def center(mode: int) -> None:
+        assert mode == 0
+        _scope_frame_sink(radio)(recovered)
+
+    radio.set_scope_mode = AsyncMock(side_effect=center)
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        scope_reader, scope_writer, _ = await _ws_connect(host, port, "/api/v1/scope")
+        try:
+            await await_until(lambda: radio.enable_scope.await_count == 1, timeout=5.0)
+            raw = bytes.fromhex(fixture["civHex"])
+            frame = ScopeAssembler().feed(raw[7:-1], raw[6])
+            assert frame is not None
+            _scope_frame_sink(radio)(frame)
+            opcode, wire = await _ws_recv_frame(scope_reader)
+            assert opcode == WS_OP_BINARY
+            assert wire.hex() == fixture["streamWireHex"]
+            reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
+            try:
+                await _ws_skip_handshake(reader)
+                await _ws_send_text(writer, json.dumps(fixture["ctrCommand"]))
+                for _ in range(10):
+                    _, payload = await _ws_recv_frame(reader)
+                    response = json.loads(payload)
+                    if response.get("id") == fixture["ctrCommand"]["id"]:
+                        assert response == fixture["ctrResponse"]
+                        break
+                else:
+                    pytest.fail("CTR response missing")
+                _, wire = await _ws_recv_frame(scope_reader)
+                assert wire.hex() == fixture["inRangeWireHex"]
+                radio.set_scope_mode.assert_awaited_once_with(0)
+            finally:
+                await _close_ws(writer)
+        finally:
+            await _close_ws(scope_writer)
+    finally:
+        await srv.stop()
 
 
 def _producer_live_frame() -> ScopeFrame:

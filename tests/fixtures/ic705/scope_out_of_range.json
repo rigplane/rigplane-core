@@ -1,7 +1,13 @@
 {
-  "description": "RX-only USB capture, fixed scope, tuned to 146.520 MHz; single segment, no wave bytes.",
+  "description": "RX-only USB OOR capture, fixed scope, tuned to 146.520 MHz; single segment, no wave bytes. CTR command/response and centered recovery are synthetic producer-validated replay documents.",
   "civHex": "fefee0a42700000101010000004401000050440101fd",
   "wireHex": "0100010044950820e59c080100010000",
+  "streamWireHex": "0100010044950820e59c080000010000",
+  "ctrCommand": { "type": "cmd", "id": "scope-ctr", "name": "set_scope_mode", "params": { "mode": 0 } },
+  "ctrResponse": { "type": "response", "id": "scope-ctr", "ok": true, "result": { "mode": 0 } },
+  "inRangeWireHex": "01000030e7b7085088bf080100000300004080",
+  "inRangeStartHz": 146270000,
+  "inRangeEndHz": 146770000,
   "startHz": 144000000,
   "endHz": 144500000
 }

@@ -124,7 +124,8 @@ export function toScopeDisplayFrame(
 
   const normalizedBins = Object.freeze(Array.from(frame.pixels, (sample) => sample / 255));
   return Object.freeze({
-    ...(frame.outOfRange ? { state: 'out-of-range' as const } : {}),
+    // SDR TX freeze also sets the flag but retains the last live pixels.
+    ...(frame.outOfRange && frame.pixels.length === 0 ? { state: 'out-of-range' as const } : {}),
     source: envelope.source === 'audio_fft' ? 'audio-fft' : 'hardware',
     receiver: envelope.receiver === 0 ? 'MAIN' : 'SUB',
     freshness: age < SCOPE_FRAME_SILENCE_MS ? 'fresh' : 'stale',

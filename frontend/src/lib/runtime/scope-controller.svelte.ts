@@ -483,7 +483,7 @@ export class ScopeController {
     };
     const wireSequence = view.getUint16(11, true);
     const envelope = qualifyScopeFrameEnvelope(frame, identity, wireSequence);
-    if (!envelope && frame.pixels.length >= 2 && frame.endFreq > frame.startFreq
+    if (!envelope && (frame.outOfRange || frame.pixels.length >= 2) && frame.endFreq > frame.startFreq
       && qualifyScopeFrameEnvelope(frame, {
         ...identity, receiver: authority.receiver === 0 ? 1 : 0,
       }, wireSequence)) return true;

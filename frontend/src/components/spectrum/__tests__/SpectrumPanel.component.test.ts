@@ -2,6 +2,9 @@
  * SpectrumPanel component-level render tests.
  * Mounts the actual Svelte component in jsdom and verifies DOM structure,
  * child component slots, and event wiring.
+ * MOR-4241 product-seam coverage: semantic-scope-projection.component.test.ts,
+ * paired with Python's test_scope_health_watchdog_mor3690.py::
+ * test_scope_ctr_control_and_scope_wire_replay using shared wire documents.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
@@ -1990,11 +1993,14 @@ describe('SDR scope source routing (MOR-3158)', () => {
       const marker = target.querySelector<HTMLElement>('[data-testid="sdr-tx-frozen"]')!;
       expect(marker).not.toBeNull();
       expect(marker.closest('.waterfall-history')).not.toBeNull();
-      clock += 1; emitFrame();
-      clock += 1; emitFrame();
+      clock += 1; emitFrame({ outOfRange: true });
+      clock += 1; emitFrame({ outOfRange: true });
       await flushWaterfallPaint();
       // Frozen: no new row scrolls — the last pre-TX panorama stays.
       expect(push).toHaveBeenCalledTimes(1);
+      expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
+      expect(target.querySelector<HTMLElement>('.waterfall-history')!.style.visibility).toBe('visible');
+      expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).toBeNull();
@@ -2084,10 +2090,15 @@ describe('SDR scope source routing (MOR-3158)', () => {
   });
 
   it('holds managed waterfall pushes under the TX marker too', async () => {
-    function sdrProjection(sequence: number): ScopeDisplayProjection {
+    function sdrProjection(sequence: number, outOfRange = false): ScopeDisplayProjection {
+      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
+        startFreq: 14_000_000, endFreq: 14_100_000, outOfRange, pixels: new Uint8Array([0, 128, 255]) },
+      { source: 'hardware', receiver: 0, providerGeneration: 17, transportEpoch: 1,
+        receivedAt: 10, acceptedSequence: sequence }, sequence)!;
+      const frame = toScopeDisplayFrame(envelope, { source: 'hardware', receiver: 0,
+        providerGeneration: 17, transportEpoch: 1, demanded: true, transport: 'connected', nowMonotonic: 10 })!;
       return Object.freeze({
-        frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
-          startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
+        frame,
         frameMode: 0, acceptedSequence: sequence,
         passband: Object.freeze({ state: 'current', tuple: Object.freeze({
           frequencyHz: 14_050_250, mode: 'USB', widthHz: 2_400, shiftHz: 0,
@@ -2118,9 +2129,12 @@ describe('SDR scope source routing (MOR-3158)', () => {
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
       clock += 83;
-      props.set('projection', sdrProjection(7)); flushSync();
+      props.set('projection', sdrProjection(7, true)); flushSync();
       await flushWaterfallPaint();
       expect(push).toHaveBeenCalledTimes(6);
+      expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
+      expect(target.querySelector<HTMLElement>('.waterfall-history')!.style.visibility).toBe('visible');
+      expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
       replaceSdrLeaf(sdrLeaf({ txFrozen: false }));
       flushSync();
       clock += 83;

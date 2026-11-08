@@ -1148,8 +1148,8 @@
         frameScopeMode = frame.mode;
         startFreq = sourceIsAudio ? 0 : frame.startFreq;
         endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
-        rawScopeState = frame.outOfRange ? 'out-of-range' : undefined;
-        if (frame.outOfRange) { scopePixels = null; return; }
+        rawScopeState = frame.outOfRange && frame.pixels.length === 0 ? 'out-of-range' : undefined;
+        if (rawScopeState === 'out-of-range') { scopePixels = null; return; }
         scopePixels = pixels;
         spectrumPush?.(pixels, token);
         // MOR-3158: same TX-frozen hold as the managed path above — only
