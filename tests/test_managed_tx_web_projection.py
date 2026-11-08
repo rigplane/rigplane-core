@@ -271,6 +271,15 @@ def _drain(queue: BoundedQueue[dict]) -> list[dict]:
     return items
 
 
+async def _await_document_pushes(server: WebServer) -> None:
+    """Let the spawned managed-TX document builders finish (MOR-4279)."""
+    tasks = [task for task in server._bg_tasks if not task.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+
 def _web_server() -> WebServer:
     return WebServer(None, WebConfig(host="127.0.0.1", port=0, radio_model="IC-7610"))
 
@@ -283,9 +292,26 @@ async def test_managed_tx_invalidation_fans_out_coalesced_to_control_queues() ->
 
     server._on_managed_tx_changed()
     server._on_managed_tx_changed()
+    await _await_document_pushes(server)
 
-    assert _drain(first) == [_INVALIDATION]
-    assert _drain(second) == [_INVALIDATION]
+    delivered_first = _drain(first)
+    delivered_second = _drain(second)
+    # Coalesced to one document-bearing event per client (MOR-4279): the
+    # event data is the managed-transmit document, no longer an empty
+    # invalidation payload.
+    assert len(delivered_first) == 1
+    assert len(delivered_second) == 1
+    for event in (delivered_first[0], delivered_second[0]):
+        assert event["type"] == "event"
+        assert event["name"] == "managed_transmit_changed"
+        document = event["data"]
+        assert document["schemaVersion"] == 1
+        assert document["managedTransmit"] == {
+            "status": "unavailable",
+            "reason": "authority_not_composed",
+        }
+        assert document["txObservation"] == {"observedPtt": "unknown"}
+    assert delivered_first[0]["data"] == delivered_second[0]["data"]
 
 
 async def test_managed_tx_invalidation_survives_a_full_queue() -> None:
@@ -297,13 +323,19 @@ async def test_managed_tx_invalidation_survives_a_full_queue() -> None:
     server._control_event_queues.add(queue)
 
     server._on_managed_tx_changed()
+    await _await_document_pushes(server)
 
     delivered = _drain(queue)
-    assert _INVALIDATION in delivered
     assert len(delivered) == 2
+    assert any(
+        event.get("name") == "managed_transmit_changed"
+        and event["data"].get("schemaVersion") == 1
+        for event in delivered
+    )
 
     server._stopping = True
     server._on_managed_tx_changed()
+    await _await_document_pushes(server)
     assert _drain(queue) == []
 
 
@@ -381,39 +413,48 @@ def _announcing_server() -> tuple[WebServer, BoundedQueue[dict]]:
     return server, queue
 
 
-def test_broadcast_seeds_baseline_without_emitting() -> None:
+async def test_broadcast_seeds_baseline_without_emitting() -> None:
     server, queue = _announcing_server()
     _observe_ptt(server, ObservedPtt.OFF)
 
     _broadcast(server)
+    await _await_document_pushes(server)
 
     assert _managed_tx_events(queue) == []
 
 
-def test_broadcast_announces_off_to_unknown_with_public_ptt_unchanged() -> None:
+async def test_broadcast_announces_off_to_unknown_with_public_ptt_unchanged() -> None:
     server, queue = _announcing_server()
     _observe_ptt(server, ObservedPtt.OFF)
     _observe_public_ptt(server, False)
     _broadcast(server)
+    await _await_document_pushes(server)
     assert _managed_tx_events(queue) == []
 
     _observe_ptt(server, ObservedPtt.UNKNOWN)
     _observe_public_ptt(server, False)
     _broadcast(server)
+    await _await_document_pushes(server)
 
-    assert _managed_tx_events(queue) == [_INVALIDATION]
+    events = _managed_tx_events(queue)
+    assert len(events) == 1
+    assert events[0]["data"]["txObservation"] == {"observedPtt": "unknown"}
 
 
-def test_broadcast_announces_off_to_on() -> None:
+async def test_broadcast_announces_off_to_on() -> None:
     server, queue = _announcing_server()
     _observe_ptt(server, ObservedPtt.OFF)
     _broadcast(server)
+    await _await_document_pushes(server)
     assert _managed_tx_events(queue) == []
 
     _observe_ptt(server, ObservedPtt.ON)
     _broadcast(server)
+    await _await_document_pushes(server)
 
-    assert _managed_tx_events(queue) == [_INVALIDATION]
+    events = _managed_tx_events(queue)
+    assert len(events) == 1
+    assert events[0]["data"]["txObservation"] == {"observedPtt": "on"}
 
 
 class _GateRadio:

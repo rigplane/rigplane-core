@@ -59,6 +59,7 @@ def _document_schema() -> type:
 
     return ManagedTransmitDocumentPublic
 
+
 _SAMPLED_AT_TEXT = "2026-11-08T12:00:00.000Z"
 
 
@@ -276,7 +277,12 @@ def test_sdk_record_types_pin_the_wire_shapes() -> None:
         document_record,
     ) = _sdk_records()
     identity_hints = typing.get_type_hints(identity_record)
-    assert set(identity_hints) == {"status", "expectedModel", "answeredModel", "answeredId"}
+    assert set(identity_hints) == {
+        "status",
+        "expectedModel",
+        "answeredModel",
+        "answeredId",
+    }
     session_hints = typing.get_type_hints(session_record)
     assert set(session_hints) == {"busy", "retryInSeconds"}
     receive_hints = typing.get_type_hints(receive_record)
@@ -289,6 +295,31 @@ def test_sdk_record_types_pin_the_wire_shapes() -> None:
         "txObservation",
     }
     assert WEB_API_CONTRACT_VERSION == 1
+
+
+def test_sdk_records_do_not_drift_from_the_wire_schema() -> None:
+    """(c) the pydantic-free SDK records stay equal to the wire schema."""
+    import typing
+
+    from rigplane.web import state_schema
+
+    (
+        identity_record,
+        session_record,
+        receive_record,
+        document_record,
+    ) = _sdk_records()
+    pairs = (
+        (identity_record, state_schema.ConnectionIdentityPublic),
+        (session_record, state_schema.ConnectionSessionPublic),
+        (receive_record, state_schema.AudioReceivePublic),
+        (document_record, state_schema.ManagedTransmitDocumentPublic),
+    )
+    for record, model in pairs:
+        assert set(typing.get_type_hints(record)) == set(model.model_fields), (
+            record.__name__,
+            model.__name__,
+        )
 
 
 def _baseline_payload(server: WebServer) -> dict[str, Any]:
@@ -365,7 +396,9 @@ async def test_control_handler_sends_current_managed_tx_document_on_connect() ->
     assert document["managedTransmit"]["status"] == "available"
 
 
-async def test_identity_change_pushes_one_delta_and_unchanged_facts_push_nothing() -> None:
+async def test_identity_change_pushes_one_delta_and_unchanged_facts_push_nothing() -> (
+    None
+):
     """(d) fact pushes are change-driven: nothing changes, nothing is pushed."""
     radio = _FactsRadio()
     server = _server(radio=radio)
@@ -391,9 +424,7 @@ async def test_identity_change_pushes_one_delta_and_unchanged_facts_push_nothing
     server._broadcast_state_update()  # noqa: SLF001
 
     state_updates = [
-        event
-        for event in _drain(queue)
-        if event.get("type") == "state_update"
+        event for event in _drain(queue) if event.get("type") == "state_update"
     ]
     assert len(state_updates) == 1, state_updates
     delta = state_updates[0]["data"]

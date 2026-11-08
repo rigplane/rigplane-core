@@ -9,11 +9,16 @@ It models the *union / superset* of the two emit paths (dataclass + snapshot):
 fields that only the snapshot path emits (``dcd``, ``fieldStatus``) are marked
 optional, while fields that are always present in both paths are required.
 
-Two uses, and ONLY two:
+Uses (each dev/CI-side; see the zero-runtime-dep guarantee below):
 
-1. The conformance test
-   (``tests/web/test_state_schema_conformance.py``) validates real payloads
-   from both producers against :class:`ServerStatePublic`.
+1. The conformance tests (``tests/web/test_state_schema_conformance.py``,
+   ``tests/web/test_control_ws_fact_records.py``) validate real payloads
+   from the producers against these models — including the server-injected
+   fact-record leaves (identity/session, ``audioReceive``) and the
+   managed-transmit document record carried by the control-WS
+   ``managed_transmit_changed`` event (MOR-4279; the pydantic-free SDK
+   mirror of those records lives in ``web/api_contract.py`` and a drift
+   test keeps the two equal).
 2. The codegen script (``scripts/gen_state_types.py``) reads
    ``ServerStatePublic.model_json_schema()`` and
    ``StateUpdateEnvelope.model_json_schema()`` to regenerate the server-sent
@@ -41,11 +46,23 @@ __all__ = [
     "KnownTxTargetPublic",
     "UnknownTxTargetPublic",
     "TxTargetPublic",
+    "ConnectionIdentityPublic",
+    "ConnectionSessionPublic",
     "ConnectionPublic",
     "RadioHealthPublic",
     "RadioDetailPublic",
     "MonitorMuteSavedAfPublic",
     "MonitorMutePublic",
+    "AudioDeviceCandidatePublic",
+    "AudioReceiveFailurePublic",
+    "AudioReceivePublic",
+    "ManagedTxIntentPublic",
+    "ManagedTxActuationPublic",
+    "ManagedTxAbortErrorPublic",
+    "ManagedTxTotPublic",
+    "ManagedTransmitBlockPublic",
+    "TxObservationPublic",
+    "ManagedTransmitDocumentPublic",
     "SdrStatusPublic",
     "WsClientsPublic",
     "ServerStatePublic",
@@ -284,6 +301,38 @@ class ConnectionLivenessPublic(_Strict):
     source: Literal["radio", "daemon", "simulator"]
 
 
+class ConnectionIdentityPublic(_Strict):
+    """Connect-time radio identity (MOR-3071), served by ``GET
+    /api/v1/info`` and pushed on the control WS inside the state payload's
+    ``connection`` object (MOR-4279).
+
+    Serialized from ``core/radio_protocol.py: RadioIdentity`` by the one
+    producer ``WebServer._connection_identity_payload``. Optional here:
+    only the web server injects it.
+    """
+
+    status: Literal[
+        "checking", "verified", "identity_mismatch", "no_response", "unverified"
+    ]
+    expectedModel: str | None = None
+    answeredModel: str | None = None
+    answeredId: str | None = None
+
+
+class ConnectionSessionPublic(_Strict):
+    """Start-up busy-session hold state (MOR-3391 part 2), served by
+    ``GET /api/v1/info`` and pushed on the control WS inside the state
+    payload's ``connection`` object (MOR-4279).
+
+    Always ``{"busy": false, "retryInSeconds": null}`` outside a hold;
+    produced by the one producer ``_startup_busy_session_payload``.
+    Optional here: only the web server injects it.
+    """
+
+    busy: bool
+    retryInSeconds: float | None = None
+
+
 class ConnectionPublic(_Strict):
     """Synthetic connection object injected from the backend connection scalars."""
 
@@ -292,6 +341,11 @@ class ConnectionPublic(_Strict):
     controlConnected: bool = False
     # MOR-3845: additive; ``None`` when no radio is attached.
     liveness: ConnectionLivenessPublic | None = None
+    # MOR-4279: additive server-injected identity/session fact records,
+    # the same records ``GET /api/v1/info`` serves. ``None`` on payloads
+    # built without a web server (the serverless helper paths).
+    identity: ConnectionIdentityPublic | None = None
+    session: ConnectionSessionPublic | None = None
 
 
 class RadioHealthPublic(_Strict):
@@ -346,6 +400,112 @@ class MonitorMutePublic(_Strict):
 
     on: bool = False
     savedAf: MonitorMuteSavedAfPublic = Field(default_factory=MonitorMuteSavedAfPublic)
+
+
+class AudioDeviceCandidatePublic(_Strict):
+    """One offered audio device of an RX-start failure record."""
+
+    stableId: str
+    displayName: str
+    direction: str
+    hostApi: str
+    portAudioIndex: int
+    nearRadio: bool
+
+
+class AudioReceiveFailurePublic(_Strict):
+    """The latest RX-start failure Core retained (schema version 1)."""
+
+    stage: str
+    code: str
+    reason: str
+    holder: str | None = None
+    candidates: list[AudioDeviceCandidatePublic] = Field(default_factory=list)
+
+
+class AudioReceivePublic(_Strict):
+    """Structured RX-audio start facts (MOR-4279), served by ``GET
+    /api/v1/info`` and pushed on the control WS as a state-payload leaf.
+
+    Produced by the one producer ``AudioBroadcaster.rx_start_status``;
+    ``failure`` is ``None`` while the last RX start succeeded. Optional on
+    :class:`ServerStatePublic`: only the web server injects it.
+    """
+
+    schemaVersion: int
+    failure: AudioReceiveFailurePublic | None
+
+
+class ManagedTxIntentPublic(_Strict):
+    """``managedTransmit.intent`` of the managed-transmit document record."""
+
+    kind: Literal["rx", "transmit", "ptt"]
+    owner: str | None = None
+
+
+class ManagedTxActuationPublic(_Strict):
+    """``managedTransmit.lastActuation`` of the managed-transmit record."""
+
+    operation: str
+    result: str
+    attemptId: str
+
+
+class ManagedTxAbortErrorPublic(_Strict):
+    """One ``managedTransmit.abortErrors`` entry of the managed-transmit
+    document record."""
+
+    operation: str
+    error: str
+
+
+class ManagedTxTotPublic(_Strict):
+    """``managedTransmit.tot`` of the managed-transmit document record."""
+
+    configuredSeconds: float | None
+    active: bool
+    remainingMs: int | None
+    expiresAt: str | None
+
+
+class ManagedTransmitBlockPublic(_Strict):
+    """The ``managedTransmit`` block of the managed-transmit document."""
+
+    status: Literal["available", "unavailable"]
+    reason: str | None = None
+    intent: ManagedTxIntentPublic | None = None
+    releaseRequired: bool | None = None
+    lastError: str | None = None
+    lastActuation: ManagedTxActuationPublic | None = None
+    abortErrors: list[ManagedTxAbortErrorPublic] = Field(default_factory=list)
+    tot: ManagedTxTotPublic | None = None
+
+
+class TxObservationPublic(_Strict):
+    """The ``txObservation`` block: canonical observed-PTT evidence
+    (``core.tx_observation.ObservedPtt``), independent of the managed
+    authority."""
+
+    observedPtt: Literal["on", "off", "unknown"]
+
+
+class ManagedTransmitDocumentPublic(_Strict):
+    """The managed-transmit document record (MOR-4279): the wire shape of
+    ``GET /api/v1/managed-transmit`` AND of the control-WS
+    ``managed_transmit_changed`` event payload — both serialize the same
+    record from the one producer ``WebServer._managed_tx_document``
+    (``web/managed_tx_view.py: build_managed_tx_view``).
+
+    Not part of :class:`ServerStatePublic`: the document changes on the
+    managed-TX authority's own cadence and is pushed as an event, not as
+    a state leaf. ``sampledAt`` / ``expiresAt`` are UTC millisecond
+    ISO-8601 strings ending in ``Z``.
+    """
+
+    schemaVersion: int
+    sampledAt: str
+    managedTransmit: ManagedTransmitBlockPublic
+    txObservation: TxObservationPublic
 
 
 class SdrStatusPublic(_Strict):
@@ -472,6 +632,10 @@ class ServerStatePublic(_Strict):
     monitorMute: MonitorMutePublic | None = None
     # Live SDR panadapter status, likewise server-injected only (MOR-3201).
     sdr: SdrStatusPublic | None = None
+    # Structured RX-audio start facts, likewise server-injected only
+    # (MOR-4279); the same record ``GET /api/v1/info`` serves as its
+    # ``audioReceive`` object.
+    audioReceive: AudioReceivePublic | None = None
 
     # Snapshot path only — absent on the dataclass path, never null when
     # present (generated TS: ``fieldStatus?: Record<string, FieldStatusPublic>``).

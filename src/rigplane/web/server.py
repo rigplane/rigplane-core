@@ -898,6 +898,17 @@ def _startup_busy_session_payload(
     return {"busy": busy, "retryInSeconds": retry_in_seconds}
 
 
+def _stable_record_key(record: Mapping[str, object] | None) -> str:
+    """A hashable, order-stable key component for one fact record (MOR-4279).
+
+    The public-state delivery key compares whole records; JSON with sorted
+    keys is stable across builds and distinguishes every value change.
+    """
+    if record is None:
+        return "null"
+    return json.dumps(record, sort_keys=True, default=str)
+
+
 def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | None:
     keyboard = profile.keyboard
     if keyboard is None:
@@ -1379,6 +1390,10 @@ class WebServer:
         # been seen yet: the first snapshot seeds the baseline without
         # emitting, because the page fetches the document on connect anyway.
         self._last_announced_observed_ptt: ObservedPtt | None = None
+        # MOR-4279: monotonic counter of managed-TX change notifications;
+        # a document builder finishing behind a newer notification drops
+        # its (stale) document instead of queueing it.
+        self._managed_tx_document_seq: int = 0
         self._cached_public_state_key: tuple[object, ...] | None = None
         self._cached_public_state_payload: dict[str, Any] | None = None
         self._public_state_seq: int = 0
@@ -1721,6 +1736,9 @@ class WebServer:
         ``core/radio_protocol.py``); camelCase like the rest of
         ``connection``.
 
+        The ONE producer of this record: ``GET /api/v1/info`` and the
+        control-WS state payload (MOR-4279) serialize it alike.
+
         Only a real ``RadioIdentity`` is serialised. Anything else the
         attribute may hold (including the ``Mock`` a test double returns
         for it) is served as ``null`` rather than raising on ``.status``.
@@ -1738,6 +1756,14 @@ class WebServer:
             "answeredModel": identity.answered_model,
             "answeredId": identity.answered_id,
         }
+
+    def _connection_session_payload(self) -> dict[str, object]:
+        """The served ``connection.session`` object (MOR-3391 part 2).
+
+        The ONE producer of this record: ``GET /api/v1/info`` and the
+        control-WS state payload (MOR-4279) serialize it alike.
+        """
+        return _startup_busy_session_payload(*self._startup_busy_hold())
 
     def _set_scope_data_callback(self, callback: Any) -> None:
         """Set the scope data callback on the radio if it supports it."""
@@ -2108,12 +2134,38 @@ class WebServer:
         self._update_iq_radio_state()
 
     def _on_managed_tx_changed(self) -> None:
-        """Queue one coalesced managed-transmit invalidation per control client."""
+        """Queue one coalesced managed-transmit document per control client.
+
+        The document is the same record ``GET /api/v1/managed-transmit``
+        serves (MOR-4279). It is built in a spawned task because the
+        change listener runs synchronously while the authority holds its
+        asyncio lock — awaiting ``authority.snapshot()`` here would
+        deadlock — and because the HTTP document build is async anyway.
+        """
         self._refresh_managed_tx_keyed()
         if self._stopping:
             return
         self._update_iq_radio_state()
-        event = {"type": "event", "name": "managed_transmit_changed", "data": {}}
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No loop (a synchronous caller): nothing can be spawned or
+            # delivered; the next change re-announces.
+            return
+        self._managed_tx_document_seq += 1
+        self._spawn(self._publish_managed_tx_document(self._managed_tx_document_seq))
+
+    async def _publish_managed_tx_document(self, seq: int) -> None:
+        try:
+            document = await self._managed_tx_document()
+        except Exception:
+            logger.debug("managed TX document push failed", exc_info=True)
+            return
+        if seq != self._managed_tx_document_seq:
+            # A newer change notification already built a fresher document;
+            # never queue an older record behind it.
+            return
+        event = {"type": "event", "name": "managed_transmit_changed", "data": document}
         for q in list(self._control_event_queues):
             q.replace_matching_with_front(event, _is_managed_tx_invalidation)
 
@@ -2332,9 +2384,18 @@ class WebServer:
             if liveness is not None
             else None
         )
+        # MOR-4279: the server-injected fact records ride in the delivery
+        # key so a change in any of them alone re-delivers the state payload
+        # (and only then — unchanged records never push).
+        identity = self._connection_identity_payload()
+        session = self._connection_session_payload()
+        audio_receive = self._audio_broadcaster.rx_start_status()
         return (
             self.monitor_mute.on,
             tuple(sorted(self.monitor_mute.saved_af.items())),
+            _stable_record_key(identity),
+            _stable_record_key(session),
+            _stable_record_key(audio_receive),
             snapshot.state_revision,
             snapshot.freshness_revision,
             snapshot.observation_seq,
@@ -2453,6 +2514,15 @@ class WebServer:
         payload["providerGeneration"] = snapshot.provider_generation
         # Live SDR status (MOR-3201); the delivery key carries it (cache hit = no-op).
         payload["sdr"] = self._sdr_status_payload()
+        # MOR-4279: the connection identity/session and audioReceive fact
+        # records — the same records ``GET /api/v1/info`` serves, from the
+        # same producers — ride in the state payload so control clients get
+        # them in the connect baseline and in change-driven deltas. The
+        # delivery key carries them, so a cache hit implies they are
+        # unchanged inside the cached payload.
+        payload["connection"]["identity"] = self._connection_identity_payload()
+        payload["connection"]["session"] = self._connection_session_payload()
+        payload["audioReceive"] = self._audio_broadcaster.rx_start_status()
         if updated_at is None:
             self._cached_public_state_key = cache_key
             self._cached_public_state_payload = copy_state_tree(payload)
@@ -4383,9 +4453,7 @@ class WebServer:
                     "radioReady": self._radio_ready(),
                     "controlConnected": control_connected,
                     "identity": self._connection_identity_payload(),
-                    "session": _startup_busy_session_payload(
-                        *self._startup_busy_hold()
-                    ),
+                    "session": self._connection_session_payload(),
                     "wsClients": len(self._client_tasks),
                     # MOR-3845: additive; computed at request time.
                     "liveness": connection_liveness_payload(self._radio),
@@ -5819,6 +5887,16 @@ class WebServer:
             observed_ptt,
             sampled_at=datetime.now(UTC),
         )
+
+    async def current_managed_tx_document(self) -> dict[str, object]:
+        """Connect-time managed-transmit document in the event shape (MOR-4279).
+
+        The same record the ``managed_transmit_changed`` event carries and
+        ``GET /api/v1/managed-transmit`` serves; ``ControlHandler`` sends it
+        once next to the connect-time state baseline so a fresh client
+        needs no initial HTTP fetch.
+        """
+        return await self._managed_tx_document()
 
     async def _managed_tx_unavailable(self, writer: asyncio.StreamWriter) -> None:
         await self._send_json(

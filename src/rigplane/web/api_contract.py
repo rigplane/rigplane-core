@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final, NotRequired, TypedDict
+from typing import Final, Literal, NotRequired, TypedDict
 
 WEB_API_CONTRACT_VERSION: Final[int] = 1
 
@@ -43,6 +43,144 @@ class CivIngressPayload(TypedDict):
     duplicate: int
     lost: int
     late: int
+
+
+class ConnectionIdentityRecord(TypedDict):
+    """The wire ``connection.identity`` object of ``GET /api/v1/info`` and
+    the public state payload (MOR-3071, pushed on the control WS by
+    MOR-4279).
+
+    Serialized from the typed :class:`rigplane.core.radio_protocol.
+    RadioIdentity` record by ``WebServer._connection_identity_payload`` —
+    the one producer both surfaces share. ``expectedModel`` /
+    ``answeredModel`` / ``answeredId`` are ``None`` while unknown.
+    """
+
+    status: Literal[
+        "checking", "verified", "identity_mismatch", "no_response", "unverified"
+    ]
+    expectedModel: str | None
+    answeredModel: str | None
+    answeredId: str | None
+
+
+class ConnectionSessionRecord(TypedDict):
+    """The wire ``connection.session`` object of ``GET /api/v1/info`` and
+    the public state payload (MOR-3391 part 2, pushed by MOR-4279).
+
+    Always present: ``busy`` false and ``retryInSeconds`` null outside a
+    start-up busy hold. Produced by ``_startup_busy_session_payload`` from
+    ``WebServer._startup_busy_hold``.
+    """
+
+    busy: bool
+    retryInSeconds: float | None
+
+
+class AudioDeviceCandidateRecord(TypedDict):
+    """One offered audio device of an ``audioReceive`` RX-start failure."""
+
+    stableId: str
+    displayName: str
+    direction: str
+    hostApi: str
+    portAudioIndex: int
+    nearRadio: bool
+
+
+class AudioReceiveFailureRecord(TypedDict):
+    """The latest RX-start failure Core retained (schema version 1)."""
+
+    stage: str
+    code: str
+    reason: str
+    holder: NotRequired[str]
+    candidates: NotRequired[list[AudioDeviceCandidateRecord]]
+
+
+class AudioReceiveRecord(TypedDict):
+    """The wire ``audioReceive`` object of ``GET /api/v1/info`` and the
+    public state payload (pushed on the control WS by MOR-4279).
+
+    Produced by ``AudioBroadcaster.rx_start_status`` — the one producer
+    both surfaces share. ``failure`` is ``None`` while the last RX start
+    succeeded (or no attempt was made).
+    """
+
+    schemaVersion: int
+    failure: AudioReceiveFailureRecord | None
+
+
+class ManagedTxIntentRecord(TypedDict):
+    """The ``managedTransmit.intent`` object of the managed-transmit
+    document. ``owner`` is present only for a PTT intent."""
+
+    kind: Literal["rx", "transmit", "ptt"]
+    owner: NotRequired[str]
+
+
+class ManagedTxActuationRecord(TypedDict):
+    """The ``managedTransmit.lastActuation`` object."""
+
+    operation: str
+    result: str
+    attemptId: str
+
+
+class ManagedTxAbortErrorRecord(TypedDict):
+    """One ``managedTransmit.abortErrors`` entry."""
+
+    operation: str
+    error: str
+
+
+class ManagedTxTotRecord(TypedDict):
+    """The ``managedTransmit.tot`` object."""
+
+    configuredSeconds: float | None
+    active: bool
+    remainingMs: int | None
+    expiresAt: str | None
+
+
+class ManagedTransmitBlockRecord(TypedDict):
+    """The ``managedTransmit`` block of the managed-transmit document.
+
+    ``status`` is ``"unavailable"`` with a ``reason`` when no authority is
+    composed; every other key belongs to the ``"available"`` shape.
+    """
+
+    status: Literal["available", "unavailable"]
+    reason: NotRequired[Literal["authority_not_composed"]]
+    intent: NotRequired[ManagedTxIntentRecord]
+    releaseRequired: NotRequired[bool]
+    lastError: NotRequired[str | None]
+    lastActuation: NotRequired[ManagedTxActuationRecord | None]
+    abortErrors: NotRequired[list[ManagedTxAbortErrorRecord]]
+    tot: NotRequired[ManagedTxTotRecord]
+
+
+class TxObservationRecord(TypedDict):
+    """The ``txObservation`` block: the canonical observed-PTT evidence,
+    independent of the managed authority (``core.tx_observation``)."""
+
+    observedPtt: Literal["on", "off", "unknown"]
+
+
+class ManagedTransmitDocument(TypedDict):
+    """The wire document of ``GET /api/v1/managed-transmit`` and of the
+    control-WS ``managed_transmit_changed`` event (MOR-4279).
+
+    Serialized from the one producer ``WebServer._managed_tx_document``
+    (``web/managed_tx_view.py: build_managed_tx_view``); the HTTP endpoint
+    and the WS event carry the same record. Timestamps are UTC
+    millisecond ISO-8601 strings ending in ``Z``.
+    """
+
+    schemaVersion: int
+    sampledAt: str
+    managedTransmit: ManagedTransmitBlockRecord
+    txObservation: TxObservationRecord
 
 
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (

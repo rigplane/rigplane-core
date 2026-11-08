@@ -93,6 +93,7 @@ export interface ServerStatePublic {
   wsClients?: WsClientsPublic;
   monitorMute?: MonitorMutePublic | null;
   sdr?: SdrStatusPublic | null;
+  audioReceive?: AudioReceivePublic | null;
   fieldStatus?: {
     [k: string]: FieldStatusPublic;
   };
@@ -232,6 +233,8 @@ export interface ConnectionPublic {
   radioReady: boolean;
   controlConnected: boolean;
   liveness?: ConnectionLivenessPublic | null;
+  identity?: ConnectionIdentityPublic | null;
+  session?: ConnectionSessionPublic | null;
 }
 /**
  * MOR-3845: decode-point radio liveness (additive).
@@ -244,6 +247,34 @@ export interface ConnectionLivenessPublic {
   lastFrameAgeMs: number | null;
   staleAfterMs: number;
   source: "radio" | "daemon" | "simulator";
+}
+/**
+ * Connect-time radio identity (MOR-3071), served by ``GET
+ * /api/v1/info`` and pushed on the control WS inside the state payload's
+ * ``connection`` object (MOR-4279).
+ *
+ * Serialized from ``core/radio_protocol.py: RadioIdentity`` by the one
+ * producer ``WebServer._connection_identity_payload``. Optional here:
+ * only the web server injects it.
+ */
+export interface ConnectionIdentityPublic {
+  status: "checking" | "verified" | "identity_mismatch" | "no_response" | "unverified";
+  expectedModel: string | null;
+  answeredModel: string | null;
+  answeredId: string | null;
+}
+/**
+ * Start-up busy-session hold state (MOR-3391 part 2), served by
+ * ``GET /api/v1/info`` and pushed on the control WS inside the state
+ * payload's ``connection`` object (MOR-4279).
+ *
+ * Always ``{"busy": false, "retryInSeconds": null}`` outside a hold;
+ * produced by the one producer ``_startup_busy_session_payload``.
+ * Optional here: only the web server injects it.
+ */
+export interface ConnectionSessionPublic {
+  busy: boolean;
+  retryInSeconds: number | null;
 }
 /**
  * Radio connection detail. Carries ONLY ``status`` in the state payload.
@@ -316,6 +347,39 @@ export interface SdrStatusPublic {
   txFrozen: boolean;
   overflowCount: number;
   lastError: string | null;
+}
+/**
+ * Structured RX-audio start facts (MOR-4279), served by ``GET
+ * /api/v1/info`` and pushed on the control WS as a state-payload leaf.
+ *
+ * Produced by the one producer ``AudioBroadcaster.rx_start_status``;
+ * ``failure`` is ``None`` while the last RX start succeeded. Optional on
+ * :class:`ServerStatePublic`: only the web server injects it.
+ */
+export interface AudioReceivePublic {
+  schemaVersion: number;
+  failure: AudioReceiveFailurePublic | null;
+}
+/**
+ * The latest RX-start failure Core retained (schema version 1).
+ */
+export interface AudioReceiveFailurePublic {
+  stage: string;
+  code: string;
+  reason: string;
+  holder: string | null;
+  candidates: AudioDeviceCandidatePublic[];
+}
+/**
+ * One offered audio device of an RX-start failure record.
+ */
+export interface AudioDeviceCandidatePublic {
+  stableId: string;
+  displayName: string;
+  direction: string;
+  hostApi: string;
+  portAudioIndex: number;
+  nearRadio: boolean;
 }
 /**
  * Per-field freshness / availability entry (snapshot path only).
