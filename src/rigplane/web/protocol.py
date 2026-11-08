@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import struct
-from typing import Any
+from typing import Any, TypedDict
 
 from rigplane.scope.models import (
     Coverage,
@@ -18,6 +18,7 @@ from rigplane.scope.models import (
 )
 
 __all__ = [
+    "ScopeSourceCapabilities",
     "MSG_TYPE_AUDIO_RX",
     "MSG_TYPE_AUDIO_TX",
     "encode_audio_frame",
@@ -37,6 +38,12 @@ __all__ = [
     "encode_scope_granted",
     "decode_scope_granted",
 ]
+
+
+class ScopeSourceCapabilities(TypedDict):
+    scopeSources: list[SourceKind]
+    scopeDefaultSourceId: SourceKind | None
+
 
 # Message type constants
 MSG_TYPE_AUDIO_RX: int = 0x10

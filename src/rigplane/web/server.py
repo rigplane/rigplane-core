@@ -114,6 +114,7 @@ from ..sdr import IqSource, IqScopeSink, SdrConfig, SdrScopeController
 from ..sdr.runtime import default_source_factory
 from ..sdr.scope_source import FRAME_STALE_S, IqFftSource
 from ..scope.hub import ScopeHub
+from ..scope.models import SourceKind
 from ..runtime.radio_scope_source import RadioScopeSource
 from .scope_sources import WebRadioScopeWriter, WebScopePcmTap  # noqa: TID251
 from ..audio.scope_source import AudioFftSource
@@ -178,7 +179,7 @@ from .runtime_helpers import (  # noqa: TID251
     store_has_radio_observation,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
-from .protocol import encode_scope_frame_v2  # noqa: TID251
+from .protocol import ScopeSourceCapabilities, encode_scope_frame_v2  # noqa: TID251
 from ..ws import WS_KEEPALIVE_INTERVAL, WebSocketConnection  # noqa: TID251
 from ..radio_protocol import (
     CivTransactionCapable,
@@ -1285,6 +1286,7 @@ class WebServer:
         self._scope_enabled = False
         self._scope_enable_failed = False
         self._scope_demand_generation = 0
+        self._scope_command_futures: set[asyncio.Future[None]] = set()
         self._scope_enable_lock: asyncio.Lock = asyncio.Lock()
         raw_radio_state = (
             getattr(radio, "radio_state", None) if radio is not None else None
@@ -1317,6 +1319,7 @@ class WebServer:
                 tap, tap.facts, fft_size=2048, sample_rate=pcm_tap_source.sample_rate
             )
         self._iq_scope_source: IqFftSource | None = None
+        self._iq_scope_construction_error: str | None = None
         self._has_audio = (
             CAP_AUDIO in radio.capabilities if radio is not None else False
         )
@@ -1762,28 +1765,39 @@ class WebServer:
                 hub.register("radio", self._radio_scope_source)
             if self._audio_scope_source is not None:
                 hub.register("audio_fft", self._audio_scope_source)
-            if self._config.sdr_config is not None:
-                config = self._config.sdr_config
-                factory = self._config.sdr_source_factory or default_source_factory
-                provider = factory(config)
-                loop = asyncio.get_running_loop()
-
-                def controller_factory(sink: IqScopeSink) -> SdrScopeController:
-                    controller = SdrScopeController(
-                        provider, sink, config, clock=loop.time
-                    )
-                    controller.on_radio_state(*self._primary_vfo_freq_and_tx())
-                    return controller
-
-                self._iq_scope_source = IqFftSource(
-                    provider,
-                    invert_spectrum=config.invert_spectrum,
-                    controller_factory=controller_factory,
-                    loop=loop,
-                )
-                hub.register("iq_fft", self._iq_scope_source)
             self._scope_hub = hub
+            try:
+                self._register_iq_scope_source(hub)
+            except Exception:
+                logger.warning("optional IQ scope construction failed", exc_info=True)
         return self._scope_hub
+
+    def _register_iq_scope_source(self, hub: ScopeHub) -> None:
+        config = self._config.sdr_config
+        if config is None or self._iq_scope_source is not None:
+            return
+        factory = self._config.sdr_source_factory or default_source_factory
+        try:
+            provider = factory(config)
+        except Exception as exc:
+            self._iq_scope_construction_error = str(exc)
+            raise
+        loop = asyncio.get_running_loop()
+
+        def controller_factory(sink: IqScopeSink) -> SdrScopeController:
+            controller = SdrScopeController(provider, sink, config, clock=loop.time)
+            controller.on_radio_state(*self._primary_vfo_freq_and_tx())
+            return controller
+
+        source = IqFftSource(
+            provider,
+            invert_spectrum=config.invert_spectrum,
+            controller_factory=controller_factory,
+            loop=loop,
+        )
+        hub.register("iq_fft", source)
+        self._iq_scope_source = source
+        self._iq_scope_construction_error = None
 
     def register_scope_handler(self, handler: "ScopeHandler") -> None:
         self._scope_handlers.add(handler)
@@ -1795,6 +1809,8 @@ class WebServer:
 
     async def _set_radio_scope_output(self, enabled: bool) -> None:
         async with self._scope_enable_lock:
+            if enabled and self._stopping:
+                raise RuntimeError("scope server is stopping")
             self._scope_demand_generation += 1
             self._radio_scope_demand = enabled
             if enabled:
@@ -1811,9 +1827,16 @@ class WebServer:
             else:
                 self._cancel_scope_reenable_task()
                 self._set_scope_data_callback(None)
-                if not await self._execute_scope_command(
+                if self._stopping:
+                    # web_startup restores after the final TX drain, with its
+                    # existing bound and the stopped poller's sole executor.
+                    return
+                completed = await self._execute_scope_command(
                     DisableScope(generation=self._scope_demand_generation)
-                ):
+                )
+                if self._stopping:
+                    return
+                if not completed:
                     raise RuntimeError("radio scope disable failed")
                 self._scope_enabled = False
                 self._scope_enable_failed = False
@@ -1832,17 +1855,24 @@ class WebServer:
 
     async def _execute_scope_command(self, command: EnableScope | DisableScope) -> bool:
         """Execute a scope command through the existing ordered command pipeline."""
+        if self._stopping:
+            return False
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._command_queue.put_ordered(command, future=future)
+        self._scope_command_futures.add(future)
         try:
+            self._command_queue.put_ordered(command, future=future)
             await future
         except asyncio.CancelledError:
+            if self._stopping:
+                return False
             raise
         except Exception as exc:
             if isinstance(command, EnableScope) and not self._scope_enabled:
                 self._scope_enable_failed = True
             logger.warning("scope: %s failed: %s", type(command).__name__, exc)
             return False
+        finally:
+            self._scope_command_futures.discard(future)
         if isinstance(command, EnableScope):
             self._scope_enable_failed = False
         return True
@@ -1873,11 +1903,12 @@ class WebServer:
     def _sdr_status_payload(self) -> dict[str, Any]:
         config = self._config.sdr_config
         source = self._iq_scope_source
-        state = (
-            "error"
-            if source is not None and source.last_error is not None
-            else "disabled"
+        last_error = (
+            source.last_error
+            if source is not None
+            else self._iq_scope_construction_error
         )
+        state = "error" if last_error is not None else "disabled"
         if source is not None and source.active and source.started_at is not None:
             last_frame = (
                 self._scope_hub.health("iq_fft").last_frame_at
@@ -1903,7 +1934,7 @@ class WebServer:
             if self._iq_scope_source
             else False,
             "overflowCount": source.overflow_count if source is not None else 0,
-            "lastError": source.last_error if source is not None else None,
+            "lastError": last_error,
         }
 
     def _sdr_status_key(self) -> tuple[object, ...]:
@@ -3931,6 +3962,12 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        if self._scope_command_futures:
+            self._scope_enable_failed = True
+            for future in tuple(self._scope_command_futures):
+                # The ordered consumer skips cancelled futures; stale scope
+                # writes must not run if this server is later restarted.
+                future.cancel()
         self._controller.revoke()
         unsubscribe = self._managed_tx_change_unsubscribe
         self._managed_tx_change_unsubscribe = None
@@ -4872,6 +4909,35 @@ class WebServer:
             result["meterRedlines"] = mr
         return result
 
+    def _scope_source_capabilities(
+        self, profile: "RadioProfile | None"
+    ) -> ScopeSourceCapabilities:
+        facts = ScopeSourceCapabilities(scopeSources=[], scopeDefaultSourceId=None)
+        available = facts["scopeSources"]
+        if (
+            self._hardware_scope_available
+            and profile is not None
+            and profile.scope_span_presets_hz
+        ):
+            available.append("radio")
+        if self._audio_scope_source is not None:
+            available.append("audio_fft")
+        if self._config.sdr_config is not None:
+            available.append("iq_fft")
+        if self._config.scope_source == "hardware":
+            facts["scopeDefaultSourceId"] = "radio"
+        elif self._config.scope_source == "audio_fft":
+            facts["scopeDefaultSourceId"] = "audio_fft"
+        elif self._config.scope_source == "sdr":
+            facts["scopeDefaultSourceId"] = "iq_fft"
+        else:
+            priority: tuple[SourceKind, ...] = ("iq_fft", "radio", "audio_fft")
+            for source_id in priority:
+                if source_id in available:
+                    facts["scopeDefaultSourceId"] = source_id
+                    break
+        return facts
+
     async def _serve_capabilities(
         self,
         writer: asyncio.StreamWriter,
@@ -4922,17 +4988,7 @@ class WebServer:
                 else (2 if "dual_rx" in caps else 1)
             ),
             "scopeSource": None,
-            "scopeSources": [
-                *(
-                    ["radio"]
-                    if self._hardware_scope_available
-                    and profile is not None
-                    and profile.scope_span_presets_hz
-                    else []
-                ),
-                *(["audio_fft"] if self._audio_scope_source is not None else []),
-                *(["iq_fft"] if self._config.sdr_config is not None else []),
-            ],
+            **self._scope_source_capabilities(profile),
             "sdrAvailable": self._config.sdr_config is not None,
             "audioFftAvailable": self._audio_scope_source is not None,
             "scopeConfig": {

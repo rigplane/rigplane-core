@@ -113,7 +113,10 @@ class ScopeHandler:
                     raise ValueError("scope source service is unavailable")
                 if self._server._stopping:
                     raise RuntimeError("scope server is stopping")
-                subscription = await self._server.scope_hub.subscribe(request)
+                hub = self._server.scope_hub
+                if request.source_id == "iq_fft":
+                    self._server._register_iq_scope_source(hub)
+                subscription = await hub.subscribe(request)
                 try:
                     await self._unsubscribe(target)
                 except BaseException:

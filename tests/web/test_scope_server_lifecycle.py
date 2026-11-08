@@ -31,9 +31,21 @@ from test_web_server import _addr
 from test_web_server_coverage import _scope_radio
 
 
-@pytest.mark.parametrize("configured,expected", [("hardware", "radio"), ("audio_fft", "audio_fft"), ("sdr", "iq_fft"), ("auto", "iq_fft")])
-async def test_cli_selection_is_separate_from_all_available_sources(monkeypatch, configured, expected):
-    _, config = await _run_cmd_web(monkeypatch, {}, "--scope-source", configured, "--sdr-device", "fake")
+@pytest.mark.parametrize(
+    "configured,expected",
+    [
+        ("hardware", "radio"),
+        ("audio_fft", "audio_fft"),
+        ("sdr", "iq_fft"),
+        ("auto", "iq_fft"),
+    ],
+)
+async def test_cli_selection_is_separate_from_all_available_sources(
+    monkeypatch, configured, expected
+):
+    _, config = await _run_cmd_web(
+        monkeypatch, {}, "--scope-source", configured, "--sdr-device", "fake"
+    )
     config.radio_model = "IC-7300"
     radio = _scope_radio()
     server = WebServer(radio, config)
@@ -68,7 +80,16 @@ async def test_optional_sdr_factory_failure_keeps_http_radio_audio_and_retries()
             raise ImportError("optional SDR binding unavailable")
         return provider
 
-    server = WebServer(None, WebConfig(host="127.0.0.1", port=0, sdr_config=SdrConfig("fake", sample_rate_hz=48_000), sdr_source_factory=factory))
+    server = WebServer(
+        None,
+        WebConfig(
+            host="127.0.0.1",
+            port=0,
+            radio_model="IC-7610",
+            sdr_config=SdrConfig("fake", sample_rate_hz=48_000),
+            sdr_source_factory=factory,
+        ),
+    )
     writer = Writer()
     radio = RadioScopeSource(resolve_radio_profile(model="ic7610"), writer)
     server._audio_broadcaster = AudioBroadcaster(_RelayRadio())
@@ -76,27 +97,55 @@ async def test_optional_sdr_factory_failure_keeps_http_radio_audio_and_retries()
     tap = WebScopePcmTap(server)
     server._audio_scope_source = AudioFftSource(tap, tap.facts, fft_size=2048)
     await server.start()
+    assert (
+        server._sdr_status_payload()["lastError"] == "optional SDR binding unavailable"
+    )
     server.scope_hub.register("radio", radio)
     try:
         host, port = _addr(server)
         async with aiohttp.ClientSession() as client:
-            async with client.get(f"http://{host}:{port}/api/v1/capabilities") as response:
+            async with client.get(
+                f"http://{host}:{port}/api/v1/capabilities"
+            ) as response:
                 assert response.status == 200
             async with client.ws_connect(f"http://{host}:{port}/api/v1/scope") as ws:
                 for source_id, receiver in [("radio", 0), ("audio_fft", None)]:
-                    await ws.send_str(encode_scope_subscription(Subscription(source_id, receiver, View(14_074_000, 14_076_400), 100, 20)))
+                    await ws.send_str(
+                        encode_scope_subscription(
+                            Subscription(
+                                source_id,
+                                receiver,
+                                View(14_074_000, 14_076_400),
+                                100,
+                                20,
+                            )
+                        )
+                    )
                     assert (await ws.receive_json(timeout=2))["type"] == "granted"
                     if source_id == "radio":
-                        radio.feed_frame(ScopeFrame(0, 0, 14_074_000, 14_076_400, b"\x10" * 100, False))
+                        radio.feed_frame(
+                            ScopeFrame(
+                                0, 0, 14_074_000, 14_076_400, b"\x10" * 100, False
+                            )
+                        )
                     else:
-                        server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(np.ones(8192, dtype=np.int16).tobytes())
+                        server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(
+                            np.ones(8192, dtype=np.int16).tobytes()
+                        )
                     message = await ws.receive(timeout=2)
                     assert decode_scope_frame_v2(message.data).source == source_id
                 assert attempts == 1
                 available = True
-                await ws.send_str(encode_scope_subscription(Subscription("iq_fft", None, View(14_064_000, 14_084_000), 100, 20)))
+                await ws.send_str(
+                    encode_scope_subscription(
+                        Subscription(
+                            "iq_fft", None, View(14_064_000, 14_084_000), 100, 20
+                        )
+                    )
+                )
                 assert (await ws.receive_json(timeout=2))["type"] == "granted"
                 assert provider.is_open
+                assert server._sdr_status_payload()["lastError"] is None
         await await_until(lambda: not provider.is_open)
     finally:
         await server.stop()
@@ -105,13 +154,21 @@ async def test_optional_sdr_factory_failure_keeps_http_radio_audio_and_retries()
 @pytest.mark.realtime(reason="local simulator and real stopped radio poller")
 @pytest.mark.parametrize("cancelled_close", [False, True])
 @pytest.mark.timeout(20)
-async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop(cancelled_close, monkeypatch):
+async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop(
+    cancelled_close, monkeypatch
+):
     from rigplane.radio import IcomRadio
     from rigplane_testkit.icom import MockIcomRadio
 
     sim = MockIcomRadio(scope_stream=True)
     await sim.start()
-    radio = IcomRadio("127.0.0.1", port=sim.control_port, username="testuser", password="testpass", model="IC-7610")
+    radio = IcomRadio(
+        "127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        model="IC-7610",
+    )
     await radio.connect()
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     stopping = None
@@ -129,13 +186,21 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
     try:
         handler = ScopeHandler(Socket(), server)
         server.register_scope_handler(handler)
-        await handler._handle_control(encode_scope_subscription(Subscription("radio", 0, View(14_090_000, 14_110_000), 100, 10)))
+        await handler._handle_control(
+            encode_scope_subscription(
+                Subscription("radio", 0, View(14_090_000, 14_110_000), 100, 10)
+            )
+        )
         assert handler._streams
         provider = FakeIqSource(center_freq_hz=14_100_000, sample_rate_hz=48_000)
         from rigplane.sdr.scope_source import IqFftSource
 
         server.scope_hub.register("test-iq", IqFftSource(provider, start_worker=False))
-        await handler._handle_control(encode_scope_subscription(Subscription("test-iq", None, View(14_090_000, 14_110_000), 100, 10)))
+        await handler._handle_control(
+            encode_scope_subscription(
+                Subscription("test-iq", None, View(14_090_000, 14_110_000), 100, 10)
+            )
+        )
         poller = server._radio_poller
         poll_task = poller._task
         poller.stop()
@@ -148,15 +213,22 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
         monkeypatch.setattr(poller, "restore_scope_after_shutdown", restore)
         stopping = asyncio.create_task(server.stop())
         done, _ = await asyncio.wait({stopping}, timeout=3)
-        assert stopping in done, "shutdown waited forever on the stopped scope-command consumer"
+        assert stopping in done, (
+            "shutdown waited forever on the stopped scope-command consumer"
+        )
         await stopping
         if closing is not None:
-            assert closing.done(), "cancelled unsubscribe retained its shielded queue wait"
+            assert closing.done(), (
+                "cancelled unsubscribe retained its shielded queue wait"
+            )
             await asyncio.gather(closing, return_exceptions=True)
         assert not handler._streams
         assert not provider.is_open
         assert server._server is None
         assert not server._bg_tasks
+        assert not server.command_queue.has_commands
+        assert not server._scope_command_futures
+        assert not server._radio_scope_source._active
         restore.assert_awaited_once()
         assert not server._scope_enabled
     finally:
