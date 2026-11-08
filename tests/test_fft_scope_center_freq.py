@@ -104,3 +104,19 @@ def test_explicit_cw_side_still_requires_observed_pitch(code):
     _seed_audio_facts(server, receiver='main', mode=mode)
     with pytest.raises(ValueError, match='observed CW pitch'):
         WebScopePcmTap(server).facts()
+
+
+@pytest.mark.parametrize('code,low,high,sideband', [
+    ('8', -2400, 0, 'lower'), ('C', 0, 2400, 'upper'),
+    ('D', -1200, 1200, 'upper'), ('B', -1200, 1200, 'upper'),
+    ('A', -1200, 1200, 'upper'), ('F', -1200, 1200, 'upper'),
+])
+def test_explicit_audio_alias_from_producer_profile_uses_existing_geometry(code, low, high, sideband):
+    from pathlib import Path
+    from rigplane.audio.scope_source import AudioPassband
+    from rigplane.profiles.rig_loader import load_rig
+    config = load_rig(Path(__file__).resolve().parents[1] / 'rigs/ftx1.toml')
+    mode = dict(zip(config.mode_codes, config.modes, strict=True))[code]
+    server = WebServer(None)
+    _seed_audio_facts(server, receiver='main', mode=mode, width=2400)
+    assert WebScopePcmTap(server).facts() == AudioPassband(14_074_000, low, high, sideband)
