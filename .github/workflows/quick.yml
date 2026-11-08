@@ -371,7 +371,7 @@ jobs:
           fetch-depth: 2
 
       - name: Install uv
-        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true' || needs.classify.outputs.ci == 'true'
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
@@ -423,6 +423,10 @@ jobs:
       - name: Doc link gate contract tests
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/check-doc-citations.test.py
+
+      - name: Runner label validation
+        if: needs.classify.outputs.ci == 'true'
+        run: uv run --no-project --with 'pyyaml>=6' python3 .github/scripts/check-workflow-runs-on.py
 
       - name: Compile Python workflow controls
         if: needs.classify.outputs.ci == 'true'

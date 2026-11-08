@@ -219,6 +219,32 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
+    def test_runner_label_validation_runs_for_workflow_only_changes(self) -> None:
+        for path in (
+            ".github/workflows/artifact-cleanup.yml",
+            ".github/workflows/new-ci.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": False, "frontend": False, "ci": True, "docs": False},
+                )
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        self.assertIn(
+            "      - name: Runner label validation\n"
+            "        if: needs.classify.outputs.ci == 'true'\n"
+            "        run: uv run --no-project --with 'pyyaml>=6' python3 "
+            ".github/scripts/check-workflow-runs-on.py\n",
+            quick,
+        )
+        self.assertIn(
+            "      - name: Install uv\n"
+            "        if: needs.classify.outputs.core == 'true' || "
+            "needs.classify.outputs.web == 'true' || "
+            "needs.classify.outputs.ci == 'true'\n",
+            quick,
+        )
+
     def test_release_gate_changes_select_the_route_that_runs_receipt_tests(
         self,
     ) -> None:
