@@ -13,6 +13,13 @@ former `/api/v1/audio-scope` endpoint is removed. Opening a socket does not
 start a source: send a subscription first. Source IDs are `radio`, `audio_fft`
 and `iq_fft` when the corresponding producer is available.
 
+Audio FFT requires observed frequency, filter width and mode. The web adapter
+maps `USB`, `LSB`, `AM`, `FM`, `WFM` and the data/narrow aliases declared in
+`src/rigplane/web/scope_sources.py: _AUDIO_MODE_ALIASES`. Explicit `CW-U` and
+`CW-L` additionally require observed CW pitch; ambiguous `CW` and `CW-R` are
+refused because their normal-side polarity is not established. See
+`src/rigplane/web/scope_sources.py: WebScopePcmTap.facts`.
+
 ```json
 {"type":"subscribe","sourceId":"radio","receiver":0,"view":{"follow":"vfo","spanHz":100000},"width":1024,"maxFps":10}
 ```

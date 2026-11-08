@@ -147,18 +147,21 @@ async def test_geometry_change_discards_pcm_and_fft_history(
     await reference.stop()
 
 
-@pytest.mark.parametrize('old_count', [3072, 4096])
-async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(old_count, virtual_clock, monkeypatch, caplog):
+@pytest.mark.parametrize("old_count", [3072, 4096])
+async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(
+    old_count, virtual_clock, monkeypatch, caplog
+):
     from types import SimpleNamespace
     from unittest.mock import Mock
     import rigplane.audio.fft_scope as fft_module
-    monkeypatch.setattr(fft_module, 'time', SimpleNamespace(monotonic=virtual_clock))
-    valid = AudioPassband(14_100_000, 300, 2700, 'upper')
+
+    monkeypatch.setattr(fft_module, "time", SimpleNamespace(monotonic=virtual_clock))
+    valid = AudioPassband(14_100_000, 300, 2700, "upper")
     available = True
 
     def facts():
         if not available:
-            raise ValueError('RF mapping unavailable')
+            raise ValueError("RF mapping unavailable")
         return valid
 
     tap = Tap()
@@ -167,11 +170,13 @@ async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(old_co
     source.on_frame(frames.append)
     await source.start()
     try:
-        old = (np.sin(2 * np.pi * 1500 * np.arange(old_count) / 48000) * 16000).astype('<i2')
+        old = (np.sin(2 * np.pi * 1500 * np.arange(old_count) / 48000) * 16000).astype(
+            "<i2"
+        )
         tap.callback(old.tobytes())
         frames.clear()
         stop = Mock(wraps=source.producer.stop)
-        monkeypatch.setattr(source.producer, 'stop', stop)
+        monkeypatch.setattr(source.producer, "stop", stop)
         available = False
         for _ in range(3):
             tap.callback(bytes(1920))
@@ -180,7 +185,7 @@ async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(old_co
         assert not caplog.records
         available = True
         noise = np.random.default_rng(31).integers(-100, 101, 4096, dtype=np.int16)
-        await virtual_clock.elapse(.1)
+        await virtual_clock.elapse(0.1)
         tap.callback(noise[:1024].tobytes())
         assert not frames
         tap.callback(noise[1024:].tobytes())

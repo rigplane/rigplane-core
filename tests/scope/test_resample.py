@@ -1,7 +1,43 @@
+from math import ceil, floor, nextafter
+
 import pytest
 
 from rigplane.scope.models import Coverage, View
 from rigplane.scope.resample import max_hold
+
+
+def _scalar_projection(pixels, coverage, view, width):
+    result = bytearray(width)
+    native_scale = len(pixels) / (coverage.end_hz - coverage.start_hz)
+    step = (view.end_hz - view.start_hz) / width
+    for column in range(width):
+        start = max(view.start_hz + column * step, coverage.start_hz)
+        end = min(view.start_hz + (column + 1) * step, coverage.end_hz)
+        if start < end:
+            first = max(0, floor((start - coverage.start_hz) * native_scale))
+            last = min(len(pixels), ceil((end - coverage.start_hz) * native_scale))
+            result[column] = max(pixels[first:last], default=0)
+    return bytes(result)
+
+
+@pytest.mark.parametrize("native_width", [1, 3, 475, 689, 4096])
+@pytest.mark.parametrize("width", [1, 2, 1024, 2800, 65535])
+def test_vector_projection_matches_scalar_frequency_intervals(native_width, width):
+    pixels = bytes((i * 37) % 256 for i in range(native_width))
+    coverage = Coverage(14_000_000, 14_200_000)
+    for view in (
+        View(14_000_000, 14_200_000),
+        View(13_900_000, 14_300_000),
+        View(14_000_123.25, 14_199_765.25),
+        View(nextafter(coverage.end_hz, 0), 14_300_000),
+        View(14_000_000.1, 14_000_000.1000001),
+        View(0, 1e308),
+        View(0, 1e30),
+        View(14_000_123.25, 1e308),
+    ):
+        assert max_hold(pixels, coverage, view, width) == _scalar_projection(
+            pixels, coverage, view, width
+        )
 
 
 def test_decimation_preserves_each_peak():

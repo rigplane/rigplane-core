@@ -9,10 +9,9 @@ Each handler manages the lifecycle of one client connection on one channel:
 from .audio import AudioBroadcaster, AudioHandler  # noqa: TID251
 from .control import ControlHandler  # noqa: TID251
 from .diagnostics import DiagnosticsHandler  # noqa: TID251
-from .scope import HIGH_WATERMARK, ScopeHandler  # noqa: TID251
+from .scope import ScopeHandler  # noqa: TID251
 
 __all__ = [
-    "HIGH_WATERMARK",
     "ControlHandler",
     "DiagnosticsHandler",
     "ScopeHandler",

@@ -64,6 +64,7 @@ async def test_iq_seed_precedes_open_and_updates_without_control_clients(
         assert (target.start_hz + target.end_hz) / 2 == 14_101_000
         assert provider.center_freq_hz != 14_101_000
         assert server._sdr_status_payload()["txFrozen"] is True
+        assert server._sdr_status_payload()["state"] == "starting"
         server.command_state_store.apply_current(
             _store_observation(
                 OBSERVED_PTT_PATH, ObservedPtt.OFF, at=virtual_clock(), max_age=1
@@ -149,6 +150,22 @@ async def test_iq_status_tracks_current_session_frames_and_staleness(virtual_clo
         await subscription.close()
 
 
+async def test_iq_status_does_not_classify_cancelled_start_as_error(monkeypatch):
+    provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48_000)
+    server = make_server(provider)
+
+    def cancel_open():
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(provider, "open", cancel_open)
+    with pytest.raises(asyncio.CancelledError):
+        await server.scope_hub.subscribe(
+            Subscription("iq_fft", None, View(14_090_000, 14_110_000), 1024, 20)
+        )
+    assert server._sdr_status_payload()["state"] == "disabled"
+    assert server._sdr_status_payload()["lastError"] is None
+
+
 async def test_iq_status_counts_actual_overflow_blocks_and_resets():
     provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48_000)
     server = make_server(provider)
@@ -169,7 +186,7 @@ async def test_iq_status_counts_actual_overflow_blocks_and_resets():
         await subscription.close()
 
 
-async def test_iq_status_retains_open_error_until_deliberate_stop(monkeypatch):
+async def test_iq_status_retains_open_error_until_successful_retry(monkeypatch):
     provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48_000)
     server = make_server(provider)
 
@@ -186,5 +203,12 @@ async def test_iq_status_retains_open_error_until_deliberate_stop(monkeypatch):
     assert status["lastError"] == "device unavailable"
     assert not server._iq_scope_source.active
     await server._iq_scope_source.stop()
+    assert server._sdr_status_payload()["lastError"] == "device unavailable"
+    monkeypatch.undo()
+    subscription = await server.scope_hub.subscribe(
+        Subscription("iq_fft", None, View(14_090_000, 14_110_000), 1024, 20)
+    )
+    assert server._sdr_status_payload()["lastError"] is None
+    await subscription.close()
     assert server._sdr_status_payload()["lastError"] is None
     assert server._sdr_status_payload()["state"] == "disabled"

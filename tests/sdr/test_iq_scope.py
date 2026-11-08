@@ -774,9 +774,9 @@ def test_zoom_retune_discards_earlier_geometry_queued_in_same_tick(
     old_samples = np.exp(2j * np.pi * 800 * np.arange(8192) / 48_000).astype(
         np.complex64
     )
-    new_samples = (
-        0.01 * np.exp(2j * np.pi * 1200 * np.arange(9216) / rate)
-    ).astype(np.complex64)
+    new_samples = (0.01 * np.exp(2j * np.pi * 1200 * np.arange(9216) / rate)).astype(
+        np.complex64
+    )
     old = IqBlock(old_samples, 10_000_000, 48_000, 0.0)
     first = IqBlock(new_samples[:1024], center, rate, 1.0)
     rest = IqBlock(new_samples[1024:], center, rate, 2.0)

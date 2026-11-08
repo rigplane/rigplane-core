@@ -126,9 +126,7 @@ async def test_http_acquisition_is_atomic_anonymous_and_mode_is_local_only(stati
     assert released.payload["state"] == "idle"
 
 
-@pytest.mark.parametrize(
-    "path", ["/api/v1/ws", "/api/v1/audio", "/api/v1/scope", "/api/v1/audio-scope"]
-)
+@pytest.mark.parametrize("path", ["/api/v1/ws", "/api/v1/audio", "/api/v1/scope"])
 @pytest.mark.parametrize("bad", ["missing", "wrong", "duplicate"])
 async def test_all_ws_channels_refuse_unclaimed_or_ambiguous_keys(station, path, bad):
     server, _ = station
@@ -152,7 +150,6 @@ async def test_all_ws_channels_refuse_unclaimed_or_ambiguous_keys(station, path,
         ("/api/v1/ws", "ControlHandler"),
         ("/api/v1/audio", "AudioHandler"),
         ("/api/v1/scope", "ScopeHandler"),
-        ("/api/v1/audio-scope", "ScopeHandler"),
     ],
 )
 async def test_grouped_ws_echoes_only_valid_protocol_and_binds_currency(
@@ -160,7 +157,6 @@ async def test_grouped_ws_echoes_only_valid_protocol_and_binds_currency(
 ):
     server, _ = station
     key, _ = await remote(server)
-    server._audio_fft_scope = object()
     captured = []
 
     class Handler:

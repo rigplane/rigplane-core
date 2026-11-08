@@ -706,9 +706,10 @@ async def test_reconnect_waiting_behind_last_close_cannot_revive_output(monkeypa
     from test_web_server_coverage import _scope_radio
     from rigplane.web.radio_poller import DisableScope, EnableScope
     from rigplane.web.server import WebConfig
+
     radio = _scope_radio()
     radio._fetch_initial_state = AsyncMock()
-    server = WebServer(radio, WebConfig(radio_model='IC-7610'))
+    server = WebServer(radio, WebConfig(radio_model="IC-7610"))
     server._radio_scope_demand = True
     server._scope_enabled = True
     server.scope_hub
@@ -719,14 +720,14 @@ async def test_reconnect_waiting_behind_last_close_cannot_revive_output(monkeypa
     def complete(command, **kwargs):
         entry = put(command, **kwargs)
         commands.append(command)
-        future = kwargs.get('future')
+        future = kwargs.get("future")
         if isinstance(command, EnableScope) and not held:
             held.append(future)
         elif future is not None:
             future.set_result(None)
         return entry
 
-    monkeypatch.setattr(server.command_queue, 'put_ordered', complete)
+    monkeypatch.setattr(server.command_queue, "put_ordered", complete)
     first = asyncio.create_task(server._refetch_and_reenable())
     close = second = None
     try:
@@ -751,16 +752,24 @@ async def test_reconnect_waiting_behind_last_close_cannot_revive_output(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_previous_session_health_cannot_override_new_session_grace(virtual_clock, monkeypatch):
-    from test_web_server_coverage import _virtual_scope_server, _feed_scope_health, _live_scope_frame
+async def test_previous_session_health_cannot_override_new_session_grace(
+    virtual_clock, monkeypatch
+):
+    from test_web_server_coverage import (
+        _virtual_scope_server,
+        _feed_scope_health,
+        _live_scope_frame,
+    )
+
     server, _, _ = _virtual_scope_server(monkeypatch, virtual_clock)
     _feed_scope_health(server, _live_scope_frame())
     await virtual_clock.elapse(100)
     await server._set_radio_scope_output(False)
     await server._set_radio_scope_output(True)
-    monkeypatch.setattr(server, '_civ_link_flowing', lambda now: True)
+    monkeypatch.setattr(server, "_civ_link_flowing", lambda now: True)
     import rigplane.web.server as server_module
-    monkeypatch.setattr(server_module, 'asyncio', asyncio)
+
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
     monitor = asyncio.create_task(server._scope_health_monitor())
     try:
         await virtual_clock.elapse(server._scope_health_interval)
@@ -771,14 +780,19 @@ async def test_previous_session_health_cannot_override_new_session_grace(virtual
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('enable_path', ['deferred', 'reconnect'])
-async def test_scope_enable_success_starts_new_health_grace(virtual_clock, monkeypatch, enable_path):
+@pytest.mark.parametrize("enable_path", ["deferred", "reconnect"])
+async def test_scope_enable_success_starts_new_health_grace(
+    virtual_clock, monkeypatch, enable_path
+):
     from test_web_server_coverage import _virtual_scope_server
+
     server, _, _ = _virtual_scope_server(monkeypatch, virtual_clock)
     await virtual_clock.elapse(100)
     server._scope_enabled = False
-    if enable_path == 'deferred':
-        await server._wait_and_enable_scope(reason='readiness', generation=server._scope_demand_generation)
+    if enable_path == "deferred":
+        await server._wait_and_enable_scope(
+            reason="readiness", generation=server._scope_demand_generation
+        )
     else:
         await server._refetch_and_reenable()
     assert server._scope_enabled is True

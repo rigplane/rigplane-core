@@ -141,7 +141,13 @@ class AudioFftSource:
 
     def _feed(self, pcm: bytes) -> None:
         if self._active:
-            facts = self._facts()
+            try:
+                facts = self._facts()
+            except ValueError:
+                if self._frame_facts is not None:
+                    self.producer.stop()
+                    self._frame_facts = None
+                return
             if facts != self._frame_facts:
                 self.producer.stop()
                 self.producer = self._make_producer()

@@ -46,6 +46,8 @@ from rigplane.core.tx_observation import (
     ObservedPtt,
     project_observed_ptt,
 )
+from rigplane.scope.hub import ScopeHealth
+from rigplane.scope.models import Coverage
 from rigplane.core.radio_protocol import ScopeCapable
 from rigplane.profiles import resolve_radio_profile
 from rigplane.scope import ScopeFrame
@@ -498,6 +500,7 @@ async def test_managed_tx_start_still_registers_reconnect_recovery_pass() -> Non
         # Simulate the radio's post-soft_reconnect edge: the registered
         # callback must refetch state and queue the scope re-enable.
         srv._scope_handlers.add(MagicMock())  # noqa: SLF001
+        srv._radio_scope_demand = True
         scope_callbacks_before = radio.on_scope_data.call_count
         radio._reconnect_callback()
         await _await_condition(
@@ -815,7 +818,7 @@ async def test_scope_lifecycle_broadcasts_ws_client_count_changes() -> None:
     srv.register_control_event_queue(observer)
     _drain_queue(observer)
 
-    await srv.ensure_scope_enabled(scope_handler)
+    srv.register_scope_handler(scope_handler)
     event = observer.get_nowait()
 
     assert _state_event_ws_clients(event)["scope"] == 1
@@ -2579,34 +2582,6 @@ async def test_handle_connection_none_http_ws_and_exception() -> None:
 
 
 @pytest.mark.asyncio
-async def test_scope_health_and_radio_state_event_paths() -> None:
-    radio = _scope_radio()
-    srv = WebServer(radio)
-
-    frame = SimpleNamespace(pixels=b"\x00\x01")
-    before = srv._scope_last_nonzero
-    srv._scope_health_check(frame)  # noqa: SLF001
-    assert srv._scope_last_nonzero >= before
-
-    bad = SimpleNamespace(pixels=123)
-    srv._scope_health_check(bad)  # noqa: SLF001
-
-    # Meter state change still triggers broadcast_state_update
-    srv._on_radio_state_change("meter", {"type": "power", "raw": 77})  # noqa: SLF001
-
-    scope_handler = MagicMock()
-    srv._scope_handlers.add(scope_handler)
-    radio._fetch_initial_state = AsyncMock()
-    scope_callbacks_before = radio.on_scope_data.call_count
-    srv._on_radio_reconnect()  # noqa: SLF001
-    await _await_condition(
-        lambda: radio.on_scope_data.call_count > scope_callbacks_before
-    )
-    cmds = srv.command_queue.drain
-    assert any(isinstance(c, EnableScope) for c in cmds())
-
-
-@pytest.mark.asyncio
 async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revision() -> (
     None
 ):
@@ -3577,6 +3552,7 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
     radio._fetch_initial_state = AsyncMock()
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
+    srv._radio_scope_demand = True
 
     scope_callbacks_before = radio.on_scope_data.call_count
     srv._on_radio_reconnect()  # noqa: SLF001
@@ -3652,35 +3628,6 @@ async def test_on_radio_reconnect_reseeds_scan_facts() -> None:
     assert field.source.source != "poll_response"
 
 
-@pytest.mark.asyncio
-async def test_ensure_scope_enabled_defers_enable_when_radio_not_ready() -> None:
-    radio = _scope_radio(ready=False)
-    srv = WebServer(radio)
-    srv._scope_reenable_poll_interval = 0.01  # noqa: SLF001
-    srv._scope_reenable_timeout = 0.2  # noqa: SLF001
-
-    await srv.ensure_scope_enabled(MagicMock())
-    assert not any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
-
-    radio.radio_ready = True
-    await asyncio.sleep(0.03)
-    assert any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
-
-
-@pytest.mark.asyncio
-async def test_ensure_scope_enabled_skips_when_scope_capability_absent() -> None:
-    radio = MagicMock()
-    radio.connected = True
-    radio.radio_ready = True
-    radio.capabilities = set()
-    srv = WebServer(radio)
-
-    await srv.ensure_scope_enabled(MagicMock())
-
-    assert not any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
-    assert srv._scope_enabled is False
-
-
 @pytest.mark.timeout(30)
 async def test_scope_health_monitor_link_down_then_menu_silence(
     virtual_clock: VirtualClock,
@@ -3691,13 +3638,13 @@ async def test_scope_health_monitor_link_down_then_menu_silence(
     srv, radio, queued = _virtual_scope_server(monkeypatch, virtual_clock)
     radio.connected = False
     radio.radio_ready = False
-    srv._scope_last_nonzero = 0.0  # noqa: SLF001
+    srv._scope_started_at = 0.0  # noqa: SLF001
 
     monitor = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     try:
         await _elapse_scope_windows(virtual_clock, 2)
         # Link down: the frame clock is reset inside the monitor window.
-        assert 0.0 <= virtual_clock() - srv._scope_last_nonzero <= 10.0  # noqa: SLF001
+        assert 0.0 <= virtual_clock() - srv._scope_started_at <= 10.0  # noqa: SLF001
         radio.connected = True
         radio.radio_ready = True
         await _elapse_scope_windows(
@@ -3720,9 +3667,10 @@ async def test_scope_health_monitor_unconfirmed_session_does_not_reenable() -> N
     radio = _scope_radio(ready=True, connected=True)
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
+    srv._radio_scope_demand = True
     srv._scope_enabled = False
     srv._scope_health_interval = 0.01
-    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._scope_started_at = time.monotonic() - 1.0
 
     task = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
     await asyncio.sleep(0.03)
@@ -3792,6 +3740,17 @@ def test_scope_frame_fixtures_are_producer_typed() -> None:
         assert isinstance(frame.pixels, bytes)
 
 
+def _feed_scope_health(srv: WebServer, frame: ScopeFrame) -> None:
+    now = asyncio.get_running_loop().time()
+    hub = srv.scope_hub
+    hub._sources["radio"].health[frame.receiver] = ScopeHealth(
+        now,
+        now if frame.pixels else None,
+        frame.out_of_range,
+        Coverage(frame.start_freq_hz, frame.end_freq_hz),
+    )
+
+
 def _scope_hidden_verdict(srv: WebServer) -> object:
     """The published scope-hidden fact value, or None when never published."""
     for field in srv.command_state_store.snapshot().fields:
@@ -3821,8 +3780,10 @@ def _virtual_scope_server(
     if radio is None:
         radio = _scope_radio()
     radio._fetch_initial_state = AsyncMock()  # noqa: SLF001
-    srv = WebServer(radio)
+    srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+    srv.scope_hub
     srv._scope_handlers.add(MagicMock())  # noqa: SLF001
+    srv._radio_scope_demand = True
     srv._scope_enabled = True  # noqa: SLF001
     srv._scope_health_interval = interval  # noqa: SLF001
     queued: list[EnableScope] = []
@@ -3889,9 +3850,10 @@ async def test_scope_health_monitor_keyed_tx_queues_nothing(
     radio = _scope_radio(ready=True, connected=True)
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
+    srv._radio_scope_demand = True
     srv._scope_enabled = True
     srv._scope_health_interval = 0.01
-    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._scope_started_at = time.monotonic() - 1.0
     srv._managed_tx_keyed = True  # noqa: SLF001
     queued: list[EnableScope] = []
     _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
@@ -3915,9 +3877,10 @@ async def test_scope_health_monitor_observed_ptt_on_queues_nothing(
     radio = _scope_radio(ready=True, connected=True)
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
+    srv._radio_scope_demand = True
     srv._scope_enabled = True
     srv._scope_health_interval = 0.01
-    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._scope_started_at = time.monotonic() - 1.0
     _observe_scope_ptt(srv, ObservedPtt.ON, max_age=60.0)
     assert srv._managed_tx_keyed is False  # noqa: SLF001
     queued: list[EnableScope] = []
@@ -3942,9 +3905,10 @@ async def test_scope_health_monitor_long_tx_never_gives_up(
     radio = _scope_radio(ready=True, connected=True)
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
+    srv._radio_scope_demand = True
     srv._scope_enabled = True
     srv._scope_health_interval = 0.01
-    srv._scope_last_nonzero = time.monotonic() - 1.0
+    srv._scope_started_at = time.monotonic() - 1.0
     srv._managed_tx_keyed = True  # noqa: SLF001
     queued: list[EnableScope] = []
     _record_scope_commands_completing_like_a_poller(srv, queued, monkeypatch)
@@ -3978,7 +3942,7 @@ async def test_scope_health_monitor_verdicts_around_tx(
         await _elapse_scope_windows(
             virtual_clock,
             2,
-            between=lambda: srv._scope_health_check(_live_scope_frame()),  # noqa: SLF001
+            between=lambda: _feed_scope_health(srv, _live_scope_frame()),  # noqa: SLF001
         )
         assert _scope_hidden_verdict(srv) is False
         # Menu opens: frames stop entirely, CI-V keeps answering (IC-705).

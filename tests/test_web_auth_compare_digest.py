@@ -79,16 +79,13 @@ async def test_http_dispatch_needs_no_application_token(header, path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "path", ["/api/v1/ws", "/api/v1/scope", "/api/v1/audio-scope", "/api/v1/audio"]
-)
+@pytest.mark.parametrize("path", ["/api/v1/ws", "/api/v1/scope", "/api/v1/audio"])
 @pytest.mark.parametrize("legacy_token", [False, True])
 async def test_all_ws_channels_upgrade_without_application_auth(
     monkeypatch, path, legacy_token
 ):
     srv = WebServer(radio=None, config=WebConfig())
     srv._config.auth_token = "retired-private-value"
-    srv._audio_fft_scope = object()
     handlers = {}
     for name in ("ControlHandler", "ScopeHandler", "AudioHandler"):
         factory = MagicMock(return_value=MagicMock(run=AsyncMock()))
@@ -130,7 +127,7 @@ async def test_ws_still_rejects_missing_key():
     "path,reason",
     [
         ("/api/v1/unknown", "unknown channel"),
-        ("/api/v1/audio-scope", "audio FFT scope not available"),
+        ("/api/v1/audio-scope", "unknown channel"),
     ],
 )
 async def test_ws_still_refuses_unavailable_channels(monkeypatch, path, reason):

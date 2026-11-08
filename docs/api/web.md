@@ -1249,8 +1249,9 @@ Notable fields:
 | `maxPowerW` | `int` (optional) | The profile's flat rated maximum TX power in watts (`[power].max_watts`): the base the per-band `txBands[].maxPowerW` rows are compared with. Absent when the profile declares none. Also in `/api/v1/info` `capabilities` |
 | `txBands[].maxPowerW` | `int` (optional) | Rated maximum TX power of that band in watts (profile band row `max_power_w`), never above `maxPowerW`. The RF power slider follows the band the active receiver is on, by `powerUnit`: `raw_255` keeps the full range and labels the level in watts (level x band maximum); `watts` scales the range to the band maximum over the flat `maxPowerW`. Full range and a percent label when no band declares a maximum, `powerUnit` is absent or the frequency is unknown. It is display data only: a power value that is sent is never clamped or rescaled by it |
 | `powerUnit` | `"raw_255"` \| `"watts"` (optional) | How the radio's `powerLevel` is scaled: the attached radio's `native_power_unit`. `raw_255` (Icom): a percentage of the current band's rated maximum. `watts` (Yaesu CAT): a fraction of the flat `maxPowerW`. Present with `maxPowerW`; absent when the radio does not declare it. Also in `/api/v1/info` `capabilities` |
-| `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
-| `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
+| `scopeSource` | `null` | Legacy field, currently always null; select the source per scope subscription with `sourceId` |
+| `scopeSources` | `string[]` | Discoverable IDs (`radio`, `audio_fft`, `iq_fft`) from source capability/configuration. Audio FFT still requires observed RF mapping facts; discovery does not grant a view or establish live coverage. See `src/rigplane/web/server.py: WebServer._serve_capabilities` |
+| `scopeConfig.defaultSpan` | `int` | Legacy UI hint, currently 500000 Hz; the subscription's granted `view` defines its negotiated geometry |
 | `audioConfig` | object | Web audio transport defaults |
 | `webrtc.available` | `bool` | Whether the optional `rigplane[webrtc]` backend is importable; this does not indicate that the default-off `WebConfig.webrtc_enabled` transport gate is enabled |
 
