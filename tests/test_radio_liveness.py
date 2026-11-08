@@ -34,6 +34,7 @@ from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.state_store import StateStore
 from rigplane.radio import IcomRadio
+from rigplane.exceptions import CommandError
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
 from rigplane.types import bcd_encode
 from rigplane.web.runtime_helpers import (
@@ -1306,3 +1307,252 @@ async def test_civ_invalid_scope_metadata_cannot_seed_liveness(
             frame, generation=civ_radio._civ_epoch
         )
     assert civ_radio.last_valid_frame_monotonic == 1.0
+
+
+@pytest.mark.parametrize("model", ["IC-7610", "IC-7300", "IC-705"])
+@pytest.mark.parametrize(
+    "command,sub,data",
+    [
+        (0x18, None, b"\xff"),
+        (0x21, 0x00, b"\xff\xff\x00"),
+        (0x21, 0x00, b"\x00\x00\x02"),
+    ],
+)
+async def test_civ_semantically_invalid_decode_preserves_stamp(
+    model: str, command: int, sub: int | None, data: bytes
+) -> None:
+    radio = IcomRadio("", model=model)
+    radio.last_valid_frame_monotonic = 1.0
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, command, sub=sub, data=data)
+    )
+    await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+    assert radio.last_valid_frame_monotonic == 1.0
+
+
+async def test_civ_illegal_scope_sequence_bcd_preserves_stamp(
+    civ_radio: IcomRadio,
+) -> None:
+    civ_radio.last_valid_frame_monotonic = 1.0
+    metadata = b"\x01" + bcd_encode(14_000_000) + bcd_encode(14_350_000) + b"\x00"
+    for seq in range(1, 11):
+        payload = bytes([0, seq, 0x0A]) + (metadata if seq == 1 else b"\x10")
+        frame = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x27, sub=0, data=payload)
+        )
+        await civ_radio._civ_runtime._route_civ_frame(
+            frame, generation=civ_radio._civ_epoch
+        )
+    assert civ_radio.last_valid_frame_monotonic == 1.0
+
+
+@pytest.mark.parametrize(
+    "data,retire", [(b"\x01", False), (b"\xff", False), (b"\x01", True)]
+)
+@pytest.mark.parametrize("prior_stamp", [None, 1.0])
+async def test_civ_af_mute_liveness_through_rx_pump(
+    civ_radio: IcomRadio,
+    monkeypatch: pytest.MonkeyPatch,
+    data: bytes,
+    retire: bool,
+    prior_stamp: float | None,
+) -> None:
+    from rigplane.testing.timing import await_until
+
+    runtime = civ_radio._civ_runtime
+    civ_radio.last_valid_frame_monotonic = prior_stamp
+    generation = civ_radio._civ_epoch
+    if retire:
+        runtime.advance_generation("retire AF mute source")
+    frame_bytes = build_civ_frame(
+        CONTROLLER_ADDR, IC_7610_ADDR, 0x1A, sub=0x09, data=data
+    )
+    packet = bytearray(CIV_HEADER_SIZE + len(frame_bytes))
+    struct.pack_into("<I", packet, 0, len(packet))
+    packet[CIV_HEADER_SIZE:] = frame_bytes
+    routed = asyncio.Event()
+    route = runtime._route_civ_frame
+
+    async def observe_route(*args: Any, **kwargs: Any) -> None:
+        await route(*args, **kwargs)
+        routed.set()
+
+    monkeypatch.setattr(runtime, "_route_civ_frame", observe_route)
+    civ_radio._civ_transport.queue_response(bytes(packet))
+    task = asyncio.create_task(
+        runtime._civ_rx_loop(
+            source_generation=generation,
+            store_provider_generation=civ_radio._state_store.provider_generation,
+        )
+    )
+    try:
+        await await_until(routed.is_set)
+        if data == b"\x01" and not retire:
+            assert civ_radio.last_valid_frame_monotonic is not None
+            assert civ_radio.last_valid_frame_monotonic != prior_stamp
+        else:
+            assert civ_radio.last_valid_frame_monotonic == (
+                None if retire else prior_stamp
+            )
+    finally:
+        task.cancel()
+        await task
+
+
+@pytest.mark.parametrize("model", ["IC-7610", "IC-7300", "IC-705"])
+@pytest.mark.parametrize("reply", ["xfc", "system_date"])
+@pytest.mark.parametrize("valid", [True, False])
+async def test_civ_valid_unprojected_decode_stamps(
+    model: str, reply: str, valid: bool
+) -> None:
+    from rigplane.commands._frame import decode_wire_tuple
+
+    radio = IcomRadio("", model=model)
+    name = "get_xfc_status" if reply == "xfc" else "get_system_date"
+    command, sub, prefix = decode_wire_tuple(radio._profile.command_map.get(name))
+    data = b"\x01" if reply == "xfc" else b"\x20\x26\x11\x07"
+    if not valid:
+        data = b"\xff"
+    radio.last_valid_frame_monotonic = 1.0
+    radio._on_state_change = MagicMock()
+    frame = parse_civ_frame(
+        build_civ_frame(
+            CONTROLLER_ADDR,
+            radio._radio_addr,
+            command,
+            sub=sub,
+            data=prefix + data,
+        )
+    )
+    assert radio._civ_runtime._observations_from_frame(frame) == ()
+    await radio._civ_runtime._route_civ_frame(frame, generation=radio._civ_epoch)
+    assert (radio.last_valid_frame_monotonic != 1.0) is valid
+    if valid:
+        radio._on_state_change.assert_any_call("liveness", {})
+
+
+@pytest.fixture
+def radio() -> YaesuCatRadio:
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport._connected = True
+    radio._transport._writer = FakeStreamWriter()
+    radio._transport._reader = FakeStreamReader([])
+    return radio
+
+
+@pytest.mark.parametrize("stamp", [None, 1.0])
+@pytest.mark.parametrize(
+    "response,method,error",
+    [
+        (b"OS09;", "read_repeater_shift", CommandError),
+        (b"AC102;", "get_tuner_status", ValueError),
+        (b"AC121;", "get_tuner_status", ValueError),
+    ],
+)
+async def test_invalid_semantics_never_credit_liveness(
+    radio: YaesuCatRadio,
+    stamp: float | None,
+    response: bytes,
+    method: str,
+    error: type[Exception],
+) -> None:
+    radio._transport._reader = FakeStreamReader([response])
+    radio._transport.last_valid_frame_monotonic = stamp
+    with pytest.raises(error):
+        await getattr(radio, method)()
+    assert radio.last_valid_frame_monotonic == stamp
+
+
+@pytest.mark.parametrize(
+    "response,method",
+    [(b"OS03;", "read_repeater_shift"), (b"AC103;", "get_tuner_status")],
+)
+async def test_valid_semantics_credit_liveness(
+    radio: YaesuCatRadio,
+    response: bytes,
+    method: str,
+) -> None:
+    radio._transport._reader = FakeStreamReader([response])
+    await getattr(radio, method)()
+    assert radio.last_valid_frame_monotonic is not None
+
+
+@pytest.mark.realtime(reason="transport reconnect cooldown uses host monotonic time")
+async def test_held_reply_across_cooldown_reconnect_cannot_stamp(
+    radio: YaesuCatRadio,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = radio._transport
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class HeldReader(FakeStreamReader):
+        async def readuntil(self, separator: bytes) -> bytes:
+            entered.set()
+            await release.wait()
+            return await super().readuntil(separator)
+
+    transport._reader = HeldReader([b"FA014074000;"])
+    store = StateStore()
+    poller = YaesuCatPoller(radio)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    monkeypatch.setattr(transport, "_maybe_reconnect_needed", lambda: True)
+    task = asyncio.create_task(radio.get_freq())
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        transport._last_reconnect = time.monotonic()
+        old_writer = transport._writer
+        await poller._try_reconnect()
+        assert store.provider_generation == 1
+        assert transport._writer is old_writer
+        assert transport.stats.reconnects == 0
+        release.set()
+        assert await task == 14_074_000
+        assert radio.last_valid_frame_monotonic is None
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.realtime(
+    reason="exercise real exchange admission during transport reconnect"
+)
+async def test_query_queued_across_real_reconnect_credits_new_connection(
+    radio: YaesuCatRadio,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = radio._transport
+    store = StateStore()
+    poller = YaesuCatPoller(radio)
+    poller.bind_provider_generation(
+        capture=lambda: store.provider_generation,
+        advance=store.begin_provider_generation,
+    )
+    monkeypatch.setattr(transport, "_maybe_reconnect_needed", lambda: True)
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port",
+        AsyncMock(
+            return_value=(FakeStreamReader([b"FA014074000;"]), FakeStreamWriter())
+        ),
+    )
+    entered = asyncio.Event()
+    query = transport.query
+
+    async def queued_query(*args: object, **kwargs: object) -> str:
+        entered.set()
+        return await query(*args, **kwargs)
+
+    monkeypatch.setattr(transport, "query", queued_query)
+    async with transport._exchange_gate.exchange():
+        task = asyncio.create_task(radio.get_freq())
+        await asyncio.wait_for(entered.wait(), 1)
+        await poller._try_reconnect()
+        assert transport.stats.reconnects == 1
+        assert store.provider_generation == 1
+    try:
+        assert await task == 14_074_000
+        assert radio.last_valid_frame_monotonic is not None
+    finally:
+        await task
