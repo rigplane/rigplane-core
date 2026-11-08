@@ -189,6 +189,11 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(baselineIds);
       expect(paint).toHaveBeenCalledTimes(3);
 
+      resizeCallback?.([{ target: observed!, contentRect: { width: 301, height: 150 } } as ResizeObserverEntry],
+        {} as ResizeObserver);
+      flushSync(); flushPaint();
+      expect(pushed).toHaveBeenCalledTimes(3);
+
       hidden = true;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
@@ -230,6 +235,16 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(socket.connect).toHaveBeenCalledTimes(1);
       // Nothing is left pending: no scheduler backlog, no animation frame.
       expect(rafCallbacks.size).toBe(0);
+
+      const paintedBeforeResize = pushed.mock.calls.length;
+      resizeCallback?.([{ target: observed!, contentRect: { width: 302, height: 150 } } as ResizeObserverEntry],
+        {} as ResizeObserver);
+      flushSync(); flushPaint();
+      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize);
+      hidden = true; document.dispatchEvent(new Event('visibilitychange')); flushSync(); flushPaint();
+      hidden = false; document.dispatchEvent(new Event('visibilitychange')); flushSync(); flushPaint();
+      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize + 1);
+      expect(pushed.mock.calls.at(-1)![0][0]).toBe(liveIds.at(-1));
     } finally {
       unsubscribe();
       await controller.hardwareScopeDriver.stop(handle);
