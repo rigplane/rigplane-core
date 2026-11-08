@@ -229,8 +229,7 @@ export class ScopeController {
       },
       (subscription, previous) => {
         if (previous && (subscription === null || previous.sourceId !== subscription.sourceId || previous.receiver !== subscription.receiver)) {
-          this._channel?.sendRaw({ type: 'unsubscribe', sourceId: previous.sourceId, receiver: previous.receiver });
-          this._sentSubscriptions.delete(`${previous.sourceId}:${previous.receiver}`);
+          this._sendUnsubscribe(previous);
         }
         if (subscription) this._sendSubscription(source, subscription);
 
@@ -277,6 +276,13 @@ export class ScopeController {
     const identity = JSON.stringify([this._channel.sessionEpoch, subscription]);
     if (this._sentSubscriptions.get(key) === identity) return;
     if (this._channel.sendRaw({ type: 'subscribe', ...subscription })) this._sentSubscriptions.set(key, identity);
+  }
+
+  private _sendUnsubscribe(subscription: ScopeSubscription): void {
+    const key = `${subscription.sourceId}:${subscription.receiver}`;
+    if (this._channel?.state !== 'connected' || !this._sentSubscriptions.has(key)) return;
+    this._channel.sendRaw({ type: 'unsubscribe', sourceId: subscription.sourceId, receiver: subscription.receiver });
+    this._sentSubscriptions.delete(key);
   }
 
   private _installBinding(binding: ChannelBinding): void {
@@ -364,8 +370,7 @@ export class ScopeController {
     binding.active = false;
     const stream = this._streams[source];
     for (const subscription of stream?.subscriptions ?? []) {
-      channel.sendRaw({ type: 'unsubscribe', sourceId: subscription.sourceId, receiver: subscription.receiver });
-      this._sentSubscriptions.delete(`${subscription.sourceId}:${subscription.receiver}`);
+      this._sendUnsubscribe(subscription);
     }
     stream?.pause(); stream?.clearMode(); this._arrivals[source] = null; this._slotArrivals[source].clear();
     if (![...this._bindings.values()].some(active => active.active)) {
