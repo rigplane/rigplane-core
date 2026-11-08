@@ -26,10 +26,11 @@ export function resolveLcdSpectrumFrame(
     return { state: 'ghost', reason: 'receiver-mismatch' };
   }
   if (geometry.freshness !== 'fresh') return { state: 'ghost', reason: 'stale' };
+  const headerOnlyOutOfRange = geometry.outOfRange && !geometry.hasPixels;
   if (!Number.isFinite(geometry.view.startHz) || !Number.isFinite(geometry.view.endHz)
     || geometry.view.endHz <= geometry.view.startHz
-    || (!geometry.outOfRange && (!geometry.hasPixels || geometry.width < 2))) {
+    || (!headerOnlyOutOfRange && (!geometry.hasPixels || geometry.width < 2))) {
     return { state: 'ghost', reason: 'invalid' };
   }
-  return { state: geometry.outOfRange ? 'out-of-range' : 'live', geometry };
+  return { state: headerOnlyOutOfRange ? 'out-of-range' : 'live', geometry };
 }

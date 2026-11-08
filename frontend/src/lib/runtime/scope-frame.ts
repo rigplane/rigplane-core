@@ -49,7 +49,8 @@ export interface ScopeCoverageProjection {
 
 export function projectScopeCoverage(geometry: ScopeGeometry, requested: View): ScopeCoverageProjection {
   const hatch = (reason: ScopeHatchReason): ScopeCoverageProjection => ({ covered: [], hatched: [{ start: 0, end: 1, reason }] });
-  if (geometry.outOfRange) return hatch('outOfRange');
+  // IqFftScope._tx_frame retains pixels while setting the out-of-range flag.
+  if (geometry.outOfRange && !geometry.hasPixels) return hatch('outOfRange');
   if (!geometry.hasPixels) return hatch('no pixels');
   const startHz = Math.max(requested.startHz, geometry.view.startHz, geometry.coverage.startHz);
   const endHz = Math.min(requested.endHz, geometry.view.endHz, geometry.coverage.endHz);
