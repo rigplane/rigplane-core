@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScopeRenderTrace } from '../scope-render-trace';
 import type { ScopeFrame } from '../adapters/scope-adapter';
 
-const frame: ScopeFrame = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array(2049) });
+const frame: ScopeFrame = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels: new Uint8Array(2049) });
 const receipt = (sequence: number, wireSequence: number, transportEpoch = 1) => ({
   kind: 'accepted' as const, frame, token: { source: 'audio_fft' as const, transportEpoch, wireSequence, acceptedSequence: sequence },
   callbackAt: performance.now(), acceptedAt: performance.now(),

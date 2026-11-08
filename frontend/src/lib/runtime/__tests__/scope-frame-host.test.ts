@@ -36,7 +36,7 @@ function channel() {
   };
 }
 
-function frame(receiver: 0 | 1 = 0, pixels = [0, 128, 255], wireSequence = 17): ArrayBuffer {
+function frame(receiver: 0 | 1 = 0, pixels = [0, 128, 255], wireSequence = 17, flags = 0): ArrayBuffer {
   const buffer = new ArrayBuffer(16 + pixels.length);
   const view = new DataView(buffer);
   view.setUint8(0, 0x01);
@@ -44,6 +44,7 @@ function frame(receiver: 0 | 1 = 0, pixels = [0, 128, 255], wireSequence = 17): 
   view.setUint32(3, 14_000_000, true);
   view.setUint32(7, 14_100_000, true);
   view.setUint16(11, wireSequence, true);
+  view.setUint8(13, flags);
   view.setUint16(14, pixels.length, true);
   pixels.forEach((sample, index) => view.setUint8(16 + index, sample));
   return buffer;
@@ -126,23 +127,24 @@ describe('ScopeFrameHost MOR-2326 lifecycle', () => {
     host.dispose();
   });
 
-  it.each([0, 1] as const)('expires receiver %s at its own deadline while foreign traffic continues', async receiver => {
+  it.each([[0, false], [1, false], [0, true], [1, true]] as const)(
+    'expires receiver %s at its own deadline while foreign traffic continues (OOR=%s)', async (receiver, oor) => {
     const { time, channels, controller, host } = rig();
     host.updateAuthority({ source: 'hardware', receiver: receiver === 0 ? 'MAIN' : 'SUB', providerGeneration: 1 });
     const handle = await controller.hardwareScopeDriver.start();
     channels.scope.transition('connected');
     const updates = vi.fn();
     host.subscribePresentation(updates);
-    channels.scope.fire(frame(receiver));
+    channels.scope.fire(frame(receiver, oor ? [] : [0, 128, 255], 17, oor ? 1 : 0));
     const selected = host.snapshotPresentation().envelope;
     for (let tick = 0; tick < 4; tick++) {
       time.advance(100);
-      channels.scope.fire(frame(receiver === 0 ? 1 : 0, [255, 0, 0]));
+      channels.scope.fire(frame(receiver === 0 ? 1 : 0, oor ? [] : [255, 0, 0], 17, oor ? 1 : 0));
       expect(host.snapshotPresentation().envelope).toBe(selected);
-      expect(host.snapshot().state).toBe('live');
+      expect(host.snapshot().state).toBe(oor ? 'out-of-range' : 'live');
     }
     time.advance(99);
-    expect(host.snapshot().state).toBe('live');
+    expect(host.snapshot().state).toBe(oor ? 'out-of-range' : 'live');
     updates.mockClear();
     time.advance(1);
     expect(updates.mock.lastCall?.[0].resolution).toEqual({ state: 'ghost', reason: 'stale' });

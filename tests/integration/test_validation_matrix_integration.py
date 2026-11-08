@@ -160,10 +160,15 @@ def test_safety_gated_checks_blocked_without_authorization(
     for spec in REGISTRY:
         status = checks[spec.check_id]["status"]
         if _is_safety_gated(spec):
-            # Fail-closed: blocked regardless of capability declaration.
-            assert status == CheckStatus.BLOCKED.value, (
+            # Fail-closed: never executed. A profile that does not declare the
+            # check's capability at all (the IC-905 has no tuner) reports the
+            # firm UNSUPPORTED instead of BLOCKED; both are non-executing.
+            allowed = {CheckStatus.BLOCKED.value}
+            if spec.capability and spec.capability not in capabilities:
+                allowed.add(CheckStatus.UNSUPPORTED.value)
+            assert status in allowed, (
                 f"{owned_profile_model}: safety-gated {spec.check_id} is "
-                f"{status!r}, expected blocked"
+                f"{status!r}, expected one of {sorted(allowed)}"
             )
         elif (
             spec.kind in (CheckKind.MANUAL, CheckKind.AUDIO_PROBE)

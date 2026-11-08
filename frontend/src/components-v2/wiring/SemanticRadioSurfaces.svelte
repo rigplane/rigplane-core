@@ -855,7 +855,6 @@
     volume: runtime.audio.volume,
     connected: runtime.connectionAudio,
     rxSilent: runtime.rxSilent,
-    sourceLevelLow: runtime.rxSourceLevelLow,
     routing: runtime.audioRouting == null ? null : {
       focus: runtime.audioRouting.focus,
       splitStereo: runtime.audioRouting.split_stereo,
@@ -1480,7 +1479,7 @@
     const resolution = scopePresentation?.resolution;
     const frameMode = scopePresentation?.envelope?.frame.mode;
     const acceptedSequence = scopePresentation?.envelope?.acceptedSequence;
-    const projection = scopeDemanded && resolution?.state === 'live'
+    const projection = scopeDemanded && (resolution?.state === 'live' || resolution?.state === 'out-of-range')
       && typeof frameMode === 'number' && Number.isSafeInteger(frameMode) && acceptedSequence !== undefined
       ? { frame: resolution.frame, frameMode, acceptedSequence, passband: scopePassband.display } : null;
     return { projection, demanded: scopeDemanded, setDemand: setManagedScopeDemand };

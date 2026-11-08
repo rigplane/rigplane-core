@@ -16,7 +16,7 @@ jobs:
     # head without allocating a build runner or checking out code.
     # pull_request_target keeps the workflow and token policy base-controlled;
     # this job uses API metadata only and never executes pull-request contents.
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 2
     steps:
       - name: Publish docs-only quick status

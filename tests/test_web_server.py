@@ -1376,7 +1376,7 @@ class TestBackpressure:
 
         # Mock WebSocket that never sends (simulates slow client)
         mock_ws = MagicMock(spec=WebSocketConnection)
-        handler = ScopeHandler(mock_ws, None)
+        handler = ScopeHandler(mock_ws)
         handler._running = True
 
         pixels = bytes(range(100))
@@ -1384,7 +1384,7 @@ class TestBackpressure:
 
         # Push HIGH_WATERMARK * 3 frames — queue should not block
         for i in range(HIGH_WATERMARK * 3):
-            handler.push_frame(frame)
+            handler.push_frame(encode_scope_frame(frame, i))
 
         # Queue size should be bounded by HIGH_WATERMARK * 2 (maxsize)
         # but frames were dropped, so it should be <= HIGH_WATERMARK * 2
@@ -1396,14 +1396,16 @@ class TestBackpressure:
         from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
-        handler = ScopeHandler(mock_ws, None)
+        handler = ScopeHandler(mock_ws)
         handler._running = True
+        server = WebServer()
+        server._scope_handlers.add(handler)
 
         frame = ScopeFrame(0, 0, 14_000_000, 14_350_000, b"\x00" * 10, False)
         for i in range(5):
-            handler.push_frame(frame)
+            server._broadcast_scope(frame)
 
-        assert handler._seq == 5
+        assert server._scope_sequence == 5
 
     def test_scope_sequence_wraps_at_65536(self) -> None:
         """Sequence counter wraps at 16-bit boundary."""
@@ -1411,17 +1413,21 @@ class TestBackpressure:
         from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
-        handler = ScopeHandler(mock_ws, None)
+        handler = ScopeHandler(mock_ws)
         handler._running = True
-        handler._seq = 65534
+        server = WebServer()
+        server._scope_handlers.add(handler)
+        server._scope_sequence = 65534
 
         frame = ScopeFrame(0, 0, 14_000_000, 14_350_000, b"\x00" * 5, False)
         # Push 3 frames: seq 65534, 65535, 0
-        handler.push_frame(frame)  # encodes with seq=65534, _seq becomes 65535
-        handler.push_frame(frame)  # encodes with seq=65535, _seq becomes 0
-        handler.push_frame(frame)  # encodes with seq=0, _seq becomes 1
-
-        assert handler._seq == 1
+        for _ in range(3):
+            server._broadcast_scope(frame)
+        assert server._scope_sequence == 65537
+        assert [
+            int.from_bytes(handler._frame_queue.get_nowait()[11:13], "little")
+            for _ in range(3)
+        ] == [65534, 65535, 0]
 
 
 # ---------------------------------------------------------------------------
@@ -3087,11 +3093,11 @@ class TestScopeHandlerPushFrame:
         from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
-        handler = ScopeHandler(mock_ws, None)
+        handler = ScopeHandler(mock_ws)
         handler._running = True
 
         frame = ScopeFrame(0, 0, 14_000_000, 14_350_000, bytes(10), False)
-        handler.push_frame(frame)  # must not raise AttributeError
+        handler.push_frame(encode_scope_frame(frame, 0))
         assert handler._frame_queue.qsize() == 1
 
     def test_push_frame_not_running_is_noop(self) -> None:
@@ -3100,25 +3106,27 @@ class TestScopeHandlerPushFrame:
         from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
-        handler = ScopeHandler(mock_ws, None)
+        handler = ScopeHandler(mock_ws)
         handler._running = False
 
         frame = ScopeFrame(0, 0, 14_000_000, 14_350_000, bytes(10), False)
-        handler.push_frame(frame)
+        handler.push_frame(encode_scope_frame(frame, 0))
         assert handler._frame_queue.qsize() == 0
 
-    def test_push_frame_increments_sequence(self) -> None:
+    def test_push_frame_preserves_shared_sequence(self) -> None:
         from rigplane.web.handlers import ScopeHandler
         from rigplane.ws import WebSocketConnection
 
         mock_ws = MagicMock(spec=WebSocketConnection)
-        handler = ScopeHandler(mock_ws, None)
+        handler = ScopeHandler(mock_ws)
         handler._running = True
 
         frame = ScopeFrame(0, 0, 14_000_000, 14_350_000, bytes(5), False)
-        handler.push_frame(frame)
-        handler.push_frame(frame)
-        assert handler._seq == 2
+        encoded = encode_scope_frame(frame, 42)
+        handler.push_frame(encoded)
+        handler.push_frame(encoded)
+        assert handler._frame_queue.get_nowait() is encoded
+        assert handler._frame_queue.get_nowait() is encoded
 
 
 # ---------------------------------------------------------------------------
@@ -3385,7 +3393,7 @@ class TestScopeReconnect:
         frame = ScopeFrame(0, 0, 14_000_000, 14_350_000, bytes(10), False)
         server._broadcast_scope(frame)
 
-        h2.enqueue_frame.assert_called_once_with(frame)
+        h2.enqueue_frame.assert_called_once_with(encode_scope_frame(frame, 0))
         h1.enqueue_frame.assert_not_called()
 
 
@@ -4672,20 +4680,12 @@ async def test_ftx1_mode_families_reach_both_capability_endpoints_over_http() ->
 
 
 @pytest.mark.parametrize(
-    ("rig_file", "expected"),
-    [
-        ("ic705.toml", "SET > Connectors > USB AF/IF Output > AF Output Level"),
-        ("ic7300.toml", "SET > Connectors > ACC/USB AF Output Level"),
-        ("ic7610.toml", None),
-    ],
+    "rig_file",
+    ["ic705.toml", "ic7300.toml", "ic7610.toml"],
 )
-async def test_rx_audio_level_menu_reaches_capabilities_over_http(
-    rig_file: str, expected: str | None
+async def test_rx_audio_level_menu_absent_from_capabilities_over_http(
+    rig_file: str,
 ) -> None:
-    """``rxAudioLevelMenu`` is the shipped profile's
-    ``[audio].rx_audio_level_menu`` on a live listener, ``null`` for a profile
-    that declares none (IC-7610). Only the radio is faked; the profile comes
-    from ``load_rig`` and the reply from a real TCP request."""
     profile = load_rig(_RIGS_DIR / rig_file).to_profile()
     radio = SimpleNamespace(
         model=profile.model,
@@ -4704,8 +4704,7 @@ async def test_rx_audio_level_menu_reaches_capabilities_over_http(
         status, _, body = await _http_get(host, port, "/api/v1/capabilities")
         assert status == 200
         payload = json.loads(body)
-        assert "rxAudioLevelMenu" in payload
-        assert payload["rxAudioLevelMenu"] == expected
+        assert "rxAudioLevelMenu" not in payload
     finally:
         await srv.stop()
 

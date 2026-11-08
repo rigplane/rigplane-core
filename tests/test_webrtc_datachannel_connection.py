@@ -283,7 +283,7 @@ async def test_control_scope_audio_flow_concurrently_into_handlers() -> None:
     # seam still delivers them. Assert via the wrapped connection directly so
     # no handler edits are needed to observe arrival.
     scope_conn = WebRtcDataChannelConnection(server_ch["scope"], server_pc)
-    scope_handler = ScopeHandler(scope_conn, None, server=None)
+    scope_handler = ScopeHandler(scope_conn, server=None)
     assert scope_handler is not None  # constructed over the lossy seam
 
     # audio: broadcaster=None → AudioHandler reads inbound frames over the seam.

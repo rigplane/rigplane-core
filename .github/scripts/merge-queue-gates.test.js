@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const {parseQueueRef, evaluateAgentReviewGate, run} = require('./merge-queue-gates');
@@ -47,27 +49,25 @@ function fakeApi({pullData, statuses, throwOn}) {
 
 test('run publishes success for a passing head', async () => {
   const api = fakeApi({pullData: pull, statuses: [{context: 'Agent Review Gate', state: 'success'}]});
-  await run({...api, gate: 'agent-review', ref: SHORT, sha: 'c'.repeat(40)});
+  await run({...api, ref: SHORT, sha: 'c'.repeat(40)});
   assert.deepEqual(api.calls.published.map((s) => s.state), ['success']);
   assert.equal(api.calls.failed.length, 0);
 });
 
 test('run fails closed on a bad ref and on API errors, publishing a failure status', async () => {
   const bad = fakeApi({pullData: pull, statuses: []});
-  await run({...bad, gate: 'agent-review', ref: 'main', sha: 'c'.repeat(40)});
+  await run({...bad, ref: 'main', sha: 'c'.repeat(40)});
   assert.deepEqual(bad.calls.published.map((s) => s.state), ['failure']);
   assert.equal(bad.calls.failed.length, 1);
   const broken = fakeApi({pullData: pull, statuses: [], throwOn: 'pull'});
-  await run({...broken, gate: 'agent-review', ref: SHORT, sha: 'c'.repeat(40)});
+  await run({...broken, ref: SHORT, sha: 'c'.repeat(40)});
   assert.deepEqual(broken.calls.published.map((s) => s.state), ['failure']);
 });
 
-test('freeze gate reuses the freeze contract and publishes no status', async () => {
-  const ok = fakeApi({pullData: {title: 'ci: x', body: 'Change class: ci', labels: [], draft: false}, statuses: []});
-  await run({...ok, gate: 'freeze', ref: SHORT, sha: 'c'.repeat(40)});
-  assert.equal(ok.calls.failed.length, 0);
-  assert.equal(ok.calls.published.length, 0);
-  const feat = fakeApi({pullData: {title: 'feat: x', body: 'Change class: fix', labels: [], draft: false}, statuses: []});
-  await run({...feat, gate: 'freeze', ref: SHORT, sha: 'c'.repeat(40)});
-  assert.equal(feat.calls.failed.length, 1);
+test('the workflow still names the gate for a base-branch helper that publishes only for agent-review', () => {
+  // The workflow loads merge-queue-gates.js from the base branch, so the first
+  // queue run after the freeze gate was removed still uses the old helper,
+  // which publishes the Agent Review Gate status only when gate === 'agent-review'.
+  const workflow = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'merge-queue-gates.yml'), 'utf8');
+  assert.match(workflow, /await run\(\{github, context, core, gate: 'agent-review',/u);
 });

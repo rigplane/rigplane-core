@@ -1,4 +1,9 @@
+/** MOR-4241 wire documents are replayed by Python's
+ * test_scope_health_watchdog_mor3690.py::test_scope_ctr_control_and_scope_wire_replay
+ * through the real control and scope WebSocket handlers (only hardware faked).
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import scopeOutOfRangeFixture from '../../../../../tests/fixtures/ic705/scope_out_of_range.json';
 import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { createClassComponent } from 'svelte/legacy';
@@ -15,6 +20,12 @@ import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import * as passband from '$lib/runtime/adapters/scope-passband-display';
 import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
+import * as controlTransport from '$lib/transport/ws-client';
+import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
+import { setRadioReady, setRadioHealth } from '$lib/stores/connection.svelte';
+import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
+import type { WsCommand, WsIncoming } from '$lib/types/protocol';
+import { IC7300_STATE } from '$lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 
 const h = vi.hoisted(() => ({
   scope: null as unknown as ScopeController, resources: null as unknown as PresentationResourceHost<unknown>,
@@ -90,10 +101,12 @@ function channel() {
     onStateChange: (fn: (value: string) => void) => { states.add(fn); return () => states.delete(fn); },
     onSessionTransition: (fn: (next: { state: string; epoch: number }) => void) => { sessions.add(fn); return () => sessions.delete(fn); },
     connected() { transition('connected'); },
-    frame(receiver = 0, pixels = [0, 128, 255]) {
-      const buffer = new ArrayBuffer(16 + pixels.length), view = new DataView(buffer);
-      view.setUint8(0, 1); view.setUint8(1, receiver); view.setUint32(3, 14_000_000, true);
-      view.setUint32(7, 14_100_000, true); view.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
+    frame(receiver = 0, pixels = [0, 128, 255], captured?: ArrayBuffer) {
+      const buffer = captured ?? new ArrayBuffer(16 + pixels.length), view = new DataView(buffer);
+      if (!captured) {
+        view.setUint8(0, 1); view.setUint8(1, receiver); view.setUint32(3, 14_000_000, true);
+        view.setUint32(7, 14_100_000, true); view.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
+      }
       for (const fn of binary) fn(buffer); flushSync();
     }, count: () => binary.size,
   };
@@ -214,6 +227,53 @@ afterEach(async () => {
 });
 
 describe('one managed scope owner through the real region and panel', () => {
+  it('sends CTR through the real client and consumes the paired server recovery documents', async () => {
+    const documents = scopeOutOfRangeFixture as unknown as {
+      streamWireHex: string; inRangeWireHex: string; ctrCommand: WsCommand;
+      ctrResponse: Extract<WsIncoming, { type: 'response' }>;
+    };
+    deliver(s => {
+      s.main.freqHz = 146_520_000;
+      s.scopeControls = { ...IC7300_STATE.scopeControls!, mode: 1 };
+      s.fieldStatus!['scopeControls.mode'] = IC7300_STATE.fieldStatus!['scopeControls.mode'];
+    });
+    publishAuthority();
+    instances.length = 0;
+    vi.stubGlobal('WebSocket', MockWebSocket);
+    setRadioReady(true); setRadioHealth(null);
+    controlTransport.connect('ws://station.test/api/v1/ws');
+    const socket = instances[0]; socket.simulateOpen();
+    try {
+      await render();
+      wire.frame(0, [], Uint8Array.from(Buffer.from(documents.streamWireHex, 'hex')).buffer);
+      const overlay = target.querySelector('[data-testid="scope-out-of-range"]')!;
+      expect(overlay).not.toBeNull();
+      overlay.querySelector<HTMLButtonElement>('button')!.click(); flushSync();
+      const command = socket.sent.map(raw => JSON.parse(raw) as WsCommand)
+        .find(message => message.type === 'cmd' && message.name === 'set_scope_mode');
+      expect(command).toEqual({ ...documents.ctrCommand, id: expect.any(String) });
+      socket.simulateMessage(JSON.stringify({ ...documents.ctrResponse, id: command!.id }));
+      wire.frame(0, [], Uint8Array.from(Buffer.from(documents.inRangeWireHex, 'hex')).buffer);
+      expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
+      expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    } finally {
+      controlTransport.disconnect(); resetCommandLifecycle();
+      setRadioReady(false); setRadioHealth(null);
+    }
+  });
+
+  it('keeps captured OOR content distinct from transport loss through the real host', async () => {
+    await render();
+    wire.frame(0, [], Uint8Array.from(Buffer.from('0100010044950820e59c080100010000', 'hex')).buffer);
+    expect(h.scope.hardwareScopeConnected).toBe(true);
+    expect(target.querySelector('[data-testid="scope-out-of-range"]')?.textContent)
+      .toContain('144.000–144.500 MHz');
+    expect(target.textContent).not.toContain('Scope disconnected');
+    wire.frame();
+    expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+  });
+
   it.each([50, 100, 200])('keeps the selected panorama drawn across interleaved receivers every %s ms', async interval => {
     setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
       capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });

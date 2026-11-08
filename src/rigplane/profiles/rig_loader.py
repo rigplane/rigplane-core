@@ -732,10 +732,6 @@ class RigConfig:
     # at full level. The FTX-1 sets "left" (USB RX audio is on L only, so the
     # average with a silent R loses 6 dB).
     rx_audio_channel: str = "mix"
-    # Radio menu item that sets its RX audio output level to the computer
-    # (MOR-4210), shown when browser RX audio stays quiet. None = undeclared.
-    # Keyword-only so the fields after it keep their positions.
-    rx_audio_level_menu: str | None = field(default=None, kw_only=True)
     write_only_controls: tuple[str, ...] = ()
     # Per-check_id fixed-value declarations (MOR-2105 part 2): check_id ->
     # source establishing that this radio has only one legal value for that
@@ -983,7 +979,6 @@ class RigConfig:
             sample_rate_by_codec=self.sample_rate_by_codec,
             browser_rx_transport=self.browser_rx_transport,
             browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
-            rx_audio_level_menu=self.rx_audio_level_menu,
             write_only_controls=frozenset(self.write_only_controls),
             fixed_value_checks=dict(self.fixed_value_checks),
             state_acquisition=self.state_acquisition,
@@ -3437,7 +3432,6 @@ def load_rig(path: Path) -> RigConfig:
     browser_rx_transport: str | None = None
     browser_rx_transcode_to_opus: bool | None = None
     rx_audio_channel: str = "mix"
-    rx_audio_level_menu: str | None = None
     audio_section = data.get("audio")
     if audio_section is not None:
         if not isinstance(audio_section, dict):
@@ -3531,13 +3525,6 @@ def load_rig(path: Path) -> RigConfig:
                     f"{sorted(VALID_RX_AUDIO_CHANNELS)}, got {rx_channel_raw!r}"
                 )
             rx_audio_channel = rx_channel_raw
-        if "rx_audio_level_menu" in audio_section:
-            level_menu_raw = audio_section["rx_audio_level_menu"]
-            if not isinstance(level_menu_raw, str) or not level_menu_raw.strip():
-                raise RigLoadError(
-                    f"{filename}: [audio].rx_audio_level_menu must be a non-empty string"
-                )
-            rx_audio_level_menu = level_menu_raw.strip()
 
     usb_identity: UsbAudioIdentity | None = None
     usb_section = data.get("usb")
@@ -3727,7 +3714,6 @@ def load_rig(path: Path) -> RigConfig:
         browser_rx_transport=browser_rx_transport,
         browser_rx_transcode_to_opus=browser_rx_transcode_to_opus,
         rx_audio_channel=rx_audio_channel,
-        rx_audio_level_menu=rx_audio_level_menu,
         write_only_controls=write_only_controls,
         fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,

@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, Mock
 
 import numpy as np
 import pytest
+from rigplane.scope import ScopeFrame
 
 from rigplane.audio import AudioPacket
 from rigplane.audio.bus import STAGE_RX_PCM, STAGE_RX_POST_DSP, AudioBus
@@ -282,8 +283,10 @@ class _FakeScopeHandler:
     def __init__(self) -> None:
         self.frames: list = []
 
-    def enqueue_frame(self, frame) -> None:
-        self.frames.append(frame)
+    def enqueue_frame(self, frame: bytes) -> None:
+        from _helpers import scope_frame_from_wire
+
+        self.frames.append(scope_frame_from_wire(frame))
 
 
 def test_fft_scope_receives_frames_via_named_post_dsp_stage() -> None:
@@ -345,7 +348,7 @@ async def test_scope_service_lifecycle_and_serializer_matrix(
     await server.ensure_audio_scope_enabled(audio_handler)
     assert (broadcaster._legacy_tap_handle is not None) is audio
     if scope is not None:
-        frame = object()
+        frame = ScopeFrame(0, 0, 14_000_000, 14_100_000, b"\x01", False)
         server._dispatch_audio_fft_frame(frame)
         assert audio_handler.frames == [frame]
         assert main_handler.frames == ([] if hardware else [frame])
@@ -373,7 +376,7 @@ async def test_runtime_hardware_scope_is_cached_for_dispatch_and_teardown() -> N
     await server.ensure_audio_scope_enabled(audio_handler)
     radio.capabilities.clear()
 
-    frame = object()
+    frame = ScopeFrame(0, 0, 14_000_000, 14_100_000, b"\x01", False)
     server._dispatch_audio_fft_frame(frame)
     assert audio_handler.frames == [frame]
     assert main_handler.frames == []

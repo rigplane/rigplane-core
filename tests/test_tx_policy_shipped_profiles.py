@@ -100,7 +100,7 @@ def test_every_shipped_profile_declares_a_tx_policy_section():
     contents are right is the business of the per-rig pins below.
     """
     rigs = discover_rigs(RIGS_DIR)
-    assert len(rigs) == 9, "shipped rig count changed; re-run the TX policy ruling"
+    assert len(rigs) == 10, "shipped rig count changed; re-run the TX policy ruling"
 
     undeclared = [
         path.name
@@ -131,7 +131,14 @@ def test_icom_siblings_inherit_the_measured_civ_receiving_byte():
         model for model in rigs if _routes_onto_the_shared_icom_read(model)
     } - MEASURED
 
-    assert inheritors == {"IC-705", "IC-7300MK2", "IC-7610", "IC-9700", "X6200"}
+    assert inheritors == {
+        "IC-705",
+        "IC-7300MK2",
+        "IC-7610",
+        "IC-905",
+        "IC-9700",
+        "X6200",
+    }
 
     for model in sorted(inheritors):
         assert rigs[model].to_profile().tx_policy == TxPolicy(

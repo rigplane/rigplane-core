@@ -226,10 +226,6 @@ export interface Capabilities {
    *  the capability for the RF-power level only. Absent on older servers
    *  (treated as unknown, not false). */
   powerOnCommand?: boolean;
-  /** The profile's `[audio].rx_audio_level_menu` (MOR-4210): the radio menu
-   *  item that sets its RX audio output level. `null` when undeclared;
-   *  absent on older servers and profile-less backends. */
-  rxAudioLevelMenu?: string | null;
   /** Absent on older servers. */
   cwText?: CwTextCapability;
   receivers: number;
@@ -693,10 +689,6 @@ export function validateCapabilities(value: unknown): Capabilities {
   const expectedReceivers = raw.vfoScheme === 'single' || raw.vfoScheme === 'ab' ? 1 : 2;
   if (raw.receivers !== expectedReceivers) {
     invalid('$.vfoScheme', `${String(raw.vfoScheme)} with receivers=${expectedReceivers}`);
-  }
-  if (Object.prototype.hasOwnProperty.call(raw, 'rxAudioLevelMenu')
-    && raw.rxAudioLevelMenu !== null && typeof raw.rxAudioLevelMenu !== 'string') {
-    invalid('$.rxAudioLevelMenu', 'a string or null');
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'vfoReadback')) {
     const readbacks: readonly VfoReadback[] = ['absolute', 'selected_unselected', 'none'];

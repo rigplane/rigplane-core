@@ -52,6 +52,7 @@ from rigplane.commands import (
     parse_scope_vbw_response,
 )
 from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.radio_state import ScopeControlsState
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import ScopeCompletionPolicy, ScopeFixedEdge
@@ -61,6 +62,9 @@ logger = logging.getLogger(__name__)
 
 class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
     """Scope/waterfall methods for CoreRadio (mixin)."""
+
+    _scope_frame_queue: BoundedQueue[ScopeFrame] | None
+    _scope_stream_consumers: int
 
     # ------------------------------------------------------------------
     # Scope / Waterfall API
@@ -91,17 +95,27 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
         Note:
             Uses a bounded queue (maxsize=64) that drops oldest frames if not
-            consumed fast enough. Call enable_scope() separately to start data.
+            consumed fast enough, allocated only while iterated. Call
+            enable_scope() separately to start data.
         """
-        while self._connected:
-            try:
-                frame = await asyncio.wait_for(
-                    self._scope_frame_queue.get(), timeout=1.0
-                )
-                yield frame
-                self._scope_frame_queue.task_done()
-            except asyncio.TimeoutError:
-                continue
+        if self._scope_frame_queue is None:
+            self._scope_frame_queue = BoundedQueue(maxsize=64)
+        queue = self._scope_frame_queue
+        self._scope_stream_consumers += 1
+        try:
+            while self._connected:
+                try:
+                    frame = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                try:
+                    yield frame
+                finally:
+                    queue.task_done()
+        finally:
+            self._scope_stream_consumers -= 1
+            if not self._scope_stream_consumers:
+                self._scope_frame_queue = None
 
     async def enable_scope(
         self,

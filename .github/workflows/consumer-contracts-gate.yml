@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   consumer-contracts-gate:
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 8
     env:
       UV_PYTHON: "3.11"

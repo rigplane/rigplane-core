@@ -117,11 +117,11 @@
   "core.overlay.poweredOff.powerOnButton": "Включить",
   "core.overlay.poweredOff.failedPowerOn": "Не удалось включить: {detail}",
   "core.overlay.scopeDisconnected": "Панорама отключена — переподключение…",
+  "core.overlay.scopeOutOfRange": "Частота за пределами фиксированных границ панорамы ({start}–{end} МГц)",
+  "core.overlay.scopeSwitchToCtr": "Переключить в CTR",
   "core.overlay.scopeTransmitting": "Идёт передача — радио не присылает панораму во время передачи",
   "core.overlay.audioLinkLost": "Аудиоканал потерян — переподключение…",
   "core.overlay.rxSilence": "Нет звука от радиостанции: сервер получает только цифровую тишину. В macOS выдайте разрешение на микрофон программе, которая запускает сервер, или проверьте вывод USB-аудио радиостанции. В Windows отключите «Улучшение звука» для этого входа в параметрах звука Windows.",
-  "core.overlay.rxSourceLow": "Звук с радио тихий. Поднимите уровень звукового выхода радио.",
-  "core.overlay.rxSourceLowMenu": "Звук с радио тихий. Поднимите уровень звукового выхода радио: {menu}.",
 
   "core.diagnostics.sendReport.title": "Отправить диагностический отчёт",
   "core.diagnostics.sendReport.confirm": "Отправить отчёт",

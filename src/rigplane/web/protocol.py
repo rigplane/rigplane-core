@@ -58,7 +58,9 @@ def encode_scope_frame(frame: ScopeFrameLike, sequence: int) -> bytes:
 
     Args:
         frame: Complete scope frame from the radio.
-        sequence: Wrapping sequence counter (uint16).
+        sequence: Per-frame counter shared by a channel's clients, wrapping
+            at uint16. Bytes 11..12 are little endian. A late join starts
+            mid-count; reconnect does not reset the channel counter.
 
     Returns:
         16-byte header + pixel bytes.

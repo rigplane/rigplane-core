@@ -59,6 +59,7 @@ from .parser import (
 )
 from .transport import (
     CatCommandRejected,
+    CatQueryResponse,
     CatTimeoutError,
     CatTransportError,
     YaesuCatTransport,
@@ -130,6 +131,16 @@ def _digit_fields_valid(result: Mapping[str, Any]) -> bool:
         for name, value in result.items()
         if name in _DIGIT_REPLY_FIELDS and isinstance(value, str)
     )
+
+
+def _decode_atu_response(result: Mapping[str, Any]) -> tuple[str, str, int]:
+    """Decode the AC route and native state before crediting the reply."""
+    src, typ, state = result.get("src"), result.get("type"), result.get("state")
+    # FTX-1 CAT Operation Reference 2508-C, AC table, printed page 6.
+    native_to_status = {"0": 0, "1": 1, "3": 2}
+    if src not in ("0", "1") or typ != "0" or state not in native_to_status:
+        raise ValueError(f"Unsupported ATU response: {result!r}")
+    return src, typ, native_to_status[state]
 
 
 def _load_config(profile: Any) -> "RigConfig":
@@ -1409,10 +1420,14 @@ class YaesuCatRadio:
         self, cmd_name: str, read_cmd: str, **query_kwargs: Any
     ) -> dict[str, Any]:
         """Decode a read and credit only its still-current connection."""
-        writer = self._transport._writer
+        transport = self._transport
+        writer = transport._writer
         identity_generation = self._identity_generation
-        reconnects = self._transport.stats.reconnects
-        raw = await self._transport.query(read_cmd, **query_kwargs)
+        reconnects = transport.stats.reconnects
+        capture = self._tuner_provider_generation
+        provider_generation = None if capture is None else capture()
+
+        raw = await transport.query(read_cmd, **query_kwargs)
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -1436,12 +1451,29 @@ class YaesuCatRadio:
                     raise ValueError("Malformed CAT identity")
             elif type(value) is not int or not 0 <= value <= 9999:
                 raise ValueError("Malformed CAT identity")
+        semantic_valid = True
+        try:
+            if cmd_name == "get_repeater_shift":
+                RepeaterShiftDirection(int(result["shift"]))
+            elif cmd_name == "get_tuner":
+                _decode_atu_response(result)
+        except (TypeError, ValueError):
+            semantic_valid = False
+        connection_current = (
+            transport.connected
+            and transport._writer is writer
+            and transport.stats.reconnects == reconnects
+            and self._tuner_provider_generation is capture
+            and (capture is None or capture() == provider_generation)
+        )
+        if isinstance(raw, CatQueryResponse):
+            connection_current = raw.is_current()
         if (
-            self._transport.connected
+            self._transport is transport
+            and connection_current
             and _digit_fields_valid(result)
-            and self._transport._writer is writer
+            and semantic_valid
             and self._identity_generation == identity_generation
-            and self._transport.stats.reconnects == reconnects
         ):
             self._transport.last_valid_frame_monotonic = time.monotonic()
         return result
@@ -4002,6 +4034,7 @@ class YaesuCatRadio:
 
     def _bind_tuner_provider_generation(self, capture: Callable[[], int]) -> None:
         self._tuner_provider_generation = capture
+        self._transport.bind_provider_generation(capture)
 
     async def _read_atu_route(self) -> tuple[str, str, int, Callable[[], bool]]:
         transport = self._transport
@@ -4025,12 +4058,7 @@ class YaesuCatRadio:
             raise CommandError(
                 "Tuner connection or provider changed during acquisition"
             )
-        src, typ, state = result.get("src"), result.get("type"), result.get("state")
-        # FTX-1 CAT Operation Reference 2508-C, AC table, printed page 6.
-        native_to_status = {"0": 0, "1": 1, "3": 2}
-        if src not in ("0", "1") or typ != "0" or state not in native_to_status:
-            raise ValueError(f"Unsupported ATU response: {result!r}")
-        return src, typ, native_to_status[state], current
+        return (*_decode_atu_response(result), current)
 
     async def get_tuner_status(self) -> int:
         """Return generic ATU status: 0=OFF, 1=ON, 2=tuning/start."""

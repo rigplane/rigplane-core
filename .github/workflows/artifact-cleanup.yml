@@ -31,7 +31,7 @@ permissions:
 
 jobs:
   cleanup:
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6

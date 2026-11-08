@@ -5,7 +5,6 @@ TDD: these tests were written FIRST, then the implementation.
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import re
 import textwrap
@@ -1712,6 +1711,7 @@ choices = [
         "ic705.toml": {"rit"},
         "ic7300.toml": {"rit"},
         "ic7300mk2.toml": {"rit"},
+        "ic905.toml": {"rit"},
         "ic7610.toml": {"rit"},
         "ic9700.toml": {"rit"},
         "x6100.toml": {"rit"},
@@ -3124,48 +3124,11 @@ browser_rx_transcode_to_opus = true
         assert profile.tx_codec is None
         assert profile.default_sample_rate_hz is None
 
-    @pytest.mark.parametrize(
-        ("name", "menu"),
-        [
-            ("ic705.toml", "SET > Connectors > USB AF/IF Output > AF Output Level"),
-            ("ic7300.toml", "SET > Connectors > ACC/USB AF Output Level"),
-            ("ic7610.toml", None),
-        ],
-    )
-    def test_rx_audio_level_menu_reaches_the_profile(self, name, menu):
-        """MOR-4210: the USB AF output menu item is profile data."""
-        rig = load_rig(RIGS_DIR / name)
-        assert rig.rx_audio_level_menu == menu
-        assert rig.to_profile().rx_audio_level_menu == menu
-
-    @pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
-    def test_rx_audio_level_menu_keeps_existing_positional_arguments(self, cls):
-        """MOR-4210: a caller that passes positionally every field that
-        existed before ``rx_audio_level_menu`` still gets each value in its
-        own field (``write_only_controls`` stays a control set, not the
-        menu string)."""
-        rig = load_rig(RIGS_DIR / "ic7300.toml")
-        original = rig if cls is RigConfig else rig.to_profile()
-        names = [
-            f.name
-            for f in dataclasses.fields(cls)
-            if f.init and not f.kw_only and f.name != "rx_audio_level_menu"
-        ]
-        keywords = {
-            f.name: getattr(original, f.name)
-            for f in dataclasses.fields(cls)
-            if f.init and f.kw_only and f.name != "rx_audio_level_menu"
-        }
-        rebuilt = cls(*(getattr(original, name) for name in names), **keywords)
-        for name in names:
-            assert getattr(rebuilt, name) == getattr(original, name), name
-        assert rebuilt.rx_audio_level_menu is None
-
-    @pytest.mark.parametrize("value", ['""', '"   "', "100", "true"])
-    def test_rx_audio_level_menu_must_be_a_non_empty_string(self, tmp_path, value):
-        toml = _MINIMAL_TOML + f"\n[audio]\nrx_audio_level_menu = {value}\n"
-        with pytest.raises(RigLoadError, match=r"\[audio\].rx_audio_level_menu"):
-            load_rig(_write_toml(tmp_path, toml))
+    def test_removed_audio_level_menu_is_ignored_as_an_unknown_key(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[audio]\nrx_audio_level_menu = 100\n"
+        rig = load_rig(_write_toml(tmp_path, toml))
+        assert not hasattr(rig, "rx_audio_level_menu")
+        assert not hasattr(rig.to_profile(), "rx_audio_level_menu")
 
     def test_unknown_tx_codec_rejected(self, tmp_path):
         toml = _MINIMAL_TOML + '\n[audio]\ntx_codec = "BOGUS_CODEC"\n'
@@ -3362,6 +3325,7 @@ _SHIPPED_RX_ONLY_BANDS = {
     "ic7300.toml": (),
     "ic7300mk2.toml": (),
     "ic7610.toml": (),
+    "ic905.toml": (),
     "ic9700.toml": (),
     "tx500.toml": (),
     "x6100.toml": (),

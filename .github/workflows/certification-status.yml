@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   status:
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6

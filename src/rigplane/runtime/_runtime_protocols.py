@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from rigplane._civ_rx import CivRuntime
     from rigplane._state_cache import StateCache
     from rigplane.audio import AudioPacket, AudioStream
-    from rigplane.civ import CivEvent, CivRequestTracker
+    from rigplane.civ import CivRequestTracker
     from rigplane.commander import IcomCommander
     from rigplane.radio_state import RadioState
     from rigplane.profiles import RadioProfile
@@ -70,13 +70,12 @@ class CivRuntimeHost(Protocol):
     _civ_waiter_ttl_gc_interval: float
     _civ_last_waiter_gc_monotonic: float
 
-    # Scope and CI-V event queues
+    # Scope delivery
     _scope_assembler: "ScopeAssembler"
-    _scope_frame_queue: "BoundedQueue[ScopeFrame]"
+    _scope_frame_queue: "BoundedQueue[ScopeFrame] | None"
     _scope_callback: "Callable[[ScopeFrame], Any] | None"
     _raw_civ_listeners: "list[Callable[[bytes], Any]]"
     _scope_activity_event: asyncio.Event
-    _civ_event_queue: "BoundedQueue[CivEvent]"
 
     # State cache / last-known values
     _state_cache: "StateCache"

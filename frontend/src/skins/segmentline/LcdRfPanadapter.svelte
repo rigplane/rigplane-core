@@ -46,7 +46,7 @@
     receiver,
   }));
   const liveFrame = $derived(resolution.state === 'live' ? resolution.frame : null);
-  const frameReason = $derived(resolution.state === 'live' ? 'live' : resolution.reason);
+  const frameReason = $derived(resolution.state === 'ghost' ? resolution.reason : resolution.state);
   const spanHz = $derived(liveFrame === null ? 0 : liveFrame.endHz - liveFrame.startHz);
   const renderBins = $derived(liveFrame?.normalizedBins ?? []);
   const axisTicks: readonly AxisTick[] = $derived.by(() => {

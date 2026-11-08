@@ -78,7 +78,7 @@ class TestSupportsSerialModel:
             create_radio(SerialBackendConfig(device="/dev/ttyUSB0", model="X6100"))
         assert str(excinfo.value) == (
             "Unsupported serial model 'X6100'; supported: "
-            "IC-705, IC-7300, IC-7300MK2, IC-7610, IC-9700, X6200, "
+            "IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700, X6200, "
             "and Yaesu FT-series (FTX-1, FT-710, ...)."
         )
 

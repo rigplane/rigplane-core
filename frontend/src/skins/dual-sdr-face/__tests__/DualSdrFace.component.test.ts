@@ -109,7 +109,7 @@ describe('DualSdrFace', () => {
     expect(target.querySelectorAll('[data-receiver-cluster]').length).toBe(2);
     expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
     const pixels = new Uint8Array([1, 2]);
-    listener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels });
+    listener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels });
     pixels[0] = 255;
     await tick();
     await Promise.resolve();
@@ -117,10 +117,10 @@ describe('DualSdrFace', () => {
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
     expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('2');
     expect(canvas.lineTo).toHaveBeenCalledWith(1, expect.closeTo(8.96, 2));
-    listener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, pixels: new Uint8Array([3]) });
+    listener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, outOfRange: false, pixels: new Uint8Array([3]) });
     await tick();
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
-    listener?.({ receiver: 9, mode: 0, startFreq: 9, endFreq: 9, pixels: new Uint8Array([9]) });
+    listener?.({ receiver: 9, mode: 0, startFreq: 9, endFreq: 9, outOfRange: false, pixels: new Uint8Array([9]) });
     await tick();
     // MOR-2692: the axis separator is ' · ' — never a dash.
     expect(target.querySelector('[data-receiver-cluster="1"] .axis')?.textContent).toContain('3 · 4');
@@ -146,8 +146,8 @@ describe('DualSdrFace', () => {
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
     await tick();
-    frameListener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array([1]) });
-    frameListener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, pixels: new Uint8Array([2]) });
+    frameListener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels: new Uint8Array([1]) });
+    frameListener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, outOfRange: false, pixels: new Uint8Array([2]) });
     await tick();
     expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(2);
     healthListener?.(false);

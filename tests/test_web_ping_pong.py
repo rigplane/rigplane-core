@@ -23,6 +23,7 @@ from rigplane.web.handlers import (
     ScopeHandler,
 )
 from rigplane.ws import WS_OP_TEXT
+from rigplane.web.protocol import encode_scope_frame
 from test_web_audio_link_quality import _make_radio, _make_ws
 
 
@@ -58,7 +59,7 @@ def _scope_ws(text: str) -> SimpleNamespace:
 @pytest.mark.parametrize("audio_mode", [False, True], ids=["scope", "audio-scope"])
 async def test_scope_channel_answers_ping_with_pong(audio_mode: bool) -> None:
     ws = _scope_ws(json.dumps({"type": "ping"}))
-    await ScopeHandler(ws, None, audio_mode=audio_mode).run()  # type: ignore[arg-type]
+    await ScopeHandler(ws, audio_mode=audio_mode).run()  # type: ignore[arg-type]
     assert _sent_json(ws.send_text) == [{"type": "pong"}]
 
 
@@ -74,7 +75,7 @@ async def test_scope_run_skips_non_utf8_text_frame() -> None:
         send_text=AsyncMock(),
         send_binary=AsyncMock(),
     )
-    await ScopeHandler(ws, None).run()  # type: ignore[arg-type]
+    await ScopeHandler(ws).run()  # type: ignore[arg-type]
     assert _sent_json(ws.send_text) == [{"type": "pong"}]
 
 
@@ -83,7 +84,7 @@ async def test_scope_channel_other_control_message_unanswered(
 ) -> None:
     ws = _scope_ws(json.dumps({"type": "bogus"}))
     with caplog.at_level(logging.DEBUG, logger="rigplane.web.handlers.scope"):
-        await ScopeHandler(ws, None).run()  # type: ignore[arg-type]
+        await ScopeHandler(ws).run()  # type: ignore[arg-type]
     assert "scope: control message: 'bogus'" in caplog.text
     ws.send_text.assert_not_awaited()
 
@@ -98,7 +99,7 @@ async def test_non_json_and_non_object_text_gets_no_reply_and_does_not_raise(
         await _control_handler(ws)._handle_text(text)
     else:
         ws = _scope_ws(text)
-        await ScopeHandler(ws, None).run()  # type: ignore[arg-type]
+        await ScopeHandler(ws).run()  # type: ignore[arg-type]
     ws.send_text.assert_not_awaited()
 
 
@@ -144,10 +145,10 @@ async def test_scope_pong_is_not_queued_behind_blocked_scope_frames() -> None:
             await release_frames.wait()
 
     ws = _BlockedBinaryScopeWs()
-    handler = ScopeHandler(ws, None)  # type: ignore[arg-type]
+    handler = ScopeHandler(ws)  # type: ignore[arg-type]
     run_task = asyncio.create_task(handler.run())
     await asyncio.sleep(0)  # let run() set _running before pushing a frame
-    handler.push_frame(frame)
+    handler.push_frame(encode_scope_frame(frame, 0))
     await asyncio.wait_for(binary_in_flight.wait(), 1.0)
     await asyncio.wait_for(pong_sent.wait(), 1.0)
     assert [json.loads(text) for text in ws.sent_text] == [{"type": "pong"}]

@@ -176,7 +176,9 @@ def parse_rit_frequency_response(data: bytes) -> int:
     if len(data) < 3:
         return 0
     d0, d1, sign = data[0], data[1], data[2]
-    hz = (d1 >> 4) * 1000 + (d1 & 0x0F) * 100 + (d0 >> 4) * 10 + (d0 & 0x0F)
+    if len(data) != 3 or sign not in (0, 1):
+        raise ValueError("Expected two RIT BCD bytes and a 0/1 sign")
+    hz = _bcd_decode_value(bytes([d1, d0]))
     return -hz if sign else hz
 
 
