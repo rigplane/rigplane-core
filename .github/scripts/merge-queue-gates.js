@@ -1,11 +1,9 @@
 'use strict';
 
-// Merge-queue counterparts of the two PR-level required gates. The merge_group
-// event carries no PR comments or body, so both gates are re-derived through
-// the API for the single PR named by the queue ref (the queue must be
-// configured with a merge group of one PR). Both fail closed.
-
-const {evaluate: evaluateFreeze} = require('./freeze-gate');
+// Merge-queue counterpart of the PR-level Agent Review Gate. The merge_group
+// event carries no PR comments, so the gate is re-derived through the API for
+// the single PR named by the queue ref (the queue must be configured with a
+// merge group of one PR). It fails closed.
 
 const AGENT_REVIEW_CONTEXT = 'Agent Review Gate';
 
@@ -39,26 +37,14 @@ function evaluateAgentReviewGate({pull, statuses}) {
   };
 }
 
-function evaluateFreezeForPull(pull) {
-  return evaluateFreeze({
-    title: pull.title,
-    body: pull.body,
-    labels: (pull.labels ?? []).map((label) => label.name),
-    draft: pull.draft,
-  });
-}
-
-// Shared by both workflow jobs. `gate` is 'agent-review' or 'freeze'.
-async function run({github, context, core, gate, ref, sha}) {
+async function run({github, context, core, ref, sha}) {
   const {owner, repo} = context.repo;
   const url = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
   const publish = (state, description) => github.rest.repos.createCommitStatus({
     owner, repo, sha, state, context: AGENT_REVIEW_CONTEXT, description: description.slice(0, 140), target_url: url,
   });
   const fail = async (reason) => {
-    if (gate === 'agent-review') {
-      await publish('failure', reason);
-    }
+    await publish('failure', reason);
     core.setFailed(reason);
   };
   const queued = parseQueueRef(ref);
@@ -69,26 +55,20 @@ async function run({github, context, core, gate, ref, sha}) {
   let verdict;
   try {
     const {data: pull} = await github.rest.pulls.get({owner, repo, pull_number: queued.number});
-    if (gate === 'freeze') {
-      verdict = evaluateFreezeForPull(pull);
-    } else {
-      const {data: combined} = await github.rest.repos.getCombinedStatusForRef({
-        owner, repo, ref: pull.head.sha, per_page: 100,
-      });
-      verdict = evaluateAgentReviewGate({pull, statuses: combined.statuses});
-    }
+    const {data: combined} = await github.rest.repos.getCombinedStatusForRef({
+      owner, repo, ref: pull.head.sha, per_page: 100,
+    });
+    verdict = evaluateAgentReviewGate({pull, statuses: combined.statuses});
   } catch (error) {
-    await fail(`${gate} evaluation failed closed: ${error instanceof Error ? error.message : String(error)}`);
+    await fail(`agent-review evaluation failed closed: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
   if (!verdict.ok) {
     await fail(verdict.reason);
     return;
   }
-  if (gate === 'agent-review') {
-    await publish('success', verdict.reason);
-  }
+  await publish('success', verdict.reason);
   core.info(verdict.reason);
 }
 
-module.exports = {parseQueueRef, evaluateAgentReviewGate, evaluateFreezeForPull, run};
+module.exports = {parseQueueRef, evaluateAgentReviewGate, run};
