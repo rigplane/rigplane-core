@@ -65,3 +65,12 @@ def test_golden_fixtures_and_standalone_decoder():
         assert mapping == expected
         assert module.decode(wire) == expected
         assert encode_scope_frame_v2(actual) == wire
+
+
+def test_follow_view_control_matches_r1_contract():
+    request = Subscription('radio:main', 0, FollowView('vfo', 5000), 1024, 10)
+    assert json.loads(encode_scope_subscription(request))['view'] == {'follow': 'vfo', 'spanHz': 5000}
+    assert decode_scope_subscription(json.dumps({
+        'type': 'subscribe', 'sourceId': 'radio:main', 'receiver': 0,
+        'view': {'follow': 'vfo', 'spanHz': 5000}, 'width': 1024, 'maxFps': 10,
+    })) == request
