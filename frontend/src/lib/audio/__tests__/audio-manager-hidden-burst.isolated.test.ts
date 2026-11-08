@@ -24,7 +24,8 @@ vi.mock('../../stores/audio.svelte', () => ({
   setTxError: vi.fn(),
 }));
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
+vi.mock('$lib/stores/capabilities.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/stores/capabilities.svelte')>(),
   getCapabilities: vi.fn(() => null),
 }));
 

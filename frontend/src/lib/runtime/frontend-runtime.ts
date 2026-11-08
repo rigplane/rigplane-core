@@ -463,17 +463,14 @@ class FrontendRuntime {
       // Re-arm a remounted App only after controller admission succeeds.
       this._ended = false;
       clearLegacyPendingModInputRestore();
-      let audioRoutingReady = false;
       this._capabilitiesUnsubscribe = subscribeCapabilities((caps) => {
         this._configurePresentationResources(caps);
-        if (audioRoutingReady) makeAudioRoutingHandlers().restoreFromStorage();
       });
       transport.connect('/api/v1/ws');
       systemController.connect();
       transport.sendRaw({ type: 'subscribe', streams: ['events'] });
       await controllerClient.waitForPrimary();
       signal?.throwIfAborted();
-      audioRoutingReady = true;
       makeAudioRoutingHandlers().restoreFromStorage();
 
       this._bootstrapCleanup = cleanup;

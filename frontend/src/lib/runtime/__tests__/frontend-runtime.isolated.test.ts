@@ -539,7 +539,14 @@ describe('FrontendRuntime.bootstrap()', () => {
     localStorage.clear();
   });
 
-  it('reapplies persisted routing on accepted provider changes without overwriting storage', async () => {
+  it('does not issue an audio routing command for empty storage during bootstrap', async () => {
+    const rt = await freshRuntime();
+    const cleanup = await rt.bootstrap();
+    expect(audioManager.setAudioConfig).not.toHaveBeenCalled();
+    await cleanup();
+  });
+
+  it('does not replay routing commands on accepted provider changes', async () => {
     localStorage.setItem('icom.audio.main_gain_db', '-27');
     localStorage.setItem('icom.audio.focus', 'main');
     let listener!: Parameters<typeof subscribeCapabilities>[0];
@@ -555,9 +562,8 @@ describe('FrontendRuntime.bootstrap()', () => {
       const caps = validateCapabilities(structuredClone(stateWireGoldens[model].capabilities));
       vi.mocked(getCapabilities).mockReturnValue(caps);
       listener(caps);
-      expect(audioManager.setAudioConfig).toHaveBeenLastCalledWith({ focus: 'main', main_gain_db: -27 });
     }
-    expect(audioManager.setAudioConfig).toHaveBeenCalledTimes(3);
+    expect(audioManager.setAudioConfig).not.toHaveBeenCalled();
     expect(localStorage.getItem('icom.audio.main_gain_db')).toBe('-27');
     expect(localStorage.getItem('icom.audio.focus')).toBe('main');
     localStorage.clear();

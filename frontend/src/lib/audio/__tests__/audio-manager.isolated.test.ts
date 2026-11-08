@@ -94,7 +94,8 @@ vi.mock('../../stores/audio.svelte', () => ({
   setTxError: vi.fn(),
 }));
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
+vi.mock('$lib/stores/capabilities.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/stores/capabilities.svelte')>(),
   getCapabilities: vi.fn(() => null),
 }));
 
@@ -148,6 +149,18 @@ describe('candidate-only RX numeric overlay', () => {
     const { audioManager } = await import('../audio-manager');
     audioManager.destroy();
     vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers();
+  });
+
+  it('subscribes to capabilities only on first active use', async () => {
+    const capabilities = await import('$lib/stores/capabilities.svelte');
+    const subscribe = vi.spyOn(capabilities, 'subscribeCapabilities');
+    const { audioManager } = await import('../audio-manager');
+    expect(subscribe).not.toHaveBeenCalled();
+    audioManager.setAudioConfig({ main_gain_db: 0 });
+    audioManager.setAudioConfig({ main_gain_db: 0 });
+    expect(subscribe).toHaveBeenCalledOnce();
+    audioManager.destroy();
+    subscribe.mockRestore();
   });
 
   it.each([undefined, '0'])('does not observe or display in an ordinary build (%s)', async (flag) => {

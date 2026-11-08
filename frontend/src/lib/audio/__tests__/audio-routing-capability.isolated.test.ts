@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioManager } from '../audio-manager';
+import { RxPlayer } from '../rx-player';
 import { clearCapabilities, setCapabilities } from '$lib/stores/capabilities.svelte';
 import { validateCapabilities } from '$lib/types/capabilities';
 import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
@@ -54,18 +55,48 @@ describe('RX routing follows the accepted capability contract', () => {
     expect(RoutingSocket.instances).toHaveLength(0);
   });
 
-  it('applies supported trims, neutralizes an unsupported transition, and restores supported trims', () => {
+  it('reconciles transitions locally and clears pending transport work', () => {
     setCapabilities(capabilities('IC-7610', true));
     audioManager.setAudioConfig(stored);
     expect(audioManager.getAudioConfig()).toEqual(stored);
     setCapabilities(capabilities('IC-705'));
-    audioManager.setAudioConfig(stored);
     expect(audioManager.getAudioConfig()).toEqual(neutral);
+    expect(audioManager.getAppliedAudioConfig()).toEqual(neutral);
     RoutingSocket.instances[0]!.open();
     expect(RoutingSocket.instances[0]!.sent).not.toContainEqual(expect.objectContaining({ type: 'audio_config' }));
+    clearCapabilities();
+    setCapabilities(capabilities('IC-7610', true));
+    expect(audioManager.getAudioConfig()).toEqual(stored);
+    expect(audioManager.getAppliedAudioConfig()).toEqual(stored);
+    expect(RoutingSocket.instances).toHaveLength(1);
+    expect(RoutingSocket.instances[0]!.sent).not.toContainEqual(expect.objectContaining({ type: 'audio_config' }));
+
+    const focus = vi.spyOn(RxPlayer.prototype, 'setFocus');
+    const split = vi.spyOn(RxPlayer.prototype, 'setSplitStereo');
+    const gain = vi.spyOn(RxPlayer.prototype, 'setChannelGainDb');
+    const notify = vi.fn();
+    const unsubscribe = audioManager.onChange(notify);
+    setCapabilities(capabilities('IC-7610', true));
+    setCapabilities(capabilities('IC-7610', true));
+    expect(focus).not.toHaveBeenCalled();
+    expect(split).not.toHaveBeenCalled();
+    expect(gain).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+    expect(RoutingSocket.instances).toHaveLength(1);
+    expect(RoutingSocket.instances[0]!.sent).not.toContainEqual(expect.objectContaining({ type: 'audio_config' }));
+    unsubscribe();
+    vi.restoreAllMocks();
+  });
+
+  it('unsubscribes on destroy and rearms when reused', () => {
     setCapabilities(capabilities('IC-7610', true));
     audioManager.setAudioConfig(stored);
+    audioManager.destroy();
+    setCapabilities(capabilities('IC-705'));
     expect(audioManager.getAudioConfig()).toEqual(stored);
-    expect(RoutingSocket.instances[0]!.sent).toContainEqual({ type: 'audio_config', focus: 'main', split_stereo: true });
+    audioManager.setAudioConfig({ main_gain_db: -27 });
+    expect(audioManager.getAudioConfig()).toEqual(neutral);
+    setCapabilities(capabilities('IC-7610', true));
+    expect(audioManager.getAudioConfig()).toEqual(stored);
   });
 });
