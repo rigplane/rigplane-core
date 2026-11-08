@@ -13,6 +13,9 @@ class Writer(RadioScopeWriter):
         self.writes = []
         self.frequency = 14_100_000
 
+    def on_frame(self, frame):
+        pass
+
     def tuned_frequency(self, receiver):
         return self.frequency
 

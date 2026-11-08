@@ -11,10 +11,10 @@ async def test_server_simulator_pause_resume_release_counts_scope_writes(monkeyp
     from rigplane.testing.timing import await_until
     from rigplane.web.protocol import encode_scope_subscription
     from rigplane.web.server import WebConfig, WebServer
-    from rigplane_testkit.icom import MockIcomRadio
+    from _scope_simulator import ScopeControlSimulator
     from test_web_server import _addr
 
-    sim = MockIcomRadio(scope_stream=True)
+    sim = ScopeControlSimulator(scope_stream=True)
     await sim.start()
     radio = IcomRadio("127.0.0.1", port=sim.control_port,
                       username="testuser", password="testpass", model="IC-7610")
@@ -55,7 +55,7 @@ async def test_server_simulator_pause_resume_release_counts_scope_writes(monkeyp
                 await subscribe(20)
                 assert writes == initial + [(0x11, b"\x00"), (0x11, b"\x01")]
                 await ws.send_json({"type": "unsubscribe", "sourceId": "radio", "receiver": 0})
-                await await_until(lambda: not server._scope_enabled)
+                assert await await_until(lambda: not radio.scope_session().active)
                 assert writes.count((0x10, b"\x01")) == 1
                 assert writes.count((0x10, b"\x00")) == 1
     finally:
