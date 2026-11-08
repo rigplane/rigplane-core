@@ -2,10 +2,6 @@
  * Pure logic extracted from SpectrumPanel.svelte for testability.
  */
 
-// Compatibility exports: the runtime adapter owns the binary wire decoder.
-export { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
-export type { ScopeFrame, ScopeParseResult } from '$lib/runtime/adapters/scope-adapter';
-
 // --- Scale helpers ---
 export function formatFreqOffset(hz: number): string {
   if (hz === 0) return '0';

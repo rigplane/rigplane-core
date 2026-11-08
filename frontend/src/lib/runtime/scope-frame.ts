@@ -17,11 +17,12 @@ export interface ScopeFrame {
 }
 
 export interface CurrentScopeContext {
-  readonly source: 'radio' | 'audio_fft';
+  readonly source: ScopeFrame['source'];
   readonly sourceId: string;
   readonly epoch: number;
+  readonly mode?: number;
 }
-export type ScopeParseError = 'short header' | 'message type' | 'pixel length' | 'frequency range';
+export type ScopeParseError = 'short header' | 'message type' | 'pixel length' | 'frequency range' | 'source' | 'flags' | 'source id' | 'sent time';
 export type ScopeParseResult = { readonly ok: true; readonly frame: ScopeFrame }
   | { readonly ok: false; readonly reason: ScopeParseError };
 
@@ -31,7 +32,7 @@ export interface ScopeGeometry {
   readonly source: ScopeFrame['source'];
   readonly sourceId: string;
   readonly receiver: ScopeFrame['receiver'];
-  /** Scope mode byte from the frame header; the ingress owner qualifies it. */
+  /** Observed control-plane scope mode, qualified by the ingress owner. */
   readonly mode: number;
   readonly width: number;
   readonly view: View;

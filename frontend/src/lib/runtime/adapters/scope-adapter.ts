@@ -20,20 +20,43 @@ export type {
 } from '$lib/runtime/scope-frame';
 
 export function parseCurrentScopeFrame(buffer: ArrayBuffer, context: CurrentScopeContext): ScopeParseResult {
-  if (buffer.byteLength < 16) return { ok: false, reason: 'short header' };
+  if (buffer.byteLength < 56) return { ok: false, reason: 'short header' };
   const wire = new DataView(buffer);
-  if (wire.getUint8(0) !== 1) return { ok: false, reason: 'message type' };
-  const width = wire.getUint16(14, true);
-  if (buffer.byteLength !== 16 + width) return { ok: false, reason: 'pixel length' };
-  const startHz = wire.getUint32(3, true);
-  const endHz = wire.getUint32(7, true);
-  const outOfRange = (wire.getUint8(13) & 1) !== 0;
-  if (width > 0 && !outOfRange && endHz <= startHz) return { ok: false, reason: 'frequency range' };
+  if (wire.getUint8(0) !== 2) return { ok: false, reason: 'message type' };
+  const source = (['radio', 'audio_fft', 'iq_fft'] as const)[wire.getUint8(1)];
+  if (source === undefined) return { ok: false, reason: 'source' };
+  const flags = wire.getUint8(2);
+  if ((flags & ~3) !== 0) return { ok: false, reason: 'flags' };
+  const identityLength = wire.getUint8(3);
+  const width = wire.getUint16(6, true);
+  const pixelOffset = 56 + identityLength;
+  const hasPixels = (flags & 2) !== 0;
+  if (width === 0 || buffer.byteLength !== pixelOffset + (hasPixels ? width : 0)) {
+    return { ok: false, reason: 'pixel length' };
+  }
+  const identity = new Uint8Array(buffer, 56, identityLength);
+  if (identityLength === 0 || identity.some(byte => byte < 33 || byte > 126)) {
+    return { ok: false, reason: 'source id' };
+  }
+  const sentTime = wire.getBigInt64(16, true);
+  if (sentTime < -1n || sentTime > BigInt(Number.MAX_SAFE_INTEGER)) return { ok: false, reason: 'sent time' };
+  const startHz = wire.getFloat64(24, true);
+  const endHz = wire.getFloat64(32, true);
+  const coverageStartHz = wire.getFloat64(40, true);
+  const coverageEndHz = wire.getFloat64(48, true);
+  if (![startHz, endHz, coverageStartHz, coverageEndHz].every(Number.isFinite)
+    || startHz < 0 || endHz <= startHz
+    || coverageStartHz < startHz || coverageEndHz < coverageStartHz || coverageEndHz > endHz) {
+    return { ok: false, reason: 'frequency range' };
+  }
+  const receiver = wire.getUint16(4, true);
   return { ok: true, frame: Object.freeze({
-    source: context.source, sourceId: context.sourceId, epoch: context.epoch,
-    receiver: wire.getUint8(1), seq: wire.getUint16(11, true), sentAtMs: null,
-    viewStartHz: startHz, viewEndHz: endHz, coverageStartHz: startHz, coverageEndHz: endHz,
-    width, pixels: width === 0 ? null : new Uint8Array(buffer, 16, width), outOfRange,
+    source, sourceId: String.fromCharCode(...identity), epoch: wire.getUint32(8, true),
+    receiver: receiver === 65535 ? null : receiver, seq: wire.getUint32(12, true),
+    sentAtMs: sentTime === -1n ? null : Number(sentTime),
+    viewStartHz: startHz, viewEndHz: endHz, coverageStartHz, coverageEndHz,
+    width, pixels: hasPixels ? new Uint8Array(buffer, pixelOffset, width) : null,
+    outOfRange: (flags & 1) !== 0,
   }) };
 }
 
@@ -67,7 +90,7 @@ export function ingressScopeFrame(buffer: ArrayBuffer, context: CurrentScopeCont
     geometry: {
       source: frame.source, sourceId: frame.sourceId, receiver: frame.receiver,
       ...scopeFrameDisplayFacts(frame),
-      mode: new DataView(buffer).getUint8(2), // scope mode byte — owner-qualified metadata
+      mode: context.mode ?? 0,
       coverage: { startHz: frame.coverageStartHz, endHz: frame.coverageEndHz },
       freshness: 'fresh',
     },
