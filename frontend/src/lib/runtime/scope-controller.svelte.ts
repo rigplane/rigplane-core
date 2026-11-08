@@ -136,8 +136,7 @@ export class ScopeController {
     for (const source of [authority.source, ...additional]) {
       if (newlyQualified.includes(source)) this._streams[source]?.reset();
       const binding = [...this._bindings.values()].find(item => item.source === source);
-      if ((source === authority.source && authority.receiver === null)
-        || !binding || binding.revision === this._authorityRevision) continue;
+      if (!binding || binding.revision === this._authorityRevision) continue;
       this._retire(binding);
       try { this._installBinding(binding); }
       catch (error) {

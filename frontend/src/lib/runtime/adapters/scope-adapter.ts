@@ -44,6 +44,14 @@ export function scopeSlotKey(sourceId: string, receiver: number | null): string 
   return receiver === null ? `${sourceId}:*` : `${sourceId}:${receiver}`;
 }
 
+/** Display metadata derived by the ingress owner; pixel payload stays on the frame sink. */
+export function scopeFrameDisplayFacts(frame: ScopeFrame): Pick<ScopeGeometry, 'view' | 'width' | 'hasPixels' | 'outOfRange'> {
+  return {
+    view: { startHz: frame.viewStartHz, endHz: frame.viewEndHz },
+    width: frame.width, hasPixels: frame.pixels !== null, outOfRange: frame.outOfRange,
+  };
+}
+
 /** One ingress pass: the typed frame, its qualified geometry and the slot key it belongs to. */
 export type ScopeIngressResult =
   | { readonly ok: true; readonly frame: ScopeFrame; readonly geometry: ScopeGeometry; readonly slotKey: string }
@@ -58,11 +66,10 @@ export function ingressScopeFrame(buffer: ArrayBuffer, context: CurrentScopeCont
     frame,
     geometry: {
       source: frame.source, sourceId: frame.sourceId, receiver: frame.receiver,
-      width: frame.width,
+      ...scopeFrameDisplayFacts(frame),
       mode: new DataView(buffer).getUint8(2), // scope mode byte — owner-qualified metadata
-      view: { startHz: frame.viewStartHz, endHz: frame.viewEndHz },
       coverage: { startHz: frame.coverageStartHz, endHz: frame.coverageEndHz },
-      outOfRange: frame.outOfRange, hasPixels: frame.pixels !== null, freshness: 'fresh',
+      freshness: 'fresh',
     },
     slotKey: scopeSlotKey(frame.sourceId, frame.receiver),
   };

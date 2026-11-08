@@ -26,6 +26,7 @@ export class ScopeStream {
   private context: CurrentScopeContext;
   private slotFilter: string | null = null;
   private accepted = 0;
+  private geometryAccepted = 0;
   private disposed = false;
 
   constructor(
@@ -73,7 +74,7 @@ export class ScopeStream {
     let unsubscribe = () => {};
     unsubscribe = this.subscribe((_frame, slotKey) => {
       const geometry = this.geometryValue;
-      if (this.accepted <= afterReceipt || slotKey !== this.geometryKey || geometry?.freshness !== 'fresh') return;
+      if (this.geometryAccepted <= afterReceipt || slotKey !== this.geometryKey || geometry?.freshness !== 'fresh') return;
       unsubscribe();
       sink(geometry);
     });
@@ -85,10 +86,13 @@ export class ScopeStream {
     if (!this.disposed && this.slotFilter !== key) { this.slotFilter = key; this.reset(); }
   }
 
-  /** Monotonic count of accepted frames — the receipt clock downstream facts read. */
+  /** Monotonic count of all accepted frames for diagnostics and sink delivery. */
   get receipt(): number {
     return this.accepted;
   }
+
+  /** Last accepted ID for valid selected geometry; preserved across evidence boundaries. */
+  get geometryReceipt(): number { return this.geometryAccepted; }
 
   /** A new transport session: the epoch stamps future frames and stale-session state retires. */
   setSessionEpoch(epoch: number): void {
@@ -129,6 +133,7 @@ export class ScopeStream {
     this.frames.set(slotKey, frame);
     if (Number.isSafeInteger(this.context.epoch) && this.context.epoch > 0
       && (this.slotFilter === null || this.slotFilter === slotKey)) {
+      this.geometryAccepted = this.accepted;
       this.geometryKey = slotKey;
       const current = this.geometryValue;
       if (!current || current.source !== geometry.source || current.sourceId !== geometry.sourceId
