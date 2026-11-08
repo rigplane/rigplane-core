@@ -360,3 +360,41 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(mod
     index = server._get_profile().scope_span_presets_hz.index(span)
     assert commands == [SwitchScopeReceiver(0), SetScopeMode(0), SetScopeSpan(index)]
     assert server._radio_state.main.freq == 14_100_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('kind', ['radio', 'audio_fft'])
+async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previous(kind):
+    from rigplane.audio.scope_source import AudioFftSource, AudioPassband
+    server = WebServer(None)
+    writer = Writer()
+    receiver = 0
+    if kind == 'radio':
+        source = RadioScopeSource(resolve_radio_profile(model='ic705'), writer)
+    else:
+        class Tap:
+            async def acquire(self, callback):
+                writer.output.append(True)
+
+            async def release(self):
+                writer.output.append(False)
+
+        source = AudioFftSource(Tap(), lambda: AudioPassband(14_100_000, 0, 2400, 'upper'))
+        receiver = None
+    server.scope_hub.register('selected', source)
+    ws = Socket()
+    handler = ScopeHandler(ws, server)
+    try:
+        first = Subscription('selected', receiver, View(14_100_000, 14_102_400), 1024, 10)
+        await handler._handle_control(encode_scope_subscription(first))
+        previous = handler._subscription
+        await handler._handle_control(encode_scope_subscription(Subscription('selected', 9, first.view, 1024, 10)))
+        assert handler._subscription is previous
+        assert writer.output == [True]
+        await handler._handle_control(encode_scope_subscription(Subscription('selected', receiver, first.view, 2800, 20)))
+        assert handler._subscription is not previous
+        assert handler._subscription.granted.width == 2800
+        assert writer.output == [True]
+    finally:
+        await handler._unsubscribe()
+    assert writer.output == [True, False]
