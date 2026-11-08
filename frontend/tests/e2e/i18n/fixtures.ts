@@ -14,7 +14,7 @@
 import type { Route } from '@playwright/test';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState, ReceiverState } from '../../../src/lib/types/state';
-import hostWire from '../../../../tests/fixtures/host-api-v3-wire.json';
+import hostWire from '../../../../tests/fixtures/host-api-v3-wire.json' with { type: 'json' };
 
 // ControllerAuthority.status() for an idle local authority.
 export const mockLocalControllerStatus = hostWire.controllerStatus;

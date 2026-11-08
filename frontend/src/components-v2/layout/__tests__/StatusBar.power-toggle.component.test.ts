@@ -64,9 +64,9 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   setLayoutMode: vi.fn(),
 }));
 
-vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>(),
   getActiveFrequencyHz: vi.fn(() => null),
-  deriveRxAudioProps: () => ({ monitorMode: 'local', afLevel: NaN, hasAfLevel: false, hasLiveAudio: false }),
 }));
 
 vi.mock('$lib/runtime', () => ({
