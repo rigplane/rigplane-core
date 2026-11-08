@@ -569,6 +569,22 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(h.width).not.toHaveBeenCalled();
   });
 
+  it.each(['missing state', 'generation mismatch', 'unknown receiver'] as const)(
+    'does not acquire managed hardware demand with %s', async boundary => {
+      if (boundary === 'missing state') radio.current = null;
+      else if (boundary === 'generation mismatch') setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
+      else {
+        setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'ab_shared',
+          capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
+        deliver(state => { state.fieldStatus!.active.observed = false; });
+      }
+      publishAuthority(); await mountHost();
+      expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
+      expect(wire.connect).not.toHaveBeenCalled();
+      expect(h.scope.snapshotHealth('hardware')).toEqual({ demanded: false, transport: 'disconnected', frameSeen: false });
+    },
+  );
+
   it('recovers normal managed startup when state arrives after hardware capabilities', async () => {
     radio.current = null; await render(); clear();
     fixture(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
