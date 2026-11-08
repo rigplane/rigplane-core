@@ -24,6 +24,19 @@ class Writer(RadioScopeWriter):
 
 
 @pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_off_vfo_view_keeps_acquisition_at_tuned_frequency(model):
+    source_profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    writer = Writer()
+    source = RadioScopeSource(source_profile, writer)
+    requested = View(14_200_000, 14_210_000)
+    granted = await source.set_view(requested)
+    assert granted.view == requested
+    assert granted.coverage == Coverage(13_975_000, 14_225_000)
+    assert writer.writes[-1] == (writer.frequency, 250000, 0)
+    assert writer.frequency == 14_100_000
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
 async def test_profile_center_span_and_partial(model):
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     writer = Writer()

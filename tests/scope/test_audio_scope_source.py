@@ -99,6 +99,15 @@ async def test_pcm_frame_routes_through_real_hub_and_releases_on_last_close():
     assert tap.releases == 1
 
 
+async def test_constructor_does_not_require_observed_passband():
+    def facts():
+        raise ValueError("passband not observed")
+
+    source = AudioFftSource(Tap(), facts)
+    with pytest.raises(ValueError, match="passband not observed"):
+        source.coverage_for(View(7_100_000, 7_103_000))
+
+
 async def test_failed_pcm_tap_release_can_be_retried():
     class FlakyTap(Tap):
         def __init__(self):
