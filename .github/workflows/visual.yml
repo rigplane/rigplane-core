@@ -108,7 +108,8 @@ jobs:
       needs.changes.outputs.frontend == 'true' &&
       (github.event_name != 'pull_request' ||
       github.event.pull_request.draft == false)
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    # Build pool, not the 2 GiB gate pool (MOR-4280): Playwright Chromium pixel diff; same architecture as before.
+    runs-on: [self-hosted, Linux, ARM64, build]
     timeout-minutes: 10
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
