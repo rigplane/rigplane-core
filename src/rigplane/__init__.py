@@ -220,8 +220,6 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "get_scope_span": ("rigplane.commands", "get_scope_span"),
     "get_scope_speed": ("rigplane.commands", "get_scope_speed"),
     "get_scope_vbw": ("rigplane.commands", "get_scope_vbw"),
-    "scope_data_output_off": ("rigplane.commands", "scope_data_output_off"),
-    "scope_data_output_on": ("rigplane.commands", "scope_data_output_on"),
     "scope_main_sub": ("rigplane.commands", "scope_main_sub"),
     "scope_off": ("rigplane.commands", "scope_off"),
     "scope_on": ("rigplane.commands", "scope_on"),

@@ -39,8 +39,6 @@ class IqFftSource:
         self._start_worker = start_worker
         self._callbacks: list[Callable[[NativeFrame], None]] = []
         self._active = False
-        self._streaming = False
-        self._input_geometry: tuple[int, int] | None = None
         self.producer = self._make_producer()
 
     def _make_producer(self) -> IqFftScope:
@@ -84,10 +82,8 @@ class IqFftSource:
         if self._active:
             return
         self.producer = self._make_producer()
-        self._input_geometry = None
         self.producer.on_frame(self._emit)
         self._active = True
-        self._streaming = True
         try:
             self._provider.on_block(self._feed)
             self._provider.open()
@@ -96,15 +92,14 @@ class IqFftSource:
             raise
 
     async def stop(self) -> None:
-        self._streaming = False
         if not self._active:
             return
+        self._active = False
         try:
             self._provider.on_block(None)
         finally:
             try:
                 self._provider.close()
-                self._active = False
             finally:
                 try:
                     self.producer.on_frame(None)
@@ -121,20 +116,11 @@ class IqFftSource:
         return unsubscribe
 
     def _feed(self, block: IqBlock) -> None:
-        if self._streaming:
-            geometry = (block.center_freq_hz, block.sample_rate_hz)
-            if self._input_geometry is not None and geometry != self._input_geometry:
-                try:
-                    self.producer.on_frame(None)
-                finally:
-                    self.producer.close()
-                self.producer = self._make_producer()
-                self.producer.on_frame(self._emit)
-            self._input_geometry = geometry
+        if self._active:
             self.producer.feed(block)
 
     def _emit(self, frame: ScopeFrame) -> None:
-        if not self._streaming:
+        if not self._active:
             return
         native = NativeFrame(
             None,

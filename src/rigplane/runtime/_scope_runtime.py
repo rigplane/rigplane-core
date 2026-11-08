@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from typing import TYPE_CHECKING, AsyncGenerator
 
 if TYPE_CHECKING:
@@ -63,8 +64,7 @@ logger = logging.getLogger(__name__)
 class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
     """Scope/waterfall methods for CoreRadio (mixin)."""
 
-    _scope_frame_queue: BoundedQueue[ScopeFrame] | None
-    _scope_stream_consumers: int
+    _scope_stream_callbacks: list[Callable[[ScopeFrame], None]]
 
     # ------------------------------------------------------------------
     # Scope / Waterfall API
@@ -87,21 +87,22 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._scope_controls().receiver = receiver
 
     async def scope_stream(self) -> AsyncGenerator[ScopeFrame, None]:
-        """Consume scope frames asynchronously.
+        """Consume frames through the deprecated SDK callback adapter.
 
-        Yields:
-            ScopeFrame objects as they are assembled.
-            Stops yielding if the radio disconnects.
-
-        Note:
-            Uses a bounded queue (maxsize=64) that drops oldest frames if not
-            consumed fast enough, allocated only while iterated. Call
-            enable_scope() separately to start data.
+        .. deprecated::
+           Use :meth:`on_scope_data` for native frames or the scope WebSocket
+           subscription API. Each active iterator has a bounded 64-frame
+           buffer; call :meth:`enable_scope` separately to start data.
         """
-        if self._scope_frame_queue is None:
-            self._scope_frame_queue = BoundedQueue(maxsize=64)
-        queue = self._scope_frame_queue
-        self._scope_stream_consumers += 1
+        warnings.warn(
+            "scope_stream() is deprecated; use on_scope_data() or a scope "
+            "WebSocket subscription",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        queue: BoundedQueue[ScopeFrame] = BoundedQueue(maxsize=64)
+        callback = queue.put_drop_oldest
+        self._scope_stream_callbacks.append(callback)
         try:
             while self._connected:
                 try:
@@ -113,9 +114,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 finally:
                     queue.task_done()
         finally:
-            self._scope_stream_consumers -= 1
-            if not self._scope_stream_consumers:
-                self._scope_frame_queue = None
+            self._scope_stream_callbacks.remove(callback)
 
     async def enable_scope(
         self,

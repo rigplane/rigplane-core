@@ -9,7 +9,9 @@ from rigplane.scope import ScopeFrame
 
 
 @pytest.mark.parametrize("model", ["IC-7300", "IC-7610"])
-async def test_deprecated_streams_preserve_primary_callback_and_cancel(model, virtual_clock):
+async def test_deprecated_streams_preserve_primary_callback_and_cancel(
+    model, virtual_clock
+):
     radio = IcomRadio("127.0.0.1", model=model)
     radio._connected = True
     assert not hasattr(radio, "_scope_frame_queue")
