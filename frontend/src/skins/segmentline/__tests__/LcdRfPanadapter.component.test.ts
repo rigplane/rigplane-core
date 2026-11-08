@@ -1,3 +1,5 @@
+import { ScopeStream } from '$lib/runtime/scope-stream';
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -206,3 +208,26 @@ describe('LcdRfPanadapter hardware amplitude parity', () => {
 
 beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
 afterEach(() => { vi.unstubAllGlobals(); });
+
+it('subscribes to receiver-neutral IQ initially and after replacing a radio source', async () => {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe() { this.callback([{ contentRect: { width: 600 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+    disconnect() {}
+  });
+  for (const initial of ['iq_fft', 'radio'] as const) {
+    const publish = vi.fn(); let receive = (_buffer: ArrayBuffer) => {};
+    const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
+      { source: initial, sourceId: initial, epoch: 1 }, 'borrowed', undefined, publish);
+    const target = document.createElement('div'); document.body.append(target);
+    component = mount(LcdRfPanadapter, { target, props: { receiver: 'MAIN', scopeStream: stream } });
+    flushSync();
+    expect(stream.subscription?.receiver).toBe(initial === 'radio' ? 0 : null);
+    stream.setSource('iq_fft', 'iq_fft');
+    receive(scopeWire({ source: 'iq_fft', sourceId: 'iq_fft', receiver: null }));
+    flushSync();
+    expect(stream.subscription?.receiver).toBeNull();
+    expect(target.querySelector('[data-rf-mode="live"]')).not.toBeNull();
+    await unmount(component); component = null; target.remove(); stream.dispose();
+  }
+});

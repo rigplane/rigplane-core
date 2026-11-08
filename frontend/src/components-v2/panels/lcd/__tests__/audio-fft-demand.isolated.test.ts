@@ -22,12 +22,12 @@ type ScopeFrameProbe = import('$lib/runtime/adapters/scope-adapter').ScopeFrame;
 type AmberAfScopePropsProbe = {
   data: Uint8Array | null;
   bandwidth?: number;
-  onRegisterPush?: (push: (pixels: Uint8Array) => void) => void;
+  onRegisterPush?: (push: (pixels: Uint8Array | null) => void) => void;
 };
 
 const scopeChildProbe = vi.hoisted(() => ({
   props: null as AmberAfScopePropsProbe | null,
-  pushed: vi.fn<(pixels: Uint8Array) => void>(),
+  pushed: vi.fn<(pixels: Uint8Array | null) => void>(),
 }));
 
 const mocks = vi.hoisted(() => {
@@ -440,6 +440,18 @@ it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
         main: { ...known.main!, sMeter: 7 } };
       setRadioState(unrelated); flushSync();
       expect(subscriptions()).toHaveLength(2);
+      const pixels = scopeChildProbe.pushed.mock.lastCall?.[0];
+      expect(pixels).toBeInstanceOf(Uint8Array);
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, pixels: null }));
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
+      flushSync(); expect(scopeChildProbe.pushed.mock.lastCall?.[0]).toBeInstanceOf(Uint8Array);
+      mocks.channel.message({ type: 'error', sourceId: 'audio_fft', receiver: null, message: 'source stopped' });
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
+      flushSync(); expect(scopeChildProbe.pushed.mock.lastCall?.[0]).toBeInstanceOf(Uint8Array);
+      mocks.channel.disconnect();
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
     } finally {
       await unmount(component); await cleanup(); clearCapabilities(); target.remove();
       vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules();

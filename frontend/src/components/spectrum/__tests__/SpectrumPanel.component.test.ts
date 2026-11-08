@@ -1062,6 +1062,21 @@ describe('SpectrumPanel component', () => {
     expect(spectrumRendererHarness.lastOptions).toMatchObject({ sampleOffset: 2, sampleAmplitudeMax: 160 });
   });
 
+  it('retains default audio follow intent after granted RF geometry and a QSY', () => {
+    runtimeHarness.state.currentCaps = { scopeSource: 'audio_fft' };
+    const target = mountPanel();
+    const subscription = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
+    harnessChannels.scope.fire(new Uint8Array(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null,
+      viewStartHz: 14_026_000, viewEndHz: 14_074_000, pixels: new Uint8Array([0, 80, 160, 0]) })));
+    flushSync();
+    expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
+    runtimeHarness.state.currentState = { ...runtimeHarness.state.currentState, main: {
+      ...runtimeHarness.state.currentState?.main, freqHz: 14_200_000 } };
+    flushSync();
+    expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
+  });
+
   it.each([0, 1] as const)('requests the numeric receiver %s from authority', (receiver) => {
     authorityHarness.state.current = authority({ receiver });
     const target = mountPanel();
