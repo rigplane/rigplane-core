@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mount, tick, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
+import { ScopeStream } from '../../../lib/runtime/scope-stream';
+import * as svelteClient from 'svelte/internal/client';
 import { createClassComponent } from 'svelte/legacy';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { ReceiverIndicatorViewModel } from '../../../semantic/radio-view-model';
@@ -45,7 +47,16 @@ function wireFrame(pixels: Uint8Array, startFreq = 1, endFreq = 2, receiver = 0)
 const known = <T>(value: T) => ({ reading: { status: 'known' as const, value }, availability: { structural: true, operational: true } });
 const unknown = () => ({ reading: { status: 'unknown' as const }, availability: { structural: true, operational: false } });
 const canvas = { clearRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), strokeStyle: '', lineWidth: 0 };
+const dualEffectRuns = new Map<number, number>();
+const realUserEffect = svelteClient.user_effect;
 beforeEach(() => {
+  dualEffectRuns.clear();
+  vi.spyOn(svelteClient, 'user_effect').mockImplementation(fn => {
+    const caller = new Error().stack?.split('\n').find(line => line.includes('.svelte:')) ?? '';
+    if (!/(?:DualSdrFace|ReceiverInstrumentCluster|ReceiverScopeWaterfall)\.svelte/.test(caller)) return realUserEffect(fn);
+    const id = dualEffectRuns.size; dualEffectRuns.set(id, 0);
+    return realUserEffect(() => { dualEffectRuns.set(id, dualEffectRuns.get(id)! + 1); return fn(); });
+  });
   meter.instances.length = 0; meter.create.mockClear(); meter.reduced.mockReset(); meter.reduced.mockReturnValue(false);
   for (const call of Object.values(canvas)) if (typeof call === 'function') call.mockClear();
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(canvas as unknown as CanvasRenderingContext2D);
@@ -107,7 +118,60 @@ function view(preamp = 1, preValues = [0, 1, 2], mutex = false, indicators: Rece
   return result;
 }
 
+function realScopeSource() {
+    let receive = (_buffer: ArrayBuffer) => {};
+    const producer = { subscribe: vi.fn((sink: (buffer: ArrayBuffer) => void) => {
+      receive = sink; return () => {};
+    }), close() {} };
+    const stream = new ScopeStream(producer, { source: 'radio', sourceId: 'scope', epoch: 1 }, 'borrowed');
+    const source = { subscribe: stream.subscribe.bind(stream), slotKeys: ['scope:0', 'scope:1'] as const };
+    function fire(receiver: number, pixels: number[], outOfRange = false) {
+      const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
+      wire.setUint8(0, 1); wire.setUint8(1, receiver);
+      wire.setUint32(3, 144_000_000, true); wire.setUint32(7, 144_500_000, true);
+      wire.setUint8(13, outOfRange ? 1 : 0); wire.setUint16(14, pixels.length, true);
+      new Uint8Array(buffer, 16).set(pixels); receive(buffer); flushSync();
+    }
+    return { stream, source, fire, producer };
+}
+
 describe('DualSdrFace', () => {
+  it('consumes real wire frames through live, header-only out-of-range, and live recovery', async () => {
+    const { stream, source, fire, producer } = realScopeSource();
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
+    try {
+      flushSync(); fire(0, [0, 128, 255]); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('3');
+      expect(() => fire(0, [], true)).not.toThrow(); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('out-of-range');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('0');
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.textContent).toContain('144.000–144.500 MHz');
+      fire(0, [3, 17, 254]); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('3');
+      fire(0, [3, 17, 254], true); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('3');
+      fire(0, []); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('0');
+      expect(producer.subscribe).toHaveBeenCalledOnce();
+    } finally { await unmount(component); stream.dispose(); }
+  });
+  it('delivers 100 pixel-only frames without reactive effects in the face, cluster, or waterfall', async () => {
+    const { stream, source, fire, producer } = realScopeSource();
+    const component = mount(DualSdrFace, { target: document.createElement('div'), props: { view: view(), scopeSource: source } });
+    try {
+      flushSync(); fire(0, [0, 128, 255]); await tick();
+      expect(dualEffectRuns.size).toBeGreaterThan(0);
+      const before = new Map(dualEffectRuns), receipt = stream.receipt;
+      for (let index = 0; index < 100; index += 1) { fire(0, [index, 128, 255]); await tick(); }
+      expect(stream.receipt).toBe(receipt + 100);
+      expect(dualEffectRuns).toEqual(before);
+      expect(producer.subscribe).toHaveBeenCalledOnce();
+    } finally { await unmount(component); stream.dispose(); }
+  });
   it('mounts one cluster per receiver, demuxes one scope subscription, and cleans it up', async () => {
     let listener: ((frame: ScopeFrame) => void) | undefined;
     const unsubscribe = vi.fn();

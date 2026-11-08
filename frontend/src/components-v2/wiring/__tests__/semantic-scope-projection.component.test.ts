@@ -468,6 +468,19 @@ describe('one managed scope owner through the real region and panel', () => {
     toggle(); toggle(); renew(11); expect(overlay()).toBeNull();
     wire.frame(); expect(overlay()).not.toBeNull(); h.resources.release(shared);
   });
+  it('requires a new MAIN receipt after retirement even when SUB traffic arrives before renewed MAIN readbacks', async () => {
+    setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
+      capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
+    const sub = structuredClone(radio.current!.main);
+    deliver(state => { state.sub = sub; }); publishAuthority();
+    await render(); expect(overlay()).not.toBeNull();
+    deliver(state => { state.fieldStatus!['main.filterWidth'].observed = false; }); publishAuthority(); flushSync();
+    expect(overlay()).toBeNull();
+    wire.frame(1);
+    deliver(state => { state.fieldStatus!['main.filterWidth'].observed = true; }); renew(11);
+    expect(overlay()).toBeNull();
+    wire.frame(0); expect(overlay()).not.toBeNull();
+  });
   it.each(['single', 'ab'] as const)('uses the exact canonical %s VFO selection', async scheme => {
     fixture(scheme); const project = vi.spyOn(passband, 'projectScopePassbandDisplay'); await render(false);
     expect(project.mock.lastCall?.[1].selection).toEqual({ receiver: 'MAIN', slot: scheme === 'single' ? 'single' : 'A' });
