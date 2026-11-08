@@ -64,15 +64,21 @@ describe('capabilities maxPowerW', () => {
       .toThrow(/\$\.txBands\[0\]\.maxPowerW: expected a positive integer/);
   });
 
-  it('state-wire goldens carry the IC-9700 per-band maximum and no other radio invents one', () => {
+  it('state-wire goldens carry the IC-9700 and IC-905 per-band maxima and no other radio invents one', () => {
     type Golden = { capabilities: { maxPowerW?: number; txBands: Array<{ name: string; maxPowerW?: number }> | null } };
     const byModel = goldens as unknown as Record<string, Golden>;
     const ic9700 = byModel['IC-9700'].capabilities;
     expect(ic9700.maxPowerW).toBe(100);
     expect(Object.fromEntries((ic9700.txBands ?? []).map((b) => [b.name, b.maxPowerW])))
       .toEqual({ '2m': 100, '70cm': 75, '23cm': 10 });
+    // IC-905 (MOR-3984): 10 W on 144/430/1200 MHz, 2 W on 2400/5600 MHz
+    // (Basic manual, Specifications).
+    const ic905 = byModel['IC-905'].capabilities;
+    expect(ic905.maxPowerW).toBe(10);
+    expect(Object.fromEntries((ic905.txBands ?? []).map((b) => [b.name, b.maxPowerW])))
+      .toEqual({ '2m': 10, '70cm': 10, '23cm': 10, '13cm': 2, '5cm': 2 });
     for (const [model, golden] of Object.entries(byModel)) {
-      if (model === 'IC-9700') continue;
+      if (model === 'IC-9700' || model === 'IC-905') continue;
       expect(
         (golden.capabilities.txBands ?? []).filter((b) => b.maxPowerW !== undefined),
         model,
