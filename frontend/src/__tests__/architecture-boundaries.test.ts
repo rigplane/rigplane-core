@@ -922,12 +922,14 @@ describe('radio authority boundary (MOR-1406)', () => {
       path: 'src/lib/features/transport-contract.ts',
       code: `import type { ConnectionState } from '$lib/transport/ws-client';\nexport type State = ConnectionState;`,
     },
-    ...['scope-frame.ts', 'scope-stream.ts'].map((owner) => ({
-      name: `scope metadata ingress ${owner}`,
-      path: `src/lib/runtime/${owner}`,
-      code: `import type { ScopeFrame } from '$lib/runtime/scope-frame';\nexport function receiver(frame: ScopeFrame){ return frame.receiver; }`,
-    })),
   ])('allows $name outside the authority boundary', async ({ path: filePath, code }) => {
     expect(await authorityRuleIds(code, filePath)).toEqual([]);
+  }, ARCH_LINT_TIMEOUT_MS);
+});
+
+describe('scope metadata ingress owners (MOR-4270)', () => {
+  it.each(['scope-frame.ts', 'scope-stream.ts'])('allows %s to consume frame metadata', async (owner) => {
+    const code = `import type { ScopeFrame } from '$lib/runtime/scope-frame';\nexport function receiver(frame: ScopeFrame){ return frame.receiver; }`;
+    expect(await authorityRuleIds(code, `src/lib/runtime/${owner}`)).toEqual([]);
   }, ARCH_LINT_TIMEOUT_MS);
 });
