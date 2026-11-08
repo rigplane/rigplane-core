@@ -66,7 +66,7 @@ function renderFrame() {
 
 function setup(mode: Mode, initial: Uint8Array | null) {
   let data = initial;
-  let push: ((pixels: Uint8Array) => void) | undefined;
+  let push: ((pixels: Uint8Array | null) => void) | undefined;
   component = mount(AmberAfScope, {
     target,
     props: {
@@ -81,7 +81,7 @@ function setup(mode: Mode, initial: Uint8Array | null) {
   renderFrame();
   return {
     setData(pixels: Uint8Array | null) { data = pixels; renderFrame(); },
-    push(pixels: Uint8Array) { expect(push).toBeTypeOf('function'); push!(pixels); renderFrame(); },
+    push(pixels: Uint8Array | null) { expect(push).toBeTypeOf('function'); push!(pixels); renderFrame(); },
   };
 }
 
@@ -197,4 +197,16 @@ describe('Amber AF scope manual-notch marker placement (MOR-2475 PR-3)', () => {
   it('clamps a notch frequency beyond the drawn passband to the trapezoid edge', () => {
     expect(notchApexX(3200, FTX1_NOTCH_DISPLAY_DOMAIN)).toBeCloseTo(TR, 9);
   });
+});
+
+it.each(['compact', 'fill', 'dominant'] as const)('clears pushed pixels and history at a null evidence boundary in %s', (mode) => {
+  const initial = new Uint8Array(120).fill(120);
+  const canvas = setup(mode, initial);
+  canvas.push(initial);
+  canvas.push(null);
+  expectZeroActivity();
+  canvas.push(new Uint8Array(120));
+  expectZeroActivity();
+  canvas.push(initial);
+  expectActivity(mode);
 });

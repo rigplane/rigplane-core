@@ -115,3 +115,10 @@ it('discovers radio, IQ and audio defaults when the legacy selected-source hint 
     expect(result.scope.availableSources).toContain(expected);
   }
 });
+
+it.each(['radio', 'iq_fft', 'audio_fft'] as const)('preserves the explicit %s default among all discoverable sources', (scopeDefaultSourceId) => {
+  const result = derivePresentationCapabilities(caps({ scope: true, audio: true, audioFftAvailable: true,
+    scopeSource: null, capabilities: ['audio', 'scope'], scopeSources: ['radio', 'iq_fft', 'audio_fft'],
+    scopeDefaultSourceId }));
+  expect(result.scope.defaultSource).toBe(scopeDefaultSourceId === 'audio_fft' ? 'audio_fft' : 'hardware');
+});

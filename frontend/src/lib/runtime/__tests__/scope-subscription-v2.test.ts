@@ -116,3 +116,24 @@ it('observes native backing width, intersection and document visibility for dema
 });
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it.each(['error-first', 'facts-first'])('retries refused startup once for changed facts in %s order', (order) => {
+  const { value, publish } = stream();
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  const node = document.createElement('div'); document.body.append(node);
+  Object.defineProperty(node, 'clientWidth', { value: 100 });
+  const params = { stream: value, receiver: 0, view: request().view, revision: 'unknown' };
+  const action = scopeSubscriptionSurface(node, params);
+  const before = publish.mock.calls.length;
+  const error = () => value.handleMessage({ type: 'error', message: 'audio mapping unavailable' });
+  if (order === 'error-first') error();
+  action.update({ ...params, revision: 'observed' });
+  if (order === 'facts-first') error();
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  error(); // same observed facts cannot form an unbounded error/retry loop
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  action.update({ ...params, revision: 'observed' });
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  action.destroy(); node.remove();
+});

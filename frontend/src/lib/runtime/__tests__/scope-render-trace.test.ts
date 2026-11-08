@@ -35,6 +35,22 @@ describe('ScopeRenderTrace', () => {
     expect(trace.tokenForFrame(frame)).toBeNull();
   });
 
+  it('keeps wire continuity separate by source, receiver, source epoch and transport session', () => {
+    const trace = new ScopeRenderTrace();
+    const observe = (accepted: number, receiver: number, seq: number, epoch = 1, transport = 1, sourceId = 'radio') => {
+      const parsed = parseCurrentScopeFrame(scopeWire({ sourceId, receiver, seq, epoch }),
+        { source: 'radio', sourceId, epoch: transport });
+      if (!parsed.ok) throw new Error(parsed.reason);
+      trace.observe({ ...receipt(accepted, seq, transport), frame: parsed.frame,
+        token: { ...receipt(accepted, seq, transport).token, source: 'hardware' } });
+    };
+    observe(1, 0, 0xffffffff); observe(2, 1, 40); observe(3, 0, 0); observe(4, 1, 41);
+    observe(5, 0, 0, 2); observe(6, 0, 0, 2, 2); observe(7, 0, 10, 2, 2, 'replacement');
+    observe(8, 1, 43); // one genuine skipped frame on receiver 1
+    trace.stop();
+    expect(JSON.parse(trace.export()!).counts).toMatchObject({ accepted: 8, wireGaps: 1 });
+  });
+
   it('ends at the hard deadline, removes timers, and ignores later observations', () => {
     const stopped = vi.fn();
     const trace = new ScopeRenderTrace(stopped);

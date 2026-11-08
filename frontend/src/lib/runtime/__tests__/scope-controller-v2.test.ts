@@ -96,3 +96,10 @@ it('retires observed mode at provider/source boundaries and accepts the next qua
   expect(get(hardware.geometry)?.mode).toBe(0);
   await owner.hardwareScopeDriver.stop(handle);
 });
+
+it('preserves an explicit IQ default even when radio is also discoverable', () => {
+  const { port } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
+  owner.configureSources(['radio', 'iq_fft', 'audio_fft'], 'iq_fft');
+  expect(owner.stream('hardware').kind).toBe('iq_fft');
+  expect(owner.stream('hardware').sourceId).toBe('iq_fft');
+});
