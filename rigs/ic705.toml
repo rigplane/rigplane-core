@@ -34,7 +34,6 @@ browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 # IC-705 Basic Manual (ENG, rev 9), SET > Connectors > USB AF/IF Output:
 # "AF Output Level (Default: 50%)" for the [microUSB] port (MOR-4210).
-rx_audio_level_menu = "SET > Connectors > USB AF/IF Output > AF Output Level"
 
 [usb]
 # macOS USB and audio recording, 2026-10-22: codec under the internal hub.

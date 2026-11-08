@@ -58,7 +58,7 @@ async function installOutputWitness(page: Page): Promise<void> {
       }
       if (!running) return;
       witness.peaks.push({ at: performance.now(), peak });
-      if (witness.peaks.length > 800) witness.peaks.shift();
+      if (witness.peaks.length > 2000) witness.peaks.shift();
     }, 20);
   });
 }
@@ -136,6 +136,14 @@ gainTest.describe('LIVE RX makeup gain through the real server and audio graph',
       // Unity: the output carries the source tone at its own level.
       await expectSettledPeak(page, amplitude(QUIET_DBFS), 0.1);
       const unity = await recentPeak(page, 1000);
+
+      // Exercise more than the old 20-second quiet-source detection window.
+      const quietStart = await pageNow(page);
+      await expect.poll(() => page.evaluate((start) => {
+        const { peaks } = (window as Window & { __RX_OUTPUT__?: OutputWitness }).__RX_OUTPUT__!;
+        return peaks.filter((entry) => entry.at >= start && entry.peak > 0.005).length;
+      }, quietStart), { timeout: 50_000 }).toBeGreaterThan(1300);
+      await expect(page.getByTestId('rx-audio-source-low')).toHaveCount(0);
 
       // 150%: +10 dB; 200%: +20 dB (still below the -6 dBFS limiter knee).
       for (const [percent, ratio] of [[150, 10 ** 0.5], [200, 10]] as const) {

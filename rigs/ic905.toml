@@ -60,7 +60,6 @@ browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
 # Basic manual, SET > Connectors > USB/AV-OUT AF/IF Output > AF Output Level
 # (1A 05 01 18, 0-100%): the radio's own level for the USB audio it sends.
-rx_audio_level_menu = "SET > Connectors > USB/AV-OUT AF/IF Output > AF Output Level"
 
 # No [usb] section: USB VID:PID entries come only from our own recordings
 # (_schema.md) and none exists for this model. The guide (p.2) names the two
