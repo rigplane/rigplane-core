@@ -377,7 +377,7 @@ test('quick v2 reports no hard-coded self-hosted minutes', async () => {
 function workflowJobs(root) {
   const dir = path.join(root, '.github/workflows');
   const jobs = [];
-  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.yml')).sort()) {
+  for (const file of fs.readdirSync(dir).filter((name) => /\.ya?ml$/u.test(name)).sort()) {
     const text = fs.readFileSync(path.join(dir, file), 'utf8');
     const lines = text.split('\n');
     let inJobs = false; let current = null; let currentRunsOn = null;
@@ -401,13 +401,6 @@ function workflowJobs(root) {
   }
   return jobs;
 }
-
-test('every workflow job runs on self-hosted runners', () => {
-  const jobs = workflowJobs(TARGET_ROOT);
-  assert.ok(jobs.length > 0);
-  const hosted = jobs.filter(({runsOn}) => /ubuntu-|macos-|windows-/iu.test(runsOn) && !/self-hosted/iu.test(runsOn));
-  assert.deepEqual(hosted.map(({file, job, runsOn}) => `${file}:${job}:${runsOn}`), []);
-});
 
 test('migrated light jobs carry their explicit tool setup', () => {
   const jobs = workflowJobs(TARGET_ROOT);

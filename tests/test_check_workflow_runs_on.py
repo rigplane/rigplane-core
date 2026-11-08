@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -14,11 +15,16 @@ SCRIPT = REPO_ROOT / ".github/scripts/check-workflow-runs-on.py"
 
 def run_checker(repo: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["python3", str(SCRIPT), "--repo", str(repo)],
+        [sys.executable, str(SCRIPT), "--repo", str(repo)],
         check=False,
         capture_output=True,
         text=True,
     )
+
+
+def _indent(runs_on: str) -> str:
+    """Continuation lines of a multi-line ``runs-on`` sit under the job's keys."""
+    return runs_on.replace("\n", "\n            ")
 
 
 def write_workflow(repo: Path, name: str, body: str) -> None:
@@ -150,3 +156,115 @@ def test_accepts_each_verified_pool(tmp_path: Path, labels: str) -> None:
         """,
     )
     assert run_checker(tmp_path).returncode == 0
+
+
+HOSTED_BLOCK_LIST = """
+    name: bad
+    on: push
+    jobs:
+      oops:
+        runs-on:
+          - ubuntu-latest
+        steps:
+          - run: echo no
+    """
+
+
+@pytest.mark.parametrize("suffix", [".yml", ".yaml"])
+def test_scans_both_workflow_extensions(tmp_path: Path, suffix: str) -> None:
+    write_workflow(tmp_path, f"bad{suffix}", HOSTED_BLOCK_LIST)
+    result = run_checker(tmp_path)
+    assert result.returncode == 1
+    assert "bad" + suffix in result.stdout
+
+
+@pytest.mark.parametrize(
+    "runs_on",
+    [
+        "runs-on:\n  - ubuntu-latest",
+        "runs-on: # header comment\n  - self-hosted\n  - linux",
+        "runs-on: ubuntu-latest # trailing",
+        "runs-on:\n  labels: [ubuntu-latest]",
+        "runs-on:\n  group: hosted-pool",
+        "runs-on: self-hosted",
+        "runs-on: [self-hosted]",
+    ],
+)
+def test_rejects_every_unapproved_runs_on_shape(tmp_path: Path, runs_on: str) -> None:
+    write_workflow(
+        tmp_path,
+        "shape.yml",
+        f"""
+        name: shape
+        on: push
+        jobs:
+          job:
+            {_indent(runs_on)}
+            steps:
+              - run: echo no
+        """,
+    )
+    assert run_checker(tmp_path).returncode == 1
+
+
+@pytest.mark.parametrize(
+    "runs_on",
+    [
+        "runs-on: # header comment\n  - self-hosted\n  - Linux\n  - ARM64\n  - light",
+        "runs-on: [self-hosted, Linux, ARM64, light] # trailing comment",
+        "runs-on:\n  labels: [self-hosted, Linux, X64, build]",
+    ],
+)
+def test_accepts_approved_pool_in_any_yaml_shape(tmp_path: Path, runs_on: str) -> None:
+    write_workflow(
+        tmp_path,
+        "shape.yml",
+        f"""
+        name: shape
+        on: push
+        jobs:
+          job:
+            {_indent(runs_on)}
+            steps:
+              - run: echo ok
+        """,
+    )
+    result = run_checker(tmp_path)
+    assert result.returncode == 0, result.stdout
+
+
+def test_job_without_runs_on_fails_but_a_reusable_call_passes(tmp_path: Path) -> None:
+    write_workflow(
+        tmp_path,
+        "reuse.yml",
+        """
+        name: reuse
+        on: push
+        jobs:
+          call:
+            uses: ./.github/workflows/other.yml
+        """,
+    )
+    assert run_checker(tmp_path).returncode == 0
+    write_workflow(
+        tmp_path,
+        "none.yml",
+        """
+        name: none
+        on: push
+        jobs:
+          job:
+            steps:
+              - run: echo no
+        """,
+    )
+    result = run_checker(tmp_path)
+    assert result.returncode == 1
+    assert "no runs-on" in result.stdout
+
+
+def test_invalid_yaml_fails(tmp_path: Path) -> None:
+    write_workflow(tmp_path, "broken.yml", "jobs: [unclosed")
+    result = run_checker(tmp_path)
+    assert result.returncode == 1
+    assert "not valid YAML" in result.stdout
