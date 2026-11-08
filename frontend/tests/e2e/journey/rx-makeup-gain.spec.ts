@@ -115,8 +115,9 @@ async function setAfPercent(slider: Locator, percent: number): Promise<void> {
 }
 
 test('MOR-4273 unity settling rejects a startup peak inside the baseline window', async ({ page }) => {
-  await page.clock.install();
-  await page.clock.runFor(1000);
+  const epoch = new Date('2026-01-01T00:00:00Z');
+  await page.clock.install({ time: epoch });
+  await page.clock.pauseAt(new Date(epoch.getTime() + 1000));
   const quiet = amplitude(QUIET_DBFS);
   await page.evaluate(level => {
     const win = window as Window & { __RX_OUTPUT__?: OutputWitness; __RX_STARTUP_PEAK_READS__?: number };
