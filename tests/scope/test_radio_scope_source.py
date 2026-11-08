@@ -16,7 +16,7 @@ class Writer(RadioScopeWriter):
     def tuned_frequency(self, receiver):
         return self.frequency
 
-    async def set_output(self, enabled):
+    async def set_output(self, enabled, *, release=True):
         self.writes.append(enabled)
 
     async def set_center(self, center_hz, span_hz, receiver):
@@ -116,7 +116,7 @@ async def test_real_assembler_oor_routes_through_hub(mode, first, last, expected
 
 async def test_failed_output_off_can_be_retried():
     class FlakyWriter(Writer):
-        async def set_output(self, enabled):
+        async def set_output(self, enabled, *, release=True):
             self.writes.append(enabled)
             if not enabled and self.writes.count(False) == 1:
                 raise RuntimeError("output-off failed")
@@ -136,7 +136,7 @@ async def test_failed_start_and_failed_rollback_preserve_output_off_retry():
             super().__init__()
             self.output = False
 
-        async def set_output(self, enabled):
+        async def set_output(self, enabled, *, release=True):
             self.writes.append(enabled)
             if enabled:
                 self.output = True

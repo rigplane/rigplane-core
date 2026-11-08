@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from rigplane.runtime.scope_session import ScopeSession, ScopeState
+from rigplane.scope.models import ScopeDemand
 
 
 @pytest.mark.asyncio
@@ -21,19 +22,19 @@ async def test_shared_demand_ack_restore_and_pause(transport):
 
     session = ScopeSession(read, write)
     await session.set_ready(False)
-    await session.demand("web", True)
+    await session.set_demand(ScopeDemand(1, 1))
     assert not writes and not session.enabled
     await session.set_ready(True)
     assert writes == [("scope_on", True, 0), ("output_on", True, 0)]
-    await session.demand("sdk", True)
+    await session.set_demand(ScopeDemand(2, 2))
     assert len(writes) == 2
     await session.configure(mode=1, span=4)
-    await session.demand("web", False)
+    await session.set_demand(ScopeDemand(1, 1))
     assert session.enabled
-    await session.demand("sdk", False)
+    await session.set_demand(ScopeDemand(0, 0))
     assert session.observed == original
     restored = list(writes)
-    await session.demand("sdk", False)
+    await session.set_demand(ScopeDemand(0, 0))
     assert writes == restored
 
 
@@ -54,7 +55,7 @@ async def test_no_writes_during_tx_and_enabled_waits_for_ack():
 
     session = ScopeSession(read, write)
     await session.set_tx(True)
-    await session.demand("web", True)
+    await session.set_demand(ScopeDemand(1, 1))
     assert not writes
     task = asyncio.create_task(session.set_tx(False))
     from rigplane.testing.timing import await_until
@@ -82,9 +83,9 @@ async def test_reconnect_retains_original_capture():
         current = replace(current, **{name: value})
 
     session = ScopeSession(read, write)
-    await session.demand("web", True)
+    await session.set_demand(ScopeDemand(1, 1))
     await session.invalidate()
     await session.set_ready(True)
-    await session.demand("web", False)
+    await session.set_demand(ScopeDemand(0, 0))
     assert captures == 1
     assert current == original
