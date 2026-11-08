@@ -221,7 +221,8 @@ class ScopeWireFrame:
 
 
 class ScopeSourcePlugin(Protocol):
-    kind: SourceKind
+    @property
+    def kind(self) -> SourceKind: ...
 
     def capabilities(self) -> SourceCapabilities: ...
     def resolve_view(self, view: ViewRequest, receiver: int | None = None) -> View: ...

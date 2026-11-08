@@ -206,7 +206,8 @@ def encode_scope_frame_v2(frame: ScopeWireFrame) -> bytes:
 
     Identity travels with each message, requiring no external source registry.
     """
-    source_id = frame.source_id.encode("ascii")
+    source_id: bytes = frame.source_id.encode("ascii")
+    pixels: bytes = frame.pixels if frame.pixels is not None else b""
     return (
         SCOPE_V2_HEADER.pack(
             MSG_TYPE_SCOPE_V2,
@@ -224,7 +225,7 @@ def encode_scope_frame_v2(frame: ScopeWireFrame) -> bytes:
             frame.coverage_end_hz,
         )
         + source_id
-        + (frame.pixels if frame.pixels is not None else b"")
+        + pixels
     )
 
 
