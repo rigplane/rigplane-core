@@ -980,7 +980,9 @@ describe('SpectrumPanel component', () => {
     expect(panelEffects.runs).toEqual(baseline);
     emitFrame({ sequence: 102, startFreq: 13_990_000, endFreq: 14_110_000 });
     const changed = [...panelEffects.runs].map(([id, runs]) => runs - (baseline.get(id) ?? 0));
-    expect(Math.max(...changed), JSON.stringify([...panelEffects.origins])).toBeLessThanOrEqual(1);
+    const sites = [...panelEffects.runs].map(([id, runs]) => ({ runs: runs - (baseline.get(id) ?? 0), site: panelEffects.origins.get(id) })).filter(({ runs }) => runs > 0);
+    console.info('MOR-4270 geometry effect sites', sites);
+    expect(changed.reduce((sum, runs) => sum + runs, 0), JSON.stringify(sites)).toBeLessThanOrEqual(1);
     expect(changed.some((runs) => runs === 1)).toBe(true);
     console.info('MOR-4270 SpectrumPanel effects', { registered: baseline.size, pixelOnly: 0, geometryMaximum: Math.max(...changed), geometryTotal: changed.reduce((sum, runs) => sum + runs, 0) });
   });

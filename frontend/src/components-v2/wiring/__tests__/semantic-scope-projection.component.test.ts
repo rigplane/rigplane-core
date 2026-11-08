@@ -259,12 +259,18 @@ describe('one managed scope owner through the real region and panel', () => {
     await render(false);
     expect(surfaceEffects.runs.size).toBeGreaterThan(0);
     const initial = new Map(surfaceEffects.runs);
+    const initialReceipt = h.scope.stream('hardware').receipt;
     for (let index = 0; index < 100; index += 1) wire.frame(0, [index, 128, 255]);
+    expect(h.scope.stream('hardware').receipt).toBe(initialReceipt + 100);
     expect(surfaceEffects.runs).toEqual(initial);
+    const pixelRuns = [...surfaceEffects.runs].reduce((total, [id, count]) => total + count - initial.get(id)!, 0);
+    expect(pixelRuns).toBe(0);
     wire.frame(0, [0, 128, 255, 64]);
     const changes = [...surfaceEffects.runs].map(([id, count]) => count - initial.get(id)!);
-    expect(changes.every(count => count <= 1)).toBe(true);
-    expect(changes.some(count => count === 1)).toBe(true);
+    const geometryRuns = changes.reduce((total, count) => total + count, 0);
+    console.info('SRS effect budget', { registered: initial.size, pixelRuns, geometryRuns });
+    expect(geometryRuns).toBeGreaterThan(0);
+    expect(geometryRuns).toBeLessThanOrEqual(1);
   });
   it('sends CTR through the real client and consumes the paired server recovery documents', async () => {
     const documents = scopeOutOfRangeFixture as unknown as {
