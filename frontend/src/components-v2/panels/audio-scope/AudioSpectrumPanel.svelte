@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onMount } from 'svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
@@ -58,7 +59,7 @@
 
 <div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible} use:scopeSubscriptionSurface={{
   stream: runtime.scope.stream('audio_fft'), receiver: null,
-  view: { follow: 'vfo', spanHz: 48000 },
+  view: { follow: 'vfo', spanHz: 48000 }, revision: audioScopeFactsRevision(runtime.state, runtime.caps),
 }}>
   <AudioSpectrumCanvas
     data={null}

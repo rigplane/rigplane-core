@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
+  import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onDestroy } from 'svelte';
   import {
     bindVfoTunerContext, deriveAmberCockpitProps,
@@ -538,7 +540,10 @@
     <!-- ═══ Scope / Filter-viz (full-width) ═══ -->
     <div class="lcd-filter-row" style:grid-area="scope">
       {#if showFft}
-        <div class="lcd-scope-strip">
+        <div class="lcd-scope-strip" use:scopeSubscriptionSurface={{
+          stream: runtime.scope.stream('audio_fft'), receiver: null, view: { follow: 'vfo', spanHz: 48000 },
+          revision: audioScopeFactsRevision(radioState, caps),
+        }}>
           <AmberAfScope
               data={null}
               onRegisterPush={(fn) => { fftPush = fn; }}

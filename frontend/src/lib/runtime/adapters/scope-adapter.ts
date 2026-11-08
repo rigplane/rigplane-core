@@ -186,6 +186,33 @@ const strictlySeen = (state: ServerState, path: string): boolean => {
     && (status.availability === 'available' || status.availability === 'stale');
 };
 
+/** A retry token for observed primary audio-mapping facts, independent of UI VFO qualification. */
+export function audioScopeFactsRevision(state: ServerState | null, caps: Capabilities | null): string {
+  const seen = <T>(path: string, value: T | undefined): T | null =>
+    state != null && strictlySeen(state, path) ? value ?? null : null;
+  const primary = state?.main;
+  const activeSlot = seen('main.activeSlot', primary?.activeSlot);
+  const slot = activeSlot === 'A' ? primary?.vfoA : activeSlot === 'B' ? primary?.vfoB : undefined;
+  const slotPath = activeSlot === 'A' ? 'main.vfoA' : 'main.vfoB';
+  return JSON.stringify({
+    providerGeneration: state?.providerGeneration ?? null,
+    capsGeneration: caps?.providerGeneration ?? null,
+    sources: caps?.scopeSources ?? null,
+    activeSlot,
+    frequencyHz: seen('main.freqHz', primary?.freqHz),
+    mode: seen('main.mode', primary?.mode),
+    widthHz: seen('main.filterWidth', primary?.filterWidth),
+    dataMode: seen('main.dataMode', primary?.dataMode),
+    pitchHz: seen('cwPitch', state?.cwPitch),
+    active: slot === undefined ? null : {
+      slot: activeSlot,
+      frequencyHz: seen(`${slotPath}.freqHz`, slot.freqHz),
+      mode: seen(`${slotPath}.mode`, slot.mode),
+      dataMode: seen(`${slotPath}.dataMode`, slot.dataMode),
+    },
+  });
+}
+
 function immutableClone<T>(value: T): DeepReadonly<T> {
   if (Array.isArray(value)) return Object.freeze(value.map(immutableClone)) as DeepReadonly<T>;
   if (value !== null && typeof value === 'object') {
