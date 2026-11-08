@@ -108,7 +108,7 @@ valid answer; skipping the question is not.
 11. **Tests can fail.** Each behavior fix has a test that fails on the old code;
     name the mutation that turns it red. (A documentation-only correction needs no
     test.) Test the failure path, not only the happy path.
-12. **Process.** Change class and Linear id in the PR body (freeze rules), no
+12. **Process.** Linear id in the PR body, no
     personal data (user names, host names, addresses, keys) in code, fixtures or
     text, nothing private in a public repository, no secret exposed to fork PRs.
 
