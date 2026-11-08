@@ -145,6 +145,14 @@ export function getPendingFrequencyHz(_receiver: 0 | 1): number | null {
   return null;
 }
 
+export function getTuningBurstFrequencyHz(_receiver: 0 | 1): number | null {
+  return null;
+}
+
+export function isTuningBurstObservation(_receiver: number, _frequency: number): boolean {
+  return false;
+}
+
 /**
  * MOR-1441 leg 2 — same MOR-1271/MOR-1320 lesson as `getPendingFrequencyHz`
  * above, for the discrete-control pending accessors `SemanticRadioSurfaces.

@@ -441,7 +441,10 @@ describe('one managed scope owner through the real region and panel', () => {
     for (const [type, x] of [['pointerdown', 100], ['pointermove', 120], ['pointerup', 120]] as const) {
       surface.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, clientX: x })); flushSync();
     }
-    expect(h.frequency).toHaveBeenCalledOnce(); expect(h.width).not.toHaveBeenCalled();
+    expect(h.frequency).toHaveBeenCalledTimes(2);
+    expect(h.frequency).toHaveBeenNthCalledWith(1, 14_040_000, 0, 'drag');
+    expect(h.frequency).toHaveBeenNthCalledWith(2, 14_040_000, 0);
+    expect(h.width).not.toHaveBeenCalled();
     renew(11); wire.frame(); expect(overlay()!.getAttribute('style')).toBe(edges);
     expect(target.querySelector('.passband-freshness')).toBeNull();
   });
