@@ -127,3 +127,17 @@ describe('ScopeStream', () => {
     expect(stream.latest(scopeSlotKey('scope-1', 0))).toBeNull();
   });
 });
+
+it('isolates throwing sinks and uses exact subscriptions during notification', () => {
+  const input = source(); const stream = new ScopeStream(input.port, context, 'borrowed');
+  const failure = new Error('observer'); const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const healthy = vi.fn(); const late = vi.fn(); let remove = () => {};
+  remove = stream.subscribe(() => { remove(); stream.subscribe(late); throw failure; });
+  const unsubscribe = stream.subscribe(healthy);
+  input.emit();
+  expect(healthy).toHaveBeenCalledTimes(1); expect(late).not.toHaveBeenCalled();
+  expect(warn).toHaveBeenCalledWith('Scope stream subscriber failed', failure);
+  input.emit(); expect(healthy).toHaveBeenCalledTimes(2); expect(late).toHaveBeenCalledTimes(1);
+  unsubscribe(); unsubscribe(); input.emit(); expect(healthy).toHaveBeenCalledTimes(2);
+  stream.dispose(); warn.mockRestore();
+});

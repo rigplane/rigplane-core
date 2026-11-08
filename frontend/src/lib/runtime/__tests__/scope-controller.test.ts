@@ -491,29 +491,34 @@ describe.each([
     expect(geometry.mock.lastCall?.[0]).toBeNull();
   });
 
-  it('expires selected receiver at exactly 500 ms despite foreign receiver traffic', async () => {
+  it.each([[0, false], [1, false], [0, true], [1, true]] as const)(
+    'expires selected receiver %s at exactly 500 ms despite foreign receiver traffic (OOR=%s)', async (receiver, oor) => {
     vi.useFakeTimers(); let now = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => now);
     const channel = makeMockChannel(); const controller = new ScopeController(() => channel as never);
-    const stream = controller.stream(source); stream.setSlotFilter(`${channelName}:0`);
+    const stream = controller.stream(source); stream.setSlotFilter(`${channelName}:${receiver}`);
     const geometry = vi.fn(); stream.geometry.subscribe(geometry);
     const handle = await controller[driverName].start();
     try {
-      channel._setState('connected'); channel._fire(makeScopeFrameBuffer());
-      const selected = stream.latest(`${channelName}:0`);
+      const selectedFrame = () => {
+        const frame = makeScopeFrameBuffer(oor ? 0 : 4); const wire = new DataView(frame);
+        wire.setUint8(1, receiver); wire.setUint8(13, oor ? 1 : 0); return frame;
+      };
+      channel._setState('connected'); channel._fire(selectedFrame());
+      const selected = stream.latest(`${channelName}:${receiver}`);
       for (let tick = 0; tick < 4; tick++) {
         now += 100; vi.advanceTimersByTime(100);
-        const foreign = makeScopeFrameBuffer(); new DataView(foreign).setUint8(1, 1); channel._fire(foreign);
-        expect(stream.latest(`${channelName}:0`)).toBe(selected);
-        expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver: 0, freshness: 'fresh' });
+        const foreign = makeScopeFrameBuffer(); new DataView(foreign).setUint8(1, 1 - receiver); channel._fire(foreign);
+        expect(stream.latest(`${channelName}:${receiver}`)).toBe(selected);
+        expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver, freshness: 'fresh' });
       }
       now = 499; vi.advanceTimersByTime(99);
       expect(geometry.mock.lastCall?.[0]).toMatchObject({ freshness: 'fresh' });
       now = 500; vi.advanceTimersByTime(1);
-      expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver: 0, freshness: 'stale' });
+      expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver, freshness: 'stale' });
       expect(controller.snapshotHealth(source).frameSeen).toBe(true);
-      channel._fire(makeScopeFrameBuffer());
-      expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver: 0, freshness: 'fresh' });
+      channel._fire(selectedFrame());
+      expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver, freshness: 'fresh' });
     } finally { await controller[driverName].stop(handle); vi.useRealTimers(); vi.restoreAllMocks(); }
   });
 });
