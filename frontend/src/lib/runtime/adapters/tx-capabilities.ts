@@ -1,8 +1,23 @@
 import type { Capabilities } from '$lib/types/capabilities';
 import type { KnownTxTargetPublic, UnknownTxTargetPublic } from '$lib/types/state';
+import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import { getFrequencyPermit, type FrequencyPermit } from '$lib/utils/tx-permit';
 
 type TxTarget = KnownTxTargetPublic | UnknownTxTargetPublic;
+
+export function projectHeaderFrequency(
+  view: RadioViewModel | null, activeRxFrequencyHz: number,
+): { frequencyHz: number; showingTxFrequency: boolean } {
+  const target = view?.txTarget;
+  if (view?.split.status === 'known' && view.split.value
+    && view.radioWideIndicators?.rfState === 'transmitting'
+    && target?.status === 'known' && target.frequencyHz !== null
+    && Number.isFinite(target.frequencyHz)) {
+    return { frequencyHz: target.frequencyHz, showingTxFrequency: true };
+  }
+  return { frequencyHz: activeRxFrequencyHz, showingTxFrequency: false };
+}
+
 export type ModInputSource =
   | { status: 'known'; source: number }
   | { status: 'unknown' };

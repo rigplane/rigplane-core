@@ -332,7 +332,10 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 label="get_frequency",
             )
             freq = parse_frequency_response(resp)
-            if update_cache:
+            if (
+                update_cache
+                and self._civ_runtime._operating_frequency_path(resp) is not None
+            ):
                 self._state_cache.update_freq(freq)
             return freq
         except TimeoutError:

@@ -97,6 +97,7 @@ from rigplane.core.types import (
     ctcss_booleans_for_tone_squelch_type,
 )
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.runtime._dual_rx_runtime import _relative_vfo_routing_available
 from rigplane.runtime import radio_reconnect
 from rigplane.runtime._state_queries import (
     acquisition_query_resolver_for_profile,
@@ -2296,8 +2297,12 @@ class CivRuntime:
                         len(frame.data),
                     )
                 else:
-                    freq = parse_frequency_response(frame)
-                    host._state_cache.update_freq(freq)
+                    receiver_id, _ = self._receiver_context(frame)
+                    if self._operating_frequency_path(frame) == self._freq_mode_path(
+                        receiver_id=receiver_id, name="freq_hz"
+                    ):
+                        freq = parse_frequency_response(frame)
+                        host._state_cache.update_freq(freq)
             elif frame.command in (0x04, 0x01):
                 mode_val, filt = parse_mode_response(frame)
                 host._state_cache.update_mode(mode_val.name, filt)
@@ -2866,13 +2871,11 @@ class CivRuntime:
             return ()
 
         if frame.command in (0x00, 0x03):
-            if len(frame.data) == _FREQ_BCD_LEN:
+            path = self._operating_frequency_path(frame)
+            if len(frame.data) == _FREQ_BCD_LEN and path is not None:
                 observations.append(
                     self._observation(
-                        self._freq_mode_path(
-                            receiver_id=receiver_id,
-                            name="freq_hz",
-                        ),
+                        path,
                         parse_frequency_response(frame),
                         frame=frame,
                     )
@@ -3529,6 +3532,31 @@ class CivRuntime:
             return None, "contradiction"
         return ("SUB" if split.value else "MAIN"), None
 
+    def _operating_frequency_path(self, frame: CivFrame) -> FieldPath | None:
+        receiver_id, _ = self._receiver_context(frame)
+        active = self._freq_mode_path(receiver_id=receiver_id, name="freq_hz")
+        store = getattr(self._host, "_state_store", None)
+        if frame.receiver is not None or store is None:
+            return active
+        profile = self._host._profile
+        if not _relative_vfo_routing_available(
+            profile, profile.command_map, ("get_selected_freq", "get_unselected_freq")
+        ):
+            return active
+        acquisition = profile.state_acquisition
+        if (
+            acquisition is None
+            or not acquisition.capability_for(
+                _profile_path_for_observation(acquisition, active)
+            ).can_poll
+        ):
+            return active
+        try:
+            split = store.field(FieldPath.global_("tx_state", "split"))
+        except KeyError:
+            return active
+        return None if split.value is True else active
+
     @staticmethod
     def _decode_level(data: bytes) -> int:
         from rigplane.commands import _level_bcd_decode
@@ -3721,7 +3749,11 @@ class CivRuntime:
             )
             return
         freq = parse_frequency_response(frame)
-        rx.freq = freq
+        receiver_id, _ = self._receiver_context(frame)
+        if self._operating_frequency_path(frame) == self._freq_mode_path(
+            receiver_id=receiver_id, name="freq_hz"
+        ):
+            rx.freq = freq
 
     def _handle_mode(
         self,
