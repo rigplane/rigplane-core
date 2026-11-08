@@ -103,3 +103,43 @@ it('preserves an explicit IQ default even when radio is also discoverable', () =
   expect(owner.stream('hardware').kind).toBe('iq_fft');
   expect(owner.stream('hardware').sourceId).toBe('iq_fft');
 });
+
+it('aggregates panorama and dedicated AF demand on one configured audio target', async () => {
+  const { port, change } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
+  owner.configureSources(['radio', 'audio_fft', 'iq_fft'], 'audio_fft');
+  const audio = owner.stream('audio_fft'), main = Symbol('panorama'), af = Symbol('dedicated AF');
+  audio.updateSurfaceSubscription(main, { ...request('audio_fft', null), width: 2800 });
+  audio.updateSurfaceSubscription(af, { ...request('audio_fft', null), width: 224,
+    view: { follow: 'vfo', spanHz: 4800 } });
+  const mainSink = vi.fn(), afSink = vi.fn(); audio.subscribe(mainSink); audio.subscribe(afSink);
+  const handle = await owner.audioFftDriver.start(); change('connected');
+  expect(port.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/scope');
+  expect(audio.subscriptions).toEqual([{ ...request('audio_fft', null), width: 2800 }]);
+  port.message({ type: 'granted', sourceId: 'audio_fft', receiver: null, width: 2049, fps: 20,
+    view: { startHz: 14_026_000, endHz: 14_074_000 }, coverage: { startHz: 14_026_000, endHz: 14_074_000 } });
+  const buffer = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, pixels: new Uint8Array(2049) });
+  port.receive(buffer);
+  expect(get(audio.granted)?.width).toBe(2049);
+  expect(mainSink.mock.lastCall?.[0].pixels.buffer).toBe(buffer);
+  expect(afSink.mock.lastCall?.[0].pixels.buffer).toBe(buffer);
+  audio.removeSurfaceSubscription(main);
+  expect(port.sendRaw).toHaveBeenLastCalledWith({ type: 'subscribe', ...request('audio_fft', null),
+    width: 224, view: { follow: 'vfo', spanHz: 4800 } });
+  expect(port.disconnect).not.toHaveBeenCalled();
+  port.receive(buffer); expect(afSink).toHaveBeenCalledTimes(2);
+  audio.removeSurfaceSubscription(af);
+  expect(port.sendRaw).toHaveBeenLastCalledWith({ type: 'unsubscribe', sourceId: 'audio_fft', receiver: null });
+  await owner.audioFftDriver.stop(handle);
+});
+
+it.each(['iq_fft', 'audio_fft'] as const)('does not apply native radio scope mode to %s geometry', async source => {
+  const { port, change } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
+  const stream = owner.stream(source === 'audio_fft' ? 'audio_fft' : 'hardware');
+  stream.setSource(source, source); stream.setMode(3);
+  stream.setSubscription(request(source, null));
+  const driver = source === 'audio_fft' ? owner.audioFftDriver : owner.hardwareScopeDriver;
+  const handle = await driver.start(); change('connected');
+  port.receive(scopeWire({ source, sourceId: source, receiver: null }));
+  expect(get(stream.geometry)?.mode).toBe(0);
+  await driver.stop(handle);
+});

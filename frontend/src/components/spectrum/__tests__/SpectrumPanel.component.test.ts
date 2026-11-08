@@ -12,7 +12,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import * as svelteClient from 'svelte/internal/client';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { scopeWire } from '../../../lib/runtime/__tests__/scope-wire-fixture';
+import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden } from '../../../lib/runtime/__tests__/scope-wire-fixture';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplay, type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -207,9 +207,9 @@ Object.defineProperty(runtimeHarness.state, 'currentCaps', {
   get: () => runtimeFacts.get('caps'),
   set: value => {
     runtimeFacts.set('caps', value);
-    const caps = value as { scopeSources?: readonly string[]; scopeSource?: string };
+    const caps = value as { scopeSources?: readonly string[]; scopeSource?: string; scopeDefaultSourceId?: 'radio' | 'iq_fft' | 'audio_fft' | null };
     scopeControllerHarness.configureSources(caps.scopeSources ??
-      [caps.scopeSource === 'sdr' ? 'iq_fft' : caps.scopeSource === 'audio_fft' ? 'audio_fft' : 'radio']);
+      [caps.scopeSource === 'sdr' ? 'iq_fft' : caps.scopeSource === 'audio_fft' ? 'audio_fft' : 'radio'], caps.scopeDefaultSourceId);
   },
 });
 
@@ -1071,10 +1071,60 @@ describe('SpectrumPanel component', () => {
       viewStartHz: 14_026_000, viewEndHz: 14_074_000, pixels: new Uint8Array([0, 80, 160, 0]) })));
     flushSync();
     expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
-    runtimeHarness.state.currentState = { ...runtimeHarness.state.currentState, main: {
-      ...runtimeHarness.state.currentState?.main, freqHz: 14_200_000 } };
+    const state = runtimeHarness.state.currentState as ServerState;
+    runtimeHarness.state.currentState = { ...state, main: { ...state.main, freqHz: 14_200_000 } };
     flushSync();
     expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
+  });
+
+  it.each(['radio', 'iq_fft', 'audio_fft'] as const)('preserves the configured %s default in the mounted panorama among all sources', (scopeDefaultSourceId) => {
+    runtimeHarness.state.currentCaps = { scopeSource: null, scopeDefaultSourceId,
+      scopeSources: ['radio', 'iq_fft', 'audio_fft'], scope: true, audio: true, audioFftAvailable: true };
+    const target = mountPanel();
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.sourceId).toBe(scopeDefaultSourceId);
+    expect(request.receiver).toBe(scopeDefaultSourceId === 'radio' ? 0 : null);
+    expect(target.querySelector('.spectrum-panel')!.classList.contains('audio-fft')).toBe(scopeDefaultSourceId === 'audio_fft');
+  });
+
+  it.each(audioScopeGoldenNames)('keeps real %s pixels and observed AF coordinates through the actual panel', async (name) => {
+    const { buffer, expected } = loadAudioScopeGolden(name);
+    runtimeHarness.state.currentCaps = { scopeSource: null, scopeDefaultSourceId: 'audio_fft',
+      scopeSources: ['radio', 'iq_fft', 'audio_fft'], audio: true, audioFftAvailable: true };
+    const observed = { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 };
+    runtimeHarness.state.currentState = { providerGeneration: 17, main: { freqHz: expected.audioPassband.tunedHz,
+      mode: expected.input.mode }, cwPitch: expected.input.cwPitchHz,
+      fieldStatus: Object.fromEntries(['main.freqHz', 'main.mode', 'cwPitch'].map(path => [path, { ...observed, storePath: path }])) };
+    const target = mountPanel();
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    harnessChannels.scope.fire(new Uint8Array(buffer)); flushSync(); await flushWaterfallPaint();
+    const span = expected.frame.view_end_hz - expected.frame.view_start_hz;
+    const carrier = expected.audioPassband.tunedHz + expected.audioPassband.carrierOffsetHz;
+    const sign = expected.audioPassband.sideband === 'lower' ? -1 : 1;
+    const afSpan = sign === 1 ? expected.frame.view_end_hz - carrier : carrier - expected.frame.view_start_hz;
+    const pixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
+    expect(pixels.buffer).toBe(buffer); expect(push.mock.lastCall?.[0]).toBe(pixels);
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: afSpan, sampleOffset: 0,
+      sampleWindow: { start: (carrier - expected.frame.view_start_hz) / span,
+        end: (carrier - expected.frame.view_start_hz) / span + sign / span * afSpan } });
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.view).toEqual({ follow: 'vfo', spanHz: 48000 });
+  });
+
+  it.each([1, 3])('keeps IQ View following QSY independently of native radio scope mode %s', async (mode) => {
+    runtimeHarness.state.currentCaps = { scopeSource: null, scopeDefaultSourceId: 'iq_fft',
+      scopeSources: ['radio', 'iq_fft', 'audio_fft'] };
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(mode) });
+    const target = mountPanel();
+    harnessChannels.scope.fire(new Uint8Array(scopeWire({ source: 'iq_fft', sourceId: 'iq_fft', receiver: null })));
+    flushSync();
+    await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions?.scopeMode).toBe(0);
+    authorityHarness.state.current = authority({ frequencyHz: 14_150_000, scopeControls: testScopeControls(mode) });
+    flushSync();
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.receiver).toBeNull();
+    expect(request.view).toEqual({ startHz: 14_100_000, endHz: 14_200_000 });
   });
 
   it.each([0, 1] as const)('requests the numeric receiver %s from authority', (receiver) => {
