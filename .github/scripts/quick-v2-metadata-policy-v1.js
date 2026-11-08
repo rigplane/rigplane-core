@@ -152,14 +152,12 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
   if (totalCount === null || jobs.length !== totalCount) { throw new ObservationError('invalid_binding', 'legacy quick job topology is incomplete'); }
   return jobs;
 }
-// MOR-3875: legacy quick runs classify, two parallel build-tier halves, and the
-// `quick` aggregator on the light pool. classify sits on the light pool.
-// The base classifier's
-// frontend and ci routes are subsets of the workflow's, so those routes pin a
-// half; its core route also covers unknown roots the workflow selects nothing
-// for, so it does not.
-const BUILD_LABELS = Object.freeze(['self-hosted', 'linux', 'build']);
-const LIGHT_LABELS = Object.freeze(['self-hosted', 'linux', 'light']);
+// MOR-3875: legacy quick runs classify, two parallel worker halves, and the
+// `quick` aggregator on the light pool. classify sits on the light pool. The
+// halves run on build pools (MOR-4214), not on the 2 GiB gate pool.
+const FRONTEND_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
+const PYTHON_LABELS = Object.freeze(['self-hosted', 'Linux', 'X64', 'build']);
+const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
 function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
 function ranOnRunner(job) { return job !== undefined && job.conclusion !== 'skipped' && typeof job.runner_name === 'string' && job.runner_name.length > 0; }
 function evaluateJobTopology(run, jobs, routes, draft) { const names = jobs.map((job) => job.name);
@@ -169,11 +167,11 @@ function evaluateJobTopology(run, jobs, routes, draft) { const names = jobs.map(
   const frontend = jobs.find((job) => job.name === 'quick-frontend');
   const python = jobs.find((job) => job.name === 'quick-python');
   const quick = jobs.find((job) => job.name === 'quick');
-  const workers = [frontend, python];
+  const workers = [[frontend, FRONTEND_LABELS], [python, PYTHON_LABELS]];
   const frontendRequired = routes.frontend === true;
   const pythonRequired = routes.ci === true;
-  const classifyMatches = classify?.conclusion === 'success' && (hasLabels(classify, ['ubuntu-latest']) || hasLabels(classify, LIGHT_LABELS));
-  const workersBound = workers.every((job) => job?.conclusion === 'skipped' || (ranOnRunner(job) && hasLabels(job, BUILD_LABELS)));
+  const classifyMatches = classify?.conclusion === 'success' && hasLabels(classify, LIGHT_LABELS);
+  const workersBound = workers.every(([job, labels]) => job?.conclusion === 'skipped' || (ranOnRunner(job) && hasLabels(job, labels)));
   const skippedWork = quick?.conclusion === 'skipped' || (frontendRequired && frontend?.conclusion === 'skipped') || (pythonRequired && python?.conclusion === 'skipped');
   const quickWasSubstantive = ranOnRunner(quick) && (!frontendRequired || ranOnRunner(frontend)) && (!pythonRequired || ranOnRunner(python));
   const labelsMatch = hasLabels(quick, LIGHT_LABELS) && workersBound;
@@ -182,7 +180,7 @@ function evaluateJobTopology(run, jobs, routes, draft) { const names = jobs.map(
   }
   if (!routeConcordance) { return {ok: false, code: 'route_mismatch', routeConcordance: false};
   }
-  if (run.conclusion !== 'success' || quick.conclusion !== 'success' || workers.some((job) => job.conclusion !== 'success' && job.conclusion !== 'skipped')) { return {ok: false, code: 'terminal_failure', routeConcordance: true};
+  if (run.conclusion !== 'success' || quick.conclusion !== 'success' || workers.some(([job]) => job.conclusion !== 'success' && job.conclusion !== 'skipped')) { return {ok: false, code: 'terminal_failure', routeConcordance: true};
   }
   return {ok: true, code: 'terminal_match', routeConcordance: true};
 }

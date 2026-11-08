@@ -51,7 +51,10 @@ def _bcd_byte_decode(b: int) -> int:
     Returns:
         Decimal value 0–99.
     """
-    return ((b >> 4) & 0x0F) * 10 + (b & 0x0F)
+    high, low = b >> 4, b & 0x0F
+    if high > 9 or low > 9:
+        raise ValueError("Invalid scope sequence BCD")
+    return high * 10 + low
 
 
 class _ReceiverState:
@@ -106,8 +109,12 @@ class _ReceiverState:
         if len(raw_payload) < 2:
             return None
 
-        seq = _bcd_byte_decode(raw_payload[0])
-        seq_max = _bcd_byte_decode(raw_payload[1])
+        try:
+            seq = _bcd_byte_decode(raw_payload[0])
+            seq_max = _bcd_byte_decode(raw_payload[1])
+        except ValueError:
+            self._reset()
+            return None
 
         # Discard stale partial assembly if it has exceeded the timeout.
         if self._start_time is not None and seq != 1:

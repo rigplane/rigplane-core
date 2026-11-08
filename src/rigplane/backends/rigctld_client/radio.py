@@ -805,7 +805,7 @@ class RigctldClientRadio:
 
     @property
     def last_valid_frame_monotonic(self) -> float | None:
-        """Unknown: standard rigctld responses carry no fresh-read provenance."""
+        """Physical freshness only with an optional trusted provenance provider."""
         return self._transport.last_valid_frame_monotonic
 
     @property
@@ -887,17 +887,9 @@ class RigctldClientRadio:
 
     async def get_freq(self, receiver: int = 0) -> int:
         self._require_main_receiver(receiver, "get_freq")
-        line = (await self._transport.query("f", response_lines=1))[0]
-        try:
-            freq = int(line)
-        except ValueError as exc:
-            raise CommandError(
-                f"External rigctld returned malformed frequency: {line!r}."
-            ) from exc
-        if freq < 0:
-            raise CommandError(
-                f"External rigctld returned invalid negative frequency: {freq}."
-            )
+        freq = await self._transport.query_decoded(
+            "f", response_lines=1, decode=_decode_frequency
+        )
         self._state.main.freq = freq
         return freq
 
@@ -909,16 +901,9 @@ class RigctldClientRadio:
 
     async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
         self._require_main_receiver(receiver, "get_mode")
-        mode, passband = await self._transport.query("m", response_lines=2)
-        mode = mode.strip().upper()
-        if not mode:
-            raise CommandError("External rigctld returned an empty mode.")
-        try:
-            passband_hz = int(passband)
-        except ValueError as exc:
-            raise CommandError(
-                f"External rigctld returned malformed passband: {passband!r}."
-            ) from exc
+        mode, passband_hz = await self._transport.query_decoded(
+            "m", response_lines=2, decode=_decode_mode
+        )
         self._state.main.mode = mode
         self._state.main.filter_width = passband_hz
         return mode, passband_hz
@@ -965,17 +950,13 @@ class RigctldClientRadio:
         is_current: Callable[[], bool] | None = None,
         urgent: bool = False,
     ) -> bool:
-        if is_current is None and not urgent:
-            line = (await self._transport.query("t", response_lines=1))[0]
-        else:
-            line = (
-                await self._transport.query(
-                    "t", response_lines=1, is_current=is_current, urgent=urgent
-                )
-            )[0]
-        if line not in {"0", "1"}:
-            raise CommandError(f"External rigctld returned malformed PTT: {line!r}.")
-        return line == "1"
+        return await self._transport.query_decoded(
+            "t",
+            response_lines=1,
+            decode=_decode_ptt,
+            is_current=is_current,
+            urgent=urgent,
+        )
 
     async def set_ptt(self, on: bool) -> None:
         await self._set_ptt(on)
@@ -1051,8 +1032,9 @@ class RigctldClientRadio:
 
     async def get_vfo_slot(self, receiver: int = 0) -> str:
         self._require_main_receiver(receiver, "get_vfo_slot")
-        line = (await self._transport.query("v", response_lines=1))[0]
-        slot = _normalize_vfo_slot(line)
+        slot = await self._transport.query_decoded(
+            "v", response_lines=1, decode=lambda lines: _normalize_vfo_slot(lines[0])
+        )
         self._state.main.active_slot = slot
         return slot
 
@@ -1063,8 +1045,11 @@ class RigctldClientRadio:
 
     async def get_rf_gain(self, receiver: int = 0) -> int:
         self._require_main_receiver(receiver, "get_rf_gain")
-        line = (await self._transport.query("l RF", response_lines=1))[0]
-        return _parse_level_255(line, "RF gain")
+        return await self._transport.query_decoded(
+            "l RF",
+            response_lines=1,
+            decode=lambda lines: _parse_level_255(lines[0], "RF gain"),
+        )
 
     async def set_rf_gain(self, level: int, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_rf_gain")
@@ -1072,8 +1057,11 @@ class RigctldClientRadio:
 
     async def get_af_level(self, receiver: int = 0) -> int:
         self._require_main_receiver(receiver, "get_af_level")
-        line = (await self._transport.query("l AF", response_lines=1))[0]
-        return _parse_level_255(line, "AF level")
+        return await self._transport.query_decoded(
+            "l AF",
+            response_lines=1,
+            decode=lambda lines: _parse_level_255(lines[0], "AF level"),
+        )
 
     async def set_af_level(self, level: int, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_af_level")
@@ -1081,8 +1069,13 @@ class RigctldClientRadio:
 
     async def get_preamp(self, receiver: int = 0) -> int:
         self._require_main_receiver(receiver, "get_preamp")
-        line = (await self._transport.query("l PREAMP", response_lines=1))[0]
-        return _preamp_db_to_level(_parse_int_level(line, "preamp"))
+        return await self._transport.query_decoded(
+            "l PREAMP",
+            response_lines=1,
+            decode=lambda lines: _preamp_db_to_level(
+                _parse_int_level(lines[0], "preamp")
+            ),
+        )
 
     async def set_preamp(self, level: int, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_preamp")
@@ -1098,8 +1091,11 @@ class RigctldClientRadio:
 
     async def get_attenuator_level(self, receiver: int = 0) -> int:
         self._require_main_receiver(receiver, "get_attenuator_level")
-        line = (await self._transport.query("l ATT", response_lines=1))[0]
-        return _parse_int_level(line, "attenuator")
+        return await self._transport.query_decoded(
+            "l ATT",
+            response_lines=1,
+            decode=lambda lines: _parse_int_level(lines[0], "attenuator"),
+        )
 
     def project_attenuator_observation_value(self, db: int) -> int:
         return db
@@ -1109,16 +1105,22 @@ class RigctldClientRadio:
         await self._transport.command(f"L ATT {int(db)}")
 
     async def get_nb(self) -> bool:
-        line = (await self._transport.query("u NB", response_lines=1))[0]
-        return _parse_func(line, "noise blanker")
+        return await self._transport.query_decoded(
+            "u NB",
+            response_lines=1,
+            decode=lambda lines: _parse_func(lines[0], "noise blanker"),
+        )
 
     async def set_nb(self, on: bool, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_nb")
         await self._transport.command(f"U NB {1 if on else 0}")
 
     async def get_nr(self) -> bool:
-        line = (await self._transport.query("u NR", response_lines=1))[0]
-        return _parse_func(line, "noise reduction")
+        return await self._transport.query_decoded(
+            "u NR",
+            response_lines=1,
+            decode=lambda lines: _parse_func(lines[0], "noise reduction"),
+        )
 
     async def set_nr(self, on: bool, receiver: int = 0) -> None:
         self._require_main_receiver(receiver, "set_nr")
@@ -1138,6 +1140,42 @@ class RigctldClientRadio:
             raise ValueError(
                 f"{operation}: external rigctld backend only supports receiver 0"
             )
+
+
+def _decode_frequency(lines: list[str]) -> int:
+    line = lines[0]
+    try:
+        freq = int(line)
+    except ValueError as exc:
+        raise CommandError(
+            f"External rigctld returned malformed frequency: {line!r}."
+        ) from exc
+    if freq < 0:
+        raise CommandError(
+            f"External rigctld returned invalid negative frequency: {freq}."
+        )
+    return freq
+
+
+def _decode_mode(lines: list[str]) -> tuple[str, int]:
+    mode, passband = lines
+    mode = mode.strip().upper()
+    if not mode:
+        raise CommandError("External rigctld returned an empty mode.")
+    try:
+        passband_hz = int(passband)
+    except ValueError as exc:
+        raise CommandError(
+            f"External rigctld returned malformed passband: {passband!r}."
+        ) from exc
+    return mode, passband_hz
+
+
+def _decode_ptt(lines: list[str]) -> bool:
+    line = lines[0]
+    if line not in {"0", "1"}:
+        raise CommandError(f"External rigctld returned malformed PTT: {line!r}.")
+    return line == "1"
 
 
 def _normalize_vfo_slot(value: str) -> str:

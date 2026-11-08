@@ -219,6 +219,53 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
+    def test_runner_label_validation_runs_for_workflow_only_changes(self) -> None:
+        for path in (
+            ".github/workflows/artifact-cleanup.yml",
+            ".github/workflows/new-ci.yaml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    CLASSIFIER.classify([path]),
+                    {"core": False, "frontend": False, "ci": True, "docs": False},
+                )
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        self.assertIn(
+            "      - name: Runner label validation\n"
+            "        if: needs.classify.outputs.ci == 'true'\n"
+            "        run: uv run --no-project --with 'pyyaml>=6' python3 "
+            ".github/scripts/check-workflow-runs-on.py\n",
+            quick,
+        )
+        self.assertIn(
+            "      - name: Install uv\n"
+            "        if: needs.classify.outputs.core == 'true' || "
+            "needs.classify.outputs.web == 'true' || "
+            "needs.classify.outputs.ci == 'true'\n",
+            quick,
+        )
+
+    def test_test_heavy_jobs_stay_off_the_two_gib_gate_pool(self) -> None:
+        # MOR-4214 / MOR-4280: the gate pool is 2 GiB containers sized for short
+        # guard jobs; the full suite and the Playwright jobs belong on build pools.
+        workflows = ROOT / ".github" / "workflows"
+        for name, pools in (
+            ("full.yml", ["[self-hosted, Linux, X64, build]", "[self-hosted, Linux, ARM64, build]"]),
+            ("visual.yml", ["[self-hosted, Linux, ARM64, build]"]),
+        ):
+            with self.subTest(workflow=name):
+                text = (workflows / name).read_text(encoding="utf-8")
+                self.assertNotIn("ARM64, gate", text)
+                found = re.findall(r"(?m)^    runs-on: (\[.*\])$", text)
+                self.assertEqual([pool for pool in found if "light" not in pool], pools)
+
+    def test_frontend_check_step_sets_the_node_heap_svelte_check_needs(self) -> None:
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        step = quick.split("      - name: Frontend install + check + tests + build\n", 1)[1]
+        step = step.split("      - name:", 1)[0]
+        self.assertIn("NODE_OPTIONS: --max-old-space-size=3072", step)
+        self.assertIn("npm run check", step)
+
     def test_release_gate_changes_select_the_route_that_runs_receipt_tests(
         self,
     ) -> None:
@@ -431,11 +478,16 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertEqual(
             set(jobs), {"classify", "quick-frontend", "quick-python", "quick"}
         )
+        # MOR-4214: both halves need more memory than the 2 GiB gate pool gives.
+        pools = {
+            "quick-frontend": "[self-hosted, Linux, ARM64, build]",
+            "quick-python": "[self-hosted, Linux, X64, build]",
+        }
         for half in ("quick-frontend", "quick-python"):
             with self.subTest(job=half):
                 block = jobs[half]
                 self.assertIn("    needs: classify\n", block)
-                self.assertIn("    runs-on: [self-hosted, linux, build]\n", block)
+                self.assertIn(f"    runs-on: {pools[half]}\n", block)
                 self.assertIn("    timeout-minutes: 25\n", block)
                 self.assertIn("needs.classify.outputs.docs != 'true'", block)
                 self.assertIn("needs.classify.outputs.reuse != 'true'", block)
@@ -445,7 +497,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertNotIn("npm ci", jobs["quick-python"])
         aggregator = jobs["quick"]
         self.assertIn("    needs: [classify, quick-frontend, quick-python]\n", aggregator)
-        self.assertIn("    runs-on: [self-hosted, linux, light]\n", aggregator)
+        self.assertIn("    runs-on: [self-hosted, Linux, ARM64, light]\n", aggregator)
         self.assertIn("    timeout-minutes: 5\n", aggregator)
         self.assertIn("needs.classify.outputs.reuse != 'true'", aggregator)
         self.assertNotIn("actions/checkout", aggregator)
@@ -459,7 +511,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
         self.assertIn(event_types, quick)
         self.assertIn(event_types, visual)
-        self.assertIn("runs-on: [self-hosted, linux, light]", quick)
+        self.assertIn("runs-on: [self-hosted, Linux, ARM64, light]", quick)
         self.assertIn("needs: classify", quick)
         self.assertIn("needs.classify.outputs.docs != 'true'", quick)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)

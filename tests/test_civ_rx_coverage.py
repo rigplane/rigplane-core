@@ -20,7 +20,6 @@ Covers missing lines:
 - 470-622: _update_radio_state_from_frame all paths
 - 628-632: _notify_change with callback
 - 640-643: _publish_scope_frame queue full
-- 655-658: _publish_civ_event queue full
 - 726: _start_civ_worker commander already exists
 - 759-768: _drain_ack_sinks_before_blocking
 - 823: pre-send timeout check
@@ -4585,24 +4584,17 @@ async def test_route_civ_frame_contains_observation_decode_failures(
     frame: CivFrame,
     expected_observation_seq: int,
 ) -> None:
-    published: list[Any] = []
     radio._civ_request_tracker.resolve = MagicMock()
-
-    with patch.object(
-        radio._civ_runtime,
-        "_publish_civ_event",
-        side_effect=published.append,
-    ):
-        await radio._civ_runtime._route_civ_frame(
-            frame,
-            generation=radio._civ_epoch,
-        )
-
-    assert len(published) == 1
-    assert published[0].frame == frame
+    await radio._civ_runtime._route_civ_frame(
+        frame,
+        generation=radio._civ_epoch,
+    )
+    radio._civ_request_tracker.resolve.assert_called_once()
+    event = radio._civ_request_tracker.resolve.call_args.args[0]
+    assert event.frame == frame
     # MockTransport carries the LAN ingress-order contract (MOR-4209).
     radio._civ_request_tracker.resolve.assert_called_once_with(
-        published[0],
+        event,
         generation=radio._civ_epoch,
         ordered_ingress=IcomCivTransport.ordered_ingress,
     )
@@ -6233,7 +6225,9 @@ def test_notify_change_no_callback_debug_log(radio: IcomRadio) -> None:
 
 def test_publish_scope_frame_drops_oldest_when_full(radio: IcomRadio) -> None:
     """When scope_frame_queue is full, oldest frame is dropped (lines 640-643)."""
-    # Fill the queue to capacity
+    from rigplane.core._bounded_queue import BoundedQueue
+
+    radio._scope_frame_queue = BoundedQueue(maxsize=64)
     dummy_frame = ScopeFrame(
         receiver=0,
         mode=1,
@@ -6266,26 +6260,6 @@ def test_publish_scope_frame_invokes_callback(radio: IcomRadio) -> None:
     )
     radio._civ_runtime._publish_scope_frame(dummy_frame)
     assert received == [dummy_frame]
-
-
-# ---------------------------------------------------------------------------
-# _publish_civ_event — queue full (lines 655-658)
-# ---------------------------------------------------------------------------
-
-
-def test_publish_civ_event_drops_oldest_when_full(radio: IcomRadio) -> None:
-    """When civ_event_queue is full, oldest event is dropped (lines 655-658)."""
-    from rigplane.civ import CivEvent, CivEventType
-
-    event = CivEvent(type=CivEventType.ACK, frame=None)
-
-    # Fill the queue
-    while not radio._civ_event_queue.full():
-        radio._civ_event_queue.put_nowait(event)
-
-    # Publish one more — should succeed by dropping oldest
-    radio._civ_runtime._publish_civ_event(event)
-    assert radio._civ_event_queue.full()
 
 
 # ---------------------------------------------------------------------------

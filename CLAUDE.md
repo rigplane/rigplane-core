@@ -132,9 +132,15 @@ Development runs across a local laptop and a dev Mac mini, often with several
 agents. Before editing:
 
 ```bash
-git fetch --all --tags --prune
+git fetch origin --prune --no-prune-tags
 git status --short --branch
 ```
+
+With `fetch.pruneTags=true` (set on some machines) every fetch deletes local tags
+that the remote does not have: all of them for a fork remote without tags
+(`--all`), and an unpushed release tag even for a plain `git fetch origin`. Always
+pass `--no-prune-tags`; fetch tags explicitly with
+`git fetch origin --tags --no-prune-tags`.
 
 Rules:
 

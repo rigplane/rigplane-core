@@ -2431,7 +2431,7 @@ async def test_scope_run_and_control_handling() -> None:
         ensure_scope_enabled=AsyncMock(),
         unregister_scope_handler=MagicMock(),
     )
-    handler = ScopeHandler(ws, None, server=server)
+    handler = ScopeHandler(ws, server=server)
     handler._sender = AsyncMock(return_value=None)  # type: ignore[method-assign]
     await handler.run()
     server.ensure_scope_enabled.assert_awaited_once_with(handler)
@@ -2443,7 +2443,7 @@ async def test_scope_sender_timeout_and_error_branches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ws = SimpleNamespace(send_binary=AsyncMock())
-    handler = ScopeHandler(ws, None)
+    handler = ScopeHandler(ws)
     calls = {"count": 0}
 
     async def _fake_wait_for(coro: object, **_kwargs: object) -> bytes:
@@ -2465,7 +2465,7 @@ async def test_scope_sender_sends_and_stops_on_send_error() -> None:
     ws = SimpleNamespace(
         send_binary=AsyncMock(side_effect=[None, RuntimeError("boom")])
     )
-    handler = ScopeHandler(ws, None)
+    handler = ScopeHandler(ws)
     await handler._frame_queue.put(b"one")
     await handler._frame_queue.put(b"two")
     await handler._sender()
@@ -2473,8 +2473,10 @@ async def test_scope_sender_sends_and_stops_on_send_error() -> None:
 
 
 async def test_scope_enqueue_and_push_paths() -> None:
-    handler = ScopeHandler(SimpleNamespace(send_binary=AsyncMock()), None)
-    frame = _scope_frame()
+    from rigplane.web.protocol import encode_scope_frame
+
+    handler = ScopeHandler(SimpleNamespace(send_binary=AsyncMock()))
+    frame = encode_scope_frame(_scope_frame(), 0)
     handler.enqueue_frame(frame)
     assert handler._frame_queue.qsize() == 0
     handler._running = True

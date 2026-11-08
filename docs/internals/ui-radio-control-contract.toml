@@ -52,6 +52,11 @@ provider = "icom_civ"
 required_proof = "generic fixture plus historical regression"
 
 [[profiles]]
+path = "rigs/ic905.toml"
+provider = "icom_civ"
+required_proof = "MOR-3984 documented profile conformance; real IC-905 proof pending"
+
+[[profiles]]
 path = "rigs/ic9700.toml"
 provider = "icom_civ"
 required_proof = "generic fixture plus profile conformance"

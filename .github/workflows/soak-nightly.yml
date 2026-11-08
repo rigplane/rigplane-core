@@ -38,7 +38,7 @@ permissions:
 jobs:
   soak:
     if: ${{ !inputs.certification }}
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     timeout-minutes: 75
     env:
       # Same pin as quick.yml: keep the soak on the project's minimum
@@ -84,7 +84,7 @@ jobs:
 
   soak-24h:
     if: ${{ inputs.certification }}
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     timeout-minutes: 1500
     env:
       UV_PYTHON: "3.11"

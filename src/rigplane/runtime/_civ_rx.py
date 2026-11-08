@@ -32,6 +32,8 @@ from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
     parse_bool_response,
+    parse_powerstat,
+    parse_system_date_response,
     parse_civ_frame,
     parse_frequency_response,
     parse_level_response,
@@ -2148,16 +2150,9 @@ class CivRuntime:
         if frame.command == 0x27 and frame.sub == 0x00 and len(frame.data) >= 3:
             receiver = frame.data[0]
             self._host._scope_activity_event.set()
-            self._publish_civ_event(
-                CivEvent(
-                    type=CivEventType.SCOPE_CHUNK,
-                    frame=frame,
-                    receiver=receiver,
-                )
-            )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
-                self._stamp_liveness(notify=True)
+                self._stamp_liveness()
                 self._publish_scope_mode_observation(
                     scope_frame, receiver=receiver, frame=frame
                 )
@@ -2178,7 +2173,6 @@ class CivRuntime:
                 source_generation=generation,
                 store_provider_generation=store_provider_generation,
             )
-        self._publish_civ_event(event)
         claimed: _CivDataTransaction | None = None
         transport = self._host._civ_transport
         if self._host._civ_request_tracker.resolve(
@@ -2465,7 +2459,7 @@ class CivRuntime:
                 self._stamp_liveness(notify=True)
             return
         try:
-            observations = self._observations_from_frame(frame)
+            observations, decoded = self._decode_state_frame(frame)
         except (ValueError, IndexError, KeyError, AttributeError, TypeError) as exc:
             logger.debug(
                 "civ-rx: observation decode failed for cmd=0x%02x sub=0x%02x: %s",
@@ -2493,16 +2487,11 @@ class CivRuntime:
         )
         qualifies_liveness = (
             not malformed_ptt
-            and any(
-                observation.value is not None
-                and observation.value is not ObservedPtt.UNKNOWN
-                and not isinstance(observation.value, UnknownTxTarget)
-                for observation in observations
-            )
+            and decoded
             and store_provider_generation == self._host._state_store.provider_generation
         )
         if qualifies_liveness:
-            self._stamp_liveness()
+            self._stamp_liveness(notify=not observations)
         observations = tuple(
             _replace_dataclass(
                 observation,
@@ -2823,6 +2812,39 @@ class CivRuntime:
             },
         )
         return True
+
+    def _decode_state_frame(
+        self, frame: CivFrame
+    ) -> tuple[tuple[Observation, ...], bool]:
+        observations = self._observations_from_frame(frame)
+        if observations:
+            return observations, any(
+                observation.value is not None
+                and observation.value is not ObservedPtt.UNKNOWN
+                and not isinstance(observation.value, UnknownTxTarget)
+                for observation in observations
+            )
+
+        from rigplane.commands._frame import decode_wire_tuple
+
+        command_map = self._host._profile.command_map
+        for name in ("get_af_mute", "get_xfc_status", "get_system_date"):
+            if command_map is None or not command_map.has(name):
+                continue
+            command, sub, prefix = decode_wire_tuple(command_map.get(name))
+            if (frame.command, frame.sub) != (
+                command,
+                sub,
+            ) or not frame.data.startswith(prefix):
+                continue
+            if name == "get_system_date":
+                parse_system_date_response(frame, prefix=prefix)
+            else:
+                if frame.data[len(prefix) :] not in (b"\x00", b"\x01"):
+                    raise ValueError("Invalid boolean response payload")
+                parse_bool_response(frame, command=command, sub=sub, prefix=prefix)
+            return observations, True
+        return observations, False
 
     def _observations_from_frame(self, frame: CivFrame) -> tuple[Observation, ...]:
         """Decode one CI-V frame into supported observation contracts."""
@@ -3236,7 +3258,7 @@ class CivRuntime:
             observations.append(
                 self._observation(
                     _POWER_ON_PATH,
-                    bool(frame.data[0]),
+                    parse_powerstat(frame),
                     frame=frame,
                 )
             )
@@ -4318,18 +4340,15 @@ class CivRuntime:
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""
-        self._publish_civ_event(CivEvent(type=CivEventType.SCOPE_FRAME))
-        self._host._scope_frame_queue.put_drop_oldest(frame)
+        queue = self._host._scope_frame_queue
+        if queue is not None:
+            queue.put_drop_oldest(frame)
         callback = self._host._scope_callback
         if callback is not None:
             try:
                 callback(frame)
             except Exception:
                 logger.exception("Scope callback raised an exception")
-
-    def _publish_civ_event(self, event: CivEvent) -> None:
-        """Publish CI-V event to internal event queue (best effort)."""
-        self._host._civ_event_queue.put_drop_oldest(event)
 
     def _check_connected(self) -> None:
         """Raise ConnectionError if not connected."""

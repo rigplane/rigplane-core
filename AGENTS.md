@@ -26,34 +26,24 @@ This repository is the public open-core `rigplane` implementation.
 - Repository: `rigplane/rigplane-core`
 - License: MIT, unless a file says otherwise
 
-## Stabilization freeze (from 2026-10-13)
+## Release-candidate freeze
 
-Owner decision of 2026-10-11: after Core 3.0.0b15 the repository is in a
-stabilization freeze while the hardening program (Linear project
-"Stabilization & Hardening 2026-Q4") runs.
+Owner decision of 2026-11-08 (Linear MOR-3876) retired the general
+stabilization freeze of 2026-10-13. What remains is a freeze on a candidate:
 
-Allowed change classes:
+- Between a release-candidate tag (`vX.Y.ZrcN`) and its final release only the
+  version may change: version files, the lockfile version line and the
+  changelog heading. Any other difference is a new candidate (`rcN+1`), which
+  is tested again; a moved or reused tag is never allowed.
+- Every fix carries a test that fails on the old code, and an integration test
+  where it crosses a module boundary.
+- Review is at most two rounds of Codex review; after the second the
+  coordinator checks the fix.
+- No release while an issue labelled `release-blocker` is open. The label
+  blocks releases, not feature merges.
 
-- `fix` — a defect, with a test that reproduces it;
-- `regression-test`;
-- `characterization-test`;
-- `testability` — seams, fakes, simulators, recorders;
-- `observability` — diagnostics, metrics, logging;
-- `ci`;
-- `docs`;
-- `release`;
-- `chore` — dependency pins, tooling.
-
-Prohibited without an exception: new features, speculative refactoring, UI
-redesign, new protocols, radios or DSP features, opportunistic cleanup that
-widens the regression surface.
-
-Every PR body carries a line `Change class: <class>` with exactly one class
-from the list above. `.github/workflows/freeze-gate.yml` checks it and refuses
-a `feat` title without the `freeze-exception` label. An exception is the
-owner's decision, recorded as the first line of the PR body
-(`Freeze exception: <ruling, date>`) together with the label
-`freeze-exception`.
+Outside that window feature work merges through the normal gates (`quick`,
+`Agent Review Gate`).
 
 `slow`-marked tests must not run on every build; they must run when a release
 candidate or a release is cut (owner ruling 2026-10-10).
@@ -198,11 +188,10 @@ never because `visual.yml` itself changed.
 
 When every changed path is documentation or documentation metadata — including
 `docs/**` except data files, Markdown/RST anywhere in the tree, `.claude/**`, and
-the doc-citation baseline files — no test job runs. `docs-only-quick.yml`
-(`pull_request_target`, `ubuntu-latest`) publishes the required `quick` status
+the doc-citation baseline files — no test job runs. `docs-only-quick.yml` (`pull_request_target`, `[self-hosted, Linux, ARM64, light]`) publishes the required `quick` status
 as success without a checkout; `quick.yml`'s `paths-ignore` skips such a head,
 and for a docs-only head that still reaches it, the `classify` job
-(`ubuntu-latest`) sets `docs=true` and the `quick` job is skipped by its `if:`
+(`[self-hosted, Linux, ARM64, light]`) sets `docs=true` and the `quick` job is skipped by its `if:`
 (`needs.classify.outputs.docs != 'true'`). No self-hosted runner is allocated.
 Do not run citation, link, Markdown, product, visual,
 or full automation; the exact-head independent review is the substantive gate.
@@ -217,7 +206,11 @@ checks (`.github/scripts/classify-quick-paths.py: DOCS_DATA_SUFFIXES`,
 This repo is developed from multiple machines and by multiple agents. Before
 editing:
 
-- run `git fetch --all --tags --prune`;
+- run `git fetch origin --prune --no-prune-tags`. With `fetch.pruneTags=true`
+  (set on some machines) every fetch deletes local tags that the remote does not
+  have: all of them for a fork remote without tags (`--all`), and an unpushed
+  release tag even for a plain `git fetch origin`. Always pass `--no-prune-tags`,
+  and fetch tags explicitly with `git fetch origin --tags --no-prune-tags`;
 - inspect `git status --short --branch`;
 - do not work directly on `main`;
 - use `codex/<issue-or-task>` branches for agent work;

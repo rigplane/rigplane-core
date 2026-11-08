@@ -132,8 +132,6 @@ class CivEventType(StrEnum):
     ACK = "ack"
     NAK = "nak"
     RESPONSE = "response"
-    SCOPE_CHUNK = "scope_chunk"
-    SCOPE_FRAME = "scope_frame"
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,7 +140,6 @@ class CivEvent:
 
     type: CivEventType
     frame: CivFrame | None = None
-    receiver: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
