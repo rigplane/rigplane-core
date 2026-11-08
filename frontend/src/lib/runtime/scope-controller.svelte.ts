@@ -32,7 +32,11 @@ export type ScopeHealth = Readonly<{
 type HealthHandler = (source: ScopeSource, health: ScopeHealth) => void;
 type AudioFftHandle = Readonly<{ token: symbol }>;
 type HardwareHandle = Readonly<{ generation: number }>;
+export type ScopeFrameAuthority = Readonly<{ source: ScopeSource; receiver: 0 | 1 | null; providerGeneration: number }>;
 type ChannelBinding = {
+  source: ScopeSource;
+  revision: number;
+  active: boolean;
   channel: WsChannel;
   unsubscribeState: () => void;
   unsubscribeSession: () => void;
@@ -63,11 +67,13 @@ export class ScopeController {
   get hardwareScopeFrameLive() { return this._health.hardware.frameSeen; }
 
   private readonly _streams: Partial<Record<ScopeSource, ScopeStream>> = {};
-  private readonly _streamChannels = new Map<ScopeSource, WsChannel>();
+  private _authority: ScopeFrameAuthority | null = null;
+  private _authorityRevision = 0;
+  private readonly _slotArrivals: Record<ScopeSource, Map<string, number>> = { hardware: new Map(), audio_fft: new Map() };
   private _healthSubscribers = new Map<number, HealthHandler>();
   private _traceObservers: Map<number, (receipt: TraceReceipt) => void> | null = null;
   private _nextId = 0;
-  private _bindings = new Map<AudioFftHandle | HardwareHandle, ChannelBinding & { source: ScopeSource }>();
+  private _bindings = new Map<AudioFftHandle | HardwareHandle, ChannelBinding>();
   private _hardwareGeneration = 0;
   private _acceptedSequence = 0;
   private _arrivals: Record<ScopeSource, number | null> = { hardware: null, audio_fft: null };
@@ -98,19 +104,37 @@ export class ScopeController {
     this._timing = timing;
   }
 
-  /**
-   * The one shared stream per source for the whole page lifetime (lazy per
-   * source). The registry hands the same channel instance for a page's
-   * lifetime; if that identity ever changes, the stream is rebuilt against
-   * the new channel rather than staying bound to a dead one.
-   */
+  /** One shared stream per source; sinks survive demand stop/restart and provider rebind. */
   stream(source: ScopeSource): ScopeStream {
-    const channel = this._channelFor(source);
-    if (this._streams[source] === undefined || this._streamChannels.get(source) !== channel) {
-      this._streams[source]?.dispose();
-      this._streams[source] = this._createStream(source, channel);
-    }
+    if (!this._streams[source]) this._streams[source] = this._createStream(source);
     return this._streams[source]!;
+  }
+
+  /** Control-plane identity qualifies geometry; pixel delivery stays on the shared stream. */
+  setFrameAuthority(authority: ScopeFrameAuthority | null): void {
+    const previous = this._authority;
+    if (previous?.source === authority?.source && previous?.receiver === authority?.receiver
+      && previous?.providerGeneration === authority?.providerGeneration) return;
+    if (previous?.providerGeneration !== authority?.providerGeneration) {
+      this._authorityRevision += 1;
+      for (const stream of Object.values(this._streams)) stream?.reset();
+    }
+    this._authority = authority === null ? null : Object.freeze({ ...authority });
+    if (previous) this._streams[previous.source]?.reset();
+    if (!authority) return;
+    const stream = this.stream(authority.source);
+    stream.setSlotFilter(authority.receiver === null ? null
+      : `${authority.source === 'hardware' ? 'scope' : 'audio-scope'}:${authority.receiver}`);
+    stream.reset();
+    const binding = [...this._bindings.values()].find(item => item.source === authority.source);
+    if (authority.receiver !== null && binding && binding.revision !== this._authorityRevision) {
+      this._retire(binding);
+      try { this._installBinding(binding); }
+      catch (error) {
+        this._setHealth(authority.source, { demanded: true, transport: 'disconnected', frameSeen: false });
+        console.warn('Scope authority rebind failed', error);
+      }
+    }
   }
 
   private _channelFor(source: ScopeSource): WsChannel {
@@ -156,93 +180,119 @@ export class ScopeController {
     });
   }
 
-  private _createStream(source: ScopeSource, channel: WsChannel): ScopeStream {
-    this._streamChannels.set(source, channel);
-    this._subscribeSession(source, channel, (transition) => {
-      if (transition.state === 'connected' && Number.isSafeInteger(transition.epoch) && transition.epoch > 0) {
-        this._streams[source]?.setSessionEpoch(transition.epoch);
-      } else if (transition.state !== 'connected') {
-        this._streams[source]?.reset();
-      }
-    });
+  private _createStream(source: ScopeSource): ScopeStream {
     const messageSource: ScopeMessageSource = {
-      // Same fence the per-binding guard held: frames only flow to the
-      // shared stream while a binding owns the channel and transport is
-      // connected — nothing after teardown races through.
-      subscribe: (sink) => channel.onBinary((buffer) => {
-        if (this._sourceDemanded(source) && this._readHealth(source).transport === 'connected') sink(buffer);
-      }),
-      close: () => { channel.disconnect(); },
+      subscribe: (sink) => {
+        const binding = [...this._bindings.values()].find(item => item.source === source);
+        if (!binding) return () => {};
+        const revision = binding.revision;
+        return binding.channel.onBinary((buffer) => {
+          if (!binding.active || binding.revision !== revision || !this._sourceDemanded(source)
+            || this._readHealth(source).transport !== 'connected') return;
+          const now = this._timing.now();
+          if (!Number.isFinite(now) || now < 0) {
+            this._streams[source]?.reset();
+            this._arrivals[source] = null; this._slotArrivals[source].clear();
+            this._publishTraceReceipt({ kind: 'rejected', source, transportEpoch: binding.channel.sessionEpoch,
+              callbackAt: now, reason: 'clock' });
+            this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
+            return;
+          }
+          sink(buffer);
+        });
+      },
+      close: () => {},
     };
     const stream = new ScopeStream(
       messageSource,
       { source: source === 'hardware' ? 'radio' : 'audio_fft', sourceId: source === 'hardware' ? 'scope' : 'audio-scope', epoch: 0 },
       'borrowed',
       () => {
+        const binding = [...this._bindings.values()].find(item => item.source === source);
         this._publishTraceReceipt({ kind: 'rejected', source,
-          transportEpoch: channel.sessionEpoch, callbackAt: this._timing.now(), reason: 'parse' });
+          transportEpoch: binding?.channel.sessionEpoch ?? 0, callbackAt: this._timing.now(), reason: 'parse' });
+        this._arrivals[source] = null; this._slotArrivals[source].clear();
         this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
       },
     );
-    stream.subscribe((frame) => {
-      const callbackAt = this._traceObservers ? this._timing.now() : null;
+    stream.subscribe((frame, slotKey) => {
       const receivedAt = this._timing.now();
-      if (!Number.isFinite(receivedAt) || receivedAt < 0) {
-        if (callbackAt !== null) this._publishTraceReceipt({ kind: 'rejected', source,
-          transportEpoch: channel.sessionEpoch, callbackAt, reason: 'clock' });
-        this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
-        return;
-      }
       const acceptedSequence = ++this._acceptedSequence;
       this._arrivals[source] = receivedAt;
+      this._slotArrivals[source].set(slotKey, receivedAt);
       markScopeFrame();
       this._setHealth(source, { ...this._readHealth(source), frameSeen: true });
       this._ensureClock();
-      if (callbackAt !== null) this._publishTraceReceipt({ kind: 'accepted', frame,
-        token: { source, transportEpoch: channel.sessionEpoch, wireSequence: frame.seq, acceptedSequence },
-        callbackAt, acceptedAt: receivedAt });
+      if (this._traceObservers) this._publishTraceReceipt({ kind: 'accepted', frame,
+        token: { source, transportEpoch: frame.epoch, wireSequence: frame.seq, acceptedSequence },
+        callbackAt: receivedAt, acceptedAt: receivedAt });
     });
+    stream.pause();
     return stream;
   }
 
   private _connect(source: ScopeSource): AudioFftHandle | HardwareHandle {
-    const channel = this._channelFor(source);
     const handle = source === 'hardware'
       ? Object.freeze({ generation: ++this._hardwareGeneration }) as HardwareHandle
       : Object.freeze({ token: Symbol('audio-fft') }) as AudioFftHandle;
-    const binding: ChannelBinding & { source: ScopeSource } = {
-      channel, source,
-      unsubscribeState: () => {},
-      unsubscribeSession: () => {},
+    const shared = [...this._bindings.values()].find(item => item.source === source);
+    if (shared) { this._bindings.set(handle, shared); return handle; }
+    const binding: ChannelBinding = {
+      channel: this._channelFor(source), source, revision: this._authorityRevision, active: false,
+      unsubscribeState: () => {}, unsubscribeSession: () => {},
     };
     this._bindings.set(handle, binding);
-    this.stream(source).reset();
+    try { this._installBinding(binding); return handle; }
+    catch (error) {
+      this._bindings.delete(handle);
+      this._setHealth(source, { demanded: false, transport: 'disconnected', frameSeen: false });
+      throw error;
+    }
+  }
+
+  private _installBinding(binding: ChannelBinding): void {
+    const { source, channel } = binding;
+    const stream = this.stream(source);
+    binding.revision = this._authorityRevision;
+    binding.active = true;
+    const revision = binding.revision;
     this._setHealth(source, { demanded: true, transport: channel.state, frameSeen: false });
     try {
       binding.unsubscribeState = channel.onStateChange((state) => {
-        if (!this._bindings.has(handle)) return;
+        if (!binding.active || binding.revision !== revision) return;
         if (state !== 'connected') {
-          this._streams[source].reset();
-          this._arrivals[source] = null;
+          stream.reset(); this._arrivals[source] = null; this._slotArrivals[source].clear();
         }
-        this._setHealth(source, {
-          demanded: true, transport: state, frameSeen: state === 'connected' && this._arrivalIsLive(source),
-        });
+        this._setHealth(source, { demanded: true, transport: state,
+          frameSeen: state === 'connected' && this._arrivalIsLive(source) });
         this._ensureClock();
       });
       binding.unsubscribeSession = this._subscribeSession(source, channel, (transition) => {
-        if (this._bindings.has(handle) && transition.state !== 'connected') {
-          this._streams[source].reset();
-        }
+        if (!binding.active || binding.revision !== revision) return;
+        if (transition.state === 'connected') {
+          const epoch = channel.sessionEpoch;
+          stream.setSessionEpoch(Number.isSafeInteger(epoch) && epoch > 0 ? epoch : 0);
+        } else stream.reset();
       });
+      stream.resume();
       channel.connect(source === 'hardware' ? '/api/v1/scope' : '/api/v1/audio-scope');
-      return handle;
-    } catch (error) {
-      this._bindings.delete(handle);
-      this._detachBinding(binding);
-      if (![...this._bindings.values()].some((item) => item.channel === channel)) channel.disconnect();
-      this._setHealth(source, { demanded: this._sourceDemanded(source), transport: 'disconnected', frameSeen: false });
-      throw error;
+      if (channel.state === 'connected' && Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0) {
+        stream.setSessionEpoch(channel.sessionEpoch);
+      }
+    } catch (error) { this._retire(binding); throw error; }
+  }
+
+  private _retire(binding: ChannelBinding): void {
+    const { source, channel } = binding;
+    binding.active = false;
+    try { this._detachBinding(binding); }
+    finally {
+      try { this._streams[source]?.pause(); }
+      finally {
+        channel.disconnect(); this._arrivals[source] = null; this._slotArrivals[source].clear();
+        this._setHealth(source, { demanded: this._sourceDemanded(source), transport: 'disconnected', frameSeen: false });
+        this._ensureClock();
+      }
     }
   }
 
@@ -250,15 +300,8 @@ export class ScopeController {
     const binding = this._bindings.get(handle);
     if (!binding) return;
     this._bindings.delete(handle);
-    const { source, channel } = binding;
-    this._detachBinding(binding);
-    if (![...this._bindings.values()].some((item) => item.channel === channel)) channel.disconnect();
-    this._streams[source].reset();
-    this._arrivals[source] = null;
-    this._setHealth(source, {
-      demanded: this._sourceDemanded(source), transport: 'disconnected', frameSeen: false,
-    });
-    this._ensureClock();
+    if ([...this._bindings.values()].includes(binding)) return;
+    this._retire(binding);
   }
 
   private _detachBinding(binding: ChannelBinding): void {
@@ -306,7 +349,10 @@ export class ScopeController {
       const health = this._readHealth(source);
       if (!health.demanded || health.transport !== 'connected') continue;
       const live = this._arrivalIsLive(source);
-      this._streams[source].setFreshness(live ? 'fresh' : 'stale');
+      const stream = this._streams[source]!;
+      const selectedAt = stream.selectedSlot === null ? undefined : this._slotArrivals[source].get(stream.selectedSlot);
+      const age = selectedAt === undefined ? NaN : this._timing.now() - selectedAt;
+      stream.setFreshness(Number.isFinite(age) && age >= 0 && age < SCOPE_FRAME_SILENCE_MS ? 'fresh' : 'stale');
       if (health.frameSeen !== live) this._setHealth(source, { ...health, frameSeen: live });
     }
   }

@@ -51,6 +51,7 @@ export interface ScopeFrameFacts {
   readonly source: 'hardware' | 'audio_fft';
   readonly receiver: number;
   readonly providerGeneration: number;
+  readonly transportEpoch: number;
   readonly demanded: boolean;
   readonly transport: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
   readonly geometry: ScopeGeometry | null;
@@ -266,6 +267,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     || facts.receiver !== receiver
     || facts.providerGeneration !== state.providerGeneration
     || facts.transport !== 'connected' || !facts.demanded
+    || !integer(facts.transportEpoch) || facts.transportEpoch === 0
     || geometry.source !== 'radio' || geometry.receiver !== receiver
     || geometry.freshness !== 'fresh'
     || !integer(geometry.mode) || geometry.mode > 255
@@ -283,7 +285,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   const effectiveStale = stale && !heldReadbackConfirmed;
   const strict = effectiveStale ? null : toSpectrumAuthority(state, caps);
   const flatBands = flattenBands(caps.freqRanges ?? []);
-  const context = [state.providerGeneration, capabilityIdentity(caps), session.epoch,
+  const context = [state.providerGeneration, capabilityIdentity(caps), session.epoch, facts.transportEpoch,
     selection.receiver, selection.slot, mode, filter, data, 'hardware', geometry.mode];
   result.candidate = {
       tuple, stale: effectiveStale, frequencyCurrent, frequencyAligned,

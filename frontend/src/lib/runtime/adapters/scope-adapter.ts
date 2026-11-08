@@ -29,12 +29,12 @@ export function parseCurrentScopeFrame(buffer: ArrayBuffer, context: CurrentScop
   const endHz = wire.getUint32(7, true);
   const outOfRange = (wire.getUint8(13) & 1) !== 0;
   if (width > 0 && !outOfRange && endHz <= startHz) return { ok: false, reason: 'frequency range' };
-  return { ok: true, frame: {
+  return { ok: true, frame: Object.freeze({
     source: context.source, sourceId: context.sourceId, epoch: context.epoch,
     receiver: wire.getUint8(1), seq: wire.getUint16(11, true), sentAtMs: null,
     viewStartHz: startHz, viewEndHz: endHz, coverageStartHz: startHz, coverageEndHz: endHz,
     width, pixels: width === 0 ? null : new Uint8Array(buffer, 16, width), outOfRange,
-  } };
+  }) };
 }
 
 /** The one LCD/SDR silence boundary. A frame is stale at this exact age. */
@@ -58,6 +58,7 @@ export function ingressScopeFrame(buffer: ArrayBuffer, context: CurrentScopeCont
     frame,
     geometry: {
       source: frame.source, sourceId: frame.sourceId, receiver: frame.receiver,
+      width: frame.width,
       mode: new DataView(buffer).getUint8(2), // scope mode byte — owner-qualified metadata
       view: { startHz: frame.viewStartHz, endHz: frame.viewEndHz },
       coverage: { startHz: frame.coverageStartHz, endHz: frame.coverageEndHz },

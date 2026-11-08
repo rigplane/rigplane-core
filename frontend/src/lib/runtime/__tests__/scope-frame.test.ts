@@ -46,7 +46,7 @@ describe('scope ingress slot + geometry derivation', () => {
     if (!result.ok) throw new Error(result.reason);
     expect(result.slotKey).toBe(scopeSlotKey('scope-1', 0));
     expect(result.geometry).toMatchObject({
-      source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0,
+      source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0, width: 4,
       outOfRange: false, hasPixels: true, freshness: 'fresh',
       view: { startHz: 14_000_000, endHz: 14_100_000 },
       coverage: { startHz: 14_000_000, endHz: 14_100_000 },
@@ -61,7 +61,7 @@ describe('scope ingress slot + geometry derivation', () => {
 });
 
 const geometry: ScopeGeometry = {
-  source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0,
+  source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0, width: 4,
   view: { startHz: 20, endHz: 80 }, coverage: { startHz: 30, endHz: 70 },
   outOfRange: false, hasPixels: true, freshness: 'fresh',
 };

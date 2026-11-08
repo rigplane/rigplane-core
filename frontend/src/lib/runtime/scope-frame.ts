@@ -33,6 +33,7 @@ export interface ScopeGeometry {
   readonly receiver: ScopeFrame['receiver'];
   /** Scope mode byte from the frame header; the ingress owner qualifies it. */
   readonly mode: number;
+  readonly width: number;
   readonly view: View;
   readonly coverage: View;
   readonly outOfRange: boolean;

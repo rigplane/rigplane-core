@@ -19,8 +19,10 @@ export class ScopeStream {
   private readonly geometryStore = writable<ScopeGeometry | null>(null);
   private geometryValue: ScopeGeometry | null = null;
   private readonly frames = new Map<string, ScopeFrame>();
-  private readonly sinks = new Set<(frame: ScopeFrame, slotKey: string) => void>();
-  private readonly detach: () => void;
+  private readonly sinks = new Map<number, (frame: ScopeFrame, slotKey: string) => void>();
+  private nextSinkId = 0;
+  private detach: (() => void) | null = null;
+  private geometryKey: string | null = null;
   private context: CurrentScopeContext;
   private slotFilter: string | null = null;
   private accepted = 0;
@@ -30,31 +32,45 @@ export class ScopeStream {
     private readonly source: ScopeMessageSource,
     context: CurrentScopeContext,
     private readonly ownership: 'owned' | 'borrowed',
-    malformed?: (reason: ScopeParseError) => void,
+    private readonly malformed?: (reason: ScopeParseError) => void,
   ) {
     this.geometry = { subscribe: this.geometryStore.subscribe };
     this.context = { ...context };
     this.sourceId = context.sourceId;
-    this.detach = source.subscribe((buffer) => {
+    this.resume();
+  }
+
+  resume(): void {
+    if (this.disposed || this.detach) return;
+    this.detach = this.source.subscribe((buffer) => {
       if (this.disposed) return;
       const ingressed = ingressScopeFrame(buffer, this.context);
-      if (!ingressed.ok) { malformed?.(ingressed.reason); return; }
+      if (!ingressed.ok) { this.reset(); this.malformed?.(ingressed.reason); return; }
       this.accept(ingressed);
     });
   }
+
+  pause(): void {
+    const detach = this.detach; this.detach = null;
+    try { detach?.(); } finally { this.reset(); }
+  }
+
+  get selectedSlot(): string | null { return this.geometryKey; }
+  get sessionEpoch(): number { return this.context.epoch; }
 
   latest(slotKey: string): ScopeFrame | null {
     return this.frames.get(slotKey) ?? null;
   }
 
   subscribe(sink: (frame: ScopeFrame, slotKey: string) => void): () => void {
-    if (!this.disposed) this.sinks.add(sink);
-    return () => { this.sinks.delete(sink); };
+    const id = this.nextSinkId++;
+    if (!this.disposed) this.sinks.set(id, sink);
+    return () => { this.sinks.delete(id); };
   }
 
   /** Frames of the bound slot publish geometry; `null` accepts every slot (unknown authority). */
   setSlotFilter(key: string | null): void {
-    if (!this.disposed && this.slotFilter !== key) this.slotFilter = key;
+    if (!this.disposed && this.slotFilter !== key) { this.slotFilter = key; this.reset(); }
   }
 
   /** Monotonic count of accepted frames — the receipt clock downstream facts read. */
@@ -72,6 +88,7 @@ export class ScopeStream {
   reset(): void {
     if (this.disposed) return;
     this.frames.clear();
+    this.geometryKey = null;
     this.publishGeometry(null);
   }
 
@@ -87,7 +104,7 @@ export class ScopeStream {
     this.disposed = true;
     this.sinks.clear();
     this.frames.clear();
-    try { this.detach(); }
+    try { this.detach?.(); this.detach = null; }
     finally {
       try { if (this.ownership === 'owned') this.source.close(); }
       finally { this.publishGeometry(null); }
@@ -98,10 +115,12 @@ export class ScopeStream {
     const { frame, geometry, slotKey } = ingressed;
     this.accepted += 1;
     this.frames.set(slotKey, frame);
-    if (this.slotFilter === null || this.slotFilter === slotKey) {
+    if (Number.isSafeInteger(this.context.epoch) && this.context.epoch > 0
+      && (this.slotFilter === null || this.slotFilter === slotKey)) {
+      this.geometryKey = slotKey;
       const current = this.geometryValue;
       if (!current || current.source !== geometry.source || current.sourceId !== geometry.sourceId
-        || current.receiver !== geometry.receiver || current.mode !== geometry.mode
+        || current.receiver !== geometry.receiver || current.mode !== geometry.mode || current.width !== geometry.width
         || current.view.startHz !== geometry.view.startHz
         || current.view.endHz !== geometry.view.endHz
         || current.coverage.startHz !== geometry.coverage.startHz
@@ -111,7 +130,9 @@ export class ScopeStream {
         this.publishGeometry(geometry);
       }
     }
-    for (const sink of this.sinks) sink(frame, slotKey);
+    for (const sink of [...this.sinks.values()]) {
+      try { sink(frame, slotKey); } catch (error) { console.warn('Scope stream subscriber failed', error); }
+    }
   }
 
   private publishGeometry(geometry: ScopeGeometry | null): void {
