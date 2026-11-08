@@ -3,8 +3,7 @@
  * through the real control and scope WebSocket handlers (only hardware faked).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import scopeOutOfRangeFixture from '../../../../../tests/fixtures/ic705/scope_out_of_range.json';
 import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { createClassComponent } from 'svelte/legacy';
@@ -229,11 +228,10 @@ afterEach(async () => {
 
 describe('one managed scope owner through the real region and panel', () => {
   it('sends CTR through the real client and consumes the paired server recovery documents', async () => {
-    const documents = JSON.parse(readFileSync(resolve(process.cwd(), '..',
-      'tests/fixtures/ic705/scope_out_of_range.json'), 'utf8')) as {
-        streamWireHex: string; inRangeWireHex: string; ctrCommand: WsCommand;
-        ctrResponse: Extract<WsIncoming, { type: 'response' }>;
-      };
+    const documents = scopeOutOfRangeFixture as unknown as {
+      streamWireHex: string; inRangeWireHex: string; ctrCommand: WsCommand;
+      ctrResponse: Extract<WsIncoming, { type: 'response' }>;
+    };
     deliver(s => {
       s.main.freqHz = 146_520_000;
       s.scopeControls = { ...IC7300_STATE.scopeControls!, mode: 1 };
