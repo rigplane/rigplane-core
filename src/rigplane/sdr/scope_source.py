@@ -39,7 +39,8 @@ class IqFftSource:
         self._start_worker = start_worker
         self._callbacks: list[Callable[[NativeFrame], None]] = []
         self._active = False
-        self._view: ViewRequest | None = None
+        self._streaming = False
+        self._input_geometry: tuple[int, int] | None = None
         self.producer = self._make_producer()
 
     def _make_producer(self) -> IqFftScope:
@@ -77,28 +78,16 @@ class IqFftSource:
         self, view: ViewRequest, receiver: int | None = None
     ) -> GrantedView:
         resolved = self.resolve_view(view, receiver)
-        self._view = view
-        self._configure_view()
         return GrantedView(resolved, self.coverage_for(resolved, receiver))
-
-    def _configure_view(self) -> None:
-        coverage = self.coverage_for(self._view) if self._view is not None else None
-        if coverage is None:
-            self.producer.set_view_center(self._provider.center_freq_hz)
-            self.producer.set_span(None)
-        else:
-            self.producer.set_view_center(
-                round((coverage.start_hz + coverage.end_hz) / 2)
-            )
-            self.producer.set_span(max(1, round(coverage.end_hz - coverage.start_hz)))
 
     async def start(self) -> None:
         if self._active:
             return
         self.producer = self._make_producer()
-        self._configure_view()
+        self._input_geometry = None
         self.producer.on_frame(self._emit)
         self._active = True
+        self._streaming = True
         try:
             self._provider.on_block(self._feed)
             self._provider.open()
@@ -107,6 +96,7 @@ class IqFftSource:
             raise
 
     async def stop(self) -> None:
+        self._streaming = False
         if not self._active:
             return
         try:
@@ -131,12 +121,20 @@ class IqFftSource:
         return unsubscribe
 
     def _feed(self, block: IqBlock) -> None:
-        if self._active:
-            self._configure_view()
+        if self._streaming:
+            geometry = (block.center_freq_hz, block.sample_rate_hz)
+            if self._input_geometry is not None and geometry != self._input_geometry:
+                try:
+                    self.producer.on_frame(None)
+                finally:
+                    self.producer.close()
+                self.producer = self._make_producer()
+                self.producer.on_frame(self._emit)
+            self._input_geometry = geometry
             self.producer.feed(block)
 
     def _emit(self, frame: ScopeFrame) -> None:
-        if not self._active:
+        if not self._streaming:
             return
         native = NativeFrame(
             None,
