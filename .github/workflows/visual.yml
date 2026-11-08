@@ -68,7 +68,7 @@ permissions:
 
 jobs:
   changes:
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     outputs:
       frontend: ${{ steps.filter.outputs.frontend || steps.manual.outputs.frontend }}
     steps:
@@ -108,7 +108,7 @@ jobs:
       needs.changes.outputs.frontend == 'true' &&
       (github.event_name != 'pull_request' ||
       github.event.pull_request.draft == false)
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     timeout-minutes: 10
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment

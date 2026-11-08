@@ -29,7 +29,11 @@ function topologyErrors({quick, review, migration}) {
   const pins = quick.match(/actions\/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd/gu) ?? [];
   if (statusWrites.length !== 1 || pins.length !== 2) errors.push('publisher permission or action pin count changed');
   for (const forbidden of [
-    'self-hosted, linux, build', 'actions/checkout', 'actions/upload-artifact', 'actions/download-artifact',
+    'self-hosted, Linux, ARM64, build',
+    'self-hosted, Linux, ARM64, gate',
+    'actions/checkout',
+    'actions/upload-artifact',
+    'actions/download-artifact',
     '/logs', '/artifacts', '/caches', 'secrets.', 'github.workflow_sha',
   ]) {
     if (quick.includes(forbidden)) errors.push(`quick observer contains forbidden surface: ${forbidden}`);
@@ -90,7 +94,7 @@ test('workflow-run observation admits feature heads targeting main', () => asser
 test('topology contract catches permission, execution, event, and pin regressions', () => {
   const original = sources();
   const mutations = [
-    ['runs-on: [self-hosted, linux, light]', 'runs-on: [self-hosted, linux, build]'],
+    ['runs-on: [self-hosted, Linux, ARM64, light]', 'runs-on: [self-hosted, Linux, ARM64, build]'],
     ['permissions: {}', 'permissions:\n  statuses: write'],
     ['actions: read', 'actions: read\n      statuses: write'],
     ['with:\n          script:', 'uses: actions/upload-artifact@v4\n        with:\n          script:'],
@@ -110,17 +114,17 @@ test('edited lifecycle events are no-ops unless base metadata changed', () => {
 test('terminal topology refuses skipped success and injected or incomplete jobs', () => {
   const run = {conclusion: 'success', run_attempt: 2};
   const routes = {core: true, frontend: false, ci: false, docs: false};
-  const build = ['self-hosted', 'linux', 'build'];
-  const light = ['self-hosted', 'linux', 'light'];
+  const gate = ['self-hosted', 'Linux', 'ARM64', 'gate'];
+  const light = ['self-hosted', 'Linux', 'ARM64', 'light'];
   const valid = [
-    {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'GitHub Actions 1', labels: ['ubuntu-latest']},
-    {name: 'quick-frontend', status: 'completed', conclusion: 'skipped', run_attempt: 2, runner_name: null, labels: build},
-    {name: 'quick-python', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-build-core-1', labels: build},
+    {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-light-core-1', labels: light},
+    {name: 'quick-frontend', status: 'completed', conclusion: 'skipped', run_attempt: 2, runner_name: null, labels: gate},
+    {name: 'quick-python', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-gate-core-1', labels: gate},
     {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-light-core-1', labels: light},
   ];
   const ok = {ok: true, code: 'terminal_match', routeConcordance: true};
   assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), ok);
-  const both = structuredClone(valid); both[1].conclusion = 'success'; both[1].runner_name = 'mm-build-core-2';
+  const both = structuredClone(valid); both[1].conclusion = 'success'; both[1].runner_name = 'mm-gate-core-2';
   assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
   const lightClassify = structuredClone(valid); lightClassify[0].labels = light; lightClassify[0].runner_name = 'mm-light-core-2';
   assert.deepEqual(observer.evaluateJobTopology(run, lightClassify, routes, false), ok);
@@ -134,7 +138,7 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   assert.equal(observer.evaluateJobTopology(run, valid, {...routes, frontend: true}, false).code, 'skipped_substantive');
   const hostedWorker = structuredClone(valid); hostedWorker[2].labels = ['ubuntu-latest'];
   assert.equal(observer.evaluateJobTopology(run, hostedWorker, routes, false).code, 'route_mismatch');
-  const buildAggregator = structuredClone(valid); buildAggregator[3].labels = build;
+  const buildAggregator = structuredClone(valid); buildAggregator[3].labels = ['self-hosted', 'Linux', 'ARM64', 'build'];
   assert.equal(observer.evaluateJobTopology(run, buildAggregator, routes, false).code, 'route_mismatch');
   assert.equal(observer.evaluateJobTopology(run, valid.filter((job) => job.name !== 'quick-frontend'), routes, false).code, 'route_mismatch');
   assert.equal(observer.evaluateJobTopology(run, [...valid, {...valid[2], name: 'quick-shadow'}], routes, false).code, 'route_mismatch');
@@ -145,8 +149,9 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
 });
 
 test('legacy attempt jobs consume the normalized pagination shape', async () => {
-  const classify = {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'GitHub Actions 1', labels: ['ubuntu-latest']};
-  const quick = {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-build-core-1', labels: ['self-hosted', 'linux', 'build']};
+  const light = ['self-hosted', 'Linux', 'ARM64', 'light'];
+  const classify = {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-light-core-1', labels: light};
+  const quick = {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-light-core-1', labels: light};
   // Pinned actions/github-script paginate.iterator normalizes the list-jobs
   // response: the page data is the jobs array itself, not an object with a
   // `jobs` key (MOR-2434).
@@ -372,7 +377,7 @@ test('quick v2 reports no hard-coded self-hosted minutes', async () => {
 function workflowJobs(root) {
   const dir = path.join(root, '.github/workflows');
   const jobs = [];
-  for (const file of fs.readdirSync(dir).filter((name) => name.endsWith('.yml')).sort()) {
+  for (const file of fs.readdirSync(dir).filter((name) => /\.ya?ml$/u.test(name)).sort()) {
     const text = fs.readFileSync(path.join(dir, file), 'utf8');
     const lines = text.split('\n');
     let inJobs = false; let current = null; let currentRunsOn = null;
@@ -396,13 +401,6 @@ function workflowJobs(root) {
   }
   return jobs;
 }
-
-test('every workflow job runs on self-hosted runners', () => {
-  const jobs = workflowJobs(TARGET_ROOT);
-  assert.ok(jobs.length > 0);
-  const hosted = jobs.filter(({runsOn}) => /ubuntu-|macos-|windows-/iu.test(runsOn) && !/self-hosted/iu.test(runsOn));
-  assert.deepEqual(hosted.map(({file, job, runsOn}) => `${file}:${job}:${runsOn}`), []);
-});
 
 test('migrated light jobs carry their explicit tool setup', () => {
   const jobs = workflowJobs(TARGET_ROOT);

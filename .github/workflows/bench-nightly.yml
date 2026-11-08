@@ -38,6 +38,7 @@ concurrency:
 jobs:
   radio:
     name: ${{ matrix.label }}
+    # runs-on-allowlist: every matrix.runs_on below is an approved self-hosted label set (macOS ARM64 bench, Linux ARM64 light), never GitHub-hosted.
     runs-on: ${{ fromJSON(matrix.runs_on) }}
     timeout-minutes: 45
     # No job-level continue-on-error: a night passes for a radio only when its

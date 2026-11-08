@@ -40,11 +40,16 @@ jobs:
     # Scheduled runs only: skip a tick when this exact commit already passed
     # this workflow (an earlier tick, a dispatch or the candidate tag run).
     # `test` and `capture-harness` are skipped with a false answer.
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 5
     outputs:
       run: ${{ steps.check.outputs.run }}
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Has this commit already passed the full matrix
         id: check
         env:
@@ -72,7 +77,7 @@ jobs:
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
     # Operator doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     timeout-minutes: 25
     strategy:
       matrix:
@@ -261,7 +266,7 @@ jobs:
     # "Install deps + Playwright chromium" red, never as a fixtures
     # regression in the `Run fixture-harness capture` step.
     #
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
     # generous ceiling for a cold cache / first run on a new runner image,

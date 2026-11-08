@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   validate:
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, gate]
     timeout-minutes: 25
     env:
       # Pin uv to the matrix interpreter; unpinned, `uv run` picks the newest
@@ -122,7 +122,7 @@ jobs:
 
   build:
     needs: validate
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, build]
     steps:
       - uses: actions/checkout@v6
 
@@ -194,7 +194,7 @@ jobs:
 
   publish:
     needs: build
-    runs-on: [self-hosted, linux, build]
+    runs-on: [self-hosted, Linux, ARM64, build]
     environment:
       name: pypi
       url: https://pypi.org/p/rigplane

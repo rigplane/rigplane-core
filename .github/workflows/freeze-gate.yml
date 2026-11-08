@@ -19,7 +19,7 @@ permissions:
 jobs:
   freeze-gate:
     name: Evaluate stabilization-freeze PR contract
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 3
 
     steps:

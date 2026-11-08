@@ -69,7 +69,7 @@ jobs:
     # API-only workflow via actions/github-script -- no compile/test toolchain
     # needed. It stays off the build pool on the light runners so PR merges
     # are not blocked when self-hosted build runners are offline or occupied.
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 5
 
     steps:
