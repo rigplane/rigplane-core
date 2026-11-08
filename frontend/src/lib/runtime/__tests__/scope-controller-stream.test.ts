@@ -110,3 +110,62 @@ describe('ScopeController shared streams (MOR-4270)', () => {
     }
   });
 });
+
+it.each(['hardware', 'audio_fft'] as const)('expires a phased %s receipt at its exact 500 ms deadline', async source => {
+  vi.useFakeTimers(); let now = 0;
+  const timing = {
+    now: () => now,
+    setTimeout: vi.fn((callback: () => void, delay: number) => setTimeout(callback, delay)),
+    clearTimeout: vi.fn((handle: ReturnType<typeof setTimeout>) => clearTimeout(handle)),
+    setInterval: vi.fn((callback: () => void, delay: number) => setInterval(callback, delay)),
+    clearInterval: vi.fn((handle: ReturnType<typeof setInterval>) => clearInterval(handle)),
+  };
+  const channel = fakeChannel(); const controller = new ScopeController(() => channel as unknown as WsChannel, timing);
+  const stream = controller.stream(source); const geometry = vi.fn(); stream.geometry.subscribe(geometry);
+  const driver = source === 'hardware' ? controller.hardwareScopeDriver : controller.audioFftDriver;
+  const handle = await driver.start();
+  try {
+    now = 50; vi.advanceTimersByTime(50); channel.receive(radioAt(0));
+    now = 549; vi.advanceTimersByTime(499);
+    expect(geometry.mock.lastCall?.[0]).toMatchObject({ freshness: 'fresh' });
+    expect(controller.snapshotHealth(source).frameSeen).toBe(true);
+    now = 550; vi.advanceTimersByTime(1);
+    expect(geometry.mock.lastCall?.[0]).toMatchObject({ freshness: 'stale' });
+    expect(controller.snapshotHealth(source).frameSeen).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { await driver.stop(handle); vi.useRealTimers(); }
+});
+
+it('keeps one pending deadline over a 100-frame burst and reschedules only when it wakes', async () => {
+  vi.useFakeTimers(); let now = 0;
+  const timing = {
+    now: () => now,
+    setTimeout: vi.fn((callback: () => void, delay: number) => setTimeout(callback, delay)),
+    clearTimeout: vi.fn((handle: ReturnType<typeof setTimeout>) => clearTimeout(handle)),
+    setInterval: vi.fn((callback: () => void, delay: number) => setInterval(callback, delay)),
+    clearInterval: vi.fn((handle: ReturnType<typeof setInterval>) => clearInterval(handle)),
+  };
+  const channel = fakeChannel(); const controller = new ScopeController(() => channel as unknown as WsChannel, timing);
+  const handle = await controller.hardwareScopeDriver.start();
+  try {
+    expect(timing.setTimeout).not.toHaveBeenCalled();
+    now = 50; vi.advanceTimersByTime(50); channel.receive(radioAt(0));
+    for (let frame = 1; frame <= 100; frame++) {
+      now += 1; vi.advanceTimersByTime(1); channel.receive(radioAt(frame));
+    }
+    expect(timing.setTimeout).toHaveBeenCalledTimes(1);
+    expect(timing.clearTimeout).not.toHaveBeenCalled();
+    expect(timing.setInterval).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+    now = 550; vi.advanceTimersByTime(400);
+    expect(controller.snapshotHealth('hardware').frameSeen).toBe(true);
+    expect(timing.setTimeout).toHaveBeenCalledTimes(2);
+    expect(timing.setTimeout.mock.lastCall?.[1]).toBe(100);
+    expect(timing.clearTimeout).not.toHaveBeenCalled();
+    await controller.hardwareScopeDriver.stop(handle);
+    expect(timing.clearTimeout).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    now = 2_000; vi.advanceTimersByTime(1_450);
+    expect(timing.setTimeout).toHaveBeenCalledTimes(2);
+  } finally { await controller.hardwareScopeDriver.stop(handle); vi.useRealTimers(); }
+});
