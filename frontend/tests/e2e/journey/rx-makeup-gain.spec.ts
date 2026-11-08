@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { startJourneyServer } from './server-process';
+import { validateCapabilities } from '../../../src/lib/types/capabilities';
 
 /**
  * MOR-4210 makeup gain, end to end: the real WebServer with the in-memory
@@ -25,11 +26,13 @@ const amplitude = (dbfs: number) => 10 ** (dbfs / 20);
 
 interface OutputWitness {
   peaks: { at: number; peak: number }[];
+  rms: { at: number; value: number }[];
+  inputRms: number;
 }
 
 async function installOutputWitness(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const witness: OutputWitness = { peaks: [] };
+    const witness: OutputWitness = { peaks: [], rms: [], inputRms: 0 };
     (window as Window & { __RX_OUTPUT__?: OutputWitness }).__RX_OUTPUT__ = witness;
     const analysers: AnalyserNode[] = [];
     const proto = AudioNode.prototype as unknown as {
@@ -37,6 +40,10 @@ async function installOutputWitness(page: Page): Promise<void> {
     };
     const nativeConnect = proto.connect;
     proto.connect = function (destination, ...rest) {
+      if (this instanceof AudioBufferSourceNode && this.buffer) {
+        const input = this.buffer.getChannelData(0);
+        witness.inputRms = Math.sqrt(input.reduce((sum, sample) => sum + sample * sample, 0) / input.length);
+      }
       if (destination instanceof AudioDestinationNode) {
         // Tap what the page sends to the speakers, unchanged.
         const analyser = this.context.createAnalyser();
@@ -49,16 +56,20 @@ async function installOutputWitness(page: Page): Promise<void> {
     const samples = new Float32Array(2048);
     setInterval(() => {
       let peak = 0;
+      let rms = 0;
       let running = false;
       for (const analyser of analysers) {
         if (analyser.context.state !== 'running') continue;
         running = true;
         analyser.getFloatTimeDomainData(samples);
+        rms = Math.max(rms, Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length));
         for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
       }
       if (!running) return;
       witness.peaks.push({ at: performance.now(), peak });
+      witness.rms.push({ at: performance.now(), value: rms });
       if (witness.peaks.length > 2000) witness.peaks.shift();
+      if (witness.rms.length > 2000) witness.rms.shift();
     }, 20);
   });
 }
@@ -114,6 +125,64 @@ const gainTest = test.extend({
 
 gainTest.describe('LIVE RX makeup gain through the real server and audio graph', () => {
   gainTest.use({ baseURL: `http://127.0.0.1:${PORT}` });
+
+  gainTest('MOR-4296 unsupported routing keeps browser and app-window PCM16 RMS at unity', async ({ browser }, testInfo) => {
+    test.setTimeout(90_000);
+    const levelFile = testInfo.outputPath('rx-tone-dbfs');
+    await writeFile(levelFile, String(QUIET_DBFS));
+    const server = await startJourneyServer(PORT + 1, FREQ_HZ, [
+      '--audio', '--model', 'IC-705', '--rx-tone-level-file', levelFile,
+    ]);
+    const readings: { gainDb: number; inputRms: number }[] = [];
+    try {
+      for (const appWindow of [false, true]) {
+        const context = await browser.newContext();
+        try {
+          const page = await context.newPage();
+          await page.addInitScript((app) => {
+            Object.defineProperty(globalThis, 'AudioDecoder', { value: undefined, configurable: true });
+            if (app) Object.assign(globalThis, { __TAURI_INTERNALS__: {} });
+            localStorage.setItem('icom.audio.focus', 'main');
+            localStorage.setItem('icom.audio.split_stereo', '0');
+            localStorage.setItem('icom.audio.main_gain_db', '-27');
+            localStorage.removeItem('icom.audio.sub_gain_db');
+          }, appWindow);
+          await installOutputWitness(page);
+          await page.goto(`http://127.0.0.1:${PORT + 1}/?ui=v2`, { waitUntil: 'domcontentloaded' });
+          const caps = validateCapabilities(await (await page.request.get(`http://127.0.0.1:${PORT + 1}/api/v1/capabilities`)).json());
+          expect(caps.capabilities).not.toContain('lan_dual_rx_audio_routing');
+          await expect(page.locator('[role="status"][title="Control WebSocket: connected"]')).toBeVisible();
+          await page.getByTestId('rx-audio-monitor-live').click();
+          await setAfPercent(page.getByTestId('rx-audio-af').getByRole('slider'), 100);
+          const measureGain = () => page.evaluate(() => {
+            const witness = (window as Window & { __RX_OUTPUT__?: OutputWitness }).__RX_OUTPUT__!;
+            const samples = witness.rms.filter(({ at }) => at >= performance.now() - 800).map(({ value }) => value).sort((a, b) => a - b);
+            if (samples.length < 20 || witness.inputRms <= 0) return null;
+            const output = samples[Math.floor(samples.length / 2)]!;
+            return output > 0 ? 20 * Math.log10(output / witness.inputRms) : null;
+          });
+          await expect.poll(async () => {
+            const gain = await measureGain();
+            return gain === null ? Infinity : Math.abs(gain);
+          }, { timeout: 15_000, message: `${appWindow ? 'app-window' : 'browser'} PCM16 output stays within 1.5 dB of input` }).toBeLessThanOrEqual(1.5);
+          readings.push({
+            gainDb: (await measureGain())!,
+            inputRms: await page.evaluate(() => (window as Window & { __RX_OUTPUT__?: OutputWitness }).__RX_OUTPUT__!.inputRms),
+          });
+          expect(await page.evaluate(() => localStorage.getItem('icom.audio.main_gain_db'))).toBe('-27');
+        } finally {
+          await context.close();
+        }
+      }
+      expect(readings[0]!.inputRms).toBe(readings[1]!.inputRms);
+      expect(Math.abs(readings[0]!.gainDb - readings[1]!.gainDb)).toBeLessThanOrEqual(1.5);
+      const resultFile = testInfo.outputPath('pcm16-rms-gain-db.json');
+      await writeFile(resultFile, JSON.stringify({ browser: readings[0], appWindow: readings[1] }));
+      await testInfo.attach('pcm16-rms-gain-db', { path: resultFile, contentType: 'application/json' });
+    } finally {
+      await server.kill();
+    }
+  });
 
   gainTest('MOR-4210 AF above 100% raises quiet RX and limits loud RX', async ({ page }, testInfo) => {
     test.setTimeout(120_000);

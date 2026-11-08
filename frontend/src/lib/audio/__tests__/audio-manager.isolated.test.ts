@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedTxController } from '../../runtime/tx-controller/managed-controller';
 import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
+import { validateCapabilities } from '$lib/types/capabilities';
+import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -652,6 +654,11 @@ describe('AudioManager websocket subscriptions', () => {
 
   it('sends rx audio_start when startRx is called after config already opened the websocket', async () => {
     const { audioManager } = await import('../audio-manager');
+    const { getCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const wire = structuredClone(stateWireGoldens['IC-7610'].capabilities);
+    vi.mocked(getCapabilities).mockReturnValueOnce(validateCapabilities({
+      ...wire, capabilities: [...wire.capabilities, 'lan_dual_rx_audio_routing'],
+    }));
 
     audioManager.setAudioConfig({ focus: 'main', split_stereo: true });
     const ws = FakeWebSocket.instances[0];

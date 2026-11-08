@@ -9,6 +9,8 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { flushSync } from 'svelte';
+import { validateCapabilities } from '$lib/types/capabilities';
+import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 // @ts-expect-error -- Svelte does not publish types for its test-only effect harness.
 import { effect_root, render_effect } from 'svelte/internal/client';
 
@@ -115,6 +117,7 @@ vi.mock('$lib/audio/audio-manager', () => ({
     startTx: vi.fn(),
     stopTx: vi.fn(),
     setRxVolume: vi.fn(),
+    setAudioConfig: vi.fn(),
     setOperatorNotifier: vi.fn(),
     setControllerBinding: vi.fn(),
     destroy: vi.fn(),
@@ -529,6 +532,32 @@ describe('FrontendRuntime.bootstrap()', () => {
     controller.waitForPrimary.mockResolvedValue(undefined);
     controller.assertHostAction.mockImplementation(() => {});
     configureAcceptedCapabilities();
+    localStorage.clear();
+  });
+
+  it('reapplies persisted routing on accepted provider changes without overwriting storage', async () => {
+    localStorage.setItem('icom.audio.main_gain_db', '-27');
+    localStorage.setItem('icom.audio.focus', 'main');
+    let listener!: Parameters<typeof subscribeCapabilities>[0];
+    vi.mocked(subscribeCapabilities).mockImplementation((next) => {
+      listener = next;
+      next(null);
+      return vi.fn();
+    });
+    const rt = await freshRuntime();
+    const cleanup = await rt.bootstrap();
+    vi.mocked(audioManager.setAudioConfig).mockClear();
+    for (const model of ['IC-7610', 'IC-705', 'IC-7610'] as const) {
+      const caps = validateCapabilities(structuredClone(stateWireGoldens[model].capabilities));
+      vi.mocked(getCapabilities).mockReturnValue(caps);
+      listener(caps);
+      expect(audioManager.setAudioConfig).toHaveBeenLastCalledWith({ focus: 'main', main_gain_db: -27 });
+    }
+    expect(audioManager.setAudioConfig).toHaveBeenCalledTimes(3);
+    expect(localStorage.getItem('icom.audio.main_gain_db')).toBe('-27');
+    expect(localStorage.getItem('icom.audio.focus')).toBe('main');
+    localStorage.clear();
+    await cleanup();
   });
 
   it('acquires before control and waits for primary before audio routing restore', async () => {

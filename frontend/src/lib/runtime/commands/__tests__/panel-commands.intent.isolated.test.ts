@@ -309,7 +309,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       main_gain_db: 0,
       sub_gain_db: 0,
     });
-    expect(h.setAudioConfig).not.toHaveBeenCalled();
+    expect(h.setAudioConfig).toHaveBeenCalledExactlyOnceWith({});
+    h.setAudioConfig.mockClear();
 
     handlers.onFocusChange('sub');
     handlers.onSplitStereoChange(true);

@@ -3,6 +3,8 @@ import { flushSync, mount, unmount } from 'svelte';
 import Toast from '../../../components/shared/Toast.svelte';
 import { setLocale } from '$lib/i18n';
 import { _resetLocale } from '$lib/i18n/store.svelte';
+import { validateCapabilities } from '$lib/types/capabilities';
+import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 // The rendered-toast describe runs the refusal through the REAL runtime
 // notification path. These imports are static on purpose: Toast, the i18n
 // runtime, the real ws-client bus, the audio manager singleton and the
@@ -412,6 +414,11 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
 
   it('a server close with no browser demand latches nothing and reconnects nothing', async () => {
     const { audioManager } = await import('../audio-manager');
+    const { getCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const wire = structuredClone(stateWireGoldens['IC-7610'].capabilities);
+    vi.mocked(getCapabilities).mockReturnValueOnce(validateCapabilities({
+      ...wire, capabilities: [...wire.capabilities, 'lan_dual_rx_audio_routing'],
+    }));
     const audio = await import('../../stores/audio.svelte');
 
     audioManager.setAudioConfig({ focus: 'main', split_stereo: true });

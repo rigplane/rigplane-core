@@ -261,6 +261,11 @@ class AudioManager {
    * CI-V command never left the browser.
    */
   setAudioConfig(cfg: Partial<AudioRoutingConfig>): void {
+    const supported = getCapabilities()?.capabilities.includes('lan_dual_rx_audio_routing') === true;
+    if (!supported) {
+      cfg = { focus: 'both', split_stereo: false, main_gain_db: 0, sub_gain_db: 0 };
+      this._audioConfigPending = false;
+    }
     this.audioConfigControllerEpoch = this.controller?.epoch() ?? 0;
     if (cfg.focus !== undefined) this.rxPlayer.setFocus(cfg.focus);
     if (cfg.split_stereo !== undefined) this.rxPlayer.setSplitStereo(cfg.split_stereo);
@@ -275,6 +280,7 @@ class AudioManager {
       ...(cfg.sub_gain_db !== undefined ? { sub_gain_db: applied.sub_gain_db } : {}),
     });
     this.notify();
+    if (!supported) return;
     // Only the focus + split_stereo pair maps to CI-V; gain is local.
     if (cfg.focus === undefined && cfg.split_stereo === undefined) return;
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -291,6 +297,10 @@ class AudioManager {
   private audioConfigControllerEpoch = 0;
 
   private _flushPendingAudioConfig(): void {
+    if (getCapabilities()?.capabilities.includes('lan_dual_rx_audio_routing') !== true) {
+      this._audioConfigPending = false;
+      return;
+    }
     if (this.controller?.remote() && !this.controller.current(this.audioConfigControllerEpoch)) {
       this._audioConfigPending = false;
       return;

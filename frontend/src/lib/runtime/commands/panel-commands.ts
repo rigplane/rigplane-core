@@ -551,9 +551,7 @@ export function makeAudioRoutingHandlers() {
       if (split !== null) cfg.split_stereo = split;
       if (mainDb !== null) cfg.main_gain_db = mainDb;
       if (subDb !== null) cfg.sub_gain_db = subDb;
-      if (Object.keys(cfg).length > 0) {
-        audioManager.setAudioConfig(cfg);
-      }
+      audioManager.setAudioConfig(cfg);
       return {
         focus: focus ?? 'both' as AudioFocus,
         split_stereo: split ?? false,
