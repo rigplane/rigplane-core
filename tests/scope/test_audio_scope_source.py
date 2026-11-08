@@ -159,3 +159,27 @@ async def test_geometry_change_discards_pcm_and_fft_history(
     assert frames[0] == expected[0]
     await source.stop()
     await reference.stop()
+
+
+async def test_failed_release_does_not_restart_fft_on_changed_facts():
+    class RetainedTap(Tap):
+        async def release(self):
+            if not self.releases:
+                self.releases += 1
+                raise RuntimeError("release failed")
+            await super().release()
+
+    facts = AudioPassband(14_100_000, 300, 2700, "upper")
+    tap = RetainedTap()
+    source = AudioFftSource(tap, lambda: facts)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    with pytest.raises(RuntimeError, match="release failed"):
+        await source.stop()
+    try:
+        facts = AudioPassband(7_100_000, -2700, -300, "lower")
+        tap.callback(np.ones(4096, dtype="<i2").tobytes())
+        assert not frames
+    finally:
+        await source.stop()
