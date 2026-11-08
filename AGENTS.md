@@ -206,7 +206,10 @@ checks (`.github/scripts/classify-quick-paths.py: DOCS_DATA_SUFFIXES`,
 This repo is developed from multiple machines and by multiple agents. Before
 editing:
 
-- run `git fetch --all --tags --prune`;
+- run `git fetch origin --prune --no-prune-tags`. Do not use `--all` or
+  `--tags` with pruning: with `fetch.pruneTags=true` (set on some machines) a
+  fork remote that has no tags makes git delete every local tag. Fetch tags
+  explicitly with `git fetch origin --tags` when you need them;
 - inspect `git status --short --branch`;
 - do not work directly on `main`;
 - use `codex/<issue-or-task>` branches for agent work;
