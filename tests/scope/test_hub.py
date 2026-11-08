@@ -499,3 +499,41 @@ async def test_stop_retry_serializes_with_new_demand_and_repeated_cancellation(
     fresh = await opening
     assert source.starts == source.stops == 2
     await fresh.close()
+
+
+class NativeWriter:
+    """Minimal RadioScopeWriter for the width-cap tests."""
+
+    def tuned_frequency(self, receiver):
+        return 10_000_000
+
+    async def set_output(self, enabled):
+        pass
+
+    async def set_center(self, center_hz, span_hz, receiver):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_width_requests_above_native_are_granted_at_native_resolution(
+    virtual_clock,
+):
+    profile = load_rig(Path("rigs/ic7300.toml")).to_profile()
+    native_source = RadioScopeSource(profile, NativeWriter(), native_width=689)
+    native_encoder = Encoder()
+    native_hub = ScopeHub(encoder=native_encoder)
+    native_hub.register("radio689", native_source)
+    view = View(10_000_300, 10_002_700)
+    wide = await native_hub.subscribe(Subscription("radio689", 0, view, 2800, 20))
+    assert wide.granted.width == 689
+    native_source.feed_frame(
+        ScopeFrame(0, 0, 10_000_300, 10_002_700, bytes([160]) * 689, False)
+    )
+    assert native_encoder.frames[-1].width == 689
+    assert native_encoder.frames[-1].pixels == bytes([160]) * 689
+    await wide.close()
+
+    hub, source, encoder = setup()
+    exact = await hub.subscribe(request(1024))
+    assert exact.granted.width == 1024
+    await exact.close()
