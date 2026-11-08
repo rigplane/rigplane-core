@@ -73,8 +73,12 @@ vi.mock('../../panels/EssentialsPanel.svelte', () => ({ default: function S() { 
 // -- Typed doubles against the producer modules --
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
+    // Only producer-defined AudioManager methods the mounted subtree
+    // actually calls: the frontend-runtime constructor injects
+    // setOperatorNotifier, and the runtime.audioRouting getter reads
+    // getAppliedAudioConfig behind the onChange subscriber.
     onChange: () => () => {}, getAppliedAudioConfig: () => null,
-    start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), setOperatorNotifier: vi.fn(),
+    setOperatorNotifier: vi.fn(),
   } satisfies Partial<(typeof import('$lib/audio/audio-manager'))['audioManager']>,
 }));
 vi.mock('$lib/stores/audio.svelte', () => ({
