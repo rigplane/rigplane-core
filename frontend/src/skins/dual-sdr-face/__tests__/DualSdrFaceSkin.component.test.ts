@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CANONICAL_LAYOUT_MODES, type CanonicalLayoutMode } from '../../../presentation/layout-mode';
 import { TEST_INSTRUMENTS } from '../../../components-v2/layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
+import { getLayoutOptions } from '$lib/local-extensions/host-ui';
 
 const lifecycle = vi.hoisted(() => ({
   acquire: vi.fn(() => ({ resource: 'hardware-scope', token: Symbol('lease') })),
@@ -68,9 +69,7 @@ import { loadSkin, resolveSkinId } from '../../registry';
 
 describe('DualSdrFaceSkin production entrypoint', () => {
   const source = readFileSync('src/skins/dual-sdr-face/DualSdrFaceSkin.svelte', 'utf8');
-  const statusBarSource = readFileSync('src/components-v2/layout/StatusBar.svelte', 'utf8');
-  const pickerModes = [...statusBarSource.matchAll(/\{ value: '([^']+)', label:/g)]
-    .map((match) => match[1] as CanonicalLayoutMode);
+  const pickerModes = getLayoutOptions().map(option => option.value);
 
   beforeEach(() => {
     lifecycle.acquire.mockClear();

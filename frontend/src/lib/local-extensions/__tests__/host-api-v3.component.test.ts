@@ -11,6 +11,7 @@ import { LOCAL_SUPERVISOR_META_NAME } from '../manifest';
 import { parseHostDeclaration, readHostDeclaration, getLayoutOptions, type LocalExtensionHostDeclaration } from '../host-ui';
 import type { ServerState } from '$lib/types/state';
 import type { LocalExtensionHostApiV3, LocalExtensionHostWindow } from '../host-api';
+import { CANONICAL_LAYOUT_MODES } from '../../../presentation/layout-mode';
 
 vi.mock('$lib/media/media-session', () => ({ initMediaSession() {}, destroyMediaSession() {} } satisfies Pick<typeof import('$lib/media/media-session'), 'initMediaSession' | 'destroyMediaSession'>));
 const audioBoundary = vi.hoisted(() => ({ deferStop: false, finishStop: undefined as (() => void) | undefined }));
@@ -87,12 +88,28 @@ beforeEach(() => {
 afterEach(async () => {
   if (app) { await unmount(app); app = undefined; }
   disconnectAll(); document.body.replaceChildren();
-  vi.restoreAllMocks(); vi.unstubAllGlobals();
+  vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs();
   resize(viewport.width, viewport.height);
   document.querySelector(`meta[name="${LOCAL_SUPERVISOR_META_NAME}"]`)?.remove();
 });
 
 describe('installed host API v3 with production UI handlers', () => {
+  it.each([true, false])('keeps mounted pickers and the host catalogue synchronized with DEV=%s', async development => {
+    vi.stubEnv('DEV', development);
+    await start(2);
+    const expected = new Set([...CANONICAL_LAYOUT_MODES].filter(mode => development || mode !== 'sdr-test'));
+    expect(new Set(host().getLayouts().map(option => option.value))).toEqual(expected);
+    for (const layout of expected) {
+      expect(host().setLayout(layout)).toBe(true);
+      await vi.waitFor(() => {
+        flushSync();
+        const selector = document.querySelector<HTMLSelectElement>('select.skin-select');
+        expect(selector?.value).toBe(layout);
+        expect(new Set(Array.from(selector!.options, option => option.value))).toEqual(expected);
+      });
+    }
+  }, 30000);
+
   it.each([1, 2] as const)('uses validated %i-receiver documents for LOCAL, MUTE and playback', async receivers => {
     await start(receivers);
     const listening = vi.fn();
