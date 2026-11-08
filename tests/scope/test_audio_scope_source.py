@@ -145,3 +145,54 @@ async def test_geometry_change_discards_pcm_and_fft_history(
     assert frames[0] == expected[0]
     await source.stop()
     await reference.stop()
+
+
+@pytest.mark.parametrize('old_count', [3072, 4096])
+async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(old_count, virtual_clock, monkeypatch, caplog):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    import rigplane.audio.fft_scope as fft_module
+    monkeypatch.setattr(fft_module, 'time', SimpleNamespace(monotonic=virtual_clock))
+    valid = AudioPassband(14_100_000, 300, 2700, 'upper')
+    available = True
+
+    def facts():
+        if not available:
+            raise ValueError('RF mapping unavailable')
+        return valid
+
+    tap = Tap()
+    source = AudioFftSource(tap, facts)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        old = (np.sin(2 * np.pi * 1500 * np.arange(old_count) / 48000) * 16000).astype('<i2')
+        tap.callback(old.tobytes())
+        frames.clear()
+        stop = Mock(wraps=source.producer.stop)
+        monkeypatch.setattr(source.producer, 'stop', stop)
+        available = False
+        for _ in range(3):
+            tap.callback(bytes(1920))
+        assert stop.call_count == 1
+        assert not frames and source._frame_facts is None
+        assert not caplog.records
+        available = True
+        noise = np.random.default_rng(31).integers(-100, 101, 4096, dtype=np.int16)
+        await virtual_clock.elapse(.1)
+        tap.callback(noise[:1024].tobytes())
+        assert not frames
+        tap.callback(noise[1024:].tobytes())
+        reference_tap = Tap()
+        reference = AudioFftSource(reference_tap, lambda: valid)
+        expected = []
+        reference.on_frame(expected.append)
+        await reference.start()
+        try:
+            reference_tap.callback(noise.tobytes())
+            assert frames == expected and len(frames) == 1
+        finally:
+            await reference.stop()
+    finally:
+        await source.stop()
