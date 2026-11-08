@@ -34,6 +34,7 @@ import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/suppor
 import { SpectrumRenderer } from '$lib/renderers/spectrum-renderer';
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
+import type { ScopeSubscription } from '$lib/runtime/scope-view';
 import type { SpectrumAuthority, SpectrumFilterRule } from '$lib/runtime/adapters/scope-adapter';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
 import goldenScopeWire from '../../../lib/runtime/__tests__/fixtures/scope-wire.json';
@@ -650,8 +651,10 @@ function paintCounts(): PaintCounts {
   };
 }
 
-function readSubscription(): { width: number; maxFps: number; sourceId: string } {
-  return JSON.parse(panelTarget.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+/** The panel serializes its scopeSubscription() result verbatim — parse it
+ *  back into the producer's type, not a hand-shaped subset. */
+function readSubscription(): ScopeSubscription {
+  return JSON.parse(panelTarget.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!) as ScopeSubscription;
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,9 @@ import { flushSync, mount, unmount } from 'svelte';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { IC7300_CAPABILITIES, IC7300_STATE } from '$lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
-import type { WsChannel } from '$lib/transport/ws-client';
+import { WsChannel } from '$lib/transport/ws-client';
+import { controllerClient } from '$lib/transport/controller-client';
+import { MockWebSocket, instances as wsInstances } from '$lib/transport/__tests__/support/fake-ws-backend';
 import AudioSpectrumPanel from '../AudioSpectrumPanel.svelte';
 
 const h = vi.hoisted(() => ({
@@ -37,20 +39,10 @@ vi.mock('$lib/runtime/frontend-runtime', async (importOriginal) => {
   };
 });
 
-function channel() {
-  const binary = new Set<(data: ArrayBuffer) => void>();
-  return {
-    state: 'disconnected', sessionEpoch: 0,
-    connect: vi.fn(), disconnect: vi.fn(),
-    onBinary: (handler: (data: ArrayBuffer) => void) => {
-      binary.add(handler); return () => { binary.delete(handler); };
-    },
-    onStateChange: () => () => {},
-    onSessionTransition: () => () => {},
-  };
-}
-
-let audio: ReturnType<typeof channel>;
+// Producer-faithful transport — the same seam the scope-surface integration
+// harness uses: real WsChannel objects over the shared MockWebSocket backend,
+// never a hand-rolled channel fake.
+let channels: Record<string, WsChannel>;
 let scope: ScopeController;
 let target: HTMLDivElement;
 let instance: ReturnType<typeof mount> | undefined;
@@ -69,8 +61,16 @@ beforeEach(() => {
   localStorage.clear();
   intersectionCallbacks = [];
   hidden = false;
-  audio = channel();
-  scope = new ScopeController(() => audio as unknown as WsChannel);
+  // Scope channels are plain local sockets (no controller session handshake).
+  wsInstances.length = 0;
+  vi.stubGlobal('WebSocket', MockWebSocket);
+  vi.spyOn(controllerClient, 'sessionMode', 'get').mockReturnValue(false);
+  vi.spyOn(controllerClient, 'protocols').mockReturnValue([]);
+  channels = {};
+  scope = new ScopeController((name: string) => {
+    channels[name] ??= new WsChannel(false);
+    return channels[name]!;
+  });
   h.scope = scope;
   h.state = structuredClone(IC7300_STATE);
   h.caps = structuredClone(IC7300_CAPABILITIES);
@@ -109,6 +109,7 @@ afterEach(async () => {
   if (instance) await unmount(instance);
   instance = undefined;
   await h.host.teardown();
+  for (const channel of Object.values(channels)) channel.disconnect();
   target.remove();
   if (originalHiddenDescriptor) Object.defineProperty(document, 'hidden', originalHiddenDescriptor);
   Reflect.deleteProperty(HTMLElement.prototype, 'setPointerCapture');
