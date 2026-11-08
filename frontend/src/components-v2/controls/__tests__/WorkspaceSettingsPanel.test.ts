@@ -8,7 +8,7 @@
  * `vi.mock`-ed, and no global is stubbed, so this file stays in the fast
  * pool per the MOR-1272 doctrine (see `store.test.ts`).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, unmount, flushSync, tick } from 'svelte';
 import WorkspaceSettingsPanel from '../WorkspaceSettingsPanel.svelte';
 import {
@@ -46,11 +46,19 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   document.body.innerHTML = '';
   delete document.documentElement.dataset.theme;
 });
 
 describe('WorkspaceSettingsPanel (MOR-1080)', () => {
+  it('excludes test layouts from the release workspace selector', () => {
+    vi.stubEnv('DEV', false);
+    const { target, component } = setup();
+    const sel = target.querySelector('[data-testid="workspace-layout-select"]') as HTMLSelectElement;
+    expect(Array.from(sel.options).map(o => o.value)).not.toContain('sdr-test');
+    unmount(component);
+  });
   it('enumerates exactly the registered layout ids, in order', () => {
     const { target, component } = setup();
     const sel = target.querySelector('[data-testid="workspace-layout-select"]') as HTMLSelectElement;

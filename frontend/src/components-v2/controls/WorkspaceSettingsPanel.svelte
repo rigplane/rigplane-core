@@ -34,6 +34,8 @@
   import type { SkinId } from '../../skins/registry';
   import { getAvailableThemes, setThemeUserChoice } from '../theme/theme-switcher';
   import { t } from '$lib/i18n';
+  import { getLayoutOptions } from '$lib/local-extensions/host-ui';
+  const visibleLayouts = WORKSPACE_LAYOUT_IDS.filter(id => getLayoutOptions().some(option => option.value === id));
 
   /** MOR-2215 variant B / MOR-2218: the operator switches only among the
    *  current skin's declared languages (the resolved skin, from RadioLayout). */
@@ -131,7 +133,7 @@
   <label class="ws-row">
     <span>{t('core.settings.workspace.layoutLabel')}</span>
     <select data-testid="workspace-layout-select" value={workspace.layout} onchange={handleLayoutChange}>
-      {#each WORKSPACE_LAYOUT_IDS as id (id)}
+      {#each visibleLayouts as id (id)}
         <option value={id}>{humanize(id)}</option>
       {/each}
     </select>

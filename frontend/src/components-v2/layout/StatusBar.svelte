@@ -89,7 +89,8 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings, Bug } from 'lucide-svelte';
+  import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, SlidersHorizontal, Bug } from 'lucide-svelte';
+  import { bindHostUi, getLayoutOptions, readHostDeclaration } from '$lib/local-extensions/host-ui';
   import ThemePicker from '../controls/ThemePicker.svelte';
   import ManagedTotStatusControl from '../controls/ManagedTotStatusControl.svelte';
   import SendReportDialog from '../dialogs/SendReportDialog.svelte';
@@ -110,7 +111,7 @@
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
   import { getAudioState } from '$lib/stores/audio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum, hasCapability } from '$lib/stores/capabilities.svelte';
-  import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
+  import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
 
   interface Props {
@@ -145,25 +146,9 @@
     const raw = getLayoutMode();
     return raw === 'lcd' ? 'lcd-cockpit' : raw;
   });
-  // Skin-switcher dropdown options. `lcd` is a legacy persisted value that
-  // normalizes to `lcd-cockpit` above (kept for backward compat). Twin-skin
-  // variants (`lcd-cockpit`, `lcd-scope`) are selectable per #887 / #889.
-  // Typed `CanonicalLayoutMode`, not the wider `LayoutMode` (MOR-1257 F1):
-  // `CanonicalLayoutMode` excludes the QA-only 'dual-receiver-cockpit' value,
-  // so adding it to this array is a compile error, not just an omission —
-  // restoring the barrier that existed before that value was added to
-  // `LayoutMode`. See lib/stores/qa-cockpit-override.ts.
-  const skinOptions: Array<{ value: CanonicalLayoutMode; label: string }> = [
-    { value: 'auto', label: 'AUTO' },
-    { value: 'standard', label: 'Standard' },
-    { value: 'lcd-cockpit', label: 'LCD Cockpit' },
-    { value: 'lcd-scope', label: 'LCD Scope' },
-    { value: 'peer-split', label: 'LCD Peer Split' },
-    { value: 'unified-instrument', label: 'LCD Unified Instrument' },
-    { value: 'panadapter-first', label: 'LCD Panadapter' },
-    { value: 'sdr-test', label: 'SDR Screen (test)' },
-    { value: 'dual-sdr-face', label: 'Dual SDR Face' },
-  ];
+  // Shared catalogue keeps release filtering identical to the extension API.
+  const skinOptions = getLayoutOptions();
+  const hostDeclaration = readHostDeclaration();
 
   function handleSkinChange(ev: Event) {
     const value = (ev.currentTarget as HTMLSelectElement).value as LayoutMode;
@@ -334,20 +319,27 @@
   }
 
   function handleConnectionToggle() {
-    const isConnected = controlState === 'connected';
+    requestConnection(controlState !== 'connected');
+  }
+
+  function requestConnection(connect: boolean): boolean {
+    if ((controlState === 'connected') === connect) return false;
     requestConfirm({
-      message: isConnected
-        ? t('core.statusbar.connection.confirmDisconnect')
-        : t('core.statusbar.connection.confirmConnect'),
-      action: () => (isConnected ? runtime.system.disconnect() : runtime.system.connect()),
+      message: connect ? t('core.statusbar.connection.confirmConnect') : t('core.statusbar.connection.confirmDisconnect'),
+      action: () => (connect ? runtime.system.connect() : runtime.system.disconnect()),
     });
+    return true;
   }
 
   function handlePowerToggle() {
+    if (radioPowerOn !== null) requestPower(!radioPowerOn);
+  }
+
+  function requestPower(on: boolean): boolean {
     // Defence in depth: never confirm or dispatch when the power state is
     // unknown.
-    if (runtime.remoteController || radioPowerOn === null) return;
-    if (radioPowerOn === true) {
+    if (!powerControlSupported || runtime.remoteController || radioPowerOn === null || radioPowerOn === on) return false;
+    if (!on) {
       requestConfirm({
         message: t('core.statusbar.power.confirmTurnOff'),
         // The state was known when the dialog opened; re-check at OK
@@ -362,7 +354,17 @@
         formatError: (err) => t('core.statusbar.power.failedTurnOn', { detail: String(err) }),
       });
     }
+    return true;
   }
+
+  function openRadioControls(): boolean {
+    if (!onSettings || runtime.remoteController) return false;
+    onSettings();
+    return true;
+  }
+
+  onMount(() => bindHostUi({ connect: () => requestConnection(true),
+    disconnect: () => requestConnection(false), setRadioPower: requestPower, openRadioControls }));
 
   // ── Send-Report dialog (issue #1397) ──
   let reportOpen = $state(false);
@@ -562,7 +564,7 @@
     {#if showManagedTotControl}
       <ManagedTotStatusControl />
     {/if}
-    {#if !runtime.remoteController}
+    {#if !runtime.remoteController && !hostDeclaration.report}
     <button
       type="button"
       class="control-btn report-btn"
@@ -578,11 +580,12 @@
       <button
         type="button"
         class="control-btn settings-btn"
-        onclick={onSettings}
+        onclick={openRadioControls}
         title={t('core.statusbar.settings.tooltip')}
         aria-label={t('core.statusbar.settings.tooltip')}
       >
-        <Settings size={14} strokeWidth={2} />
+        <SlidersHorizontal size={14} strokeWidth={2} />
+        <span class="btn-label">{t('core.statusbar.settings.tooltip')}</span>
       </button>
     {/if}
     <label class="skin-switcher" title={t('core.statusbar.skin.selectorLabel')}>

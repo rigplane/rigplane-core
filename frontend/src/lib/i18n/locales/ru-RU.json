@@ -63,7 +63,7 @@
   "core.statusbar.connection.confirmConnect": "Подключить?",
   "core.statusbar.report.button": "Отчёт",
   "core.statusbar.report.tooltip": "Отправить диагностический отчёт",
-  "core.statusbar.settings.tooltip": "Показать настройки",
+  "core.statusbar.settings.tooltip": "Управление радио",
   "core.statusbar.skin.selectorLabel": "Выбрать оформление интерфейса",
   "core.statusbar.skin.srLabel": "Оформление",
   "core.statusbar.nowPlaying.dialogLabel": "Сведения о станции",

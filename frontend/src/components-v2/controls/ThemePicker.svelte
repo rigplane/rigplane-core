@@ -4,7 +4,7 @@
   import { getAvailableThemes, getTheme, setThemeUserChoice, getVfoTheme, setVfoTheme, type ThemeInfo } from '../theme/theme-switcher';
 
   let isOpen = $state(false);
-  let currentTheme = $state('default');
+  let currentTheme = $derived(getTheme());
   let currentVfoTheme = $state<string | null>(null);
   let dropdownElement = $state<HTMLElement | null>(null);
   let buttonElement = $state<HTMLElement | null>(null);
@@ -17,7 +17,6 @@
   ];
 
   onMount(() => {
-    currentTheme = getTheme();
     currentVfoTheme = getVfoTheme();
 
     function handleClickOutside(event: MouseEvent) {
@@ -41,7 +40,6 @@
   }
 
   function selectTheme(themeId: string) {
-    currentTheme = themeId;
     setThemeUserChoice(themeId);
     isOpen = false;
   }

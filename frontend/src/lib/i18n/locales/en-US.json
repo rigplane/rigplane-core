@@ -63,7 +63,7 @@
   "core.statusbar.connection.confirmConnect": "Connect?",
   "core.statusbar.report.button": "Report",
   "core.statusbar.report.tooltip": "Send diagnostic report",
-  "core.statusbar.settings.tooltip": "Show settings",
+  "core.statusbar.settings.tooltip": "Radio Controls",
   "core.statusbar.skin.selectorLabel": "Select UI skin",
   "core.statusbar.skin.srLabel": "Skin",
   "core.statusbar.nowPlaying.dialogLabel": "Station details",

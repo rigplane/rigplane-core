@@ -1,5 +1,20 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { hasCapability } from '$lib/stores/capabilities.svelte';
+  import { getConnectionStatus, getRadioPowerOn } from '$lib/stores/connection.svelte';
+  import { getLayoutMode } from '$lib/stores/layout.svelte';
+  import { getTheme } from '../../components-v2/theme/theme-switcher';
+  import { runtime } from '$lib/runtime';
+  import { publishHostSnapshot, publishListening } from './host-ui';
+  import { readListeningSnapshot } from './host-listening';
+
+  // Reactive reads observe UI-originated changes as well as extension requests.
+  $effect(() => {
+    publishHostSnapshot({ connected: getConnectionStatus() === 'connected',
+      power: getRadioPowerOn(), powerSupported: hasCapability('power_control') && !runtime.remoteController,
+      layout: getLayoutMode(), theme: getTheme() });
+    publishListening(readListeningSnapshot());
+  });
   import {
     Minimize2,
     Move,

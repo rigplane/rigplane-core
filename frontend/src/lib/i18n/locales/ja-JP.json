@@ -88,7 +88,7 @@
   "core.statusbar.connection.confirmConnect": "接続しますか?",
   "core.statusbar.report.button": "レポート",
   "core.statusbar.report.tooltip": "診断レポートを送信",
-  "core.statusbar.settings.tooltip": "設定を表示",
+  "core.statusbar.settings.tooltip": "無線機の操作",
   "core.statusbar.skin.selectorLabel": "UI スキンを選択",
   "core.statusbar.skin.srLabel": "スキン",
   "core.statusbar.nowPlaying.dialogLabel": "局の詳細",

@@ -14,7 +14,7 @@ import {
   createLocalExtensionHostApi,
   installLocalExtensionHostApi,
   LOCAL_EXTENSION_HOST_API_VERSION,
-  type LocalExtensionHostApiV2,
+  type LocalExtensionHostApiV3,
   type LocalExtensionHostWindow,
   type RadioStateSubscriber,
 } from '../host-api';
@@ -42,7 +42,7 @@ describe('createLocalExtensionHostApi', () => {
     });
 
     expect(api.version).toBe(LOCAL_EXTENSION_HOST_API_VERSION);
-    expect(api.version).toBe(2);
+    expect(api.version).toBe(3);
     expect(api.getState()).toBe(state);
     expect(api.getCapabilities()).toBe(capabilities);
   });
@@ -152,7 +152,7 @@ describe('createLocalExtensionHostApi', () => {
 });
 
 describe('installLocalExtensionHostApi', () => {
-  function makeApi(): LocalExtensionHostApiV2 {
+  function makeApi(): LocalExtensionHostApiV3 {
     return createLocalExtensionHostApi({
       getState: () => null,
       getCapabilities: () => null,
@@ -172,7 +172,7 @@ describe('installLocalExtensionHostApi', () => {
     expect(fakeWindow.rigplaneExtensionHost).toBe(api);
     expect(fakeWindow.icomLanExtensionHost).toBe(api);
     expect(fakeWindow.rigplaneExtensionHost).toBe(fakeWindow.icomLanExtensionHost);
-    expect(fakeWindow.icomLanExtensionHost?.version).toBe(2);
+    expect(fakeWindow.icomLanExtensionHost?.version).toBe(3);
 
     uninstall();
   });

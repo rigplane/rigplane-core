@@ -238,13 +238,16 @@ declaring the new host contract:
 
 The entry URL here is illustrative; it must resolve to your own extension
 asset. TypeScript embedders replace `LocalExtensionHostApiV1` with
-`LocalExtensionHostApiV2` from the host module.
+`LocalExtensionHostApiV3` from the host module. Host v3 retains the v2 command
+members and accepts both `host_api: "2.0"` and `"3.0"` manifests; use `"3.0"`
+when consuming the additional UI and listening methods documented in
+[the public API surface](api/public-api-surface.md#frontend-extension-host-api-pro-facing).
 
 An extension should use a strict canonical non-TX intent, for example:
 
 ```javascript
 const host = window.rigplaneExtensionHost;
-if (!host || host.version !== 2) throw new Error('Extension requires host API 2');
+if (!host || (host.version !== 2 && host.version !== 3)) throw new Error('Extension requires host API 2 or 3');
 const accepted = host.sendCommand('set_notch_filter', { value: 128, receiver: 0 });
 // `accepted` is client transport acceptance, not server admission or completion.
 ```
