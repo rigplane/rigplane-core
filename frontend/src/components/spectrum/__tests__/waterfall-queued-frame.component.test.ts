@@ -1,12 +1,17 @@
 /**
  * MOR-4206 review round 2, finding 1: a frame queued in the latest-wins
- * pump carries a delivery-time options snapshot. When the panorama advances
- * before the rAF paint runs, the paint must keep the queued pixels'
+ * scheduler carries a delivery-time options snapshot. When the panorama
+ * advances before the rAF paint runs, the paint must keep the queued pixels'
  * sample-window geometry but reconcile it with the CURRENT viewport and
  * appearance options, recomputing the sampling shift. Painting the older
  * snapshot instead moves waterfall history backward relative to the
  * spectrum and the overlays, and pixelToFreq() tunes against the reverted
  * center.
+ *
+ * MOR-4271 (R2): WaterfallCanvas owns a CanvasSurface + ScopeRenderScheduler.
+ * The RO/IO stubs below are explicit: the scheduler only paints while the
+ * surface is sized and visible, a push arriving while hidden is CACHED
+ * (never dropped), and the visibility wake repaints the latest cached frame.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -31,7 +36,13 @@ function options(centerHz: number, panoramaShiftHz: number, refLevel = 0): Water
 let target: HTMLDivElement;
 let component: ReturnType<typeof mount> | undefined;
 let rafCallbacks: Map<number, FrameRequestCallback>;
+let rafRequestCount: number;
 let rafId: number;
+let resizeCallback: ResizeObserverCallback | undefined;
+let observed: Element | undefined;
+let intersectionCallback: IntersectionObserverCallback | undefined;
+let hidden: boolean;
+let originalHiddenDescriptor: PropertyDescriptor | undefined;
 
 function flushPaint(): void {
   const pending = [...rafCallbacks.values()];
@@ -43,13 +54,32 @@ beforeEach(() => {
   target = document.createElement('div');
   document.body.appendChild(target);
   rafCallbacks = new Map();
+  rafRequestCount = 0;
   rafId = 0;
+  hidden = false;
+  resizeCallback = undefined;
+  observed = undefined;
+  intersectionCallback = undefined;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    rafRequestCount++;
     rafCallbacks.set(++rafId, callback);
     return rafId;
   });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafCallbacks.delete(id); });
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(cb: ResizeObserverCallback) { resizeCallback = cb; }
+    observe(element: Element) { observed = element; }
+    unobserve() {}
+    disconnect() {}
+  });
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(cb: IntersectionObserverCallback) { intersectionCallback = cb; }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  });
+  originalHiddenDescriptor = Object.getOwnPropertyDescriptor(document, 'hidden');
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
   // jsdom lacks pointer capture; the gesture recognizer calls it on pointerdown.
   HTMLElement.prototype.setPointerCapture = vi.fn();
   HTMLElement.prototype.releasePointerCapture = vi.fn();
@@ -72,6 +102,7 @@ afterEach(async () => {
   if (component) await unmount(component);
   component = undefined;
   target.remove();
+  if (originalHiddenDescriptor) Object.defineProperty(document, 'hidden', originalHiddenDescriptor);
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -79,6 +110,14 @@ afterEach(async () => {
 function mountHarness(props: Record<string, unknown> = {}): void {
   component = mount(WaterfallQueuedFrameHarness, { target, props });
   flushSync();
+  // The surface starts sized and visible (the test owns both observers).
+  resizeCallback!([{ target: observed!, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry],
+    {} as ResizeObserver);
+  intersectionCallback?.([{ target: observed!, isIntersecting: true } as IntersectionObserverEntry],
+    {} as IntersectionObserver);
+  flushSync();
+  rafCallbacks.clear();
+  rafRequestCount = 0;
 }
 
 describe('queued frame vs. an advancing viewport (MOR-4206 review round 2)', () => {
@@ -137,5 +176,42 @@ describe('queued frame vs. an advancing viewport (MOR-4206 review round 2)', () 
     canvas.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, button: 0, pointerId: 1, clientX: 150, clientY: 20 }));
     expect(onFreqClick).toHaveBeenCalledTimes(1);
     expect(onFreqClick).toHaveBeenCalledWith(ADVANCED_CENTER_HZ);
+  });
+
+  it('frames pushed while hidden repaint from cache on visibility restore', () => {
+    const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    let push: ((pixels: Uint8Array, frameOptions?: WaterfallOptions) => void) | undefined;
+    mountHarness({ onRegisterPush: (fn: typeof push) => { push = fn; } });
+
+    // Visible baseline: one delivered frame paints in one animation frame.
+    push!(new Uint8Array(475).fill(64), options(DELIVERED_CENTER_HZ, DELIVERED_SHIFT_HZ));
+    flushPaint();
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+
+    // Hidden: the stream keeps accepting frames, the scheduler requests no
+    // animation frame at all, and the pushed frames are NOT dropped — they
+    // replace the canvas's cached latest frame.
+    hidden = true;
+    document.dispatchEvent(new Event('visibilitychange'));
+    flushSync();
+    flushPaint(); // drain any in-flight tick; nothing may re-arm
+    const requestsBefore = rafRequestCount;
+    for (let sequence = 2; sequence <= 21; sequence++) {
+      push!(new Uint8Array(475).fill(sequence), options(DELIVERED_CENTER_HZ, DELIVERED_SHIFT_HZ));
+    }
+    expect(rafRequestCount - requestsBefore).toBe(0);
+    flushPaint();
+    expect(pushSpy).toHaveBeenCalledTimes(1);
+
+    // Visible again: the wake repaints the LATEST pushed frame (fill 21)
+    // from cache — no new delivery accompanies the repaint.
+    const requestsBeforeRestore = rafRequestCount;
+    hidden = false;
+    document.dispatchEvent(new Event('visibilitychange'));
+    flushSync();
+    expect(rafRequestCount - requestsBeforeRestore).toBeGreaterThan(0);
+    flushPaint();
+    expect(pushSpy).toHaveBeenCalledTimes(2);
+    expect(pushSpy.mock.calls.at(-1)![0][0]).toBe(21);
   });
 });

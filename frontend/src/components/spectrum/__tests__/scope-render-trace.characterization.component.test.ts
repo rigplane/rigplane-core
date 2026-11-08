@@ -16,13 +16,30 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); document.body.inn
 describe('actual canvas trace callbacks', () => {
   // MOR-4206: the waterfall no longer paints synchronously per push — like
   // the spectrum it coalesces latest-wins to one paint per rAF, tracing the
-  // dropped frame as `coalesced`. This characterization pins that contract:
-  // two same-tick pushes, one rAF flush, one paint per canvas.
+  // dropped frame as `coalesced`. MOR-4271 moves both canvases onto
+  // CanvasSurface + ScopeRenderScheduler and KEEPS this trace contract:
+  // `recordGeometry` on draw, `coalesced` (with the REPLACED frame's token)
+  // when a push arrives while a paint is pending, and the stage timings.
+  // This characterization pins that contract: two same-tick pushes, one rAF
+  // flush, one paint per canvas.
   it('coalesces waterfall rows and spectrum draws to one paint per rAF each', async () => {
     const callbacks: FrameRequestCallback[] = [];
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callbacks.push(callback); return callbacks.length; });
     vi.stubGlobal('cancelAnimationFrame', vi.fn());
-    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    const resizeCallbacks: ResizeObserverCallback[] = [];
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(cb: ResizeObserverCallback) { resizeCallbacks.push(cb); }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(cb: IntersectionObserverCallback) { intersectionCallback = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
       return { canvas: this, createImageData: (width: number, height: number) =>
         ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
@@ -37,6 +54,13 @@ describe('actual canvas trace callbacks', () => {
     let spectrumPush: ((pixels: Uint8Array, token?: TraceToken | null) => void) | undefined;
     const waterfall = mount(WaterfallCanvas, { target, props: { trace, onRegisterPush: (fn) => { waterfallPush = fn; } } });
     const spectrum = mount(SpectrumCanvas, { target, props: { data: null, trace, onRegisterPush: (fn) => { spectrumPush = fn; } } });
+    flushSync();
+    // MOR-4271: the schedulers only paint a sized, visible surface — give
+    // both canvases their size and visibility explicitly.
+    for (const cb of resizeCallbacks) {
+      cb([{ target, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry], {} as ResizeObserver);
+    }
+    intersectionCallback?.([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
     flushSync();
     try {
       const fixture = producerFrames.frames.find(frame => frame.name === 'uncropped')!;
@@ -65,7 +89,7 @@ describe('actual canvas trace callbacks', () => {
       expect(output.buckets[0].stages.waterfall_options.count).toBe(1);
       expect(output.buckets[0].stages.spectrum_push.count).toBe(2);
       // Both canvases dropped the first frame: spectrum's rAF coalescing and
-      // the waterfall pump's latest-wins replacement each trace one.
+      // the waterfall's latest-wins replacement each trace one.
       expect(output.buckets[0].stages.coalesced.count).toBe(2);
       expect(output.buckets[0].stages.spectrum_render.count).toBe(1);
       expect(Object.keys(output.geometry).sort()).toEqual(['spectrum', 'waterfall']);

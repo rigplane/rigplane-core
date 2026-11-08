@@ -1,4 +1,23 @@
 import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
+/**
+ * Hidden-tab delivery characterization, MOR-4271 surface/scheduler world.
+ *
+ * The canvas owns a CanvasSurface (visibility = IntersectionObserver ∧
+ * !document.hidden) and a ScopeRenderScheduler (active = surface.visible ∧
+ * surface.sized). The contract being pinned:
+ *
+ *  - Hidden ⇒ the scheduler requests NO animation frame at all; nothing
+ *    paints. (The old canvas also requested none, but only because it DROPPED
+ *    the deliveries at the push registration — the new one stops scheduling
+ *    while still accepting every frame into its latest-frame cache.)
+ *  - The STREAM keeps accepting frames while hidden: arrival and accepted
+ *    sequences advance, and the geometry freshness clock still runs.
+ *  - The visibility wake repaints the CACHED LATEST frame — one row stands in
+ *    for the whole hidden burst, latest-wins, with no new delivery.
+ *
+ * Real ScopeController over a fake channel and a fake liveness clock; the
+ * test owns the rAF queue, the ResizeObserver and the IntersectionObserver.
+ */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { get } from 'svelte/store';
@@ -45,7 +64,7 @@ afterEach(() => {
 });
 
 describe('same-session scope delivery across hidden rendering', () => {
-  it.each(['continued', 'delayed'] as const)('%s delivery characterizes receipt and paint independently', async (mode) => {
+  it('hidden stops scheduling, the stream keeps accepting, and the wake repaints the cached latest frame', async () => {
     let now = 0;
     let hidden = false;
     let timerId = 0;
@@ -74,12 +93,8 @@ describe('same-session scope delivery across hidden rendering', () => {
       }
     }
     vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
-    // MOR-4206: the waterfall paints from a requestAnimationFrame callback
-    // (latest-wins per animation frame). The test owns the rAF queue and
-    // flushes it after every live delivery, so each such frame paints in
-    // its own animation frame and receipt vs paint stay observable; the
-    // deferred burst below deliberately withholds the flush so one
-    // animation frame faces the whole drain.
+    // The test owns the animation-frame queue: a rAF stub that counts
+    // requests, flushed explicitly after every live delivery.
     const rafCallbacks = new Map<number, FrameRequestCallback>();
     let rafId = 0;
     const raf = vi.fn((callback: FrameRequestCallback) => {
@@ -93,8 +108,20 @@ describe('same-session scope delivery across hidden rendering', () => {
       rafCallbacks.clear();
       for (const callback of pending) callback(now);
     };
+    let resizeCallback: ResizeObserverCallback | undefined;
+    let observed: Element | undefined;
     vi.stubGlobal('ResizeObserver', class {
-      observe() {} unobserve() {} disconnect() {}
+      constructor(cb: ResizeObserverCallback) { resizeCallback = cb; }
+      observe(element: Element) { observed = element; }
+      unobserve() {}
+      disconnect() {}
+    });
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(cb: IntersectionObserverCallback) { intersectionCallback = cb; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
     });
     const paint = vi.fn();
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
@@ -118,16 +145,19 @@ describe('same-session scope delivery across hidden rendering', () => {
     const component = mount(WaterfallCanvas, {
       target,
       props: {
-        // Mirrors the SpectrumPanel waterfallPush registration: backlog
-        // handling is consolidated into the canvas's rAF pump (MOR-4206) —
-        // every delivery reaches the registration unfiltered and replaces
-        // the pending frame, so one animation frame paints only the
-        // latest delivery.
+        // Mirrors the SpectrumPanel waterfallPush registration: every
+        // delivery reaches the canvas's latest-frame cache unfiltered.
         onRegisterPush: (fn) => {
           push = (pixels) => fn(pixels);
         },
       },
     });
+    flushSync();
+    // Sized and visible before any delivery.
+    resizeCallback?.([{ target: observed!, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry],
+      {} as ResizeObserver);
+    intersectionCallback?.([{ target: observed!, isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver);
     flushSync();
     const arrivals: number[] = [];
     const accepted: { id: number; sequence: number; receivedAt: number }[] = [];
@@ -136,75 +166,69 @@ describe('same-session scope delivery across hidden rendering', () => {
       accepted.push({ id: receipt.frame.pixels![0]!, sequence: receipt.token.acceptedSequence,
         receivedAt: receipt.acceptedAt });
     });
-    const unsubscribe = controller.stream('hardware').subscribe((frame) => {
-      if (frame.pixels) push?.(frame.pixels);
+    const unsubscribe = controller.stream('hardware').subscribe((streamFrame) => {
+      if (streamFrame.pixels) push?.(streamFrame.pixels);
     });
     const handle = await controller.hardwareScopeDriver.start();
     socket.connected();
     const baselineIds = [1, 2, 3];
-    const ids = Array.from({ length: 64 }, (_, index) => index + 4);
-    // These buffers are retained by this test, not by production or a modeled WebKit queue.
-    const produced = ids.map(frame);
-    const liveIds = [68, 69, 70, 71, 72, 73, 74];
-    const deliver = (buffer: ArrayBuffer, paint = true) => {
+    const hiddenIds = Array.from({ length: 20 }, (_, index) => index + 4);
+    const liveIds = [24, 25, 26, 27, 28];
+    const deliver = (buffer: ArrayBuffer, paintFrame = true) => {
       arrivals.push(new DataView(buffer).getUint32(12, true));
       socket.deliver(buffer);
       flushSync();
-      if (paint) flushPaint();
+      if (paintFrame) flushPaint();
     };
     try {
       expect(push).toBeTypeOf('function');
-      // Visible live-spaced baseline: every delivery gets its own
-      // animation frame, so all three paint; they also establish the
-      // pre-gap delivery history the later gap is measured against.
+      // Visible live-spaced baseline: every delivery gets its own animation
+      // frame, so all three paint; they also establish the pre-gap delivery
+      // history the later gap is measured against.
       for (const id of baselineIds) { deliver(frame(id)); advance(83); }
       expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(baselineIds);
+      expect(paint).toHaveBeenCalledTimes(3);
+
       hidden = true;
-      if (mode === 'continued') for (const buffer of produced) deliver(buffer);
+      document.dispatchEvent(new Event('visibilitychange'));
+      flushSync();
+      flushPaint(); // drain the in-flight tick; the scheduler must not re-arm
+      expect(rafCallbacks.size).toBe(0);
+      // Hidden burst: the stream still ACCEPTS every frame while the
+      // scheduler requests no animation frame at all.
+      const rafRequestsBeforeHiddenBurst = raf.mock.calls.length;
+      for (const id of hiddenIds) { deliver(frame(id)); advance(1); }
+      expect(arrivals).toEqual([...baselineIds, ...hiddenIds]);
+      expect(accepted.map((value) => value.id)).toEqual([...baselineIds, ...hiddenIds]);
+      expect(accepted.map((value) => value.sequence)).toEqual([...baselineIds, ...hiddenIds]);
       expect(pushed).toHaveBeenCalledTimes(3);
       expect(paint).toHaveBeenCalledTimes(3);
-      expect(arrivals).toEqual(mode === 'continued' ? [...baselineIds, ...ids] : baselineIds);
+      expect(raf.mock.calls.length - rafRequestsBeforeHiddenBurst).toBe(0);
+      expect(rafCallbacks.size).toBe(0);
+
       advance(2 * 60 * 60 * 1000);
       flushSync();
       expect(get(controller.stream('hardware').geometry)?.freshness).toBe('stale');
+
+      // Visibility wake: ONE row paints, standing latest-wins for the whole
+      // hidden burst from the cached frame — no new delivery accompanies it.
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
-      expect(pushed).toHaveBeenCalledTimes(3);
-      if (mode === 'delayed') {
-        // The deferred backlog drains back-to-back with no animation
-        // frame in between: every delivery reaches the registration
-        // unfiltered and replaces the pump's pending frame, so the single
-        // flush that follows paints ONLY the burst's final frame
-        // (latest-wins consolidation, MOR-4206) — one deferred row stands
-        // in for the whole backlog.
-        for (const buffer of produced) { deliver(buffer, false); advance(1); }
-        flushPaint();
-      }
-      // Live frames after the return: each paints in its own animation
-      // frame — a normal silence costs no live rows. In `continued` the
-      // hidden deliveries never reached the pump (the canvas drops
-      // deliveries while the document is hidden) — whether a real Space
-      // switch keeps delivering while hidden is unconfirmed (MOR-3471
-      // trace pending).
+      flushPaint();
+      expect(pushed).toHaveBeenCalledTimes(4);
+      expect(pushed.mock.calls.at(-1)![0][0]).toBe(hiddenIds.at(-1));
+      expect(paint).toHaveBeenCalledTimes(4);
+
+      // Live frames after the return: each paints in its own animation frame.
       for (const id of liveIds) { advance(83); deliver(frame(id)); }
-      expect(arrivals).toEqual([...baselineIds, ...ids, ...liveIds]);
-      expect(accepted.map((value) => value.id)).toEqual([...baselineIds, ...ids, ...liveIds]);
-      expect(accepted.map((value) => value.sequence)).toEqual([...baselineIds, ...ids, ...liveIds]);
-      const paintedIds = pushed.mock.calls.map(([pixels]) => pixels[0]);
-      expect(paintedIds).toEqual(mode === 'delayed'
-        ? [...baselineIds, ids.at(-1)!, ...liveIds]
-        : [...baselineIds, ...liveIds]);
-      expect(paint).toHaveBeenCalledTimes(paintedIds.length);
-      expect(accepted[0].receivedAt).toBe(0);
+      expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(
+        [...baselineIds, hiddenIds.at(-1)!, ...liveIds]);
       expect(accepted.at(-1)?.receivedAt).toBe(now);
       expect(get(controller.stream('hardware').geometry)?.freshness).toBe('fresh');
       expect(socket.sessionEpoch).toBe(1);
       expect(socket.connect).toHaveBeenCalledTimes(1);
-      // Painting went through rAF scheduling and nothing is left pending:
-      // every delivered frame painted in its own animation frame except
-      // the coalesced burst, and no backlog survives either path.
-      expect(raf).toHaveBeenCalled();
+      // Nothing is left pending: no scheduler backlog, no animation frame.
       expect(rafCallbacks.size).toBe(0);
     } finally {
       unsubscribe();
