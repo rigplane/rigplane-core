@@ -549,10 +549,20 @@ async def test_cancellation_during_connect_snapshot_unregisters_the_queue() -> N
 async def test_state_etag_is_a_valid_opaque_tag_and_conditional_get_304s() -> None:
     """The fact-record delivery-key components keep the ETag well-formed.
 
-    A raw JSON component would embed ``"`` inside the quoted validator,
-    which RFC 9110 opaque-tags forbid; hex encoding keeps it visible-ASCII.
+    The validator hashes every component, so populated fact records and an
+    SDR error text carrying an apostrophe (whose tuple repr embeds double
+    quotes) cannot break RFC 9110 opaque-tag syntax.
     """
+    from types import SimpleNamespace
+
     server = _server(radio=_FactsRadio())
+    server._sdr_runtime = SimpleNamespace(  # noqa: SLF001
+        state="error",
+        span_hz=2_000_000,
+        tx_frozen=False,
+        overflow_count=1,
+        last_error="can't open device",
+    )
     writer = _Writer()
     await server._handle_http(  # noqa: SLF001
         writer,  # type: ignore[arg-type]

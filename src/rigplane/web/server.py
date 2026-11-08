@@ -27,6 +27,7 @@ import functools
 import gzip as _gzip
 import ipaddress
 import binascii
+import hashlib
 import json
 import logging
 import math
@@ -2444,31 +2445,21 @@ class WebServer:
         public_state_seq: int,
         liveness: Mapping[str, object] | None,
     ) -> str:
-        def _etag_component(value: object) -> str:
-            if isinstance(value, bool):
-                return "1" if value else "0"
-            if value is None:
-                return "none"
-            # RFC 9110 entity-tags allow only visible ASCII (no space, no
-            # DQUOTE); tuple reprs carry ", " separators, so spaces are
-            # stripped to keep the whole validator well-formed.
-            return str(value).replace(" ", "")
-
-        return '"{}"'.format(
-            "-".join(
-                _etag_component(value)
-                for value in self._public_state_delivery_key(
-                    snapshot,
-                    health_revision=health_revision,
-                )
-                + (
-                    public_state_seq,
-                    liveness.get("lastFrameAgeMs") if liveness else None,
-                    liveness.get("staleAfterMs") if liveness else None,
-                    liveness.get("source") if liveness else None,
-                )
-            )
+        # The validator is a strong hash of every delivery-key component:
+        # opaque, stable, and well-formed regardless of what a component's
+        # repr carries (quotes, spaces, non-ASCII error text).
+        components = self._public_state_delivery_key(
+            snapshot,
+            health_revision=health_revision,
+        ) + (
+            public_state_seq,
+            liveness.get("lastFrameAgeMs") if liveness else None,
+            liveness.get("staleAfterMs") if liveness else None,
+            liveness.get("source") if liveness else None,
         )
+        digest_source = "\x1f".join(repr(value) for value in components)
+        digest = hashlib.sha256(digest_source.encode()).hexdigest()[:32]
+        return f'"{digest}"'
 
     def _public_state_seq_for_key(self, key: tuple[object, ...]) -> int:
         if key != self._last_public_state_seq_key:
