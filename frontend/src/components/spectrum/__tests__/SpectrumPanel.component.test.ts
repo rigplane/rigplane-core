@@ -6,7 +6,7 @@
  * paired with Python's test_scope_health_watchdog_mor3690.py::
  * test_scope_ctr_control_and_scope_wire_replay using shared wire documents.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
 import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import * as svelteClient from 'svelte/internal/client';
@@ -143,7 +143,6 @@ Object.defineProperty(globalThis, 'localStorage', {
 // Module mocks
 // ---------------------------------------------------------------------------
 
-type TestLease = Readonly<{ resource: 'hardware-scope'; sessionEpoch: string; id: number }>;
 type TestScopeFrame = ScopeFrame;
 // MOR-4270: the harness mounts the REAL ScopeController against fake
 // channels, so every frame assertion runs the real ingress, stream and
@@ -173,9 +172,9 @@ const runtimeHarness = vi.hoisted(() => {
     dxUnsubscribe: vi.fn(),
     driverBridge: {
       startHardware: (() => Object.freeze({ resource: 'hardware-scope' as const, sessionEpoch: 'test', id: 0 })) as () => unknown,
-      stopHardware: () => {},
+      stopHardware: (_lease: unknown) => {},
       startAudio: (() => Object.freeze({ resource: 'audio-fft' as const })) as () => unknown,
-      stopAudio: () => {},
+      stopAudio: (_lease: unknown) => {},
     },
   };
   const runtime = {
@@ -200,14 +199,14 @@ const mockRuntime = runtimeHarness.runtime;
 
 // ── MOR-4270: real ScopeController over fake channels (the transport seam) ──
 type FakeScopeChannel = {
-  connect: ReturnType<typeof vi.fn>;
-  disconnect: ReturnType<typeof vi.fn>;
+  connect: Mock<() => void>;
+  disconnect: Mock<() => void>;
   state: string;
   sessionEpoch: number;
   onBinary(handler: (buffer: ArrayBuffer) => void): () => void;
   onStateChange(handler: (state: string) => void): () => void;
   onSessionTransition(handler: (transition: { state: string; epoch: number }) => void): () => void;
-  fire(bytes: Uint8Array): void;
+  fire(bytes: Uint8Array<ArrayBuffer>): void;
   setState(next: string): void;
 };
 function makeFakeScopeChannel(): FakeScopeChannel {
@@ -235,7 +234,7 @@ function makeFakeScopeChannel(): FakeScopeChannel {
     onBinary(handler) { binary.add(handler); return () => { binary.delete(handler); }; },
     onStateChange(handler) { states.add(handler); return () => { states.delete(handler); }; },
     onSessionTransition(handler) { sessions.add(handler); return () => { sessions.delete(handler); }; },
-    fire(bytes: Uint8Array) { for (const handler of binary) handler(bytes.buffer); },
+    fire(bytes: Uint8Array<ArrayBuffer>) { for (const handler of binary) handler(bytes.buffer); },
     setState(next: string) {
       (channel as { transport?: string }).transport = next;
       const transition = { state: next, epoch: channel.sessionEpoch };
@@ -265,13 +264,13 @@ runtimeHarness.runtime.scope = {
     return runtimeHarness.state.mockScopeFrameLive ?? scopeControllerHarness.hardwareScopeFrameLive;
   },
 };
-runtimeHarness.state.driverBridge.startHardware = () => scopeControllerHarness.hardwareScopeDriver.start() as never;
+runtimeHarness.state.driverBridge.startHardware = () => scopeControllerHarness.hardwareScopeDriver.start();
 runtimeHarness.state.driverBridge.stopHardware = (lease: unknown) => {
-  void scopeControllerHarness.hardwareScopeDriver.stop(lease as never);
+  void scopeControllerHarness.hardwareScopeDriver.stop(lease);
 };
-runtimeHarness.state.driverBridge.startAudio = () => scopeControllerHarness.audioFftDriver.start() as never;
+runtimeHarness.state.driverBridge.startAudio = () => scopeControllerHarness.audioFftDriver.start();
 runtimeHarness.state.driverBridge.stopAudio = (lease: unknown) => {
-  void scopeControllerHarness.audioFftDriver.stop(lease as never);
+  void scopeControllerHarness.audioFftDriver.stop(lease);
 };
 // Observes trace-receipt subscriptions through the real controller.
 const traceReceiptSubscriptions: Array<(receipt: TraceReceipt) => void> = [];
@@ -458,7 +457,7 @@ function setTuningBurstFrequency(receiver: 0 | 1, hz: number | null): void {
 
 const passbandHarness = vi.hoisted(() => ({
   rawWidth: 2_700 as number | null,
-  getFilterWidthFromRightEdgePx: vi.fn(() => 2_700 as number | null),
+  getFilterWidthFromRightEdgePx: vi.fn<typeof import('../passband-geometry')['getFilterWidthFromRightEdgePx']>(() => 2_700),
 }));
 
 const spectrumRendererHarness = vi.hoisted(() => ({
@@ -746,7 +745,7 @@ type EmitOverrides = {
   pixels?: Uint8Array | null;
   sequence?: number;
 };
-function encodeScopeWire(overrides: EmitOverrides): Uint8Array {
+function encodeScopeWire(overrides: EmitOverrides): Uint8Array<ArrayBuffer> {
   const pixels = overrides.pixels ?? new Uint8Array(475).fill(64);
   const bytes = new Uint8Array(16 + pixels.length);
   const view = new DataView(bytes.buffer);
@@ -1931,7 +1930,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
-    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(0);
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 100_000, sampleSpanHz: 100_000, showTuneIndicator: false, tuneHz: 0, passbandHz: 0 });
     expect(spectrumRendererHarness.render.mock.calls.at(-1)?.[1]).toHaveLength(475);
   });
 
@@ -1942,7 +1941,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(target.querySelector('.tune-line')).toBeNull();
     expect(target.querySelector('.passband-overlay')).toBeNull();
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
-    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(0);
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 100_000, sampleSpanHz: 100_000, showTuneIndicator: false, tuneHz: 0, passbandHz: 0 });
   });
 
   it('keeps frame mode and pixel geometry authoritative over canonical scope-control metadata', async () => {
@@ -2513,7 +2512,7 @@ describe('managed scope projection (MOR-2367)', () => {
   function managed(initial: ReturnType<typeof projection> | null | undefined) {
     // The wiring's managed lease, stood in for by the harness: frames must
     // flow through the shared stream exactly as they do under SRS.
-    harnessLeases.push(sharedLeaseAcquisitions() as TestLease);
+    harnessLeases.push(sharedLeaseAcquisitions());
     const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
     const onScopeDemandChange = vi.fn((enabled: boolean) => props.set('demanded', enabled));
     const target = mountPanel({
@@ -2656,7 +2655,7 @@ describe('managed scope projection (MOR-2367)', () => {
     const oldFrame = stream.latest(stream.selectedSlot!)!;
     const oldSlot = stream.selectedSlot!;
     const ownLease = mockRuntime.acquireHardwareScope.mock.results[0].value;
-    harnessLeases.push(sharedLeaseAcquisitions() as TestLease);
+    harnessLeases.push(sharedLeaseAcquisitions());
     stream.reset();
     region.set('value', { passband: { state: 'unknown', reason: 'not-observed' }, demanded: true, setDemand: () => {} });
     flushSync();
@@ -4538,8 +4537,10 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
       goldenState.main!.filterWidth = 2400;
       goldenState.main!.activeSlot = 'A';
       goldenState.main!.vfoA = { freqHz: 14_050_000, mode: 'USB', filterNum: 1, dataMode: 0 };
+      const statuses = goldenState.fieldStatus;
+      if (!statuses) throw new Error('Captured state omits fieldStatus');
       for (const path of ['main.activeSlot', ...Object.keys(goldenState.main!.vfoA).map((leaf) => `main.vfoA.${leaf}`)]) {
-        goldenState.fieldStatus[path] = { ...goldenState.fieldStatus['main.freqHz'], storePath: path, observed: true, freshness: 'fresh', availability: 'available' };
+        statuses[path] = { ...statuses['main.freqHz'], storePath: path, observed: true, freshness: 'fresh', availability: 'available' };
       }
       runtimeHarness.state.currentState = goldenState;
       runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
@@ -4746,6 +4747,22 @@ describe('review corrections for requested View and sample retirement', () => {
     emitFrame({ pixels: new Uint8Array([1, 2, 3]) }); await flushWaterfallPaint();
     expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([1, 2, 3]);
     expect(target.querySelector('.waterfall-content canvas')).toBe(waterfall);
+  });
+
+  it('retires resize capture if a same-edge preset changes the displayed carrier position', async () => {
+    const presets = await import('$lib/runtime/scope-presets');
+    const spy = vi.spyOn(presets, 'scopePresets').mockReturnValue([{ kind: 'cw', label: 'Same edges', view: { startHz: 14_010_000, endHz: 14_110_000 } }]);
+    try {
+      const target = mountPanel(); emitFrame(); setPendingFrequency(0, 14_060_000); flushSync(); await flushWaterfallPaint();
+      const before = requested(target); const { waterfall } = prepareGeometry(target);
+      pointer(waterfall.querySelector('.passband-resize-zone')!, 'pointerdown', 207, 110);
+      pointer(waterfall, 'pointermove', 207, 120);
+      const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+      select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
+      expect(requested(target)).toEqual(before);
+      pointer(waterfall, 'pointerup', 207, 120);
+      expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
   });
 
   it('uses the existing ordinary toolbar control classes for View controls', () => {
