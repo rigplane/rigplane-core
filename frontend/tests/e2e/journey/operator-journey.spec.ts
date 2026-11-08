@@ -1,10 +1,8 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { createSourceFile, isFunctionDeclaration, ScriptTarget, transpileModule } from 'typescript';
-import type { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/adapters/scope-adapter';
-import type { ScopeFrame } from '../../../src/lib/runtime/scope-frame';
+import { parseCurrentScopeFrame, parseScopeGranted, type ScopeFrame } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
-import { scopeWire } from '../../../src/lib/runtime/__tests__/scope-wire-fixture';
+import { loadScopeWireGolden, scopeWire } from '../../../src/lib/runtime/__tests__/scope-wire-fixture';
 import { startJourneyServer, type JourneyServerHandle } from './server-process';
 
 /**
@@ -489,16 +487,6 @@ interface PanoramaWitness {
 }
 
 async function installPanoramaWitness(page: Page): Promise<void> {
-  const adapter = await readFile(new URL('../../../src/lib/runtime/adapters/scope-adapter.ts', import.meta.url), 'utf8');
-  const source = createSourceFile('scope-adapter.ts', adapter, ScriptTarget.ES2022, true);
-  // Execute the production parser without loading its Svelte store dependencies in Node.
-  const parserScript = ['parseCurrentScopeFrame', 'parseScopeGranted'].map(name => {
-    const parser = source.statements.find(node => isFunctionDeclaration(node) && node.name?.text === name);
-    if (!parser) throw new Error(`Production scope parser declaration is missing: ${name}`);
-    return transpileModule(parser.getText(source).replace(/^export /, ''), {
-      compilerOptions: { target: ScriptTarget.ES2022 },
-    }).outputText;
-  }).join('\n');
   const observe = (parseScopeFrame: typeof parseCurrentScopeFrame, parseGrant: typeof parseScopeGranted) => {
     // Exercise the production PCM fallback when optional WebCodecs is absent.
     Object.defineProperty(window, 'AudioDecoder', { configurable: true, value: undefined });
@@ -638,7 +626,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
     }
     window.WebSocket = ObservedSocket;
   };
-  await page.addInitScript(`${parserScript}\n(${observe.toString()})(parseCurrentScopeFrame, parseScopeGranted);`);
+  await page.addInitScript(`(${observe.toString()})(${parseCurrentScopeFrame.toString()}, ${parseScopeGranted.toString()});`);
 }
 
 async function panoramaWitness(page: Page): Promise<PanoramaWitness> {
@@ -646,12 +634,12 @@ async function panoramaWitness(page: Page): Promise<PanoramaWitness> {
 }
 
 test('MOR-4273 panorama witness accepts producer frames and requests both receivers', async ({ page }) => {
-  const golden = await readFile(new URL('../../../../tests/fixtures/scope-wire/partial_coverage.bin', import.meta.url));
-  const expected = JSON.parse(await readFile(new URL('../../../../tests/fixtures/scope-wire/partial_coverage.json', import.meta.url), 'utf8'));
+  const { buffer, expected } = loadScopeWireGolden('partial_coverage.bin');
+  const golden = Buffer.from(buffer);
   const wrongVersion = Buffer.from(golden);
   wrongVersion[0] = 1;
-  const iq = await readFile(new URL('../../../../tests/fixtures/scope-wire/iq_fft.bin', import.meta.url));
-  const outOfRange = await readFile(new URL('../../../../tests/fixtures/scope-wire/out_of_range.bin', import.meta.url));
+  const iq = Buffer.from(loadScopeWireGolden('iq_fft.bin').buffer);
+  const outOfRange = Buffer.from(loadScopeWireGolden('out_of_range.bin').buffer);
   const sub = Buffer.from(scopeWire({ sourceId: 'radio:sub', receiver: 1 }));
   const requests: ScopeSubscription[] = [];
   await page.routeWebSocket('ws://scope-witness.invalid/api/v1/scope', socket => {
