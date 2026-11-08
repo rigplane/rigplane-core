@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
+  import { runtime } from '$lib/runtime/frontend-runtime';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import type { ScopeStream } from '$lib/runtime/scope-stream';
   import type { ScopeGeometry } from '$lib/runtime/scope-frame';
@@ -58,7 +60,8 @@
 
 {#if inputState !== 'unsupported'}
   <svg
-    use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: null, view: { follow: 'vfo', spanHz: 48000 } }}
+    use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: null, view: { follow: 'vfo', spanHz: 48000 },
+      revision: audioScopeFactsRevision(runtime.state, runtime.caps) }}
     bind:this={svg}
     data-testid="lcd-af-fft"
     data-fft-mode="safe-empty"

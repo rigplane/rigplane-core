@@ -1517,13 +1517,6 @@
       && runtime.state?.providerGeneration === runtime.caps?.providerGeneration
   ));
 
-  let scopeLeaseQualified = $derived(scopeAuthority !== null || (
-    runtime.caps?.vfoReadback === 'none'
-      && Number.isSafeInteger(runtime.state?.providerGeneration)
-      && (runtime.state?.providerGeneration ?? -1) >= 0
-      && runtime.state?.providerGeneration === runtime.caps?.providerGeneration
-  ));
-
   $effect(() => {
     const source = scopeFrameSource;
     if (source === undefined) return;

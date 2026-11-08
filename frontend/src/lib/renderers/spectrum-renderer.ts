@@ -497,9 +497,11 @@ export class SpectrumRenderer {
     }
 
     // Draw back along peak line (right to left) under the same viewport
-    for (let i = peaks.length - 1; i >= 0; i--) {
+    const window = options.sampleWindow;
+    const reversed = window !== undefined && window.end < window.start;
+    for (let step = 0; step < peaks.length; step++) {
+      const i = reversed ? step : peaks.length - 1 - step;
       const scale = options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1;
-      const window = options.sampleWindow;
       const fraction = window ? (i / peaks.length - window.start) / (window.end - window.start) : i / peaks.length;
       const x = width / 2 + (fraction * width - width / 2 - shiftPx) / scale;
       if (x < 0 || x >= width) continue;
