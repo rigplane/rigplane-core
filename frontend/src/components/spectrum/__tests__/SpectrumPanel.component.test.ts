@@ -2567,6 +2567,28 @@ describe('managed scope projection (MOR-2367)', () => {
     emitFrame();
     return { target, props, onScopeDemandChange };
   }
+  it('does not paint a managed passband when the requested preset excludes its carrier', async () => {
+    const presets = await import('$lib/runtime/scope-presets');
+    const spy = vi.spyOn(presets, 'scopePresets').mockReturnValue([
+      { kind: 'cw', label: 'CW segment', view: { startHz: 14_000_000, endHz: 14_040_000 } },
+    ]);
+    try {
+      const current = passband();
+      const { target } = managed(Object.freeze({ ...current, tuple: Object.freeze({ ...current.tuple!, frequencyHz: 14_050_000 }) }));
+      const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+      select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
+      flushSync(); await flushWaterfallPaint();
+      const { renderSpectrum } = await vi.importActual<typeof import('$lib/renderers/spectrum-renderer')>('$lib/renderers/spectrum-renderer');
+      const fills: string[] = [];
+      const ctx = { ...noopCanvas, setLineDash: noop, fillRect() { fills.push(this.fillStyle as string); } };
+      const options = spectrumRendererHarness.lastOptions;
+      renderSpectrum(ctx as unknown as CanvasRenderingContext2D, new Uint8Array(100).fill(80), 400, 100, options);
+      expect(options).toMatchObject({ sampleSpanHz: 100_000, spanHz: 40_000, tuneHz: 0, showTuneIndicator: false });
+      expect(fills).not.toContain(options.passbandFillColor);
+      expect(target.querySelector('.passband-overlay')).toBeNull();
+    } finally { spy.mockRestore(); }
+  });
+
   /** The managed data-plane gap: transport drops and frames stop flowing. */
   function silenceFrames(): void {
     runtimeHarness.state.mockScopeFrameLive = false;
