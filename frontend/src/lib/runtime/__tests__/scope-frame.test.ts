@@ -33,6 +33,9 @@ describe('current scope wire → ScopeFrame', () => {
     const wrong = [...fixtures.radio]; wrong[0] = 0x10;
     expect(parseCurrentScopeFrame(wire(wrong), context)).toEqual({ ok: false, reason: 'message type' });
     expect(parseCurrentScopeFrame(wire(fixtures.radio.slice(0, -1)), context)).toEqual({ ok: false, reason: 'pixel length' });
+    const backwards = wire(fixtures.radio);
+    new DataView(backwards).setUint32(7, 13_000_000, true);
+    expect(parseCurrentScopeFrame(backwards, context)).toEqual({ ok: false, reason: 'frequency range' });
   });
 });
 
@@ -42,6 +45,11 @@ const geometry: ScopeGeometry = {
   outOfRange: false, hasPixels: true, freshness: 'fresh',
 };
 describe('coverage projection', () => {
+  it('does not hatch a view wholly inside coverage', () => {
+    expect(projectScopeCoverage(geometry, { startHz: 35, endHz: 65 })).toEqual({
+      covered: [{ start: 0, end: 1, sampleStart: 0.25, sampleEnd: 0.75 }], hatched: [],
+    });
+  });
   it('hatches requested edges and maps covered columns against granted view without stretching', () => {
     expect(projectScopeCoverage(geometry, { startHz: 0, endHz: 100 })).toEqual({
       covered: [{ start: 0.3, end: 0.7, sampleStart: 1 / 6, sampleEnd: 5 / 6 }],

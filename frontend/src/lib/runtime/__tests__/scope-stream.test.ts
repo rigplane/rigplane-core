@@ -18,6 +18,16 @@ function source() {
 const context = { source: 'radio' as const, sourceId: 'scope-1', epoch: 7 };
 
 describe('ScopeStream', () => {
+  it.each(['radio', 'audio_fft'] as const)('delivers %s pixels through its sink without copying', (sourceKind) => {
+    const input = source(); const stream = new ScopeStream(input.port, { ...context, source: sourceKind }, 'borrowed');
+    const sink = vi.fn(); stream.subscribe(sink);
+    const buffer = input.emit(sourceKind === 'radio' ? fixtures.radio : fixtures.audio);
+    const frame = sink.mock.lastCall?.[0];
+    expect(frame?.source).toBe(sourceKind);
+    expect(frame?.pixels.buffer).toBe(buffer);
+    expect(frame?.pixels.byteOffset).toBe(16);
+    stream.dispose();
+  });
   it('keeps latest per source/receiver outside the geometry store over 100 frames', () => {
     const input = source();
     const stream = new ScopeStream(input.port, context, 'borrowed');
@@ -25,7 +35,7 @@ describe('ScopeStream', () => {
     const unwatch = stream.geometry.subscribe(() => { writes++; });
     const sink = vi.fn(); stream.subscribe(sink);
     for (let seq = 0; seq < 100; seq++) {
-      const bytes = [...fixtures.radio]; bytes[11] = seq;
+      const bytes = [...fixtures.radio]; bytes[11] = seq; bytes[12] = 0; bytes[16] = seq;
       const buffer = input.emit(bytes);
       expect(stream.latest('scope-1', 0)?.pixels?.buffer).toBe(buffer);
     }

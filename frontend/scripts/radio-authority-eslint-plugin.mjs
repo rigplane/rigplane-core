@@ -42,6 +42,8 @@ const SCOPE_METADATA_OWNERS = new Set([
   'src/components-v2/panels/lcd/AmberScope.svelte',
   'src/components/spectrum/SpectrumPanel.svelte',
   'src/lib/runtime/adapters/scope-adapter.ts',
+  'src/lib/runtime/scope-frame.ts',
+  'src/lib/runtime/scope-stream.ts',
 ]);
 const READ_ONLY_SEAMS = [
   'src/lib/runtime/adapters',
