@@ -83,7 +83,7 @@ jobs:
     # Grep + bash, no toolchain needed. It runs on the light runners, off the
     # build pool, so protected-branch merges are not blocked when the
     # self-hosted build runners are offline or occupied.
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 3
 
     steps:

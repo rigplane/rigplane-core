@@ -23,7 +23,7 @@ permissions:
 jobs:
   agent-review-gate:
     name: Agent Review Gate on the merge group
-    runs-on: [self-hosted, linux, light]
+    runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v6
