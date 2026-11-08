@@ -62,8 +62,10 @@ def generate(destination: Path) -> None:
         destination.joinpath(name + ".bin").write_bytes(encode_scope_frame_v2(frame))
         fields = asdict(frame)
         fields["pixels"] = list(frame.pixels) if frame.pixels is not None else None
+        # One line per sidecar: pixels stay a JSON array (same contract),
+        # just without the one-number-per-line pretty printing.
         destination.joinpath(name + ".json").write_text(
-            json.dumps(fields, indent=2) + "\n"
+            json.dumps(fields, separators=(",", ":")) + "\n"
         )
 
 
