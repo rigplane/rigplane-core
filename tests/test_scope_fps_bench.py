@@ -126,3 +126,54 @@ async def test_collect_requires_pixel_delivery_and_reports_valid_null_states(
         result = await bench.collect(Session(), "http://127.0.0.1", (), request, 1)
         assert result["pixel_frames"] == frame_count
         assert result["null_frames"] == result["out_of_range_frames"] == 0
+
+
+@pytest.mark.parametrize("granted_width,expected_error", [(475, None), (3000, "unexpected")])
+async def test_collect_accepts_native_capped_grant(
+    granted_width, expected_error, virtual_clock, monkeypatch
+) -> None:
+    """A grant narrower than requested (hub native-width cap) still collects."""
+    virtual_clock.scope_to(monkeypatch, bench)
+    view = View(14_100_000, 14_200_000)
+    grant = GrantedSubscription(
+        "radio", 0, view, Coverage(view.start_hz, view.end_hz), granted_width, 10
+    )
+    messages = [
+        aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, encode_scope_granted(grant), ""),
+        *(
+            aiohttp.WSMessage(
+                aiohttp.WSMsgType.BINARY,
+                encode_scope_frame_v2(frame(width=granted_width, seq=seq)),
+                "",
+            )
+            for seq in range(1, 9)
+        ),
+    ]
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send_str(self, _text):
+            pass
+
+        async def receive(self, **_kwargs):
+            if not messages:
+                raise TimeoutError
+            return messages.pop(0)
+
+    class Session:
+        def ws_connect(self, *_args, **_kwargs):
+            return Socket()
+
+    request = Subscription("radio", 0, view, 2800, 10)
+    if expected_error is not None:
+        with pytest.raises(ValueError, match=expected_error):
+            await bench.collect(Session(), "http://127.0.0.1", (), request, 1)
+    else:
+        result = await bench.collect(Session(), "http://127.0.0.1", (), request, 1)
+        assert result["width"] == granted_width
+        assert result["pixel_frames"] == 8

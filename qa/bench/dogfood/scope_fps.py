@@ -138,10 +138,12 @@ async def collect(
             granted = decode_scope_granted(message.data)
         except ValueError as error:
             raise ValueError(f"scope subscription refused: {message.data}") from error
-        if (granted.source_id, granted.receiver, granted.width) != (
-            request.source_id,
-            request.receiver,
-            request.width,
+        # The hub grants at most the source native width: a request wider
+        # than native is granted at native resolution, never upsampled.
+        if (
+            (granted.source_id, granted.receiver)
+            != (request.source_id, request.receiver)
+            or not 1 <= granted.width <= request.width
         ):
             raise ValueError("unexpected granted subscription")
         arrivals: list[float] = []
