@@ -177,7 +177,10 @@ class ScopeHub:
                         request.receiver,
                         grant.view,
                         _intersection(grant.view, grant.coverage),
-                        request.width,
+                        # No upsampling: a request wider than the source's
+                        # native bins is granted at native resolution, and
+                        # the granted message reports the actual width.
+                        min(request.width, caps.native_width),
                         min(request.max_fps, caps.max_fps),
                     ),
                 )

@@ -27,7 +27,9 @@ refused because their normal-side polarity is not established. See
 An absolute view uses `{"startHz":14100000,"endHz":14200000}` instead of
 `follow` and `spanHz`. Audio and IQ sources use `receiver: null`. The reply is
 `type: "granted"` with `sourceId`, `receiver`, `view`, `coverage`, `width` and
-`fps`. `coverage` can be null. Send another subscription to change the view,
+`fps`. `coverage` can be null. Widths above the source's native bin count are
+granted at native resolution instead of being upsampled; the granted message
+reports the actual width. Send another subscription to change the view,
 source, width or rate; `maxFps: 0` pauses the subscription. Closing the socket
 releases its demand. The hub starts the producer on first active demand and
 stops it on last release.
@@ -71,7 +73,8 @@ Equal coverage edges represent no covered range. The total length is
 
 The headless simulator benchmark is
 `uv run python qa/bench/dogfood/scope_fps.py --radio simulator --transport sim --both`.
-It requests concurrent 1024-pixel/10-fps and 2800-pixel/20-fps streams. A normal
+It requests concurrent 1024-pixel/10-fps and 2800-pixel/20-fps streams; each
+grant is capped at the source native width. A normal
 in-range run passes only when usable pixel delivery reaches at least 80% of
 each granted frame rate; native sequence gaps caused by rate limiting are
 allowed. Null and out-of-range states are counted separately and do not count

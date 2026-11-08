@@ -691,7 +691,7 @@ async def test_scope_ws_menu_preserved_through_reconnect() -> None:
         await _ws_send_text(
             writer,
             encode_scope_subscription(
-                Subscription("radio", 0, View(14_000_000, 14_350_000), 479, 30)
+                Subscription("radio", 0, View(14_000_000, 14_350_000), 475, 30)
             ),
         )
         await _ws_recv_frame(reader)
@@ -708,7 +708,7 @@ async def test_scope_ws_menu_preserved_through_reconnect() -> None:
             opcode, payload = await asyncio.wait_for(_ws_recv_frame(reader), 5.0)
             assert opcode == WS_OP_BINARY
             assert decode_scope_frame_v2(payload).source == "radio"
-            assert decode_scope_frame_v2(payload).width == 479
+            assert decode_scope_frame_v2(payload).width == 475
 
             await _establish_menu_silence(srv, radio)
 
@@ -748,7 +748,7 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
         await _ws_send_text(
             writer,
             encode_scope_subscription(
-                Subscription("radio", 0, View(14_000_000, 14_350_000), 479, 30)
+                Subscription("radio", 0, View(14_000_000, 14_350_000), 475, 30)
             ),
         )
         await _ws_recv_frame(reader)
@@ -775,7 +775,7 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
         await _ws_send_text(
             writer2,
             encode_scope_subscription(
-                Subscription("radio", 0, View(14_000_000, 14_350_000), 479, 30)
+                Subscription("radio", 0, View(14_000_000, 14_350_000), 475, 30)
             ),
         )
         await _ws_recv_frame(reader2)
@@ -790,7 +790,7 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
             opcode, payload = await asyncio.wait_for(_ws_recv_frame(reader2), 5.0)
             assert opcode == WS_OP_BINARY
             assert decode_scope_frame_v2(payload).source == "radio"
-            assert decode_scope_frame_v2(payload).width == 479
+            assert decode_scope_frame_v2(payload).width == 475
         finally:
             await _close_ws(writer2)
     finally:
