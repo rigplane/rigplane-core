@@ -73,6 +73,22 @@ describe('renderAudioSpectrum', () => {
     contourFreq: 128,
   };
 
+  it('draws every frame while filter width is unknown and after it becomes known', () => {
+    const ctx = mockCtx();
+    let style = '';
+    const strokes: string[] = [];
+    Object.defineProperty(ctx, 'strokeStyle', { set: (value: string) => { style = value; } });
+    Object.defineProperty(ctx, 'stroke', { value: () => strokes.push(style) });
+    const rs = new AudioSpectrumRendererState();
+    const reset = vi.spyOn(rs, 'reset');
+    for (const filterWidth of [NaN, NaN, NaN, 2400]) {
+      strokes.length = 0;
+      renderAudioSpectrum(ctx, 400, 160, { ...baseState, filterWidth }, rs);
+      expect(strokes).toContain('rgba(0, 220, 220, 0.9)');
+    }
+    expect(reset).not.toHaveBeenCalled();
+  });
+
   it('renders without throwing for valid state', () => {
     resetSmoothing();
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, baseState)).not.toThrow();
@@ -181,10 +197,8 @@ describe('renderAudioSpectrum', () => {
      * a real, more severe defect (not just a label glitch) newly
      * reachable through A12's honest sentinel, out of the original
      * label-only grant. The grant was expanded: the guard now skips the
-     * ENTIRE filter-overlay geometry (label, trapezoid, contour, notch,
-     * and the trapezoid-clipped spectrum line) when `filterWidth`/
-     * `animFilterWidth` is non-finite, so this same populated-pixels
-     * case must render without throwing and without any overlay.
+     * filter-overlay geometry when the width is unknown. The spectrum
+     * now draws unclipped in that case, without throwing.
      */
     it('renders without throwing for populated pixels + a non-finite filterWidth (was: RangeError)', () => {
       const rs = new AudioSpectrumRendererState();

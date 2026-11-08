@@ -137,29 +137,15 @@ export function renderAudioSpectrum(
   if (trapH < 10) return;
 
   // ── Animate filter width ──
-  if (rs.animFilterWidth === 0) rs.animFilterWidth = filterWidth;
-  const fwDiff = filterWidth - rs.animFilterWidth;
-  rs.animFilterWidth += fwDiff * (Math.abs(fwDiff) > 200 ? 0.5 : 0.15);
-  if (Math.abs(fwDiff) <= 1) rs.animFilterWidth = filterWidth;
+  if (Number.isFinite(filterWidth) && filterWidth > 0) {
+    if (rs.animFilterWidth === 0) rs.animFilterWidth = filterWidth;
+    const fwDiff = filterWidth - rs.animFilterWidth;
+    rs.animFilterWidth += fwDiff * (Math.abs(fwDiff) > 200 ? 0.5 : 0.15);
+    if (Math.abs(fwDiff) <= 1) rs.animFilterWidth = filterWidth;
+  }
 
-  // MOR-1409 A12 (coordinator adjudication addendum, Core #2317, comment
-  // 5246612628, extending 5246487510): a connected receiver that has
-  // never reported `filterWidth` reaches here as `NaN` (panel-props.ts's
-  // `toAudioSpectrumProps` no longer fabricates `?? 2400`) — and once
-  // `rs.animFilterWidth` latches to `NaN` it never recovers (the
-  // animation step's own `Math.abs(fwDiff) > 200` check is itself always
-  // `false` for a NaN diff). Every downstream trapezoid-geometry value
-  // (`topHalfW`/`tl`/`tr`/`bl`/`br`) inherits the NaN, and with populated
-  // `pixels` the spectrum-line block below would compute
-  // `numPoints = botRight - botLeft` as NaN and crash on
-  // `new Array(numPoints)` (`RangeError: Invalid array length`) — a defect
-  // the pre-A12 `?? 2400` fabrication masked. The entire filter-overlay
-  // geometry (label, trapezoid outline/fill, the trapezoid-clipped
-  // spectrum line, contour, manual notch — everything below that reads
-  // `rs.animFilterWidth`, `topHalfW`, `tl`/`tr`/`bl`/`br`) is skipped when
-  // non-finite; the background clear/fill and the bottom frequency grid
-  // (computed from `bandwidth`, independent of the filter passband) still
-  // render normally either way.
+  // Zero means no width has been reported. Keep the last finite width when
+  // a later readout is unknown; before the first one, draw an unclipped trace.
   // ── Trapezoid geometry ──
   const totalHalfW = width * 0.45;
   const whiskerLeft = width / 2 - totalHalfW;
@@ -190,7 +176,7 @@ export function renderAudioSpectrum(
   // without PBT supplies the radio's signed native IF-shift instead; zero
   // keeps the established baseband-centred geometry.
   const centerOffsetHz = pbtRange ? avgPbtHz : ifShift;
-  const showFilterOverlay = Number.isFinite(rs.animFilterWidth) && Number.isFinite(centerOffsetHz);
+  const showFilterOverlay = rs.animFilterWidth > 0 && Number.isFinite(centerOffsetHz) && Number.isFinite(filterWidthMax);
   const shiftRef = Math.max(rs.animFilterWidth, filterWidthMax * 0.5);
   const cx = showFilterOverlay
     ? width / 2 + (centerOffsetHz / shiftRef) * totalHalfW * 0.6
@@ -317,18 +303,13 @@ export function renderAudioSpectrum(
   }
 
   // ── Passband fraction (used for bin mapping below) ──
-  // Skipped entirely when non-finite — see `showFilterOverlay` above
-  // (this whole block, and everything it feeds, is what threw
-  // `RangeError: Invalid array length` pre-fix: `filterHz` is `NaN`,
-  // cascading into `botLeft`/`botRight`/`numPoints` all `NaN`, and
-  // `new Array(NaN)` throws).
   const filterHz = Math.round(rs.animFilterWidth);
-  const passbandFrac = Math.min(1, filterHz / halfBw);
+  const passbandFrac = showFilterOverlay ? Math.min(1, filterHz / halfBw) : 1;
 
   // ── Spectrum: gradient fill + line, clipped to trapezoid ──
-  if (showFilterOverlay && pixels && pixels.length > 0) {
-    const botLeft = Math.max(0, Math.floor(bl));
-    const botRight = Math.min(width, Math.ceil(br));
+  if (pixels && pixels.length > 0) {
+    const botLeft = showFilterOverlay ? Math.max(0, Math.floor(bl)) : 0;
+    const botRight = showFilterOverlay ? Math.min(width, Math.ceil(br)) : width;
     const numPoints = botRight - botLeft;
     if (numPoints <= 0) return;
 
@@ -359,7 +340,7 @@ export function renderAudioSpectrum(
       // Clip to trapezoid height at this x
       const distFromCenter = Math.abs(x - cx);
       let maxFrac: number;
-      if (distFromCenter <= topHalfW) {
+      if (!showFilterOverlay || distFromCenter <= topHalfW) {
         maxFrac = 1;
       } else if (distFromCenter <= topHalfW + slopeExtra) {
         maxFrac = 1 - (distFromCenter - topHalfW) / slopeExtra;
@@ -373,13 +354,15 @@ export function renderAudioSpectrum(
 
     // Clip rendering to trapezoid shape
     ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(bl, trapBottom);
-    ctx.lineTo(tl, trapTop);
-    ctx.lineTo(tr, trapTop);
-    ctx.lineTo(br, trapBottom);
-    ctx.closePath();
-    ctx.clip();
+    if (showFilterOverlay) {
+      ctx.beginPath();
+      ctx.moveTo(bl, trapBottom);
+      ctx.lineTo(tl, trapTop);
+      ctx.lineTo(tr, trapTop);
+      ctx.lineTo(br, trapBottom);
+      ctx.closePath();
+      ctx.clip();
+    }
 
     // Gradient fill under spectrum line
     ctx.beginPath();
