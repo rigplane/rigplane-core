@@ -37,5 +37,7 @@ jobs:
         with:
           script: |
             const {run} = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/merge-queue-gates.js`);
-            await run({github, context, core,
+            // `gate` is read only by the helper on the base branch until this change
+            // has merged; the new helper ignores it (MOR-3876 bootstrap).
+            await run({github, context, core, gate: 'agent-review',
               ref: process.env.MERGE_GROUP_REF, sha: process.env.MERGE_GROUP_SHA});

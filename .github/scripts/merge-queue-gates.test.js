@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 
 const {parseQueueRef, evaluateAgentReviewGate, run} = require('./merge-queue-gates');
@@ -60,4 +62,12 @@ test('run fails closed on a bad ref and on API errors, publishing a failure stat
   const broken = fakeApi({pullData: pull, statuses: [], throwOn: 'pull'});
   await run({...broken, ref: SHORT, sha: 'c'.repeat(40)});
   assert.deepEqual(broken.calls.published.map((s) => s.state), ['failure']);
+});
+
+test('the workflow still names the gate for a base-branch helper that publishes only for agent-review', () => {
+  // The workflow loads merge-queue-gates.js from the base branch, so the first
+  // queue run after the freeze gate was removed still uses the old helper,
+  // which publishes the Agent Review Gate status only when gate === 'agent-review'.
+  const workflow = fs.readFileSync(path.join(__dirname, '..', 'workflows', 'merge-queue-gates.yml'), 'utf8');
+  assert.match(workflow, /await run\(\{github, context, core, gate: 'agent-review',/u);
 });
