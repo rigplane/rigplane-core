@@ -206,10 +206,11 @@ checks (`.github/scripts/classify-quick-paths.py: DOCS_DATA_SUFFIXES`,
 This repo is developed from multiple machines and by multiple agents. Before
 editing:
 
-- run `git fetch origin --prune --no-prune-tags`. Do not use `--all` or
-  `--tags` with pruning: with `fetch.pruneTags=true` (set on some machines) a
-  fork remote that has no tags makes git delete every local tag. Fetch tags
-  explicitly with `git fetch origin --tags` when you need them;
+- run `git fetch origin --prune --no-prune-tags`. With `fetch.pruneTags=true`
+  (set on some machines) every fetch deletes local tags that the remote does not
+  have: all of them for a fork remote without tags (`--all`), and an unpushed
+  release tag even for a plain `git fetch origin`. Always pass `--no-prune-tags`,
+  and fetch tags explicitly with `git fetch origin --tags --no-prune-tags`;
 - inspect `git status --short --branch`;
 - do not work directly on `main`;
 - use `codex/<issue-or-task>` branches for agent work;

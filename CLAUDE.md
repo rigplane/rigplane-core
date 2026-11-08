@@ -136,9 +136,11 @@ git fetch origin --prune --no-prune-tags
 git status --short --branch
 ```
 
-Never `git fetch --all --tags --prune`: with `fetch.pruneTags=true` (set on some
-machines), a fork remote without tags makes git delete every local tag. Fetch
-tags explicitly with `git fetch origin --tags` when needed.
+With `fetch.pruneTags=true` (set on some machines) every fetch deletes local tags
+that the remote does not have: all of them for a fork remote without tags
+(`--all`), and an unpushed release tag even for a plain `git fetch origin`. Always
+pass `--no-prune-tags`; fetch tags explicitly with
+`git fetch origin --tags --no-prune-tags`.
 
 Rules:
 
