@@ -37,43 +37,33 @@ def test_audio_passband_refuses_missing_facts():
         WebScopePcmTap(server).facts()
 
 
-@pytest.mark.parametrize("mode", ["RTTY", "RTTY-R", "DV"])
-def test_audio_passband_does_not_invent_carrier_offsets(mode):
-    server = WebServer(None)
+@pytest.mark.parametrize(
+    "model,mode,half",
+    [
+        ("IC-7610", "CW", 1800),
+        ("IC-7610", "CW-R", 1800),
+        ("IC-7610", "RTTY", 1350),
+        ("IC-7610", "RTTY-R", 1350),
+        ("IC-7300", "CW", 1800),
+        ("IC-7300", "RTTY", 1350),
+    ],
+)
+def test_ambiguous_modes_map_main_symmetric_crop(model, mode, half):
+    """CW/CW-R/RTTY/RTTY-R keep main's symmetric VFO-centered RF placement.
+
+    Main's AudioFftScope crops symmetrically to the mode filter rule
+    (set_mode_bandwidth(rule.max_hz)); the new source must grant the same
+    coverage instead of refusing the mapping.
+    """
+    server = WebServer(None, WebConfig(radio_model=model))
     _seed_audio_facts(server, mode=mode)
-    with pytest.raises(ValueError, match="mapping unavailable"):
-        WebScopePcmTap(server).facts()
-
-
-@pytest.mark.parametrize("receiver", ["0", "main"])
-@pytest.mark.parametrize("mode", ["CW", "CW-R"])
-def test_cw_passband_does_not_infer_polarity_from_observed_pitch(receiver, mode):
-    from rigplane.core.state_pipeline_contracts import (
-        FieldPath,
-        Observation,
-        SourceMetadata,
+    facts = WebScopePcmTap(server).facts()
+    assert facts.tuned_hz == 14_074_000
+    assert (facts.low_offset_hz, facts.high_offset_hz, facts.sideband) == (
+        -half,
+        half,
+        "both",
     )
-
-    server = WebServer(None)
-    _seed_audio_facts(server, receiver=receiver, mode=mode, width=500)
-    server.command_state_store.apply_current(
-        Observation(
-            path=FieldPath.global_("operator_controls", "cw_pitch"),
-            value=650,
-            source=SourceMetadata(source="poll_response", provider="test"),
-            timestamp_monotonic=0,
-        )
-    )
-    with pytest.raises(ValueError, match="CW normal-side setting"):
-        WebScopePcmTap(server).facts()
-
-
-@pytest.mark.parametrize("mode", ["CW", "CW-R"])
-def test_cw_passband_requires_observed_normal_side(mode):
-    server = WebServer(None)
-    _seed_audio_facts(server, mode=mode)
-    with pytest.raises(ValueError, match="CW normal-side setting"):
-        WebScopePcmTap(server).facts()
 
 
 @pytest.mark.parametrize("receiver", ["0", "main"])
