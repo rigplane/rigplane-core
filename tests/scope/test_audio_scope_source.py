@@ -321,3 +321,88 @@ async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(
             await reference.stop()
     finally:
         await source.stop()
+
+
+@pytest.mark.parametrize("sideband,lo,hi,width", [
+    ("upper", 0, 2400, 103), ("lower", -2400, 0, 103),
+    ("both", -1200, 1200, 103), ("both", -1800, 1800, 153),
+])
+async def test_real_pcm_hub_grants_only_emitted_crop_bins(sideband, lo, hi, width):
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+
+    facts = AudioPassband(14_100_000, lo, hi, sideband)
+    tap = Tap()
+    source = AudioFftSource(tap, lambda: facts, fft_size=2048, sample_rate=48000)
+    native, encoded = [], []
+    source.on_frame(native.append)
+    hub = ScopeHub(encoder=lambda frame: encoded.append(frame) or b"frame")
+    hub.register("audio", source)
+    view = View(facts.tuned_hz + lo, facts.tuned_hz + hi)
+    sub = await hub.subscribe(Subscription("audio", None, view, 1024, 20))
+    try:
+        pcm = (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000)).astype("<i2").tobytes()
+        tap.callback(pcm)
+        assert len(native[-1].pixels) == width
+        assert encoded[-1].width == sub.granted.width == width
+        assert len(encoded[-1].pixels) == width
+        assert native[-1].native_width == source.capabilities().native_width == width
+    finally:
+        await sub.close()
+
+
+async def test_real_pcm_crop_width_changes_update_existing_hub_client(virtual_clock, monkeypatch):
+    import rigplane.audio.fft_scope as fft_module
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+
+    virtual_clock.scope_to(monkeypatch, fft_module)
+    await virtual_clock.elapse(1)
+    facts = AudioPassband(14_100_000, 0, 2400, "upper")
+    tap = Tap()
+    source = AudioFftSource(tap, lambda: facts, fft_size=2048, sample_rate=48000)
+    encoded = []
+    hub = ScopeHub(encoder=lambda frame: encoded.append(frame) or b"frame")
+    hub.register("audio", source)
+    sub = await hub.subscribe(Subscription("audio", None, View(14_097_600, 14_102_400), 2800, 20))
+    try:
+        pcm = (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000)).astype("<i2").tobytes()
+        for lo, hi, sideband, width in [(0, 2400, "upper", 103), (-1200, 0, "lower", 52), (-1800, 1800, "both", 153)]:
+            facts = AudioPassband(14_100_000, lo, hi, sideband)
+            await virtual_clock.elapse(0.1)
+            tap.callback(pcm)
+            assert encoded[-1].width == sub.granted.width == width
+            assert source.capabilities().native_width == width
+            assert encoded[-1].pixels is not None and max(encoded[-1].pixels) >= 100
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ftx1"])
+@pytest.mark.parametrize("mode", ["AM", "FM", "WFM", "AM-N", "FM-N", "DATA-FM", "DATA-FM-N"])
+async def test_symmetric_web_mode_real_pcm_reaches_both_rf_halves(model, mode):
+    from rigplane.web.server import WebServer, WebConfig
+    from rigplane.web.scope_sources import WebScopePcmTap
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+    from test_audio_scope_dispatch import _seed_audio_facts
+
+    server = WebServer(None, WebConfig(radio_model=model))
+    _seed_audio_facts(server, mode=mode, frequency=14_100_000, width=2400)
+    facts = WebScopePcmTap(server).facts
+    tap = Tap()
+    source = AudioFftSource(tap, facts, fft_size=2048, sample_rate=48000)
+    encoded = []
+    hub = ScopeHub(encoder=lambda frame: encoded.append(frame) or b"frame")
+    hub.register("audio", source)
+    sub = await hub.subscribe(Subscription("audio", None, View(14_098_800, 14_101_200), 1024, 20))
+    try:
+        pcm = (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000)).astype("<i2").tobytes()
+        tap.callback(pcm)
+        frame = encoded[-1]
+        assert facts().sideband == "both"
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (14_098_800, 14_101_200)
+        assert max(frame.pixels[:len(frame.pixels)//2]) >= 100
+        assert max(frame.pixels[len(frame.pixels)//2:]) >= 100
+    finally:
+        await sub.close()

@@ -566,3 +566,56 @@ async def test_queued_radio_frames_keep_their_observed_width_snapshot():
     assert [len(frame.pixels) for frame in encoder.frames] == [475, 689]
     assert source.capabilities().native_width == 689
     await sub.close()
+
+
+async def test_initial_paused_demand_does_not_start_or_set_view():
+    hub, source, _ = setup()
+    paused = await hub.subscribe(request(fps=0))
+    assert source.starts == source.stops == 0
+    assert source.set_views == [] and source.callbacks == []
+    await paused.close()
+    assert source.starts == source.stops == 0
+
+
+async def test_positive_demand_transitions_retain_paused_clients():
+    hub, source, _ = setup()
+    active = await hub.subscribe(request())
+    paused = await hub.subscribe(request(fps=0))
+    await active.close()
+    assert source.stops == 1 and source.callbacks == []
+    assert not paused._closed
+    resumed = await hub.subscribe(request(fps=20))
+    assert source.starts == 2 and len(source.callbacks) == 1
+    sibling = await hub.subscribe(request(fps=10))
+    await resumed.close()
+    assert source.stops == 1
+    await sibling.close()
+    assert source.stops == 2 and not paused._closed
+    await paused.close()
+    assert source.stops == 2
+
+
+@pytest.mark.parametrize("model", ["ic7610", "ic9700"])
+async def test_observed_widths_are_receiver_scoped_for_existing_and_new_clients(model):
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    source = RadioScopeSource(profile, NativeWriter())
+    encoder = Encoder()
+    hub = ScopeHub(encoder=encoder)
+    hub.register("radio", source)
+    view = View(10_000_300, 10_002_700)
+    first = await hub.subscribe(Subscription("radio", 0, view, 2800, 20))
+    other = await hub.subscribe(Subscription("radio", 1, view, 2800, 20))
+    new = []
+    try:
+        source.feed_frame(ScopeFrame(0, 1, view.start_hz, view.end_hz, bytes([160])*475, False))
+        source.feed_frame(ScopeFrame(1, 1, view.start_hz, view.end_hz, bytes([160])*689, False))
+        for oor in (False, True):
+            source.feed_frame(ScopeFrame(0, 1, view.start_hz, view.end_hz, b"", oor))
+            assert first.granted.width == 475
+            assert other.granted.width == 689
+        for receiver, width in ((0, 475), (1, 689)):
+            new.append(await hub.subscribe(Subscription("radio", receiver, view, 2800, 20)))
+            assert new[-1].granted.width == width
+    finally:
+        for sub in [first, other, *new]:
+            await sub.close()
