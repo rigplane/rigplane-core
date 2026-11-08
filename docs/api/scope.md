@@ -16,8 +16,10 @@ and `iq_fft` when the corresponding producer is available.
 Audio FFT requires observed frequency, filter width and mode. The web adapter
 maps `USB`, `LSB`, `AM`, `FM`, `WFM` and the data/narrow aliases declared in
 `src/rigplane/web/scope_sources.py: _AUDIO_MODE_ALIASES`. Explicit `CW-U` and
-`CW-L` additionally require observed CW pitch; ambiguous `CW` and `CW-R` are
-refused because their normal-side polarity is not established. See
+`CW-L` additionally require observed CW pitch. The ambiguous `CW`, `CW-R`,
+`RTTY`, `RTTY-R` and `DV` modes keep main's symmetric VFO-centered placement:
+the mode filter rule bandwidth, or the full spectrum when the profile declares
+no rule. See
 `src/rigplane/web/scope_sources.py: WebScopePcmTap.facts`.
 
 ```json

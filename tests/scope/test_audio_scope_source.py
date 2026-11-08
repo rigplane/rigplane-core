@@ -178,6 +178,97 @@ async def test_symmetric_passband_emits_main_crop_slice():
         await source.stop()
 
 
+async def test_full_spectrum_slice_matches_main_producer_pixels(
+    virtual_clock, monkeypatch
+):
+    import rigplane.audio.fft_scope as fft_module
+    from types import SimpleNamespace
+
+    from rigplane.audio.fft_scope import AudioFftScope
+
+    monkeypatch.setattr(fft_module, "time", SimpleNamespace(monotonic=virtual_clock))
+    await virtual_clock.elapse(1)
+    tuned = 14_100_000
+    main = AudioFftScope(fft_size=2048, sample_rate=48000)
+    main.set_center_freq(tuned)
+    main_frames = []
+    main.on_frame(main_frames.append)
+    facts = AudioPassband(tuned, -24000, 24000, "both")
+    tap = Tap()
+    new = AudioFftSource(tap, lambda: facts, fft_size=2048, sample_rate=48000)
+    new_frames = []
+    new.on_frame(new_frames.append)
+    await new.start()
+    try:
+        pcm = (np.sin(2 * np.pi * 1500 * np.arange(2048 * 6) / 48000) * 16000).astype(
+            "<i2"
+        )
+        for window in range(6):
+            chunk = pcm[window * 2048 : (window + 1) * 2048].tobytes()
+            main.feed_audio(chunk)
+            tap.callback(chunk)
+            await virtual_clock.elapse(0.06)
+        assert main_frames and new_frames
+        assert (main_frames[-1].start_freq_hz, main_frames[-1].end_freq_hz) == (
+            tuned - 24000,
+            tuned + 24000,
+        )
+        assert new_frames[-1].pixels == main_frames[-1].pixels
+        assert new_frames[-1].coverage == Coverage(tuned - 24000, tuned + 24000)
+    finally:
+        await new.stop()
+
+
+async def test_ruled_slice_places_tone_at_main_offset(
+    virtual_clock, monkeypatch
+):
+    import rigplane.audio.fft_scope as fft_module
+    from types import SimpleNamespace
+
+    from rigplane.audio.fft_scope import AudioFftScope
+
+    monkeypatch.setattr(fft_module, "time", SimpleNamespace(monotonic=virtual_clock))
+    await virtual_clock.elapse(1)
+    tuned = 14_100_000
+    main = AudioFftScope(fft_size=4096, sample_rate=48000)
+    main.set_center_freq(tuned)
+    main.set_mode_bandwidth(3600)
+    main_frames = []
+    main.on_frame(main_frames.append)
+    facts = AudioPassband(tuned, -1800, 1800, "both")
+    tap = Tap()
+    new = AudioFftSource(tap, lambda: facts, fft_size=4096, sample_rate=48000)
+    new_frames = []
+    new.on_frame(new_frames.append)
+    await new.start()
+    try:
+        pcm = (np.sin(2 * np.pi * 1500 * np.arange(4096 * 6) / 48000) * 16000).astype(
+            "<i2"
+        )
+        for window in range(6):
+            chunk = pcm[window * 4096 : (window + 1) * 4096].tobytes()
+            main.feed_audio(chunk)
+            tap.callback(chunk)
+            await virtual_clock.elapse(0.06)
+        assert main_frames and new_frames
+        assert (main_frames[-1].start_freq_hz, main_frames[-1].end_freq_hz) == (
+            tuned - 1792,
+            tuned + 1792,
+        )
+        assert new_frames[-1].coverage == Coverage(tuned - 1800, tuned + 1800)
+        assert len(new_frames[-1].pixels) == len(main_frames[-1].pixels) == 307
+        # The same tone saturates adjacent bins under the two level windows
+        # (the new producer estimates over the full spectrum, main over the
+        # crop), so the peak indices agree to one bin.
+        new_peak = int(np.argmax(np.frombuffer(new_frames[-1].pixels, dtype=np.uint8)))
+        main_peak = int(
+            np.argmax(np.frombuffer(main_frames[-1].pixels, dtype=np.uint8))
+        )
+        assert abs(new_peak - main_peak) <= 1
+    finally:
+        await new.stop()
+
+
 @pytest.mark.parametrize("old_count", [3072, 4096])
 async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(
     old_count, virtual_clock, monkeypatch, caplog
