@@ -202,6 +202,18 @@ describe('installed host API v3 with production UI handlers', () => {
     expect(document.querySelector('.language-selector')).not.toBeNull();
   });
 
+  it.each([true, false])('respects declared host language ownership=%s in mounted controls', async language => {
+    const declaration: LocalExtensionHostDeclaration = { version: 1, report: false, language };
+    const meta = document.createElement('meta'); meta.name = LOCAL_SUPERVISOR_META_NAME;
+    meta.content = JSON.stringify(declaration); document.head.append(meta);
+    await start(1);
+    expect(host().openRadioControls()).toBe(true); flushSync();
+    const controls = document.querySelector('.settings-modal');
+    expect(controls).not.toBeNull();
+    expect(controls!.querySelector('[data-panel-id="desktop-workspace"]')).not.toBeNull();
+    expect(controls!.querySelector('[data-panel-id="desktop-language"]') === null).toBe(language);
+  });
+
   it('shares confirmations with UI buttons and keeps actions through desktop, mobile and LCD', async () => {
     await start(1);
     const installed = host();
