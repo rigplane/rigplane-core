@@ -483,10 +483,8 @@ class SerialCivLink:
             read_task = asyncio.create_task(self._read_once())
             self._read_task = read_task
             try:
-                chunk = await asyncio.wait_for(
-                    read_task,
-                    timeout=remaining,
-                )
+                async with asyncio.timeout(remaining):
+                    chunk = await read_task
             except asyncio.CancelledError:
                 receiver = asyncio.current_task()
                 if (
