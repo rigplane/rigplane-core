@@ -3588,6 +3588,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
         expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBe(x === 120 ? 14_040_000 : 14_034_000);
         expect(send).toHaveBeenCalledTimes(1);
       }
+      const first = commands.getCommandLifecycles()[0];
+      commands.acknowledgeCommand(first.id, first.originalEpoch, first.originalEpoch);
       pointer(spectrum, 'pointerup', 42, 133);
       expect(send).toHaveBeenLastCalledWith('set_freq',
         { freq: 14_034_000, receiver: 0 }, expect.any(String));

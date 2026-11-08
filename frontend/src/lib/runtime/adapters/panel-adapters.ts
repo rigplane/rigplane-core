@@ -23,7 +23,7 @@ import {
   makeTxHandlers, makeFilterHandlers, makeBandHandlers,
   makePresetHandlers, makeAudioRoutingHandlers, makeRxAudioHandlers,
   makeVfoHandlers, makeScopeControlsHandlers, makeVoxHandlers, makeMemoryHandlers,
-  makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers,
+  makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers, isTuningBurstObservation,
 } from '../commands/panel-commands';
 export { isTuningBurstObservation } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
@@ -326,7 +326,7 @@ const lifecycleSuperseded: SupersededPredicate = (command) => isCommandLifecycle
  * stays pending through ack.
  */
 export function getPendingFrequencyHz(receiver: 0 | 1): number | null {
-  return pendingFrequencyHz(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
+  return pendingFrequencyHz(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver, isTuningBurstObservation);
 }
 
 // ── Tuning burst target (MOR-2464) ──

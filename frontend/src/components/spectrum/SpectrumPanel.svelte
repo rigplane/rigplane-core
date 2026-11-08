@@ -962,9 +962,8 @@
     const geometry = readSampleGeometry(element);
     return current !== null && sameResizeAuthority(capture.authority, current)
       && geometry?.frameMode === capture.geometry.frameMode
-      && (ownReadback
-        ? geometry.endFreq - geometry.startFreq === capture.geometry.endFreq - capture.geometry.startFreq
-        : geometry.startFreq === capture.geometry.startFreq && geometry.endFreq === capture.geometry.endFreq)
+      && geometry.startFreq === capture.geometry.startFreq
+      && geometry.endFreq === capture.geometry.endFreq
       && geometry.elementWidth === capture.geometry.elementWidth
       && capture.view.startHz === viewportStartFreq
       && capture.view.endHz === viewportEndFreq
@@ -1011,8 +1010,9 @@
       && (current.frequencyHz === capture.authority.frequencyHz
         || (current.frequencyHz !== null && isTuningBurstObservation(current.receiver, current.frequencyHz)))
       && geometry?.frameMode === capture.geometry.frameMode
-      && geometry.startFreq === capture.geometry.startFreq
-      && geometry.endFreq === capture.geometry.endFreq
+      && (ownReadback
+        ? geometry.endFreq - geometry.startFreq === capture.geometry.endFreq - capture.geometry.startFreq
+        : geometry.startFreq === capture.geometry.startFreq && geometry.endFreq === capture.geometry.endFreq)
       && geometry.elementWidth === capture.geometry.elementWidth
       && capture.requestedView === requestedView;
   }
@@ -1215,8 +1215,9 @@
     // One View update per move: the gesture leg pans the confirmed window
     // to the SNAPPED candidate (MOR-4256) and the candidate Hz leads the
     // FIX marker.
+    const changed = dragCandidate !== null || gestureCandidateHz !== null;
     gestureCandidateHz = dragCandidate;
-    vfoHandlers.onFreqChange(candidate, capture.authority.receiver, 'drag');
+    if (changed) vfoHandlers.onFreqChange(candidate, capture.authority.receiver, 'drag');
     if (panoramaActive) {
       const base = capture.view ?? untrack(() => scopeView.confirmed);
       scopeView.set('gesture', dragCandidate !== null && base.endHz > base.startHz
