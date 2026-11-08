@@ -157,6 +157,14 @@ describe('installed host API v3 with production UI handlers', () => {
     Array.from(document.querySelectorAll<HTMLButtonElement>('.theme-option')).find(button => button.textContent?.includes('Nord'))!.click(); flushSync();
     expect(snapshots.mock.lastCall?.[0].theme).toBe('nord');
     expect(document.documentElement.dataset.theme).toBe('nord');
+    expect(installed.setTheme('dracula')).toBe(true); flushSync();
+    document.querySelector<HTMLButtonElement>('.theme-button')!.click(); flushSync();
+    const themeOptions = Array.from(document.querySelectorAll<HTMLButtonElement>('.theme-option'));
+    const dracula = themeOptions.find(button => button.querySelector('.theme-name')?.textContent === 'Dracula');
+    expect(dracula).toBeDefined();
+    expect(themeOptions.filter(button => button.classList.contains('active'))).toEqual([dracula]);
+    expect(themeOptions.filter(button => button.querySelector('.theme-check'))).toEqual([dracula]);
+    document.querySelector<HTMLButtonElement>('.theme-button')!.click(); flushSync();
     expect(installed.openRadioControls()).toBe(true); flushSync();
     expect(document.querySelector('.settings-modal')).not.toBeNull();
     document.querySelector<HTMLButtonElement>('.settings-close')!.click();
