@@ -106,12 +106,12 @@ async def test_failed_output_off_can_be_retried():
         async def set_output(self, enabled):
             self.writes.append(enabled)
             if not enabled and self.writes.count(False) == 1:
-                raise RuntimeError('output-off failed')
+                raise RuntimeError("output-off failed")
 
     writer = FlakyWriter()
-    source = RadioScopeSource(load_rig(Path('rigs/ic7300.toml')).to_profile(), writer)
+    source = RadioScopeSource(load_rig(Path("rigs/ic7300.toml")).to_profile(), writer)
     await source.start()
-    with pytest.raises(RuntimeError, match='output-off failed'):
+    with pytest.raises(RuntimeError, match="output-off failed"):
         await source.stop()
     await source.stop()
     assert writer.writes == [True, False, False]
