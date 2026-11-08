@@ -147,6 +147,37 @@ async def test_geometry_change_discards_pcm_and_fft_history(
     await reference.stop()
 
 
+def test_symmetric_passband_covers_tuned_plus_minus_half():
+    from rigplane.audio.scope_source import AudioPassband as Passband
+
+    facts = Passband(14_100_000, -1800, 1800, "both")
+    source = AudioFftSource(Tap(), lambda: facts)
+    assert source.coverage_for(View(14_000_000, 14_200_000)) == Coverage(
+        14_098_200, 14_101_800
+    )
+
+
+async def test_symmetric_passband_emits_main_crop_slice():
+    from rigplane.audio.scope_source import AudioPassband as Passband
+
+    facts = Passband(14_100_000, -1800, 1800, "both")
+    tap = Tap()
+    source = AudioFftSource(tap, lambda: facts, fft_size=4096, sample_rate=48000)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        tone = (np.sin(2 * np.pi * 1500 * np.arange(4096) / 48000) * 16000).astype(
+            "<i2"
+        )
+        tap.callback(tone.tobytes())
+        frame = frames[-1]
+        assert frame.coverage == Coverage(14_098_200, 14_101_800)
+        assert len(frame.pixels) == 307
+    finally:
+        await source.stop()
+
+
 @pytest.mark.parametrize("old_count", [3072, 4096])
 async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(
     old_count, virtual_clock, monkeypatch, caplog
