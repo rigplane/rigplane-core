@@ -97,6 +97,7 @@ from rigplane.core.types import (
     ctcss_booleans_for_tone_squelch_type,
 )
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.runtime._dual_rx_runtime import _relative_vfo_routing_available
 from rigplane.runtime import radio_reconnect
 from rigplane.runtime._state_queries import (
     acquisition_query_resolver_for_profile,
@@ -3537,21 +3538,21 @@ class CivRuntime:
         store = getattr(self._host, "_state_store", None)
         if frame.receiver is not None or store is None:
             return active
-        snapshot = store.snapshot()
-        try:
-            split = snapshot.field(FieldPath.global_("tx_state", "split"))
-        except KeyError:
-            return None
-        if (
-            split.value is False
-            and split.freshness is FreshnessState.FRESH
-            and split.provider_generation == snapshot.provider_generation
-            and split.max_age is not None
-            and 0 <= snapshot.generated_at_monotonic
-            - split.last_observed_monotonic < split.max_age
+        profile = self._host._profile
+        if not _relative_vfo_routing_available(
+            profile, profile.command_map, ("get_selected_freq", "get_unselected_freq")
         ):
             return active
-        return None
+        acquisition = profile.state_acquisition
+        if acquisition is None or not acquisition.capability_for(
+            _profile_path_for_observation(acquisition, active)
+        ).can_poll:
+            return active
+        try:
+            split = store.field(FieldPath.global_("tx_state", "split"))
+        except KeyError:
+            return active
+        return None if split.value is True else active
 
     @staticmethod
     def _decode_level(data: bytes) -> int:

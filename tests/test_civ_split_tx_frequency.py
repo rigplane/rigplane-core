@@ -16,8 +16,11 @@ import pytest
 
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.commands import build_civ_frame
+from rigplane.core.acquisition_scheduler import StateFreshnessService
+from rigplane.core.state_store import FreshnessState
 from rigplane.core.tx_target import KnownTxTarget
 from rigplane.core.types import bcd_encode
+from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
@@ -35,8 +38,8 @@ pytestmark = pytest.mark.realtime(
 
 
 class SplitLink(_FakeSerialCivLink):
-    def __init__(self) -> None:
-        super().__init__(model_id=0x94)
+    def __init__(self, *, model_id: int = 0x94) -> None:
+        super().__init__(model_id=model_id)
         self.operating_hz = 29_600_000
         self.split = False
         self.ptt = False
@@ -67,11 +70,13 @@ class SplitLink(_FakeSerialCivLink):
         else:
             payload = b"\xfa"
         if payload is not None:
-            self.queue_response(b"\xfe\xfe\xe0\x94" + payload + b"\xfd")
+            self.queue_response(bytes((0xFE, 0xFE, frame[3], frame[2])) + payload + b"\xfd")
 
 
 async def _ingress(radio: Ic7300SerialRadio, link: SplitLink, frames: list[str]) -> None:
-    marker = build_civ_frame(0xE0, 0x94, 0x19, sub=0x00, data=b"\x94")
+    marker = build_civ_frame(
+        0xE0, radio.profile.civ_addr, 0x19, sub=0x00, data=bytes((link.model_id,))
+    )
     delivered = asyncio.Event()
     subscription = radio.add_raw_civ_listener(
         lambda raw: delivered.set() if raw == marker else None
@@ -212,3 +217,70 @@ async def test_public_get_freq_during_split_tx_does_not_poison_rx_fallback(tmp_p
         await _ingress(radio, link, ["FEFEE0941C0000FD"])
         link.answer_frequency = False
         assert await radio.get_freq() == 29_600_000
+
+
+@asynccontextmanager
+async def _frequency_radio(model: str) -> AsyncIterator[tuple[Ic7300SerialRadio, SplitLink]]:
+    profile = resolve_radio_profile(model=model)
+    link = SplitLink(model_id=profile.civ_addr)
+    radio = Ic7300SerialRadio(
+        device="/dev/rigplane-test-no-hardware",
+        model=model,
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        timeout=0.1,
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    try:
+        await radio.connect()
+        assert radio.connected
+        yield radio, link
+    finally:
+        await radio.disconnect()
+
+
+@pytest.mark.parametrize("model", ["X6100", "X6200"])
+@pytest.mark.parametrize("split_on", [False, True])
+async def test_public_frequency_ingress_without_polled_vfo_readback_keeps_rx(
+    model: str, split_on: bool
+) -> None:
+    async with _frequency_radio(model) as (radio, link):
+        addr = radio.profile.civ_addr
+        if split_on:
+            await _ingress(radio, link, [build_civ_frame(0xE0, addr, 0x0F, data=b"\x01").hex()])
+        await _ingress(
+            radio, link, [build_civ_frame(0xE0, addr, 0x03, data=bcd_encode(29_600_000)).hex()]
+        )
+        assert radio.radio_state.main.freq == 29_600_000
+        assert radio.state_cache.freq == 29_600_000
+        assert radio.state_store.snapshot().field("receiver.0.active.freq_mode.freq_hz").value == 29_600_000
+
+
+@pytest.mark.parametrize("command", [0x00, 0x03])
+async def test_public_ic7300_frequency_before_split_observation_keeps_rx(command: int) -> None:
+    async with _frequency_radio("IC-7300") as (radio, link):
+        await _ingress(
+            radio, link,
+            [build_civ_frame(0x00 if command == 0x00 else 0xE0, 0x94, command, data=bcd_encode(29_600_000)).hex()],
+        )
+        assert radio.radio_state.main.freq == 29_600_000
+        assert radio.state_cache.freq == 29_600_000
+        assert radio.state_store.snapshot().field("receiver.0.active.freq_mode.freq_hz").value == 29_600_000
+
+
+async def test_public_ic7300_stale_split_on_still_drops_keyup_frequency() -> None:
+    async with _frequency_radio("IC-7300") as (radio, link):
+        await _ingress(
+            radio, link, ["FEFEE0940F00FD", "FEFEE094030000602900FD", "FEFEE0940F01FD"]
+        )
+        split = radio.state_store.snapshot().field("global.tx_state.split")
+        assert split.max_age is not None
+        StateFreshnessService(store=radio.state_store).tick(
+            now=split.last_observed_monotonic + split.max_age + 1.0
+        )
+        split = radio.state_store.snapshot().field("global.tx_state.split")
+        assert split.value is True and split.freshness is FreshnessState.STALE
+        await _ingress(radio, link, ["FEFEE094000000102900FD"])
+        assert radio.radio_state.main.freq == 29_600_000
+        assert radio.state_cache.freq == 29_600_000
+        assert radio.state_store.snapshot().field("receiver.0.active.freq_mode.freq_hz").value == 29_600_000

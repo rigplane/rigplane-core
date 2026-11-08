@@ -250,9 +250,6 @@ async def test_relative_vfo_ingress_bootstraps_then_transceive_patches_immediate
         coherence_window=5.0,
     )
     radio.send_civ = AsyncMock()  # type: ignore[method-assign]
-    await radio._civ_runtime._route_civ_frame(
-        _make_frame(cmd=0x0F, data=b"\x00"), generation=radio._civ_epoch
-    )
 
     for frame in (
         _make_frame(cmd=0x25, data=b"\x00" + bcd_encode(14_284_000)),
@@ -2895,10 +2892,6 @@ def test_update_state_cache_projects_supported_fields_into_state_store(
     expected: object,
     expected_source: str,
 ) -> None:
-    if frame.command in (0x00, 0x03):
-        radio._civ_runtime._update_state_cache_from_frame(
-            _make_frame(cmd=0x0F, data=b"\x00")
-        )
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
     field = radio._state_store.snapshot().field(path)
@@ -3541,10 +3534,6 @@ def test_civ_projected_active_rit_xit_fields_become_stale(
 def test_update_state_cache_records_scheduler_result_for_matching_pending_request(
     radio: IcomRadio,
 ) -> None:
-    radio._civ_runtime._update_state_cache_from_frame(
-        _make_frame(cmd=0x0F, data=b"\x00")
-    )
-
     class _SpyScheduler(AcquisitionScheduler):
         def __init__(self, *, profile: RadioAcquisitionProfile) -> None:
             super().__init__(profile=profile)
@@ -3580,10 +3569,6 @@ def test_a_frame_decoded_before_the_request_was_dispatched_does_not_credit_it(
     A pending request the drain has not sent is completed by no frame; once
     it is sent, a frame decoded after that send completes it.
     """
-
-    radio._civ_runtime._update_state_cache_from_frame(
-        _make_frame(cmd=0x0F, data=b"\x00")
-    )
 
     path = FieldPath.active("main", "freq_mode", "freq_hz")
     scheduler = AcquisitionScheduler(profile=_acquisition_profile(path))
@@ -4559,23 +4544,22 @@ def test_update_state_cache_applies_state_store_before_legacy_cache_mirror(
 def test_update_state_cache_applies_command_response_observation_once(
     radio: IcomRadio,
 ) -> None:
-    radio._civ_runtime._update_state_cache_from_frame(
-        _make_frame(cmd=0x0F, data=b"\x00")
-    )
-    before = radio._state_store.snapshot()
     frame = _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
 
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
     snapshot = radio._state_store.snapshot()
-    delta = radio._state_store.delta_since(before)
+    delta = radio._state_store.delta_since(StateSnapshot.empty())
 
-    assert before.field("global.tx_state.power_on").value is True
-    assert snapshot.field("global.tx_state.power_on").value is True
-    assert snapshot.state_revision == before.state_revision + 1
-    assert snapshot.observation_seq == before.observation_seq + 1
+    # The 0x03 frame yields exactly one freq observation; the MOR-2544
+    # power_on liveness inference (IC-7610: power control, no power-status
+    # query) adds exactly one more — each applied once. (``snapshot.fields``
+    # is path-sorted, so the old single-change order pin no longer applies.)
+    assert snapshot.state_revision == 2
+    assert snapshot.observation_seq == 2
     assert [str(change.path) for change in delta.changes] == [
         "receiver.0.active.freq_mode.freq_hz",
+        "global.tx_state.power_on",
     ]
     assert radio._radio_state.main.freq == 14_074_000
 
@@ -4647,9 +4631,6 @@ def radio_with_state(radio: IcomRadio) -> IcomRadio:
 def test_update_radio_state_freq_cmd03(radio_with_state: IcomRadio) -> None:
     """cmd 0x03 updates receiver frequency (line 482-483)."""
     rs = radio_with_state._radio_state
-    radio_with_state._civ_runtime._update_state_cache_from_frame(
-        _make_frame(cmd=0x0F, data=b"\x00")
-    )
     frame = _make_frame(cmd=0x03, data=bcd_encode(14_074_000))
     radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
     assert rs.main.freq == 14_074_000
@@ -4658,9 +4639,6 @@ def test_update_radio_state_freq_cmd03(radio_with_state: IcomRadio) -> None:
 def test_update_radio_state_freq_cmd00(radio_with_state: IcomRadio) -> None:
     """cmd 0x00 (unsolicited transceive) also updates frequency (line 481)."""
     rs = radio_with_state._radio_state
-    radio_with_state._civ_runtime._update_state_cache_from_frame(
-        _make_frame(cmd=0x0F, data=b"\x00")
-    )
     frame = _make_frame(cmd=0x00, data=bcd_encode(7_074_000))
     radio_with_state._civ_runtime._update_radio_state_from_frame(frame)
     assert rs.main.freq == 7_074_000
