@@ -99,6 +99,8 @@ describe('LCD leaves consume ScopeStream directly', () => {
       flushSync(); wire.frame();
       expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('live');
       expect(target.querySelector('.fft-trace')?.getAttribute('d')).toBe('M0.00,92.00 L250.00,50.84 L500.00,10.00');
+      radio.current = audioState(14_200_000, 'LSB'); flushSync();
+      expect(target.querySelector('.fft-trace')?.getAttribute('d')).not.toBe('M0.00,92.00 L250.00,50.84 L500.00,10.00');
       wire.stream.setFreshness('stale'); flushSync();
       expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
     } finally { await unmount(component); wire.stream.dispose(); target.remove(); radio.current = previous; }
@@ -107,6 +109,7 @@ describe('LCD leaves consume ScopeStream directly', () => {
     const { buffer, expected } = loadAudioScopeGolden(name);
     const previous = radio.current;
     radio.current = audioState(expected.audioPassband.tunedHz, expected.input.mode, expected.input.cwPitchHz ?? 600);
+    if (expected.input.cwPitchHz !== null) radio.current.main.filterWidth = 500;
     let receive = (_buffer: ArrayBuffer) => {};
     const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
       { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed');
@@ -120,7 +123,10 @@ describe('LCD leaves consume ScopeStream directly', () => {
       const path = target.querySelector('.fft-trace')!.getAttribute('d')!;
       const points = [...path.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map(match => [Number(match[1]), Number(match[2])]);
       const peak = points.reduce((best, point) => point[1] < best[1] ? point : best);
-      expect(peak[0] / 500 * 2400).toBeCloseTo(expected.input.toneHz, -2);
+      const carrier = expected.audioPassband.tunedHz + expected.audioPassband.carrierOffsetHz;
+      const span = expected.audioPassband.sideband === 'lower'
+        ? carrier - expected.frame.coverage_start_hz : expected.frame.coverage_end_hz - carrier;
+      expect(peak[0] / 500 * span).toBeCloseTo(expected.input.toneHz, -2);
       expect(stream.latest(stream.selectedSlot!)?.pixels?.buffer).toBe(buffer);
     } finally { await unmount(component); stream.dispose(); target.remove(); radio.current = previous; }
   });
@@ -131,7 +137,8 @@ describe('LCD leaves consume ScopeStream directly', () => {
     pixels.set(expected.frame.pixels!, 1020);
     const buffer = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null,
       viewStartHz: expected.audioPassband.tunedHz - 24_000,
-      viewEndHz: expected.audioPassband.tunedHz + 24_000, pixels });
+      viewEndHz: expected.audioPassband.tunedHz + 24_000,
+      coverageStartHz: expected.frame.coverage_start_hz, coverageEndHz: expected.frame.coverage_end_hz, pixels });
     let receive = (_buffer: ArrayBuffer) => {};
     const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
       { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed');
@@ -145,7 +152,8 @@ describe('LCD leaves consume ScopeStream directly', () => {
       const path = target.querySelector('.fft-trace')!.getAttribute('d')!;
       const points = [...path.matchAll(/[ML]([\d.]+),([\d.]+)/g)].map(match => [Number(match[1]), Number(match[2])]);
       const peak = points.reduce((best, point) => point[1] < best[1] ? point : best);
-      expect(peak[0] / 500 * 2400).toBeCloseTo(expected.input.toneHz, -2);
+      expect(peak[0] / 500 * (expected.frame.coverage_end_hz - expected.audioPassband.tunedHz))
+        .toBeCloseTo(expected.input.toneHz, -2);
       expect(stream.latest(stream.selectedSlot!)?.pixels?.buffer).toBe(buffer);
     } finally { await unmount(component); stream.dispose(); target.remove(); radio.current = previous; }
   });
