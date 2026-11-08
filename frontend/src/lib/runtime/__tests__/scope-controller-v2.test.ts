@@ -26,7 +26,7 @@ function channel() {
     message(message: unknown) { messages.forEach(sink => sink(message)); },
   };
   // Keep a getter distinct from the state-transition helper.
-  return { port: { ...port, get state() { return state; } }, change: port.change };
+  return { port, change: port.change };
 }
 const request = (sourceId: string, receiver: number | null) => ({ sourceId, receiver,
   view: { follow: 'vfo' as const, spanHz: 100_000 }, width: 2800, maxFps: 20 });
@@ -77,4 +77,22 @@ describe('one multiplexed subscribed scope channel', () => {
     expect(port.sendRaw.mock.calls.filter(call => call[0].type === 'subscribe')).toHaveLength(6);
     await owner.hardwareScopeDriver.stop(first); await owner.audioFftDriver.stop(second);
   });
+});
+
+it('retires observed mode at provider/source boundaries and accepts the next qualified control fact', async () => {
+  const { port, change } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
+  const hardware = owner.stream('hardware');
+  owner.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 1 });
+  hardware.setMode(2);
+  const handle = await owner.hardwareScopeDriver.start(); change('connected');
+  port.receive(scopeWire({ sourceId: 'radio' }));
+  expect(get(hardware.geometry)?.mode).toBe(2);
+  owner.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 2 });
+  change('connected'); port.receive(scopeWire({ sourceId: 'radio' }));
+  expect(get(hardware.geometry)?.mode).toBe(0);
+  hardware.setMode(3); expect(get(hardware.geometry)?.mode).toBe(3);
+  hardware.setSource('iq_fft', 'iq_fft');
+  port.receive(scopeWire({ source: 'iq_fft', sourceId: 'iq_fft', receiver: null }));
+  expect(get(hardware.geometry)?.mode).toBe(0);
+  await owner.hardwareScopeDriver.stop(handle);
 });
