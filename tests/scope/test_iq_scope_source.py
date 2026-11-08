@@ -2,8 +2,127 @@ import numpy as np
 import pytest
 
 from rigplane.sdr import FakeIqSource
+from rigplane.sdr.controller import SdrScopeController
 from rigplane.sdr.scope_source import IqFftSource
-from rigplane.scope.models import Coverage, View
+from rigplane.sdr.types import SdrConfig
+from rigplane.scope.models import Coverage, FollowView, View
+
+
+def controlled_source(provider, virtual_clock, *, tx_active=False, invert=False):
+    config = SdrConfig(
+        "fake", sample_rate_hz=48000, span_hz=6000, freq_offset_hz=8_000_000
+    )
+
+    def controller_factory(sink):
+        controller = SdrScopeController(
+            provider, sink, config, clock=lambda: virtual_clock() + 1_000_000
+        )
+        controller.on_radio_state(14_100_000, tx_active)
+        return controller
+
+    return IqFftSource(
+        provider,
+        native_width=64,
+        start_worker=False,
+        controller_factory=controller_factory,
+        invert_spectrum=invert,
+    )
+
+
+@pytest.mark.parametrize("invert,peak", [(False, 40), (True, 23)])
+async def test_controller_seeds_rf_before_open_without_cropping_capture(
+    virtual_clock, invert, peak
+):
+    class Provider(FakeIqSource):
+        def open(self):
+            self.opened_at = self.center_freq_hz
+            super().open()
+
+    provider = Provider(
+        center_freq_hz=0, sample_rate_hz=48000, block_size=4096, tones=[(6000, -6)]
+    )
+    source = controlled_source(provider, virtual_clock, invert=invert)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        assert source.active
+        assert provider.opened_at == 22_088_000
+        assert source.resolve_view(FollowView("vfo", 20000)) == View(
+            22_090_000, 22_110_000
+        )
+        provider.pump(1)
+        source.producer.process_pending()
+        assert frames[-1].coverage == Coverage(22_064_000, 22_112_000)
+        assert abs(np.argmax(np.frombuffer(frames[-1].pixels, dtype=np.uint8)) - peak) <= 1
+    finally:
+        await source.stop()
+    assert not source.active and not provider.is_open
+
+
+async def test_controller_initial_tx_freeze_releases_after_hold(virtual_clock):
+    provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
+    source = controlled_source(provider, virtual_clock, tx_active=True)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        provider.pump(1)
+        source.producer.process_pending()
+        assert source.tx_frozen
+        assert not frames  # No measured pre-TX frame exists to freeze yet.
+        source.on_radio_state(None, False)
+        await virtual_clock.elapse(0.299)
+        assert source.tx_frozen
+        await virtual_clock.elapse(0.002)
+        assert not source.tx_frozen
+        provider.pump(1)
+        source.producer.process_pending()
+        assert not frames[-1].out_of_range and frames[-1].pixels
+        assert frames[-1].coverage == Coverage(22_064_000, 22_112_000)
+    finally:
+        await source.stop()
+
+
+async def test_controller_retune_debounce_and_stop_cancel_pending_actions(virtual_clock):
+    provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
+    source = controlled_source(provider, virtual_clock)
+    await source.start()
+    try:
+        source.on_radio_state(14_200_000, False)
+        assert provider.center_freq_hz == 22_088_000
+        await virtual_clock.elapse(0.1)
+        source.on_radio_state(14_300_000, False)
+        assert source.resolve_view(FollowView("vfo", 20000)) == View(
+            22_290_000, 22_310_000
+        )
+        await virtual_clock.elapse(0.051)
+        assert provider.center_freq_hz == 22_288_000
+        source.on_radio_state(14_400_000, True)
+        source.on_radio_state(None, False)
+        await source.stop()
+        await virtual_clock.elapse(1)
+        source.on_radio_state(14_500_000, True)
+        assert provider.center_freq_hz == 22_288_000
+        assert not source.active and not source.tx_frozen
+    finally:
+        await source.stop()
+
+
+async def test_controller_outside_provider_range_marks_native_frame(virtual_clock):
+    provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
+    source = controlled_source(provider, virtual_clock)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        source.on_radio_state(7_000_000_000, False)
+        provider.pump(1)
+        source.producer.process_pending()
+        assert not source.frequency_in_range
+        assert frames[-1].out_of_range
+    finally:
+        await source.stop()
 
 
 async def test_real_iq_provider_full_coverage_peak_and_restart():
