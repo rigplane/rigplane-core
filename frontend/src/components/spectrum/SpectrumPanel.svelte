@@ -1499,6 +1499,8 @@
             .latest(scopeSlotKey(geometry.sourceId, geometry.receiver)) : null;
         if (frame?.pixels) fn(frame.pixels);
       }} />
+      {/if}
+      {#if scopeTraceLive && scopeContentState !== 'out-of-range'}
       {#each coverageHatched as hatched (hatched.reason + hatched.start)}
         <div
           class="scope-hatch"
