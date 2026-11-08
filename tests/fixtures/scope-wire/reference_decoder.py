@@ -2,12 +2,34 @@
 
 import math
 import struct
+from typing import Literal, TypedDict
+
+
+class ReferenceFrame(TypedDict):
+    source: Literal["radio", "audio_fft", "iq_fft"]
+    source_id: str
+    receiver: int | None
+    view_start_hz: float
+    view_end_hz: float
+    coverage_start_hz: float
+    coverage_end_hz: float
+    width: int
+    pixels: list[int] | None
+    out_of_range: bool
+    epoch: int
+    seq: int
+    sent_at_ms: int | None
+
 
 _HEADER = struct.Struct("<BBBBHHIIqdddd")
-_KINDS = ("radio", "audio_fft", "iq_fft")
+_KINDS: tuple[Literal["radio", "audio_fft", "iq_fft"], ...] = (
+    "radio",
+    "audio_fft",
+    "iq_fft",
+)
 
 
-def decode(data: bytes) -> dict:
+def decode(data: bytes) -> ReferenceFrame:
     if len(data) < _HEADER.size:
         raise ValueError("short header")
     (
@@ -41,7 +63,7 @@ def decode(data: bytes) -> dict:
         raise ValueError("invalid frequency geometry")
     if width == 0 or not -1 <= stamp <= 2**53 - 1:
         raise ValueError("invalid width or timestamp")
-    return dict(
+    return ReferenceFrame(
         source=_KINDS[kind],
         source_id=identity.decode("ascii"),
         receiver=None if receiver == 65535 else receiver,
