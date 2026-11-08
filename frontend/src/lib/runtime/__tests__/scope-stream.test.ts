@@ -141,3 +141,33 @@ it('isolates throwing sinks and uses exact subscriptions during notification', (
   unsubscribe(); unsubscribe(); input.emit(); expect(healthy).toHaveBeenCalledTimes(2);
   stream.dispose(); warn.mockRestore();
 });
+
+it('delivers one post-boundary selected geometry receipt without changing the shared cache or reactive geometry', () => {
+  const input = source(); const stream = new ScopeStream(input.port, context, 'borrowed');
+  stream.setSlotFilter(scopeSlotKey('scope-1', 0));
+  const changes = vi.fn(); stream.geometry.subscribe(changes); input.emit();
+  const cached = stream.latest(scopeSlotKey('scope-1', 0)); const sink = vi.fn();
+  const cancel = stream.subscribeNextGeometry(stream.receipt, sink);
+  expect(sink).not.toHaveBeenCalled(); expect(stream.latest(scopeSlotKey('scope-1', 0))).toBe(cached);
+  expect(changes).toHaveBeenCalledTimes(2);
+  input.emit(fixtures.audio); expect(sink).not.toHaveBeenCalled();
+  input.emit(); expect(sink).toHaveBeenCalledTimes(1);
+  expect(sink.mock.lastCall).toHaveLength(1);
+  expect(sink.mock.lastCall?.[0]).toEqual(changes.mock.lastCall?.[0]);
+  expect(sink.mock.lastCall?.[0]).not.toHaveProperty('pixels');
+  expect(changes).toHaveBeenCalledTimes(2);
+  input.emit(); expect(sink).toHaveBeenCalledTimes(1);
+  cancel(); cancel(); stream.dispose();
+});
+
+it('cancels a geometry receipt wait and refuses epoch-zero or malformed geometry', () => {
+  const input = source(); const stream = new ScopeStream(input.port, context, 'borrowed');
+  const cancelled = vi.fn(); const cancel = stream.subscribeNextGeometry(stream.receipt, cancelled);
+  cancel(); cancel(); input.emit(); expect(cancelled).not.toHaveBeenCalled();
+  const sink = vi.fn(); stream.subscribeNextGeometry(stream.receipt, sink);
+  stream.setSessionEpoch(0); input.emit(); expect(sink).not.toHaveBeenCalled();
+  stream.setSessionEpoch(8); input.emit([1]); expect(sink).not.toHaveBeenCalled();
+  input.emit(); expect(sink).toHaveBeenCalledTimes(1);
+  input.emit(); expect(sink).toHaveBeenCalledTimes(1);
+  stream.dispose();
+});

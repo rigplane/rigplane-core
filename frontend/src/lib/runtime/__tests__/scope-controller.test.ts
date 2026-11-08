@@ -712,3 +712,43 @@ it.each(['hardware', 'audio_fft'] as const)('remounts %s after an orphaned start
   host.release(current); await vi.waitFor(() => expect(channel.disconnect).toHaveBeenCalledTimes(3));
   expect([channel._binaryHandlerCount(), channel._stateHandlerCount(), channel._sessionHandlerCount()]).toEqual([0, 0, 0]);
 });
+
+it('fences qualified secondary audio on provider change while retaining both original demand handles and stream identities', async () => {
+  const channels = { scope: makeMockChannel(), 'audio-scope': makeMockChannel() };
+  const controller = new ScopeController(name => channels[name as keyof typeof channels] as never);
+  controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 1 }, ['audio_fft']);
+  const hardware = controller.stream('hardware'); const audio = controller.stream('audio_fft');
+  const audioSink = vi.fn(); audio.subscribe(audioSink);
+  const hardwareHandle = await controller.hardwareScopeDriver.start(); const audioHandle = await controller.audioFftDriver.start();
+  channels.scope._setState('connected'); channels['audio-scope']._setState('connected');
+  channels.scope._fire(makeScopeFrameBuffer()); channels['audio-scope']._fire(makeScopeFrameBuffer());
+  const retired = channels['audio-scope'].binaryHistory.at(-1)!;
+  controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 2 }, ['audio_fft']);
+  expect(controller.stream('hardware')).toBe(hardware); expect(controller.stream('audio_fft')).toBe(audio);
+  expect(hardware.latest('scope:0')).toBeNull(); expect(audio.latest('audio-scope:0')).toBeNull();
+  expect(channels.scope.connect).toHaveBeenCalledTimes(2); expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
+  retired(makeScopeFrameBuffer()); expect(audioSink).toHaveBeenCalledTimes(1); expect(audio.latest('audio-scope:0')).toBeNull();
+  channels.scope._setState('connected'); channels['audio-scope']._setState('connected');
+  channels['audio-scope']._fire(makeScopeFrameBuffer()); expect(audioSink).toHaveBeenCalledTimes(2);
+  const renewed = audio.latest('audio-scope:0'); retired(makeScopeFrameBuffer()); expect(audio.latest('audio-scope:0')).toBe(renewed);
+  controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 2 }, ['audio_fft', 'audio_fft']);
+  expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
+  await controller.hardwareScopeDriver.stop(hardwareHandle); await controller.audioFftDriver.stop(audioHandle);
+  expect(channels.scope.disconnect).toHaveBeenCalledTimes(2); expect(channels['audio-scope'].disconnect).toHaveBeenCalledTimes(2);
+});
+
+it('keeps unrelated raw audio running until it becomes an additional qualified source', async () => {
+  const channels = { scope: makeMockChannel(), 'audio-scope': makeMockChannel() };
+  const controller = new ScopeController(name => channels[name as keyof typeof channels] as never);
+  controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 1 });
+  const hardwareHandle = await controller.hardwareScopeDriver.start(); const audioHandle = await controller.audioFftDriver.start();
+  channels.scope._setState('connected'); channels['audio-scope']._setState('connected');
+  const audio = controller.stream('audio_fft'); const sink = vi.fn(); audio.subscribe(sink);
+  controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 2 });
+  expect(channels['audio-scope'].disconnect).not.toHaveBeenCalled(); expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(1);
+  channels['audio-scope']._fire(makeScopeFrameBuffer()); expect(sink).toHaveBeenCalledTimes(1);
+  controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 2 }, ['audio_fft']);
+  expect(channels['audio-scope'].disconnect).toHaveBeenCalledTimes(1); expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
+  expect(audio.latest('audio-scope:0')).toBeNull();
+  await controller.hardwareScopeDriver.stop(hardwareHandle); await controller.audioFftDriver.stop(audioHandle);
+});
