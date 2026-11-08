@@ -61,7 +61,7 @@
     getIfShiftControlFeedback, getPbtInnerHzControlFeedback, getPbtOuterHzControlFeedback,
     getCwPitchControlFeedback, getKeySpeedControlFeedback, getRfSqlControlFeedback,
     getTxAuxControlFeedback, type TxAuxControlFeedbackField,
-    getPendingFrequencyHz,
+    getPendingFrequencyHz, getTuningBurstFrequencyHz,
     getPendingFilterSelection, getPendingManualNotchWidth, getPendingNarrow, getPendingNbOn, getPendingNotchMode,
     getPendingNrOn, getPendingPreampLevel,
     getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
@@ -619,8 +619,8 @@
   };
   let pendingFrequencyHzCache: PendingFrequencyHzCache | null = null;
   function computePendingFrequencyHz(): Partial<Record<'MAIN' | 'SUB', number>> {
-    const main = getPendingFrequencyHz(0);
-    const sub = getPendingFrequencyHz(1);
+    const main = getTuningBurstFrequencyHz(0) ?? getPendingFrequencyHz(0);
+    const sub = getTuningBurstFrequencyHz(1) ?? getPendingFrequencyHz(1);
     const cache: PendingFrequencyHzCache | null = pendingFrequencyHzCache;
     if (cache !== null && cache.main === main && cache.sub === sub) return cache.value;
     const result: Partial<Record<'MAIN' | 'SUB', number>> = {};
