@@ -193,3 +193,18 @@ async def test_fixed_edges_are_negotiated_from_profile_data():
     request = View(10_950_000, 11_050_000)
     await source.set_view(request, 0)
     assert isinstance(writer.writes[-1][0], float)
+
+
+async def test_fixed_edge_quantization_is_profile_data():
+    class FixedWriter(Writer):
+        async def set_fixed(self, fixed_edge, receiver):
+            self.writes.append((fixed_edge, receiver))
+
+    from rigplane.core.types import ScopeFixedEdge
+
+    writer = FixedWriter()
+    source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
+    request = View(14_050_123, 14_150_567)
+    grant = await source.set_view(request, 0)
+    assert writer.writes[-1] == (ScopeFixedEdge(6, 1, 14_050_000, 14_151_000), 0)
+    assert grant.coverage == Coverage(14_050_000, 14_151_000)
