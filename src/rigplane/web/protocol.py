@@ -1,41 +1,10 @@
-"""Web UI binary frame protocol for scope and audio data.
-
-Binary Scope Frame (RFC):
-    Offset  Size  Field           Description
-    0       1     msg_type        0x01 = scope_frame
-    1       1     receiver        0=Main, 1=Sub
-    2       1     mode            0=center, 1=fixed, 2=scroll-C, 3=scroll-F
-    3       4     start_freq      uint32 LE, Hz
-    7       4     end_freq        uint32 LE, Hz
-    11      2     sequence        uint16 LE
-    13      1     flags           bit 0: out_of_range
-    14      2     pixel_count     uint16 LE
-    16      N     pixels          uint8[], amplitude 0-160
-
-Scope v2 (all multibyte fields little-endian):
-    Offset  Size  Field
-    0       1     msg_type = 0x02
-    1       1     source: radio=0, audio_fft=1, iq_fft=2
-    2       1     flags: bit0 out_of_range, bit1 pixels present
-    3       1     source_id length L (1..255)
-    4       2     receiver uint16; 65535 = null
-    6       2     width uint16 (1..65535)
-    8       4     epoch uint32
-    12      4     seq uint32
-    16      8     sent_at_ms int64; -1 = null
-    24      8     view_start_hz float64
-    32      8     view_end_hz float64
-    40      8     coverage_start_hz float64
-    48      8     coverage_end_hz float64
-    56      L     source_id printable ASCII without spaces
-    56+L    W     width pixel bytes when bit1 set; absent when bit1 clear
-"""
+"""Web UI binary scope and audio codecs; scope wire format is in docs/api/scope.md."""
 
 from __future__ import annotations
 
 import json
 import struct
-from typing import Any, Protocol
+from typing import Any
 
 from rigplane.scope.models import (
     Coverage,
@@ -48,11 +17,8 @@ from rigplane.scope.models import (
 )
 
 __all__ = [
-    "MSG_TYPE_SCOPE",
     "MSG_TYPE_AUDIO_RX",
     "MSG_TYPE_AUDIO_TX",
-    "SCOPE_HEADER_SIZE",
-    "encode_scope_frame",
     "encode_audio_frame",
     "AUDIO_HEADER_SIZE",
     "AUDIO_CODEC_OPUS",
@@ -70,51 +36,8 @@ __all__ = [
 ]
 
 # Message type constants
-MSG_TYPE_SCOPE: int = 0x01
 MSG_TYPE_AUDIO_RX: int = 0x10
 MSG_TYPE_AUDIO_TX: int = 0x11
-
-# Header sizes
-SCOPE_HEADER_SIZE: int = 16
-
-
-class ScopeFrameLike(Protocol):
-    """Structural scope frame required by the web binary encoder."""
-
-    receiver: int
-    mode: int
-    start_freq_hz: int
-    end_freq_hz: int
-    out_of_range: bool
-    pixels: bytes
-
-
-def encode_scope_frame(frame: ScopeFrameLike, sequence: int) -> bytes:
-    """Serialize a scope frame to binary wire format (RFC).
-
-    Args:
-        frame: Complete scope frame from the radio.
-        sequence: Per-frame counter shared by a channel's clients, wrapping
-            at uint16. Bytes 11..12 are little endian. A late join starts
-            mid-count; reconnect does not reset the channel counter.
-
-    Returns:
-        16-byte header + pixel bytes.
-    """
-    pixel_count = len(frame.pixels)
-    flags = 0x01 if frame.out_of_range else 0x00
-    seq_u16 = sequence & 0xFFFF
-
-    header = (
-        bytes([MSG_TYPE_SCOPE, frame.receiver, frame.mode])
-        + struct.pack("<I", frame.start_freq_hz)
-        + struct.pack("<I", frame.end_freq_hz)
-        + struct.pack("<H", seq_u16)
-        + bytes([flags])
-        + struct.pack("<H", pixel_count)
-    )
-    # header is exactly 3 + 4 + 4 + 2 + 1 + 2 = 16 bytes
-    return header + frame.pixels
 
 
 def encode_audio_frame(

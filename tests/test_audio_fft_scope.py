@@ -457,11 +457,11 @@ class TestAudioFftScopeNoCallback:
 
 
 class TestAudioFftScopeProtocolCompat:
-    """Test compatibility with existing scope binary protocol."""
+    """Test audio producer output and shutdown."""
 
     def test_scope_frame_encodable(self):
-        """ScopeFrame from AudioFftScope should be encodable by protocol.py."""
-        from rigplane.web.protocol import encode_scope_frame
+        from rigplane.scope.models import ScopeWireFrame
+        from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_frame_v2
 
         scope = AudioFftScope(fft_size=1024, fps=100, avg_count=1)
         scope.set_center_freq(14_074_000)
@@ -473,10 +473,23 @@ class TestAudioFftScopeProtocolCompat:
         scope.feed_audio(pcm)
 
         assert len(frames) >= 1
-        # Should encode without error
-        binary = encode_scope_frame(frames[0], sequence=1)
-        assert len(binary) >= 16  # Header size
-        assert binary[0] == 0x01  # MSG_TYPE_SCOPE
+        native = frames[0]
+        wire = ScopeWireFrame(
+            "audio_fft",
+            "audio_fft",
+            None,
+            native.start_freq_hz,
+            native.end_freq_hz,
+            native.start_freq_hz,
+            native.end_freq_hz,
+            len(native.pixels),
+            native.pixels,
+            native.out_of_range,
+            0,
+            1,
+            None,
+        )
+        assert decode_scope_frame_v2(encode_scope_frame_v2(wire)) == wire
 
     def test_stop_clears_state(self):
         """stop() should clear buffers and unregister callback."""

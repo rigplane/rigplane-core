@@ -1,15 +1,36 @@
 from __future__ import annotations
 
 import pytest
+import aiohttp
 
+from qa.bench.dogfood import scope_fps as bench
 from qa.bench.dogfood.scope_fps import sequence_step, summarize, validate_frame
-from rigplane.scope.models import ScopeWireFrame
+from rigplane.scope.models import (
+    Coverage,
+    GrantedSubscription,
+    ScopeWireFrame,
+    Subscription,
+    View,
+)
+from rigplane.web.protocol import encode_scope_frame_v2, encode_scope_granted
+from dataclasses import replace
 
 
 def frame(*, width: int = 1024, seq: int = 1) -> ScopeWireFrame:
     return ScopeWireFrame(
-        "radio", "radio", 0, 14_100_000, 14_200_000,
-        14_100_000, 14_200_000, width, bytes(width), False, 0, seq, None,
+        "radio",
+        "radio",
+        0,
+        14_100_000,
+        14_200_000,
+        14_100_000,
+        14_200_000,
+        width,
+        bytes(width),
+        False,
+        0,
+        seq,
+        None,
     )
 
 
@@ -34,3 +55,50 @@ def test_frame_validation_checks_the_granted_consumer_contract() -> None:
         validate_frame(frame(), "radio", 0, 2800)
     with pytest.raises(ValueError, match="subscription"):
         validate_frame(frame(), "audio_fft", None, 1024)
+
+
+@pytest.mark.parametrize("pixels", [None, bytes(1024)])
+async def test_collect_requires_pixel_delivery_and_reports_valid_null_states(
+    pixels: bytes | None, virtual_clock, monkeypatch
+) -> None:
+    virtual_clock.scope_to(monkeypatch, bench)
+    view = View(14_100_000, 14_200_000)
+    grant = GrantedSubscription(
+        "radio", 0, view, Coverage(view.start_hz, view.end_hz), 1024, 10
+    )
+    messages = [
+        aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, encode_scope_granted(grant), ""),
+        aiohttp.WSMessage(
+            aiohttp.WSMsgType.BINARY,
+            encode_scope_frame_v2(replace(frame(), pixels=pixels)),
+            "",
+        ),
+    ]
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def send_str(self, _text):
+            pass
+
+        async def receive(self, **_kwargs):
+            if not messages:
+                raise TimeoutError
+            return messages.pop(0)
+
+    class Session:
+        def ws_connect(self, *_args, **_kwargs):
+            return Socket()
+
+    request = Subscription("radio", 0, view, 1024, 10)
+    if pixels is None:
+        with pytest.raises(ValueError, match="no in-range pixel"):
+            await bench.collect(Session(), "http://127.0.0.1", (), request, 1)
+    else:
+        result = await bench.collect(Session(), "http://127.0.0.1", (), request, 1)
+        assert result["pixel_frames"] == 1
+        assert result["null_frames"] == result["out_of_range_frames"] == 0

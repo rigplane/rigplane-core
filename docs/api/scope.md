@@ -6,6 +6,62 @@ robots: noindex, follow
 
 Spectrum and waterfall data from the radio's scope display.
 
+## WebSocket subscriptions
+
+`/api/v1/scope` carries the selected radio, audio FFT or IQ FFT source. The
+former `/api/v1/audio-scope` endpoint is removed. Opening a socket does not
+start a source: send a subscription first. Source IDs are `radio`, `audio_fft`
+and `iq_fft` when the corresponding producer is available.
+
+```json
+{"type":"subscribe","sourceId":"radio","receiver":0,"view":{"follow":"vfo","spanHz":100000},"width":1024,"maxFps":10}
+```
+
+An absolute view uses `{"startHz":14100000,"endHz":14200000}` instead of
+`follow` and `spanHz`. Audio and IQ sources use `receiver: null`. The reply is
+`type: "granted"` with `sourceId`, `receiver`, `view`, `coverage`, `width` and
+`fps`. `coverage` can be null. Send another subscription to change the view,
+source, width or rate; `maxFps: 0` pauses the subscription. Closing the socket
+releases its demand. The hub starts the producer on first active demand and
+stops it on last release.
+
+Frames use the typed v2 schema in
+`src/rigplane/scope/models.py: ScopeWireFrame`, encoded by
+`src/rigplane/web/protocol.py: encode_scope_frame_v2`. Pixels span the granted
+view; coverage describes the supplied subrange. Consumers must mark uncovered
+columns rather than stretch the covered data. Null pixels and `outOfRange`
+are valid frame states. The hub uses max-hold resampling and latest-wins rate
+limiting, so sequence gaps can be intentional.
+
+### Binary wire v2
+
+All multibyte fields are little-endian. The fixed header is 56 bytes, followed
+by the source ID and optional pixels. The encoder and decoder are
+`src/rigplane/web/protocol.py: encode_scope_frame_v2` and
+`src/rigplane/web/protocol.py: decode_scope_frame_v2`; portable examples and
+the standalone decoder are in `tests/fixtures/scope-wire/`.
+
+| Offset | Bytes | Field |
+| --- | --- | --- |
+| 0 | 1 | Message type `0x02` |
+| 1 | 1 | Source: radio `0`, audio FFT `1`, IQ FFT `2` |
+| 2 | 1 | Flags: bit 0 out of range, bit 1 pixels present |
+| 3 | 1 | Source ID length `L`, 1–255 |
+| 4 | 2 | Receiver uint16; `65535` means null |
+| 6 | 2 | Width uint16, 1–65535 |
+| 8 | 4 | Epoch uint32 |
+| 12 | 4 | Sequence uint32, wrapping modulo 2³² |
+| 16 | 8 | Sent time int64 milliseconds; `-1` means null |
+| 24 | 8 | View start float64 Hz |
+| 32 | 8 | View end float64 Hz |
+| 40 | 8 | Coverage start float64 Hz |
+| 48 | 8 | Coverage end float64 Hz |
+| 56 | `L` | Printable ASCII source ID without spaces |
+| `56+L` | width or 0 | Pixel bytes when flag bit 1 is set |
+
+Equal coverage edges represent no covered range. The total length is
+`56 + L + (width if pixels are present else 0)`.
+
 ## Overview
 
 Icom radios with spectrum scope (IC-7610, IC-7300, IC-705, etc.) stream real-time spectrum data over the CI-V protocol as unsolicited `0x27 0x00` packets. The `rigplane` library reassembles these multi-sequence bursts and delivers complete frames via callback.
@@ -86,8 +142,6 @@ Low-level CI-V command builders for scope control. All take a required `to_addr`
 | `scope_on()` | `0x27 0x10 0x01` | Enable scope display |
 | `scope_off()` | `0x27 0x10 0x00` | Disable scope display |
 | `scope_data_output(on)` | `0x27 0x11` | Enable/disable wave data output |
-| `scope_data_output_on()` | `0x27 0x11 0x01` | Shortcut: enable data output |
-| `scope_data_output_off()` | `0x27 0x11 0x00` | Shortcut: disable data output |
 | `scope_main_sub(receiver)` | `0x27 0x12` | Select scope receiver (0=MAIN, 1=SUB) |
 | `scope_single_dual(dual)` | `0x27 0x13` | Single/dual scope mode |
 | `scope_set_mode(mode)` | `0x27 0x14` | Set scope mode (0–3) |
