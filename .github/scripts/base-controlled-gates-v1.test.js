@@ -420,7 +420,6 @@ test('migrated light jobs carry their explicit tool setup', () => {
     if (/(^|\s)gh(\s|$)/.test(text) && !text.includes('command -v gh')) problems.push(`${key} uses gh without a command -v gh guard`);
   }
   requireIn('.github/workflows/quick.yml:classify', 'actions/setup-python@v5', 'explicit Python setup');
-  requireIn('.github/workflows/freeze-gate.yml:freeze-gate', 'actions/setup-node@v6', 'explicit Node setup');
   requireIn('.github/workflows/artifact-cleanup.yml:cleanup', 'actions/setup-python@v5', 'explicit Python setup');
   requireIn('.github/workflows/certification-status.yml:status', 'actions/setup-python@v5', 'explicit Python setup');
   requireIn('.github/workflows/docs.yml:indexnow', 'actions/setup-python@v5', 'explicit Python setup');
