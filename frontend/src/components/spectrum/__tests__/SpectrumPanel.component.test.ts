@@ -398,7 +398,8 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => appTxHostHarness.controller,
 }));
 
-vi.mock('$lib/stores/radio.svelte', () => ({
+vi.mock('$lib/stores/radio.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/stores/radio.svelte')>(),
   radio: { current: null },
   patchActiveReceiver: vi.fn(),
   patchReceiver: vi.fn(),
@@ -413,7 +414,8 @@ vi.mock('$lib/stores/tuning.svelte', () => ({
   formatStep: vi.fn(() => '100 Hz'),
 }));
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
+vi.mock('$lib/stores/capabilities.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/stores/capabilities.svelte')>(),
   getCapabilities: vi.fn(() => ({})),
   hasCapability: vi.fn((name: string) => name === 'scope'),
   hasDualReceiver: vi.fn(() => false),
@@ -3034,6 +3036,64 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
       expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_035_000, 0);
     } finally {
+      restore();
+    }
+  });
+
+  it('hands the real VFO release command to pending without losing the preview viewport', async () => {
+    const restore = stubReducedMotion();
+    const adapters = await import('$lib/runtime/adapters/panel-adapters');
+    const actualAdapters = await vi.importActual<typeof adapters>('$lib/runtime/adapters/panel-adapters');
+    const capabilities = await import('$lib/stores/capabilities.svelte');
+    const actualCapabilities = await vi.importActual<typeof capabilities>('$lib/stores/capabilities.svelte');
+    const radio = await import('$lib/stores/radio.svelte');
+    const commands = await import('$lib/stores/commands.svelte');
+    const transport = await import('$lib/transport/ws-client');
+    const send = vi.spyOn(transport, 'sendCommand').mockReturnValue(true);
+    const pending = vi.spyOn(adapters, 'getPendingFrequencyHz')
+      .mockImplementation(actualAdapters.getPendingFrequencyHz);
+    const vfo = vi.spyOn(adapters, 'getVfoHandlers').mockImplementation(actualAdapters.getVfoHandlers);
+    const getCapabilities = vi.spyOn(capabilities, 'getCapabilities')
+      .mockImplementation(actualCapabilities.getCapabilities);
+    try {
+      const state: ServerState = structuredClone(IC7300_STATE);
+      state.main!.freqHz = 14_050_000;
+      expect(capabilities.setCapabilities(IC7300_STEPPED_CAPABILITIES)).toBe(true);
+      expect(radio.setRadioState(state)).toBe(true);
+      runtimeHarness.state.currentState = radio.getRadioState();
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000,
+        providerGeneration: state.providerGeneration });
+      const target = mountPanel();
+      emitFrame();
+      const { spectrum } = prepareGeometry(target);
+      pointer(spectrum, 'pointerdown', 42, 100);
+      for (const x of [120, 133]) {
+        pointer(spectrum, 'pointermove', 42, x);
+        await flushPreviewPaint();
+        await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz)
+          .toBe(x === 120 ? -10_000 : -16_000));
+        expect(send).not.toHaveBeenCalled();
+        expect(commands.getCommandLifecycles()).toHaveLength(0);
+      }
+      pointer(spectrum, 'pointerup', 42, 133);
+      expect(send).toHaveBeenCalledExactlyOnceWith('set_freq',
+        { freq: 14_034_000, receiver: 0 }, expect.any(String));
+      expect(commands.getCommandLifecycles()).toHaveLength(1);
+      expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
+      await vi.waitFor(() => expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBeNull());
+      await flushPreviewPaint();
+      expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
+      expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(-16_000);
+      expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
+      expect(send).toHaveBeenCalledTimes(1);
+    } finally {
+      send.mockRestore();
+      pending.mockRestore();
+      vfo.mockRestore();
+      getCapabilities.mockRestore();
+      commands.resetCommandLifecycle();
+      radio.resetRadioState();
+      capabilities.clearCapabilities();
       restore();
     }
   });

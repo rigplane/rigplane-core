@@ -101,13 +101,6 @@ function buildColorLut(scheme: ColorSchemeName): Uint8Array {
 
 export class WaterfallRenderer {
   private ctx: CanvasRenderingContext2D;
-  // MOR-4256: retained history in the anchored sample plane. The visible
-  // canvas is a PROJECTION of this copy at the current viewport offset, so
-  // a reversible viewport excursion (a drag preview out and back, a
-  // cancelled pan, a tuning burst settling to its origin) restores every
-  // column — the previous in-place shift blanked exposed strips in the
-  // only copy and a return trip could not bring them back.
-  private history: CanvasRenderingContext2D | null = null;
   private options: WaterfallOptions;
   private lut: Uint8Array;
   private width: number;
@@ -116,15 +109,10 @@ export class WaterfallRenderer {
   private rowData: Uint8ClampedArray | null = null;
   private destroyed = false;
   // MOR-2464: history reprojects by viewport-center deltas only; the
-  // sampling offset places new rows. MOR-4256: the anchor tracks the
-  // SAMPLE-WINDOW center (`centerHz - panoramaShiftHz`); a display-only
-  // preview never moves it, a real retune does (rebase below).
+  // sampling offset places new rows.
   private anchoredViewportHz: number;
   private appliedViewportPx = 0;
   private viewportAnchorValid = false;
-  // Sub-pixel residue of the last rebase, so repeated retunes do not
-  // accumulate rounding drift in the retained plane.
-  private rebaseResiduePx = 0;
   // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
   // detect a genuine SPAN change (MOR-1479) vs. a same-value re-observation
   // or the initial 0→real transition (first frame / reconnect), neither of
@@ -141,11 +129,9 @@ export class WaterfallRenderer {
     this.lut = buildColorLut(options.colorScheme);
     this.width = canvas.width;
     this.height = canvas.height;
-    this.anchoredViewportHz = this.options.centerHz
-      - (Number.isFinite(this.options.panoramaShiftHz) ? this.options.panoramaShiftHz : 0);
+    this.anchoredViewportHz = this.options.centerHz;
     if (this.width > 0 && this.height > 0) {
       this._initBuffers();
-      this._initHistory();
       this.clear();
     }
   }
@@ -153,41 +139,6 @@ export class WaterfallRenderer {
   private _initBuffers(): void {
     this.rowBuf = this.ctx.createImageData(this.width, 1);
     this.rowData = this.rowBuf.data;
-  }
-
-  private _initHistory(): void {
-    const canvas = document.createElement('canvas');
-    canvas.width = this.width;
-    canvas.height = this.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Cannot get 2d context from waterfall history canvas');
-    this.history = ctx;
-  }
-
-  // Project the retained history onto the visible canvas at the current
-  // viewport offset: visible(x) = history(x + appliedViewportPx). Strips
-  // the retained copy does not cover stay background — and reappear once
-  // the offset returns, because the copy itself is never shifted.
-  private _composite(): void {
-    const ctx = this.ctx;
-    if (this.destroyed || !ctx) return;
-    const canvas = ctx.canvas;
-    const w = canvas.width;
-    const h = canvas.height;
-    if (w <= 0 || h <= 0) return;
-    ctx.fillStyle = WATERFALL_BACKGROUND;
-    ctx.fillRect(0, 0, w, h);
-    const source = this.history?.canvas;
-    if (!source || source.width <= 0 || source.height <= 0) return;
-    const offset = this.appliedViewportPx;
-    if (Math.abs(offset) >= w) return;
-    if (offset > 0) {
-      ctx.drawImage(source, offset, 0, w - offset, h, 0, 0, w - offset, h);
-    } else if (offset < 0) {
-      ctx.drawImage(source, 0, 0, w + offset, h, -offset, 0, w + offset, h);
-    } else {
-      ctx.drawImage(source, 0, 0);
-    }
   }
 
   // Exact device-pixel sampling offset for the NEXT row.
@@ -204,69 +155,47 @@ export class WaterfallRenderer {
     return Math.round(((centerHz - this.anchoredViewportHz) / spanHz) * this.width);
   }
 
-  // Rebase the retained plane when the SAMPLE WINDOW moves (a real retune
-  // with recentered frames; a display-only preview keeps the sample window
-  // constant, so it never lands here). History keeps its frequencies:
-  // content shifts against the window delta and the strip that left the
-  // window blanks honestly — then fresh rows cover the full viewport again.
-  private _shiftHistory(rebasePx: number): void {
-    const ctx = this.history;
-    if (!ctx) return;
-    const canvas = ctx.canvas;
-    const w = canvas.width;
-    const h = canvas.height;
-    if (w <= 0 || h <= 0) return;
-    ctx.fillStyle = WATERFALL_BACKGROUND;
-    if (Math.abs(rebasePx) >= w) {
-      ctx.fillRect(0, 0, w, h);
-      return;
-    }
-    if (rebasePx > 0) {
-      ctx.drawImage(canvas, rebasePx, 0, w - rebasePx, h, 0, 0, w - rebasePx, h);
-      ctx.fillRect(w - rebasePx, 0, rebasePx, h);
-    } else {
-      ctx.drawImage(canvas, 0, 0, w + rebasePx, h, -rebasePx, 0, w + rebasePx, h);
-      ctx.fillRect(0, 0, -rebasePx, h);
-    }
-  }
-
   // Reproject the drawn history onto the current viewport (MOR-2464):
-  // integer delta between rounded viewport offsets, composited from the
-  // RETAINED history (MOR-4256) so the projection is lossless and
-  // reversible; the first binding of a real sample window anchors silently.
+  // integer delta between rounded viewport offsets, uncovered strip
+  // blanked; the first binding of a real sample window anchors silently.
   private _applyViewportShift(): void {
-    const { spanHz, centerHz, panoramaShiftHz } = this.options;
+    const { spanHz, centerHz } = this.options;
     if (!(spanHz > 0)) return;
-    const sampleWindowHz = centerHz - (Number.isFinite(panoramaShiftHz) ? panoramaShiftHz : 0);
     if (!this.viewportAnchorValid) {
-      this.anchoredViewportHz = sampleWindowHz;
+      this.anchoredViewportHz = centerHz;
       this.appliedViewportPx = 0;
       this.viewportAnchorValid = true;
       return;
     }
-    if (sampleWindowHz !== this.anchoredViewportHz) {
-      const exactPx = ((sampleWindowHz - this.anchoredViewportHz) / spanHz) * this.width
-        + this.rebaseResiduePx;
-      const rebasePx = Math.round(exactPx);
-      this.rebaseResiduePx = exactPx - rebasePx;
-      if (rebasePx !== 0) this._shiftHistory(rebasePx);
-      this.anchoredViewportHz = sampleWindowHz;
-      this.appliedViewportPx = this.viewportOffsetPx();
-      this._composite();
+    const target = this.viewportOffsetPx();
+    const delta = target - this.appliedViewportPx;
+    if (delta === 0) return;
+    this.appliedViewportPx = target;
+    const ctx = this.ctx;
+    if (this.destroyed || !ctx) return;
+    const canvas = ctx.canvas;
+    const w = canvas.width;
+    const h = canvas.height;
+    if (w <= 0 || h <= 0) return;
+    const copyWidth = w - Math.abs(delta);
+    ctx.fillStyle = WATERFALL_BACKGROUND;
+    if (copyWidth <= 0) {
+      ctx.fillRect(0, 0, w, h);
       return;
     }
-    const target = this.viewportOffsetPx();
-    if (target === this.appliedViewportPx) return;
-    this.appliedViewportPx = target;
-    this._composite();
+    if (delta > 0) {
+      ctx.drawImage(canvas, delta, 0, copyWidth, h, 0, 0, copyWidth, h);
+      ctx.fillRect(copyWidth, 0, delta, h);
+    } else {
+      ctx.drawImage(canvas, 0, 0, copyWidth, h, -delta, 0, copyWidth, h);
+      ctx.fillRect(0, 0, -delta, h);
+    }
   }
 
   /** Add a new scope data row at the top; shift existing content down. */
   pushRow(data: Uint8Array): void {
     if (this.destroyed) return;
-    // Rows land in the retained history plane; the visible canvas is
-    // re-projected from it afterwards.
-    const ctx = this.history;
+    const ctx = this.ctx;
     if (!ctx) return;
     const canvas = ctx.canvas;
     const w = canvas.width;
@@ -287,11 +216,8 @@ export class WaterfallRenderer {
     // Build the new top row using the color LUT. MOR-2464: the resting row
     // keeps the established nearest-bin mapping; a fractional shift
     // interpolates the translated screen profile; uncovered stays blank.
-    // MOR-4256: the row lands in the ANCHOR plane (the retained history),
-    // so the viewport-plane sampling offset is reduced by the offset the
-    // composite re-applies on top.
     const lut = this.lut;
-    const shiftPx = this.samplingShiftPx() - this.appliedViewportPx;
+    const shiftPx = this.samplingShiftPx();
     const profile = (column: number): number =>
       data[Math.min(n - 1, Math.floor((column / w) * n))];
     // Ref level: maps -30..+30 dB → ±20 on 0-80 scale
@@ -323,37 +249,42 @@ export class WaterfallRenderer {
       rowData[pi + 3] = 255;
     }
     ctx.putImageData(this.rowBuf, 0, 0);
-    this._composite();
   }
 
   /** Resize the waterfall canvas, preserving existing content scaled to new dimensions. */
   resize(width: number, height: number): void {
     if (this.destroyed) return;
-    // Preserve the retained history (the anchor plane); the visible canvas
-    // is re-projected from it below. drawImage scales directly from the old
-    // canvas, so no temporary copy is needed.
-    const oldHistory = this.history?.canvas ?? null;
-    const prevW = oldHistory?.width ?? 0;
-    const prevH = oldHistory?.height ?? 0;
+    // Capture current content before resize clears the canvas
+    let oldCanvas: HTMLCanvasElement | null = null;
+    const prevW = this.ctx.canvas.width;
+    const prevH = this.ctx.canvas.height;
+    if (prevW > 0 && prevH > 0) {
+      oldCanvas = document.createElement('canvas');
+      oldCanvas.width = prevW;
+      oldCanvas.height = prevH;
+      const offCtx = oldCanvas.getContext('2d');
+      if (offCtx) {
+        offCtx.drawImage(this.ctx.canvas, 0, 0);
+      } else {
+        oldCanvas = null;
+      }
+    }
 
     this.width = width;
     this.height = height;
     this.rowBuf = null;
     this.rowData = null;
+    // Scaled content no longer matches the old pixel anchor.
+    this.anchoredViewportHz = this.options.centerHz;
+    this.appliedViewportPx = 0;
+    this.viewportAnchorValid = this.options.spanHz > 0;
     if (width > 0 && height > 0) {
       this.ctx.canvas.width = width;
       this.ctx.canvas.height = height;
       this._initBuffers();
-      this._initHistory();
-      if (oldHistory && prevW > 0 && prevH > 0) {
-        // Restore the preserved history scaled to the new dimensions. The
-        // scaled copy keeps the OLD anchor plane — scaling maps the same
-        // frequencies onto the same span edges at any width — so the anchor
-        // survives and only the viewport's pixel offset is recomputed at
-        // the new width (MOR-4256 round 2).
-        this.history!.drawImage(oldHistory, 0, 0, width, height);
-        this.appliedViewportPx = this.viewportOffsetPx();
-        this._composite();
+      if (oldCanvas) {
+        // Restore preserved content scaled to new dimensions
+        this.ctx.drawImage(oldCanvas, 0, 0, width, height);
       } else {
         this.clear();
       }
@@ -404,23 +335,17 @@ export class WaterfallRenderer {
   /** Fill the canvas with the background color and re-anchor the viewport. */
   clear(): void {
     if (this.destroyed || this.width <= 0 || this.height <= 0) return;
-    this.anchoredViewportHz = this.options.centerHz
-      - (Number.isFinite(this.options.panoramaShiftHz) ? this.options.panoramaShiftHz : 0);
+    this.anchoredViewportHz = this.options.centerHz;
     this.appliedViewportPx = 0;
-    this.rebaseResiduePx = 0;
     this.viewportAnchorValid = this.options.spanHz > 0;
-    if (this.history) {
-      this.history.fillStyle = WATERFALL_BACKGROUND;
-      this.history.fillRect(0, 0, this.width, this.height);
-    }
-    this._composite();
+    this.ctx.fillStyle = WATERFALL_BACKGROUND;
+    this.ctx.fillRect(0, 0, this.width, this.height);
   }
 
   destroy(): void {
     this.destroyed = true;
     this.rowBuf = null;
     this.rowData = null;
-    this.history = null;
     this.ctx = null as unknown as CanvasRenderingContext2D;
   }
 }
