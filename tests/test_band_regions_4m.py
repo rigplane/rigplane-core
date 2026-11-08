@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -436,3 +437,80 @@ class TestFtx1DisplayGateOverRealHttp:
             assert any(b["name"] == "4m" for b in (r1["txBands"] or []))
         finally:
             await srv.stop()
+
+
+# ── Mounted-UI fixture: region-dependent capabilities documents ────
+
+_4M_REGION_FIXTURE = (
+    REPO_ROOT
+    / "frontend"
+    / "src"
+    / "components-v2"
+    / "controls"
+    / "__tests__"
+    / "fixtures"
+    / "ic7300-4m-region-capabilities.json"
+)
+
+# ``providerGeneration`` (the radio session's generation counter) is the
+# only volatile field in the served body — everything else is derived
+# from the profile and the band-plan region — so the fixture pins it to
+# 0 before comparing. No timestamps are served.
+_4M_FIXTURE_GENERATION = 0
+
+
+def _pin_volatile(doc: dict) -> dict:
+    doc["providerGeneration"] = _4M_FIXTURE_GENERATION
+    return doc
+
+
+class TestFourMetreRegionCapabilitiesFixture:
+    """The mounted BandSelector suite
+    (``frontend/src/components-v2/controls/__tests__/BandSelector.isolated.test.ts``)
+    proves the region-dependent 4 m button against these two bodies. This
+    test rebuilds them from the real IC-7300 handler end to end and
+    requires the committed fixture to equal what the server serves
+    (regenerate with ``UPDATE_4M_REGION_GOLDENS=1`` and review the diff)."""
+
+    @pytest.mark.asyncio
+    async def test_committed_fixture_matches_the_real_handler(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        plans = _copy_plans(tmp_path)
+        _write_region(plans, "US")
+        async with _station(monkeypatch, plans) as (web, _r, _f, _e, _x):
+            us = _pin_volatile(await _capabilities_over_http(web))
+            await _post_region(web, "IARU-R1")
+            r1 = _pin_volatile(await _capabilities_over_http(web))
+
+        produced = {"US": us, "IARU-R1": r1}
+        if os.environ.get("UPDATE_4M_REGION_GOLDENS") == "1":
+            _4M_REGION_FIXTURE.parent.mkdir(parents=True, exist_ok=True)
+            _4M_REGION_FIXTURE.write_text(
+                '{"US": '
+                + json.dumps(produced["US"], sort_keys=True)
+                + ',\n"IARU-R1": '
+                + json.dumps(produced["IARU-R1"], sort_keys=True)
+                + "}\n",
+                encoding="utf-8",
+            )
+        committed = json.loads(_4M_REGION_FIXTURE.read_text(encoding="utf-8"))
+        assert produced == committed, (
+            "the 4 m region capabilities fixture is stale; regenerate it "
+            "(run this module with UPDATE_4M_REGION_GOLDENS=1) and review "
+            "the diff"
+        )
+
+    def test_fixture_pins_the_scenarios_the_frontend_relies_on(self) -> None:
+        committed = json.loads(_4M_REGION_FIXTURE.read_text(encoding="utf-8"))
+        us, r1 = committed["US"], committed["IARU-R1"]
+        # US: no 4 m selector entry, the other bands stay.
+        assert not any(b["name"] == "4m" for b in _payload_bands(us))
+        assert any(b["name"] == "6m" for b in _payload_bands(us))
+        # IARU-R1: the 4 m entry with its published default, no bsrCode.
+        band = next(b for b in _payload_bands(r1) if b["name"] == "4m")
+        assert band["default"] == _FOUR_METRE_DEFAULT
+        assert "bsrCode" not in band
+        # The TX row is unconditional in both regions (MOR-4303).
+        assert _FOUR_METRE_TX_ROW in (us["txBands"] or [])
+        assert _FOUR_METRE_TX_ROW in (r1["txBands"] or [])

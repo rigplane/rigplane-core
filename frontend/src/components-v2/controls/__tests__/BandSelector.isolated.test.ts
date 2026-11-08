@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRawSnippet, mount, unmount, flushSync, type Snippet } from 'svelte';
 import { flattenBands, findActiveBand } from '../band-utils';
+import { validateCapabilities } from '$lib/types/capabilities';
 import type { FreqRange } from '$lib/types/capabilities';
+import regionDocuments from './fixtures/ic7300-4m-region-capabilities.json';
 
 // ── Fixtures (must be declared before vi.mock factories) ──────────────────
 
@@ -42,8 +44,15 @@ const mockPresetHandlers = {
   onFreqPreset: vi.fn(),
 };
 
+/**
+ * The document the mocked capabilities store serves. The 4 m region
+ * block below swaps in the real-handler documents; every other test
+ * keeps the hand-rolled HF fixture above.
+ */
+let capabilitiesDocument: { freqRanges: FreqRange[] } = { freqRanges: HF_RANGES };
+
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => ({ freqRanges: HF_RANGES })),
+  getCapabilities: vi.fn(() => capabilitiesDocument),
   getKeyboardConfig: vi.fn(() => null),
 }));
 
@@ -315,5 +324,59 @@ describe('BandSelector HAM/broadcast split (hamBands prop)', () => {
       .find((el) => el.textContent?.trim() === 'MW') as HTMLElement).click();
     flushSync();
     expect(mockPresetHandlers.onPresetSelect).toHaveBeenCalledWith(1_000_000, 'AM');
+  });
+});
+
+// ── 4 m region rows from the real handler (MOR-4300) ───────────────────────
+//
+// The two capability documents are what the production IC-7300 server
+// serves over `GET /api/v1/capabilities` with the band-plan region set
+// to US and to IARU-R1. They are produced and pinned by the Python
+// fixture test in tests/test_band_regions_4m.py (regenerate with
+// UPDATE_4M_REGION_GOLDENS=1) and pass through the real
+// validateCapabilities before the store mock serves them, so the
+// buttons render from contract-valid payloads, not hand-rolled ones.
+describe('BandSelector 4 m region rows (MOR-4300)', () => {
+  type RegionDocuments = Record<'US' | 'IARU-R1', unknown>;
+
+  function findButtonByText(container: HTMLElement, text: string): HTMLButtonElement | null {
+    const buttons = container.querySelectorAll<HTMLButtonElement>('button');
+    for (const btn of buttons) {
+      if (btn.textContent?.trim() === text) return btn;
+    }
+    return null;
+  }
+
+  /** Serve a real-handler region document through the real parse. */
+  function serveRegion(region: 'US' | 'IARU-R1'): void {
+    const docs = regionDocuments as unknown as RegionDocuments;
+    capabilitiesDocument = validateCapabilities(structuredClone(docs[region]));
+  }
+
+  afterEach(() => {
+    capabilitiesDocument = { freqRanges: HF_RANGES };
+  });
+
+  it('IARU-R1 renders the 4 m button and tunes its published default', () => {
+    serveRegion('IARU-R1');
+    const target = mountPanel();
+
+    const fourMetre = findButtonByText(target, '4m');
+    expect(fourMetre).not.toBeNull();
+    fourMetre?.click();
+    flushSync();
+
+    // The IC-7300 4 m row has no bsrCode: the selection is the band
+    // name, the published default (70.200 MHz) and no code.
+    expect(mockBandHandlers.onBandSelect).toHaveBeenCalledWith('4m', 70_200_000, undefined);
+  });
+
+  it('US renders no 4 m button while the region-independent bands stay', () => {
+    serveRegion('US');
+    const target = mountPanel();
+
+    expect(findButtonByText(target, '4m')).toBeNull();
+    expect(findButtonByText(target, '6m')).not.toBeNull();
+    expect(findButtonByText(target, '20m')).not.toBeNull();
   });
 });
