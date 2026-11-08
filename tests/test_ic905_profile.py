@@ -167,6 +167,15 @@ def test_modes_exclude_dd_atv_and_wfm() -> None:
 def test_front_end_and_level_domains() -> None:
     raw = _raw()
 
+    assert raw["data_mode"]["modes"] == [
+        "USB",
+        "LSB",
+        "AM",
+        "FM",
+    ]  # Basic manual: SSB-D/AM-D/FM-D
+    assert raw["audio"]["rx_audio_level_menu"].endswith(
+        "AF Output Level"
+    )  # 1A 05 01 18
     assert raw["attenuator"]["values"] == [0, 10]  # p.3: 11 00 / 11 10 (10 dB)
     assert raw["preamp"]["values"] == [0, 1]  # p.4: 16 02 00/01
     assert raw["agc"]["modes"] == [1, 2, 3]  # p.4: 16 12 01-03

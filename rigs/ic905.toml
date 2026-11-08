@@ -58,6 +58,9 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 tx_codec = "PCM_1CH_16BIT"
 browser_rx_transport = "auto"
 browser_rx_transcode_to_opus = true
+# Basic manual, SET > Connectors > USB/AV-OUT AF/IF Output > AF Output Level
+# (1A 05 01 18, 0-100%): the radio's own level for the USB audio it sends.
+rx_audio_level_menu = "SET > Connectors > USB/AV-OUT AF/IF Output > AF Output Level"
 
 # No [usb] section: USB VID:PID entries come only from our own recordings
 # (_schema.md) and none exists for this model. The guide (p.2) names the two
@@ -174,9 +177,6 @@ polling_only = [
     "receiver.main.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
-    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp — the 0x15 0x01
-    # single-byte SQL-status read, same cadence class as the sibling toggles.
-    "receiver.main.operator_toggles.dcd",
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
     # MOR-2131: read by the same 16 5D query as the two booleans above.
@@ -546,6 +546,9 @@ families = { cw = ["CW", "CW-R"] }
 # CI-V 0x1A 0x06 (p.14, format p.23): 00 = OFF, 01 = ON, filter 01-03.
 count = 1
 labels = { "0" = "OFF", "1" = "DATA" }
+# The modes that can carry DATA: the Basic manual's IF filter table lists SSB-D,
+# AM-D and FM-D (and DD/ATV, out of scope); no CW or RTTY data mode.
+modes = ["USB", "LSB", "AM", "FM"]
 
 # MOD Input sources (1A 05 01 26 DATA OFF MOD / 01 27 DATA MOD, p.8):
 # 00 = MIC, 01 = USB, 02 = MIC,USB, 03 = LAN.
