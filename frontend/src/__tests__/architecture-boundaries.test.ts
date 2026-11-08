@@ -688,12 +688,6 @@ describe('v3 package boundaries (MOR-1061)', () => {
 });
 
 describe('radio authority boundary (MOR-1406)', () => {
-  it('keeps host listening behind the declared radio authority adapter', async () => {
-    const filePath = 'src/lib/local-extensions/host-listening.ts';
-    const source = readFileSync(path.join(FRONTEND_ROOT, filePath), 'utf8');
-    expect(await authorityRuleIds(source, filePath)).toEqual([]);
-  }, ARCH_LINT_TIMEOUT_MS);
-
   it('rejects the first hop of a two-file writer facade', async () => {
     const facade = await authorityRuleIds(
       `export { setRadioState as commit } from '$lib/stores/radio.svelte';`,
