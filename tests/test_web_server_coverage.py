@@ -14,8 +14,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 
 from rigplane._bounded_queue import BoundedQueue
+from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.testing.timing import await_until
+from rigplane.web.state_schema import StateUpdateEnvelope
 from rigplane.core.command_service import (
     COMMAND_OUTCOME_INVALIDATED,
     CommandExecutionInvalidatedError,
@@ -1320,37 +1324,80 @@ async def test_http_power_is_lifecycle_only_until_provider_observation() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.realtime(
+    reason="real serial RX pump and request tracker on a fake hardware link"
+)
 async def test_http_power_endpoint_matches_the_golden_documents() -> None:
     golden = json.loads(
-        (pathlib.Path(__file__).parent / "fixtures" / "radio-power.json").read_text()
+        (
+            pathlib.Path(__file__).resolve().parents[1]
+            / "frontend/src/lib/transport/__tests__/fixtures/radio-power.json"
+        ).read_text()
     )
     assert golden["requestHeaderNames"] == ["Content-Type"]
-    for case in (golden["turnOn"], golden["turnOff"]):
-        calls: list[bool] = []
 
-        async def set_powerstat(on: bool) -> None:
-            calls.append(on)
+    class PowerLink(_FakeSerialCivLink):
+        async def send(self, frame: bytes) -> None:
+            await super().send(frame)
+            command = frame[4:-1]
+            if command in (b"\x18\x00", b"\x18\x01"):
+                reply = b"\xfb" if command[-1] == 0 else b"\x18\x01"
+                self.queue_response(
+                    bytes((0xFE, 0xFE, frame[3], frame[2])) + reply + b"\xfd"
+                )
 
-        radio = SimpleNamespace(
-            connected=True,
-            control_connected=True,
-            capabilities={"power_control"},
-            set_powerstat=set_powerstat,
-        )
-        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
-        writer = _FakeWriter()
-        payload = json.dumps(case["requestBody"]).encode()
-        await srv._handle_http(  # noqa: SLF001
-            writer,
-            "POST",
-            golden["endpoint"],
-            headers={"content-length": str(len(payload)), "content-type": "application/json"},
-            reader=_reader_with(payload),
-        )
-        status, body = _response_json(writer)
-        assert status == 200
-        assert body == case["reply"]
-        assert calls == [case["requestBody"]["state"] == "on"]
+    link = PowerLink()
+    radio = Icom7610SerialRadio(
+        device="/dev/rigplane-test-no-hardware",
+        civ_link=link,
+        audio_driver=_FakeUsbAudioDriver(),
+        timeout=0.1,
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    try:
+        await radio.connect()
+        srv = WebServer(radio, WebConfig(radio_model=golden["model"]))
+        for case in (golden["turnOff"], golden["turnOn"]):
+            writer = _FakeWriter()
+            payload = json.dumps(case["requestBody"]).encode()
+            await srv._handle_http(  # noqa: SLF001
+                writer,
+                "POST",
+                golden["endpoint"],
+                headers={
+                    "content-length": str(len(payload)),
+                    "content-type": "application/json",
+                },
+                reader=_reader_with(payload),
+            )
+            status, body = _response_json(writer)
+            assert status == 200
+            assert body == case["reply"]
+            expected = case["envelope"]["set"][0][1]
+            await await_until(
+                lambda: srv.build_public_state()["powerOn"] is expected,
+                description="Core power observation reaches served state",
+            )
+            state_writer = _FakeWriter()
+            await srv._serve_state(state_writer)  # noqa: SLF001
+            state_status, served = _response_json(state_writer)
+            assert state_status == 200
+            envelope = srv.build_state_update_envelope(force_full=True)
+            StateUpdateEnvelope.model_validate(envelope)
+            for document in (served, envelope["data"]):
+                for path, expected in case["envelope"]["set"]:
+                    actual: Any = document
+                    for key in path:
+                        actual = actual[key]
+                    if path[0] == "fieldStatus":
+                        actual = {key: actual[key] for key in expected}
+                    assert actual == expected
+        power_commands = [
+            frame[4:-1] for frame in link.sent_frames if frame[4] == 0x18
+        ]
+        assert power_commands == [b"\x18\x00", b"\x18\x01"]
+    finally:
+        await radio.disconnect()
 
 
 @pytest.mark.asyncio

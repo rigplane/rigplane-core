@@ -138,6 +138,10 @@
     startY = 0;
   }
 
+  function clearPendingPress() {
+    if (!dragActive) trackedPointer = null;
+  }
+
   // Reset state when sheet closes externally
   $effect(() => {
     if (!open) {
@@ -175,6 +179,8 @@
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
       onpointercancel={onPointerCancel}
+      onpointerleave={clearPendingPress}
+      onlostpointercapture={clearPendingPress}
     >
       <div class="m-sheet-handle"></div>
       <div class="m-sheet-title">{title}</div>

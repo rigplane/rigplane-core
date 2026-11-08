@@ -49,10 +49,6 @@ vi.mock('$lib/stores/audio.svelte', () => ({
     return () => {};
   }),
 } satisfies { [K in keyof typeof import('$lib/stores/audio.svelte')]?: (typeof import('$lib/stores/audio.svelte'))[K] }));
-vi.mock('$lib/transport/ws-client', async (importOriginal) => ({
-  ...await importOriginal<typeof import('$lib/transport/ws-client')>(),
-  sendCommand: vi.fn<(typeof import('$lib/transport/ws-client'))['sendCommand']>(() => true),
-}));
 vi.mock('$lib/utils/tx-permit', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/utils/tx-permit')>(),
   getTxPermit: vi.fn<(typeof import('$lib/utils/tx-permit'))['getTxPermit']>(() => 'allowed'),
@@ -66,7 +62,7 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
 import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { FTX1_CAPABILITIES } from '$lib/runtime/adapters/__tests__/fixtures/ftx1-profile';
-import radioPowerGolden from '../../../../../tests/fixtures/radio-power.json';
+import radioPowerGolden from '$lib/transport/__tests__/fixtures/radio-power.json';
 import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.svelte';
 import { setRadioPowerOn } from '$lib/stores/connection.svelte';
 import { resetRadioState } from '$lib/stores/radio.svelte';
@@ -113,6 +109,9 @@ import LocalExtensionsHost from '$lib/local-extensions/LocalExtensionsHost.svelt
 import { runtime } from '$lib/runtime';
 import { getHostUi } from '$lib/local-extensions/host-ui';
 import { setRadioHealth } from '$lib/stores/connection.svelte';
+import stateGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
+import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
+import * as client from '$lib/transport/ws-client';
 
 let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
 function pointer(el: Element, type: string, y = 40) {
@@ -166,6 +165,50 @@ afterEach(async () => {
 });
 
 describe('MOR-4299 mobile radio power', () => {
+  it('observes confirmed OFF then ON through the shared browser state documents', async () => {
+    vi.stubGlobal('WebSocket', MockWebSocket); instances.length = 0;
+    client.connect('ws://test/api/v1/ws'); const socket = instances[0]; socket.simulateOpen();
+    try {
+      socket.simulateMessage(JSON.stringify({ type: 'state_update', data: stateGoldens['IC-7610'].allObserved }));
+      socket.simulateMessage(JSON.stringify({ type: 'state_update', data: {
+        ...radioPowerGolden.turnOn.envelope, revision: 100000, transportSeq: 100000,
+        stateRevision: 100000, observationSeq: 100000,
+      } }));
+      setCapabilities({ ...capsWith(['power_control']), powerOnCommand: true });
+      mountMobileWithAppPlan(); mountHosts(); tap(button('.m-settings-btn'));
+      for (const which of ['turnOff', 'turnOn'] as const) {
+        fetchMock.mockClear();
+        fetchMock.mockResolvedValue(new Response(JSON.stringify(radioPowerGolden[which].reply)));
+        tap(button(which === 'turnOff' ? '.power-toggle-btn' : '.power-on-btn'));
+        expect(fetchMock).not.toHaveBeenCalled();
+        tap(button('[data-testid="confirm-dialog-confirm"]'));
+        await vi.waitFor(() => assertRequest(which));
+        await tick();
+        socket.simulateMessage(JSON.stringify({ type: 'state_update', data: radioPowerGolden[which].envelope }));
+        flushSync();
+        expect(runtime.radioPowerOn, which).toBe(which === 'turnOn');
+        expect(document.querySelector('[data-testid="global-power-off"]') !== null, which).toBe(which === 'turnOff');
+      }
+    } finally { client.disconnect(); }
+  });
+
+  it('offers no silent Power ON action to a remote controller', () => {
+    vi.spyOn(runtime, 'remoteController', 'get').mockReturnValue(true);
+    setCapabilities({ ...capsWith(), powerOnCommand: true }); setRadioPowerOn(false);
+    mountHosts();
+    expect(document.querySelector('.power-on-btn')).toBeNull();
+    expect(document.querySelector('.power-off-hint')?.textContent).toContain('cannot be powered on');
+  });
+
+  it('forgets an unrecognized sheet press released outside before pointer reentry', () => {
+    setup(); const sheet = document.querySelector('.m-sheet')!;
+    const capture = vi.fn(); Object.defineProperty(sheet, 'setPointerCapture', { value: capture });
+    pointer(sheet, 'pointerdown', 40);
+    pointer(sheet, 'pointerleave', 41);
+    pointer(document.querySelector('.m-sheet-backdrop')!, 'pointerup', 45);
+    pointer(sheet, 'pointerenter', 80); pointer(sheet, 'pointermove', 100);
+    expect(capture, 'released press cannot start a phantom drag').not.toHaveBeenCalled();
+  });
   it('keeps one power control at the top of SETUP and confirmation outside the sheet across rotation', async () => {
     const phone = setup();
     const power = button('.m-sheet-content .power-toggle-btn');

@@ -1,6 +1,0 @@
-{
-  "endpoint": "/api/v1/radio/power",
-  "requestHeaderNames": ["Content-Type"],
-  "turnOn": {"requestBody": {"state": "on"}, "reply": {"status": "ok", "power": "on"}},
-  "turnOff": {"requestBody": {"state": "off"}, "reply": {"status": "ok", "power": "off"}}
-}

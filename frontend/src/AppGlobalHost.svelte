@@ -13,7 +13,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import Toast from './components/shared/Toast.svelte';
-  import { getHostUi } from '$lib/local-extensions/host-ui';
+  import { getHostUi, powerRequestAllowed } from '$lib/local-extensions/host-ui';
   import { runtime } from '$lib/runtime';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { t } from '$lib/i18n';
@@ -95,7 +95,7 @@
   // power-on command (`power_on` in rigs/*.toml, published as
   // capabilities.powerOnCommand). Elsewhere the operator gets the plain
   // "cannot power on from here" sentence instead of a dead button.
-  let powerOnCommand = $derived(runtime.caps?.powerOnCommand === true);
+  let powerOnCommand = $derived(powerRequestAllowed(true, 'powered-off-overlay'));
 
   function handlePowerOn(): void {
     getHostUi()?.setRadioPower(true, 'powered-off-overlay');
@@ -147,7 +147,7 @@
           <button class="power-on-btn" onclick={handlePowerOn}>
             {t('core.overlay.poweredOff.powerOnButton')}
           </button>
-        {:else if radioNotAnswering}
+        {:else if !radioNotConnected}
           <span class="power-off-hint">{t('core.overlay.poweredOff.noRemotePowerOn')}</span>
         {/if}
       </div>

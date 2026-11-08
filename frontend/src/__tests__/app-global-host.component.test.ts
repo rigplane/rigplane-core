@@ -100,6 +100,10 @@ vi.mock('$lib/runtime/system-controller', () => ({
   systemController: { registerPreDisconnectBarrier: h.registerBarrier },
 }));
 vi.mock('$lib/stores/capabilities.svelte', () => ({ hasAnyScope: () => false }));
+vi.mock('$lib/stores/connection.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/stores/connection.svelte')>(),
+  getRadioPowerOn: () => h.radioPowerOn,
+}));
 vi.mock('$lib/stores/layout.svelte', () => ({ getLayoutMode: () => 'standard' }));
 vi.mock('../skins/registry', () => ({
   resolveSkinId: h.resolveSkin,

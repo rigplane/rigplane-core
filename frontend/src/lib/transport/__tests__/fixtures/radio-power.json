@@ -1,0 +1,15 @@
+{
+  "model": "IC-7610",
+  "endpoint": "/api/v1/radio/power",
+  "requestHeaderNames": ["Content-Type"],
+  "turnOn": {
+    "requestBody": {"state": "on"}, "reply": {"status": "ok", "power": "on"},
+    "envelope": {"type": "delta", "deltaVersion": 2, "stateContractVersion": 1, "providerGeneration": 0, "revision": 100002, "transportSeq": 100002, "stateRevision": 100002, "freshnessRevision": 0, "observationSeq": 100002,
+      "set": [[["powerOn"], true], [["fieldStatus", "powerOn"], {"storePath": "global.tx_state.power_on", "observed": true, "availability": "available", "freshness": "fresh"}]]}
+  },
+  "turnOff": {
+    "requestBody": {"state": "off"}, "reply": {"status": "ok", "power": "off"},
+    "envelope": {"type": "delta", "deltaVersion": 2, "stateContractVersion": 1, "providerGeneration": 0, "revision": 100001, "transportSeq": 100001, "stateRevision": 100001, "freshnessRevision": 0, "observationSeq": 100001,
+      "set": [[["powerOn"], false], [["fieldStatus", "powerOn"], {"storePath": "global.tx_state.power_on", "observed": true, "availability": "available", "freshness": "fresh"}]]}
+  }
+}
