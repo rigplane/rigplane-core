@@ -37,8 +37,10 @@ real WebServer and RadioPoller — only the hardware is faked.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from unittest.mock import AsyncMock, MagicMock
@@ -47,9 +49,9 @@ import pytest
 
 from rigplane.core.radio_protocol import Radio
 from rigplane.rigctld.state_cache import StateCache
-from rigplane.scope import ScopeFrame
+from rigplane.scope import ScopeAssembler, ScopeFrame
 from rigplane.testing.timing import VirtualClock, await_until
-from rigplane.web.protocol import MSG_TYPE_SCOPE
+from rigplane.web.protocol import MSG_TYPE_SCOPE, encode_scope_frame
 from rigplane.web.radio_poller import EnableScope
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.ws import WS_OP_BINARY
@@ -59,6 +61,8 @@ from test_web_server import (
     _close_ws,
     _ws_connect,
     _ws_recv_frame,
+    _ws_send_text,
+    _ws_skip_handshake,
 )
 from test_web_server_coverage import (
     _elapse_scope_windows,
@@ -104,6 +108,58 @@ async def test_all_zero_frames_flowing_writes_nothing(
 
     assert queued == []
     assert _scope_hidden_verdict(srv) is True
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-7610"])
+async def test_captured_out_of_range_is_present_not_hidden(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/ic705/scope_out_of_range.json").read_text()
+    )
+    raw = bytes.fromhex(fixture["civHex"])
+    assert raw[7:9] == b"\x01\x01"  # captured seq=1/max=1: no continuation
+    frame = ScopeAssembler().feed(raw[7:-1], raw[6])
+    assert isinstance(frame, ScopeFrame)
+    assert frame.out_of_range and frame.pixels == b""
+    assert (frame.start_freq_hz, frame.end_freq_hz) == (
+        fixture["startHz"],
+        fixture["endHz"],
+    )
+    wire = encode_scope_frame(frame, 1)
+    assert wire.hex() == fixture["wireHex"]
+    assert wire[13:] == b"\x01\x00\x00"
+    radio = _scope_radio()
+    radio.model = model
+    srv, _, queued = _virtual_scope_server(monkeypatch, virtual_clock, radio=radio)
+    caplog.set_level("INFO", logger="rigplane.web.server")
+    published: list[bool] = []
+    publish = srv._publish_scope_hidden  # noqa: SLF001
+
+    def record(hidden: bool, **kwargs: Any) -> None:
+        published.append(hidden)
+        publish(hidden, **kwargs)
+
+    monkeypatch.setattr(srv, "_publish_scope_hidden", record)
+
+    async def scenario() -> None:
+        await _elapse_scope_windows(
+            virtual_clock,
+            5,
+            between=lambda: srv._scope_health_check(frame),  # noqa: SLF001
+        )
+        assert True not in published
+        assert _scope_hidden_verdict(srv) is False
+        assert "all-zero" not in caplog.text
+        assert not srv._scope_menu_guard_active(now=virtual_clock())  # noqa: SLF001
+        srv._scope_health_check(_live_scope_frame())  # noqa: SLF001
+        await srv._refetch_and_reenable()  # noqa: SLF001
+        assert len(queued) == 1
+
+    await _run_monitor(srv, scenario())
 
 
 @pytest.mark.timeout(30)
@@ -559,6 +615,68 @@ def _scope_frame_sink(radio: MagicMock) -> Callable[[ScopeFrame], None]:
     calls = [c for c in radio.on_scope_data.call_args_list if c.args[0] is not None]
     assert calls, "scope data callback not wired on the radio"
     return calls[-1].args[0]
+
+
+@pytest.mark.realtime(reason="real control and scope WebSocket handlers")
+@pytest.mark.timeout(30)
+async def test_scope_ctr_control_and_scope_wire_replay() -> None:
+    """Shared browser documents, replayed through both real WS handlers."""
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/ic705/scope_out_of_range.json").read_text()
+    )
+    radio = _e2e_scope_radio()
+    radio.get_freq = AsyncMock(return_value=146_520_000)
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    recovered = ScopeFrame(
+        receiver=0,
+        mode=0,
+        start_freq_hz=fixture["inRangeStartHz"],
+        end_freq_hz=fixture["inRangeEndHz"],
+        pixels=b"\x00\x40\x80",
+        out_of_range=False,
+    )
+
+    async def center(mode: int) -> None:
+        assert mode == 0
+        _scope_frame_sink(radio)(recovered)
+
+    radio.set_scope_mode = AsyncMock(side_effect=center)
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        scope_reader, scope_writer, _ = await _ws_connect(host, port, "/api/v1/scope")
+        try:
+            await await_until(lambda: radio.enable_scope.await_count == 1, timeout=5.0)
+            raw = bytes.fromhex(fixture["civHex"])
+            frame = ScopeAssembler().feed(raw[7:-1], raw[6])
+            assert frame is not None
+            _scope_frame_sink(radio)(frame)
+            opcode, wire = await _ws_recv_frame(scope_reader)
+            assert opcode == WS_OP_BINARY
+            assert wire.hex() == fixture["streamWireHex"]
+            reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
+            try:
+                await _ws_skip_handshake(reader)
+                await _ws_send_text(writer, json.dumps(fixture["ctrCommand"]))
+                for _ in range(10):
+                    _, payload = await _ws_recv_frame(reader)
+                    response = json.loads(payload)
+                    if response.get("id") == fixture["ctrCommand"]["id"]:
+                        assert response == fixture["ctrResponse"]
+                        break
+                else:
+                    pytest.fail("CTR response missing")
+                _, wire = await _ws_recv_frame(scope_reader)
+                assert wire.hex() == fixture["inRangeWireHex"]
+                radio.set_scope_mode.assert_awaited_once_with(0)
+            finally:
+                await _close_ws(writer)
+        finally:
+            await _close_ws(scope_writer)
+    finally:
+        await srv.stop()
 
 
 def _producer_live_frame() -> ScopeFrame:

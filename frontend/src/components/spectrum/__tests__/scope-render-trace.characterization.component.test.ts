@@ -36,7 +36,7 @@ describe('actual canvas trace callbacks', () => {
     const spectrum = mount(SpectrumCanvas, { target, props: { data: null, trace, onRegisterPush: (fn) => { spectrumPush = fn; } } });
     flushSync();
     try {
-      const first = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, pixels: new Uint8Array(2049) });
+      const first = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels: new Uint8Array(2049) });
       const second = Object.freeze({ ...first, pixels: new Uint8Array(2049) });
       for (const [index, frame] of [first, second].entries()) {
         trace.observe({ kind: 'accepted', frame, token: { source: 'audio_fft', transportEpoch: 1,
