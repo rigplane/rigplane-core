@@ -2424,6 +2424,41 @@ describe('SDR scope source routing (MOR-3158)', () => {
     }
   });
 
+  it('keeps retained binary OOR pixels live under TX freeze but clears an empty OOR before recovery', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    selectSdrSource();
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    const target = mountPanel();
+    emitFrame({ pixels: new Uint8Array([10, 80]), sequence: 1 });
+    await flushWaterfallPaint();
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    replaceSdrLeaf(sdrLeaf({ txFrozen: true })); flushSync();
+    emitFrame({ pixels: new Uint8Array([10, 80]), sequence: 2, outOfRange: true });
+    await flushWaterfallPaint();
+    expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([10, 80]);
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    expect(target.querySelector('.scope-hatch[data-reason="outOfRange"]')).toBeNull();
+    expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+    expect(push).toHaveBeenCalledTimes(1);
+    const renders = spectrumRendererHarness.render.mock.calls.length;
+    emitFrame({ pixels: new Uint8Array(0), sequence: 3, outOfRange: true });
+    await flushWaterfallPaint();
+    expect(target.querySelector('[data-testid="scope-out-of-range"]')).not.toBeNull();
+    expect(target.querySelector('.spectrum-area canvas')).toBeNull();
+    expect(spectrumRendererHarness.render).toHaveBeenCalledTimes(renders);
+    expect(push).toHaveBeenCalledTimes(1);
+    replaceSdrLeaf(sdrLeaf({ txFrozen: false })); flushSync();
+    emitFrame({ pixels: new Uint8Array([1, 2, 3]), sequence: 4 });
+    await flushWaterfallPaint();
+    expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([1, 2, 3]);
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    expect(target.querySelector('.scope-hatch[data-reason="outOfRange"]')).toBeNull();
+    expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+    expect(push).toHaveBeenCalledTimes(2);
+  });
+
   it('holds managed waterfall pushes under the TX marker too', async () => {
     function sdrProjection(sequence: number, outOfRange = false) {
       emitFrame({

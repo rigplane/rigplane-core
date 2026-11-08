@@ -85,7 +85,7 @@ describe('coverage projection', () => {
     expect(projection.covered).toEqual([{ start: 0.2, end: 0.8, sampleStart: 0, sampleEnd: 1 }]);
   });
   it.each([
-    [{ outOfRange: true }, 'outOfRange'],
+    [{ outOfRange: true, hasPixels: false }, 'outOfRange'],
     [{ hasPixels: false }, 'no pixels'],
   ] as const)('hatches explicit missing-data state %s', (facts, reason) => {
     expect(projectScopeCoverage({ ...geometry, ...facts }, { startHz: 0, endHz: 100 }))
@@ -95,5 +95,28 @@ describe('coverage projection', () => {
     expect(projectScopeCoverage(geometry, { startHz: 100, endHz: 200 }).covered).toEqual([]);
     expect(projectScopeCoverage(geometry, { startHz: 100, endHz: 200 }).hatched)
       .toEqual([{ start: 0, end: 1, reason: 'view wider than coverage' }]);
+  });
+});
+
+it('keeps coverage for producer TX-frozen bytes that retain pixels with the out-of-range flag', () => {
+  const buffer = wire(fixtures.radio); const header = new DataView(buffer);
+  header.setUint8(13, header.getUint8(13) | 1);
+  const result = ingressScopeFrame(buffer, context);
+  expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.reason);
+  expect(result.frame.outOfRange).toBe(true); expect(result.geometry.outOfRange).toBe(true);
+  expect(result.geometry.hasPixels).toBe(true);
+  expect(result.frame.pixels).toEqual(new Uint8Array(fixtures.radio.slice(16)));
+  expect(result.frame.pixels!.buffer).toBe(buffer);
+  expect(projectScopeCoverage(result.geometry, result.geometry.view)).toEqual({
+    covered: [{ start: 0, end: 1, sampleStart: 0, sampleEnd: 1 }], hatched: [],
+  });
+});
+
+it('fully hatches producer header-only out-of-range bytes without pixels', () => {
+  const result = ingressScopeFrame(wire(fixtures.outOfRange), context);
+  expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.reason);
+  expect(result.geometry).toMatchObject({ outOfRange: true, hasPixels: false });
+  expect(projectScopeCoverage(result.geometry, result.geometry.view)).toEqual({
+    covered: [], hatched: [{ start: 0, end: 1, reason: 'outOfRange' }],
   });
 });

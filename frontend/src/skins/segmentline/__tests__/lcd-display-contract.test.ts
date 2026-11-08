@@ -3,6 +3,7 @@ import { get } from 'svelte/store';
 import type { ScopeGeometry } from '../../../lib/runtime/scope-frame';
 import { resolveLcdSpectrumFrame, type LcdSpectrumFrameExpectation } from '../lcd-display-contract';
 import { lcdStreamFixture } from './scope-stream-fixture';
+import { ingressScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
 
 const EXPECT_HARDWARE_MAIN: LcdSpectrumFrameExpectation = { source: 'hardware', receiver: 'MAIN' };
 function geometry(overrides: Partial<ScopeGeometry> = {}): ScopeGeometry {
@@ -14,6 +15,19 @@ function geometry(overrides: Partial<ScopeGeometry> = {}): ScopeGeometry {
 }
 
 describe('LCD geometry contract', () => {
+  it.each([[3, 'live'], [1, 'ghost'], [0, 'out-of-range']] as const)(
+    'qualifies real flagged wire geometry with width%s as %s', (width, state) => {
+      const buffer = new ArrayBuffer(16 + width), wire = new DataView(buffer);
+      wire.setUint8(0, 1); wire.setUint32(3, 14_200_000, true); wire.setUint32(7, 14_300_000, true);
+      wire.setUint8(13, 1); wire.setUint16(14, width, true); new Uint8Array(buffer, 16).set([0, 128, 255].slice(0, width));
+      const result = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1 });
+      expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.reason);
+      expect(result.geometry.outOfRange).toBe(true); expect(result.geometry.hasPixels).toBe(width > 0);
+      const resolution = resolveLcdSpectrumFrame(result.geometry, EXPECT_HARDWARE_MAIN);
+      expect(resolution.state).toBe(state);
+      if (width === 1) expect(resolution).toEqual({ state: 'ghost', reason: 'invalid' });
+    },
+  );
   it.each(['hardware', 'audio-fft'] as const)('admits source-qualified %s geometry unchanged', source => {
     const candidate = geometry({ source: source === 'hardware' ? 'radio' : 'audio_fft' });
     const result = resolveLcdSpectrumFrame(candidate, { source, receiver: 'MAIN' });

@@ -8,17 +8,36 @@ function source(kind: 'radio' | 'audio_fft') {
   let receive = (_buffer: ArrayBuffer) => {};
   const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
     { source: kind, sourceId: kind, epoch: 1 }, 'borrowed');
-  return { stream, frame(receiver = 0, pixels = [0, 128, 255]) {
+  return { stream, frame(receiver = 0, pixels = [0, 128, 255], outOfRange = false) {
     const bytes = new ArrayBuffer(16 + pixels.length);
     const view = new DataView(bytes);
     view.setUint8(0, 1); view.setUint8(1, receiver);
     view.setUint32(3, 14_200_000, true); view.setUint32(7, 14_300_000, true);
+    view.setUint8(13, outOfRange ? 1 : 0);
     view.setUint16(14, pixels.length, true); new Uint8Array(bytes, 16).set(pixels);
     receive(bytes); flushSync();
   } };
 }
 
 describe('LCD leaves consume ScopeStream directly', () => {
+  it('keeps retained TX-freeze samples live and clears only header-only out-of-range frames', async () => {
+    const target = document.createElement('div'); document.body.append(target);
+    const wire = source('radio');
+    const component = mount(LcdRfPanadapter, { target, props: { scopeStream: wire.stream, receiver: 'MAIN' } });
+    const state = () => target.querySelector('[data-testid="lcd-rf-panadapter"]');
+    const samples = () => [...target.querySelectorAll('[data-rf-sample]')].map(node => Number(node.getAttribute('data-rf-sample')));
+    try {
+      flushSync(); wire.frame();
+      expect(state()?.getAttribute('data-rf-mode')).toBe('live'); expect(samples()).toEqual([0, 128, 255]);
+      wire.frame(0, [0, 128, 255], true);
+      expect(state()?.getAttribute('data-rf-mode')).toBe('live'); expect(samples()).toEqual([0, 128, 255]);
+      wire.frame(0, [], true);
+      expect(state()?.getAttribute('data-rf-mode')).toBe('ghost');
+      expect(state()?.getAttribute('data-frame-reason')).toBe('out-of-range'); expect(samples()).toEqual([]);
+      wire.frame();
+      expect(state()?.getAttribute('data-rf-mode')).toBe('live'); expect(samples()).toEqual([0, 128, 255]);
+    } finally { await unmount(component); wire.stream.dispose(); target.remove(); }
+  });
   it('paints audio pixels without a reactive frame carrier and clears stale geometry', async () => {
     const target = document.createElement('div'); document.body.append(target);
     const wire = source('audio_fft');
