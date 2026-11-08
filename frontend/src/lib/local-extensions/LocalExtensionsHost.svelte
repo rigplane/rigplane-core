@@ -40,10 +40,21 @@
       action: () => connect ? runtime.system.connect() : runtime.system.disconnect() });
     return true;
   }
-  function requestPower(on: boolean): boolean {
-    if (!hasCapability('power_control') || runtime.remoteController || getRadioPowerOn() === null || getRadioPowerOn() === on) return false;
+  function powerRequestAllowed(on: boolean, origin?: 'powered-off-overlay'): boolean {
+    if (runtime.remoteController) return false;
+    const power = getRadioPowerOn();
+    if (origin === 'powered-off-overlay') {
+      return on && runtime.caps?.powerOnCommand === true
+        && runtime.radioHealth?.likelyCause !== 'radio_not_connected'
+        && (power === false || (power !== true
+          && runtime.radioHealth?.likelyCause === 'radio_powered_off_likely'));
+    }
+    return hasCapability('power_control') && power !== null && power !== on;
+  }
+  function requestPower(on: boolean, origin?: 'powered-off-overlay'): boolean {
+    if (confirmOpen || !powerRequestAllowed(on, origin)) return false;
     requestConfirm({ message: t(on ? 'core.statusbar.power.confirmTurnOn' : 'core.statusbar.power.confirmTurnOff'),
-      action: () => getRadioPowerOn() === null ? undefined : on ? runtime.system.powerOn() : runtime.system.powerOff(),
+      action: () => !powerRequestAllowed(on, origin) ? undefined : on ? runtime.system.powerOn() : runtime.system.powerOff(),
       formatError: err => t(on ? 'core.statusbar.power.failedTurnOn' : 'core.statusbar.power.failedTurnOff', { detail: String(err) }) });
     return true;
   }

@@ -1320,6 +1320,40 @@ async def test_http_power_is_lifecycle_only_until_provider_observation() -> None
 
 
 @pytest.mark.asyncio
+async def test_http_power_endpoint_matches_the_golden_documents() -> None:
+    golden = json.loads(
+        (pathlib.Path(__file__).parent / "fixtures" / "radio-power.json").read_text()
+    )
+    assert golden["requestHeaderNames"] == ["Content-Type"]
+    for case in (golden["turnOn"], golden["turnOff"]):
+        calls: list[bool] = []
+
+        async def set_powerstat(on: bool) -> None:
+            calls.append(on)
+
+        radio = SimpleNamespace(
+            connected=True,
+            control_connected=True,
+            capabilities={"power_control"},
+            set_powerstat=set_powerstat,
+        )
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        writer = _FakeWriter()
+        payload = json.dumps(case["requestBody"]).encode()
+        await srv._handle_http(  # noqa: SLF001
+            writer,
+            "POST",
+            golden["endpoint"],
+            headers={"content-length": str(len(payload)), "content-type": "application/json"},
+            reader=_reader_with(payload),
+        )
+        status, body = _response_json(writer)
+        assert status == 200
+        assert body == case["reply"]
+        assert calls == [case["requestBody"]["state"] == "on"]
+
+
+@pytest.mark.asyncio
 async def test_http_command_batch_preparation_uses_shared_command_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -122,6 +122,7 @@ vi.mock('../lib/local-extensions/LocalExtensionsHost.svelte', async () => {
 import App from '../App.svelte';
 import AppGlobalHost from '../AppGlobalHost.svelte';
 import LayoutStub from './LayoutStub.svelte';
+import { bindHostUi } from '$lib/local-extensions/host-ui';
 
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); };
 
@@ -195,41 +196,42 @@ describe('AppGlobalHost — standalone, with no layout mounted', () => {
     unmount(instance);
   });
 
-  it('offers the power-on action from the host, not from a layout status bar', async () => {
+  it('requests the shared power-on confirmation from the host', async () => {
     h.radioPowerOn = false;
     h.powerOn.mockResolvedValue(undefined);
     const instance = mountAt(AppGlobalHost);
+    const request = vi.fn(() => true);
+    const release = bindHostUi({ connect: () => false, disconnect: () => false,
+      setRadioPower: request, openRadioControls: () => false });
 
     powerEl()?.querySelector<HTMLButtonElement>('.power-on-btn')?.click();
     await settle();
-    expect(h.powerOn).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(true, 'powered-off-overlay');
+    expect(h.powerOn).not.toHaveBeenCalled();
 
+    release();
     unmount(instance);
   });
 
-  it('reports a failed power-on inside the page, never via native alert', async () => {
+  it('does not dispatch directly when the shared host rejects the request', async () => {
     h.radioPowerOn = false;
     h.powerOn.mockRejectedValueOnce(new Error('boom'));
     const alertSpy = vi.fn();
     vi.stubGlobal('alert', alertSpy);
     const instance = mountAt(AppGlobalHost);
+    const request = vi.fn(() => false);
+    const release = bindHostUi({ connect: () => false, disconnect: () => false,
+      setRadioPower: request, openRadioControls: () => false });
 
     powerEl()?.querySelector<HTMLButtonElement>('.power-on-btn')?.click();
     await settle();
-    expect(h.powerOn).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(true, 'powered-off-overlay');
+    expect(h.powerOn).not.toHaveBeenCalled();
     expect(alertSpy).not.toHaveBeenCalled();
 
-    // The failure text renders in-page via ConfirmDialog's error state.
-    await vi.waitFor(() =>
-      expect(document.querySelector('[data-testid="confirm-dialog-error"]')?.textContent).toBe(
-        'core.overlay.poweredOff.failedPowerOn: Error: boom',
-      ),
-    );
-    expect(document.querySelector('[data-testid="confirm-dialog-confirm"]')).toBeNull();
-    document.querySelector<HTMLButtonElement>('[data-testid="confirm-dialog-close"]')?.click();
-    await settle();
     expect(document.querySelector('[data-testid="confirm-dialog-error"]')).toBeNull();
 
+    release();
     unmount(instance);
     vi.unstubAllGlobals();
   });
@@ -564,15 +566,20 @@ describe('MOR-1240 — the powered-off overlay leaves the desktop status bar usa
     unmount(instance);
   });
 
-  it('keeps its Power ON action from the host', async () => {
+  it('keeps its Power ON confirmation request from the host', async () => {
     h.radioPowerOn = false;
     h.powerOn.mockResolvedValue(undefined);
     const instance = mountHost();
+    const request = vi.fn(() => true);
+    const release = bindHostUi({ connect: () => false, disconnect: () => false,
+      setRadioPower: request, openRadioControls: () => false });
 
     powerEl()?.querySelector<HTMLButtonElement>('.power-on-btn')?.click();
     await settle();
-    expect(h.powerOn).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(true, 'powered-off-overlay');
+    expect(h.powerOn).not.toHaveBeenCalled();
 
+    release();
     unmount(instance);
   });
 

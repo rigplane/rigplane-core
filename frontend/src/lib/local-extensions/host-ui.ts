@@ -46,7 +46,7 @@ export interface HostUi {
   /** true means the UI accepted the request, not that an action completed. */
   connect(): boolean;
   disconnect(): boolean;
-  setRadioPower(on: boolean): boolean;
+  setRadioPower(on: boolean, origin?: 'powered-off-overlay'): boolean;
   openRadioControls(): boolean;
 }
 

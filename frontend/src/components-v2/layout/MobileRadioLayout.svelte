@@ -1,7 +1,8 @@
 <script lang="ts">
   import { runtime } from '$lib/runtime';
+  import { getHostUi } from '$lib/local-extensions/host-ui';
   import { t } from '$lib/i18n';
-  import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, receiverLabel } from '$lib/stores/capabilities.svelte';
+  import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, hasCapability, receiverLabel } from '$lib/stores/capabilities.svelte';
   import { HardwareButton } from '$lib/Button';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
   // MOR-2851: the SCOPE chip tab's four screen keys use the same flat-key
@@ -81,6 +82,9 @@
   let keyboardConfig = $derived(getKeyboardConfig());
   let audioState = $derived(runtime.audio);
   let txCapable = $derived(hasTx());
+  let radioPowerOn = $derived(getRadioPowerOn());
+  let powerLabel = $derived(t(radioPowerOn === true ? 'core.statusbar.power.labelOff'
+    : radioPowerOn === false ? 'core.statusbar.power.labelOn' : 'core.statusbar.power.labelUnknown'));
   // The reason text the desktop status bar adds to its radio indicator's
   // title; '' while no reason applies, which hides the line. While
   // `runtime.state` is null (no state has arrived) no reason is shown.
@@ -1003,6 +1007,12 @@
        BAND / DSP / RF / MODE / FILTER / ESSENTIALS live in chips.
        Remaining here: AGC, RIT/XIT (until #842 chip lands), ANTENNA, CW. -->
   <BottomSheet bind:open={setupOpen} title={t('core.mobile.sheet.setup')}>
+          {#if hasCapability('power_control') && !runtime.remoteController}
+            <button type="button" class="power-toggle-btn m-radio-power" disabled={radioPowerOn === null}
+              onclick={() => { if (radioPowerOn !== null) getHostUi()?.setRadioPower(!radioPowerOn); }}>
+              {powerLabel}
+            </button>
+          {/if}
           <!-- VFO/BAND, DSP panels removed (#841) — BAND lives in the "band" chip,
                VFO ops (SPLIT/A↔B/A=B) live in ESSENTIALS, DSP levels+toggles live
                in ESSENTIALS. -->
@@ -1108,6 +1118,16 @@
 {/if}
 
 <style>
+  .m-radio-power {
+    min-height: 44px;
+    margin: 12px;
+    color: var(--v2-text-primary, #fff);
+    background: var(--v2-bg-input, #1a1a2e);
+    border: 1px solid var(--v2-border, #2a2a3e);
+    border-radius: 4px;
+    font: inherit;
+  }
+
   /* ── MOD-input TX warning overlay (MOR-617) ── */
   .m-mod-input-warning {
     position: fixed;

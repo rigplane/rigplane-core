@@ -29,6 +29,7 @@
   let startTime = 0;
   let startedOnHandle = false;
   let dragActive = false;
+  let trackedPointer: number | null = null;
 
   const DISMISS_THRESHOLD = 0.3; // 30% of sheet height
   const VELOCITY_THRESHOLD = 0.5; // px/ms
@@ -70,15 +71,14 @@
     if (!startedOnHandle && !scrolledToTop) return;
 
     startY = e.clientY;
+    trackedPointer = e.pointerId;
     startTime = e.timeStamp;
     dragActive = false;
     isDragging = false;
-
-    sheetEl.setPointerCapture(e.pointerId);
   }
 
   function onPointerMove(e: PointerEvent) {
-    if (!sheetEl || startY === 0) return;
+    if (!sheetEl || trackedPointer !== e.pointerId) return;
 
     const dy = e.clientY - startY;
 
@@ -90,13 +90,14 @@
       if (!startedOnHandle) {
         const contentEl = sheetEl.querySelector('.m-sheet-content');
         if (contentEl && contentEl.scrollTop > 0) {
-          startY = 0;
+          trackedPointer = null;
           return;
         }
       }
 
       dragActive = true;
       isDragging = true;
+      sheetEl.setPointerCapture(e.pointerId);
     }
 
     // Apply resistance: full 1:1 tracking
@@ -104,6 +105,8 @@
   }
 
   function onPointerUp(e: PointerEvent) {
+    if (trackedPointer !== e.pointerId) return;
+    trackedPointer = null;
     if (!sheetEl || !dragActive) {
       startY = 0;
       return;
@@ -128,6 +131,7 @@
   }
 
   function onPointerCancel(_e: PointerEvent) {
+    trackedPointer = null;
     isDragging = false;
     dragActive = false;
     dragOffsetY = 0;
@@ -137,6 +141,7 @@
   // Reset state when sheet closes externally
   $effect(() => {
     if (!open) {
+      trackedPointer = null;
       dragOffsetY = 0;
       isDragging = false;
       dragActive = false;

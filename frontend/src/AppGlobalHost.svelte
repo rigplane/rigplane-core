@@ -13,7 +13,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import Toast from './components/shared/Toast.svelte';
-  import ConfirmDialog from './components-v2/dialogs/ConfirmDialog.svelte';
+  import { getHostUi } from '$lib/local-extensions/host-ui';
   import { runtime } from '$lib/runtime';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { t } from '$lib/i18n';
@@ -40,13 +40,6 @@
         ? 'uncertain'
         : null,
   );
-
-  // A failed power-on from the powered-off screen is reported inside
-  // the page — never via a native alert. The status bar moved off
-  // native dialogs after one RigPlane Pro build where the native
-  // confirm did not appear and DISCONNECT did nothing; this surface
-  // follows the same rule, reusing ConfirmDialog's error state.
-  let powerOnFailed = $state<string | null>(null);
 
   // MOR-1240: while powered off, the overlay's top edge follows the
   // layout's real status bar through CSS alone: StatusBar publishes its
@@ -104,13 +97,8 @@
   // "cannot power on from here" sentence instead of a dead button.
   let powerOnCommand = $derived(runtime.caps?.powerOnCommand === true);
 
-  async function handlePowerOn(): Promise<void> {
-    try {
-      await runtime.system.powerOn();
-      powerOnFailed = null;
-    } catch (err) {
-      powerOnFailed = t('core.overlay.poweredOff.failedPowerOn', { detail: String(err) });
-    }
+  function handlePowerOn(): void {
+    getHostUi()?.setRadioPower(true, 'powered-off-overlay');
   }
 </script>
 
@@ -166,15 +154,6 @@
     </div>
   {/if}
 
-  <ConfirmDialog
-    open={powerOnFailed !== null}
-    message={t('core.overlay.poweredOff.label')}
-    error={powerOnFailed}
-    confirmLabel={t('common.action.ok')}
-    cancelLabel={t('common.action.cancel')}
-    onConfirm={() => { powerOnFailed = null; }}
-    onCancel={() => { powerOnFailed = null; }}
-  />
 </div>
 
 <style>
