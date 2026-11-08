@@ -1,6 +1,6 @@
 import { getAudioState } from '$lib/stores/audio.svelte';
 import { getConnectionStatus, getRadioPowerOn } from '$lib/stores/connection.svelte';
-import { deriveRxAudioProps } from '$lib/runtime/adapters/panel-adapters';
+import { deriveObservedRxAfLevel, deriveRxAudioProps } from '$lib/runtime/adapters/audio-adapter';
 import { RX_AF_LEVEL_MAX } from '$lib/audio/rx-player';
 import { runtime } from '$lib/runtime/frontend-runtime';
 import type { ListeningSnapshot } from './host-ui';
@@ -10,7 +10,7 @@ export function readListeningSnapshot(): ListeningSnapshot {
   const props = deriveRxAudioProps();
   // Match makeRxAudioHandlers' routing even while mute/local teardown is pending.
   const live = runtime.rxEnabled;
-  const level = live ? getAudioState().volume / 100 : props.afLevel;
+  const level = live ? getAudioState().volume / 100 : deriveObservedRxAfLevel();
   return { mode: props.monitorMode,
     level: Number.isFinite(level) ? level : null,
     target: live ? 'playback' : 'radio',

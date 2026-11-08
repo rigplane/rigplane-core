@@ -13,7 +13,7 @@ import {
   toRfFrontEndProps, toRitXitProps, toScanProps,
   toCwProps, toDspProps, toTxProps,
   toFilterProps, toBandSelectorProps,
-  toAudioSpectrumProps, toMemoryPanelProps, toRxAudioProps,
+  toAudioSpectrumProps, toMemoryPanelProps,
   toAmberTelemetryProps, toVfoControlProps,
 } from '../props/panel-props';
 import {
@@ -793,19 +793,6 @@ export function getManualNotchArmed(): ArmedFact<boolean> {
 export function deriveAudioRoutingConfig() { return runtime.audioRouting; }
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
-
-export function deriveRxAudioProps() {
-  const { state, caps, audio, connectionAudio } = runtime;
-  const props = toRxAudioProps(state, caps, { ...audio }, connectionAudio);
-  const receiver = state?.active === 'SUB' ? 'sub' : 'main';
-  const observedAf = !!state && (caps?.receivers === 1 || isFieldAvailable(state, 'active'))
-    && isFieldAvailable(state, `${receiver}.afLevel`);
-  return {
-    ...props,
-    afLevel: runtime.rxEnabled || (observedAf && caps?.capabilities.includes('af_level'))
-      ? props.afLevel : Number.NaN,
-  };
-}
 
 const _vfoHandlers = makeVfoHandlers();
 export function getVfoHandlers() { return _vfoHandlers; }
