@@ -403,16 +403,11 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => appTxHostHarness.controller,
 }));
 
-vi.mock('$lib/stores/radio.svelte', async (importOriginal) => {
-  const radio = { current: null as import('$lib/types/state').ServerState | null };
-  return {
-    ...await importOriginal<typeof import('$lib/stores/radio.svelte')>(),
-    radio,
-    getRadioState: () => radio.current,
-    patchActiveReceiver: vi.fn(),
-    patchReceiver: vi.fn(),
-  };
-});
+vi.mock('$lib/stores/radio.svelte', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/stores/radio.svelte')>(),
+  patchActiveReceiver: vi.fn(),
+  patchReceiver: vi.fn(),
+}));
 
 vi.mock('$lib/stores/tuning.svelte', () => ({
   snapToStep: vi.fn((hz: number) => hz),
@@ -3098,6 +3093,11 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     const commands = await import('$lib/stores/commands.svelte');
     const transport = await import('$lib/transport/ws-client');
     const send = vi.spyOn(transport, 'sendCommand').mockReturnValue(true);
+    // The file-wide MOR-4241 dispatch spy stands in for the CTR intent; this
+    // test needs the production dispatch so the release reaches the transport.
+    const intents = await vi.importActual<typeof import('$lib/runtime/commands/radio-intents')>(
+      '$lib/runtime/commands/radio-intents');
+    scopeCommandHarness.dispatch.mockImplementation(intents.dispatchRadioIntent);
     const pending = vi.spyOn(adapters, 'getPendingFrequencyHz')
       .mockImplementation(actualAdapters.getPendingFrequencyHz);
     const vfo = vi.spyOn(adapters, 'getVfoHandlers').mockImplementation(actualAdapters.getVfoHandlers);
@@ -3136,6 +3136,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(send).toHaveBeenCalledTimes(1);
     } finally {
       send.mockRestore();
+      scopeCommandHarness.dispatch.mockReset();
       pending.mockRestore();
       vfo.mockRestore();
       getCapabilities.mockRestore();

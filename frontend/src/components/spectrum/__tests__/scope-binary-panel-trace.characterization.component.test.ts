@@ -29,6 +29,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getPendingFrequencyHz: () => null,
   getTuningBurstFrequencyHz: () => null,
   bindVfoTunerContext: () => ({ activeReceiver: null, viewModel: null }),
+  bindSemanticSurfaceHandlers: () => ({ scopeControls: { onModeChange: vi.fn() } }),
 }));
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); document.body.innerHTML = ''; });
