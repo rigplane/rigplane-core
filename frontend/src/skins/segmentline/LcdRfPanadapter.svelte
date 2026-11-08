@@ -1,8 +1,4 @@
 <script module lang="ts">
-  import type { LcdSpectrumFrame } from './lcd-display-contract';
-
-  export type LcdRfPanadapterFrame = LcdSpectrumFrame;
-
   export interface LcdRfPanadapterPassband {
     readonly mode: string;
     readonly widthHz: number;
@@ -14,11 +10,13 @@
   import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
   import { spectrumDisplayAmplitude } from '../../lib/renderers/spectrum-renderer';
   import type { PeerSplitReceiverDisplay } from '../../semantic/radio-display-model';
+  import type { ScopeStream } from '$lib/runtime/scope-stream';
+  import type { ScopeGeometry } from '$lib/runtime/scope-frame';
   import { resolveLcdSpectrumFrame } from './lcd-display-contract';
 
   interface Props {
     receiver: PeerSplitReceiverDisplay['receiver'] | null;
-    frame?: unknown;
+    scopeStream?: ScopeStream | null;
     carrierHz?: number;
     passband?: LcdRfPanadapterPassband;
   }
@@ -34,22 +32,54 @@
   const PLOT_BOTTOM = 116;
   const PLOT_HEIGHT = PLOT_BOTTOM - PLOT_TOP;
 
-  const EMPTY_BINS = new Uint8Array(0);
-  let { receiver, frame, carrierHz, passband }: Props = $props();
+  let { receiver, scopeStream = null, carrierHz, passband }: Props = $props();
+  let geometry = $state.raw<ScopeGeometry | null>(null);
+  let bars = $state<SVGGElement>();
+  let pixels: Uint8Array | null = null;
 
   function formatFrequency(hz: number): string {
     const mhz = hz / 1_000_000;
     return mhz >= 1 ? mhz.toFixed(3) : `${Math.round(hz / 1_000)}k`;
   }
 
-  const resolution = $derived(resolveLcdSpectrumFrame(frame, {
-    source: 'hardware',
-    receiver,
-  }));
-  const liveFrame = $derived(resolution.state === 'live' ? resolution.frame : null);
+  const resolution = $derived(resolveLcdSpectrumFrame(geometry, { source: 'hardware', receiver }));
   const frameReason = $derived(resolution.state === 'ghost' ? resolution.reason : resolution.state);
+  const liveFrame = $derived(frameReason === 'live' && geometry !== null
+    ? { startHz: geometry.view.startHz, endHz: geometry.view.endHz } : null);
   const spanHz = $derived(liveFrame === null ? 0 : liveFrame.endHz - liveFrame.startHz);
-  const renderBins = $derived(liveFrame?.pixels ?? EMPTY_BINS);
+  function paint() {
+    if (!bars) return;
+    bars.replaceChildren();
+    if (liveFrame === null || pixels === null || pixels.length < 2) return;
+    for (let index = 0; index < pixels.length; index += 1) {
+      const sample = pixels[index];
+      const width = PLOT_WIDTH / pixels.length;
+      const height = spectrumDisplayAmplitude(sample, 0) * (PLOT_HEIGHT - 4);
+      const node = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      for (const [key, value] of Object.entries({ class: 'rf-bin', 'data-rf-bin': index,
+        'data-rf-sample': sample, x: index * width, y: PLOT_BOTTOM - height,
+        width: Math.max(0.5, width - 0.5), height })) node.setAttribute(key, String(value));
+      bars.append(node);
+    }
+  }
+  $effect(() => {
+    const stream = scopeStream;
+    pixels = null; geometry = null;
+    if (!stream) return;
+    const stopGeometry = stream.geometry.subscribe(value => { geometry = value; });
+    const stopFrames = stream.subscribe((frame, slot) => {
+      if (slot !== stream.selectedSlot) return;
+      pixels = frame.pixels;
+      paint();
+    });
+    return () => { stopFrames(); stopGeometry(); pixels = null; };
+  });
+  $effect(() => {
+    void liveFrame;
+    const slot = scopeStream?.selectedSlot;
+    pixels = slot ? scopeStream?.latest(slot)?.pixels ?? null : null;
+    paint();
+  });
   const axisTicks: readonly AxisTick[] = $derived.by(() => {
     if (liveFrame === null) return [];
     return [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -88,6 +118,7 @@
   aria-hidden="true"
 >
   <rect class="rf-frame" x="0.5" y="0.5" width="599" height="131" />
+  <g bind:this={bars}></g>
   {#if liveFrame !== null}
     {#each axisTicks as tick}
       <g class="rf-axis" data-axis-frequency={tick.frequencyHz}>
@@ -121,20 +152,6 @@
         height={PLOT_HEIGHT}
       />
     {/if}
-    {#each renderBins as sample, index}
-      {@const binWidth = PLOT_WIDTH / renderBins.length}
-      {@const displaySample = spectrumDisplayAmplitude(sample, 0)}
-      {@const binHeight = displaySample * (PLOT_HEIGHT - 4)}
-      <rect
-        class="rf-bin"
-        data-rf-bin={index}
-        data-rf-sample={sample}
-        x={index * binWidth}
-        y={PLOT_BOTTOM - binHeight}
-        width={Math.max(0.5, binWidth - 0.5)}
-        height={binHeight}
-      />
-    {/each}
     {#if carrierX !== null}
       <line
         class="rf-carrier"
@@ -159,7 +176,7 @@
     font-variant-numeric: tabular-nums;
   }
   .rf-passband { fill: var(--ink-soft); opacity: 0.22; }
-  .rf-bin { fill: var(--ink-mid); opacity: 0.86; }
+  svg :global(.rf-bin) { fill: var(--ink-mid); opacity: 0.86; }
   .rf-carrier {
     stroke: var(--ink-strong);
     stroke-width: 1.25;

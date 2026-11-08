@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
 import PeerSplitDisplay from '../PeerSplitDisplay.svelte';
 
@@ -80,8 +81,11 @@ function render(
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(PeerSplitDisplay, {
-    target, props: { model: displayModel },
+    target, props: { model: displayModel, scopeStream: pixelsByReceiver?.MAIN
+      ? lcdStreamFixture({ source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
+        startHz: 0, endHz: 24_000, pixels: pixelsByReceiver.MAIN }) : null },
   });
+  flushSync();
   return target;
 }
 
@@ -149,10 +153,11 @@ describe('PeerSplitDisplay', () => {
     expect(fft[0].querySelector('.fft-trace')?.getAttribute('d')).toMatch(/^M0\.00,92\.00 L/);
   });
 
-  it('renders safe-empty AF insets until the wiring supplies a frame path', () => {
-    const target = render();
+  it('renders active-receiver audio stream pixels while inactive receivers remain empty', () => {
+    const target = render({ MAIN: new Uint8Array([0, 128, 255]), SUB: new Uint8Array([255, 128, 0]) });
     const fft = target.querySelectorAll('[data-testid="lcd-af-fft"]');
-    expect(fft[0].getAttribute('data-fft-mode')).toBe('safe-empty');
+    expect(fft[0].getAttribute('data-fft-mode')).toBe('live');
+    expect(fft[0].querySelector('path')?.getAttribute('d')).toBe('M0.00,92.00 L250.00,50.84 L500.00,10.00');
     expect(fft[1].getAttribute('data-fft-mode')).toBe('safe-empty');
   });
 

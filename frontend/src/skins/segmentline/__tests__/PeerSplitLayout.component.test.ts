@@ -83,6 +83,7 @@ vi.mock('$lib/runtime', () => ({
       });
       return {
         hardwareScopeConnected: false,
+        setFrameAuthority: () => {},
         stream: () => idleStream,
         snapshotHealth: () => ({ demanded: false, transport: 'disconnected' as const, frameSeen: false }),
       };
@@ -399,13 +400,13 @@ describe('the selected segmentline face owns exactly one LCD source declaration 
     expect(host).toMatch(/\{readonlyDisplay\}/);
   });
 
-  it('keeps frame authority at the semantic host and forwards its selected store unchanged', () => {
-    expect(source).toContain("import type { LcdSpectrumFrame, LcdSpectrumSource } from './lcd-display-contract';");
-    expect(source).toMatch(/\{#snippet readonlyDisplay\(view: RadioViewModel, frameStore: Readable<LcdSpectrumFrame \| null>\)\}/);
-    expect(source).toMatch(/<DominantUnifiedDisplay\s+\{model\}\s+spectrumFrame=\{selectedFrame\}\s*\/>/);
-    expect(source).toMatch(/<CenterstageDisplay\s+\{model\}\s+audioFftFrame=\{selectedFrame\}\s*\/>/);
-    expect(source).toMatch(/<PanadapterDisplay\s+\{model\}\s+rfFrame=\{selectedFrame\}\s*\/>/);
-    expect(source).toMatch(/\{#snippet peer\(\)\}<PeerSplitDisplay \{model\} \/>\{\/snippet\}/);
+  it('keeps authority at the semantic host and forwards shared streams unchanged', () => {
+    expect(source).toContain("import type { LcdSpectrumSource } from './lcd-display-contract';");
+    expect(source).toMatch(/\{#snippet readonlyDisplay\(view: RadioViewModel, scopeStream: ScopeStream \| null, audioScopeStream: ScopeStream \| null\)\}/);
+    expect(source).toMatch(/<DominantUnifiedDisplay\s+\{model\}\s+\{scopeStream\}\s*\/>/);
+    expect(source).toMatch(/<CenterstageDisplay\s+\{model\}\s+\{scopeStream\}\s*\/>/);
+    expect(source).toMatch(/<PanadapterDisplay\s+\{model\}\s+\{scopeStream\}\s+\{audioScopeStream\}\s*\/>/);
+    expect(source).toMatch(/\{#snippet peer\(\)\}<PeerSplitDisplay \{model\} scopeStream=\{audioScopeStream\} \/>\{\/snippet\}/);
 
     // This selector must never grow a second producer, frame resolver, or
     // demand lease. Those are host lifecycle concerns, not face heuristics.

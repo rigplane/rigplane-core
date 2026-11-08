@@ -10,25 +10,18 @@
   import LcdLinearSMeter from './LcdLinearSMeter.svelte';
   import LcdOffsetRail from './LcdOffsetRail.svelte';
   import LcdTelemetryRail from './LcdTelemetryRail.svelte';
-  import { resolveLcdSpectrumFrame } from './lcd-display-contract';
+  import type { ScopeStream } from '$lib/runtime/scope-stream';
   import { notchIndicators, stateText } from './lcd-display-helpers';
 
   interface Props {
     model: PeerSplitDisplayModel;
-    spectrumFrame?: unknown;
+    scopeStream?: ScopeStream | null;
   }
 
-  let { model, spectrumFrame }: Props = $props();
+  let { model, scopeStream = null }: Props = $props();
 
   const main = $derived(model.receivers[0]);
   const sub = $derived(model.receivers[1]);
-  const spectrumResolution = $derived(resolveLcdSpectrumFrame(spectrumFrame, {
-    source: 'audio-fft',
-    receiver: model.activeReceiver?.receiver ?? null,
-  }));
-  const activeSpectrumPixels = $derived(
-    spectrumResolution.state === 'live' ? spectrumResolution.frame.pixels : null,
-  );
 
   const activeDsp = $derived(model.activeReceiver?.dsp ?? {
     agc: { state: 'unknown' } as DisplayValue<number | string>,
@@ -211,7 +204,7 @@
       {#if model.activeReceiver}
         <LcdFilterScope
           receiver={model.activeReceiver}
-          pixels={activeSpectrumPixels}
+          {scopeStream}
         />
       {:else}
         <div

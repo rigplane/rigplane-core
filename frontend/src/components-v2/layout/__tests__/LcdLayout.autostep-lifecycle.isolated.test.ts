@@ -92,7 +92,7 @@ vi.mock('$lib/runtime', () => ({
       source: null, available: false, resourceSelected: false, demand: 0,
       lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
     },
-    scope: { hardwareScopeConnected: false, registerPresentationDriver: vi.fn(), subscribe: vi.fn(() => () => {}) },
+    scope: { setFrameAuthority: vi.fn(), hardwareScopeConnected: false, registerPresentationDriver: vi.fn(), subscribe: vi.fn(() => () => {}) },
     bootstrap: vi.fn(async () => vi.fn()),
   },
   presentationResources: {

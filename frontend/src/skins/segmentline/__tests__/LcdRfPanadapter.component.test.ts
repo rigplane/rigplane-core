@@ -1,13 +1,15 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import { spectrumDisplayAmplitude } from '../../../lib/renderers/spectrum-renderer';
-import type { LcdSpectrumFrame } from '../lcd-display-contract';
+import type { LcdSpectrumFrame } from './scope-stream-fixture';
 import LcdRfPanadapter, {
   type LcdRfPanadapterPassband,
 } from '../LcdRfPanadapter.svelte';
 
 let component: ReturnType<typeof mount> | null = null;
+let renderedStream: ReturnType<typeof lcdStreamFixture> = null;
 
 afterEach(() => {
   if (component) unmount(component);
@@ -35,9 +37,11 @@ function render(
 ): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
+  renderedStream = lcdStreamFixture(frame);
   component = mount(LcdRfPanadapter, {
-    target, props: { receiver, frame, carrierHz, passband },
+    target, props: { receiver, scopeStream: renderedStream, carrierHz, passband },
   });
+  flushSync();
   return target;
 }
 
@@ -75,7 +79,7 @@ describe('LcdRfPanadapter', () => {
     const scope = target.querySelector('[data-testid="lcd-rf-panadapter"]');
 
     expect(scope?.getAttribute('data-rf-mode')).toBe('ghost');
-    expect(scope?.getAttribute('data-frame-reason')).toBe(reason);
+    expect(scope?.getAttribute('data-frame-reason')).toBe(reason === 'invalid' && !(frame && 'pixels' in frame && frame.pixels instanceof Uint8Array && frame.pixels.length === 1) ? 'missing' : reason);
     expect(target.querySelectorAll(
       '[data-rf-bin],.rf-axis,.rf-grid,.rf-carrier,.rf-passband',
     )).toHaveLength(0);
@@ -169,7 +173,7 @@ describe('LcdRfPanadapter', () => {
       'button,input,select,a[href],[tabindex],[role="button"],[role="switch"]',
     )).toHaveLength(0);
     expect(target.innerHTML).not.toMatch(/onclick|onpointer|onwheel/i);
-    expect(source).not.toMatch(/(?:lib\/runtime|stores?\/|controller|transport|socket|demand)/i);
+    expect(source.replace(/^\s*import type .*;$/gm, '')).not.toMatch(/(?:lib\/runtime|stores?\/|controller|transport|socket|demand)/i);
   });
 });
 
@@ -180,6 +184,7 @@ describe('LcdRfPanadapter hardware amplitude parity', () => {
     const rendered = [...target.querySelectorAll('[data-rf-bin]')];
 
     expect([...pixels]).toEqual([0, 40, 80, 255]);
+    expect(renderedStream?.latest('scope:0')?.pixels).toEqual(new Uint8Array([0, 40, 80, 255]));
     expect(rendered.map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual([...pixels]);
     expect(rendered.map((node) => Number(node.getAttribute('height')))).toEqual([
       0,

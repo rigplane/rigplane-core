@@ -245,9 +245,12 @@ describe('MOR-2355 central default scope source', () => {
     const renderCountAfterFrame = render.mock.calls.length;
     draw();
     expect(render).toHaveBeenCalledTimes(renderCountAfterFrame);
-    expect(scope.audioScopeFrame?.startFreq).toBe(14176000);
-    expect(scope.audioScopeFrame?.pixels).toHaveLength(2049);
-    expect(Math.max(...scope.audioScopeFrame!.pixels)).toBe(160);
+    let geometry: import('$lib/runtime/scope-frame').ScopeGeometry | null = null;
+    const stop = scope.stream('audio_fft').geometry.subscribe(value => { geometry = value; }); stop();
+    expect(geometry?.view.startHz).toBe(14176000);
+    const latest = scope.stream('audio_fft').latest('audio-scope:0');
+    expect(latest?.pixels).toHaveLength(2049);
+    expect(Math.max(...latest!.pixels!)).toBe(160);
     expect(render).toHaveBeenCalledWith(expect.anything(), expectedPixels, 640, 240,
       expect.objectContaining({ spanHz: 12000, centerHz: 6000, showRfOverlays: false, tuneHz: 0, passbandHz: 0 }));
     expect(push).toHaveBeenCalledWith(expectedPixels);

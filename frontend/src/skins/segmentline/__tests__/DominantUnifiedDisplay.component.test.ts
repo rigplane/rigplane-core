@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
-import type { LcdSpectrumFrame } from '../lcd-display-contract';
+import type { LcdSpectrumFrame } from './scope-stream-fixture';
 import DominantUnifiedDisplay from '../DominantUnifiedDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -75,8 +76,9 @@ function render(
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(DominantUnifiedDisplay, {
-    target, props: { model: displayModel, spectrumFrame },
+    target, props: { model: displayModel, scopeStream: lcdStreamFixture(spectrumFrame) },
   });
+  flushSync();
   return target;
 }
 
@@ -209,11 +211,11 @@ describe('DominantUnifiedDisplay', () => {
       .toBe('safe-empty');
   });
 
-  it('uses the frozen source-qualified spectrum resolver', () => {
+  it('forwards the selected shared stream into the receiver-qualified AF leaf', () => {
     const source = readFileSync('src/skins/segmentline/DominantUnifiedDisplay.svelte', 'utf8');
 
-    expect(source).toContain("import { resolveLcdSpectrumFrame } from './lcd-display-contract';");
-    expect(source).toContain("source: 'audio-fft'");
-    expect(source).toContain("spectrumResolution.state === 'live'");
+    expect(source).toContain("import type { ScopeStream } from '$lib/runtime/scope-stream';");
+    expect(source).toMatch(/<LcdFilterScope\s+receiver=\{model.activeReceiver\}\s+\{scopeStream\}/);
+    expect(source).not.toMatch(/spectrumFrame|\.pixels/);
   });
 });

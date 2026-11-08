@@ -33,12 +33,17 @@ const mocks = vi.hoisted(() => {
   const binaryHandlers = new Set<(data: ArrayBuffer) => void>();
   const stateHandlers = new Set<(state: MockConnectionState) => void>();
   let state: MockConnectionState = 'disconnected';
+  let epoch = 0;
+  const sessionHandlers = new Set<(value: { state: MockConnectionState; epoch: number }) => void>();
   const setState = (next: MockConnectionState) => {
+    if (next === 'connected' && state !== 'connected') epoch += 1;
     state = next;
     for (const handler of stateHandlers) handler(next);
+    for (const handler of sessionHandlers) handler({ state, epoch });
   };
   const channel = {
     get state() { return state; },
+    get sessionEpoch() { return epoch; },
     connect: vi.fn(() => {
       setState('connecting');
       setState('connected');
@@ -52,8 +57,12 @@ const mocks = vi.hoisted(() => {
       stateHandlers.add(handler);
       return () => { stateHandlers.delete(handler); };
     }),
+    onSessionTransition(handler: (value: { state: MockConnectionState; epoch: number }) => void) {
+      sessionHandlers.add(handler); return () => { sessionHandlers.delete(handler); };
+    },
     binaryHandlerCount: () => binaryHandlers.size,
     stateHandlerCount: () => stateHandlers.size,
+    fire(buffer: ArrayBuffer) { binaryHandlers.forEach(handler => handler(buffer)); },
   };
   return {
     channel,
@@ -188,10 +197,11 @@ describe('LCD audio-FFT demand ownership', () => {
     const configure = vi.spyOn(presentationResources, 'configure');
     const acquire = vi.spyOn(presentationResources, 'acquire');
     const release = vi.spyOn(presentationResources, 'release');
-    const realScopeSubscribe = runtime.scope.subscribe.bind(runtime.scope);
-    let cockpitFrameHandler: ((frame: ScopeFrameProbe) => void) | undefined;
+    const stream = runtime.scope.stream('audio_fft');
+    const realScopeSubscribe = stream.subscribe.bind(stream);
+    let cockpitFrameHandler: ((frame: ScopeFrameProbe, slot: string) => void) | undefined;
     let cockpitUnsubscribe: ReturnType<typeof vi.fn<() => void>> | undefined;
-    const scopeSubscribe = vi.spyOn(runtime.scope, 'subscribe').mockImplementation((handler) => {
+    const scopeSubscribe = vi.spyOn(stream, 'subscribe').mockImplementation((handler) => {
       const realUnsubscribe = realScopeSubscribe(handler);
       const exactUnsubscribe = vi.fn(() => realUnsubscribe());
       if (!cockpitFrameHandler) {
@@ -267,18 +277,17 @@ describe('LCD audio-FFT demand ownership', () => {
       expect(cockpitFrameHandler).toBeTypeOf('function');
       expect(cockpitUnsubscribe).not.toHaveBeenCalled();
 
-      const distinctivePixels = new Uint8Array([3, 17, 91, 205, 254]);
-      cockpitFrameHandler?.({
-        receiver: 0,
-        mode: 1,
-        startFreq: 14_012_345,
-        endFreq: 14_098_765,
-        outOfRange: false,
-        pixels: distinctivePixels,
-      });
+      await vi.waitFor(() => expect(mocks.channel.connect).toHaveBeenCalledTimes(1));
+      const buffer = new ArrayBuffer(21), wire = new DataView(buffer);
+      wire.setUint8(0, 1); wire.setUint8(2, 1);
+      wire.setUint32(3, 14_012_345, true); wire.setUint32(7, 14_098_765, true); wire.setUint16(14, 5, true);
+      const distinctivePixels = new Uint8Array(buffer, 16); distinctivePixels.set([3, 17, 91, 205, 254]);
+      mocks.channel.fire(buffer);
       flushSync();
-      expect(scopeChildProbe.pushed).toHaveBeenCalledExactlyOnceWith(distinctivePixels);
-      expect(scopeChildProbe.props?.data).toBe(distinctivePixels);
+      const delivered = stream.latest('audio-scope:0')!.pixels!;
+      expect(delivered.buffer).toBe(buffer);
+      expect(scopeChildProbe.pushed).toHaveBeenCalledExactlyOnceWith(delivered);
+      expect(scopeChildProbe.props).not.toHaveProperty('data');
       expect(scopeChildProbe.props?.bandwidth).toBe(86_420);
 
       scope = mount(AmberScope, { target: targets[1] });

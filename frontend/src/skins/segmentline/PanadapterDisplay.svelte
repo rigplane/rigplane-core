@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PeerSplitDisplayModel } from '../../semantic/radio-display-model';
+  import type { ScopeStream } from '$lib/runtime/scope-stream';
   import LcdAfFft from './LcdAfFft.svelte';
   import LcdFilterScope from './LcdFilterScope.svelte';
   import LcdFrequencyReadout from './LcdFrequencyReadout.svelte';
@@ -11,10 +12,11 @@
 
   interface Props {
     model: PeerSplitDisplayModel;
-    rfFrame?: unknown;
+    scopeStream?: ScopeStream | null;
+    audioScopeStream?: ScopeStream | null;
   }
 
-  let { model, rfFrame }: Props = $props();
+  let { model, scopeStream = null, audioScopeStream = null }: Props = $props();
 
   const activeReceiver = $derived(model.activeReceiver);
   const activeCarrierHz = $derived(
@@ -79,7 +81,7 @@
       <div class="rf-plot">
         <LcdRfPanadapter
           receiver={activeReceiver?.receiver ?? null}
-          frame={rfFrame}
+          {scopeStream}
           carrierHz={activeCarrierHz}
           passband={activePassband}
         />
@@ -89,7 +91,7 @@
     <aside class="active-inset">
       <div class="af-block">
         {#if activeReceiver !== null}
-          <LcdFilterScope receiver={activeReceiver} pixels={null} />
+          <LcdFilterScope receiver={activeReceiver} scopeStream={audioScopeStream} />
         {:else}
           <div class="unknown-af">
             <span>AF · BANDPASS</span>

@@ -5,6 +5,7 @@
     PeerSplitDisplayModel,
   } from '../../semantic/radio-display-model';
   import LcdFilterScope from './LcdFilterScope.svelte';
+  import type { ScopeStream } from '$lib/runtime/scope-stream';
   import LcdFlagRail, { type LcdFlagRailItem } from './LcdFlagRail.svelte';
   import LcdFrequencyReadout from './LcdFrequencyReadout.svelte';
   import LcdLinearSMeter from './LcdLinearSMeter.svelte';
@@ -14,9 +15,10 @@
 
   interface Props {
     model: PeerSplitDisplayModel;
+    scopeStream?: ScopeStream | null;
   }
 
-  let { model }: Props = $props();
+  let { model, scopeStream = null }: Props = $props();
 
   const topLeft: readonly LcdFlagRailItem[] = $derived([
     { label: 'VOX', icon: 'VOX', field: model.top.vox },
@@ -130,6 +132,7 @@
         <LcdLinearSMeter field={receiver.sMeter} />
         <LcdFilterScope
           {receiver}
+          {scopeStream}
         />
       </section>
     {/each}

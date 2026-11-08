@@ -307,11 +307,14 @@ beforeEach(() => {
   rt.scope = new ScopeController(() => { throw new Error('Routing fixture has no selected transport'); });
   rt.resources = new PresentationResourceHost('routing');
   rt.evidenceListeners = 0;
-  const subscribe = rt.scope.subscribeFrameEvidence.bind(rt.scope);
-  vi.spyOn(rt.scope, 'subscribeFrameEvidence').mockImplementation(fn => {
-    rt.evidenceListeners++; const stop = subscribe(fn);
-    return () => { stop(); rt.evidenceListeners--; };
-  });
+  for (const source of ['hardware', 'audio_fft'] as const) {
+    const geometry = rt.scope.stream(source).geometry;
+    const subscribe = geometry.subscribe;
+    vi.spyOn(geometry, 'subscribe').mockImplementation(fn => {
+      rt.evidenceListeners++; const stop = subscribe(fn);
+      return () => { stop(); rt.evidenceListeners--; };
+    });
+  }
   vi.mocked(hasDualReceiver).mockReturnValue(false);
   vi.mocked(getScopeSource).mockReturnValue(null);
   vi.mocked(hasSpectrum).mockReturnValue(true);

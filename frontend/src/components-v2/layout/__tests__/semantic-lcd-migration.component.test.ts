@@ -64,13 +64,9 @@ const h = vi.hoisted(() => {
     },
     scope: {
       registerPresentationDriver: vi.fn(),
-      subscribe: vi.fn(() => () => {}),
-      // B/D resolves its frame inside the existing ScopeFrameHost. This
-      // migration fixture has no frame evidence, so retain the fail-closed
-      // null envelope while exposing the host's complete controller seam.
-      subscribeFrameEvidence: vi.fn(() => () => {}),
+      stream: vi.fn(),
       setFrameAuthority: vi.fn(),
-      snapshotFrameEvidence: vi.fn(() => ({ envelope: null, authority: null })),
+      snapshotHealth: vi.fn(() => ({ demanded: false, transport: 'disconnected', frameSeen: false })),
       // MOR-1312 slice 12B: `SemanticRadioSurfaces`'s scope-display snapshot
       // reads `runtime.scope.hardwareScopeConnected` directly.
       hardwareScopeConnected: false,
@@ -88,6 +84,13 @@ const h = vi.hoisted(() => {
     runtime(): Promise<unknown> {
       h.runtimePromise ??= (async () => {
         const { createSubscriber } = await import('svelte/reactivity');
+        const { ScopeStream } = await import('$lib/runtime/scope-stream');
+        const streams = Object.fromEntries((['hardware', 'audio_fft'] as const).map(source => [source,
+          new ScopeStream({ subscribe: () => () => {}, close() {} }, {
+            source: source === 'hardware' ? 'radio' : 'audio_fft',
+            sourceId: source === 'hardware' ? 'scope' : 'audio-scope', epoch: 0,
+          }, 'borrowed')]));
+        h.scope.stream.mockImplementation((source: 'hardware' | 'audio_fft') => streams[source]);
         let update = () => {};
         const subscribe = createSubscriber((notify) => { update = notify; return () => {}; });
         h.notify = () => update();
@@ -288,7 +291,7 @@ beforeEach(() => {
   h.released = [];
   h.leases = [];
   h.scope.registerPresentationDriver.mockClear();
-  h.scope.subscribe.mockClear();
+  h.scope.stream.mockClear();
   vi.mocked(hasCapability).mockReturnValue(false);
   // The amber glass draws into a canvas behind a ResizeObserver; jsdom has
   // neither. Both are inert here — this suite measures ownership, not pixels.

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import type {
   PeerSplitDisplayModel,
   PeerSplitReceiverDisplay,
 } from '../../../semantic/radio-display-model';
-import type { LcdSpectrumFrame } from '../lcd-display-contract';
+import type { LcdSpectrumFrame } from './scope-stream-fixture';
 import CenterstageDisplay from '../CenterstageDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -84,8 +85,9 @@ function render(
   document.body.appendChild(target);
   component = mount(CenterstageDisplay, {
     target,
-    props: { model: displayModel, audioFftFrame },
+    props: { model: displayModel, scopeStream: lcdStreamFixture(audioFftFrame) },
   });
+  flushSync();
   return target;
 }
 

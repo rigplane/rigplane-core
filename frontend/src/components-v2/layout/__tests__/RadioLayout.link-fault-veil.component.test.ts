@@ -90,7 +90,7 @@ const runtimeMock = vi.hoisted(() => async () => {
         source: null, available: false, resourceSelected: false, demand: 0,
         lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
       },
-      scope: { hardwareScopeConnected: false },
+      scope: { setFrameAuthority: vi.fn(), hardwareScopeConnected: false },
       // Forwards to the real, unmocked store — see the file header.
       get connectionStale() { return conn.isStale(); },
     },

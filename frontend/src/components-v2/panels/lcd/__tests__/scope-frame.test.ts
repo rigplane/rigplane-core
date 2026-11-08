@@ -59,6 +59,7 @@ describe('parseCurrentScopeFrame', () => {
     const result = parseCurrentScopeFrame(buf, context);
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.reason);
+    expect(Object.isFrozen(result.frame)).toBe(true);
     expect(result.frame.receiver).toBe(0);
     expect(result.frame.viewStartHz).toBe(14_050_000);
     expect(result.frame.viewEndHz).toBe(14_098_000);
