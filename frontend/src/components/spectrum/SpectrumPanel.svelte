@@ -25,6 +25,7 @@
     getFilterWidthCommandLifecycle,
     getPendingFrequencyHz,
     getTuningBurstFrequencyHz,
+    isTuningBurstObservation,
     getVfoHandlers,
     bindSemanticSurfaceHandlers,
   } from '../../lib/runtime/adapters/panel-adapters';
@@ -489,12 +490,6 @@
   let dragCapture = $state<GestureCapture | null>(null);
   let dragSurface: HTMLElement | null = null;
   let dragCandidate: number | null = null;
-  // MOR-4270: the display-only drag preview lives on the View model's
-  // `gesture` leg (scope-view.ts) — `dragCandidate` stays the gesture's
-  // synchronous truth the release commit reads, and the View leads the
-  // panorama target (CENTER) and the tune marker/passband (FIX) with no
-  // command per move. Q2's separate drag-preview pump is gone: one View
-  // model is the single display-only motion mechanism.
   let gestureCandidateHz = $state<number | null>(null);
   let dragging = $state(false);
 
@@ -531,12 +526,16 @@
     const capture = dragCapture;
     if (gestureCandidateHz === null || capture === null) return null;
     const authority = spectrumAuthority;
+    const ownReadback = authority !== null && authority.frequencyHz !== null
+      && isTuningBurstObservation(authority.receiver, authority.frequencyHz);
     if (authority?.providerGeneration !== capture.authority.providerGeneration
       || authority.receiver !== capture.authority.receiver
-      || authority.frequencyHz !== capture.authority.frequencyHz
+      || (authority.frequencyHz !== capture.authority.frequencyHz
+        && (authority.frequencyHz === null || !isTuningBurstObservation(authority.receiver, authority.frequencyHz)))
       || frameScopeMode !== capture.geometry.frameMode
-      || startFreq !== capture.geometry.startFreq
-      || endFreq !== capture.geometry.endFreq) return null;
+      || (ownReadback
+        ? endFreq - startFreq !== capture.geometry.endFreq - capture.geometry.startFreq
+        : startFreq !== capture.geometry.startFreq || endFreq !== capture.geometry.endFreq)) return null;
     return gestureCandidateHz;
   });
   let tuneVisible = $derived(
@@ -963,8 +962,9 @@
     const geometry = readSampleGeometry(element);
     return current !== null && sameResizeAuthority(capture.authority, current)
       && geometry?.frameMode === capture.geometry.frameMode
-      && geometry.startFreq === capture.geometry.startFreq
-      && geometry.endFreq === capture.geometry.endFreq
+      && (ownReadback
+        ? geometry.endFreq - geometry.startFreq === capture.geometry.endFreq - capture.geometry.startFreq
+        : geometry.startFreq === capture.geometry.startFreq && geometry.endFreq === capture.geometry.endFreq)
       && geometry.elementWidth === capture.geometry.elementWidth
       && capture.view.startHz === viewportStartFreq
       && capture.view.endHz === viewportEndFreq
@@ -1004,9 +1004,12 @@
   function captureFrequencyStillCurrent(capture: GestureCapture, element: HTMLElement): boolean {
     const current = readAuthority();
     const geometry = readSampleGeometry(element);
+    const ownReadback = current !== null && current.frequencyHz !== null
+      && isTuningBurstObservation(current.receiver, current.frequencyHz);
     return current?.providerGeneration === capture.authority.providerGeneration
       && current.receiver === capture.authority.receiver
-      && current.frequencyHz === capture.authority.frequencyHz
+      && (current.frequencyHz === capture.authority.frequencyHz
+        || (current.frequencyHz !== null && isTuningBurstObservation(current.receiver, current.frequencyHz)))
       && geometry?.frameMode === capture.geometry.frameMode
       && geometry.startFreq === capture.geometry.startFreq
       && geometry.endFreq === capture.geometry.endFreq
@@ -1213,6 +1216,7 @@
     // to the SNAPPED candidate (MOR-4256) and the candidate Hz leads the
     // FIX marker.
     gestureCandidateHz = dragCandidate;
+    vfoHandlers.onFreqChange(candidate, capture.authority.receiver, 'drag');
     if (panoramaActive) {
       const base = capture.view ?? untrack(() => scopeView.confirmed);
       scopeView.set('gesture', dragCandidate !== null && base.endHz > base.startHz

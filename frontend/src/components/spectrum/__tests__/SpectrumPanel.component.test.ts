@@ -3494,7 +3494,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view).toEqual({ startHz: 13_980_000, endHz: 14_080_000 });
 
       // Every repaint since the press drew the SAME cached frame pixels —
-      // the preview never waits for a new scope frame — and no command left.
+      // the preview never waits for a new scope frame.
       const previewCalls = spectrumRendererHarness.render.mock.calls.slice(settledCalls);
       expect(previewCalls.length).toBeGreaterThan(0);
       for (const call of previewCalls) expect(call[1]).toBe(paintedFrame);

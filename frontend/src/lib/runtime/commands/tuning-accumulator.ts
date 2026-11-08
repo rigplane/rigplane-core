@@ -65,7 +65,8 @@ export interface TuningAccumulatorOptions {
 
 export interface TuningAccumulator {
   step(receiver: number, confirmedFreq: number, requestedFreq: number, observationMarker?: number | null): void;
-  jump(receiver: number, freq: number, confirmedFreq?: number, observationMarker?: number | null): void;
+  jump(receiver: number, freq: number, confirmedFreq?: number, observationMarker?: number | null, paced?: boolean): void;
+  acceptsObservation(receiver: number, frequency: number, observationMarker: number | null): boolean;
   /** Retire queued relative intent before an explicit VFO identity command. */
   cancel(receiver?: number): void;
 }
@@ -265,7 +266,26 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       scheduleFlush(receiver);
       publishBurst(receiver, state.target, state.lastLifecycle, state.context);
     },
-    jump(receiver, freq, confirmedFreq, observationMarker = null) {
+    acceptsObservation(receiver, frequency, observationMarker) {
+      const state = pending.get(receiver);
+      if (!state || !stillLive(receiver, state, now()) || !validMarker(observationMarker)
+        || observationMarker < state.lastObservationMarker) return false;
+      return frequency === state.lastObservedFrequency || acceptedTarget({
+        receiver, context: state.context, frequency, observationMarker, anchor: state.anchor,
+      });
+    },
+    jump(receiver, freq, confirmedFreq, observationMarker = null, paced = false) {
+      const state = pending.get(receiver);
+      const t = now();
+      if (paced && typeof confirmedFreq === 'number' && state
+        && stillLive(receiver, state, t)
+        && observationContinues(receiver, state, confirmedFreq, observationMarker)) {
+        state.target = freq;
+        state.quietUntil = t + quietWindowMs;
+        scheduleFlush(receiver);
+        publishBurst(receiver, freq, state.lastLifecycle, state.context);
+        return;
+      }
       // A known pre-jump observation anchors subsequent relative intent;
       // the jump target remains command intent, never confirmed state.
       if (typeof confirmedFreq === 'number' && Number.isSafeInteger(confirmedFreq)

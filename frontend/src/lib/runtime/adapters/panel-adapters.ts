@@ -25,6 +25,7 @@ import {
   makeVfoHandlers, makeScopeControlsHandlers, makeVoxHandlers, makeMemoryHandlers,
   makeKeyboardHandlers, makeSystemHandlers, makeRepeaterHandlers,
 } from '../commands/panel-commands';
+export { isTuningBurstObservation } from '../commands/panel-commands';
 import { toRadioViewModel } from './radio-view-model-adapter';
 import {
   getManagedAppTxController, type ManagedAppTxController,
