@@ -18,11 +18,20 @@ import asyncio
 import json
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from rigplane.audio import AudioPacket
+from rigplane.audio.backend import (
+    AudioDeviceId,
+    AudioDeviceInfo,
+    FakeAudioBackend,
+    FakeRxStream,
+)
+from rigplane.audio.session import AudioSession
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.core.state_pipeline_contracts import Observation, SourceMetadata
@@ -119,31 +128,9 @@ class _Authority:
         )
 
 
-class _AudioSessionSource:
-    """Session-first RX source the broadcaster's route resolution accepts.
-
-    ``fail`` flips between a raising and a working ``subscribe_rx`` so a
-    test can drive the production ``ensure_relay()`` transitions: a failed
-    relay start retains the failure record, a later successful retry
-    drops it — both notify through ``on_rx_start_status_change``.
-    """
-
-    def __init__(self) -> None:
-        self.fail = False
-        self._drained = asyncio.Event()
-
-    async def subscribe_rx(self, _name: str) -> object:
-        if self.fail:
-            raise OSError("rx start failed")
-
-        return self
-
-    def __aiter__(self) -> object:
-        return self
-
-    async def __anext__(self) -> object:
-        await self._drained.wait()
-        raise StopAsyncIteration
+_AUDIO_DEVICE = AudioDeviceInfo(
+    id=AudioDeviceId(7), name="Fake RX", input_channels=1, output_channels=0
+)
 
 
 class _FactsRadio:
@@ -171,7 +158,18 @@ class _FactsRadio:
         self.startup_busy_hold_event = asyncio.Event()
         self.startup_busy_hold_event.set()
         self.startup_busy_hold_retry_in_seconds = 12.5
-        self.audio_session = _AudioSessionSource()
+        self.audio_backend = FakeAudioBackend([_AUDIO_DEVICE])
+        self._rx_stream: FakeRxStream | None = None
+        self.audio_session = AudioSession(self)
+
+    async def start_rx(self, callback: Callable[[AudioPacket], None]) -> None:
+        self._rx_stream = self.audio_backend.open_rx(_AUDIO_DEVICE.id)
+        await self._rx_stream.start(lambda _frame: None)
+
+    async def stop_rx(self) -> None:
+        if self._rx_stream is not None:
+            await self._rx_stream.stop()
+            self._rx_stream = None
 
     def supports_command(self, _command: str) -> bool:
         return False
@@ -699,7 +697,7 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
 
             # RX failure and recovery through the production tap-only relay
             # entrypoint reach the control socket as audioReceive deltas.
-            radio.audio_session.fail = True
+            radio.audio_backend.remove_devices()
             await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
             for _ in range(6):
                 _, payload = await _ws_recv_frame(reader, timeout=5.0)
@@ -711,7 +709,7 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
             else:
                 pytest.fail("rx failure delta never arrived")
 
-            radio.audio_session.fail = False
+            radio.audio_backend.add_device(_AUDIO_DEVICE)
             await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
             for _ in range(6):
                 _, payload = await _ws_recv_frame(reader, timeout=5.0)
@@ -726,10 +724,11 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
             from rigplane.audio.session import RxSubscription
 
             assert isinstance(server._audio_broadcaster._subscription, RxSubscription)
+            assert radio.audio_session.rx_demand == 1
             await server._audio_broadcaster._stop_relay()
             assert radio.audio_session.rx_demand == 0
+            assert all(not stream.running for stream in radio.audio_backend.rx_streams)
         finally:
-            radio.audio_session._drained.set()  # noqa: SLF001
             writer.close()
             await writer.wait_closed()
     finally:
@@ -776,9 +775,8 @@ async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None
     server.register_control_event_queue(queue)
     assert _drain(queue) == []
 
-    relay_task: asyncio.Task[None] | None = None
     try:
-        radio.audio_session.fail = True
+        radio.audio_backend.remove_devices()
         await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
 
         updates = [
@@ -798,7 +796,7 @@ async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None
 
         # A retry that succeeds drops the retained failure and delivers the
         # recovered record (the relay keeps running on the fake source).
-        radio.audio_session.fail = False
+        radio.audio_backend.add_device(_AUDIO_DEVICE)
         await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
         updates = [
             event for event in _drain(queue) if event.get("type") == "state_update"
@@ -806,21 +804,20 @@ async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None
         assert len(updates) == 1, updates
         audio_receive = updates[0]["data"]["changed"]["audioReceive"]
         assert audio_receive["failure"] is None
-        relay_task = server._audio_broadcaster._relay_task  # noqa: SLF001
+        from rigplane.audio.session import RxSubscription
+
+        assert isinstance(server._audio_broadcaster._subscription, RxSubscription)
+        assert radio.audio_session.rx_demand == 1
     finally:
-        radio.audio_session._drained.set()  # noqa: SLF001
-        task = (
-            relay_task
-            if relay_task is not None
-            else server._audio_broadcaster._relay_task  # noqa: SLF001
-        )
-        if task is not None:
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        await server._audio_broadcaster._stop_relay()
+        assert radio.audio_session.rx_demand == 0
+        assert all(not stream.running for stream in radio.audio_backend.rx_streams)
 
 
 @pytest.mark.parametrize("model", ["IC-7300", "IC-7610"])
-async def test_serial_identity_reread_pushes_no_response_to_control_ws(model: str) -> None:
+async def test_serial_identity_reread_pushes_no_response_to_control_ws(
+    model: str,
+) -> None:
     from rigplane.backends.ic7300 import Ic7300SerialRadio
     from rigplane.backends.icom7610 import Icom7610SerialRadio
     from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
@@ -855,7 +852,10 @@ async def test_serial_identity_reread_pushes_no_response_to_control_ws(model: st
                 _, payload = await _ws_recv_frame(reader, timeout=5.0)
                 message = json.loads(payload)
                 if message.get("type") == "state_update":
-                    assert message["data"]["data"]["connection"]["identity"]["status"] == "identity_mismatch"
+                    assert (
+                        message["data"]["data"]["connection"]["identity"]["status"]
+                        == "identity_mismatch"
+                    )
                     break
             fake.answer_identity_after_reconnect_only()
             while True:
@@ -866,7 +866,20 @@ async def test_serial_identity_reread_pushes_no_response_to_control_ws(model: st
                     if connection["identity"]["status"] == "no_response":
                         info = _Writer()
                         await server._handle_http(info, "GET", "/api/v1/info")
-                        assert connection["identity"] == info.payload["connection"]["identity"]
+                        assert (
+                            connection["identity"]
+                            == info.payload["connection"]["identity"]
+                        )
+                        break
+            await radio.disconnect()
+            while True:
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message.get("type") == "state_update":
+                    envelope = message["data"]
+                    key = "data" if envelope["type"] == "full" else "changed"
+                    connection = envelope[key]["connection"]
+                    if connection["identity"] is None:
                         break
         finally:
             writer.close()
@@ -877,10 +890,17 @@ async def test_serial_identity_reread_pushes_no_response_to_control_ws(model: st
         await server.stop()
 
 
-async def test_session_busy_lifecycle_pushes_hold_and_release_to_control_ws() -> None:
+async def test_session_busy_lifecycle_pushes_hold_and_release_to_control_ws(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from rigplane.runtime.radio import CoreRadio
     from rigplane.runtime.session_lifecycle import AttemptOutcome, AttemptResult
-    from rigplane.testing.timing import await_until
+    from rigplane.testing.timing import VirtualClock, await_until
+    from rigplane.runtime import session_lifecycle as lifecycle_module
+    from types import SimpleNamespace
+
+    clock = VirtualClock()
+    monkeypatch.setattr(lifecycle_module, "time", SimpleNamespace(monotonic=clock))
 
     tests_root = Path(__file__).resolve().parents[1]
     if str(tests_root) not in sys.path:
@@ -909,7 +929,10 @@ async def test_session_busy_lifecycle_pushes_hold_and_release_to_control_ws() ->
                 _, payload = await _ws_recv_frame(reader, timeout=5.0)
                 message = json.loads(payload)
                 if message.get("type") == "state_update":
-                    assert message["data"]["data"]["connection"]["session"]["busy"] is False
+                    assert (
+                        message["data"]["data"]["connection"]["session"]["busy"]
+                        is False
+                    )
                     break
             connect_task = asyncio.create_task(lifecycle.connect())
             await await_until(lifecycle.startup_busy_hold_event.is_set, timeout=5.0)

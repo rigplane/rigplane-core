@@ -91,7 +91,7 @@ from rigplane.runtime._control_phase import (
     ControlPhaseRuntime,
     ControlPhaseSessionMechanism,
 )
-from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
+from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle, LifecycleEvent
 from rigplane.audio import AudioPacket, AudioStream
 from rigplane.core.civ import CivRequestTracker
 from rigplane.commands.commander import IcomCommander, Priority
@@ -817,6 +817,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             # constructs the lifecycle with the default ``_RECONNECT_BACKOFF``.
             recovery_backoff_s=(0.0, 0.0, 0.0),
         )
+        self._session_lifecycle.add_event_listener(self._on_session_lifecycle_event)
         self._audio_runtime: AudioRecoveryRuntime = AudioRecoveryRuntime(self)
         # Managed TX supervisor (MOR-1016).  Built once, by the first
         # ``connect()`` that reaches ``_arm_managed_tx`` — never here: arming
@@ -1823,6 +1824,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 f"Unknown mode: {raw_mode!r}. Supported modes: {supported}"
             ) from exc
 
+    def _on_session_lifecycle_event(self, _event: LifecycleEvent) -> None:
+        self._civ_runtime._notify_change("connection_facts_changed", {})
+
     def set_state_change_callback(
         self, callback: Callable[[str, dict[str, Any]], None] | None
     ) -> None:
@@ -1913,6 +1917,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 status=RadioIdentityStatus.CHECKING, expected_model=self.model
             )
             self._connection_identity = checking
+            self._civ_runtime._notify_change("connection_facts_changed", {})
             # Per-attempt owner-stop epoch, captured before any await: the
             # tail below skips recovery when the owner tore the radio down
             # mid-connect (an owner disconnect during _fetch_initial_state
@@ -1933,6 +1938,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             except BaseException:
                 if self._connection_identity is checking:
                     self._connection_identity = None
+                    self._civ_runtime._notify_change("connection_facts_changed", {})
                 raise
             # An owner connect re-establishes session audio demand that
             # survived its teardown (MOR-3415). The resident reconnect loop
@@ -2010,6 +2016,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._lan_identity_answer_epoch = None
         self._lan_identity_owned_epoch = None
         self._lan_identity_revalidate_origin = False
+        self._civ_runtime._notify_change("connection_facts_changed", {})
 
     async def soft_disconnect(self) -> None:
         """Disconnect CI-V and audio but keep control transport alive.
@@ -2029,6 +2036,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._lan_identity_answer_epoch = None
             self._lan_identity_owned_epoch = None
             self._lan_identity_revalidate_origin = False
+            self._civ_runtime._notify_change("connection_facts_changed", {})
             return
         await self._park_managed_tx()
         self._conn_state = RadioConnectionState.DISCONNECTING
@@ -2079,6 +2087,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._conn_state = RadioConnectionState.DISCONNECTED
         self._civ_stream_ready = False
         self._civ_recovering = False
+        self._civ_runtime._notify_change("connection_facts_changed", {})
         logger.info(
             "Soft disconnect from %s:%d (control kept alive)", self._host, self._port
         )
@@ -2159,6 +2168,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 status=RadioIdentityStatus.CHECKING,
                 expected_model=self.model,
             )
+            self._civ_runtime._notify_change("connection_facts_changed", {})
             await self._stop_civ_data_watchdog()
             payload = await self._read_lan_identity_payload()
         finally:
@@ -2174,6 +2184,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if payload is not None:
             identity = self._classify_lan_identity_answer(payload)
             self._connection_identity = identity
+            self._civ_runtime._notify_change("connection_facts_changed", {})
             if identity.status in (
                 RadioIdentityStatus.VERIFIED,
                 RadioIdentityStatus.UNVERIFIED,
@@ -2252,10 +2263,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     def _record_lan_identity_no_response(self) -> None:
         """Record ``no_response`` with the answer cleared (the hold semantics)."""
+        previous_identity = self._connection_identity
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.NO_RESPONSE,
             expected_model=self.model,
         )
+        if self._connection_identity != previous_identity:
+            self._civ_runtime._notify_change("connection_facts_changed", {})
         logger.warning(
             "rigplane (%s): no identity answer on %s:%d — hold; re-read owns it",
             self.model,
@@ -2359,6 +2373,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                     continue
                 identity = self._classify_lan_identity_answer(payload)
                 self._connection_identity = identity
+                self._civ_runtime._notify_change("connection_facts_changed", {})
                 if identity.status in (
                     RadioIdentityStatus.VERIFIED,
                     RadioIdentityStatus.UNVERIFIED,

@@ -9,6 +9,7 @@ from rigplane.core.state_store import StateStore
 from rigplane.runtime.managed_tx_composition import ManagedTxComposition
 from rigplane.runtime.managed_tx_authority import ShutdownResult
 from rigplane.runtime.radio import CoreRadio, RadioConnectionState
+from rigplane.runtime._civ_rx import CivRuntime
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
@@ -96,6 +97,7 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
     store.begin_provider_generation()
     first_transport, second_transport = object(), object()
     radio = object.__new__(CoreRadio)
+    radio._civ_runtime = CivRuntime(radio)
     radio._managed_tx_composition = composition
     radio._managed_tx_arm_lock = asyncio.Lock()
     radio._civ_transport = first_transport
@@ -184,6 +186,7 @@ async def test_concurrent_duplicate_and_stale_transport_signals_are_idempotent(
     store.begin_provider_generation()
     first, second = object(), object()
     radio = object.__new__(CoreRadio)
+    radio._civ_runtime = CivRuntime(radio)
     radio._managed_tx_composition = composition
     radio._managed_tx_arm_lock = asyncio.Lock()
     radio._civ_transport = first
@@ -292,6 +295,7 @@ async def test_terminal_shutdown_then_actual_core_disconnect_is_idempotent(
     await composition.transport_ready(object())
 
     radio = object.__new__(CoreRadio)
+    radio._civ_runtime = CivRuntime(radio)
     radio._managed_tx_composition = composition
     radio._managed_tx_arm_lock = asyncio.Lock()
     radio._civ_transport = transport
