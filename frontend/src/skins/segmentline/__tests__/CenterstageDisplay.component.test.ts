@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import type {
   PeerSplitDisplayModel,
   PeerSplitReceiverDisplay,
 } from '../../../semantic/radio-display-model';
-import type { LcdSpectrumFrame } from '../lcd-display-contract';
+import type { LcdSpectrumFrame } from './scope-stream-fixture';
 import CenterstageDisplay from '../CenterstageDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -84,8 +85,9 @@ function render(
   document.body.appendChild(target);
   component = mount(CenterstageDisplay, {
     target,
-    props: { model: displayModel, audioFftFrame },
+    props: { model: displayModel, scopeStream: lcdStreamFixture(audioFftFrame) },
   });
+  flushSync();
   return target;
 }
 
@@ -96,7 +98,7 @@ function audioFftFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFr
     freshness: 'fresh',
     startHz: 0,
     endHz: 4_000,
-    normalizedBins: [0, 0.5, 1],
+    pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -155,7 +157,7 @@ describe('CenterstageDisplay', () => {
   it.each([
     ['missing', undefined],
     ['stale', audioFftFrame({ freshness: 'stale' })],
-    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', normalizedBins: [0] }],
+    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', pixels: Uint8Array.from([0], value => Math.round(value * 255)) }],
     ['source mismatch', audioFftFrame({ source: 'hardware' })],
     ['receiver mismatch', audioFftFrame({ receiver: 'SUB' })],
   ])('fails the audio FFT closed for a %s frame', (_case, frame) => {

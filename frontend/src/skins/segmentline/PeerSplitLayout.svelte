@@ -16,6 +16,7 @@
   // see `DualReceiverCockpit.svelte`'s identical import for the full
   // rationale (MOR-1070 evidence run finding N4).
   import '../../components-v2/theme/index';
+  import type { ScopeStream } from '$lib/runtime/scope-stream';
   import ScaledStage from '../../primitives/stage/ScaledStage.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
@@ -23,7 +24,7 @@
   import CenterstageDisplay from './CenterstageDisplay.svelte';
   import DominantUnifiedDisplay from './DominantUnifiedDisplay.svelte';
   import LcdDisplayVariant, { type LcdDisplayVariantId } from './LcdDisplayVariant.svelte';
-  import type { LcdSpectrumFrame, LcdSpectrumSource } from './lcd-display-contract';
+  import type { LcdSpectrumSource } from './lcd-display-contract';
   import PanadapterDisplay from './PanadapterDisplay.svelte';
   import PeerSplitDisplay from './PeerSplitDisplay.svelte';
 
@@ -60,25 +61,26 @@
   );
 </script>
 
-{#snippet readonlyDisplay(view: RadioViewModel, selectedFrame?: LcdSpectrumFrame)}
+{#snippet readonlyDisplay(view: RadioViewModel, scopeStream: ScopeStream | null, audioScopeStream: ScopeStream | null)}
   {@const model = projectPeerSplitDisplay(view)}
-  {#snippet peer()}<PeerSplitDisplay {model} />{/snippet}
-  {#snippet dominant()}<DominantUnifiedDisplay {model} spectrumFrame={selectedFrame} />{/snippet}
-  {#snippet centerstage()}<CenterstageDisplay {model} audioFftFrame={selectedFrame} />{/snippet}
-  {#snippet panadapter()}<PanadapterDisplay {model} rfFrame={selectedFrame} />{/snippet}
-  <LcdDisplayVariant
-    variant={displayVariant}
-    {peer}
-    {dominant}
-    {centerstage}
-    {panadapter}
-  />
+      {#snippet peer()}<PeerSplitDisplay {model} scopeStream={audioScopeStream} />{/snippet}
+      {#snippet dominant()}<DominantUnifiedDisplay {model} {scopeStream} />{/snippet}
+      {#snippet centerstage()}<CenterstageDisplay {model} {scopeStream} />{/snippet}
+      {#snippet panadapter()}<PanadapterDisplay {model} {scopeStream} {audioScopeStream} />{/snippet}
+      <LcdDisplayVariant
+        variant={displayVariant}
+        {peer}
+        {dominant}
+        {centerstage}
+        {panadapter}
+      />
 {/snippet}
 
 <div class="peer-split-holder">
   <ScaledStage nativeW={canvasW} nativeH={canvasH} {minScale}>
     <div class="peer-split-glass" data-testid="peer-split-glass">
-      <SemanticRadioSurfaces strips="dual" {displayFrameSource} {readonlyDisplay} />
+      <SemanticRadioSurfaces strips="dual" {displayFrameSource} {readonlyDisplay}
+        displayAudioScope={displayVariant === 'peer' || displayVariant === 'panadapter'} />
     </div>
   </ScaledStage>
 </div>

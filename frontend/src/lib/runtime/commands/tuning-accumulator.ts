@@ -36,6 +36,7 @@ export interface AcceptedTargetQuery {
 
 interface PendingTuning {
   target: number;
+  absolutePaced: boolean;
   quietUntil: number;
   flushTimer: ReturnType<typeof setTimeout> | null;
   lastEmitAt: number;
@@ -65,7 +66,8 @@ export interface TuningAccumulatorOptions {
 
 export interface TuningAccumulator {
   step(receiver: number, confirmedFreq: number, requestedFreq: number, observationMarker?: number | null): void;
-  jump(receiver: number, freq: number, confirmedFreq?: number, observationMarker?: number | null): void;
+  jump(receiver: number, freq: number, confirmedFreq?: number, observationMarker?: number | null, paced?: boolean): void;
+  acceptsObservation(receiver: number, frequency: number, observationMarker: number | null): boolean;
   /** Retire queued relative intent before an explicit VFO identity command. */
   cancel(receiver?: number): void;
 }
@@ -211,6 +213,7 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
     if (context === null || !validMarker(observationMarker)) return;
     pending.set(receiver, {
       target: requestedFreq,
+      absolutePaced: false,
       quietUntil: t + quietWindowMs,
       flushTimer: null,
       lastEmitAt: t,
@@ -265,12 +268,39 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       scheduleFlush(receiver);
       publishBurst(receiver, state.target, state.lastLifecycle, state.context);
     },
-    jump(receiver, freq, confirmedFreq, observationMarker = null) {
+    acceptsObservation(receiver, frequency, observationMarker) {
+      const state = pending.get(receiver);
+      if (!state || !stillLive(receiver, state, now()) || !validMarker(observationMarker)
+        || observationMarker < state.lastObservationMarker) return false;
+      return frequency === state.lastObservedFrequency || acceptedTarget({
+        receiver, context: state.context, frequency, observationMarker, anchor: state.anchor,
+      });
+    },
+    jump(receiver, freq, confirmedFreq, observationMarker = null, paced = false) {
+      const state = pending.get(receiver);
+      const t = now();
+      if (paced && typeof confirmedFreq === 'number' && state
+        && stillLive(receiver, state, t)
+        && observationContinues(receiver, state, confirmedFreq, observationMarker)) {
+        state.target = freq;
+        state.absolutePaced = true;
+        state.quietUntil = t + quietWindowMs;
+        scheduleFlush(receiver);
+        publishBurst(receiver, freq, state.lastLifecycle, state.context);
+        return;
+      }
       // A known pre-jump observation anchors subsequent relative intent;
       // the jump target remains command intent, never confirmed state.
       if (typeof confirmedFreq === 'number' && Number.isSafeInteger(confirmedFreq)
         && confirmedFreq > 0 && validMarker(observationMarker)) {
-        beginFresh(receiver, now(), confirmedFreq, freq, observationMarker);
+        const anchor = !paced && state?.absolutePaced && stillLive(receiver, state, t)
+          && observationContinues(receiver, state, confirmedFreq, observationMarker) ? state.anchor : null;
+        beginFresh(receiver, t, confirmedFreq, freq, observationMarker);
+        const next = pending.get(receiver);
+        if (next) {
+          next.absolutePaced = paced;
+          if (anchor) next.anchor = anchor;
+        }
         return;
       }
       clear(receiver);

@@ -1,76 +1,36 @@
+import type { ScopeGeometry } from '$lib/runtime/scope-frame';
+
 export type LcdSpectrumSource = 'audio-fft' | 'hardware';
 export type LcdSpectrumReceiver = 'MAIN' | 'SUB';
-export type LcdSpectrumFreshness = 'fresh' | 'stale';
-
-export interface LcdSpectrumFrame {
-  readonly state?: 'out-of-range';
-  readonly source: LcdSpectrumSource;
-  readonly receiver: LcdSpectrumReceiver;
-  readonly freshness: LcdSpectrumFreshness;
-  readonly startHz: number;
-  readonly endHz: number;
-  readonly normalizedBins: readonly number[];
-}
-
 export interface LcdSpectrumFrameExpectation {
   readonly source: LcdSpectrumSource;
   readonly receiver: LcdSpectrumReceiver | null;
 }
-
 export type LcdSpectrumFrameGhostReason =
-  | 'missing'
-  | 'stale'
-  | 'source-mismatch'
-  | 'receiver-unknown'
-  | 'receiver-mismatch'
-  | 'invalid';
-
+  | 'missing' | 'stale' | 'source-mismatch' | 'receiver-unknown' | 'receiver-mismatch' | 'invalid';
 export type LcdSpectrumFrameResolution =
-  | { readonly state: 'live'; readonly frame: LcdSpectrumFrame }
-  | { readonly state: 'out-of-range'; readonly frame: LcdSpectrumFrame }
+  | { readonly state: 'live' | 'out-of-range'; readonly geometry: ScopeGeometry }
   | { readonly state: 'ghost'; readonly reason: LcdSpectrumFrameGhostReason };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function hasKnownQualifiers(value: Record<string, unknown>): boolean {
-  return (value.source === 'audio-fft' || value.source === 'hardware')
-    && (value.receiver === 'MAIN' || value.receiver === 'SUB')
-    && (value.freshness === 'fresh' || value.freshness === 'stale');
-}
-
-function hasValidGeometry(value: Record<string, unknown>): boolean {
-  if (typeof value.startHz !== 'number' || !Number.isFinite(value.startHz)
-    || typeof value.endHz !== 'number' || !Number.isFinite(value.endHz)
-    || value.endHz <= value.startHz
-    || !Array.isArray(value.normalizedBins)
-    || (value.state !== 'out-of-range' && value.normalizedBins.length < 2)) return false;
-
-  for (const sample of value.normalizedBins) {
-    if (typeof sample !== 'number' || !Number.isFinite(sample) || sample < 0 || sample > 1) {
-      return false;
-    }
-  }
-  return true;
-}
-
+/** LCD qualification uses geometry only; pixels remain in the stream sink. */
 export function resolveLcdSpectrumFrame(
-  input: unknown,
+  geometry: ScopeGeometry | null | undefined,
   expectation: LcdSpectrumFrameExpectation,
 ): LcdSpectrumFrameResolution {
   if (expectation.receiver === null) return { state: 'ghost', reason: 'receiver-unknown' };
-  if (input === undefined || input === null) return { state: 'ghost', reason: 'missing' };
-  if (!isRecord(input) || !hasKnownQualifiers(input)) {
-    return { state: 'ghost', reason: 'invalid' };
+  if (geometry == null) return { state: 'ghost', reason: 'missing' };
+  if (geometry.source !== (expectation.source === 'hardware' ? 'radio' : 'audio_fft')) {
+    return { state: 'ghost', reason: 'source-mismatch' };
   }
-  if (input.source !== expectation.source) return { state: 'ghost', reason: 'source-mismatch' };
-  if (input.receiver !== expectation.receiver) {
+  if (geometry.receiver !== (expectation.receiver === 'MAIN' ? 0 : 1)) {
     return { state: 'ghost', reason: 'receiver-mismatch' };
   }
-  if (input.freshness !== 'fresh') return { state: 'ghost', reason: 'stale' };
-  if (!hasValidGeometry(input)) return { state: 'ghost', reason: 'invalid' };
-
-  return { state: input.state === 'out-of-range' ? 'out-of-range' : 'live',
-    frame: input as unknown as LcdSpectrumFrame };
+  if (geometry.freshness !== 'fresh') return { state: 'ghost', reason: 'stale' };
+  const headerOnlyOutOfRange = geometry.outOfRange && !geometry.hasPixels;
+  if (!Number.isFinite(geometry.view.startHz) || !Number.isFinite(geometry.view.endHz)
+    || geometry.view.endHz <= geometry.view.startHz
+    || (!headerOnlyOutOfRange && (!geometry.hasPixels || geometry.width < 2))) {
+    return { state: 'ghost', reason: 'invalid' };
+  }
+  return { state: headerOnlyOutOfRange ? 'out-of-range' : 'live', geometry };
 }

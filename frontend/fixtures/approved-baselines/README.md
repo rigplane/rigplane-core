@@ -2,7 +2,38 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
-## Linux re-pin provenance — 2026-11-05 MOR-4223 BUSY lamp removed (current)
+## Linux re-pin provenance — 2026-11-08 MOR-4270 CI capture correction (current)
+
+The spectrum witness and `manifest.json` were regenerated from
+`86795aeb50e856ff11e906adb386180a363d289c` in the Core CI runner image
+`rigplane-ci-build-core-arm64-runner:aead399d2a31`: Ubuntu 22.04 ARM64,
+Node v20.20.2, Playwright 1.58.2, Chromium revision 1208, and DejaVu Sans Mono.
+This environment reproduced PR #4508's exact 1,059-pixel failure against the
+previous Noble capture. Inspection of the Playwright expected/actual/diff
+images showed font-metric differences; the trace, axes, tune line and passband
+geometry stayed in place. The R1 preset and zoom controls remain intentional.
+No other approved PNG was regenerated.
+
+Command: `npm run test:e2e:visual -- spectrum-baselines.spec.ts --grep 'spectrum-panel--managed-frame$' --update-snapshots=all`.
+The selected regeneration passed 1/1; verification without snapshot updates
+passed 3/3 spectrum tests. `npm run test:e2e:i18n -- i18n-visual.spec.ts` passed
+45/45 in the same image; the production design-language PNGs remain unchanged.
+
+## Linux re-pin provenance — 2026-11-08 MOR-4270 first scope toolbar capture (superseded)
+
+Only `spectrum-panel--managed-frame.png` and `manifest.json` were regenerated
+from source `339c9c681dc30ca2d4843ca00fc8705a02011a0e` using Linux ARM64,
+Playwright 1.58.2 and Node v24.13.0 in `mcr.microsoft.com/playwright:v1.58.2-noble`
+(`sha256:6446946a1d9fd62d9ae501312a2d76a43ee688542b21622056a372959b65d63d`).
+These are native Linux container captures. `spectrum-baselines.spec.ts`
+(`spectrum-panel--managed-frame`) and `fixtures/spectrum-witness.ts` supply
+the witness; regeneration with `--update-snapshots=all` passed 3/3 tests,
+and verification without snapshot updates passed 3/3. Expected and actual
+images were visually inspected: the new preset and zoom controls reuse
+`SpectrumToolbar.svelte`'s `toolbar-select` and `toolbar-btn`; the graph,
+axes, tune line and passband remain visible.
+
+## Linux re-pin provenance — 2026-11-05 MOR-4223 BUSY lamp removed (previous)
 
 The BUSY lamp (MOR-3630) is gone; the SQL tag that replaces it is an empty
 reserved slot at the end of the lamp row (and the end of the phone chips)

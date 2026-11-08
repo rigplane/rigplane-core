@@ -40,6 +40,9 @@ export interface WaterfallOptions {
   refLevel: number;  // -30 to +30 dB brightness offset
   speed: number;     // rows scrolled per pushRow call (1 = normal)
   centerHz: number;  // displayed viewport center in Hz (MOR-2464: animated)
+  sampleSpanHz?: number;
+  sampleOffset?: number;
+  sampleAmplitudeMax?: number;
   spanHz: number;    // frequency span in Hz
   // Viewport center minus sample-window center, Hz (MOR-2464). Samples the
   // NEW row only; history reprojects by centerHz deltas instead.
@@ -145,7 +148,7 @@ export class WaterfallRenderer {
   private samplingShiftPx(): number {
     const { spanHz, panoramaShiftHz } = this.options;
     if (!(spanHz > 0) || !Number.isFinite(panoramaShiftHz) || this.width <= 0) return 0;
-    return (panoramaShiftHz / spanHz) * this.width;
+    return (panoramaShiftHz / (this.options.sampleSpanHz || spanHz)) * this.width;
   }
 
   // Rounded device-pixel offset of the viewport center from the anchor.
@@ -200,7 +203,8 @@ export class WaterfallRenderer {
     const canvas = ctx.canvas;
     const w = canvas.width;
     const h = canvas.height;
-    const n = data.length;
+    const offset = this.options.sampleOffset ?? 0;
+    const n = data.length - offset;
     if (!n || w <= 0 || h <= 0) return;
 
     // Shift existing waterfall content down by 1 row (no full redraw)
@@ -218,13 +222,18 @@ export class WaterfallRenderer {
     // interpolates the translated screen profile; uncovered stays blank.
     const lut = this.lut;
     const shiftPx = this.samplingShiftPx();
-    const profile = (column: number): number =>
-      data[Math.min(n - 1, Math.floor((column / w) * n))];
+    const profile = (column: number): number => {
+      const value = data[offset + Math.min(n - 1, Math.floor((column / w) * n))];
+      const amplitudeMax = this.options.sampleAmplitudeMax ?? 80;
+      return amplitudeMax === 80 ? value : Math.round(Math.min(value, amplitudeMax) * 80 / amplitudeMax);
+    };
     // Ref level: maps -30..+30 dB → ±20 on 0-80 scale
     const refAdjust = (this.options.refLevel / 60) * 40;
     for (let x = 0; x < w; x++) {
       const pi = x * 4;
-      const p = x + shiftPx;
+      const scale = this.options.sampleSpanHz && this.options.sampleSpanHz > 0
+        ? this.options.spanHz / this.options.sampleSpanHz : 1;
+      const p = w / 2 + (x - w / 2) * scale + shiftPx;
       if (p < 0 || p > w - 1) {
         rowData[pi] = WATERFALL_BACKGROUND_RGB[0];
         rowData[pi + 1] = WATERFALL_BACKGROUND_RGB[1];

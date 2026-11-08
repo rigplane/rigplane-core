@@ -5,12 +5,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import scopeOutOfRangeFixture from '../../../../../tests/fixtures/ic705/scope_out_of_range.json';
 import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
+import * as svelteClient from 'svelte/internal/client';
 import { SvelteMap } from 'svelte/reactivity';
 import { createClassComponent } from 'svelte/legacy';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
-import type { LcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
+import type { ScopeStream } from '$lib/runtime/scope-stream';
 import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
@@ -18,7 +19,6 @@ import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import { SpectrumRenderer } from '$lib/renderers/spectrum-renderer';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import * as passband from '$lib/runtime/adapters/scope-passband-display';
-import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import * as controlTransport from '$lib/transport/ws-client';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
@@ -37,7 +37,20 @@ const h = vi.hoisted(() => ({
   }) => void>(),
   audio: { muted: true, rxEnabled: false, volume: 0 },
   frequency: vi.fn(), width: vi.fn(), raw: vi.fn(), acquire: vi.fn(),
+  channelRequests: [] as string[],
 }));
+const surfaceEffects = vi.hoisted(() => ({ next: 0, runs: new Map<number, number>() }));
+const realUserEffect = svelteClient.user_effect;
+function observeSurfaceEffects() { vi.spyOn(svelteClient, 'user_effect').mockImplementation((fn: () => void) => {
+  const caller = new Error().stack?.split('\n').find(line => line.includes('.svelte:')) ?? '';
+  if (!caller.includes('SemanticRadioSurfaces.svelte')) return realUserEffect(fn);
+  const id = ++surfaceEffects.next;
+  surfaceEffects.runs.set(id, 0);
+  return realUserEffect(() => {
+    surfaceEffects.runs.set(id, surfaceEffects.runs.get(id)! + 1);
+    return fn();
+  });
+}); }
 vi.mock('$lib/runtime', async () => {
   const { radio } = await import('$lib/stores/radio.svelte');
   const { getCapabilities } = await import('$lib/stores/capabilities.svelte');
@@ -204,6 +217,8 @@ function flushPaint(): void {
 }
 
 beforeEach(() => {
+  observeSurfaceEffects();
+  surfaceEffects.next = 0; surfaceEffects.runs.clear();
   vi.useFakeTimers();
   rafCallbacks = new Map(); rafId = 0;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { rafCallbacks.set(++rafId, callback); return rafId; });
@@ -215,10 +230,12 @@ beforeEach(() => {
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as never);
   tx = new ManagedAppTxHarness(); h.tx = tx.controller; h.session = { state: 'connected', epoch: 1 }; h.listeners.clear();
   h.frequency.mockClear(); h.width.mockClear(); pendingWidth.clear(); h.acquire.mockClear(); wire = channel();
-  h.scope = new ScopeController(() => wire as never, { now: () => Date.now(), setTimeout, clearTimeout });
+  h.channelRequests = [];
+  h.scope = new ScopeController((name: string) => { h.channelRequests.push(name); return wire as never; },
+    { now: () => Date.now(), setTimeout, clearTimeout, setInterval, clearInterval });
   h.resources = new PresentationResourceHost('test');
   h.resources.configure('hardware-scope', { available: true, selected: true, driver: h.scope.hardwareScopeDriver });
-  h.raw = vi.spyOn(h.scope, 'subscribeHardware'); fixture(); region = undefined; component = null; legacyComponent = null;
+  fixture(); region = undefined; component = null; legacyComponent = null;
 });
 afterEach(async () => {
   if (component) await unmount(component); legacyComponent?.$destroy(); flushSync(); await h.resources.teardown();
@@ -227,6 +244,34 @@ afterEach(async () => {
 });
 
 describe('one managed scope owner through the real region and panel', () => {
+  it('admits known receiver geometry while an unobserved active slot keeps passband authority closed', async () => {
+    fixture('ab');
+    deliver(state => { state.fieldStatus!['main.activeSlot'].observed = false; });
+    publishAuthority(); await render(false);
+    expect(region!()!.geometryAdmitted).toBe(true);
+    expect(region!()!.passband.state).toBe('unknown');
+    await unmount(component!); component = null;
+    await render();
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    expect(overlay()).toBeNull();
+  });
+  it('runs no surface effects for 100 pixel-only deliveries and once at most per geometry change', async () => {
+    await render(false);
+    expect(surfaceEffects.runs.size).toBeGreaterThan(0);
+    const initial = new Map(surfaceEffects.runs);
+    const initialReceipt = h.scope.stream('hardware').receipt;
+    for (let index = 0; index < 100; index += 1) wire.frame(0, [index, 128, 255]);
+    expect(h.scope.stream('hardware').receipt).toBe(initialReceipt + 100);
+    expect(surfaceEffects.runs).toEqual(initial);
+    const pixelRuns = [...surfaceEffects.runs].reduce((total, [id, count]) => total + count - initial.get(id)!, 0);
+    expect(pixelRuns).toBe(0);
+    wire.frame(0, [0, 128, 255, 64]);
+    const changes = [...surfaceEffects.runs].map(([id, count]) => count - initial.get(id)!);
+    const geometryRuns = changes.reduce((total, count) => total + count, 0);
+    console.info('SRS effect budget', { registered: initial.size, pixelRuns, geometryRuns });
+    expect(geometryRuns).toBeGreaterThan(0);
+    expect(geometryRuns).toBeLessThanOrEqual(1);
+  });
   it('sends CTR through the real client and consumes the paired server recovery documents', async () => {
     const documents = scopeOutOfRangeFixture as unknown as {
       streamWireHex: string; inRangeWireHex: string; ctrCommand: WsCommand;
@@ -371,7 +416,7 @@ describe('one managed scope owner through the real region and panel', () => {
 
   it.each(['desktop-v2', 'sdr-test'] as const)('%s clears local OFF under an independent healthy lease and fences replay', async skin => {
     await render(true, skin); const shared = h.resources.acquire('hardware-scope', 'independent');
-    expect(overlay()).not.toBeNull(); expect(h.raw).not.toHaveBeenCalled(); expect(h.acquire).not.toHaveBeenCalled();
+    expect(overlay()).not.toBeNull(); expect(wire.count()).toBe(1); expect(h.acquire).not.toHaveBeenCalled();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(2);
     toggle(); clear(); expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
     expect(h.scope.hardwareScopeConnected).toBe(true); wire.frame(); clear();
@@ -396,25 +441,29 @@ describe('one managed scope owner through the real region and panel', () => {
     for (const [type, x] of [['pointerdown', 100], ['pointermove', 120], ['pointerup', 120]] as const) {
       surface.dispatchEvent(new PointerEvent(type, { bubbles: true, pointerId: 1, button: 0, clientX: x })); flushSync();
     }
-    expect(h.frequency).toHaveBeenCalledOnce(); expect(h.width).not.toHaveBeenCalled();
+    expect(h.frequency).toHaveBeenCalledTimes(2);
+    expect(h.frequency).toHaveBeenNthCalledWith(1, 14_040_000, 0, 'drag');
+    expect(h.frequency).toHaveBeenNthCalledWith(2, 14_040_000, 0);
+    expect(h.width).not.toHaveBeenCalled();
     renew(11); wire.frame(); expect(overlay()!.getAttribute('style')).toBe(edges);
     expect(target.querySelector('.passband-freshness')).toBeNull();
   });
-  it('keeps one host/evidence subscription and resets display state on controller lifetime disposal', async () => {
-    const watch = vi.spyOn(h.scope, 'subscribeFrameEvidence'), dispose = vi.spyOn(ScopeFrameHost.prototype, 'dispose');
-    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
-    await render(); expect(watch).toHaveBeenCalledOnce(); expect(wire.count()).toBe(1); expect(h.listeners.size).toBe(1);
+  it('keeps one geometry owner per consumer and resets display state on disposal', async () => {
+    const watch = vi.spyOn(h.scope.stream('hardware').geometry, 'subscribe');
+    await render(); expect(watch).toHaveBeenCalledTimes(2); expect(wire.count()).toBe(1); expect(h.listeners.size).toBe(1);
     await unmount(component!); component = null; flushSync(); await Promise.resolve();
-    expect(dispose).toHaveBeenCalledOnce(); expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
-    expect(wire.count()).toBe(0); expect(authority.mock.calls.filter(([value]) => value === null)).toHaveLength(1);
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
+    expect(wire.count()).toBe(0); expect(h.scope.stream('hardware').selectedSlot).toBeNull();
+    expect(h.scope.snapshotHealth('hardware')).toEqual({ demanded: false, transport: 'disconnected', frameSeen: false });
+    expect(h.scope.stream('hardware').latest('scope:0')).toBeNull();
     renew(11, true); await render(); expect(overlay()).toBeNull();
-    expect(watch).toHaveBeenCalledTimes(2); renew(12); wire.frame(); expect(overlay()).not.toBeNull();
+    expect(watch).toHaveBeenCalledTimes(4); renew(12); wire.frame(); expect(overlay()).not.toBeNull();
   });
   it('preserves toolbar argument one and exposes a passive nullable region with demand callback', async () => {
     await render(false); expect(target.querySelector('[data-projection-probe]')?.getAttribute('data-toolbar')).toBe('function');
-    expect(region?.()?.projection?.frame.normalizedBins).toEqual([0, 128 / 255, 1]);
-    expect(region?.()?.projection?.passband.state).toBe('current');
-    region!()!.setDemand(false); flushSync(); expect(region!()!.projection).toBeNull(); expect(region!()!.demanded).toBe(false);
+    expect(h.scope.stream('hardware').latest('scope:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
+    expect(region?.()?.passband.state).toBe('current');
+    region!()!.setDemand(false); flushSync(); expect(region!()!.passband.state).toBe('unknown'); expect(region!()!.demanded).toBe(false);
     expect(h.frequency).not.toHaveBeenCalled(); expect(h.width).not.toHaveBeenCalled();
   });
   it('requires a post-boundary receipt even when geometry renews first', async () => {
@@ -422,20 +471,33 @@ describe('one managed scope owner through the real region and panel', () => {
     toggle(); toggle(); renew(11); expect(overlay()).toBeNull();
     wire.frame(); expect(overlay()).not.toBeNull(); h.resources.release(shared);
   });
+  it('requires a new MAIN receipt after retirement even when SUB traffic arrives before renewed MAIN readbacks', async () => {
+    setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
+      capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
+    const sub = structuredClone(radio.current!.main);
+    deliver(state => { state.sub = sub; }); publishAuthority();
+    await render(); expect(overlay()).not.toBeNull();
+    deliver(state => { state.fieldStatus!['main.filterWidth'].observed = false; }); publishAuthority(); flushSync();
+    expect(overlay()).toBeNull();
+    wire.frame(1);
+    deliver(state => { state.fieldStatus!['main.filterWidth'].observed = true; }); renew(11);
+    expect(overlay()).toBeNull();
+    wire.frame(0); expect(overlay()).not.toBeNull();
+  });
   it.each(['single', 'ab'] as const)('uses the exact canonical %s VFO selection', async scheme => {
     fixture(scheme); const project = vi.spyOn(passband, 'projectScopePassbandDisplay'); await render(false);
     expect(project.mock.lastCall?.[1].selection).toEqual({ receiver: 'MAIN', slot: scheme === 'single' ? 'single' : 'A' });
     if (scheme === 'ab') {
       deliver((s) => { s.fieldStatus!['main.activeSlot'].observed = false; }); publishAuthority(); flushSync(); wire.frame();
       expect(project.mock.lastCall?.[1].selection).toBeNull();
-      expect(region!()!.projection?.passband.state).toBe('unknown');
+      expect(region!()!.passband.state).toBe('unknown');
     }
   });
   it('preserves explicit relative-slot unknown instead of selecting MAIN/A', async () => {
     fixture('ab'); setCapabilities({ ...getCapabilities()!, vfoReadback: 'selected_unselected' });
     deliver((s) => { s.fieldStatus!['main.activeSlot'].observed = false; });
     const project = vi.spyOn(passband, 'projectScopePassbandDisplay'); await render(false);
-    expect(project.mock.lastCall?.[1].selection).toBeNull(); expect(region!()!.projection?.passband.state).toBe('unknown');
+    expect(project.mock.lastCall?.[1].selection).toBeNull(); expect(region!()!.passband.state).toBe('unknown');
   });
   it.each(['unknown receiver', 'generation mismatch'])('clears a live projection for %s', async boundary => {
     setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'ab_shared', capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
@@ -456,44 +518,41 @@ describe('one managed scope owner through the real region and panel', () => {
   it('switches between configured managed and readonly consumers without simultaneous subscriptions or resetting floors', async () => {
     target = document.createElement('div'); document.body.append(target);
     let active = 0, maximum = 0;
-    const managedSubscribe = ScopeFrameHost.prototype.subscribePresentation, readonlySubscribe = ScopeFrameHost.prototype.subscribe;
-    const managedWatch = vi.spyOn(ScopeFrameHost.prototype, 'subscribePresentation').mockImplementation(function (this: ScopeFrameHost, handler) {
-      active++; maximum = Math.max(maximum, active); const stop = managedSubscribe.call(this, handler);
+    const geometry = h.scope.stream('hardware').geometry;
+    const subscribe = geometry.subscribe;
+    const evidence = vi.spyOn(geometry, 'subscribe').mockImplementation((handler) => {
+      active++; maximum = Math.max(maximum, active); const stop = subscribe(handler);
       return () => { stop(); active--; };
     });
-    const readonlyWatch = vi.spyOn(ScopeFrameHost.prototype, 'subscribe').mockImplementation(function (this: ScopeFrameHost, handler) {
-      active++; maximum = Math.max(maximum, active); const stop = readonlySubscribe.call(this, handler);
-      return () => { stop(); active--; };
-    });
-    const evidence = vi.spyOn(h.scope, 'subscribeFrameEvidence');
     const props = { regions: true, displayFrameSource: 'hardware' as const, regionContent: snippet };
     legacyComponent = createClassComponent({ component: SemanticRadioSurfaces, target, props });
     flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
-    expect(region!()!.projection?.passband.state).toBe('current');
+    expect(region!()!.passband.state).toBe('current');
     legacyComponent.$set({ regionContent: undefined }); flushSync();
-    expect(managedWatch).toHaveBeenCalledOnce(); expect(readonlyWatch).toHaveBeenCalledOnce();
+    expect(evidence).toHaveBeenCalledOnce(); expect(active).toBe(1);
     legacyComponent.$set({ regionContent: snippet }); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
-    expect(managedWatch).toHaveBeenCalledTimes(2); expect(evidence).toHaveBeenCalledOnce();
-    expect(region!()!.projection?.passband.state).toBe('unknown'); renew(11); wire.frame();
-    expect(region!()!.projection?.passband.state).toBe('current');
+    expect(evidence).toHaveBeenCalledOnce();
+    expect(region!()!.passband.state).toBe('unknown'); renew(11); wire.frame();
+    expect(region!()!.passband.state).toBe('current');
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1); expect(maximum).toBe(1); expect(active).toBe(1);
     const shared = h.resources.acquire('hardware-scope', 'independent');
-    let frame: (() => LcdSpectrumFrame | undefined) | undefined;
-    const readonlyDisplay = createRawSnippet<[RadioViewModel, LcdSpectrumFrame?]>((_view, selected) => {
+    let frame: (() => ScopeStream | null) | undefined;
+    const readonlyDisplay = createRawSnippet<[RadioViewModel, ScopeStream | null]>((_view, selected) => {
       frame = selected; return { render: () => '<output data-passive-frame></output>' };
     });
     const setDemand = region!()!.setDemand;
-    legacyComponent.$set({ readonlyDisplay }); flushSync(); expect(frame?.()).toBeDefined();
-    setDemand(false); flushSync(); expect(frame?.()).toBeUndefined();
-    wire.frame(); expect(h.scope.hardwareScopeConnected).toBe(true); expect(frame?.()).toBeUndefined();
+    legacyComponent.$set({ readonlyDisplay }); flushSync(); expect(frame?.()).toBe(h.scope.stream('hardware'));
+    setDemand(false); flushSync(); expect(frame?.()).toBeNull();
+    wire.frame(); expect(h.scope.hardwareScopeConnected).toBe(true); expect(frame?.()).toBeNull();
     h.resources.release(shared);
     legacyComponent.$destroy(); legacyComponent = null; flushSync(); expect(active).toBe(0);
   });
   it('keeps audio FFT layout on its legacy acquisition path with no hardware host', async () => {
     setCapabilities({ ...getCapabilities()!, scope: false, capabilities: [], scopeSource: 'audio_fft', audioFftAvailable: true });
-    const watch = vi.spyOn(h.scope, 'subscribeFrameEvidence'), acquire = vi.spyOn(h.resources, 'acquire'); await render();
-    expect(watch).not.toHaveBeenCalled(); expect(h.raw).not.toHaveBeenCalled();
-    expect(acquire.mock.calls.filter(([resource, consumer]) => resource === 'audio-fft' && consumer === 'SpectrumPanel')).toHaveLength(1);
+    const acquire = vi.spyOn(h.resources, 'acquire'); await render();
+    expect(h.channelRequests).not.toContain('scope');
+    expect(acquire.mock.calls.filter(([resource]) => resource === 'hardware-scope')).toHaveLength(0);
+        expect(acquire.mock.calls.filter(([resource, consumer]) => resource === 'audio-fft' && consumer === 'SpectrumPanel')).toHaveLength(1);
     expect(target.querySelector('.audio-source-label')?.textContent).toContain('Audio FFT');
   });
 
@@ -510,6 +569,22 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(h.width).not.toHaveBeenCalled();
   });
 
+  it.each(['missing state', 'generation mismatch', 'unknown receiver'] as const)(
+    'does not acquire managed hardware demand with %s', async boundary => {
+      if (boundary === 'missing state') radio.current = null;
+      else if (boundary === 'generation mismatch') setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
+      else {
+        setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'ab_shared',
+          capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
+        deliver(state => { state.fieldStatus!.active.observed = false; });
+      }
+      publishAuthority(); await mountHost();
+      expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
+      expect(wire.connect).not.toHaveBeenCalled();
+      expect(h.scope.snapshotHealth('hardware')).toEqual({ demanded: false, transport: 'disconnected', frameSeen: false });
+    },
+  );
+
   it('recovers normal managed startup when state arrives after hardware capabilities', async () => {
     radio.current = null; await render(); clear();
     fixture(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
@@ -524,8 +599,8 @@ describe('one managed scope owner through the real region and panel', () => {
     deliver((s) => { s.fieldStatus![path].observed = true; }); publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
     expect(overlay()).not.toBeNull(); expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
-  it('reacquires only its own resource binding when provider generation changes', async () => {
-    const watch = vi.spyOn(h.scope, 'subscribeFrameEvidence'); await render(); expect(overlay()).not.toBeNull();
+  it('keeps demand stable while requalifying the transport on provider generation changes', async () => {
+    const watch = vi.spyOn(h.scope.stream('hardware').geometry, 'subscribe'); await render(); expect(overlay()).not.toBeNull();
     const acquired = vi.spyOn(h.resources, 'acquire'), released = vi.spyOn(h.resources, 'release');
     deliver((s) => {
       s.providerGeneration = 2;
@@ -534,7 +609,8 @@ describe('one managed scope owner through the real region and panel', () => {
     setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
     publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
     expect(overlay()).toBeNull(); renew(2); wire.frame(); expect(overlay()).not.toBeNull();
-    expect(acquired).toHaveBeenCalledOnce(); expect(released).toHaveBeenCalledOnce(); expect(watch).toHaveBeenCalledOnce();
+    expect(acquired).not.toHaveBeenCalled(); expect(released).not.toHaveBeenCalled();
+    expect(watch).toHaveBeenCalledTimes(2); expect(wire.connect).toHaveBeenCalledTimes(2);
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
 
@@ -564,7 +640,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     surface.dispatchEvent(new WheelEvent('wheel', { bubbles: true })); flushSync();
     expect(h.frequency).not.toHaveBeenCalled();
     expect(h.width).not.toHaveBeenCalled();
-    expect(h.raw).toHaveBeenCalledOnce();
+    expect(wire.count()).toBe(1);
     // The fallback ends the moment actual receiver authority arrives.
     deliver((s) => { s.active = 'MAIN'; });
     publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
@@ -589,8 +665,8 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
       flushSync();
       expect(h.frequency).not.toHaveBeenCalled();
       expect(h.width).not.toHaveBeenCalled();
-      // `subscribeHardware` is the alternate raw-frame path; it must stay idle.
-      expect(h.raw).not.toHaveBeenCalled();
+      expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
+      expect(wire.count()).toBe(0);
     });
   it('drops the lease and socket on unmount and never retains prior-session raw display', async () => {
     noReadback();

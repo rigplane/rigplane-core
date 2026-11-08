@@ -68,11 +68,24 @@ vi.mock('$lib/runtime', () => ({
     },
     get radioPowerOn() { return null; },
     get scope() {
+      // MOR-4270: the wiring consumes the shared-stream contract; the idle
+      // fixture stream publishes null geometry and never delivers frames.
+      const idleStream = Object.freeze({
+        sourceId: 'scope',
+        geometry: Object.freeze({ subscribe(listener: (value: null) => void) { listener(null); return () => {}; } }),
+        subscribe(_sink: (frame: never, slotKey: string) => void): () => void { return () => {}; },
+        latest(_slotKey: string): null { return null; },
+        setSlotFilter(_key: string | null): void {},
+        setSessionEpoch(_epoch: number): void {},
+        reset(): void {},
+        setFreshness(_freshness: 'fresh' | 'stale'): void {},
+        receipt: 0,
+      });
       return {
         hardwareScopeConnected: false,
-        subscribeFrameEvidence: () => () => {},
         setFrameAuthority: () => {},
-        snapshotFrameEvidence: () => ({ envelope: null, authority: null }),
+        stream: () => idleStream,
+        snapshotHealth: () => ({ demanded: false, transport: 'disconnected' as const, frameSeen: false }),
       };
     },
   },
@@ -387,13 +400,13 @@ describe('the selected segmentline face owns exactly one LCD source declaration 
     expect(host).toMatch(/\{readonlyDisplay\}/);
   });
 
-  it('keeps frame authority at the semantic host and forwards its one selected object unchanged', () => {
-    expect(source).toContain("import type { LcdSpectrumFrame, LcdSpectrumSource } from './lcd-display-contract';");
-    expect(source).toMatch(/\{#snippet readonlyDisplay\(view: RadioViewModel, selectedFrame\?: LcdSpectrumFrame\)\}/);
-    expect(source).toMatch(/<DominantUnifiedDisplay\s+\{model\}\s+spectrumFrame=\{selectedFrame\}\s*\/>/);
-    expect(source).toMatch(/<CenterstageDisplay\s+\{model\}\s+audioFftFrame=\{selectedFrame\}\s*\/>/);
-    expect(source).toMatch(/<PanadapterDisplay\s+\{model\}\s+rfFrame=\{selectedFrame\}\s*\/>/);
-    expect(source).toMatch(/\{#snippet peer\(\)\}<PeerSplitDisplay \{model\} \/>\{\/snippet\}/);
+  it('keeps authority at the semantic host and forwards shared streams unchanged', () => {
+    expect(source).toContain("import type { LcdSpectrumSource } from './lcd-display-contract';");
+    expect(source).toMatch(/\{#snippet readonlyDisplay\(view: RadioViewModel, scopeStream: ScopeStream \| null, audioScopeStream: ScopeStream \| null\)\}/);
+    expect(source).toMatch(/<DominantUnifiedDisplay\s+\{model\}\s+\{scopeStream\}\s*\/>/);
+    expect(source).toMatch(/<CenterstageDisplay\s+\{model\}\s+\{scopeStream\}\s*\/>/);
+    expect(source).toMatch(/<PanadapterDisplay\s+\{model\}\s+\{scopeStream\}\s+\{audioScopeStream\}\s*\/>/);
+    expect(source).toMatch(/\{#snippet peer\(\)\}<PeerSplitDisplay \{model\} scopeStream=\{audioScopeStream\} \/>\{\/snippet\}/);
 
     // This selector must never grow a second producer, frame resolver, or
     // demand lease. Those are host lifecycle concerns, not face heuristics.

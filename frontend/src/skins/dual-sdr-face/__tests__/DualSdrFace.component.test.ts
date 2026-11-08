@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mount, tick, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
+import { ScopeStream } from '../../../lib/runtime/scope-stream';
+import * as svelteClient from 'svelte/internal/client';
 import { createClassComponent } from 'svelte/legacy';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { ReceiverIndicatorViewModel } from '../../../semantic/radio-view-model';
-import type { ScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
+import type { ScopeFrame } from '../../../lib/runtime/scope-frame';
+import { parseCurrentScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
 import { findPlaceholderTokens } from '../../../lib/placeholder-token-rule';
 
 const meter = vi.hoisted(() => ({
@@ -32,10 +35,30 @@ vi.mock('../../../components-v2/meters/smeter-scale', async (importOriginal) => 
 
 import DualSdrFace from '../DualSdrFace.svelte';
 
+/** Builds the typed wire frame the shared stream delivers. */
+function wireFrame(pixels: Uint8Array, startFreq = 1, endFreq = 2, receiver = 0): ScopeFrame {
+  const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
+  wire.setUint8(0, 1); wire.setUint8(1, receiver);
+  wire.setUint32(3, startFreq, true); wire.setUint32(7, endFreq, true);
+  wire.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
+  const result = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1 });
+  if (!result.ok) throw new Error(result.reason);
+  return result.frame;
+}
+
 const known = <T>(value: T) => ({ reading: { status: 'known' as const, value }, availability: { structural: true, operational: true } });
 const unknown = () => ({ reading: { status: 'unknown' as const }, availability: { structural: true, operational: false } });
 const canvas = { clearRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), strokeStyle: '', lineWidth: 0 };
+const dualEffectRuns = new Map<number, number>();
+const realUserEffect = svelteClient.user_effect;
 beforeEach(() => {
+  dualEffectRuns.clear();
+  vi.spyOn(svelteClient, 'user_effect').mockImplementation(fn => {
+    const caller = new Error().stack?.split('\n').find(line => line.includes('.svelte:')) ?? '';
+    if (!/(?:DualSdrFace|ReceiverInstrumentCluster|ReceiverScopeWaterfall)\.svelte/.test(caller)) return realUserEffect(fn);
+    const id = dualEffectRuns.size; dualEffectRuns.set(id, 0);
+    return realUserEffect(() => { dualEffectRuns.set(id, dualEffectRuns.get(id)! + 1); return fn(); });
+  });
   meter.instances.length = 0; meter.create.mockClear(); meter.reduced.mockReset(); meter.reduced.mockReturnValue(false);
   for (const call of Object.values(canvas)) if (typeof call === 'function') call.mockClear();
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(canvas as unknown as CanvasRenderingContext2D);
@@ -97,71 +120,134 @@ function view(preamp = 1, preValues = [0, 1, 2], mutex = false, indicators: Rece
   return result;
 }
 
+function realScopeSource() {
+    let receive = (_buffer: ArrayBuffer) => {};
+    const producer = { subscribe: vi.fn((sink: (buffer: ArrayBuffer) => void) => {
+      receive = sink; return () => {};
+    }), close() {} };
+    const stream = new ScopeStream(producer, { source: 'radio', sourceId: 'scope', epoch: 1 }, 'borrowed');
+    const source = { subscribe: stream.subscribe.bind(stream), slotKeys: ['scope:0', 'scope:1'] as const };
+    function fire(receiver: number, pixels: number[], outOfRange = false) {
+      const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
+      wire.setUint8(0, 1); wire.setUint8(1, receiver);
+      wire.setUint32(3, 144_000_000, true); wire.setUint32(7, 144_500_000, true);
+      wire.setUint8(13, outOfRange ? 1 : 0); wire.setUint16(14, pixels.length, true);
+      new Uint8Array(buffer, 16).set(pixels); receive(buffer); flushSync();
+    }
+    return { stream, source, fire, producer };
+}
+
 describe('DualSdrFace', () => {
+  it('consumes real wire frames through live, header-only out-of-range, and live recovery', async () => {
+    const { stream, source, fire, producer } = realScopeSource();
+    const target = document.createElement('div');
+    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
+    try {
+      flushSync(); fire(0, [0, 128, 255]); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('3');
+      expect(() => fire(0, [], true)).not.toThrow(); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('out-of-range');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('0');
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.textContent).toContain('144.000–144.500 MHz');
+      fire(0, [3, 17, 254]); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('3');
+      fire(0, [3, 17, 254], true); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('3');
+      fire(0, []); await tick();
+      expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
+      expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('0');
+      expect(producer.subscribe).toHaveBeenCalledOnce();
+    } finally { await unmount(component); stream.dispose(); }
+  });
+  it('delivers 100 pixel-only frames without reactive effects in the face, cluster, or waterfall', async () => {
+    const { stream, source, fire, producer } = realScopeSource();
+    const component = mount(DualSdrFace, { target: document.createElement('div'), props: { view: view(), scopeSource: source } });
+    try {
+      flushSync(); fire(0, [0, 128, 255]); await tick();
+      expect(dualEffectRuns.size).toBeGreaterThan(0);
+      const before = new Map(dualEffectRuns), receipt = stream.receipt;
+      for (let index = 0; index < 100; index += 1) { fire(0, [index, 128, 255]); await tick(); }
+      expect(stream.receipt).toBe(receipt + 100);
+      expect(dualEffectRuns).toEqual(before);
+      expect(producer.subscribe).toHaveBeenCalledOnce();
+    } finally { await unmount(component); stream.dispose(); }
+  });
   it('mounts one cluster per receiver, demuxes one scope subscription, and cleans it up', async () => {
-    let listener: ((frame: ScopeFrame) => void) | undefined;
+    const listeners = new Set<(frame: ScopeFrame, key: string) => void>();
+    const deliver = (frame: ScopeFrame, key: string) => { listeners.forEach(next => next(frame, key)); };
     const unsubscribe = vi.fn();
-    const source = { subscribe: vi.fn((next: (frame: ScopeFrame) => void) => { listener = next; return unsubscribe; }) };
+    const source = {
+      subscribe: vi.fn((next: (frame: ScopeFrame, slotKey: string) => void) => {
+        listeners.add(next); return () => { listeners.delete(next); unsubscribe(); };
+      }),
+      slotKeys: ['scope:0', 'scope:1'] as const,
+    };
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
     await tick();
-    expect(source.subscribe).toHaveBeenCalledOnce();
+    expect(source.subscribe).toHaveBeenCalledTimes(2);
     expect(target.querySelectorAll('[data-receiver-cluster]').length).toBe(2);
     expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
     const pixels = new Uint8Array([1, 2]);
-    listener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels });
-    pixels[0] = 255;
+    const parsed = wireFrame(pixels);
+    deliver(parsed, 'scope:0');
+    parsed.pixels![0] = 255;
     await tick();
     await Promise.resolve();
     expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
     expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('2');
-    expect(canvas.lineTo).toHaveBeenCalledWith(1, expect.closeTo(8.96, 2));
-    listener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, outOfRange: false, pixels: new Uint8Array([3]) });
+    // MOR-4270: the typed pixel view rides the wire buffer with no copy —
+    // a producer-side mutation after delivery is visible by design.
+    expect(canvas.lineTo).toHaveBeenCalledWith(1, 0);
+    deliver(wireFrame(new Uint8Array([3]), 3, 4, 1), 'scope:1');
     await tick();
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
-    listener?.({ receiver: 9, mode: 0, startFreq: 9, endFreq: 9, outOfRange: false, pixels: new Uint8Array([9]) });
+    deliver(wireFrame(new Uint8Array([9]), 9, 10, 9), 'scope:9');
     await tick();
     // MOR-2692: the axis separator is ' · ' — never a dash.
     expect(target.querySelector('[data-receiver-cluster="1"] .axis')?.textContent).toContain('3 · 4');
     unmount(component);
-    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
   });
 
   it('clears both receiver frames when hardware scope health stops being live', async () => {
-    let frameListener: ((frame: ScopeFrame) => void) | undefined;
-    let healthListener: ((live: boolean) => void) | undefined;
+    const frameListeners = new Set<(frame: ScopeFrame, slotKey: string) => void>();
+    const healthListeners = new Set<(live: boolean) => void>();
     const unsubscribeFrames = vi.fn();
     const unsubscribeHealth = vi.fn();
     const source = {
-      subscribe: vi.fn((next: (frame: ScopeFrame) => void) => {
-        frameListener = next;
-        return unsubscribeFrames;
+      subscribe: vi.fn((next: (frame: ScopeFrame, slotKey: string) => void) => {
+        frameListeners.add(next);
+        return () => { frameListeners.delete(next); unsubscribeFrames(); };
       }),
       subscribeHealth: vi.fn((next: (live: boolean) => void) => {
-        healthListener = next;
-        return unsubscribeHealth;
+        healthListeners.add(next);
+        return () => { healthListeners.delete(next); unsubscribeHealth(); };
       }),
+      slotKeys: ['scope:0', 'scope:1'] as const,
     };
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
     await tick();
-    frameListener?.({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels: new Uint8Array([1]) });
-    frameListener?.({ receiver: 1, mode: 0, startFreq: 3, endFreq: 4, outOfRange: false, pixels: new Uint8Array([2]) });
+    frameListeners.forEach(next => next(wireFrame(new Uint8Array([1]), 1, 2, 0), 'scope:0'));
+    frameListeners.forEach(next => next(wireFrame(new Uint8Array([2]), 3, 4, 1), 'scope:1'));
     await tick();
     expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(2);
-    healthListener?.(false);
+    healthListeners.forEach(next => next(false));
     await tick();
     expect(target.querySelectorAll('[data-scope-state="unknown"]')).toHaveLength(2);
     expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(0);
     unmount(component);
-    expect(unsubscribeFrames).toHaveBeenCalledOnce();
-    expect(unsubscribeHealth).toHaveBeenCalledOnce();
+    expect(unsubscribeFrames).toHaveBeenCalledTimes(2);
+    expect(unsubscribeHealth).toHaveBeenCalledTimes(2);
   });
 
   it('keeps receiver-addressed meter and bandwidth facts with their own cluster', async () => {
     const target = document.createElement('div');
-    const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, receiverIndicators(11, 2_400, 22, 3_100)), scopeSource: { subscribe: () => () => {} } } });
+    const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, receiverIndicators(11, 2_400, 22, 3_100)), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
     await tick();
     expect(target.querySelector('[data-receiver-cluster="0"] [data-bandwidth]')?.textContent).toContain('2.4k');
     expect(target.querySelector('[data-receiver-cluster="1"] [data-bandwidth]')?.textContent).toContain('3.1k');
@@ -175,7 +261,7 @@ describe('DualSdrFace', () => {
   it('keeps unknown receiver display unasserted and enables only backed PRE', async () => {
     const onPreChange = vi.fn();
     const target = document.createElement('div');
-    mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, []), scopeSource: { subscribe: () => () => {} }, onPreChange } });
+    mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, []), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const }, onPreChange } });
     await tick();
     expect(target.querySelector('[data-receiver-cluster="1"] [data-frequency]')?.textContent).toBe('');
     expect(target.querySelector('[data-receiver-cluster="1"] [data-needle]')).toBeNull();
@@ -189,7 +275,7 @@ describe('DualSdrFace', () => {
   // so under a `format → String` mutation it prints '0', never 'MODE 0'.
   it('renders the known P.AMP value and the literal MODE … status', async () => {
     const target = document.createElement('div');
-    const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, []), scopeSource: { subscribe: () => () => {} } } });
+    const component = mount(DualSdrFace, { target, props: { view: view(1, [0, 1, 2], false, []), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
     await tick();
     expect(target.querySelector<HTMLButtonElement>('[data-control="pre"]')?.textContent).toBe('P.AMP1');
     expect(target.querySelector<HTMLElement>('.status')?.textContent).toBe('SPECTRUM SCOPE · MODE 0');
@@ -201,7 +287,7 @@ describe('DualSdrFace', () => {
   // rule the whole-page guard applies, run here without a browser).
   it('renders no placeholder token on the all-unread view', async () => {
     const target = document.createElement('div');
-    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: { subscribe: () => () => {} } } });
+    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
     await tick();
     const hits: string[] = [];
     const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT);
@@ -222,7 +308,7 @@ describe('DualSdrFace', () => {
   it('reserves one badge width from the mounted profile choices in any state', async () => {
     const fixtureView = modeFilterView();
     const target = document.createElement('div');
-    const component = mount(DualSdrFace, { target, props: { view: fixtureView, scopeSource: { subscribe: () => () => {} } } });
+    const component = mount(DualSdrFace, { target, props: { view: fixtureView, scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
     await tick();
     // unread empty state — the literal literal pin: the longest mode label
     // on the fixture's choice set is 'DATA-FM-N' (9ch); filters top out at
@@ -244,7 +330,7 @@ describe('DualSdrFace', () => {
   // tuning envelope ('30,000,000' → 10ch), not from a radio constant.
   it('reserves one frequency slot size in the unread state', async () => {
     const target = document.createElement('div');
-    const component = mount(DualSdrFace, { target, props: { view: modeFilterView(), scopeSource: { subscribe: () => () => {} } } });
+    const component = mount(DualSdrFace, { target, props: { view: modeFilterView(), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
     await tick();
     for (const clusterId of ['0', '1']) {
       const frequency = target.querySelector<HTMLElement>(`[data-receiver-cluster="${clusterId}"] [data-frequency]`);
@@ -260,7 +346,7 @@ describe('DualSdrFace', () => {
     ['wraps the last declared PRE value', 2, [0, 1, 2], 0],
   ])('%s', async (_label, current, values, expected) => {
     const onPreChange = vi.fn(); const target = document.createElement('div');
-    mount(DualSdrFace, { target, props: { view: view(current, values), scopeSource: { subscribe: () => () => {} }, onPreChange } }); await tick();
+    mount(DualSdrFace, { target, props: { view: view(current, values), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const }, onPreChange } }); await tick();
     const pre = target.querySelector<HTMLButtonElement>('[data-control="pre"]')!;
     expect(pre.disabled).toBe(false); pre.click(); expect(onPreChange).toHaveBeenCalledWith(expected);
   });
@@ -270,7 +356,7 @@ describe('DualSdrFace', () => {
     (unavailable.rfFrontEnd!.preamp as { reading: unknown }).reading = unknown().reading;
     for (const candidate of [view(9), view(1, [0, 1, 2], true), unavailable]) {
       const onPreChange = vi.fn(); const target = document.createElement('div');
-      mount(DualSdrFace, { target, props: { view: candidate, scopeSource: { subscribe: () => () => {} }, onPreChange } }); await tick();
+      mount(DualSdrFace, { target, props: { view: candidate, scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const }, onPreChange } }); await tick();
       const pre = target.querySelector<HTMLButtonElement>('[data-control="pre"]')!;
       expect(pre.disabled).toBe(true); pre.click(); expect(onPreChange).not.toHaveBeenCalled();
     }
@@ -282,14 +368,14 @@ describe('DualSdrFace', () => {
     const candidate = view(1, [0, 1, 2]);
     (candidate.rfFrontEnd!.preamp as { availability: { structural: boolean; operational: boolean } }).availability = { structural: true, operational: false };
     const onPreChange = vi.fn(); const target = document.createElement('div');
-    mount(DualSdrFace, { target, props: { view: candidate, scopeSource: { subscribe: () => () => {} }, onPreChange } }); await tick();
+    mount(DualSdrFace, { target, props: { view: candidate, scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const }, onPreChange } }); await tick();
     const pre = target.querySelector<HTMLButtonElement>('[data-control="pre"]')!;
     expect(pre.disabled).toBe(true); pre.click(); expect(onPreChange).not.toHaveBeenCalled();
   });
 
   it('uses the shared smoother lifecycle for receiver meter transitions and teardown', async () => {
     const target = document.createElement('div');
-    const component = createClassComponent({ component: DualSdrFace, target, props: { view: view(), scopeSource: { subscribe: () => () => {} } } });
+    const component = createClassComponent({ component: DualSdrFace, target, props: { view: view(), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
     await tick();
     expect(meter.create).toHaveBeenCalledTimes(2);
     expect(meter.instances.map((instance) => instance.start)).toSatisfy((starts: ReturnType<typeof vi.fn>[]) => starts.every((start) => start.mock.calls.length === 1));
@@ -304,7 +390,7 @@ describe('DualSdrFace', () => {
   it('passes reduced-motion observation through the shared meter helper', async () => {
     meter.reduced.mockReturnValue(true);
     const target = document.createElement('div');
-    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: { subscribe: () => () => {} } } });
+    const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
     await tick();
     expect(meter.reduced).toHaveBeenCalled();
     expect(target.querySelector('[data-receiver-cluster="0"] [data-needle]')?.getAttribute('data-reduced-motion')).toBe('true');
@@ -363,7 +449,7 @@ describe('DualSdrFace', () => {
   describe('ReceiverInstrumentCluster display observation pins (MOR-2688 S4c)', () => {
     it('an absent observation shows the legacy value and asserts current', async () => {
       const target = document.createElement('div');
-      const component = mount(DualSdrFace, { target, props: { view: observationFixture('absent'), scopeSource: { subscribe: () => () => {} } } });
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('absent'), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
       await tick();
       for (const [badge, text] of [['mode', 'LSB'], ['filter', 'FIL2']] as const) {
         const node = target.querySelector<HTMLElement>(`[data-receiver-cluster="0"] [data-badge="${badge}"]`);
@@ -378,7 +464,7 @@ describe('DualSdrFace', () => {
 
     it('a current or stale observation shows the observed value and asserts current', async () => {
       const target = document.createElement('div');
-      const component = mount(DualSdrFace, { target, props: { view: observationFixture('observed'), scopeSource: { subscribe: () => () => {} } } });
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('observed'), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
       await tick();
       for (const [badge, text] of [['mode', 'USB'], ['filter', 'FIL1']] as const) {
         const node = target.querySelector<HTMLElement>(`[data-receiver-cluster="0"] [data-badge="${badge}"]`);
@@ -393,7 +479,7 @@ describe('DualSdrFace', () => {
 
     it('a present unknown observation shows nothing — the legacy value never fires', async () => {
       const target = document.createElement('div');
-      const component = mount(DualSdrFace, { target, props: { view: observationFixture('unknown'), scopeSource: { subscribe: () => () => {} } } });
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('unknown'), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
       await tick();
       for (const badge of ['mode', 'filter'] as const) {
         const node = target.querySelector<HTMLElement>(`[data-receiver-cluster="0"] [data-badge="${badge}"]`);
@@ -411,7 +497,7 @@ describe('DualSdrFace', () => {
     // widest of the fixture's filter choices 'WIDE-F3'/BW '2.4k' (9ch).
     it('reserves the frequency and bandwidth widths with literal ch pins', async () => {
       const target = document.createElement('div');
-      const component = mount(DualSdrFace, { target, props: { view: observationFixture('absent'), scopeSource: { subscribe: () => () => {} } } });
+      const component = mount(DualSdrFace, { target, props: { view: observationFixture('absent'), scopeSource: { subscribe: () => () => {}, slotKeys: ['scope:0', 'scope:1'] as const } } });
       await tick();
       const frequency = target.querySelector<HTMLElement>('[data-receiver-cluster="0"] [data-frequency]');
       expect(frequency?.style.minWidth).toBe('9ch');
@@ -423,17 +509,19 @@ describe('DualSdrFace', () => {
   });
 
   it('replaces the scope source reactively and cleans each subscription once', async () => {
+    const SLOTS = ['scope:0', 'scope:1'] as const;
     const cleanupA = vi.fn(); const cleanupB = vi.fn();
-    const sourceA = { subscribe: vi.fn(() => cleanupA) }; const sourceB = { subscribe: vi.fn(() => cleanupB) };
+    const sourceA = { subscribe: vi.fn(() => cleanupA), slotKeys: SLOTS };
+    const sourceB = { subscribe: vi.fn(() => cleanupB), slotKeys: SLOTS };
     const target = document.createElement('div');
     const component = createClassComponent({ component: DualSdrFace, target, props: { view: view(), scopeSource: sourceA } });
     await tick();
-    expect(sourceA.subscribe).toHaveBeenCalledOnce();
+    expect(sourceA.subscribe).toHaveBeenCalledTimes(2);
     component.$set({ scopeSource: sourceB });
     await tick();
-    expect(cleanupA).toHaveBeenCalledOnce();
-    expect(sourceB.subscribe).toHaveBeenCalledOnce();
+    expect(cleanupA).toHaveBeenCalledTimes(2);
+    expect(sourceB.subscribe).toHaveBeenCalledTimes(2);
     component.$destroy();
-    expect(cleanupB).toHaveBeenCalledOnce();
+    expect(cleanupB).toHaveBeenCalledTimes(2);
   });
 });

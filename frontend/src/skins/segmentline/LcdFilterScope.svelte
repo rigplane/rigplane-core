@@ -1,18 +1,18 @@
 <script lang="ts">
   import type { PeerSplitReceiverDisplay } from '../../semantic/radio-display-model';
   import LcdAfFft from './LcdAfFft.svelte';
+  import type { ScopeStream } from '$lib/runtime/scope-stream';
   import {
-    fftInputState,
     filterEnvelopes,
     formatBandwidth,
   } from './lcd-display-helpers';
 
   interface Props {
     receiver: PeerSplitReceiverDisplay;
-    normalizedBins?: readonly number[];
+    scopeStream?: ScopeStream | null;
   }
 
-  let { receiver, normalizedBins }: Props = $props();
+  let { receiver, scopeStream = null }: Props = $props();
 
   const envelopes = $derived(filterEnvelopes(receiver));
 </script>
@@ -23,8 +23,9 @@
   </span>
   <div class="scope-plot">
     <LcdAfFft
-      {normalizedBins}
-      inputState={fftInputState(receiver, normalizedBins)}
+      {scopeStream}
+      receiver={receiver.receiver}
+      inputState={receiver.spectrum === 'unsupported' ? 'unsupported' : receiver.spectrum === 'unknown' ? 'unknown' : 'live'}
       receiverActivity={receiver.activity}
     />
     <svg

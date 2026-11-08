@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
-import type { LcdSpectrumFrame } from '../lcd-display-contract';
+import type { LcdSpectrumFrame } from './scope-stream-fixture';
 import DominantUnifiedDisplay from '../DominantUnifiedDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -75,8 +76,9 @@ function render(
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(DominantUnifiedDisplay, {
-    target, props: { model: displayModel, spectrumFrame },
+    target, props: { model: displayModel, scopeStream: lcdStreamFixture(spectrumFrame) },
   });
+  flushSync();
   return target;
 }
 
@@ -87,7 +89,7 @@ function audioFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFrame
     freshness: 'fresh',
     startHz: 0,
     endHz: 24_000,
-    normalizedBins: [0, 0.5, 1],
+    pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -130,7 +132,7 @@ describe('DominantUnifiedDisplay', () => {
     ];
     const target = render({
       ...model, receivers: subActiveReceivers, activeReceiver: subActiveReceivers[1],
-    }, audioFrame({ receiver: 'SUB', normalizedBins: [0, 0.5, 1] }));
+    }, audioFrame({ receiver: 'SUB', pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)) }));
 
     expect(target.querySelector('[data-testid="lcd-dominant-main"]')?.getAttribute('data-receiver-activity')).toBe('inactive');
     expect(target.querySelector('[data-testid="lcd-dominant-sub"]')?.getAttribute('data-receiver-activity')).toBe('active');
@@ -147,7 +149,7 @@ describe('DominantUnifiedDisplay', () => {
     ];
     const target = render({ ...model, receivers: unknownReceivers, activeReceiver: null }, {
       source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
-      startHz: 0, endHz: 24_000, normalizedBins: [1, 0.5, 0],
+      startHz: 0, endHz: 24_000, pixels: Uint8Array.from([1, 0.5, 0], value => Math.round(value * 255)),
     });
 
     expect(target.querySelector('[data-testid="lcd-dominant-scope-unknown"]')).not.toBeNull();
@@ -201,7 +203,7 @@ describe('DominantUnifiedDisplay', () => {
     ['stale', audioFrame({ freshness: 'stale' })],
     ['source mismatch', audioFrame({ source: 'hardware' })],
     ['receiver mismatch', audioFrame({ receiver: 'SUB' })],
-    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', startHz: 0, endHz: 0, normalizedBins: [0] }],
+    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', startHz: 0, endHz: 0, pixels: Uint8Array.from([0], value => Math.round(value * 255)) }],
   ])('fails closed to an empty AF trace for %s input', (_label, spectrumFrame) => {
     const target = render(model, spectrumFrame);
 
@@ -209,11 +211,11 @@ describe('DominantUnifiedDisplay', () => {
       .toBe('safe-empty');
   });
 
-  it('uses the frozen source-qualified spectrum resolver', () => {
+  it('forwards the selected shared stream into the receiver-qualified AF leaf', () => {
     const source = readFileSync('src/skins/segmentline/DominantUnifiedDisplay.svelte', 'utf8');
 
-    expect(source).toContain("import { resolveLcdSpectrumFrame } from './lcd-display-contract';");
-    expect(source).toContain("source: 'audio-fft'");
-    expect(source).toContain("spectrumResolution.state === 'live'");
+    expect(source).toContain("import type { ScopeStream } from '$lib/runtime/scope-stream';");
+    expect(source).toMatch(/<LcdFilterScope\s+receiver=\{model.activeReceiver\}\s+\{scopeStream\}/);
+    expect(source).not.toMatch(/spectrumFrame|\.pixels/);
   });
 });

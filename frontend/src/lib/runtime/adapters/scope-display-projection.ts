@@ -1,16 +1,14 @@
-import type { LcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ScopePassbandDisplay } from './scope-passband-display';
 
-export type ScopeDisplayProjection = Readonly<{
-  frame: LcdSpectrumFrame;
-  frameMode: number;
-  /** Existing controller-lifetime receipt identity, unchanged by metadata refresh. */
-  acceptedSequence: number;
-  passband: ScopePassbandDisplay;
-}>;
-
+/**
+ * MOR-4270: the managed scope region carries no pixels — those flow through
+ * the shared `ScopeStream` sinks. The region supplies the passband overlay
+ * projection and the demand wiring; geometry facts come from the stream's
+ * `geometry` store.
+ */
 export type ManagedScopeRegion = Readonly<{
-  projection: ScopeDisplayProjection | null;
+  passband: ScopePassbandDisplay;
   demanded: boolean;
+  geometryAdmitted?: boolean;
   setDemand(enabled: boolean): void;
 }>;

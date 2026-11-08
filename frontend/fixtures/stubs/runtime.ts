@@ -1,8 +1,7 @@
 /** MOR-1070 stub for `$lib/runtime` — fixture state/caps, no transport. */
-import {
-  harness, type FixtureFrameAuthority, type FixtureFrameEvidence,
-} from '../harness-state';
+import { harness } from '../harness-state';
 import type { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import { ScopeStream } from '$lib/runtime/scope-stream';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 /**
@@ -62,47 +61,26 @@ export const presentationResources = Object.freeze({
 });
 
 /**
- * The real ScopeFrameHost owns selection and resolution. This fixture-local
- * controller only supplies its input contract: the authority set by that host
- * is mirrored back with a null envelope, disconnected transport, and no
- * demand. Thus an LCD source selection can be observed without inventing a
- * socket, controller, binary frame, zero-fill, or live waveform.
+ * MOR-4270: the fixture-local controller supplies the shared-stream contract
+ * the wiring consumes — an idle stream per source (null geometry, no frames)
+ * and honest disconnected health. An LCD source selection can be observed
+ * without inventing a socket, controller, binary frame, or live waveform.
  */
+const fixtureIdleStreams = {
+  hardware: new ScopeStream({ subscribe: () => () => {}, close: () => {} },
+    { source: 'radio', sourceId: 'fixture-scope', epoch: 1 }, 'borrowed'),
+  audio_fft: new ScopeStream({ subscribe: () => () => {}, close: () => {} },
+    { source: 'audio_fft', sourceId: 'fixture-audio-scope', epoch: 1 }, 'borrowed'),
+};
 const fixtureScope = {
   get hardwareScopeConnected() { return false; },
-  subscribeFrameEvidence(_listener: () => void): () => void { return () => {}; },
-  setFrameAuthority(authority: FixtureFrameAuthority | null): void {
-    harness.frameAuthority = authority === null ? null : Object.freeze({ ...authority });
+  stream(source: 'hardware' | 'audio_fft') { return fixtureIdleStreams[source]; },
+  setFrameAuthority(_authority: Parameters<ScopeController['setFrameAuthority']>[0]): void {},
+  registerPresentationDriver(): void {},
+  snapshotHealth(_source: 'hardware' | 'audio_fft') {
+    return Object.freeze({ demanded: false, transport: 'disconnected' as const, frameSeen: false });
   },
-  snapshotFrameEvidence() {
-    const authority = harness.frameAuthority ?? {
-      source: 'hardware' as const, receiver: null, providerGeneration: null,
-    };
-    const evidence: FixtureFrameEvidence = {
-      envelope: null,
-      authority: {
-        ...authority,
-      },
-      transportEpoch: null,
-      demanded: false,
-      transport: 'disconnected',
-      nowMonotonic: 0,
-    };
-    harness.frameEvidence = Object.freeze({
-      ...evidence,
-      authority: Object.freeze({ ...evidence.authority }),
-    });
-    return Object.freeze({
-      envelope: evidence.envelope,
-      authority: Object.freeze({
-        ...evidence.authority,
-        transportEpoch: evidence.transportEpoch,
-        demanded: evidence.demanded,
-        transport: evidence.transport,
-        nowMonotonic: evidence.nowMonotonic,
-      }),
-    });
-  },
+  subscribeHealth(_listener: () => void): () => void { return () => {}; },
 };
 
 export const runtime = {
@@ -136,9 +114,5 @@ export const runtime = {
   get connectionAudio() { return harness.audioRuntime.connectionAudio; },
   get defaultScopeStatus() { return DEFAULT_SCOPE_STATUS; },
   get radioPowerOn() { return null; },
-  // ScopeFrameHost takes the concrete production controller type. This
-  // fixture object implements only the three evidence methods it consumes;
-  // the cast remains at the offline seam rather than teaching production code
-  // about fixture state.
   get scope() { return fixtureScope as unknown as ScopeController; },
 };

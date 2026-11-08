@@ -22,17 +22,17 @@
     showBandPlan = $bindable(true),
     scopeControls,
     scopeStatusIndicator,
-    scopeProjection,
+    scopeRegion,
     scopeDemanded,
     onScopeDemandChange,
   }: {
     hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
     enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet; scopeStatusIndicator?: Snippet;
-    // MOR-2442 — the managed projection/demand props, recorded the way the
-    // contract fields above are, so layout tests prove who gets the
+    // MOR-2442/MOR-4270 — the managed region/demand props, recorded the way
+    // the contract fields above are, so layout tests prove who gets the
     // SemanticRadioSurfaces region without mounting the real panel.
-    scopeProjection?: unknown; scopeDemanded?: boolean;
+    scopeRegion?: unknown; scopeDemanded?: boolean;
     onScopeDemandChange?: unknown;
   } = $props();
 </script>
@@ -46,7 +46,7 @@
   data-enable-peak-hold={enablePeakHold}
   data-show-band-plan={showBandPlan}
   data-has-scope-controls={scopeControls !== undefined}
-  data-managed-scope={scopeProjection !== undefined}
+  data-managed-scope={scopeRegion !== undefined}
   data-scope-demanded={scopeDemanded ?? 'undefined'}
   data-has-scope-demand-handler={onScopeDemandChange !== undefined}
 >

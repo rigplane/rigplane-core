@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
+import producerFrames from '../../../components-v2/layout/__tests__/fixtures/audio-fft-producer-frames.json';
 import { ScopeRenderTrace } from '$lib/runtime/scope-render-trace';
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import { SpectrumRenderer } from '$lib/renderers/spectrum-renderer';
@@ -36,14 +38,19 @@ describe('actual canvas trace callbacks', () => {
     const spectrum = mount(SpectrumCanvas, { target, props: { data: null, trace, onRegisterPush: (fn) => { spectrumPush = fn; } } });
     flushSync();
     try {
-      const first = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels: new Uint8Array(2049) });
-      const second = Object.freeze({ ...first, pixels: new Uint8Array(2049) });
-      for (const [index, frame] of [first, second].entries()) {
+      const fixture = producerFrames.frames.find(frame => frame.name === 'uncropped')!;
+      const parsedFrames = [0, 1].map(() => {
+        const bytes = Uint8Array.from(atob(fixture.wireBase64), char => char.charCodeAt(0));
+        const parsed = parseCurrentScopeFrame(bytes.buffer, { source: 'audio_fft', sourceId: 'audio-scope', epoch: 1 });
+        if (!parsed.ok || parsed.frame.pixels === null) throw new Error('Producer FFT fixture did not decode');
+        return { frame: parsed.frame, pixels: parsed.frame.pixels };
+      });
+      for (const [index, { frame, pixels }] of parsedFrames.entries()) {
         trace.observe({ kind: 'accepted', frame, token: { source: 'audio_fft', transportEpoch: 1,
           wireSequence: index, acceptedSequence: index + 1 }, callbackAt: performance.now(), acceptedAt: performance.now() });
         const token = trace.tokenForFrame(frame)!;
-        waterfallPush?.(frame.pixels, undefined, token);
-        spectrumPush?.(frame.pixels, token);
+        waterfallPush?.(pixels, undefined, token);
+        spectrumPush?.(pixels, token);
       }
       // Nothing paints synchronously anymore — both canvases await the rAF.
       expect(rows).not.toHaveBeenCalled();

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import type { ScopePreset } from '$lib/runtime/scope-presets';
   import { getTuningStep, adjustTuningStep, isAutoStep, setAutoStep, formatStep } from '../../lib/stores/tuning.svelte';
   import { t } from '$lib/i18n';
   import { type ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
@@ -37,6 +38,11 @@
     showEiBi?: boolean;
     scopeDemandOn?: boolean;
     onScopeDemandChange?: (enabled: boolean) => void;
+    /** MOR-4270: band-plan presets derived from profile data; selecting one
+     * edits the View (display-only until the server grants views, R4). */
+    scopePresets?: readonly ScopePreset[];
+    onScopePresetSelect?: (preset: ScopePreset) => void;
+    onScopeZoom?: (factor: number) => void;
     hideSourceControls?: boolean;
     hideScopeControls?: boolean;
     hideAutoStepToggle?: boolean;
@@ -58,6 +64,9 @@
     hiddenLayers = $bindable([] as string[]),
     showEiBi = $bindable(false),
     scopeDemandOn = true,
+    scopePresets = [],
+    onScopePresetSelect,
+    onScopeZoom,
     onScopeDemandChange = (_enabled: boolean) => {},
     /**
      * Hide the DUAL + MAIN/SUB scope-source controls. Set by layouts that
@@ -332,6 +341,32 @@
   </div>
 {/snippet}
 
+{#snippet viewControls()}
+    {#if scopePresets.length > 0}
+      <select
+        class="toolbar-select scope-capsule-select"
+        data-testid="scope-preset-select"
+        aria-label={t('core.scope.presets')}
+        title={t('core.scope.presets')}
+        onchange={(event) => {
+          const index = Number((event.currentTarget as HTMLSelectElement).value);
+          const preset = scopePresets[index];
+          if (Number.isInteger(index) && index >= 0 && preset) onScopePresetSelect?.(preset);
+          (event.currentTarget as HTMLSelectElement).selectedIndex = 0;
+        }}
+      >
+        <option value="">{t('core.scope.presets')}</option>
+        {#each scopePresets as preset, index (preset.kind + preset.label)}
+          <option value={index}>{preset.kind === 'follow' ? t('core.scope.preset.follow') : preset.label}</option>
+        {/each}
+      </select>
+      <button type="button" class="toolbar-btn scope-flat-key" data-testid="scope-zoom-out"
+        onclick={() => onScopeZoom?.(2)} title={t('core.scope.zoomOut')}>ZOOM−</button>
+      <button type="button" class="toolbar-btn scope-flat-key" data-testid="scope-zoom-in"
+        onclick={() => onScopeZoom?.(0.5)} title={t('core.scope.zoomIn')}>ZOOM+</button>
+    {/if}
+{/snippet}
+
 {#snippet screenGroup(closeMore?: () => void)}
   <div class="toolbar-group step-group toolbar-step-copy" data-testid="scope-more-step">
     <span class="scope-stepper scope-capsule">
@@ -372,6 +407,7 @@
       <option value="thermal">Thermal</option>
       <option value="grayscale">Gray</option>
     </select>
+    {@render viewControls()}
   </div>
   {#if availableLayers.length > 1}
     <div class="more-layers" data-testid="scope-more-layers">
@@ -602,6 +638,7 @@
     </div>
     <div class="toolbar-sub-separator"></div>
     <div class="toolbar-group">
+      {@render viewControls()}
       <select class="toolbar-select" bind:value={colorScheme}>
         <option value="classic">Classic</option>
         <option value="thermal">Thermal</option>

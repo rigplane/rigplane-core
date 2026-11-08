@@ -543,7 +543,7 @@
       <SemanticRadioSurfaces>
         {#snippet children(instruments: InstrumentComposition)}
           <SpectrumPanel hideAutoStepToggle={true}
-            scopeProjection={instruments.managedScope?.projection}
+            scopeRegion={instruments.managedScope}
             scopeDemanded={instruments.managedScope?.demanded ?? true}
             onScopeDemandChange={instruments.managedScope?.setDemand} />
         {/snippet}
@@ -748,7 +748,7 @@
           <section class="m-spectrum">
             <SpectrumPanel hideAutoStepToggle={true} hideToolbar={true}
               bind:enableAvg={scopeAvg} bind:enablePeakHold={scopePeakHold} bind:showBandPlan={scopeBandPlan}
-              scopeProjection={managedScopeRegion?.projection}
+              scopeRegion={managedScopeRegion ?? undefined}
               scopeDemanded={managedScopeRegion?.demanded ?? true}
               onScopeDemandChange={managedScopeRegion?.setDemand} />
           </section>

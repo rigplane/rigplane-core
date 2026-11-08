@@ -591,3 +591,45 @@ describe('spectrum colour roles', () => {
     expect(second.paint.gradientStops).toEqual([[0, PREVIOUS_LITERALS.fillTop], [1, '#090909']]);
   });
 });
+
+describe('requested View coordinates (MOR-4270)', () => {
+  it('places a narrower sample plane inside the requested view without stretching', () => {
+    const { ctx, log } = createMockCtx();
+    renderSpectrum(ctx, new Uint8Array([80, 80, 80, 80]), 100, 40, opts({
+      spanHz: 200_000, sampleSpanHz: 100_000, centerHz: 14_050_000,
+      showRfOverlays: false,
+    }));
+    const tracePoints = log.lineTo.slice(17).filter(([, y]) => y === 0);
+    expect(Math.min(...tracePoints.map(([x]) => x))).toBe(25);
+    expect(Math.max(...tracePoints.map(([x]) => x))).toBe(74);
+  });
+});
+
+describe('central audio sample interpretation (MOR-4270)', () => {
+  it('crops and scales inside the renderer exactly like the former pre-sink conversion', () => {
+    const actual = createMockCtx(); const expected = createMockCtx();
+    renderSpectrum(actual.ctx, new Uint8Array([255, 255, 40, 160]), 100, 40,
+      opts({ sampleOffset: 2, sampleAmplitudeMax: 160 }));
+    renderSpectrum(expected.ctx, new Uint8Array([20, 80]), 100, 40, opts());
+    expect(actual.log).toEqual(expected.log);
+  });
+});
+
+it('preserves audio clamp/rounding order through averaging and peak hold', () => {
+  const actual = createMockCtx(); const expected = createMockCtx();
+  const a = new SpectrumRenderer(); const b = new SpectrumRenderer();
+  for (const raw of [new Uint8Array([5, 6, 40, 160]), new Uint8Array([5, 6, 255, 0])]) {
+    a.render(actual.ctx, raw, 100, 40, opts({ sampleOffset: 2, sampleAmplitudeMax: 160 }));
+    b.render(expected.ctx, raw.slice(2).map(value => Math.round(Math.min(value, 160) / 2)), 100, 40, opts());
+  }
+  expect(actual.log).toEqual(expected.log);
+});
+
+it('can hide only the carrier marker while retaining RF geometry and labels', () => {
+  const shown = createMockCtx(); const hidden = createMockCtx();
+  const options = opts({ spanHz: 100_000, centerHz: 14_050_000, tuneHz: 14_050_000 });
+  renderSpectrum(shown.ctx, data50(), 200, 100, options);
+  renderSpectrum(hidden.ctx, data50(), 200, 100, { ...options, showTuneIndicator: false });
+  expect(hidden.log.fillText).toEqual(shown.log.fillText);
+  expect(hidden.log.strokes).toBe(shown.log.strokes - 1);
+});

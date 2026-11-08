@@ -9,15 +9,12 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
-import type {
-  LcdSpectrumFrame, LcdSpectrumFrameResolution, LcdSpectrumSource,
-} from '../../../skins/segmentline/lcd-display-contract';
+import type { LcdSpectrumSource } from '../../../skins/segmentline/lcd-display-contract';
+import type { ScopeStream } from '$lib/runtime/scope-stream';
+import { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import { PresentationResourceHost } from '$lib/runtime/resource-host';
+import type { WsChannel } from '$lib/transport/ws-client';
 
-type Authority = Readonly<{
-  source: LcdSpectrumSource;
-  receiver: 'MAIN' | 'SUB' | null;
-  providerGeneration: number | null;
-}>;
 
 const h = vi.hoisted(() => ({
   authoritySubscribers: new Set<(next: {
@@ -26,76 +23,21 @@ const h = vi.hoisted(() => ({
   }) => void>(),
   audio: { muted: true, rxEnabled: false, volume: 0 },
   events: [] as string[],
-  hostInstances: [] as Array<{
-    authorities: Array<Authority | null>;
-    emit: (resolution: LcdSpectrumFrameResolution) => void;
-    dispose: () => void;
-  }>,
+  scope: null as unknown as ScopeController, resources: null as unknown as PresentationResourceHost<unknown>,
   acquire: vi.fn((resource: string) => {
     h.events.push(`acquire:${resource}`);
-    return Object.freeze({ resource, id: h.events.length });
+    return h.resources.acquire(resource as 'hardware-scope' | 'audio-fft', 'test');
   }),
   release: vi.fn((lease: { resource: string }) => {
     h.events.push(`release:${lease.resource}`);
-    return true;
+    return h.resources.release(lease as never);
   }),
-  subscribeCount: 0,
-  unsubscribeCount: 0,
-  disposeCount: 0,
   frameGetter: null as null | (() => unknown),
   viewGetter: null as null | (() => unknown),
   renderCount: 0,
-  rawAudioFrame: Object.freeze({ pixels: new Uint8Array([255, 0]), startFreq: 1, endFreq: 2 }),
-  rawHardwareFrame: Object.freeze({ pixels: new Uint8Array([0, 255]), startFreq: 3, endFreq: 4 }),
   txController: null as unknown,
 }));
 
-vi.mock('$lib/runtime/scope-frame-host', () => ({
-  ScopeFrameHost: class FakeScopeFrameHost {
-    readonly authorities: Array<Authority | null> = [];
-    private resolution: LcdSpectrumFrameResolution = { state: 'ghost', reason: 'missing' };
-    private listener: ((resolution: LcdSpectrumFrameResolution) => void) | null = null;
-    private disposed = false;
-
-    constructor(_scope: unknown) {
-      h.hostInstances.push(this);
-    }
-
-    updateAuthority(authority: Authority | null): void {
-      this.authorities.push(authority);
-      this.resolution = { state: 'ghost', reason: authority ? 'missing' : 'receiver-unknown' };
-      this.listener?.(this.resolution);
-    }
-
-    snapshot(): LcdSpectrumFrameResolution {
-      return this.resolution;
-    }
-
-    subscribe(listener: (resolution: LcdSpectrumFrameResolution) => void): () => void {
-      this.listener = listener;
-      h.subscribeCount += 1;
-      let active = true;
-      return () => {
-        if (!active) return;
-        active = false;
-        this.listener = null;
-        h.unsubscribeCount += 1;
-      };
-    }
-
-    emit(resolution: LcdSpectrumFrameResolution): void {
-      this.resolution = resolution;
-      this.listener?.(resolution);
-    }
-
-    dispose(): void {
-      if (this.disposed) return;
-      this.disposed = true;
-      h.disposeCount += 1;
-      this.listener = null;
-    }
-  },
-}));
 
 vi.mock('$lib/runtime', async () => {
   const { radio } = await import('$lib/stores/radio.svelte');
@@ -126,13 +68,7 @@ vi.mock('$lib/runtime', async () => {
         };
       },
       get radioPowerOn() { return null; },
-      get scope() {
-        return {
-          hardwareScopeConnected: false,
-          audioScopeFrame: h.rawAudioFrame,
-          scopeFrame: h.rawHardwareFrame,
-        };
-      },
+      get scope() { return h.scope; },
     },
   };
 });
@@ -188,14 +124,15 @@ function liveCaps(providerGeneration = 7): Capabilities {
   } as Capabilities;
 }
 
-const readonlyDisplay = createRawSnippet<[RadioViewModel, LcdSpectrumFrame?]>(
-  (view, frame) => {
+const readonlyDisplay = createRawSnippet<[RadioViewModel, ScopeStream | null]>(
+  (view, stream) => {
     h.viewGetter = view;
-    h.frameGetter = frame ?? (() => undefined);
+    h.frameGetter = stream;
     h.renderCount += 1;
     return { render: () => '<output data-testid="lcd-display"></output>' };
   },
-) as Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
+) as Snippet<[RadioViewModel, ScopeStream | null]>;
+
 
 function publishAuthority(): void {
   const next = {
@@ -205,15 +142,6 @@ function publishAuthority(): void {
   };
   for (const subscriber of h.authoritySubscribers) subscriber(next);
 }
-
-const audioFrame: LcdSpectrumFrame = Object.freeze({
-  source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
-  startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]),
-});
-const hardwareFrame: LcdSpectrumFrame = Object.freeze({
-  source: 'hardware', receiver: 'SUB', freshness: 'fresh',
-  startHz: 7_000_000, endHz: 7_100_000, normalizedBins: Object.freeze([1, 0.5, 0]),
-});
 
 let target: HTMLDivElement;
 let component: ReturnType<typeof createClassComponent> | null = null;
@@ -240,21 +168,24 @@ beforeEach(() => {
   radio.current = liveState();
   expect(setCapabilities(liveCaps())).toBe(true);
   h.events.length = 0;
-  h.hostInstances.length = 0;
+channels = { scope: channel(), 'audio-scope': channel() };
+h.scope = new ScopeController(name => channels[name as keyof typeof channels] as unknown as WsChannel);
+h.resources = new PresentationResourceHost('test');
+h.resources.configure('hardware-scope', { available: true, selected: true, driver: h.scope.hardwareScopeDriver });
+h.resources.configure('audio-fft', { available: true, selected: true, driver: h.scope.audioFftDriver });
+
   h.acquire.mockClear();
   h.release.mockClear();
-  h.subscribeCount = 0;
-  h.unsubscribeCount = 0;
-  h.disposeCount = 0;
   h.frameGetter = null;
   h.viewGetter = null;
   h.renderCount = 0;
 });
 
-afterEach(() => {
+afterEach(async () => {
   component?.$destroy();
   component = null;
   flushSync();
+  await h.resources.teardown();
   expect(h.authoritySubscribers.size).toBe(0);
   resetRadioState();
   clearCapabilities();
@@ -262,105 +193,178 @@ afterEach(() => {
   document.body.innerHTML = '';
 });
 
-describe('MOR-2329 semantic LCD display-frame binding', () => {
-  it('owns one selected-source lease, preserves live identity, and switches sources without fallback', () => {
-    render('audio-fft');
+function channel() {
+  let state = 'disconnected', epoch = 0;
+  const binary = new Set<(buffer: ArrayBuffer) => void>();
+  const states = new Set<(state: string) => void>();
+  const sessions = new Set<(next: { state: string; epoch: number }) => void>();
+  function transition(next: string) {
+    if (next === 'connected' && state !== 'connected') epoch += 1;
+    state = next; states.forEach(fn => fn(state)); sessions.forEach(fn => fn({ state, epoch }));
+  }
+  return {
+    get state() { return state; }, get sessionEpoch() { return epoch; },
+    connect: vi.fn(() => transition('connecting')), disconnect: vi.fn(() => transition('disconnected')),
+    connected() { transition('connected'); },
+    onBinary(fn: (buffer: ArrayBuffer) => void) { binary.add(fn); return () => { binary.delete(fn); }; },
+    onStateChange(fn: (state: string) => void) { states.add(fn); return () => { states.delete(fn); }; },
+    onSessionTransition(fn: (next: { state: string; epoch: number }) => void) { sessions.add(fn); return () => { sessions.delete(fn); }; },
+    count: () => binary.size,
+    callbacks: () => [...binary],
+    frame(receiver = 0, values = [0, 128, 255], callbacks = [...binary]) {
+      const buffer = new ArrayBuffer(16 + values.length), view = new DataView(buffer);
+      view.setUint8(0, 1); view.setUint8(1, receiver);
+      view.setUint32(3, 14_000_000, true); view.setUint32(7, 14_100_000, true);
+      view.setUint16(14, values.length, true); new Uint8Array(buffer, 16).set(values);
+      callbacks.forEach(fn => fn(buffer)); flushSync(); return buffer;
+    },
+  };
+}
+let channels: Record<'scope' | 'audio-scope', ReturnType<typeof channel>>;
+async function settle() { await Promise.resolve(); flushSync(); await Promise.resolve(); }
+const selected = () => h.frameGetter?.() as ScopeStream | null;
+const geometry = (stream: ScopeStream) => {
+  let value: unknown;
+  const stop = stream.geometry.subscribe(next => { value = next; }); stop(); return value;
+};
 
-    expect(h.hostInstances).toHaveLength(1);
-    const host = h.hostInstances[0];
-    expect(host.authorities.at(-1)).toEqual({
-      source: 'audio-fft', receiver: 'MAIN', providerGeneration: 7,
-    });
-    expect(h.events).toEqual(['acquire:audio-fft']);
-    expect(h.frameGetter?.()).toBeUndefined();
-
-    host.emit({ state: 'live', frame: audioFrame });
-    flushSync();
-    expect(h.frameGetter?.()).toBe(audioFrame);
-
-    host.emit({ state: 'ghost', reason: 'stale' });
-    flushSync();
-    expect(h.frameGetter?.()).toBeUndefined();
-    expect(h.events).toEqual(['acquire:audio-fft']);
-
-    component?.$set({ displayFrameSource: 'hardware' });
-    flushSync();
-    expect(h.events).toEqual([
-      'acquire:audio-fft', 'release:audio-fft', 'acquire:hardware-scope',
-    ]);
-    expect(h.hostInstances).toHaveLength(1);
-    expect(host.authorities.at(-1)).toEqual({
-      source: 'hardware', receiver: 'MAIN', providerGeneration: 7,
-    });
-    expect(h.frameGetter?.()).toBeUndefined();
-
-    host.emit({ state: 'live', frame: hardwareFrame });
-    flushSync();
-    expect(h.frameGetter?.()).toBe(hardwareFrame);
-    expect(h.acquire.mock.calls.map(([resource]) => resource)).toEqual([
-      'audio-fft', 'hardware-scope',
-    ]);
+describe('MOR-2329 semantic LCD stream binding', () => {
+  it('leaves an independently demanded live stream and its authority untouched for a scope-free mount', async () => {
+    h.scope.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 7 });
+    const lease = h.resources.acquire('hardware-scope', 'independent');
+    await settle(); channels.scope.connected(); const buffer = channels.scope.frame();
+    const stream = h.scope.stream('hardware');
+    const before = geometry(stream);
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    const streams = vi.spyOn(h.scope, 'stream');
+    render(); await settle();
+    expect(authority).not.toHaveBeenCalled(); expect(streams).not.toHaveBeenCalled();
+    expect(geometry(stream)).toBe(before);
+    expect(stream.latest('scope:0')?.pixels?.buffer).toBe(buffer);
+    component!.$destroy(); component = null; flushSync(); await settle();
+    expect(authority).not.toHaveBeenCalled(); expect(streams).not.toHaveBeenCalled();
+    expect(geometry(stream)).toBe(before); expect(channels.scope.count()).toBe(1);
+    expect(channels.scope.disconnect).not.toHaveBeenCalled();
+    h.resources.release(lease);
   });
-
-  it('updates canonical authority without reacquiring demand and fails closed on disagreement', () => {
-    render('hardware');
-    const host = h.hostInstances[0];
-    expect(h.events).toEqual(['acquire:hardware-scope']);
-
-    radio.current = liveState(8, 'SUB');
-    publishAuthority();
-    flushSync();
-    expect(host.authorities.at(-1)).toBeNull();
-    expect(h.events).toEqual(['acquire:hardware-scope']);
-
-    expect(setCapabilities(liveCaps(8))).toBe(true);
-    publishAuthority();
-    flushSync();
-    expect(host.authorities.at(-1)).toEqual({
-      source: 'hardware', receiver: 'SUB', providerGeneration: 8,
-    });
-    expect(h.events).toEqual(['acquire:hardware-scope']);
-
-    for (const reason of ['receiver-mismatch', 'source-mismatch', 'stale', 'missing'] as const) {
-      host.emit({ state: 'ghost', reason });
-      flushSync();
-      expect(h.frameGetter?.()).toBeUndefined();
-      expect(h.events).toEqual(['acquire:hardware-scope']);
-    }
-  });
-
-  it('acquires no source for the shared readonly path and tears a defined source down exactly once', () => {
-    render();
-    expect(h.hostInstances).toHaveLength(0);
-    expect(h.events).toEqual([]);
-    expect(h.frameGetter?.()).toBeUndefined();
-
-    component?.$destroy();
-    component = null;
-    const dualComponent = render(undefined, 'dual');
-    expect(h.hostInstances).toHaveLength(0);
-    expect(h.events).toEqual([]);
-
-    dualComponent.$set({ displayFrameSource: 'audio-fft' });
-    flushSync();
-    expect(h.hostInstances).toHaveLength(1);
+  it('qualifies an audio-only peer as a genuine consumer and fences prior-provider audio callbacks', async () => {
+    render(); component!.$set({ displayAudioScope: true }); flushSync(); await settle();
+    const audio = h.scope.stream('audio_fft');
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    expect(selected()).toBe(audio);
     expect(h.events).toEqual(['acquire:audio-fft']);
-
-    dualComponent.$destroy();
-    component = null;
-    flushSync();
+    expect(channels.scope.connect).not.toHaveBeenCalled();
+    channels['audio-scope'].connected(); channels['audio-scope'].frame();
+    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: 0 });
+    const previous = channels['audio-scope'].callbacks();
+    radio.current = liveState(8); expect(setCapabilities(liveCaps(8))).toBe(true);
+    publishAuthority(); flushSync(); await settle();
+    expect(authority.mock.lastCall).toEqual([{ source: 'audio_fft', receiver: 0, providerGeneration: 8 }, []]);
+    channels['audio-scope'].frame(0, [9, 9, 9], previous);
+    expect(geometry(audio)).toBeNull();
+    expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
+    channels['audio-scope'].connected(); channels['audio-scope'].frame();
+    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: 0, freshness: 'fresh' });
+    expect(h.events).toEqual(['acquire:audio-fft']);
+  });
+  it('releases only its own scope lease on unmount while an independent live consumer retains geometry', async () => {
+    render('hardware'); await settle();
+    const independent = h.resources.acquire('hardware-scope', 'independent');
+    channels.scope.connected(); const buffer = channels.scope.frame();
+    const stream = h.scope.stream('hardware'), before = geometry(stream);
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    component!.$destroy(); component = null; flushSync(); await settle();
+    expect(authority).not.toHaveBeenCalled();
+    expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
+    expect(geometry(stream)).toBe(before);
+    expect(stream.latest('scope:0')?.pixels?.buffer).toBe(buffer);
+    expect(channels.scope.count()).toBe(1); expect(channels.scope.disconnect).not.toHaveBeenCalled();
+    h.resources.release(independent);
+  });
+  it('owns one selected-source lease, preserves stream/pixel identity, and switches sources without fallback', async () => {
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    render('audio-fft'); await settle();
+    const audio = h.scope.stream('audio_fft');
+    expect(selected()).toBe(audio);
+    expect(authority.mock.lastCall).toEqual([{ source: 'audio_fft', receiver: 0, providerGeneration: 7 }, []]);
+    expect(h.events).toEqual(['acquire:audio-fft']); expect(geometry(audio)).toBeNull();
+    channels['audio-scope'].connected(); const bytes = channels['audio-scope'].frame();
+    expect(audio.latest('audio-scope:0')?.pixels?.buffer).toBe(bytes);
+    expect(audio.latest('audio-scope:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
+    audio.setFreshness('stale'); flushSync();
+    expect(geometry(audio)).toMatchObject({ freshness: 'stale' });
+    expect(selected()).toBe(audio); expect(h.events).toEqual(['acquire:audio-fft']);
+    component!.$set({ displayFrameSource: 'hardware' }); flushSync(); await settle();
+    const hardware = h.scope.stream('hardware');
+    expect(selected()).toBe(hardware);
+    expect(h.events).toEqual(['acquire:audio-fft', 'release:audio-fft', 'acquire:hardware-scope']);
+    expect(authority.mock.lastCall).toEqual([{ source: 'hardware', receiver: 0, providerGeneration: 7 }, []]);
+    expect(geometry(hardware)).toBeNull();
+    channels.scope.connected(); const hardwareBytes = channels.scope.frame();
+    expect(hardware.latest('scope:0')?.pixels?.buffer).toBe(hardwareBytes);
+    expect(h.acquire.mock.calls.map(([resource]) => resource)).toEqual(['audio-fft', 'hardware-scope']);
+    expect(channels['audio-scope'].count()).toBe(0); expect(channels.scope.count()).toBe(1);
+  });
+  it('updates canonical authority without reacquiring demand and fails closed on disagreement', async () => {
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    render('hardware'); await settle(); channels.scope.connected(); channels.scope.frame();
+    const stream = selected()!;
+    expect(h.events).toEqual(['acquire:hardware-scope']);
+    radio.current = liveState(8, 'SUB'); publishAuthority(); flushSync();
+    expect(authority.mock.lastCall).toEqual([null, []]); expect(geometry(stream)).toBeNull();
+    expect(h.events).toEqual(['acquire:hardware-scope']);
+    expect(setCapabilities(liveCaps(8))).toBe(true); publishAuthority(); flushSync(); await settle();
+    expect(authority.mock.lastCall).toEqual([{ source: 'hardware', receiver: 1, providerGeneration: 8 }, []]);
+    expect(h.events).toEqual(['acquire:hardware-scope']);
+    channels.scope.connected(); channels.scope.frame(0);
+    expect(geometry(stream)).toBeNull();
+    channels.scope.frame(1); expect(geometry(stream)).toMatchObject({ receiver: 1, freshness: 'fresh' });
+    channels['audio-scope'].frame(1); expect(geometry(stream)).toMatchObject({ source: 'radio', receiver: 1 });
+    stream.setFreshness('stale'); flushSync(); expect(geometry(stream)).toMatchObject({ freshness: 'stale' });
+    stream.reset(); flushSync(); expect(geometry(stream)).toBeNull();
+    expect(h.events).toEqual(['acquire:hardware-scope']);
+  });
+  it('acquires no source for readonly mounts and tears a defined source down exactly once', async () => {
+    render(); expect(selected()).toBeNull(); expect(h.events).toEqual([]);
+    component!.$destroy(); component = null;
+    render(undefined, 'dual'); expect(selected()).toBeNull(); expect(h.events).toEqual([]);
+    component!.$set({ displayFrameSource: 'audio-fft' }); flushSync(); await settle();
+    expect(selected()).toBe(h.scope.stream('audio_fft')); expect(h.events).toEqual(['acquire:audio-fft']);
+    channels['audio-scope'].connected(); expect(channels['audio-scope'].count()).toBe(1);
+    component!.$destroy(); component = null; flushSync(); await settle();
     expect(h.events).toEqual(['acquire:audio-fft', 'release:audio-fft']);
-    expect(h.subscribeCount).toBe(1);
-    expect(h.unsubscribeCount).toBe(1);
-    expect(h.disposeCount).toBe(1);
+    expect(channels['audio-scope'].count()).toBe(0); expect(channels['audio-scope'].disconnect).toHaveBeenCalledOnce();
   });
-
-  it('contains no raw-frame bypass or transport/channel authority', () => {
-    const source = readFileSync(resolve(
-      process.cwd(), 'src/components-v2/wiring/SemanticRadioSurfaces.svelte',
-    ), 'utf8');
+  it('owns simultaneous RF and AF demand only when an audio inset is declared', async () => {
+    render('hardware'); component!.$set({ displayAudioScope: true }); flushSync(); await settle();
+    expect(h.events).toEqual(['acquire:hardware-scope', 'acquire:audio-fft']);
+    channels.scope.connected(); channels['audio-scope'].connected();
+    channels.scope.frame(); channels['audio-scope'].frame(0, [255, 128, 0]);
+    expect(h.scope.stream('hardware').latest('scope:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
+    expect(h.scope.stream('audio_fft').latest('audio-scope:0')?.pixels).toEqual(new Uint8Array([255, 128, 0]));
+    const oldRf = channels.scope.callbacks(), oldAudio = channels['audio-scope'].callbacks();
+    radio.current = liveState(8); expect(setCapabilities(liveCaps(8))).toBe(true);
+    publishAuthority(); flushSync(); await settle();
+    expect(geometry(h.scope.stream('hardware'))).toBeNull();
+    expect(geometry(h.scope.stream('audio_fft'))).toBeNull();
+    channels.scope.frame(0, [9, 9, 9], oldRf); channels['audio-scope'].frame(0, [9, 9, 9], oldAudio);
+    expect(geometry(h.scope.stream('hardware'))).toBeNull();
+    expect(geometry(h.scope.stream('audio_fft'))).toBeNull();
+    expect(channels.scope.connect).toHaveBeenCalledTimes(2);
+    expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
+    channels.scope.connected(); channels['audio-scope'].connected();
+    channels.scope.frame(); channels['audio-scope'].frame(0, [255, 128, 0]);
+    expect(geometry(h.scope.stream('hardware'))).toMatchObject({ source: 'radio', freshness: 'fresh' });
+    expect(geometry(h.scope.stream('audio_fft'))).toMatchObject({ source: 'audio_fft', freshness: 'fresh' });
+    component!.$set({ displayAudioScope: false }); flushSync(); await settle();
+    expect(h.events).toEqual(['acquire:hardware-scope', 'acquire:audio-fft', 'release:audio-fft']);
+    expect(channels['audio-scope'].count()).toBe(0); expect(channels.scope.count()).toBe(1);
+  });
+  it('contains no raw-frame bypass, pixel store, or replacement frame host', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'), 'utf8');
     expect(source).not.toMatch(/audioScopeFrame|scopeFrame\b|\$lib\/transport|getChannel|onBinary/);
-    expect(source.match(/new ScopeFrameHost\(/g)).toHaveLength(1);
-    expect(source).toContain("resolution.state === 'live' ? resolution.frame : undefined");
+    expect(source).not.toMatch(/FrameHost\b|lcdFrame|\.pixels\b|stream\.subscribe\(/);
+    expect(source).toContain('runtime.scope.setFrameAuthority');
+    expect(source).toContain('stream.geometry.subscribe');
   });
 });

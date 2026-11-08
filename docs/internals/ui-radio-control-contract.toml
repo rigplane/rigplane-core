@@ -610,9 +610,5 @@ kind = "scopeMetadataOwners"
 owner = "MOR-1409"
 reason = "Pixels/samples are payload; radio metadata remains in declared ingress/projection owners"
 exceptions = [
-  { path = "src/components-v2/panels/audio-scope/AudioSpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
-  { path = "src/components-v2/panels/lcd/AmberCockpit.svelte", count = 1, owner = "MOR-1409" },
-  { path = "src/components-v2/panels/lcd/AmberScope.svelte", count = 1, owner = "MOR-1409" },
-  { path = "src/components/spectrum/SpectrumPanel.svelte", count = 1, owner = "MOR-1409" },
   { path = "src/lib/runtime/adapters/scope-adapter.ts", count = 1, owner = "MOR-1409" },
 ]

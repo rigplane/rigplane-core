@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScopeRenderTrace } from '../scope-render-trace';
-import type { ScopeFrame } from '../adapters/scope-adapter';
+import { parseCurrentScopeFrame } from '../adapters/scope-adapter';
 
-const frame: ScopeFrame = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels: new Uint8Array(2049) });
+const audioBuffer = new ArrayBuffer(16 + 2049);
+const audioHeader = new DataView(audioBuffer);
+audioHeader.setUint8(0, 1);
+audioHeader.setUint32(3, 1, true); audioHeader.setUint32(7, 2, true);
+audioHeader.setUint16(14, 2049, true);
+const parsed = parseCurrentScopeFrame(audioBuffer, { source: 'audio_fft', sourceId: 'audio-scope', epoch: 1 });
+if (!parsed.ok) throw new Error(parsed.reason);
+const frame = parsed.frame;
 const receipt = (sequence: number, wireSequence: number, transportEpoch = 1) => ({
   kind: 'accepted' as const, frame, token: { source: 'audio_fft' as const, transportEpoch, wireSequence, acceptedSequence: sequence },
   callbackAt: performance.now(), acceptedAt: performance.now(),
@@ -14,6 +21,7 @@ describe('ScopeRenderTrace', () => {
 
   it('stores only scalar stage data and joins an actual odd-length audio frame without retaining its payload in export', () => {
     const trace = new ScopeRenderTrace();
+    expect(frame.width).toBe(2049); expect(frame.pixels).toHaveLength(2049);
     trace.observe(receipt(1, 65535));
     const token = trace.tokenForFrame(frame);
     expect(token).toMatchObject({ source: 'audio_fft', wireSequence: 65535, acceptedSequence: 1 });

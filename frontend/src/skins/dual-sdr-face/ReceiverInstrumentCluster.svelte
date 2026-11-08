@@ -1,12 +1,12 @@
 <script lang="ts">
   import type { RadioViewModel, DisplayObservation } from '../../semantic/radio-view-model';
   import { observationValue, readingValue, valueText } from '../../primitives/reading-text';
-  import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
+  import type { ScopeFrameSource } from './DualSdrFace.svelte';
   import { formatBandwidth } from '../segmentline/lcd-display-helpers';
   import ReceiverNeedleSMeter from './ReceiverNeedleSMeter.svelte';
   import ReceiverScopeWaterfall from './ReceiverScopeWaterfall.svelte';
-  interface Props { view: RadioViewModel; receiver: 0 | 1; frame: ScopeFrame | null; }
-  let { view, receiver, frame }: Props = $props();
+  interface Props { view: RadioViewModel; receiver: 0 | 1; scopeSource: ScopeFrameSource; }
+  let { view, receiver, scopeSource }: Props = $props();
   let receiverId = $derived(receiver === 0 ? 'MAIN' : 'SUB');
   let vfo = $derived(view.vfos.find((item) => item.receiver === receiverId));
   let indicator = $derived(view.receiverIndicators?.find((item) => item.receiver === receiverId));
@@ -89,7 +89,7 @@
   <ReceiverNeedleSMeter value={meterValue} />
   <output class="frequency" data-frequency data-state={obsState(vfo?.display?.frequencyHz, vfo?.frequencyHz)} style:min-height="1em" style:min-width={`${frequencyCh}ch`}>{frequencyText}</output>
   <div class="secondary">{vfo?.label ?? ''} · {modeText} · {filterText}</div>
-  <ReceiverScopeWaterfall {frame} />
+  <ReceiverScopeWaterfall {scopeSource} slotKey={scopeSource.slotKeys[receiver]} />
 </section>
 
 <style>

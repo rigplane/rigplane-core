@@ -57,7 +57,7 @@ function computeTunePx(
 
 // ── Scope frame parsing — imported from canonical module ──────────────────────
 
-import { parseScopeFrame, type ScopeFrame } from '../spectrum-logic';
+import { ingressScopeFrame } from '$lib/runtime/adapters/scope-adapter';
 
 function encodeFrame(
   receiver: number,
@@ -80,36 +80,41 @@ function encodeFrame(
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
 
-describe('scope frame parsing — mode byte', () => {
-  it('parses mode=0 (CTR) from frame header', () => {
-    const buf = encodeFrame(0, 0, 14_050_000, 14_098_000, new Uint8Array(5));
-    expect(parseScopeFrame(buf)!.mode).toBe(0);
+describe('scope ingress — mode byte', () => {
+  const context = { source: 'radio' as const, sourceId: 'scope', epoch: 1 };
+  it('derives mode=0 (CTR) into geometry', () => {
+    const result = ingressScopeFrame(encodeFrame(0, 0, 14_050_000, 14_098_000, new Uint8Array(5)), context);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.geometry.mode).toBe(0);
   });
 
-  it('parses mode=1 (FIX) from frame header', () => {
-    const buf = encodeFrame(0, 1, 14_000_000, 14_350_000, new Uint8Array(5));
-    expect(parseScopeFrame(buf)!.mode).toBe(1);
+  it('derives mode=1 (FIX) into geometry', () => {
+    const result = ingressScopeFrame(encodeFrame(0, 1, 14_000_000, 14_350_000, new Uint8Array(5)), context);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.geometry.mode).toBe(1);
   });
 
-  it('parses mode=2 (SCROLL-C) from frame header', () => {
-    const buf = encodeFrame(0, 2, 14_050_000, 14_098_000, new Uint8Array(5));
-    expect(parseScopeFrame(buf)!.mode).toBe(2);
+  it('derives mode=2 (SCROLL-C) into geometry', () => {
+    const result = ingressScopeFrame(encodeFrame(0, 2, 14_050_000, 14_098_000, new Uint8Array(5)), context);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.geometry.mode).toBe(2);
   });
 
-  it('parses mode=3 (SCROLL-F) from frame header', () => {
-    const buf = encodeFrame(0, 3, 14_000_000, 14_350_000, new Uint8Array(5));
-    expect(parseScopeFrame(buf)!.mode).toBe(3);
+  it('derives mode=3 (SCROLL-F) into geometry', () => {
+    const result = ingressScopeFrame(encodeFrame(0, 3, 14_000_000, 14_350_000, new Uint8Array(5)), context);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.geometry.mode).toBe(3);
   });
 
   it('preserves all other fields alongside mode', () => {
     const pixels = new Uint8Array([10, 20, 30]);
-    const buf = encodeFrame(1, 3, 7_000_000, 7_300_000, pixels);
-    const frame = parseScopeFrame(buf)!;
-    expect(frame.receiver).toBe(1);
-    expect(frame.mode).toBe(3);
-    expect(frame.startFreq).toBe(7_000_000);
-    expect(frame.endFreq).toBe(7_300_000);
-    expect(Array.from(frame.pixels)).toEqual([10, 20, 30]);
+    const result = ingressScopeFrame(encodeFrame(1, 3, 7_000_000, 7_300_000, pixels), context);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.geometry.receiver).toBe(1);
+    expect(result.geometry.mode).toBe(3);
+    expect(result.geometry.view.startHz).toBe(7_000_000);
+    expect(result.geometry.view.endHz).toBe(7_300_000);
+    expect(Array.from(result.frame.pixels!)).toEqual([10, 20, 30]);
   });
 });
 

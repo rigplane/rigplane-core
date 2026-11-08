@@ -87,7 +87,7 @@
       `scopeControls` snippet is passed: that snippet exists only on the
       hosted `instruments` composition, which a self-contained skin does not
       receive. No `colorRoles`: this probe adds no colour.
-      `scopeProjection` is likewise not passed, which leaves SpectrumPanel on
+      `scopeRegion` is likewise not passed, which leaves SpectrumPanel on
       its own unmanaged path — it acquires and releases its own scope lease,
       exactly as it does under `RadioLayout`'s second `<SpectrumPanel>`.
     -->

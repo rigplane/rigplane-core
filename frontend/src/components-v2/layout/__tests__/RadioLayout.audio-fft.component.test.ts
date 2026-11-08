@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { get } from 'svelte/store';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { setCapabilities, clearCapabilities, getCapabilities } from '$lib/stores/capabilities.svelte';
@@ -7,7 +8,7 @@ import { radio } from '$lib/stores/radio.svelte';
 import { IC7300_CAPABILITIES, IC7300_STATE } from '$lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { SpectrumRenderer, defaultSpectrumOptions } from '$lib/renderers/spectrum-renderer';
-import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
+import { WaterfallRenderer, defaultWaterfallOptions } from '$lib/renderers/waterfall-renderer';
 import type { WsChannel } from '$lib/transport/ws-client';
 import producerFixtures from './fixtures/audio-fft-producer-frames.json';
 
@@ -83,6 +84,26 @@ const context = new Proxy({
   createLinearGradient: () => ({ addColorStop: () => {} }),
   measureText: () => ({ width: 20 }),
 }, { get: (obj, key) => Reflect.get(obj, key) ?? (() => {}) });
+
+const paintSpectrum = SpectrumRenderer.prototype.render;
+const paintWaterfall = WaterfallRenderer.prototype.pushRow;
+function expectCentralOutput(input: { pixels: Uint8Array }, options: Parameters<SpectrumRenderer['render']>[4]) {
+  const converted = input.pixels.slice(options.sampleOffset).map(value => Math.round(Math.min(value, 160) / 2));
+  const makeContext = () => new Proxy({
+    ...context, canvas: { width: 640, height: 240 }, lineTo: vi.fn(), moveTo: vi.fn(), putImageData: vi.fn(),
+  }, { get: (obj, key) => Reflect.get(obj, key) ?? (() => {}) });
+  const actual = makeContext(); const expected = makeContext();
+  const expectedOptions = { ...options, sampleOffset: 0, sampleAmplitudeMax: 80 };
+  paintSpectrum.call(new SpectrumRenderer(), actual as unknown as CanvasRenderingContext2D, input.pixels, 640, 240, options);
+  paintSpectrum.call(new SpectrumRenderer(), expected as unknown as CanvasRenderingContext2D, converted, 640, 240, expectedOptions);
+  expect(actual.lineTo.mock.calls).toEqual(expected.lineTo.mock.calls);
+  expect(actual.moveTo.mock.calls).toEqual(expected.moveTo.mock.calls);
+  const canvas = (ctx: typeof actual) => ({ getContext: () => ctx, width: 640, height: 240 }) as unknown as HTMLCanvasElement;
+  paintWaterfall.call(new WaterfallRenderer(canvas(actual), { ...defaultWaterfallOptions, ...options }), input.pixels);
+  paintWaterfall.call(new WaterfallRenderer(canvas(expected), { ...defaultWaterfallOptions, ...expectedOptions }), converted);
+  expect(actual.putImageData.mock.calls.at(-1)![0].data).toEqual(expected.putImageData.mock.calls.at(-1)![0].data);
+  return converted;
+}
 
 function select(audioFft: boolean, generation = 1) {
   setCapabilities({ ...IC7300_CAPABILITIES, providerGeneration: generation,
@@ -245,12 +266,16 @@ describe('MOR-2355 central default scope source', () => {
     const renderCountAfterFrame = render.mock.calls.length;
     draw();
     expect(render).toHaveBeenCalledTimes(renderCountAfterFrame);
-    expect(scope.audioScopeFrame?.startFreq).toBe(14176000);
-    expect(scope.audioScopeFrame?.pixels).toHaveLength(2049);
-    expect(Math.max(...scope.audioScopeFrame!.pixels)).toBe(160);
-    expect(render).toHaveBeenCalledWith(expect.anything(), expectedPixels, 640, 240,
-      expect.objectContaining({ spanHz: 12000, centerHz: 6000, showRfOverlays: false, tuneHz: 0, passbandHz: 0 }));
-    expect(push).toHaveBeenCalledWith(expectedPixels);
+    expect(get(scope.stream('audio_fft').geometry)?.view.startHz).toBe(14176000);
+    const latest = scope.stream('audio_fft').latest('audio-scope:0');
+    expect(latest?.pixels).toHaveLength(2049);
+    expect(Math.max(...latest!.pixels!)).toBe(160);
+    expect(render).toHaveBeenCalledWith(expect.anything(), input.pixels, 640, 240,
+      expect.objectContaining({ spanHz: 12000, centerHz: 6000, showRfOverlays: false, tuneHz: 0, passbandHz: 0, sampleOffset: 1024, sampleAmplitudeMax: 160 }));
+    expect(render.mock.calls.at(-1)![1].buffer).toBe(input.data);
+    expect(render.mock.calls.at(-1)![1].byteOffset).toBe(16);
+    expect(push.mock.calls.at(-1)![0]).toBe(render.mock.calls.at(-1)![1]);
+    expect(expectCentralOutput(input, render.mock.calls.at(-1)![4])).toEqual(expectedPixels);
     expect(options).toHaveBeenLastCalledWith(expect.objectContaining({ centerHz: 6000, spanHz: 12000 }));
     expect(panel!.textContent).toContain('Audio FFT · AF');
     expect(panel!.querySelector('.freq-axis')!.textContent).toContain('0 kHz');
@@ -334,13 +359,19 @@ describe('MOR-2355 central default scope source', () => {
       const input = producerFrame(name);
       audio.fire(input.data); draw();
       const projected = render.mock.calls.at(-1)![1];
-      expect(projected).toHaveLength(count);
-      expect(projected).toEqual(input.pixels.slice((input.pixels.length - 1) / 2).map(value => Math.round(value / 2)));
-      expect(render.mock.calls.at(-1)![4]).toMatchObject({ spanHz: span, centerHz: center });
+      expect(projected).toHaveLength(count * 2 - 1);
+      expect(projected).toEqual(input.pixels);
+      expect(projected.buffer).toBe(input.data);
+      expect(projected.byteOffset).toBe(16);
+      const renderOptions = render.mock.calls.at(-1)![4];
+      expect(renderOptions).toMatchObject({ spanHz: span, centerHz: center, sampleOffset: count - 1, sampleAmplitudeMax: 160 });
       expect(push).toHaveBeenLastCalledWith(projected);
       expect(target.querySelector('.freq-axis')!.textContent).toContain(`${span / 1000} kHz`);
-      expect(projected[64]).toBeGreaterThan(projected[40]);
-      expect(projected[192]).toBeGreaterThan(projected[160]);
+      const displayed = expectCentralOutput(input, renderOptions);
+      expect(displayed).toHaveLength(count);
+      expect(displayed).toEqual(input.pixels.slice((input.pixels.length - 1) / 2).map(value => Math.round(value / 2)));
+      expect(displayed[64]).toBeGreaterThan(displayed[40]);
+      expect(displayed[192]).toBeGreaterThan(displayed[160]);
     }
   });
 
@@ -352,7 +383,12 @@ describe('MOR-2355 central default scope source', () => {
     const input = frame(14176000, 14200000, new Uint8Array([160, 120, 80, 0, 80, 120, 160]));
     audio.fire(input.data); draw();
     const projected = render.mock.calls.at(-1)![1];
-    expect(projected).toEqual(new Uint8Array([0, 40, 60, 80]));
+    expect(projected).toEqual(new Uint8Array([160, 120, 80, 0, 80, 120, 160]));
+    expect(projected.buffer).toBe(input.data);
+    expect(projected.byteOffset).toBe(16);
+    const renderOptions = render.mock.calls.at(-1)![4];
+    expect(renderOptions).toMatchObject({ sampleOffset: 3, sampleAmplitudeMax: 160 });
+    expect(expectCentralOutput(input, renderOptions)).toEqual(new Uint8Array([0, 40, 60, 80]));
     expect(push).toHaveBeenLastCalledWith(projected);
     const row = context.putImageData.mock.calls.at(-1)![0] as ImageData;
     const rgb = (x: number) => Array.from(row.data.slice(x * 4, x * 4 + 3));
@@ -363,13 +399,13 @@ describe('MOR-2355 central default scope source', () => {
     renderer.setPeakHoldEnabled(true);
     context.lineTo.mockClear();
     renderer.render(context as unknown as CanvasRenderingContext2D, projected, 4, 100,
-      { ...defaultSpectrumOptions, showRfOverlays: false });
+      { ...defaultSpectrumOptions, showRfOverlays: false, sampleOffset: 3, sampleAmplitudeMax: 160 });
     const positiveTraceY = context.lineTo.mock.calls.slice(-7, -4).map(call => call[1]);
     expect(positiveTraceY[0]).toBeGreaterThan(positiveTraceY[1]);
     expect(positiveTraceY[1]).toBeGreaterThan(positiveTraceY[2]);
     context.lineTo.mockClear();
-    renderer.render(context as unknown as CanvasRenderingContext2D, new Uint8Array(4), 4, 100,
-      { ...defaultSpectrumOptions, showRfOverlays: false });
+    renderer.render(context as unknown as CanvasRenderingContext2D, new Uint8Array(7), 4, 100,
+      { ...defaultSpectrumOptions, showRfOverlays: false, sampleOffset: 3, sampleAmplitudeMax: 160 });
     const peakYs = context.lineTo.mock.calls.slice(-4).map(call => call[1]);
     expect(new Set(peakYs).size).toBe(4);
   });

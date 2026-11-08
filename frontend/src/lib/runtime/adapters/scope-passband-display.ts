@@ -5,10 +5,10 @@ import {
 } from '$lib/radio/filter-controls';
 import { modeHasTwinPbt, resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import { flattenBands } from '$lib/radio/band-plan';
-import type { ScopeFramePresentation } from '../scope-frame-host';
+import type { ScopeGeometry } from '$lib/runtime/scope-frame';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { derivePresentationCapabilities, type ReceiverId } from './presentation-capabilities';
-import { SCOPE_FRAME_SILENCE_MS, toSpectrumAuthority } from './scope-adapter';
+import { toSpectrumAuthority } from './scope-adapter';
 
 type Scalar = number | string | boolean;
 type Observation = Readonly<{ value: Scalar; marker: number }>;
@@ -42,12 +42,27 @@ export interface ScopePassbandDisplayState {
   readonly selection: SelectionObservation | null;
   readonly selectionRecovery: Readonly<{ context: string | null }> | null;
 }
+/**
+ * MOR-4270: the frame input is the qualified geometry-facts record the
+ * wiring derives from the shared stream (authority + health + geometry +
+ * the stream's monotonic receipt); pixels never enter this projection.
+ */
+export interface ScopeFrameFacts {
+  readonly source: 'hardware' | 'audio_fft';
+  readonly receiver: number;
+  readonly providerGeneration: number;
+  readonly transportEpoch: number;
+  readonly demanded: boolean;
+  readonly transport: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
+  readonly geometry: ScopeGeometry | null;
+  readonly receipt: number;
+}
 export interface ScopePassbandDisplayInput {
   state: ServerState | null;
   caps: Capabilities | null;
   selection: { receiver: ReceiverId; slot: 'single' | 'A' | 'B' } | null;
   session: { state: 'disconnected' | 'connecting' | 'connected' | 'reconnecting'; epoch: number } | null;
-  frame: ScopeFramePresentation | null;
+  frame: ScopeFrameFacts | null;
 }
 const EMPTY_OBSERVATIONS: Observations = Object.freeze({});
 const EMPTY_PATHS: readonly string[] = Object.freeze([]);
@@ -106,10 +121,10 @@ interface Inspection {
   explicitSelectionBind: boolean;
 }
 function inspect(input: ScopePassbandDisplayInput): Inspection {
-  const { state, caps, selection, session, frame: presentation } = input;
-  const envelope = presentation?.envelope;
+  const { state, caps, selection, session, frame: facts } = input;
+  const geometry = facts?.geometry ?? null;
   const result: Inspection = { candidate: null, domain: null, observations: {}, geometryPaths: [],
-    receipt: integer(envelope?.acceptedSequence) ? envelope.acceptedSequence : 0,
+    receipt: integer(facts?.receipt) ? facts.receipt : 0,
     reason: 'identity-unresolved', unsupported: false, selection: null, explicitSelectionBind: false };
   if (!state || !caps || !selection || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
     || !integer(state.providerGeneration) || state.providerGeneration !== caps.providerGeneration
@@ -247,25 +262,20 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   }
   if (!session || session.state !== 'connected' || !integer(session.epoch) || session.epoch === 0) return result;
   result.reason = 'frame-unavailable';
-  const authority = presentation?.authority;
-  const resolution = presentation?.resolution;
-  const frame = envelope?.frame;
   const receiver = selection.receiver === 'MAIN' ? 0 : 1;
-  const age = authority && envelope ? authority.nowMonotonic - envelope.receivedAt : NaN;
-  if (!envelope || !authority || !frame || resolution?.state !== 'live'
-    || envelope.source !== 'hardware' || authority.source !== 'hardware'
-    || envelope.receiver !== receiver || authority.receiver !== receiver || frame.receiver !== receiver
-    || envelope.providerGeneration !== state.providerGeneration || authority.providerGeneration !== state.providerGeneration
-    || !integer(envelope.transportEpoch) || envelope.transportEpoch === 0 || envelope.transportEpoch !== authority.transportEpoch
-    || !integer(envelope.acceptedSequence) || envelope.acceptedSequence === 0
-    || authority.transport !== 'connected' || !authority.demanded || !nonnegative(age) || age >= SCOPE_FRAME_SILENCE_MS
-    || !nonnegative(envelope.receivedAt) || !integer(frame.mode) || frame.mode > 255
-    || !Number.isFinite(frame.startFreq) || !Number.isFinite(frame.endFreq) || frame.endFreq <= frame.startFreq
-    || resolution.frame.source !== 'hardware' || resolution.frame.receiver !== selection.receiver
-    || resolution.frame.freshness !== 'fresh'
-    || resolution.frame.startHz !== frame.startFreq || resolution.frame.endHz !== frame.endFreq) return result;
+  if (!facts || !geometry || facts.source !== 'hardware'
+    || facts.receiver !== receiver
+    || facts.providerGeneration !== state.providerGeneration
+    || facts.transport !== 'connected' || !facts.demanded
+    || !integer(facts.transportEpoch) || facts.transportEpoch === 0
+    || geometry.source !== 'radio' || geometry.receiver !== receiver
+    || geometry.freshness !== 'fresh' || !geometry.hasPixels
+    || !integer(geometry.mode) || geometry.mode > 255
+    || !Number.isFinite(geometry.view.startHz) || !Number.isFinite(geometry.view.endHz)
+    || geometry.view.endHz <= geometry.view.startHz
+    || !nonnegative(facts.receipt) || facts.receipt === 0) return result;
   const tuple = Object.freeze({ frequencyHz: frequency, mode, widthHz: width, shiftHz,
-    frameMode: frame.mode, startHz: frame.startFreq, endHz: frame.endFreq });
+    frameMode: geometry.mode, startHz: geometry.view.startHz, endHz: geometry.view.endHz });
   // A held-stale value carrying provider-confirmed readback is still an
   // authoritative radio fact.  IC-7610 polling intervals intentionally exceed
   // some field max-age windows, so requiring every passband leaf to be fresh in
@@ -275,14 +285,13 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   const effectiveStale = stale && !heldReadbackConfirmed;
   const strict = effectiveStale ? null : toSpectrumAuthority(state, caps);
   const flatBands = flattenBands(caps.freqRanges ?? []);
-  const context = [state.providerGeneration, capabilityIdentity(caps), session.epoch,
-    selection.receiver, selection.slot, mode, filter, data, 'hardware',
-    envelope.transportEpoch, frame.mode];
+  const context = [state.providerGeneration, capabilityIdentity(caps), session.epoch, facts.transportEpoch,
+    selection.receiver, selection.slot, mode, filter, data, 'hardware', geometry.mode];
   result.candidate = {
       tuple, stale: effectiveStale, frequencyCurrent, frequencyAligned,
-    identity: JSON.stringify([...context, frequency, frame.startFreq, frame.endFreq]),
+    identity: JSON.stringify([...context, frequency, geometry.view.startHz, geometry.view.endHz]),
     bandlessIdentity: flatBands.length === 0 ? null
-      : JSON.stringify([...context, frame.endFreq - frame.startFreq]),
+      : JSON.stringify([...context, geometry.view.endHz - geometry.view.startHz]),
     strict: frequencyAligned && !!strict && strict.receiver === receiver && strict.frequencyHz === frequency
       && modeName(strict.mode ?? undefined) === mode && strict.filter === `FIL${filter}`
       && strict.filterWidthHz === width

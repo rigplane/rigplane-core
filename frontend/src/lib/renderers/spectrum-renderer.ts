@@ -70,6 +70,7 @@ export function spectrumColorRolesToOptions(roles: SpectrumColorRoles) {
 
 export interface SpectrumOptions {
   showRfOverlays?: boolean;
+  showTuneIndicator?: boolean;
   bgColor: string;
   lineColor: string;
   fillColor: string;
@@ -80,6 +81,9 @@ export interface SpectrumOptions {
   passbandFillColor: string;
   passbandEdgeColor: string;
   refLevel: number;   // dB reference (reserved for future dB axis labels)
+  sampleSpanHz?: number;
+  sampleOffset?: number;
+  sampleAmplitudeMax?: number;
   spanHz: number;     // frequency span in Hz
   centerHz: number;   // center frequency in Hz
   lineWidth: number;
@@ -121,7 +125,7 @@ const SPECTRUM_AMPLITUDE_MAX = 80;
 function panoramaShiftPixels(options: SpectrumOptions, width: number): number {
   const { spanHz, panoramaShiftHz } = options;
   if (!(spanHz > 0) || !Number.isFinite(panoramaShiftHz)) return 0;
-  return (panoramaShiftHz / spanHz) * width;
+  return (panoramaShiftHz / (options.sampleSpanHz || spanHz)) * width;
 }
 
 // Map data to canvas y-coordinates for the shifted viewport (MOR-2464):
@@ -137,12 +141,17 @@ function mapShiftedPoints(
   refLevel: number,
   yPoints: Float32Array,
   covered: Uint8Array,
+  viewScale = 1,
+  offset = 0,
+  amplitudeMax = 80,
 ): void {
-  const n = data.length;
-  const profile = (column: number): number =>
-    data[Math.min(n - 1, Math.floor((column / width) * n))];
+  const n = data.length - offset;
+  const profile = (column: number): number => {
+    const value = data[offset + Math.min(n - 1, Math.floor((column / width) * n))];
+    return amplitudeMax === 80 ? value : Math.round(Math.min(value, amplitudeMax) * 80 / amplitudeMax);
+  };
   for (let x = 0; x < width; x++) {
-    const p = x + shiftPx;
+    const p = width / 2 + (x - width / 2) * viewScale + shiftPx;
     if (p < 0 || p > width - 1) continue;
     const i0 = Math.floor(p);
     const frac = p - i0;
@@ -275,7 +284,9 @@ export function renderSpectrum(
   const shiftPx = panoramaShiftPixels(options, width);
   const yPoints = new Float32Array(width);
   const covered = new Uint8Array(width);
-  mapShiftedPoints(data, width, height, shiftPx, options.refLevel, yPoints, covered);
+  mapShiftedPoints(data, width, height, shiftPx, options.refLevel, yPoints, covered,
+    options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1,
+    options.sampleOffset ?? 0, options.sampleAmplitudeMax ?? 80);
 
   // Filled area under spectrum (gradient cached per-instance; recreated only when height or either stop changes)
   const cache = gradCache ?? { current: null };
@@ -350,13 +361,14 @@ export function renderSpectrum(
       }
     }
 
-    // Center frequency line (carrier)
-    ctx.strokeStyle = options.tuneLineColor;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(tunePx, 0);
-    ctx.lineTo(tunePx, height);
-    ctx.stroke();
+    if (options.showTuneIndicator !== false) {
+      ctx.strokeStyle = options.tuneLineColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(tunePx, 0);
+      ctx.lineTo(tunePx, height);
+      ctx.stroke();
+    }
   }
 }
 
@@ -406,42 +418,51 @@ export class SpectrumRenderer {
 
     // --- Moving average ---
     let displayData = data;
+    const offset = options.sampleOffset ?? 0;
+    const amplitudeMax = options.sampleAmplitudeMax ?? 80;
+    const sampleCount = data.length - offset;
+    const sample = (index: number) => amplitudeMax === 80 ? data[index + offset]
+      : Math.round(Math.min(data[index + offset], amplitudeMax) * 80 / amplitudeMax);
+    let displayOptions = options;
     if (this.avgEnabled) {
-      this.frameHistory.push(new Uint8Array(data));
+      const history = new Uint8Array(sampleCount);
+      for (let i = 0; i < sampleCount; i++) history[i] = sample(i);
+      this.frameHistory.push(history);
       if (this.frameHistory.length > AVG_DEPTH) this.frameHistory.shift();
-      const averaged = new Uint8Array(data.length);
-      for (let i = 0; i < data.length; i++) {
+      const averaged = new Uint8Array(sampleCount);
+      for (let i = 0; i < sampleCount; i++) {
         let sum = 0;
         for (const frame of this.frameHistory) sum += frame[i];
         averaged[i] = Math.round(sum / this.frameHistory.length);
       }
       displayData = averaged;
+      if (offset !== 0 || amplitudeMax !== 80) displayOptions = { ...options, sampleOffset: 0, sampleAmplitudeMax: 80 };
     }
 
     // --- Peak hold update ---
     if (this.peakHoldEnabled) {
-      const n = data.length;
+      const n = sampleCount;
       if (this.peakValues.length !== n) {
         this.peakValues = new Array(n).fill(0);
         this.peakTimestamps = new Array(n).fill(now);
       }
       for (let i = 0; i < n; i++) {
-        if (data[i] > this.peakValues[i]) {
-          this.peakValues[i] = data[i];
+        if (sample(i) > this.peakValues[i]) {
+          this.peakValues[i] = sample(i);
           this.peakTimestamps[i] = now;
         } else if (now - this.peakTimestamps[i] > PEAK_DECAY_MS) {
-          this.peakValues[i] = data[i];
+          this.peakValues[i] = sample(i);
           this.peakTimestamps[i] = now;
         }
       }
     }
 
     // Draw main spectrum first
-    renderSpectrum(ctx, displayData, width, height, options, this._gradCache);
+    renderSpectrum(ctx, displayData, width, height, displayOptions, this._gradCache);
 
     // Draw peak hold fill on top (subtle overlay above spectrum)
     if (this.peakHoldEnabled) {
-      this._drawPeakHold(ctx, displayData, this.peakValues, width, height, options);
+      this._drawPeakHold(ctx, displayData, this.peakValues, width, height, displayOptions);
     }
   }
 
@@ -457,7 +478,9 @@ export class SpectrumRenderer {
     const shiftPx = panoramaShiftPixels(options, width);
     const yPoints = new Float32Array(width);
     const covered = new Uint8Array(width);
-    mapShiftedPoints(currentData, width, height, shiftPx, options.refLevel, yPoints, covered);
+    mapShiftedPoints(currentData, width, height, shiftPx, options.refLevel, yPoints, covered,
+      options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1,
+      options.sampleOffset ?? 0, options.sampleAmplitudeMax ?? 80);
 
     ctx.fillStyle = 'rgba(200, 200, 200, 0.25)';
     ctx.beginPath();
@@ -472,7 +495,8 @@ export class SpectrumRenderer {
 
     // Draw back along peak line (right to left) under the same viewport
     for (let i = peaks.length - 1; i >= 0; i--) {
-      const x = ((i / peaks.length) * width) - shiftPx;
+      const scale = options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1;
+      const x = width / 2 + (((i / peaks.length) * width) - width / 2 - shiftPx) / scale;
       if (x < 0 || x >= width) continue;
       const amplitude = spectrumDisplayAmplitude(peaks[i], options.refLevel);
       const y = height * (1 - amplitude);

@@ -1,30 +1,18 @@
 <script lang="ts">
   import type { RadioViewModel } from '../../semantic/radio-view-model';
-  import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
+  import type { ScopeFrame } from '../../lib/runtime/scope-frame';
   import ReceiverInstrumentCluster from './ReceiverInstrumentCluster.svelte';
   import { readingText } from '../../primitives/reading-text';
   import { usable } from '../../primitives/control-instruments/control-instrument-behavior';
+  /** MOR-4270: frames arrive with their ingress-owned slot key; receivers never re-read frame metadata. */
   export interface ScopeFrameSource {
-    subscribe(listener: (frame: ScopeFrame) => void): () => void;
+    subscribe(listener: (frame: ScopeFrame, slotKey: string) => void): () => void;
     subscribeHealth?(listener: (live: boolean) => void): () => void;
+    /** The stream slot keys for receiver 0 and 1, computed by the source owner. */
+    readonly slotKeys: readonly [string, string];
   }
   interface Props { view: RadioViewModel; scopeSource: ScopeFrameSource; onPreChange?: (level: number) => void; }
   let { view, scopeSource, onPreChange }: Props = $props();
-  let frames: [ScopeFrame | null, ScopeFrame | null] = $state([null, null]);
-  $effect(() => {
-    const unsubscribeFrames = scopeSource.subscribe((incoming) => {
-      if (incoming.receiver !== 0 && incoming.receiver !== 1) return;
-      const frame = Object.freeze({ ...incoming, pixels: new Uint8Array(incoming.pixels) }) as ScopeFrame;
-      frames = incoming.receiver === 0 ? [frame, frames[1]] : [frames[0], frame];
-    });
-    const unsubscribeHealth = scopeSource.subscribeHealth?.((live) => {
-      if (!live) frames = [null, null];
-    });
-    return () => {
-      unsubscribeFrames();
-      unsubscribeHealth?.();
-    };
-  });
   let pre = $derived(view.rfFrontEnd?.preamp);
   let preBlocked = $derived(view.disabledReasons.some((reason) => reason.field === 'rfFrontEnd.preamp'));
   let preEnabled = $derived(usable(pre) && !preBlocked && onPreChange !== undefined);
@@ -42,7 +30,7 @@
     <button data-control="ant" disabled>ANT<br />{''}</button><button data-control="pre" disabled={preNext === null} onclick={() => preNext !== null && onPreChange?.(preNext)}>P.AMP<br />{pre ? readingText(pre) : ''}</button>
     {#each ['att', 'ip', 'agc', 'vox', 'comp', 'mode'] as name}<button data-control={name} disabled>{name === 'ip' ? 'IP+' : name.toUpperCase()}<br />{''}</button>{/each}
   </aside>
-  <section class="instruments"><ReceiverInstrumentCluster {view} receiver={0} frame={frames[0]} /><ReceiverInstrumentCluster {view} receiver={1} frame={frames[1]} /></section>
+  <section class="instruments"><ReceiverInstrumentCluster {view} receiver={0} {scopeSource} /><ReceiverInstrumentCluster {view} receiver={1} {scopeSource} /></section>
   <div class="status">SPECTRUM SCOPE · {view.scopeControls ? readingText(view.scopeControls.mode, (v) => `MODE ${v}`) : ''}</div>
   <nav class="softkeys" aria-label="Scope softkeys">{#each ['menu1', 'edge', 'hold', 'cent-fix', 'main-sub', 'dual', 'expd-set'] as name}<button data-control={name} disabled>{name === 'cent-fix' ? 'CENT/FIX' : name === 'main-sub' ? 'MAIN/SUB' : name === 'expd-set' ? 'EXPD/SET' : name.toUpperCase()}</button>{/each}</nav>
 </main>

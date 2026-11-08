@@ -2,6 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
 import { readFileSync } from 'node:fs';
+import { SvelteMap } from 'svelte/reactivity';
+import { createTuningAccumulator } from '$lib/runtime/commands/tuning-accumulator';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -26,6 +28,7 @@ const h = vi.hoisted(() => ({
 }));
 const selectedFrequency = vi.hoisted(() => ({ current: undefined as unknown }));
 const group = new Proxy({}, { get: () => h.noop });
+const pendingFrequencyTargets = new SvelteMap<number, number>();
 
 vi.mock('../../../component-kits/activation', () => ({
   getSelectedFrequencyReadout: () => selectedFrequency.current,
@@ -69,7 +72,9 @@ vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({
   deriveModInputTxGuardProps: () => ({ visible: false, sourceLabel: null }),
   getModInputTxGuardHandlers: () => ({ onSetLan: h.noop, onDismiss: h.noop }),
 }));
-vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+vi.mock('$lib/runtime/adapters/panel-adapters', async () => {
+  const { getTuningBurstTargetHz } = await import('$lib/runtime/commands/tuning-accumulator');
+  return ({
   bindSemanticSurfaceHandlers: () => new Proxy({}, { get: (_target, family) => family === 'vfo'
     ? new Proxy({}, { get: (_vfo, handler) => ({
       onMainVfoClick: h.main, onSubVfoClick: h.sub, onEqual: h.equalize, onSwap: h.swap,
@@ -112,7 +117,8 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   getKeySpeedControlFeedback: h.keySpeedFeedback,
   getTxAuxControlFeedback: h.txAuxFeedback,
   getRfSqlControlFeedback: () => null,
-  getPendingFrequencyHz: () => null,
+  getPendingFrequencyHz: (receiver: number) => pendingFrequencyTargets.get(receiver) ?? null,
+  getTuningBurstFrequencyHz: (receiver: number) => getTuningBurstTargetHz(receiver),
   getPendingFilterSelection: () => null, getPendingNbOn: () => null,
   getPendingNrOn: () => null, getPendingPreampLevel: () => null,
   // MOR-2111 PR2 — `SemanticRadioSurfaces.svelte` imports the repeater
@@ -127,7 +133,8 @@ vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
   // all, so the stubs only need to satisfy the import.
   deriveMemoryPanelProps: () => ({ activeFreqHz: Number.NaN, activeMode: '---', vfoIdentityKnown: false }),
   getMemoryHandlers: () => ({ onRecall: () => false, onStore: () => false, onClear: () => false }),
-}));
+  });
+});
 
 import SemanticRadioSurfaces from '../SemanticRadioSurfaces.svelte';
 import AlternateFrequencyReadoutHarness, {
@@ -257,6 +264,7 @@ beforeEach(() => {
   h.sessionSubscriber = null;
   selectedFrequency.current = undefined;
   clearRetainedInteractions();
+  pendingFrequencyTargets.clear();
   clearCapabilities();
   h.filterWidthFeedback.mockReturnValue(Object.freeze({
     confirmed: null, target: null, requestedTarget: null,
@@ -311,6 +319,67 @@ afterEach(() => {
 });
 
 describe('production receiver-indicator partitioning', () => {
+  it.each([
+    ['dual semantic receiver strip', { strips: 'dual' }],
+    ['live Standard composition', { strips: 'single', vfoAppearance: 'standard' }],
+  ] as const)('renders each accumulator drag target in %s ahead of pending with receiver isolation', (_name, props) => {
+    vi.useFakeTimers();
+    const accumulator = createTuningAccumulator({ emit: vi.fn() });
+    try {
+      selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+      render(caps('main_sub', 2), state(), {}, props);
+      const digits = (receiver: string) => target.querySelector(
+        `[data-receiver="${receiver}"][data-alternate-frequency-readout]`,
+      )!.textContent!.replace(/\s/g, '');
+      pendingFrequencyTargets.set(0, 14_210_000);
+      pendingFrequencyTargets.set(1, 7_105_000);
+      flushSync();
+      expect(digits('MAIN')).toBe('14210000');
+      expect(digits('SUB')).toBe('7105000');
+      for (const targetHz of [14_220_000, 14_225_000, 14_223_000]) {
+        accumulator.jump(0, targetHz);
+        flushSync();
+        expect(digits('MAIN')).toBe(String(targetHz));
+        expect(digits('SUB')).toBe('7105000');
+      }
+      accumulator.cancel(0);
+      flushSync();
+      expect(digits('MAIN')).toBe('14210000');
+      expect(digits('SUB')).toBe('7105000');
+    } finally {
+      accumulator.cancel();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the latest drag target through stale release readback until confirmation', () => {
+    vi.useFakeTimers();
+    const accumulator = createTuningAccumulator({ emit: vi.fn() });
+    try {
+      selectedFrequency.current = AlternateFrequencyReadoutHarness as FrequencyRenderer;
+      render(caps('main_sub', 2), state(), {}, { strips: 'single', vfoAppearance: 'standard' });
+      const digits = () => target.querySelector(
+        '[data-receiver="MAIN"][data-alternate-frequency-readout]',
+      )!.textContent!.replace(/\s/g, '');
+      accumulator.jump(0, 14_225_000);
+      flushSync();
+      expect(digits()).toBe('14225000');
+      pendingFrequencyTargets.set(0, 14_225_000);
+      accumulator.cancel(0);
+      pushState(frequencyState('stale'));
+      expect(digits()).toBe('14225000');
+      const confirmed = state();
+      confirmed.main!.freqHz = 14_225_000;
+      confirmed.main!.vfoA!.freqHz = 14_225_000;
+      pendingFrequencyTargets.delete(0);
+      pushState(confirmed);
+      expect(digits()).toBe('14225000');
+    } finally {
+      accumulator.cancel();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     ['dual semantic receiver strip', { strips: 'dual' }],
     ['single semantic VFO surface', { strips: 'single' }],

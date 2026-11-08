@@ -178,7 +178,6 @@
   let contourLevel = $derived(rx?.contour ?? 0);
   let dataActive = $derived(!!rx?.dataMode);
 
-  let fftPixels = $state<Uint8Array | null>(null);
   let fftBandwidth = $state<number | undefined>(undefined);
   let fftPush: ((data: Uint8Array) => void) | null = null;
   let showFft = $derived(cockpitProps.hasAudioFft);
@@ -333,16 +332,22 @@
 
     runtime.scope.registerPresentationDriver(presentationResources);
     const lease = presentationResources.acquire('audio-fft', 'AmberCockpit');
-    const unsubscribe = runtime.scope.subscribe((frame) => {
-      fftPixels = frame.pixels;
-      fftBandwidth = frame.endFreq > frame.startFreq ? frame.endFreq - frame.startFreq : undefined;
-      fftPush?.(frame.pixels);
+    // MOR-4270: one stream sink — pixels go straight to the canvas push,
+    // the rarely-changing bandwidth is a geometry fact.
+    const stream = runtime.scope.stream('audio_fft');
+    const stopGeometry = stream.geometry.subscribe((geometry) => {
+      fftBandwidth = geometry && geometry.view.endHz > geometry.view.startHz
+        ? geometry.view.endHz - geometry.view.startHz : undefined;
+    });
+    const unsubscribe = stream.subscribe((frame) => {
+      if (frame.pixels) fftPush?.(frame.pixels);
     });
     let released = false;
     return () => {
       if (released) return;
       released = true;
       unsubscribe();
+      stopGeometry();
       presentationResources.release(lease);
     };
   });
@@ -535,8 +540,8 @@
       {#if showFft}
         <div class="lcd-scope-strip">
           <AmberAfScope
-            data={fftPixels}
-            onRegisterPush={(fn) => { fftPush = fn; }}
+              data={null}
+              onRegisterPush={(fn) => { fftPush = fn; }}
             filterWidth={safeFilterWidth}
             filterWidthMax={filterProps.filterWidthMax}
             ifShift={filterProps.ifShift}

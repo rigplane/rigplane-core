@@ -129,8 +129,6 @@ harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.audioRuntime = { ...DEFAULT_AUDIO_RUNTIME, ...fixture.audioRuntime };
 harness.calls = [];
-harness.frameAuthority = null;
-harness.frameEvidence = null;
 harness.presentationAcquires = [];
 
 /**
@@ -243,15 +241,6 @@ declare global {
         variant: 'unified-instrument' | 'panadapter-first';
         canvas: { w: 1280; h: 540 | 594 };
         source: 'audio-fft' | 'hardware';
-        frameAuthority: { source: 'hardware' | 'audio_fft'; receiver: 0 | 1 | null; providerGeneration: number | null } | null;
-        frameEvidence: {
-          envelope: null;
-          authority: { source: 'hardware' | 'audio_fft'; receiver: 0 | 1 | null; providerGeneration: number | null };
-          transportEpoch: null;
-          demanded: false;
-          transport: 'disconnected';
-          nowMonotonic: 0;
-        } | null;
         presentationAcquires: ReadonlyArray<{ resource: 'hardware-scope' | 'audio-fft'; consumer: string }>;
         compactTotConsumers: number;
       };
@@ -311,45 +300,17 @@ window.__harness = {
     variant: fixture.lcd.variant,
     canvas: { ...fixture.lcd.canvas },
     source: fixture.lcd.source,
-    // Actual host-written authority/evidence, never a catalog substitute.
-    frameAuthority: harness.frameAuthority === null ? null : { ...harness.frameAuthority },
-    frameEvidence: harness.frameEvidence === null ? null : {
-      ...harness.frameEvidence,
-      authority: { ...harness.frameEvidence.authority },
-    },
     presentationAcquires: harness.presentationAcquires.map((entry) => ({ ...entry })),
     compactTotConsumers: document.querySelectorAll('[data-testid="managed-tot-status"]').length,
   }),
 };
 
 function lcdFixtureAssertions(expected: NonNullable<Fixture['lcd']>) {
-  const expectedAuthority = {
-    source: expected.source === 'audio-fft' ? 'audio_fft' : 'hardware',
-    receiver: 0,
-    providerGeneration: 1,
-  } as const;
-  const authority = harness.frameAuthority;
-  const evidence = harness.frameEvidence;
   const expectedResource = expected.source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
   return [
     {
       name: 'lcd-fixed-native-glass-fixture-mounted', ok: true,
       detail: 'B/D mounts its real fixed-native skin; the visual-spec lane checks the rendered stage geometry.',
-    },
-    {
-      name: 'lcd-frame-authority-from-real-host',
-      ok: authority?.source === expectedAuthority.source
-        && authority.receiver === expectedAuthority.receiver
-        && authority.providerGeneration === expectedAuthority.providerGeneration,
-      detail: `actual=${JSON.stringify(authority)} expected=${JSON.stringify(expectedAuthority)}`,
-    },
-    {
-      name: 'lcd-frame-evidence-is-honest-ghost',
-      ok: evidence?.envelope === null
-        && evidence.demanded === false
-        && evidence.transport === 'disconnected'
-        && evidence.transportEpoch === null,
-      detail: `actual=${JSON.stringify(evidence)}`,
     },
     {
       name: 'lcd-selected-source-acquires-one-presentation-lease',

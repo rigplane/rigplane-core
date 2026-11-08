@@ -2,10 +2,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import type { WsChannel } from '$lib/transport/ws-client';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 
-const harness = vi.hoisted(() => ({ controller: null as ScopeController | null, source: 'hardware' as 'hardware' | 'audio_fft' }));
+const harness = vi.hoisted(() => ({
+  controller: null as ScopeController | null,
+  source: 'hardware' as 'hardware' | 'audio_fft',
+  controlSession: Object.freeze({ state: 'connected' as const, epoch: 1 }) satisfies ControlSessionSnapshot,
+}));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   presentationResources: {
     configure: vi.fn(),
@@ -14,6 +19,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   },
   runtime: {
     get scope() { return harness.controller!; },
+    controlSession: harness.controlSession,
     state: null,
     get caps() { return { scopeSource: harness.source }; },
     defaultScopeStatus: { transport: 'connected' },
@@ -224,7 +230,9 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       expect(report.timelineOverflow).toBe(false);
       if (exportThrows) expect(target.textContent).toContain('Trace export callback failed');
       transport.receive('010000809fd5002026d70001000003000080ff');
-      expect(harness.controller.scopeFrame?.pixels).toEqual(new Uint8Array([0, 128, 255]));
+      expect(harness.controller.stream(source === 'audio_fft' ? 'audio_fft' : 'hardware')
+        .latest(source === 'audio_fft' ? 'audio-scope:0' : 'scope:0')?.pixels)
+        .toEqual(new Uint8Array([0, 128, 255]));
       expect(completed).toHaveBeenCalledTimes(1);
     } finally {
       await unmount(panel);

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import { projectPeerSplitDisplay } from '../../../semantic/radio-display-model';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import { topologyFixtures, withAudioOnlyScope } from '../../../semantic/fixtures/topologies';
@@ -23,16 +24,15 @@ function render(index: number, view: RadioViewModel) {
   const model = projectPeerSplitDisplay(view);
   const frame = {
     source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
-    startHz: 0, endHz: 4_000, normalizedBins: [0, 0.5, 1],
+    startHz: 0, endHz: 4_000, pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)),
   };
   component = mount(variants[index], {
     target,
     props: {
-      model, normalizedFftBins: { MAIN: frame.normalizedBins },
-      audioFftFrame: frame, spectrumFrame: frame,
+      model, scopeStream: lcdStreamFixture(frame), audioScopeStream: lcdStreamFixture(frame),
     },
   });
-  return target;
+  flushSync(); return target;
 }
 
 for (const [index, name] of names.entries()) {

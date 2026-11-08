@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
+import { lcdStreamFixture } from './scope-stream-fixture';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
-import type { LcdSpectrumFrame } from '../lcd-display-contract';
+import type { LcdSpectrumFrame } from './scope-stream-fixture';
 import PanadapterDisplay from '../PanadapterDisplay.svelte';
 
 const known = <T>(value: T) => ({ state: 'known' as const, value });
@@ -66,7 +67,7 @@ function hardwareFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFr
     freshness: 'fresh',
     startHz: 14_200_000,
     endHz: 14_300_000,
-    normalizedBins: [0.1, 0.6, 0.25, 0.8],
+    pixels: Uint8Array.from([0.1, 0.6, 0.25, 0.8], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -81,14 +82,17 @@ afterEach(() => {
 
 function render(
   displayModel: PeerSplitDisplayModel = model,
-  normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>,
+  pixelsByReceiver?: Partial<Record<'MAIN' | 'SUB', Uint8Array>>,
   rfFrame?: unknown,
 ): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(PanadapterDisplay, {
-    target, props: { model: displayModel, normalizedFftBins, rfFrame },
+    target, props: { model: displayModel, scopeStream: lcdStreamFixture(rfFrame),
+      audioScopeStream: pixelsByReceiver?.MAIN ? lcdStreamFixture({ source: 'audio-fft', receiver: 'MAIN',
+        freshness: 'fresh', startHz: 0, endHz: 24_000, pixels: pixelsByReceiver.MAIN }) : null },
   });
+  flushSync();
   return target;
 }
 
@@ -155,12 +159,15 @@ describe('PanadapterDisplay', () => {
 
   it('passes a source-qualified matching hardware frame through without adding samples', () => {
     const frame = hardwareFrame();
+    const pixels = frame.pixels;
+    expect(pixels).not.toBeNull();
+    if (pixels === null) throw new Error('live hardware fixture requires pixels');
     const target = render(model, undefined, frame);
 
-    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(frame.normalizedBins.length);
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(pixels.length);
     expect([...target.querySelectorAll('[data-rf-bin]')]
       .map((node) => Number(node.getAttribute('data-rf-sample'))))
-      .toEqual(frame.normalizedBins);
+      .toEqual([...pixels]);
     expect(target.querySelector('.rf-carrier')?.getAttribute('data-carrier-hz'))
       .toBe('14250000');
     expect(target.querySelector('.rf-passband')?.getAttribute('data-passband-mode'))
@@ -217,10 +224,12 @@ describe('PanadapterDisplay', () => {
     component = null;
     document.body.innerHTML = '';
 
-    const live = render(model, { MAIN: [0.1, 0.5, 0.9] });
-    expect(live.querySelectorAll('[data-testid="lcd-af-fft"]')).toHaveLength(1);
-    expect(live.querySelector('[data-testid="lcd-af-fft"]')
+    const rfOnly = render(model, { MAIN: new Uint8Array([0, 128, 255]) }, hardwareFrame());
+    expect(rfOnly.querySelectorAll('[data-testid="lcd-af-fft"]')).toHaveLength(1);
+    expect(rfOnly.querySelector('[data-testid="lcd-af-fft"]')
       ?.getAttribute('data-fft-mode')).toBe('live');
+    expect(rfOnly.querySelector('.fft-trace')?.getAttribute('d')).toBe('M0.00,92.00 L250.00,50.84 L500.00,10.00');
+    expect(rfOnly.querySelectorAll('[data-rf-bin]')).toHaveLength(4);
   });
 
   it('keeps AF geometry safe-empty when active receiver identity is unknown', () => {
@@ -248,6 +257,6 @@ describe('PanadapterDisplay', () => {
       'button,input,select,a[href],[tabindex],[role="button"],[role="switch"]',
     )).toHaveLength(0);
     expect(target.innerHTML).not.toMatch(/onclick|onpointer|onwheel/i);
-    expect(source).not.toMatch(/(?:lib\/runtime|stores?\/|controller|transport|socket|demand)/i);
+    expect(source.replace(/^\s*import type .*;$/gm, '')).not.toMatch(/(?:lib\/runtime|stores?\/|controller|transport|socket|demand)/i);
   });
 });

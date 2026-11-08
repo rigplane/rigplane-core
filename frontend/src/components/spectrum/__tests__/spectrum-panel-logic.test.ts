@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  parseScopeFrame,
+  parseCurrentScopeFrame,
   formatFreqOffset,
   deriveFreqTicks,
   getDragInterval,
@@ -29,18 +29,23 @@ function encodeFrame(rx: number, mode: number, sf: number, ef: number, px: Uint8
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe('parseScopeFrame — edge cases', () => {
-  it('parses zero-length pixel array', () => {
-    const frame = parseScopeFrame(encodeFrame(0, 0, 14_050_000, 14_098_000, new Uint8Array(0)));
-    expect(frame).not.toBeNull();
-    expect(frame!.pixels.length).toBe(0);
+describe('parseCurrentScopeFrame — edge cases', () => {
+  const context = { source: 'radio' as const, sourceId: 'scope', epoch: 1 };
+  it('parses zero-length pixel array as explicit absent pixels', () => {
+    const result = parseCurrentScopeFrame(encodeFrame(0, 0, 14_050_000, 14_098_000, new Uint8Array(0)), context);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.frame.pixels).toBeNull();
   });
 
-  it('parses 475-pixel frame (typical IC-7610 scope)', () => {
+  it('parses 475-pixel frame (typical IC-7610 scope) without copying', () => {
     const pixels = new Uint8Array(475).fill(42);
-    const frame = parseScopeFrame(encodeFrame(0, 1, 14_000_000, 14_350_000, pixels));
-    expect(frame!.pixels.length).toBe(475);
-    expect(frame!.pixels[0]).toBe(42);
+    const buffer = encodeFrame(0, 1, 14_000_000, 14_350_000, pixels);
+    const result = parseCurrentScopeFrame(buffer, context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.frame.pixels?.length).toBe(475);
+    expect(result.frame.pixels?.[0]).toBe(42);
+    expect(result.frame.pixels?.buffer).toBe(buffer);
   });
 
   it('rejects 16-byte buffer with pixelCount > 0', () => {
@@ -48,18 +53,19 @@ describe('parseScopeFrame — edge cases', () => {
     const v = new DataView(buf);
     v.setUint8(0, 0x01);
     v.setUint16(14, 1, true);
-    expect(parseScopeFrame(buf)).toBeNull();
+    expect(parseCurrentScopeFrame(buf, context)).toEqual({ ok: false, reason: 'pixel length' });
   });
 
   it('accepts 16-byte buffer with pixelCount = 0', () => {
     const buf = new ArrayBuffer(16);
     new DataView(buf).setUint8(0, 0x01);
-    expect(parseScopeFrame(buf)!.pixels.length).toBe(0);
+    const result = parseCurrentScopeFrame(buf, context);
+    expect(result.ok && result.frame.pixels).toBeNull();
   });
 
   it('handles large uint32 frequency (3 GHz)', () => {
-    const frame = parseScopeFrame(encodeFrame(0, 0, 0, 3_000_000_000, new Uint8Array(1)));
-    expect(frame!.endFreq).toBe(3_000_000_000);
+    const result = parseCurrentScopeFrame(encodeFrame(0, 0, 0, 3_000_000_000, new Uint8Array(1)), context);
+    expect(result.ok && result.frame.viewEndHz).toBe(3_000_000_000);
   });
 });
 

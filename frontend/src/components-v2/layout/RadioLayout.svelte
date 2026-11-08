@@ -491,7 +491,7 @@
         <div class="spectrum-slot">
           <div class="spectrum-frame">
             <SpectrumPanel hideSourceControls={true} hideScopeControls={declared.has('scopeControls')} {scopeControls} {scopeStatusIndicator}
-              scopeProjection={managedScope?.projection} scopeDemanded={managedScope?.demanded}
+              scopeRegion={managedScope} scopeDemanded={managedScope?.demanded}
               onScopeDemandChange={managedScope?.setDemand} />
           </div>
         </div>

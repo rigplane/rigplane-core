@@ -92,6 +92,7 @@ export function latestPendingParam(
   nowMs: number, superseded: SupersededPredicate,
   intentName: string, paramKey: string, receiver: 0 | 1 | null,
   confirmedField: keyof ServerState['main'] | ModInputStateKey,
+  retainFrequencyObservation?: (receiver: number, frequency: number) => boolean,
 ): unknown {
   let latest: {
     createdAt: number; value: unknown; status: string;
@@ -133,7 +134,11 @@ export function latestPendingParam(
   const observedAt = readState()?.fieldStatus?.[fieldPath]?.lastObservedMonotonic;
   if (typeof boundary === 'number' && Number.isFinite(boundary)
     && typeof observedAt === 'number' && Number.isFinite(observedAt)) {
-    return observedAt > boundary ? undefined : latest.value;
+    if (observedAt <= boundary) return latest.value;
+    const frequency = receiver === null ? null : confirmedReceiverState(readState(), receiver)?.freqHz;
+    return intentName === 'set_freq' && receiver !== null && typeof frequency === 'number'
+      && frequency !== latest.value && retainFrequencyObservation?.(receiver, frequency)
+      ? latest.value : undefined;
   }
 
   const ackObservationSeq = latest.ackObservationSeq;
@@ -151,8 +156,9 @@ export function latestPendingParam(
 export function pendingFrequencyHz(
   commands: readonly CommandLifecycle[], readState: ReadServerState,
   nowMs: number, superseded: SupersededPredicate, receiver: 0 | 1,
+  retainFrequencyObservation?: (receiver: number, frequency: number) => boolean,
 ): number | null {
-  const value = latestPendingParam(commands, readState, nowMs, superseded, 'set_freq', 'freq', receiver, 'freqHz');
+  const value = latestPendingParam(commands, readState, nowMs, superseded, 'set_freq', 'freq', receiver, 'freqHz', retainFrequencyObservation);
   return typeof value === 'number' ? value : null;
 }
 

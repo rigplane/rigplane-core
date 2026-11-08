@@ -1378,6 +1378,10 @@ function tuningAccumulator(): ReturnType<typeof getSharedTuningAccumulator> {
   });
 }
 
+export function isTuningBurstObservation(receiver: number, frequency: number): boolean {
+  return tuningAccumulator().acceptsObservation(receiver, frequency, currentTuningMarker(receiver));
+}
+
 export function makeVfoHandlers() {
   return {
     onSwap: () => {
@@ -1468,15 +1472,15 @@ export function makeVfoHandlers() {
     // drag, EiBi/QSY recall) and RELATIVE steps (spectrum scroll, media
     // keys, keyboard 'tune'). Defaults to 'jump' — absolute correctness by
     // default — so only true step sources opt in with 'step'.
-    onFreqChange: (freq: number, receiver?: Receiver, kind: 'jump' | 'step' = 'jump') => {
+    onFreqChange: (freq: number, receiver?: Receiver, kind: 'jump' | 'step' | 'drag' = 'jump') => {
       const context = currentA03cContext();
       const target = receiver === 0 ? 'MAIN' : receiver === 1 ? 'SUB' : null;
       if (!context || target === null || receiver === undefined
         || knownA03cReceiver(context, target, 'freqHz') !== receiver
         || !Number.isSafeInteger(freq)) return;
       const confirmed = receiver === 1 ? context.state.sub : context.state.main;
-      if (kind === 'jump') {
-        tuningAccumulator().jump(receiver, freq, confirmed?.freqHz ?? undefined, currentTuningMarker(receiver));
+      if (kind === 'jump' || kind === 'drag') {
+        tuningAccumulator().jump(receiver, freq, confirmed?.freqHz ?? undefined, currentTuningMarker(receiver), kind === 'drag');
         return;
       }
       // MOR-2513: an unobserved current frequency (null) computes no step.
