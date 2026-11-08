@@ -2945,6 +2945,211 @@ describe('silent raw scope refuses click-to-tune', () => {
   });
 });
 
+// MOR-4256 — drag-to-tune live preview. The snapped drag candidate is a
+// reactive, display-only preview published at most once per animation
+// frame: in CENTER scope it leads the panorama target (spectrum, waterfall,
+// band plan and DX overlay retarget under the pointer, redrawing the cached
+// last frame — no scope frame arrives); in FIX scope the same preview state
+// moves the tune marker and the passband instead. The release still emits
+// exactly one snapped VFO intent.
+describe('drag-to-tune live preview (MOR-4256)', () => {
+  // Deterministic panorama: under prefers-reduced-motion the viewport
+  // retarget snaps instead of gliding, so the preview shift is exact on the
+  // next painted frame.
+  function stubReducedMotion(): () => void {
+    const original = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({
+      matches: true, addEventListener: () => {}, removeEventListener: () => {},
+      addListener: () => {}, removeListener: () => {},
+    }) as unknown as typeof window.matchMedia;
+    return () => { window.matchMedia = original; };
+  }
+
+  // The drag preview commits on a requestAnimationFrame callback (the rAF
+  // stub at the top of this file defers it to a macrotask); the canvases
+  // then repaint from the new options on their own rAF. Await both turns
+  // and re-sync the deriveds in between.
+  async function flushPreviewPaint(): Promise<void> {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    flushSync();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it('retargets the panorama viewport at the snapped candidate on each preview frame without a new scope frame', async () => {
+    const restore = stubReducedMotion();
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame();
+      const { spectrum } = prepareGeometry(target);
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(0));
+      const settledCalls = spectrumRendererHarness.render.mock.calls.length;
+      const paintedFrame = spectrumRendererHarness.render.mock.calls.at(-1)![1];
+
+      pointer(spectrum, 'pointerdown', 31, 100);
+      pointer(spectrum, 'pointermove', 31, 120);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
+      // viewportStartFreq = centerHz - spanHz / 2 tracks the candidate.
+      expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_040_000);
+      expect(spectrumRendererHarness.lastOptions.centerHz
+        - spectrumRendererHarness.lastOptions.spanHz / 2).toBe(13_990_000);
+
+      pointer(spectrum, 'pointermove', 31, 140);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-20_000));
+
+      // Every repaint since the press drew the SAME cached frame pixels —
+      // the preview never waits for a new scope frame — and no command left.
+      const previewCalls = spectrumRendererHarness.render.mock.calls.slice(settledCalls);
+      expect(previewCalls.length).toBeGreaterThan(0);
+      for (const call of previewCalls) expect(call[1]).toBe(paintedFrame);
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(mockRuntime.send).not.toHaveBeenCalled();
+      pointer(spectrum, 'pointerup', 31, 140);
+    } finally {
+      restore();
+    }
+  });
+
+  it('emits no command during the moves and exactly one snapped VFO intent on pointer-up, then the pending leg holds the viewport', async () => {
+    const restore = stubReducedMotion();
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame();
+      const { spectrum } = prepareGeometry(target);
+      pointer(spectrum, 'pointerdown', 32, 100);
+      pointer(spectrum, 'pointermove', 32, 120);
+      await flushPreviewPaint();
+      pointer(spectrum, 'pointermove', 32, 130);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(mockRuntime.send).not.toHaveBeenCalled();
+      pointer(spectrum, 'pointerup', 32, 130);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_035_000, 0);
+      // The command lifecycle's pending set_freq target takes over from the
+      // cleared preview and keeps the viewport at the candidate.
+      setPendingFrequency(0, 14_035_000);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
+    } finally {
+      restore();
+    }
+  });
+
+  it.each(['pointercancel', 'lostpointercapture'] as const)(
+    'clears the preview on %s and returns the viewport to the confirmed frequency',
+    async (ending) => {
+      const restore = stubReducedMotion();
+      try {
+        authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+        const target = mountPanel();
+        emitFrame();
+        const { spectrum } = prepareGeometry(target);
+        pointer(spectrum, 'pointerdown', 33, 100);
+        pointer(spectrum, 'pointermove', 33, 120);
+        await flushPreviewPaint();
+        await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
+        pointer(spectrum, ending, 33, 120);
+        await flushPreviewPaint();
+        await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(0));
+        expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+        expect(mockRuntime.send).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it('retargets the waterfall viewport through updateOptions when the drag runs on the waterfall surface', async () => {
+    const restore = stubReducedMotion();
+    try {
+      const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame();
+      const { waterfall } = prepareGeometry(target);
+      pointer(waterfall, 'pointerdown', 34, 100);
+      pointer(waterfall, 'pointermove', 34, 120);
+      await flushPreviewPaint();
+      await vi.waitFor(() => {
+        const options = updateSpy.mock.calls.at(-1)?.[0];
+        expect(options?.centerHz).toBe(14_040_000);
+        expect(options?.panoramaShiftHz).toBe(-10_000);
+      });
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      pointer(waterfall, 'pointerup', 34, 120);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('moves the FIX-mode tune marker and passband with the preview and leaves the panorama parked', async () => {
+    const restore = stubReducedMotion();
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame({ mode: 1 });
+      const { spectrum } = prepareGeometry(target);
+      const tuneLine = () => target.querySelector<HTMLElement>('.waterfall-content .tune-line')!;
+      const overlay = () => target.querySelector<HTMLElement>('.waterfall-content .passband-overlay')!;
+      expect(tuneLine().style.left).toBe('50%');
+      expect(overlay().style.left).toBe('38%');
+
+      pointer(spectrum, 'pointerdown', 35, 100);
+      pointer(spectrum, 'pointermove', 35, 120);
+      await flushPreviewPaint();
+      // FIX has no panorama glide: the preview moves the proportional
+      // marker (canvas tuneHz + DOM tune-line) and the passband overlay.
+      expect(tuneLine().style.left).toBe('40%');
+      expect(overlay().style.left).toBe('28%');
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.tuneHz).toBe(14_040_000));
+      expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(0);
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+
+      pointer(spectrum, 'pointerup', 35, 120);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
+      // The preview dies with the gesture: the marker returns to the
+      // confirmed frequency until the radio reports the new one.
+      expect(tuneLine().style.left).toBe('50%');
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.tuneHz).toBe(14_050_000));
+    } finally {
+      restore();
+    }
+  });
+
+  it('schedules at most one preview update per animation frame and applies the latest candidate', async () => {
+    const restore = stubReducedMotion();
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame();
+      const { spectrum } = prepareGeometry(target);
+      pointer(spectrum, 'pointerdown', 36, 100);
+      vi.mocked(requestAnimationFrame).mockClear();
+      // A 120 Hz pointermove stream inside ONE animation frame.
+      pointer(spectrum, 'pointermove', 36, 110);
+      pointer(spectrum, 'pointermove', 36, 120);
+      pointer(spectrum, 'pointermove', 36, 130);
+      expect(vi.mocked(requestAnimationFrame)).toHaveBeenCalledTimes(1);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
+      pointer(spectrum, 'pointerup', 36, 130);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_035_000, 0);
+    } finally {
+      restore();
+    }
+  });
+});
+
 // MOR-2464 — the center panorama. In CENTER scope the carrier+passband
 // indicator is anchored at 50% while the visual viewport glides toward the
 // commanded frequency; a late recentered frame never restarts or double-shifts.
