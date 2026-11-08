@@ -94,7 +94,7 @@ from rigplane.runtime._control_phase import (
 )
 from rigplane.runtime.session_lifecycle import CoreRadioSessionLifecycle
 from rigplane.audio import AudioPacket, AudioStream
-from rigplane.core.civ import CivEvent, CivRequestTracker
+from rigplane.core.civ import CivRequestTracker
 from rigplane.commands.commander import IcomCommander, Priority
 from rigplane.commands import (
     _SUB_REPEATER_TONE,
@@ -657,9 +657,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_watchdog_task: asyncio.Task[None] | None = None
         self._civ_request_tracker = CivRequestTracker()
         self._civ_epoch = self._civ_request_tracker.generation
-        self._scope_frame_queue: BoundedQueue[ScopeFrame] = BoundedQueue(maxsize=64)
+        self._scope_frame_queue: BoundedQueue[ScopeFrame] | None = None
+        self._scope_stream_consumers = 0
         self._scope_activity_event = asyncio.Event()
-        self._civ_event_queue: BoundedQueue[CivEvent] = BoundedQueue(maxsize=256)
         self._civ_ack_sink_grace: float = (
             float(os.environ.get("ICOM_CIV_ACK_SINK_GRACE_MS", "120")) / 1000.0
         )

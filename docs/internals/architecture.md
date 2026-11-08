@@ -513,7 +513,7 @@ Internal (private) PCM↔Opus transcoding layer wrapping the optional `opuslib` 
 CI-V event classification, request-response matching, and frame scanning utilities. Pure logic (no I/O); consumed by `_civ_rx.py` to match incoming frames to pending waiters.
 
 - **`CivRequestTracker`**: tracks pending ACK/response waiters with generation-based invalidation, stale TTL GC (`cleanup_stale()`), and fire-and-forget sink support (`register_ack(wait=False)`)
-- **`CivEventType`** (StrEnum): `ACK`, `NAK`, `RESPONSE`, `SCOPE_CHUNK`, `SCOPE_FRAME`
+- **`CivEventType`** (StrEnum): `ACK`, `NAK`, `RESPONSE`
 - **`CivRequestKey`**: match key — `(command, sub, receiver)` — correlates responses to requests
 - **`iter_civ_frames(payload)`**: yields raw `FE FE … FD` byte sequences from an arbitrary buffer (handles concatenated frames)
 - **`request_key_from_frame(frame)`**: derives a `CivRequestKey` from an outgoing `CivFrame`

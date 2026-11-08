@@ -1228,8 +1228,6 @@ async def test_scope_stream_yields_frames(radio: IcomRadio) -> None:
         pixels=bytes([80] * 50),
         out_of_range=False,
     )
-    await radio._scope_frame_queue.put(frame)
-
     # Set connected and then disconnect to terminate the generator
     received = []
 
@@ -1238,7 +1236,10 @@ async def test_scope_stream_yields_frames(radio: IcomRadio) -> None:
             received.append(f)
             radio._connected = False  # Stop after first frame
 
-    await asyncio.wait_for(_consume(), timeout=3.0)
+    task = asyncio.create_task(_consume())
+    await asyncio.sleep(0)
+    radio._civ_runtime._publish_scope_frame(frame)
+    await asyncio.wait_for(task, timeout=3.0)
     assert len(received) >= 1
     assert received[0] is frame
 
@@ -2524,13 +2525,13 @@ async def test_scope_stream_calls_task_done(radio: IcomRadio) -> None:
         pixels=bytes([80] * 50),
         out_of_range=False,
     )
-    await radio._scope_frame_queue.put(frame)
-
-    received = []
-    async for f in radio.scope_stream():
-        received.append(f)
-        radio._connected = False  # Stop after first frame
-
-    assert received[0] is frame
-    # task_done was called; queue should be joinable (empty)
-    assert radio._scope_frame_queue.empty()
+    stream = radio.scope_stream()
+    pending = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    queue = radio._scope_frame_queue
+    assert queue is not None
+    radio._civ_runtime._publish_scope_frame(frame)
+    assert await pending is frame
+    await stream.aclose()
+    assert queue.empty()
+    assert radio._scope_frame_queue is None

@@ -52,8 +52,10 @@ class _RecordingScopeHandler:
     def __init__(self) -> None:
         self.frames: list[ScopeFrame] = []
 
-    def enqueue_frame(self, frame: ScopeFrame) -> None:
-        self.frames.append(frame)
+    def enqueue_frame(self, frame: bytes) -> None:
+        from _helpers import scope_frame_from_wire
+
+        self.frames.append(scope_frame_from_wire(frame))
 
 
 @pytest.mark.asyncio

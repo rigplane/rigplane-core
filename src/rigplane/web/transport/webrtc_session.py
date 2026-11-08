@@ -258,7 +258,7 @@ class WebRtcSessionManager:
                 ),
             )
         elif label == _SCOPE:
-            handler = ScopeHandler(conn, self._radio, server=self._server)
+            handler = ScopeHandler(conn, server=self._server)
         elif label == _AUDIO:
             broadcaster = (
                 self._server._audio_broadcaster if self._server is not None else None

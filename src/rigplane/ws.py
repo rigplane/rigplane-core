@@ -106,21 +106,24 @@ def make_accept_key(client_key: str) -> str:
 def negotiate_deflate(extensions_header: str) -> str | None:
     """Parse Sec-WebSocket-Extensions and return response value if deflate ok.
 
-    Uses server_no_context_takeover + client_no_context_takeover for
-    simplicity (no per-connection zlib state to manage).
+    Accept context takeover with a 32 KiB server window. Offers requiring
+    server context resets or a smaller server window are declined.
 
     Returns:
         Extension response string for the 101 header, or None if client
         did not offer permessage-deflate.
     """
     for ext in extensions_header.split(","):
-        name = ext.strip().split(";")[0].strip().lower()
+        parts = [part.strip().lower() for part in ext.split(";")]
+        name = parts[0]
         if name == "permessage-deflate":
-            return (
-                "permessage-deflate; "
-                "server_no_context_takeover; "
-                "client_no_context_takeover"
-            )
+            if any(
+                part.split("=", 1)[0].strip()
+                not in {"client_max_window_bits", "client_no_context_takeover"}
+                for part in parts[1:]
+            ):
+                continue
+            return "permessage-deflate"
     return None
 
 
@@ -254,6 +257,12 @@ class WebSocketConnection:
         self._writer = writer
         self._closed = False
         self._deflate = deflate
+        self._compressor = (
+            zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+            if deflate
+            else None
+        )
+        self._decompressor = zlib.decompressobj(-15) if deflate else None
         self._mask_outgoing = mask_outgoing
         self._fragmented_opcode: int = 0
         self._fragmented_rsv1 = False
@@ -273,7 +282,8 @@ class WebSocketConnection:
         """Compress payload per RFC 7692 §7.2.1."""
         # Use raw deflate (wbits=-15), flush with Z_SYNC_FLUSH,
         # then strip the trailing 0x00 0x00 0xff 0xff marker.
-        c = zlib.compressobj(zlib.Z_DEFAULT_COMPRESSION, zlib.DEFLATED, -15)
+        c = self._compressor
+        assert c is not None
         out = c.compress(data) + c.flush(zlib.Z_SYNC_FLUSH)
         if out.endswith(_DEFLATE_TAIL):
             out = out[: -len(_DEFLATE_TAIL)]
@@ -281,7 +291,8 @@ class WebSocketConnection:
 
     def _decompress(self, data: bytes) -> bytes:
         """Decompress payload per RFC 7692 §7.2.2."""
-        d = zlib.decompressobj(-15)
+        d = self._decompressor
+        assert d is not None
         return d.decompress(data + _DEFLATE_TAIL)
 
     async def recv(self) -> tuple[int, bytes]:
@@ -393,17 +404,16 @@ class WebSocketConnection:
         """Send a binary frame, compressed if deflate is enabled."""
         if self._deflate:
             compressed = self._compress(data)
-            # Only compress if it actually saves space
-            if len(compressed) < len(data):
-                await self._send_raw(
-                    make_frame(
-                        WS_OP_BINARY,
-                        compressed,
-                        rsv1=True,
-                        mask=self._mask_outgoing,
-                    )
+            # Every dictionary update must reach the peer, even if larger.
+            await self._send_raw(
+                make_frame(
+                    WS_OP_BINARY,
+                    compressed,
+                    rsv1=True,
+                    mask=self._mask_outgoing,
                 )
-                return
+            )
+            return
         await self._send_raw(make_frame(WS_OP_BINARY, data, mask=self._mask_outgoing))
 
     async def close(self, code: int = 1000, reason: str = "") -> None:

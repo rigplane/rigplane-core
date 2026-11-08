@@ -6,14 +6,11 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
-from ..protocol import decode_json, encode_json, encode_scope_frame  # noqa: TID251
+from ..protocol import decode_json, encode_json  # noqa: TID251
 from ..transport import Connection  # noqa: TID251
 from ...ws import WS_OP_TEXT  # noqa: TID251
-
-if TYPE_CHECKING:
-    from ...scope import ScopeFrame
 
 __all__ = ["HIGH_WATERMARK", "ScopeHandler"]
 
@@ -52,23 +49,19 @@ class ScopeHandler:
 
     Args:
         ws: Established WebSocket connection.
-        radio: Radio protocol instance (may be None).
     """
 
     def __init__(
         self,
         ws: Connection,
-        radio: Any = None,
         server: Any = None,
         audio_mode: bool = False,
         *,
         trace_observer: Callable[[ScopeTraceEvent], None] | None = None,
     ) -> None:
         self._ws = ws
-        self._radio = radio
         self._server = server
         self._audio_mode = audio_mode
-        self._seq: int = 0
         self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue(
             maxsize=HIGH_WATERMARK * 2
         )
@@ -97,12 +90,10 @@ class ScopeHandler:
             self._trace_observer = None
             logger.warning("scope: diagnostic observer disabled after failure")
 
-    def enqueue_frame(self, frame: "ScopeFrame") -> None:
-        """Enqueue a scope frame (called by server broadcast)."""
+    def enqueue_frame(self, encoded: bytes) -> None:
+        """Enqueue the server's shared wire frame (protocol.encode_scope_frame)."""
         if not self._running:
             return
-        encoded = encode_scope_frame(frame, self._seq)
-        self._seq = (self._seq + 1) & 0xFFFF
         if self._frame_queue.full():
             try:
                 dropped = self._frame_queue.get_nowait()
@@ -195,10 +186,6 @@ class ScopeHandler:
                 logger.warning("scope: sender error: %s", exc)
                 break
 
-    def push_frame(self, frame: "ScopeFrame") -> None:
-        """Push a scope frame directly (used by server for testing/injection).
-
-        Args:
-            frame: Scope frame to forward to the client.
-        """
-        self.enqueue_frame(frame)
+    def push_frame(self, encoded: bytes) -> None:
+        """Push a wire frame directly for testing/injection."""
+        self.enqueue_frame(encoded)

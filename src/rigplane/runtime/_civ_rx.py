@@ -2150,16 +2150,9 @@ class CivRuntime:
         if frame.command == 0x27 and frame.sub == 0x00 and len(frame.data) >= 3:
             receiver = frame.data[0]
             self._host._scope_activity_event.set()
-            self._publish_civ_event(
-                CivEvent(
-                    type=CivEventType.SCOPE_CHUNK,
-                    frame=frame,
-                    receiver=receiver,
-                )
-            )
             scope_frame = self._host._scope_assembler.feed(frame.data[1:], receiver)
             if scope_frame is not None:
-                self._stamp_liveness(notify=True)
+                self._stamp_liveness()
                 self._publish_scope_mode_observation(
                     scope_frame, receiver=receiver, frame=frame
                 )
@@ -2180,7 +2173,6 @@ class CivRuntime:
                 source_generation=generation,
                 store_provider_generation=store_provider_generation,
             )
-        self._publish_civ_event(event)
         claimed: _CivDataTransaction | None = None
         transport = self._host._civ_transport
         if self._host._civ_request_tracker.resolve(
@@ -4348,18 +4340,15 @@ class CivRuntime:
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a complete scope frame to callback and bounded queue."""
-        self._publish_civ_event(CivEvent(type=CivEventType.SCOPE_FRAME))
-        self._host._scope_frame_queue.put_drop_oldest(frame)
+        queue = self._host._scope_frame_queue
+        if queue is not None:
+            queue.put_drop_oldest(frame)
         callback = self._host._scope_callback
         if callback is not None:
             try:
                 callback(frame)
             except Exception:
                 logger.exception("Scope callback raised an exception")
-
-    def _publish_civ_event(self, event: CivEvent) -> None:
-        """Publish CI-V event to internal event queue (best effort)."""
-        self._host._civ_event_queue.put_drop_oldest(event)
 
     def _check_connected(self) -> None:
         """Raise ConnectionError if not connected."""
