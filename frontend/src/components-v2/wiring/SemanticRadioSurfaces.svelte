@@ -1436,6 +1436,7 @@
   let scopeDemanded = $state(true);
   let scopePassband = $state.raw(EMPTY_SCOPE_PASSBAND_DISPLAY);
   let scopeGeometry = $state.raw<ScopeGeometry | null>(null);
+  let stopScopeReceipt: (() => void) | undefined;
   let scopeStream = $derived.by(() => scopeFrameSource === undefined ? null
     : runtime.scope.stream(scopeFrameSource === 'audio-fft' ? 'audio_fft' : 'hardware'));
   let audioScopeStream = $derived(scopeFrameSource === 'audio-fft' ? scopeStream
@@ -1447,7 +1448,10 @@
   });
 
   function refreshScopePassband(): void {
-    if (!managedScope && untrack(() => scopePassband === EMPTY_SCOPE_PASSBAND_DISPLAY)) return;
+    if (!managedScope && untrack(() => scopePassband === EMPTY_SCOPE_PASSBAND_DISPLAY)) {
+      untrack(() => { managedScopeRegion = undefined; });
+      return;
+    }
     const active = canonicalView?.vfos.filter(vfo => vfo.isActive) ?? [];
     const vfo = active.length === 1 ? active[0] : null;
     const selection = vfo && (vfo.slot.kind === 'slotted' || vfo.slot.kind === 'unslotted')
@@ -1467,6 +1471,19 @@
       } : null;
     scopePassband = untrack(() => projectScopePassbandDisplay(scopePassband,
       { state: runtime.state, caps: runtime.caps, selection, session: controlSession, frame: facts }));
+    untrack(() => {
+      managedScopeRegion = managedScopeRegionValue;
+      stopScopeReceipt?.();
+      stopScopeReceipt = undefined;
+      const floor = scopePassband.floors?.receipt;
+      if (!stream || !managedScope || !scopeDemanded || !authority
+        || scopePassband.display.state !== 'unknown' || floor === undefined || stream.receipt > floor) return;
+      stopScopeReceipt = stream.subscribeNextGeometry(floor, geometry => {
+        stopScopeReceipt = undefined;
+        scopeGeometry = geometry;
+        untrack(refreshScopePassband);
+      });
+    });
   }
   function setManagedScopeDemand(enabled: boolean): void {
     scopeDemanded = enabled;
@@ -1477,10 +1494,6 @@
     return { passband: scopePassband.display, demanded: scopeDemanded, setDemand: setManagedScopeDemand,
       geometryAdmitted: scopeAuthority !== null || runtime.caps?.vfoReadback === 'none' };
   });
-  // MOR-2442 — the bare `scopeManaged` consumer binds the same region the
-  // hosted/region consumers read through `InstrumentComposition`/snippet
-  // arguments; either way it is exactly one owner of the scope lease.
-  $effect(() => { managedScopeRegion = managedScopeRegionValue; });
 
   let scopeAuthority = $derived.by(() => {
     const source = scopeFrameSource;
@@ -1528,16 +1541,6 @@
   // Bind identity before projection so a provider/receiver transition cannot
   // briefly admit cached geometry and retire fresh observations against it.
   $effect(refreshScopePassband);
-  $effect(() => {
-    const stream = scopeStream;
-    const floor = scopePassband.floors?.receipt;
-    if (!stream || !managedScope || !scopeDemanded || !scopeAuthority
-      || scopePassband.display.state !== 'unknown' || floor === undefined || stream.receipt > floor) return;
-    return stream.subscribeNextGeometry(floor, geometry => {
-      scopeGeometry = geometry;
-      untrack(refreshScopePassband);
-    });
-  });
 
   // MOR-3094 unified: the SRS owns the demand for every managed mount,
   // including unknown-receiver radios — the wildcard slot displays the
@@ -1588,7 +1591,7 @@
     controlSession = next;
     untrack(refreshScopePassband);
   });
-  onDestroy(() => unsubscribePbtSession?.());
+  onDestroy(() => { unsubscribePbtSession?.(); stopScopeReceipt?.(); });
   const pbtEvidence = (): PbtPresentationEvidence => {
     const state = runtime.state, session = controlSession, generation = state?.providerGeneration;
     const receiver = canonicalView?.activeReceiver;
