@@ -151,7 +151,9 @@ jobs:
     # and the Tauri/audio system libs are pre-baked in the image, so this
     # job avoids the ubuntu-latest pickup + apt install passes. Operator
     # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    # Build pool, not the 2 GiB gate pool (sized for 5-35 s guard jobs): svelte-check
+    # needs 1.5-2 GiB of Node heap (MOR-4214).
+    runs-on: [self-hosted, Linux, ARM64, build]
     timeout-minutes: 25
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
@@ -208,6 +210,12 @@ jobs:
 
       - name: Frontend install + check + tests + build
         if: needs.classify.outputs.frontend == 'true'
+        env:
+          # svelte-check on Node 20 needs 1.5-2 GiB of heap (heap limits of 1.0,
+          # 1.25 and 1.5 GiB all die with "JavaScript heap out of memory"; 2 GiB
+          # passes), and Node sizes its default limit from the container memory.
+          # 3 GiB leaves headroom inside the 8 GiB build containers.
+          NODE_OPTIONS: --max-old-space-size=3072
         run: |
           cd frontend
           npm ci
@@ -349,7 +357,8 @@ jobs:
       (needs.classify.outputs.core == 'true' ||
       needs.classify.outputs.ci == 'true' ||
       needs.classify.outputs.web == 'true')
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    # Build pool, not the 2 GiB gate pool: four pytest workers peak near 2 GiB (MOR-4214).
+    runs-on: [self-hosted, Linux, X64, build]
     timeout-minutes: 25
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
