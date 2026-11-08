@@ -78,13 +78,13 @@ async def test_explicit_subscription_granted_before_v2_and_last_close_stops():
         await await_until(lambda: bool(ws.text))
         grant = decode_scope_granted(ws.text[0])
         assert grant.source_id == "test-radio"
-        assert grant.width == 475
+        assert grant.width == 1024
         source.feed_frame(
             ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes(range(160)), False)
         )
         await await_until(lambda: bool(ws.binary))
         assert ws.binary[0][0] == 2
-        assert len(ws.binary[0]) == 56 + len("test-radio") + 475
+        assert len(ws.binary[0]) == 56 + len("test-radio") + 160
         assert writer.output == [True]
     finally:
         await ws.incoming.put(None)
@@ -152,12 +152,14 @@ async def test_two_clients_resample_and_pace_simulator_frames(
             await virtual_clock.elapse(1 / 30)
         assert 10 <= len(sockets[0].binary) <= 11
         assert 20 <= len(sockets[1].binary) <= 21
-        # Both requests exceed the 475-bin radio native width, so both are
-        # granted at native resolution and share one encode per native frame.
+        # Both requests exceed the observed native width and share one encode.
         assert len(encoded) == 30
-        assert {frame.width for frame in encoded} == {475}
+        assert {frame.width for frame in encoded} == {len(native.pixels)}
         for ws in sockets:
-            assert all(decode_scope_frame_v2(wire).width == 475 for wire in ws.binary)
+            assert all(
+                decode_scope_frame_v2(wire).width == len(native.pixels)
+                for wire in ws.binary
+            )
     finally:
         for ws in sockets:
             await ws.incoming.put(None)
@@ -205,8 +207,7 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
                     )
                     grant = await ws.receive_json(timeout=5)
                     assert grant["type"] == "granted", grant
-                    # Both radio requests exceed the 475-bin native width.
-                    assert grant["width"] == 475
+                    assert grant["width"] == width
                 sim = MockIcomRadio(scope_stream=True)
                 assembler = ScopeAssembler()
                 for raw in sim._scope_templates[0]:
@@ -214,11 +215,15 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
                     if frame is not None:
                         radio.feed_frame(frame)
                 for ws in (a, b):
+                    updated = await ws.receive_json(timeout=5)
+                    assert updated["width"] == len(native.pixels)
                     message = await ws.receive(timeout=5)
                     assert message.type == aiohttp.WSMsgType.BINARY
                     decoded = decode_scope_frame_v2(message.data)
-                    assert decoded.width == 475
-                    assert decoded.pixels is not None and len(decoded.pixels) == 475
+                    assert decoded.width == len(native.pixels)
+                    assert decoded.pixels is not None and len(decoded.pixels) == len(
+                        native.pixels
+                    )
                 await a.send_json(
                     {
                         "type": "subscribe",
@@ -368,10 +373,11 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
                 )
                 elapsed = asyncio.get_running_loop().time() - started
                 end_seq = encoded[-1].seq
-                # Both clients are capped to the 475-bin native width and
-                # share one encode per native frame.
+                # Clients share one encode at the observed native width.
                 assert len(encoded) - start_encode == (len(native_count) - start_count)
-                assert {frame.width for frame in encoded[start_encode:]} == {475}
+                assert {frame.width for frame in encoded[start_encode:]} == {
+                    len(native.pixels)
+                }
                 await await_until(
                     lambda: all(
                         frames and frames[-1].seq >= end_seq - 3 for frames in received
@@ -384,14 +390,15 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
                     ]
                     assert abs(len(sample) / elapsed - fps) <= 1.5
                     assert all(
-                        frame.pixels is not None and len(frame.pixels) == 475
+                        frame.pixels is not None
+                        and len(frame.pixels) == len(native.pixels)
                         for frame in sample
                     )
                     expected = max_hold(
                         native.pixels,
                         Coverage(native.start_freq_hz, native.end_freq_hz),
                         View(native.start_freq_hz, native.end_freq_hz),
-                        475,
+                        len(native.pixels),
                     )
                     assert all(frame.pixels == expected for frame in sample)
                 assert sim._scope_11 == 1
@@ -488,7 +495,7 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind,native_width", [("radio", 475), ("audio_fft", 2049)])
+@pytest.mark.parametrize("kind,native_width", [("radio", 2800), ("audio_fft", 2049)])
 async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previous(
     kind,
     native_width,
@@ -533,8 +540,7 @@ async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previo
             )
         )
         assert handler._subscription is not previous
-        # Requests above the source native width are granted at native
-        # resolution (ic705 radio: 475, default fft_size=4096 audio: 2049).
+        # Radio width is provisional until a frame arrives; FFT width is known.
         assert handler._subscription.granted.width == native_width
         assert writer.output == [True]
     finally:
@@ -634,7 +640,7 @@ async def test_replacement_cancels_old_send_before_new_grant():
     server.scope_hub.register("radio", source)
     ws = BlockingSocket()
     handler = ScopeHandler(ws, server)
-    frame = ScopeFrame(0, 0, 14_090_000, 14_110_000, b"\x01\x02", False)
+    frame = ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes([160]) * 475, False)
     try:
         await handler._handle_control(
             encode_scope_subscription(
@@ -805,8 +811,12 @@ async def test_scope_enable_success_starts_new_health_grace(
     assert server._scope_started_at == virtual_clock()
 
 
-@pytest.mark.parametrize("model,widths", [("ic7300", (475, 689, 475)), ("ic7610", (689, 475, 689))])
-async def test_observed_native_width_regrants_before_binary_for_existing_client(model, widths, virtual_clock):
+@pytest.mark.parametrize(
+    "model,widths", [("ic7300", (475, 689, 475)), ("ic7610", (689, 475, 689))]
+)
+async def test_observed_native_width_regrants_before_binary_for_existing_client(
+    model, widths, virtual_clock
+):
     from rigplane.web.protocol import decode_scope_frame_v2
 
     server = WebServer(None)
@@ -815,10 +825,16 @@ async def test_observed_native_width_regrants_before_binary_for_existing_client(
     ws = Socket()
     handler = ScopeHandler(ws, server)
     try:
-        await handler._handle_control(encode_scope_subscription(Subscription("radio", 0, View(14_090_000, 14_110_000), 2800, 20)))
+        await handler._handle_control(
+            encode_scope_subscription(
+                Subscription("radio", 0, View(14_090_000, 14_110_000), 2800, 20)
+            )
+        )
         assert decode_scope_granted(ws.text[-1]).width == 2800
         for index, width in enumerate(widths):
-            source.feed_frame(ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes([160]) * width, False))
+            source.feed_frame(
+                ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes([160]) * width, False)
+            )
             await virtual_clock.elapse(0.1)
             await await_until(lambda: len(ws.binary) == index + 1)
             assert source.capabilities().native_width == width

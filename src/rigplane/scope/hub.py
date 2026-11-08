@@ -74,13 +74,16 @@ class HubSubscription:
         self._source = source
         self._request = request
         self._ready = asyncio.Event()
-        self._latest: bytes | None = None
-        self._pending: bytes | None = None
+        self._latest: tuple[GrantedSubscription, bytes] | None = None
+        self._pending: tuple[GrantedSubscription, bytes] | None = None
         self._timer: asyncio.TimerHandle | None = None
         self._last_delivery: float | None = None
         self._closed = False
 
     async def receive(self) -> bytes:
+        return (await self.receive_delivery())[1]
+
+    async def receive_delivery(self) -> tuple[GrantedSubscription, bytes]:
         while not self._closed:
             await self._ready.wait()
             if self._latest is not None:
@@ -95,7 +98,7 @@ class HubSubscription:
     def _offer(self, data: bytes) -> None:
         if self._closed or self.granted.max_fps == 0:
             return
-        self._pending = data
+        self._pending = self.granted, data
         now = self._hub._loop.time()
         delay = (
             0
@@ -168,6 +171,7 @@ class ScopeHub:
                     )
                     await source.plugin.start()
                 grant = await source.plugin.set_view(request.view, request.receiver)
+                caps = source.plugin.capabilities()
                 subscription = HubSubscription(
                     self,
                     source,
@@ -180,7 +184,9 @@ class ScopeHub:
                         # No upsampling: a request wider than the source's
                         # native bins is granted at native resolution, and
                         # the granted message reports the actual width.
-                        min(request.width, caps.native_width),
+                        min(request.width, caps.native_width)
+                        if caps.native_width is not None
+                        else request.width,
                         min(request.max_fps, caps.max_fps),
                     ),
                 )
@@ -252,8 +258,21 @@ class ScopeHub:
         seq = source.sequences.get(frame.receiver, 0) + 1
         source.sequences[frame.receiver] = seq
         encoded: dict[tuple[int, View, Coverage | None], bytes] = {}
+        native_width = (
+            frame.native_width
+            if frame.native_width is not None
+            else source.plugin.capabilities().native_width
+        )
         for client in tuple(source.clients):
-            if client.granted.receiver != frame.receiver or client.granted.max_fps == 0:
+            if client.granted.receiver != frame.receiver:
+                continue
+            client.granted = replace(
+                client.granted,
+                width=min(client._request.width, native_width)
+                if native_width is not None
+                else client._request.width,
+            )
+            if client.granted.max_fps == 0:
                 continue
             grant = client.granted
             view = (

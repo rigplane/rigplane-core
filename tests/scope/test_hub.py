@@ -548,11 +548,15 @@ async def test_queued_radio_frames_keep_their_observed_width_snapshot():
     encoder = Encoder()
     hub = ScopeHub(encoder=encoder)
     hub.register("radio", source)
-    sub = await hub.subscribe(Subscription("radio", 0, View(10_000_300, 10_002_700), 2800, 20))
+    sub = await hub.subscribe(
+        Subscription("radio", 0, View(10_000_300, 10_002_700), 2800, 20)
+    )
 
     def produce():
         for width in (475, 689):
-            source.feed_frame(ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * width, False))
+            source.feed_frame(
+                ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * width, False)
+            )
 
     producer = threading.Thread(target=produce)
     producer.start()

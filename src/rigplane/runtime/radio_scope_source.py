@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Literal, Protocol
 
 from rigplane.profiles import RadioProfile
@@ -34,7 +35,6 @@ class RadioScopeSource:
         profile: RadioProfile,
         writer: RadioScopeWriter,
         *,
-        native_width: int = 475,
         max_fps: float = 30,
     ) -> None:
         self._writer = writer
@@ -42,7 +42,7 @@ class RadioScopeSource:
             tuple(range(profile.receiver_count)),
             ("center",),
             profile.scope_span_presets_hz,
-            native_width,
+            None,
             max_fps,
             "center ± span/2",
         )
@@ -115,6 +115,8 @@ class RadioScopeSource:
     def feed_frame(self, frame: ScopeFrame) -> None:
         if not self._active:
             return
+        if frame.pixels and self._caps.native_width != len(frame.pixels):
+            self._caps = replace(self._caps, native_width=len(frame.pixels))
         start, end = frame.start_freq_hz, frame.end_freq_hz
         if frame.out_of_range and frame.mode == 0:
             start, end = start - end, start + end
@@ -123,6 +125,7 @@ class RadioScopeSource:
             Coverage(start, end),
             frame.pixels or None,
             frame.out_of_range,
+            native_width=self._caps.native_width,
         )
         for callback in tuple(self._callbacks):
             callback(native)

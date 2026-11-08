@@ -93,7 +93,7 @@ class SourceCapabilities:
     receivers: tuple[int | None, ...]
     view_modes: tuple[ViewMode, ...]
     span_choices_hz: tuple[float, ...]
-    native_width: int
+    native_width: int | None
     max_fps: float
     coverage_rule: str
 
@@ -114,7 +114,8 @@ class SourceCapabilities:
             _number(span, "span")
             if span == 0:
                 raise ValueError("span must be positive")
-        _integer(self.native_width, "native_width", 65535, 1)
+        if self.native_width is not None:
+            _integer(self.native_width, "native_width", 65535, 1)
         _number(self.max_fps, "max_fps")
         if (
             self.max_fps == 0
@@ -131,6 +132,7 @@ class NativeFrame:
     pixels: bytes | None
     out_of_range: bool = False
     epoch: int = 0
+    native_width: int | None = None
 
     def __post_init__(self) -> None:
         _receiver(self.receiver)
@@ -141,6 +143,8 @@ class NativeFrame:
         if type(self.out_of_range) is not bool:
             raise ValueError("out_of_range must be bool")
         _integer(self.epoch, "epoch", 2**32 - 1)
+        if self.native_width is not None:
+            _integer(self.native_width, "native_width", 65535, 1)
 
 
 @dataclass(frozen=True)

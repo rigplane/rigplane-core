@@ -88,17 +88,24 @@ class ScopeHandler:
                     await subscription.close()
                     raise
                 self._subscription = subscription
-                await self._ws.send_text(encode_scope_granted(subscription.granted))
-                self._sender_task = asyncio.create_task(self._sender(subscription))
+                grant = subscription.granted
+                await self._ws.send_text(encode_scope_granted(grant))
+                self._sender_task = asyncio.create_task(
+                    self._sender(subscription, grant.width)
+                )
         except Exception as exc:
             await self._ws.send_text(
                 encode_json({"type": "error", "message": str(exc)})
             )
 
-    async def _sender(self, subscription: HubSubscription) -> None:
+    async def _sender(self, subscription: HubSubscription, sent_width: int) -> None:
         try:
             while True:
-                await self._ws.send_binary(await subscription.receive())
+                grant, data = await subscription.receive_delivery()
+                if grant.width != sent_width:
+                    await self._ws.send_text(encode_scope_granted(grant))
+                    sent_width = grant.width
+                await self._ws.send_binary(data)
         except StopAsyncIteration:
             pass
         except Exception:

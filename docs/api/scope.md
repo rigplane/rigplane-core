@@ -31,7 +31,13 @@ An absolute view uses `{"startHz":14100000,"endHz":14200000}` instead of
 `type: "granted"` with `sourceId`, `receiver`, `view`, `coverage`, `width` and
 `fps`. `coverage` can be null. Widths above the source's native bin count are
 granted at native resolution instead of being upsampled; the granted message
-reports the actual width. Send another subscription to change the view,
+reports the actual width. For radio sources, `RadioScopeSource.feed_frame` in
+`src/rigplane/runtime/radio_scope_source.py` observes native width from the
+assembled pixel payload. Before the first pixel-bearing frame the native width
+is unknown and the initial grant provisionally echoes the requested width.
+When the observed width changes, the server sends an updated `granted` before
+the corresponding binary frame; existing subscriptions need no new request.
+Send another subscription to change the view,
 source, width or rate; `maxFps: 0` pauses the subscription. Closing the socket
 releases its demand. The hub starts the producer on first active demand and
 stops it on last release.
