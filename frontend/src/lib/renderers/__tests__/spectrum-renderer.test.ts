@@ -624,3 +624,12 @@ it('preserves audio clamp/rounding order through averaging and peak hold', () =>
   }
   expect(actual.log).toEqual(expected.log);
 });
+
+it('can hide only the carrier marker while retaining RF geometry and labels', () => {
+  const shown = createMockCtx(); const hidden = createMockCtx();
+  const options = opts({ spanHz: 100_000, centerHz: 14_050_000, tuneHz: 14_050_000 });
+  renderSpectrum(shown.ctx, data50(), 200, 100, options);
+  renderSpectrum(hidden.ctx, data50(), 200, 100, { ...options, showTuneIndicator: false });
+  expect(hidden.log.fillText).toEqual(shown.log.fillText);
+  expect(hidden.log.strokes).toBe(shown.log.strokes - 1);
+});

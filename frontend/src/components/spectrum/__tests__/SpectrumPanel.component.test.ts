@@ -4607,3 +4607,150 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
     }
   });
 });
+
+describe('review corrections for requested View and sample retirement', () => {
+  let previousMatchMedia: typeof window.matchMedia;
+  beforeEach(() => {
+    previousMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: noop, removeEventListener: noop });
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+  });
+  afterEach(() => { window.matchMedia = previousMatchMedia; });
+
+  async function selectView(view: { startHz: number; endHz: number }, frequencyHz = 14_050_000) {
+    const presets = await import('$lib/runtime/scope-presets');
+    const spy = vi.spyOn(presets, 'scopePresets').mockReturnValue([{ kind: 'cw', label: 'Requested segment', view }]);
+    authorityHarness.state.current = authority({ frequencyHz });
+    const target = mountPanel(); emitFrame({ pixels: new Uint8Array(100).fill(80) }); await flushWaterfallPaint();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+    select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync(); await flushWaterfallPaint();
+    return { target, restore: () => spy.mockRestore() };
+  }
+  const requested = (target: HTMLElement) => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view;
+
+  it('excludes the native carrier from a requested segment without painting a clamped marker', async () => {
+    const { target, restore } = await selectView({ startHz: 14_000_000, endHz: 14_040_000 });
+    try {
+      expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 40_000, tuneHz: 0, showTuneIndicator: false });
+      expect(target.querySelector('.waterfall-content .tune-line')).toBeNull();
+      expect(target.querySelector('.passband-overlay')).toBeNull();
+    } finally { restore(); }
+  });
+
+  it('includes an uncovered carrier while mapping only actual source columns in the wider View', async () => {
+    const { target, restore } = await selectView({ startHz: 14_000_000, endHz: 14_300_000 }, 14_200_000);
+    try {
+      const { renderSpectrum } = await vi.importActual<typeof import('$lib/renderers/spectrum-renderer')>('$lib/renderers/spectrum-renderer');
+      const ctx = { ...noopCanvas, setLineDash: noop, lineTo: vi.fn(), moveTo: vi.fn() };
+      const options = spectrumRendererHarness.lastOptions;
+      renderSpectrum(ctx as unknown as CanvasRenderingContext2D, new Uint8Array(100).fill(80), 300, 100, options);
+      const covered = ctx.lineTo.mock.calls.filter(([x, y]) => x < 300 && y === 0).map(([x]) => x);
+      expect(Math.max(...covered)).toBe(99);
+      expect(options).toMatchObject({ spanHz: 300_000, sampleSpanHz: 100_000, tuneHz: 14_200_000, showTuneIndicator: true });
+      expect(parseFloat(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left)).toBeCloseTo(200 / 3);
+    } finally { restore(); }
+  });
+
+  it('pairs both zoom legends with the displayed span and click coordinates', async () => {
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync(); await flushWaterfallPaint();
+    expect([...target.querySelectorAll('.freq-axis .tick')].map(node => node.textContent)).toEqual(['-25k', '-13k', '0', '+13k', '+25k']);
+    expect(target.querySelector('.span-left')!.textContent).toBe('-25 kHz');
+    expect(target.querySelector('.span-right')!.textContent).toBe('+25 kHz');
+    const { spectrum } = prepareGeometry(target); pointer(spectrum, 'pointerdown', 201, 150); pointer(spectrum, 'pointerup', 201, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledExactlyOnceWith(14_063_000, 0);
+  });
+
+  it('shows absolute preset endpoints in both legends and uses them for click-to-tune', async () => {
+    const { target, restore } = await selectView({ startHz: 14_000_000, endHz: 14_200_000 });
+    try {
+      expect(target.querySelector('.freq-axis')!.textContent).toContain('14.000');
+      expect(target.querySelector('.freq-axis')!.textContent).toContain('14.200');
+      expect(target.querySelector('.span-left')!.textContent).toContain('14.000');
+      expect(target.querySelector('.span-right')!.textContent).toContain('14.200');
+      const { spectrum } = prepareGeometry(target); pointer(spectrum, 'pointerdown', 202, 25); pointer(spectrum, 'pointerup', 202, 25);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledExactlyOnceWith(14_025_000, 0);
+    } finally { restore(); }
+  });
+
+  it.each(['zoom', 'preset'] as const)('resizes the real filter width in displayed %s coordinates', async (kind) => {
+    const geometry = await import('../passband-geometry');
+    const actual = await vi.importActual<typeof import('../passband-geometry')>('../passband-geometry');
+    const previousWidth = passbandHarness.getFilterWidthFromRightEdgePx.getMockImplementation()!;
+    const previousGeometry = vi.mocked(geometry.getPassbandGeometry).getMockImplementation()!;
+    passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(actual.getFilterWidthFromRightEdgePx);
+    vi.mocked(geometry.getPassbandGeometry).mockImplementation(actual.getPassbandGeometry);
+    let restore = noop;
+    try {
+      let target: HTMLElement;
+      if (kind === 'preset') { const selected = await selectView({ startHz: 14_000_000, endHz: 14_200_000 }); target = selected.target; restore = selected.restore; }
+      else { target = mountPanel(); emitFrame(); target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync(); await flushWaterfallPaint(); }
+      const { waterfall } = prepareGeometry(target);
+      const zone = waterfall.querySelector('.passband-resize-zone')!;
+      const edge = kind === 'zoom' ? 110 : 52.5;
+      pointer(zone, 'pointerdown', 203, edge); pointer(waterfall, 'pointermove', 203, edge); pointer(waterfall, 'pointerup', 203, edge);
+      expect(handlerHarness.filter.onFilterWidthCommit).toHaveBeenCalledExactlyOnceWith(2_500, 0, 17);
+    } finally {
+      restore(); passbandHarness.getFilterWidthFromRightEdgePx.mockImplementation(previousWidth);
+      vi.mocked(geometry.getPassbandGeometry).mockImplementation(previousGeometry);
+    }
+  });
+
+  it('retires resize capture when the requested View changes before release', async () => {
+    const target = mountPanel(); emitFrame(); const { waterfall } = prepareGeometry(target);
+    pointer(waterfall.querySelector('.passband-resize-zone')!, 'pointerdown', 204, 110);
+    pointer(waterfall, 'pointermove', 204, 120);
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+    pointer(waterfall, 'pointerup', 204, 120);
+    expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
+  });
+
+  it('leaves ordinary clicks free to follow pending, confirmed and recentered frames', async () => {
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint(); const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 205, 150); pointer(spectrum, 'pointerup', 205, 150);
+    setPendingFrequency(0, 14_075_000); flushSync(); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_075_000);
+    authorityHarness.state.current = authority({ frequencyHz: 14_075_000 }); refreshSpectrumAuthority(); setPendingFrequency(0, null);
+    emitFrame({ startFreq: 14_025_000, endFreq: 14_125_000 }); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_075_000);
+    authorityHarness.state.current = authority({ frequencyHz: 14_085_000 }); refreshSpectrumAuthority();
+    emitFrame({ startFreq: 14_035_000, endFreq: 14_135_000 }); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_085_000);
+  });
+
+  it.each([
+    ['zoom', 'pointerup'], ['zoom', 'pointercancel'], ['preset', 'pointerup'], ['preset', 'pointercancel'],
+  ] as const)('preserves persistent %s View through drag %s', async (kind, ending) => {
+    let restore = noop;
+    try {
+      let target: HTMLElement;
+      if (kind === 'preset') { const selected = await selectView({ startHz: 14_000_000, endHz: 14_200_000 }); target = selected.target; restore = selected.restore; }
+      else { target = mountPanel(); emitFrame(); target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync(); await flushWaterfallPaint(); }
+      const initial = requested(target); const { spectrum } = prepareGeometry(target);
+      pointer(spectrum, 'pointerdown', 206, 100); pointer(spectrum, 'pointermove', 206, 120); pointer(spectrum, ending, 206, 120);
+      expect(requested(target)).toEqual(initial);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(ending === 'pointerup' ? 1 : 0);
+    } finally { restore(); }
+  });
+
+  it('retires a live spectrum on empty non-OOR frames and recovers without dropping waterfall history', async () => {
+    const target = mountPanel(); emitFrame({ pixels: new Uint8Array([80, 80]) }); await flushWaterfallPaint();
+    const waterfall = target.querySelector('.waterfall-content canvas');
+    spectrumRendererHarness.render.mockClear();
+    emitFrame({ pixels: new Uint8Array(0), outOfRange: false }); await flushWaterfallPaint();
+    expect(target.querySelector('.spectrum-area canvas')).toBeNull();
+    expect(spectrumRendererHarness.render).not.toHaveBeenCalled();
+    expect(target.querySelector('.waterfall-content canvas')).toBe(waterfall);
+    emitFrame({ pixels: new Uint8Array([1, 2, 3]) }); await flushWaterfallPaint();
+    expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([1, 2, 3]);
+    expect(target.querySelector('.waterfall-content canvas')).toBe(waterfall);
+  });
+
+  it('uses the existing ordinary toolbar control classes for View controls', () => {
+    const target = mountPanel(); emitFrame();
+    expect(target.querySelector('[data-testid="scope-preset-select"]')!.classList.contains('toolbar-select')).toBe(true);
+    expect(target.querySelector('[data-testid="scope-zoom-in"]')!.classList.contains('toolbar-btn')).toBe(true);
+  });
+});
