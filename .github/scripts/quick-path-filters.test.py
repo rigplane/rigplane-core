@@ -245,6 +245,20 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             quick,
         )
 
+    def test_test_heavy_jobs_stay_off_the_two_gib_gate_pool(self) -> None:
+        # MOR-4214 / MOR-4280: the gate pool is 2 GiB containers sized for short
+        # guard jobs; the full suite and the Playwright jobs belong on build pools.
+        workflows = ROOT / ".github" / "workflows"
+        for name, pools in (
+            ("full.yml", ["[self-hosted, Linux, X64, build]", "[self-hosted, Linux, ARM64, build]"]),
+            ("visual.yml", ["[self-hosted, Linux, ARM64, build]"]),
+        ):
+            with self.subTest(workflow=name):
+                text = (workflows / name).read_text(encoding="utf-8")
+                self.assertNotIn("ARM64, gate", text)
+                found = re.findall(r"(?m)^    runs-on: (\[.*\])$", text)
+                self.assertEqual([pool for pool in found if "light" not in pool], pools)
+
     def test_frontend_check_step_sets_the_node_heap_svelte_check_needs(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         step = quick.split("      - name: Frontend install + check + tests + build\n", 1)[1]

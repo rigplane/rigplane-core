@@ -77,7 +77,8 @@ jobs:
     # Node 24, Rust, and the Tauri/audio system libs are pre-baked in the
     # image, so the matrix avoids ubuntu-latest pickup + apt install passes.
     # Operator doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    # Build pool, not the 2 GiB gate pool (MOR-4280): the full not-slow suite across three interpreters.
+    runs-on: [self-hosted, Linux, X64, build]
     timeout-minutes: 25
     strategy:
       matrix:
@@ -266,7 +267,8 @@ jobs:
     # "Install deps + Playwright chromium" red, never as a fixtures
     # regression in the `Run fixture-harness capture` step.
     #
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    # Build pool, not the 2 GiB gate pool (MOR-4280): Playwright Chromium plus a Node frontend build.
+    runs-on: [self-hosted, Linux, ARM64, build]
     # Budget: ~45s once the Playwright browser cache is warm (npm ci +
     # cached chromium + the capture matrix itself). 10 minutes is a
     # generous ceiling for a cold cache / first run on a new runner image,
