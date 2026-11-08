@@ -872,7 +872,7 @@
     panoramaShiftHz: viewportShiftHz,
     geometryKey: spectrumGeometryKey,
     tuneHz,
-    passbandHz,
+    passbandHz: tuneVisible ? passbandHz : 0,
     passbandShiftHz,
     refLevel,
     mode: rxMode,
