@@ -200,6 +200,29 @@ const strictlySeen = (state: ServerState, path: string): boolean => {
     && (status.availability === 'available' || status.availability === 'stale');
 };
 
+/** Map observed audio carrier/polarity into the qualified RF frame without copying bins. */
+export function audioScopeProjection(geometry: ScopeGeometry | null, state: ServerState | null): import('../scope-frame').ScopeAudioProjection | null {
+  if (geometry?.source !== 'audio_fft' || state === null) return null;
+  const read = <T>(path: string, value: T | undefined): T | null => strictlySeen(state, path) ? value ?? null : null;
+  const frequency = read('main.freqHz', state.main?.freqHz);
+  const mode = read('main.mode', state.main?.mode)?.toUpperCase();
+  if (!finiteNumber(frequency) || frequency <= 0 || !mode) return null;
+  const lower = mode === 'LSB' || mode === 'DATA-L' || mode === 'CW-L';
+  let offset = 0;
+  if (mode === 'CW-U' || mode === 'CW-L') {
+    const pitch = read('cwPitch', state.cwPitch);
+    if (!finiteNumber(pitch) || pitch <= 0) return null;
+    offset = lower ? pitch : -pitch;
+  }
+  // CW/CW-R, RTTY/RTTY-R and DV retain the source's symmetric main mapping.
+  // Their correct-side choice remains MOR-4288; no NormalSide is inferred.
+  const carrier = frequency + offset;
+  const span = geometry.view.endHz - geometry.view.startHz;
+  const sign = lower ? -1 : 1;
+  const spanHz = lower ? carrier - geometry.view.startHz : geometry.view.endHz - carrier;
+  return span > 0 && spanHz > 0 ? { zero: (carrier - geometry.view.startHz) / span, perHz: sign / span, spanHz } : null;
+}
+
 /** A retry token for observed primary audio-mapping facts, independent of UI VFO qualification. */
 export function audioScopeFactsRevision(state: ServerState | null, caps: Capabilities | null): string {
   const seen = <T>(path: string, value: T | undefined): T | null =>

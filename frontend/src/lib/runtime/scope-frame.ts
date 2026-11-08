@@ -41,6 +41,13 @@ export interface ScopeGeometry {
   readonly hasPixels: boolean;
   readonly freshness: ScopeFreshness;
 }
+/** Affine RF-bin coordinates for an AF axis; the original pixel plane is retained. */
+export interface ScopeAudioProjection {
+  readonly zero: number;
+  readonly perHz: number;
+  readonly spanHz: number;
+}
+
 export type ScopeHatchReason = 'outOfRange' | 'view wider than coverage' | 'no pixels';
 export interface ScopeCoverageProjection {
   /** Normalized output columns, with sample coordinates relative to the granted frame view. */

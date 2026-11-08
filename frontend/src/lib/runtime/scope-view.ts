@@ -105,7 +105,7 @@ export function scopeSubscriptionSurface(node: Element, initial: {
       sourceId: parameters.stream.sourceId, receiver: parameters.stream.kind === 'radio' ? parameters.receiver : null,
       view: parameters.view, width, visible: intersecting && !document.hidden && cssWidth > 0,
       maxFps: parameters.maxFps ?? 20,
-    }), !attempted || attemptedRevision !== parameters.revision);
+    }), !attempted || attemptedRevision !== parameters.revision, parameters.revision);
     if (sent) { attempted = true; attemptedRevision = parameters.revision; }
   };
   const resize = new ResizeObserver(entries => {

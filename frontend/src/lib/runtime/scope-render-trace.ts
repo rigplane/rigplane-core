@@ -41,7 +41,7 @@ const LAG_INTERVAL_MS = 100;
 
 type StageCount = { count: number; totalMs: number; maxMs: number; firstSequence?: number; lastSequence?: number };
 type Bucket = { second: number; stages: Partial<Record<TraceStage, StageCount>> };
-type Burst = { atMs: number; stage: TraceStage; durationMs: number; acceptedSequence?: number; wireSequence?: number; transportEpoch?: number; source?: TraceSource };
+type Burst = { atMs: number; stage: TraceStage; durationMs: number; acceptedSequence?: number; wireSequence?: number; transportEpoch?: number; source?: TraceSource; sourceId?: string; receiver?: number | null; sourceEpoch?: number };
 type Geometry = { cssWidth: number; cssHeight: number; backingWidth: number; backingHeight: number; dpr: number };
 type TimelineEvent = (Burst | (Geometry & { atMs: number; stage: 'geometry'; canvas: 'waterfall' | 'spectrum' })) & {
   document?: { hidden: boolean; visibilityState: DocumentVisibilityState; hasFocus: boolean };
@@ -72,7 +72,7 @@ export class ScopeRenderTrace {
   private accepted = 0;
   private rejected = 0;
   private wireGaps = 0;
-  private readonly lastCallbackAt = new Map<TraceSource, number>();
+  private readonly lastCallbackAt = new Map<string, number>();
   private readonly lastWire = new Map<string, number>();
   private frames = new WeakMap<ScopeFrame, TraceToken>();
   private readonly acceptedIndex = new Map<number, TraceToken>();
@@ -154,9 +154,9 @@ export class ScopeRenderTrace {
       this.record('wire_gap', token, 0, true, callbackAt);
     }
     this.lastWire.set(wireKey, token.wireSequence);
-    const previousCallback = this.lastCallbackAt.get(token.source);
+    const previousCallback = this.lastCallbackAt.get(wireKey);
     const gap = previousCallback === undefined ? null : callbackAt - previousCallback;
-    this.lastCallbackAt.set(token.source, callbackAt);
+    this.lastCallbackAt.set(wireKey, callbackAt);
     this.record('callback', token, gap ?? 0, gap !== null && (gap < 20 || gap > 150), callbackAt);
     this.record('accepted', token, Math.max(0, acceptedAt - callbackAt), false, acceptedAt);
   }
@@ -187,7 +187,7 @@ export class ScopeRenderTrace {
     if (!this.active(at)) return;
     const duration = Number.isFinite(durationMs) ? Math.max(0, Math.min(durationMs, MAX_MS)) : 0;
     if (this.timeline && !this.appendTimeline({ atMs: at - this.startedAt, stage, durationMs: duration,
-      ...(token ? { source: token.source, transportEpoch: token.transportEpoch,
+      ...(token ? { source: token.source, sourceId: token.sourceId, receiver: token.receiver, sourceEpoch: token.sourceEpoch, transportEpoch: token.transportEpoch,
         wireSequence: token.wireSequence, acceptedSequence: token.acceptedSequence } : {}) })) return;
     const second = Math.floor((at - this.startedAt) / 1000);
     if (second < 0 || second >= MAX_BUCKETS) { this.stop('overflow'); return; }
@@ -203,7 +203,7 @@ export class ScopeRenderTrace {
     if (interesting) {
       if (this.burst.length === MAX_BURST) { this.burst.shift(); this.burstDropped += 1; }
       this.burst.push({ atMs: at - this.startedAt, stage, durationMs: duration,
-        ...(token ? { source: token.source, transportEpoch: token.transportEpoch,
+        ...(token ? { source: token.source, sourceId: token.sourceId, receiver: token.receiver, sourceEpoch: token.sourceEpoch, transportEpoch: token.transportEpoch,
           wireSequence: token.wireSequence, acceptedSequence: token.acceptedSequence } : {}) });
     }
   }

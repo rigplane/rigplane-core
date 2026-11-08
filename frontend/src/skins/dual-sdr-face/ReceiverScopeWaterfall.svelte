@@ -65,7 +65,10 @@
       if (live) return;
       pixels = null; facts = null; display();
     });
-    return () => { active = false; unsubscribe(); unsubscribeHealth?.(); };
+    const unsubscribeGeometry = source.subscriptionStream?.geometry.subscribe(geometry => {
+      if (geometry === null) { pixels = null; facts = null; display(); }
+    });
+    return () => { active = false; unsubscribe(); unsubscribeHealth?.(); unsubscribeGeometry?.(); };
   });
 </script>
 

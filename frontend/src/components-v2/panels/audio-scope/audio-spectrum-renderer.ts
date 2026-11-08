@@ -12,7 +12,10 @@ import {
   type ControlDisplayDomain, type PbtRange,
 } from '$lib/radio/filter-controls';
 
+import type { ScopeAudioProjection } from '$lib/runtime/scope-frame';
+
 export interface SpectrumState {
+  projection?: ScopeAudioProjection | null;
   /** FFT bin amplitudes (0-160 range) */
   pixels: Uint8Array | null;
   /** Effective bandwidth of the FFT data in Hz */
@@ -203,7 +206,7 @@ export function renderAudioSpectrum(
   }
 
   // ── Frequency grid labels (bottom) ──
-  const halfBw = bandwidth / 2;
+  const halfBw = state.projection?.spanHz ?? bandwidth / 2;
   const step = chooseGridStep(halfBw);
   ctx.font = '9px system-ui, sans-serif';
   ctx.textAlign = 'center';
@@ -332,8 +335,12 @@ export function renderAudioSpectrum(
       const pixIdx = showFilterOverlay
         ? dcIdx + Math.floor(barFrac * passbandFrac * positiveLen)
         : Math.floor(barFrac * pixels.length);
-      const clamped = Math.max(0, Math.min(pixels.length - 1, pixIdx));
-      const rawAmp = Math.min(pixels[clamped], MAX_AMPLITUDE) / MAX_AMPLITUDE;
+      const coordinate = state.projection
+        ? state.projection.zero + barFrac * (showFilterOverlay ? filterHz : halfBw) * state.projection.perHz : null;
+      const index = coordinate === null ? pixIdx : Math.floor(coordinate * pixels.length);
+      const clamped = Math.max(0, Math.min(pixels.length - 1, index));
+      const rawAmp = coordinate !== null && (coordinate < 0 || coordinate > 1) ? 0
+        : Math.min(pixels[clamped], MAX_AMPLITUDE) / MAX_AMPLITUDE;
 
       // Smooth
       const prev = rs.smoothed[i];

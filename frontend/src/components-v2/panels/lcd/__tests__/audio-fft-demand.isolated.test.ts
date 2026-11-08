@@ -1,4 +1,4 @@
-import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
+import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -22,6 +22,7 @@ type ScopeFrameProbe = import('$lib/runtime/adapters/scope-adapter').ScopeFrame;
 type AmberAfScopePropsProbe = {
   data: Uint8Array | null;
   bandwidth?: number;
+  projection?: import('$lib/runtime/scope-frame').ScopeAudioProjection | null;
   onRegisterPush?: (push: (pixels: Uint8Array | null) => void) => void;
 };
 
@@ -380,6 +381,7 @@ it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
       return { default: (anchor: Node, props: AmberAfScopePropsProbe) => {
         const register = props.onRegisterPush;
         props.onRegisterPush = push => register?.(pixels => { scopeChildProbe.pushed(pixels); push(pixels); });
+        scopeChildProbe.props = props;
         return Child(anchor, props);
       } };
     });
@@ -389,6 +391,7 @@ it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
       return { default: (anchor: Node, props: AmberAfScopePropsProbe) => {
         const register = props.onRegisterPush;
         props.onRegisterPush = push => register?.(pixels => { scopeChildProbe.pushed(pixels); push(pixels); });
+        scopeChildProbe.props = props;
         return Child(anchor, props);
       } };
     });
@@ -440,6 +443,23 @@ it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
         main: { ...known.main!, sMeter: 7 } };
       setRadioState(unrelated); flushSync();
       expect(subscriptions()).toHaveLength(2);
+      for (const [index, name] of audioScopeGoldenNames.entries()) {
+        const { buffer, expected } = loadAudioScopeGolden(name);
+        const revision = 4 + index;
+        const mapped = { ...known, revision, stateRevision: revision, observationSeq: revision,
+          main: { ...known.main!, freqHz: expected.audioPassband.tunedHz, mode: expected.input.mode },
+          cwPitch: expected.input.cwPitchHz,
+          fieldStatus: { ...known.fieldStatus, cwPitch: { storePath: 'cwPitch', observed: true,
+            freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: revision } } };
+        expect(setRadioState(mapped)).toBe(true); flushSync();
+        mocks.channel.fire(buffer); flushSync();
+        const span = expected.frame.view_end_hz - expected.frame.view_start_hz;
+        const carrier = expected.audioPassband.tunedHz + expected.audioPassband.carrierOffsetHz;
+        const sign = expected.audioPassband.sideband === 'lower' ? -1 : 1;
+        expect(scopeChildProbe.props?.projection).toEqual({ zero: (carrier - expected.frame.view_start_hz) / span,
+          perHz: sign / span, spanHz: sign === 1 ? expected.frame.view_end_hz - carrier : carrier - expected.frame.view_start_hz });
+        expect(scopeChildProbe.pushed.mock.lastCall?.[0]?.buffer).toBe(buffer);
+      }
       const pixels = scopeChildProbe.pushed.mock.lastCall?.[0];
       expect(pixels).toBeInstanceOf(Uint8Array);
       mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, pixels: null }));

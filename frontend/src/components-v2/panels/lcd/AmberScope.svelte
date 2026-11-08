@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
+  import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onDestroy } from 'svelte';
   import { deriveAmberScopeProps } from '$lib/runtime/adapters/panel-adapters';
@@ -258,6 +258,8 @@
   ]);
 
   // FFT scope connection — reactive to capabilities
+  let fftGeometry = $state.raw<import('$lib/runtime/scope-frame').ScopeGeometry | null>(null);
+  let fftProjection = $derived(audioScopeProjection(fftGeometry, runtime.state));
   let fftBandwidth = $state<number | undefined>(undefined);
   let fftPush: ((data: Uint8Array | null) => void) | null = null;
   let showFft = $derived(scopeProps.hasAudioFft);
@@ -274,6 +276,7 @@
     let hasPixels = false;
     const clearPixels = () => { if (hasPixels) fftPush?.(null); hasPixels = false; };
     const stopGeometry = stream.geometry.subscribe((geometry) => {
+      fftGeometry = geometry;
       if (geometry === null) clearPixels();
       fftBandwidth = geometry && geometry.view.endHz > geometry.view.startHz
         ? geometry.view.endHz - geometry.view.startHz : undefined;
@@ -370,6 +373,7 @@
     }}>
       {#if showFft}
         <AmberAfScope
+            projection={fftProjection}
           data={null}
           onRegisterPush={(fn) => { fftPush = fn; }}
           filterWidth={safeFilterWidth}

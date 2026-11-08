@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
+  import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onMount } from 'svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
@@ -12,6 +12,8 @@
 
   // ── Scope WS connection ──
 
+  let fftGeometry = $state.raw<import('$lib/runtime/scope-frame').ScopeGeometry | null>(null);
+  let fftProjection = $derived(audioScopeProjection(fftGeometry, runtime.state));
   let fftBandwidth = $state(48000);
   let fftPush: ((data: Uint8Array | null) => void) | null = null;
   let panel: HTMLDivElement;
@@ -41,6 +43,7 @@
     let hasPixels = false;
     const clearPixels = () => { if (hasPixels) fftPush?.(null); hasPixels = false; };
     const stopGeometry = stream.geometry.subscribe((geometry) => {
+      fftGeometry = geometry;
       if (geometry === null) clearPixels();
       if (geometry && geometry.view.endHz > geometry.view.startHz) {
         fftBandwidth = geometry.view.endHz - geometry.view.startHz;
@@ -67,6 +70,7 @@
   view: { follow: 'vfo', spanHz: 48000 }, revision: audioScopeFactsRevision(runtime.state, runtime.caps),
 }}>
   <AudioSpectrumCanvas
+    projection={fftProjection}
     data={null}
     onRegisterPush={(fn) => { fftPush = fn; }}
     bandwidth={fftBandwidth}

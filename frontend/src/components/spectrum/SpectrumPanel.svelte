@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { resolveScopeSourceId, audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
+  import { resolveScopeSourceId, audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
@@ -298,11 +298,14 @@
   }
 
   onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); });
-  // Frame window and scope mode are geometry facts (rarely changing); the
-  // audio-FFT display halves the delivered window exactly as before.
+  // RF geometry stays wire-owned. AF axes use observed carrier/polarity;
+  // the legacy symmetric fallback is presentation-only.
+  let audioProjection = $derived(audioFft ? audioScopeProjection(displayGeometry, runtime.state) : null);
+  let audioSampleWindow = $derived(audioProjection ? { start: audioProjection.zero,
+    end: audioProjection.zero + audioProjection.perHz * audioProjection.spanHz } : undefined);
   let startFreq = $derived(audioFft ? 0 : displayGeometry?.view.startHz ?? 0);
   let endFreq = $derived(audioFft
-    ? ((displayGeometry?.view.endHz ?? 0) - (displayGeometry?.view.startHz ?? 0)) / 2
+    ? audioProjection?.spanHz ?? ((displayGeometry?.view.endHz ?? 0) - (displayGeometry?.view.startHz ?? 0)) / 2
     : displayGeometry?.view.endHz ?? 0);
   // The runtime qualifies observed control mode into geometry; zero is a presentation fallback.
   let frameScopeMode = $derived(displayGeometry?.mode ?? 0);
@@ -500,6 +503,7 @@
   let spanHz = $derived(endFreq > startFreq ? endFreq - startFreq : 0);
   let spectrumAuthority = $derived(audioFft ? null : toSpectrumAuthority(runtime.state, runtime.caps));
   let scopeControlsMode = $derived.by(() => {
+    if (audioFft || sdrSource) return null;
     const reading = spectrumAuthority?.scopeControls?.mode.reading;
     return reading?.status === 'known' && typeof reading.value === 'number' ? reading.value : null;
   });
@@ -644,6 +648,7 @@
   // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
   let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
   let rememberedCenterReference = $derived.by(() => {
+    if (audioFft || sdrSource) return false;
     const memory = provenCenterMode;
     if (memory === null) return false;
     const state = runtime.state;
@@ -700,6 +705,7 @@
     const geometry = frameGeometry;
     const frequency = displayFrequencyHz;
     const authority = spectrumAuthority;
+    const nativeRadio = !audioFft && !sdrSource;
     const center = scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
     const sessionEpoch = runtime.controlSession.epoch;
     const fixed = isFixedScope;
@@ -712,7 +718,8 @@
     untrack(() => {
       coordinatingView = true;
       try {
-        if (authority !== null && center !== null) {
+        if (!nativeRadio) provenCenterMode = null;
+        else if (authority !== null && center !== null) {
           provenCenterMode = center ? {
             providerGeneration: authority.providerGeneration,
             receiver: authority.receiver,
@@ -790,7 +797,7 @@
       ? Math.min(100, Math.max(0, ((tuneHz - viewportStartFreq) / viewportSpanHz) * 100))
       : 50
   );
-  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}`);
+  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
@@ -858,7 +865,8 @@
     ...spectrumColorRolesToOptions(resolvedColorRoles),
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
-    sampleOffset: audioFft ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
     showRfOverlays: !audioFft,
     showTuneIndicator: !audioFft && tuneVisible,
@@ -877,7 +885,8 @@
     ...defaultWaterfallOptions,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
-    sampleOffset: audioFft ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
     centerHz: panoramaViewportHz,
     panoramaShiftHz: viewportShiftHz,

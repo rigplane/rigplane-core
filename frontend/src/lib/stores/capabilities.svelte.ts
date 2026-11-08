@@ -84,6 +84,8 @@ export function hasAnyScope(): boolean {
 }
 
 export function getScopeSource(): string | null {
+  const selected = capabilities?.scopeDefaultSourceId;
+  if (selected != null) return selected === 'audio_fft' ? 'audio_fft' : 'hardware';
   const sources = capabilities?.scopeSources;
   if (sources) return sources.includes('radio') || sources.includes('iq_fft') ? 'hardware'
     : sources.includes('audio_fft') ? 'audio_fft' : null;

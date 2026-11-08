@@ -1121,7 +1121,7 @@ describe('SpectrumPanel component', () => {
     await flushWaterfallPaint();
     expect(spectrumRendererHarness.lastOptions?.scopeMode).toBe(0);
     authorityHarness.state.current = authority({ frequencyHz: 14_150_000, scopeControls: testScopeControls(mode) });
-    flushSync();
+    refreshSpectrumAuthority(); flushSync();
     const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     expect(request.receiver).toBeNull();
     expect(request.view).toEqual({ startHz: 14_100_000, endHz: 14_200_000 });

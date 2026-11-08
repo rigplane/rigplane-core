@@ -525,3 +525,31 @@ describe('DualSdrFace', () => {
 
 beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
 afterEach(() => { vi.unstubAllGlobals(); });
+
+it.each(['radio', 'iq_fft'] as const)('keeps receiver-neutral IQ demand and paint after an initial %s source', async (initial) => {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe() { this.callback([{ contentRect: { width: 200 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+    disconnect() {}
+  });
+  let receive = (_buffer: ArrayBuffer) => {};
+  const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
+    { source: initial, sourceId: initial, epoch: 1 }, 'borrowed');
+  const source = { subscriptionStream: stream, slotKeys: [`${initial}:0`, `${initial}:1`] as const,
+    subscribe: stream.subscribe.bind(stream) };
+  const target = document.createElement('div'); document.body.append(target);
+  const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
+  try {
+    flushSync(); await tick();
+    expect(stream.subscriptions.map(request => request.receiver)).toEqual(initial === 'radio' ? [0, 1] : [null]);
+    receive(scopeWire({ source: initial, sourceId: initial, receiver: initial === 'radio' ? 0 : null }));
+    flushSync(); await tick();
+    stream.setSource('iq_fft', 'iq_fft');
+    flushSync(); await tick();
+    if (initial === 'radio') expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(0);
+    receive(scopeWire({ source: 'iq_fft', sourceId: 'iq_fft', receiver: null }));
+    flushSync(); await tick();
+    expect(stream.subscriptions.map(request => request.receiver)).toEqual([null]);
+    expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(2);
+  } finally { await unmount(component); stream.dispose(); target.remove(); }
+});

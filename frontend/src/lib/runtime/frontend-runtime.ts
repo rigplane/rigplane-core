@@ -323,6 +323,8 @@ class FrontendRuntime {
       return;
     }
 
+    // Discovery may temporarily lack an optional provider; configured selection
+    // remains authoritative and its demand is retried through the scope channel.
     scopeController.configureSources(caps.scopeSources ?? [], caps.scopeDefaultSourceId);
     const presentationCaps = derivePresentationCapabilities(caps);
     this._defaultScopeSource = presentationCaps.scope.defaultSource;

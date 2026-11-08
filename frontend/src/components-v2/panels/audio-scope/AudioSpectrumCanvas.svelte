@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { ScopeAudioProjection } from '$lib/runtime/scope-frame';
   import { onMount } from 'svelte';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
   import type { ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
@@ -6,6 +7,7 @@
   import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
+    projection?: ScopeAudioProjection | null;
     /** FFT pixel data from AudioFftScope (0-160 range) */
     data: Uint8Array | null;
     /** Register a push callback for streaming updates */
@@ -40,6 +42,7 @@
 
   let {
     data,
+    projection = null,
     onRegisterPush,
     bandwidth = 48000,
     filterWidth = 2400,
@@ -81,7 +84,7 @@
       if (ctx) {
         if (pixels === null) rendererState.reset();
         const state: SpectrumState = {
-          pixels,
+          pixels, projection,
           bandwidth,
           filterWidth,
           filterWidthMax,
@@ -126,6 +129,12 @@
     data; bandwidth; filterWidth; filterWidthMax; ifShift; pbtInner; pbtOuter;
     pbtRange; pbtStepHz; manualNotch; notchFreq; notchFreqDomain; contour; contourFreq;
     scheduleDraw();
+  });
+
+  let projectionKey: string | undefined;
+  $effect(() => {
+    const key = JSON.stringify(projection);
+    if (key !== projectionKey) { projectionKey = key; rendererState.reset(); scheduleDraw(); }
   });
 
   onMount(() => {

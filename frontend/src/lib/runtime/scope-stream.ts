@@ -26,6 +26,7 @@ export class ScopeStream {
   private subscriptionValue: ScopeSubscription | null = null;
   private subscriptionKey: string | null = null;
   private retryNeeded = false;
+  private readonly attemptedFacts = new Map<string, string>();
   private subscriptionsValue: readonly ScopeSubscription[] = [];
   private surfaces = new Map<symbol, ScopeSubscription>();
   private readonly geometryStore = writable<ScopeGeometry | null>(null);
@@ -55,19 +56,19 @@ export class ScopeStream {
 
   get subscription(): ScopeSubscription | null { return this.subscriptionValue; }
 
-  updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription, retry = true): boolean {
+  updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription, retry = true, revision?: string): boolean {
     this.surfaces.set(token, subscription);
-    return this.publishSurfaceDemand(retry);
+    return this.publishSurfaceDemand(retry, revision);
   }
 
   removeSurfaceSubscription(token: symbol): void {
     this.surfaces.delete(token);
-    this.publishSurfaceDemand();
+    this.publishSurfaceDemand(false);
   }
 
   get subscriptions(): readonly ScopeSubscription[] { return this.subscriptionsValue; }
 
-  private publishSurfaceDemand(retry = true): boolean {
+  private publishSurfaceDemand(retry = true, revision?: string): boolean {
     const groups = new Map<string, ScopeSubscription[]>();
     for (const request of this.surfaces.values()) {
       const key = `${request.sourceId}:${request.receiver}`;
@@ -81,7 +82,7 @@ export class ScopeStream {
       next.push({ ...selected, width: Math.max(...candidates.map(request => request.width)),
         maxFps: Math.max(...candidates.map(request => request.maxFps)) });
     }
-    return this.applySubscriptions(next, retry);
+    return this.applySubscriptions(next, retry, revision);
   }
 
   setSubscription(subscription: ScopeSubscription): void {
@@ -89,13 +90,18 @@ export class ScopeStream {
     this.applySubscriptions([subscription]);
   }
 
-  private applySubscriptions(next: readonly ScopeSubscription[], retry = true): boolean {
+  private applySubscriptions(next: readonly ScopeSubscription[], retry = true, revision?: string): boolean {
     const key = JSON.stringify(next);
     if (key === this.subscriptionKey) {
-      if (retry && this.retryNeeded) {
+      const changedFacts = next.filter(request => revision === undefined
+        || this.attemptedFacts.get(`${request.sourceId}:${request.receiver}`) !== revision);
+      if (retry && this.retryNeeded && changedFacts.length > 0) {
         this.retryNeeded = false;
         this.errorStore.set(null);
-        for (const request of next) this.publishSubscription?.(request, request);
+        for (const request of changedFacts) {
+          if (revision !== undefined) this.attemptedFacts.set(`${request.sourceId}:${request.receiver}`, revision);
+          this.publishSubscription?.(request, request);
+        }
         return true;
       }
       return false;
@@ -110,11 +116,17 @@ export class ScopeStream {
     if (priorSelected?.sourceId !== selected?.sourceId || priorSelected?.receiver !== selected?.receiver) this.reset();
     this.errorStore.set(null);
     for (const old of previous) {
-      if (!next.some(request => request.sourceId === old.sourceId && request.receiver === old.receiver)) this.publishSubscription?.(null, old);
+      if (!next.some(request => request.sourceId === old.sourceId && request.receiver === old.receiver)) {
+        this.attemptedFacts.delete(`${old.sourceId}:${old.receiver}`);
+        this.publishSubscription?.(null, old);
+      }
     }
     for (const request of this.subscriptionsValue) {
       const old = previous.find(prior => prior.sourceId === request.sourceId && prior.receiver === request.receiver) ?? null;
-      if (JSON.stringify(old) !== JSON.stringify(request)) this.publishSubscription?.(request, old);
+      if (JSON.stringify(old) !== JSON.stringify(request)) {
+        if (revision !== undefined) this.attemptedFacts.set(`${request.sourceId}:${request.receiver}`, revision);
+        this.publishSubscription?.(request, old);
+      }
     }
     return true;
   }
@@ -159,7 +171,8 @@ export class ScopeStream {
   }
 
   setMode(mode: number): void {
-    if (this.disposed || this.context.mode === mode) return;
+    // Native radio scope modes do not describe an IQ/audio producer's free View.
+    if (this.disposed || this.context.source !== 'radio' || this.context.mode === mode) return;
     this.context = { ...this.context, mode };
     if (this.geometryValue) this.publishGeometry({ ...this.geometryValue, mode });
   }
@@ -251,6 +264,7 @@ export class ScopeStream {
     if (this.disposed) return;
     this.disposed = true;
     this.sinks.clear();
+    this.attemptedFacts.clear();
     this.frames.clear();
     try { this.detach?.(); this.detach = null; }
     finally {

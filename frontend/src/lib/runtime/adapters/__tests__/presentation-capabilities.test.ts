@@ -122,3 +122,10 @@ it.each(['radio', 'iq_fft', 'audio_fft'] as const)('preserves the explicit %s de
     scopeDefaultSourceId }));
   expect(result.scope.defaultSource).toBe(scopeDefaultSourceId === 'audio_fft' ? 'audio_fft' : 'hardware');
 });
+
+it('keeps configured IQ demandable when optional construction failed and discovery currently lacks IQ', () => {
+  const result = derivePresentationCapabilities(caps({ scope: false, audio: true, audioFftAvailable: true,
+    scopeSource: null, capabilities: ['audio'], scopeSources: ['audio_fft'], scopeDefaultSourceId: 'iq_fft' }));
+  expect(result.scope.defaultSource).toBe('hardware');
+  expect(result.scope.hardwareScopeAvailable).toBe(true);
+});
