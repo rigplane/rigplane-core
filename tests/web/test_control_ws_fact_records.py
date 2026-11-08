@@ -697,42 +697,6 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
             }
             await authority.ptt_up("e2e-owner")
 
-            # An identity change through the production reconnect-status
-            # entry re-delivers the connection record to the socket.
-            radio.connection_identity = RadioIdentity(
-                status=RadioIdentityStatus.IDENTITY_MISMATCH,
-                expected_model="FAKE-FACTS",
-                answered_model="IC-7300",
-                answered_id="94",
-            )
-            server._on_reconnect_status({"state": "connected", "attempt": 1})  # noqa: SLF001
-            for _ in range(6):
-                _, payload = await _ws_recv_frame(reader, timeout=5.0)
-                message = json.loads(payload)
-                if message.get("type") == "state_update":
-                    connection = message["data"]["changed"]["connection"]
-                    assert connection["identity"]["status"] == "identity_mismatch"
-                    break
-            else:
-                pytest.fail("identity delta never arrived")
-
-            # The busy-session hold clearing (the connect completing fires
-            # the runtime's reconnect-status entry) re-delivers the session.
-            radio.startup_busy_hold_event.clear()
-            server._on_reconnect_status({"state": "connected", "attempt": 1})  # noqa: SLF001
-            for _ in range(6):
-                _, payload = await _ws_recv_frame(reader, timeout=5.0)
-                message = json.loads(payload)
-                if message.get("type") == "state_update":
-                    connection = message["data"]["changed"]["connection"]
-                    assert connection["session"] == {
-                        "busy": False,
-                        "retryInSeconds": None,
-                    }
-                    break
-            else:
-                pytest.fail("session delta never arrived")
-
             # RX failure and recovery through the production tap-only relay
             # entrypoint reach the control socket as audioReceive deltas.
             radio.audio_session.fail = True
@@ -758,6 +722,12 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
                     break
             else:
                 pytest.fail("rx recovery delta never arrived")
+
+            from rigplane.audio.session import RxSubscription
+
+            assert isinstance(server._audio_broadcaster._subscription, RxSubscription)
+            await server._audio_broadcaster._stop_relay()
+            assert radio.audio_session.rx_demand == 0
         finally:
             radio.audio_session._drained.set()  # noqa: SLF001
             writer.close()
@@ -847,3 +817,121 @@ async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("model", ["IC-7300", "IC-7610"])
+async def test_serial_identity_reread_pushes_no_response_to_control_ws(model: str) -> None:
+    from rigplane.backends.ic7300 import Ic7300SerialRadio
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+    from rigplane_testkit.serial import CivSerialFake
+
+    tests_root = Path(__file__).resolve().parents[1]
+    if str(tests_root) not in sys.path:
+        sys.path.insert(0, str(tests_root))
+    from test_web_server import _ws_connect, _ws_recv_frame
+
+    fake = CivSerialFake(model=model)
+    fake.wrong_model_id()
+    radio_type = Ic7300SerialRadio if model == "IC-7300" else Icom7610SerialRadio
+    radio = radio_type(
+        device="civ-serial-fake",
+        civ_link=SerialCivLink(
+            device="civ-serial-fake", open_serial_connection=fake.open_serial_connection
+        ),
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    radio._civ_get_timeout = 0.1
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (0.1,)
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 0.1
+    await radio.connect()
+    server = _server(radio=radio)
+    radio.set_state_change_callback(server._on_radio_state_change)
+    server._server = await asyncio.start_server(server._accept_client, "127.0.0.1", 0)
+    try:
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/ws")
+        try:
+            while True:
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message.get("type") == "state_update":
+                    assert message["data"]["data"]["connection"]["identity"]["status"] == "identity_mismatch"
+                    break
+            fake.answer_identity_after_reconnect_only()
+            while True:
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message.get("type") == "state_update":
+                    connection = message["data"]["changed"]["connection"]
+                    if connection["identity"]["status"] == "no_response":
+                        info = _Writer()
+                        await server._handle_http(info, "GET", "/api/v1/info")
+                        assert connection["identity"] == info.payload["connection"]["identity"]
+                        break
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        radio.set_state_change_callback(None)
+        await radio.disconnect()
+        await server.stop()
+
+
+async def test_session_busy_lifecycle_pushes_hold_and_release_to_control_ws() -> None:
+    from rigplane.runtime.radio import CoreRadio
+    from rigplane.runtime.session_lifecycle import AttemptOutcome, AttemptResult
+    from rigplane.testing.timing import await_until
+
+    tests_root = Path(__file__).resolve().parents[1]
+    if str(tests_root) not in sys.path:
+        sys.path.insert(0, str(tests_root))
+    from test_web_server import _ws_connect, _ws_recv_frame
+
+    radio = CoreRadio("127.0.0.1", model="IC-7300")
+    lifecycle = radio._session_lifecycle
+
+    async def busy_attempt() -> AttemptResult:
+        return AttemptResult(AttemptOutcome.SESSION_BUSY_REJECT)
+
+    async def release() -> None:
+        return None
+
+    lifecycle._mech.connect_attempt = busy_attempt
+    lifecycle._mech.release = release
+    server = _server(radio=radio)
+    radio.set_state_change_callback(server._on_radio_state_change)
+    server._server = await asyncio.start_server(server._accept_client, "127.0.0.1", 0)
+    connect_task = None
+    try:
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/ws")
+        try:
+            while True:
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message.get("type") == "state_update":
+                    assert message["data"]["data"]["connection"]["session"]["busy"] is False
+                    break
+            connect_task = asyncio.create_task(lifecycle.connect())
+            await await_until(lifecycle.startup_busy_hold_event.is_set, timeout=5.0)
+            for busy in (True, False):
+                while True:
+                    _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                    message = json.loads(payload)
+                    if message.get("type") == "state_update":
+                        session = message["data"]["changed"]["connection"]["session"]
+                        if session["busy"] is busy:
+                            info = _Writer()
+                            await server._handle_http(info, "GET", "/api/v1/info")
+                            assert session == info.payload["connection"]["session"]
+                            break
+                if busy:
+                    await lifecycle.disconnect()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        await lifecycle.disconnect()
+        if connect_task is not None:
+            await asyncio.gather(connect_task, return_exceptions=True)
+        radio.set_state_change_callback(None)
+        await server.stop()
