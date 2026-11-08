@@ -155,6 +155,8 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
   it('labels the sliders action Radio Controls', () => {
     const host = render(vi.fn());
     expect(host.querySelector('.settings-btn')?.getAttribute('aria-label')).toBe('Radio Controls');
+    expect(host.querySelector('.settings-btn')?.getAttribute('title')).toBe('Radio Controls');
+    expect(host.querySelector('.settings-btn')?.textContent?.trim()).toBe('');
     expect(host.querySelector('.settings-btn .lucide-sliders-horizontal')).not.toBeNull();
   });
 

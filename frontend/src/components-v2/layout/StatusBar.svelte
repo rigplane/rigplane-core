@@ -484,7 +484,6 @@
         aria-label={t('core.statusbar.settings.tooltip')}
       >
         <SlidersHorizontal size={14} strokeWidth={2} />
-        <span class="btn-label">{t('core.statusbar.settings.tooltip')}</span>
       </button>
     {/if}
     <label class="skin-switcher" title={t('core.statusbar.skin.selectorLabel')}>
