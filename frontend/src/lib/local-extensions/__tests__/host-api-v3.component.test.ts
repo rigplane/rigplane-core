@@ -1,4 +1,11 @@
+/** Shared wire documents are verified against real producers/handlers by:
+ * tests/test_host_api_v3_wire_contract.py::test_controller_documents
+ * tests/test_host_api_v3_wire_contract.py::test_power_handler_and_observed_publication
+ * tests/test_host_api_v3_wire_contract.py::test_af_handler_dispatch_and_observed_publication
+ * ACKs acknowledge dispatch; only a subsequent provider observation changes readings.
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import hostWire from '../../../../../tests/fixtures/host-api-v3-wire.json';
 import { flushSync, mount, unmount } from 'svelte';
 import App from '../../../App.svelte';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
@@ -48,13 +55,15 @@ function resize(width: number, height = 900) {
   window.dispatchEvent(new Event('resize'));
 }
 async function start(receivers: 1 | 2) {
-  const document: Capabilities = { ...mockCapabilities, receivers, vfoScheme: receivers === 2 ? 'main_sub' : 'ab', capabilities: ['audio', 'af_level', 'power_control'] };
+  const document: Capabilities = { ...mockCapabilities, receivers, vfoScheme: receivers === 2 ? 'main_sub' : 'single',
+    capabilities: receivers === 2 ? ['audio', 'af_level', 'power_control', 'dual_rx'] : ['audio', 'af_level', 'power_control'] };
   caps = validateCapabilities(document);
   app = mount(App, { target: globalThis.document.body });
   await vi.waitFor(() => expect(instances.length).toBeGreaterThan(0));
   const socket = instances[0];
   socket.simulateOpen();
   const state: ServerState = { ...mockState, active: receivers === 2 ? 'SUB' : 'MAIN',
+    fieldStatus: hostWire.fieldStatus as ServerState['fieldStatus'],
     main: { ...mockState.main, afLevel: 0.4 }, sub: { ...mockState.main, afLevel: 0.6 } };
   socket.simulateMessage(JSON.stringify({ type: 'state_update', data: { type: 'full',
     stateContractVersion: 1, providerGeneration: 0, data: state } }));
@@ -79,7 +88,7 @@ beforeEach(() => {
     const body = url.endsWith('/capabilities') ? caps : url.endsWith('/controller')
       ? init?.method === 'POST' ? mockControllerGrant : mockLocalControllerStatus
       : url.endsWith('/info') ? info : url.endsWith('/radio/power')
-        ? powerFails ? { error: 'power unavailable' } : { status: 'ok', power: JSON.parse(init!.body as string).state } : {};
+        ? powerFails ? { error: 'power unavailable' } : hostWire.power.response : {};
     const status = url.endsWith('/controller') && init?.method === 'POST' ? 201
       : url.endsWith('/radio/power') && powerFails ? 503 : 200;
     return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -94,6 +103,34 @@ afterEach(async () => {
 });
 
 describe('installed host API v3 with production UI handlers', () => {
+  it('publishes AF and power only after producer-verified provider readback', async () => {
+    await start(1);
+    const socket = instances[0];
+    expect(host().setListeningLevel(hostWire.af.request.params.level)).toBe(true);
+    expect(commands()).toContainEqual(expect.objectContaining({
+      name: hostWire.af.request.name, params: hostWire.af.request.params,
+    }));
+    expect(host().getListening().level).toBe(0.4);
+    let revision = 1;
+    const publish = (powerOn: boolean, afLevel: number) => {
+      revision += 1;
+      const state: ServerState = { ...mockState, powerOn, revision,
+        stateRevision: revision, observationSeq: revision,
+        main: { ...mockState.main, afLevel },
+        fieldStatus: hostWire.fieldStatus as ServerState['fieldStatus'],
+      };
+      socket.simulateMessage(JSON.stringify({ type: 'state_update', data: { type: 'full',
+        stateContractVersion: 1, providerGeneration: 0, data: state } }));
+    };
+    publish(true, hostWire.af.observed);
+    await vi.waitFor(() => { flushSync(); expect(host().getListening().level).toBe(hostWire.af.observed); });
+    expect(host().setRadioPower(false)).toBe(true); await confirm();
+    expect(requests.at(-1)?.init?.body).toBe(JSON.stringify(hostWire.power.request));
+    expect(host().getHostSnapshot().power).toBe(true);
+    publish(hostWire.power.observed, hostWire.af.observed);
+    await vi.waitFor(() => { flushSync(); expect(host().getHostSnapshot().power).toBe(false); });
+  });
+
   it.each([true, false])('keeps mounted pickers and the host catalogue synchronized with DEV=%s', async development => {
     vi.stubEnv('DEV', development);
     await start(2);

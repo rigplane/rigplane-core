@@ -8,7 +8,7 @@
 import { runtime } from '../frontend-runtime';
 import { toRxAudioProps, type RxAudioProps } from '../props/panel-props';
 import { makeRxAudioHandlers } from '../commands/panel-commands';
-import { isFieldAvailable } from '$lib/state/field-status';
+import { getAfLevelControlFeedback } from './panel-adapters';
 
 export function deriveRxAudioProps(): RxAudioProps {
   const state = runtime.state;
@@ -23,13 +23,8 @@ export function deriveRxAudioProps(): RxAudioProps {
 
 /** Radio AF readback for listening snapshots, independent of panel defaults. */
 export function deriveObservedRxAfLevel(): number | null {
-  const { state, caps } = runtime;
-  const receiver = state?.active === 'SUB' ? 'sub' : 'main';
-  const observedAf = !!state && (caps?.receivers === 1 || isFieldAvailable(state, 'active'))
-    && isFieldAvailable(state, `${receiver}.afLevel`);
-  const level = state?.[receiver]?.afLevel;
-  return observedAf && caps?.capabilities.includes('af_level') && Number.isFinite(level)
-    ? level! : null;
+  const feedback = getAfLevelControlFeedback();
+  return feedback.availability === 'available' ? feedback.confirmed : null;
 }
 
 // Stable handler object — delegates to existing command-bus logic.

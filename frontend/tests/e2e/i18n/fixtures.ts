@@ -14,10 +14,10 @@
 import type { Route } from '@playwright/test';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState, ReceiverState } from '../../../src/lib/types/state';
+import hostWire from '../../../../tests/fixtures/host-api-v3-wire.json';
 
 // ControllerAuthority.status() for an idle local authority.
-export const mockLocalControllerStatus = { protocol_version: 1, mode: 'local', state: 'idle', generation: 0,
-  ttl_ms: 6000, heartbeat_ms: 2000, remaining_ms: 0 } as const;
+export const mockLocalControllerStatus = hostWire.controllerStatus;
 
 // MOR-3534: local-mode Core opens one controller session per browser —
 // POST /api/v1/controller answers 201 with a grant (docs/api/web.md;
@@ -25,20 +25,12 @@ export const mockLocalControllerStatus = { protocol_version: 1, mode: 'local', s
 // _open_session`). Frozen deterministic values: the client validates only
 // the shape (`controller-client.ts: adopt` — 64-hex key, safe integer
 // generation, ttl_ms 6000, heartbeat_ms 2000).
-export const mockControllerGrant = {
-  controller_key: '0'.repeat(64),
-  generation: 0,
-  ttl_ms: 6000,
-  heartbeat_ms: 2000,
-} as const;
+export const mockControllerGrant = hostWire.controllerGrant;
 
 /** Ack frame real Core returns for a primary session heartbeat
  * (`controller_authority.py: heartbeat`); the generation matches
  * `mockControllerGrant`. */
-export const mockControllerHeartbeatAck = {
-  type: 'controller_heartbeat',
-  generation: mockControllerGrant.generation,
-} as const;
+export const mockControllerHeartbeatAck = hostWire.controllerHeartbeat;
 
 /** Serve `/api/v1/controller` as real local-mode Core does: GET status,
  * POST opens the frozen session (201 grant), DELETE ends it (200). */
