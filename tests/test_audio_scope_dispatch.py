@@ -184,7 +184,8 @@ async def test_audio_fft_is_explicit_and_last_unsubscribe_releases_real_rx(
     assert broadcaster._subscription is None
     assert broadcaster._legacy_tap_handle is None
     # The analyzer observes active audio, but carries no RX demand.
-    assert broadcaster._passive_tap_registry.active
+    assert broadcaster._tap_registry.active
+    assert not broadcaster._tap_registry.demand
     extra = None
     if other_consumer == "tap":
         extra = broadcaster.taps(STAGE_RX_POST_DSP).register(
@@ -210,7 +211,8 @@ async def test_audio_fft_is_explicit_and_last_unsubscribe_releases_real_rx(
     assert broadcaster._tap_registry.active
     await second.close()
     assert broadcaster._legacy_tap_handle is None
-    assert broadcaster._tap_registry.active is (other_consumer == "tap")
+    assert broadcaster._tap_registry.active
+    assert broadcaster._tap_registry.demand is (other_consumer == "tap")
     if other_consumer == "none":
         assert broadcaster._subscription is None
         assert broadcaster._relay_task is None
@@ -224,3 +226,56 @@ async def test_audio_fft_is_explicit_and_last_unsubscribe_releases_real_rx(
         else:
             await broadcaster.unsubscribe(extra)
         assert broadcaster._subscription is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("release", ["unsubscribe", "reap", "idle"])
+@pytest.mark.parametrize("demanding_tap", [False, True])
+async def test_passive_observer_receives_live_pcm_but_does_not_retain_rx(
+    release, demanding_tap
+):
+    from types import SimpleNamespace
+
+    from test_handlers_coverage import _RelayRadio
+    from rigplane.audio import AudioPacket
+    from rigplane.audio.bus import STAGE_RX_POST_DSP
+    from rigplane.web.handlers.audio import AudioBroadcaster
+
+    radio = _RelayRadio()
+    broadcaster = AudioBroadcaster(radio)
+    received: list[bytes] = []
+    broadcaster.set_passive_pcm_tap(received.append)
+    registry = broadcaster.taps(STAGE_RX_POST_DSP)
+    assert registry.active
+    assert not registry.demand
+    demanding = (
+        registry.register("cw-consumer", lambda pcm: None) if demanding_tap else None
+    )
+    alive = [True]
+    queue = await broadcaster.subscribe(ws=SimpleNamespace(is_alive=lambda: alive[0]))
+    try:
+        pcm = b"\x01\x00" * 160
+        callback = radio._start_rx.call_args.args[0]
+        callback(AudioPacket(ident=0x0080, send_seq=1, data=pcm))
+        await asyncio.wait_for(queue.get(), 2)
+        assert received == [pcm]
+        if release == "reap":
+            alive[0] = False
+            assert await broadcaster.reap_dead_clients() == 1
+        else:
+            await broadcaster.unsubscribe(queue)
+            if release == "idle":
+                if demanding is not None:
+                    registry.unregister(demanding)
+                    demanding = None
+                await broadcaster.release_relay_if_idle()
+        assert registry.active
+        assert (broadcaster._subscription is not None) is (demanding is not None)
+        if demanding is not None:
+            radio._stop_rx.assert_not_awaited()
+            registry.unregister(demanding)
+            await broadcaster.release_relay_if_idle()
+        assert broadcaster._subscription is None
+        radio._stop_rx.assert_awaited_once()
+    finally:
+        await broadcaster._stop_relay()
