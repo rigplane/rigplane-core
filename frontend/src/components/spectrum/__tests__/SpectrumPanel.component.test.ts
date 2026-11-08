@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
+import * as svelteClient from 'svelte/internal/client';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display-projection';
@@ -16,7 +17,11 @@ import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
-import type { WsChannel } from '$lib/transport/ws-client';
+import { WsChannel } from '$lib/transport/ws-client';
+import { controllerClient } from '$lib/transport/controller-client';
+import PanadapterDisplay from '../../../skins/segmentline/PanadapterDisplay.svelte';
+import { projectPeerSplitDisplay } from '../../../semantic/radio-display-model';
+import AudioSpectrumPanel from '../../../components-v2/panels/audio-scope/AudioSpectrumPanel.svelte';
 import {
   type ScopeFrame, type SpectrumAuthority, type SpectrumFilterRule } from '$lib/runtime/adapters/scope-adapter';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
@@ -26,6 +31,20 @@ import { ScopeRenderTrace, type TraceReceipt } from '$lib/runtime/scope-render-t
 import { radio } from '$lib/stores/radio.svelte';
 import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.svelte';
 
+const panelEffects = vi.hoisted(() => ({ next: 0, runs: new Map<number, number>(), origins: new Map<number, string>() }));
+const realUserEffect = svelteClient.user_effect;
+vi.spyOn(svelteClient, 'user_effect').mockImplementation((fn: () => void) => {
+  const caller = new Error().stack?.split('\n').find((line) => line.includes('.svelte:')) ?? '';
+  if (!caller.includes('SpectrumPanel.svelte')) return realUserEffect(fn);
+  const id = ++panelEffects.next;
+  panelEffects.runs.set(id, 0);
+  panelEffects.origins.set(id, caller);
+  return realUserEffect(() => {
+    panelEffects.runs.set(id, (panelEffects.runs.get(id) ?? 0) + 1);
+    return fn();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Global mocks (must be before component import)
 // ---------------------------------------------------------------------------
@@ -34,6 +53,8 @@ import { setCapabilities, clearCapabilities } from '$lib/stores/capabilities.sve
 const noop = () => {};
 const noopCanvas: Record<string, unknown> = {
   fillRect: noop,
+  fillText: vi.fn(),
+  quadraticCurveTo: noop,
   clearRect: noop,
   getImageData: (_sx: number, _sy: number, w: number, h: number) => ({
     data: new Uint8ClampedArray(w * h * 4),
@@ -226,7 +247,7 @@ function makeFakeScopeChannel(): FakeScopeChannel {
   return channel;
 }
 const harnessChannels: Record<string, FakeScopeChannel> = {};
-const scopeControllerHarness = new ScopeController(
+let scopeControllerHarness = new ScopeController(
   (name: string) => {
     harnessChannels[name] ??= makeFakeScopeChannel();
     return harnessChannels[name] as unknown as WsChannel;
@@ -256,6 +277,8 @@ runtimeHarness.state.driverBridge.stopAudio = (lease: unknown) => {
 // Observes trace-receipt subscriptions through the real controller.
 const traceReceiptSubscriptions: Array<(receipt: TraceReceipt) => void> = [];
 let traceReceiptCreations = 0;
+const capturedStreamSinks: Array<Parameters<ReturnType<ScopeController['stream']>['subscribe']>[0]> = [];
+const sharedLeaseAcquisitions = vi.fn(() => runtimeHarness.state.driverBridge.startHardware());
 const streamSubscriptions = { hardware: vi.fn(), audio_fft: vi.fn() };
 const streamUnsubscriptions = { hardware: vi.fn(), audio_fft: vi.fn() };
 for (const source of ['hardware', 'audio_fft'] as const) {
@@ -263,6 +286,7 @@ for (const source of ['hardware', 'audio_fft'] as const) {
   const original = stream.subscribe.bind(stream);
   stream.subscribe = (...args) => {
     streamSubscriptions[source]();
+    if (source === 'hardware') capturedStreamSinks.push(args[0]);
     const stop = original(...args);
     return () => { streamUnsubscriptions[source](); stop(); };
   };
@@ -448,6 +472,15 @@ const spectrumRendererHarness = vi.hoisted(() => ({
   setAvgEnabled: vi.fn(),
   setPeakHoldEnabled: vi.fn(),
 }));
+
+const audioPaint = vi.hoisted(() => vi.fn());
+vi.mock('../../../components-v2/panels/audio-scope/audio-spectrum-renderer', async (original) => {
+  const actual = await original<typeof import('../../../components-v2/panels/audio-scope/audio-spectrum-renderer')>();
+  return { ...actual, renderAudioSpectrum: (...args: Parameters<typeof actual.renderAudioSpectrum>) => {
+    audioPaint(...args);
+    return actual.renderAudioSpectrum(...args);
+  } };
+});
 
 const appTxHostHarness = vi.hoisted(() => ({
   controller: null as ManagedAppTxController | null,
@@ -813,6 +846,8 @@ function mountPanel(props: Record<string, unknown> = {}) {
 beforeEach(() => {
   components = [];
   traceReceiptCreations = 0;
+  capturedStreamSinks.length = 0;
+  panelEffects.runs.clear(); panelEffects.origins.clear();
   for (const name of Object.keys(harnessChannels)) {
     const channel = harnessChannels[name]!;
     channel.disconnect();
@@ -938,6 +973,19 @@ describe('SpectrumPanel component', () => {
     expect(traceReceiptSubscriptions).toHaveLength(0);
     expect(traceReceiptCreations).toBe(1);
   });
+  it('runs no panel effect for 100 pixel-only frames and at most once per changed geometry', () => {
+    mountPanel(); emitFrame();
+    const baseline = new Map(panelEffects.runs);
+    expect(baseline.size).toBeGreaterThan(0);
+    for (let sequence = 2; sequence <= 101; sequence++) emitFrame({ sequence });
+    expect(panelEffects.runs).toEqual(baseline);
+    emitFrame({ sequence: 102, startFreq: 13_990_000, endFreq: 14_110_000 });
+    const changed = [...panelEffects.runs].map(([id, runs]) => runs - (baseline.get(id) ?? 0));
+    expect(Math.max(...changed), JSON.stringify([...panelEffects.origins])).toBeLessThanOrEqual(1);
+    expect(changed.some((runs) => runs === 1)).toBe(true);
+    console.info('MOR-4270 SpectrumPanel effects', { registered: baseline.size, pixelOnly: 0, geometryMaximum: Math.max(...changed) });
+  });
+
   it.each([0, 1] as const)('requests the numeric receiver %s from authority', (receiver) => {
     authorityHarness.state.current = authority({ receiver });
     const target = mountPanel();
@@ -947,6 +995,7 @@ describe('SpectrumPanel component', () => {
   });
 
   it('zooms the effective View repeatedly and updates displayed bounds without new pixels', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     const target = mountPanel();
     emitFrame();
     await flushWaterfallPaint();
@@ -960,7 +1009,34 @@ describe('SpectrumPanel component', () => {
     expect(spectrumRendererHarness.lastOptions.spanHz).toBe(25_000);
   });
 
+  it('maps a click through the zoomed View and retains it after a non-drag release', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    const { spectrum } = prepareGeometry(target);
+    pointer(spectrum, 'pointerdown', 90, 150); pointer(spectrum, 'pointerup', 90, 150);
+    expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledExactlyOnceWith(14_062_000, 0);
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
+  });
+
+  it('applies repeated zoom and absolute requested bounds to a FIX scope too', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    const target = mountPanel(); emitFrame({ mode: 1 });
+    await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(read().view).toEqual({ startHz: 14_000_000, endHz: 14_100_000 });
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    expect(read().view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_000, spanHz: 50_000, sampleSpanHz: 100_000 });
+  });
+
   it('hatches both uncovered requested margins with a typed reason', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     const target = mountPanel();
     emitFrame();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click();
@@ -968,7 +1044,7 @@ describe('SpectrumPanel component', () => {
     const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
     expect(hatches).toHaveLength(2);
     expect([...hatches].map((hatch) => [hatch.style.left, hatch.style.width])).toEqual([['0%', '25%'], ['75%', '25%']]);
-    expect([...hatches].every((hatch) => hatch.title === 'View wider than source coverage')).toBe(true);
+    expect([...hatches].every((hatch) => hatch.title === 'View wider than the delivered scope coverage')).toBe(true);
     expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
   });
 
@@ -2373,7 +2449,7 @@ describe('managed scope projection (MOR-2367)', () => {
   function managed(initial: ReturnType<typeof projection> | null | undefined) {
     // The wiring's managed lease, stood in for by the harness: frames must
     // flow through the shared stream exactly as they do under SRS.
-    harnessLeases.push(mockRuntime.acquireHardwareScope());
+    harnessLeases.push(sharedLeaseAcquisitions() as TestLease);
     const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
     const onScopeDemandChange = vi.fn((enabled: boolean) => props.set('demanded', enabled));
     const target = mountPanel({
@@ -2445,7 +2521,10 @@ describe('managed scope projection (MOR-2367)', () => {
   });
   it.each([null, 'current'] as const)('never acquires a raw hardware lease for managed %s', (kind) => {
     const { target } = managed(kind === null ? null : projection());
-    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalledWith('SpectrumPanel');
+    expect(sharedLeaseAcquisitions).toHaveBeenCalledTimes(1);
+    expect(streamSubscriptions.hardware).toHaveBeenCalledTimes(1);
+    expect(harnessChannels.scope.connect).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
     if (kind === null) {
       silenceFrames();
       cleared(target);
@@ -2502,10 +2581,34 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(harnessChannels.scope?.connect).toHaveBeenCalledTimes(1);
     expect(streamSubscriptions.hardware).toHaveBeenCalledTimes(2);
   });
+  it('retires the old sink and lease when unmanaged ownership transfers to a managed gap', async () => {
+    const region = new SvelteMap<string, unknown>([['value', undefined]]);
+    const target = mountPanel({ get scopeRegion() { return region.get('value'); } });
+    emitFrame({ pixels: new Uint8Array([0, 128, 255]) });
+    await flushWaterfallPaint();
+    expect(target.querySelector('.passband-overlay')).not.toBeNull();
+    const oldSink = capturedStreamSinks[0];
+    const stream = scopeControllerHarness.stream('hardware');
+    const oldFrame = stream.latest(stream.selectedSlot!)!;
+    const oldSlot = stream.selectedSlot!;
+    const ownLease = mockRuntime.acquireHardwareScope.mock.results[0].value;
+    harnessLeases.push(sharedLeaseAcquisitions() as TestLease);
+    stream.reset();
+    region.set('value', { passband: { state: 'unknown', reason: 'not-observed' }, demanded: true, setDemand: () => {} });
+    flushSync();
+    expect(streamUnsubscriptions.hardware).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledExactlyOnceWith(ownLease);
+    cleared(target);
+    const renderCount = spectrumRendererHarness.render.mock.calls.length;
+    oldSink(oldFrame, oldSlot); flushSync(); await flushWaterfallPaint();
+    cleared(target);
+    expect(spectrumRendererHarness.render).toHaveBeenCalledTimes(renderCount);
+  });
   it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
     const { target, props, onScopeDemandChange } = managed(projection());
     const shared = harnessLeases.at(-1)!;
-    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(1);
+    expect(sharedLeaseAcquisitions).toHaveBeenCalledTimes(1);
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
     emitFrame({ pixels: new Uint8Array([0, 128, 255]) });
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
     expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([0, 128, 255]);
@@ -2522,7 +2625,7 @@ describe('managed scope projection (MOR-2367)', () => {
     else expectCenterReference(target, true);
     expect(oldCanvas?.isConnected).toBe(false);
     expect(runtimeHarness.state.mockScopeConnected).toBe(true);
-    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalledWith('SpectrumPanel');
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
     expect(mockRuntime.releaseHardwareScope).not.toHaveBeenCalled();
     pointer(window, 'pointerup', 80, 130);
     const { spectrum } = prepareGeometry(target);
@@ -2988,7 +3091,7 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.tune-line')).toBeNull();
     props.set('projection', projection()); flushSync(); cleared(target);
     expect(target.querySelector('.tune-line')).toBeNull();
-    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalledWith('SpectrumPanel');
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
     props.set('demanded', true); flushSync();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
   });
@@ -4327,5 +4430,102 @@ describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
       const target = await mountHidden(() => ({ ok: false, status: 503 }) as Response);
       expect(labels(target)).toEqual([]);
     });
+  });
+});
+
+describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
+  it('paints panel, LCD pixels and audio overlays from producer bytes with unchanged buffers', async () => {
+    const previousController = scopeControllerHarness;
+    const channels = new Map<string, WsChannel>();
+    const sockets: FakeSocket[] = [];
+    class FakeSocket {
+      static readonly OPEN = 1;
+      static readonly CONNECTING = 0;
+      static readonly CLOSED = 3;
+      readyState = 0;
+      protocol = '';
+      binaryType = '';
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(readonly url: string) { sockets.push(this); }
+      send() {}
+      open() { this.readyState = 1; this.onopen?.(new Event('open')); }
+      receive(buffer: ArrayBuffer) { this.onmessage?.(new MessageEvent('message', { data: buffer })); }
+      close() { this.readyState = 3; this.onclose?.(new CloseEvent('close', { code: 1000, wasClean: true })); }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket);
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: Element) { this.callback([{ target, contentRect: { width: 800, height: 200 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+      unobserve() {}
+      disconnect() {}
+    });
+    const sessionMode = vi.spyOn(controllerClient, 'sessionMode', 'get').mockReturnValue(false);
+    const protocols = vi.spyOn(controllerClient, 'protocols').mockReturnValue([]);
+    scopeControllerHarness = new ScopeController((name) => {
+      let channel = channels.get(name);
+      if (!channel) { channel = new WsChannel(false); channels.set(name, channel); }
+      return channel;
+    });
+    try {
+      const goldenState = structuredClone(IC7300_STATE);
+      goldenState.main!.filterWidth = 2400;
+      runtimeHarness.state.currentState = goldenState;
+      runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+      const hardwareStream = scopeControllerHarness.stream('hardware');
+      const realSubscribe = hardwareStream.subscribe.bind(hardwareStream);
+      const sinkBuffers: Array<ArrayBufferLike | null> = [];
+      vi.spyOn(hardwareStream, 'subscribe').mockImplementation((sink) => realSubscribe((frame, key) => {
+        sinkBuffers.push(frame.pixels?.buffer ?? null); sink(frame, key);
+      }));
+      const target = mountPanel();
+      const lcdTarget = document.createElement('div'); document.body.append(lcdTarget);
+      components.push(mount(PanadapterDisplay, { target: lcdTarget, props: {
+        model: projectPeerSplitDisplay(toRadioViewModel(goldenState, runtimeHarness.state.currentCaps as typeof IC7300_CAPABILITIES)!),
+        scopeStream: scopeControllerHarness.stream('hardware'),
+        audioScopeStream: scopeControllerHarness.stream('audio_fft'),
+      } }));
+      const audioTarget = document.createElement('div'); document.body.append(audioTarget);
+      components.push(mount(AudioSpectrumPanel, { target: audioTarget }));
+      flushSync();
+      expect(sockets).toHaveLength(2);
+      const hardwareSocket = sockets.find((socket) => socket.url.includes('/scope') && !socket.url.includes('audio-scope'))!;
+      const audioSocket = sockets.find((socket) => socket.url.includes('audio-scope'))!;
+      hardwareSocket.open(); audioSocket.open(); flushSync();
+      const golden = JSON.parse(readFileSync(resolve(import.meta.dirname,
+        '../../../lib/runtime/__tests__/fixtures/scope-wire.json'), 'utf8')) as { radio: number[]; audio: number[] };
+      const radioWire = new Uint8Array(golden.radio).buffer;
+      const audioWire = new Uint8Array(golden.audio).buffer;
+      hardwareSocket.receive(radioWire); audioSocket.receive(audioWire); flushSync();
+      await flushWaterfallPaint(); flushSync(); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.render).toHaveBeenCalled();
+      const panelPixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
+      expect(panelPixels.buffer).toBe(radioWire);
+      expect(panelPixels.byteOffset).toBe(16);
+      expect(sinkBuffers).toHaveLength(2);
+      expect(sinkBuffers.every((buffer) => buffer === radioWire)).toBe(true);
+      expect([...panelPixels]).toEqual([0, 64, 128, 255]);
+      expect(target.querySelector('.passband-overlay')).not.toBeNull();
+      expect(lcdTarget.querySelector('[data-testid="panadapter-display"]')).not.toBeNull();
+      expect(lcdTarget.querySelector('[data-rf-mode="live"]')).not.toBeNull();
+      expect([...lcdTarget.querySelectorAll('[data-rf-sample]')].map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual([0, 64, 128, 255]);
+      expect(lcdTarget.querySelectorAll('[data-axis-frequency]')).toHaveLength(5);
+      expect(audioPaint).toHaveBeenCalled();
+      const audioState = audioPaint.mock.calls.at(-1)![3];
+      expect(audioState.pixels.buffer).toBe(audioWire);
+      expect([...audioState.pixels]).toEqual([1, 127, 254]);
+      expect(audioState.bandwidth).toBe(3_000);
+      expect(audioState.filterWidth).toBe(2_400);
+      expect(noopCanvas.fillText).toHaveBeenCalledWith('0', 400, 197);
+    } finally {
+      for (const component of components.splice(0)) unmount(component);
+      for (const channel of channels.values()) channel.disconnect();
+
+      scopeControllerHarness = previousController;
+      sessionMode.mockRestore(); protocols.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
