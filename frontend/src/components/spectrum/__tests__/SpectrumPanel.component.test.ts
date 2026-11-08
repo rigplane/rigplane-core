@@ -2568,12 +2568,15 @@ describe('managed scope projection (MOR-2367)', () => {
     return { target, props, onScopeDemandChange };
   }
   it('does not paint a managed passband when the requested preset excludes its carrier', async () => {
+    const media = window.matchMedia;
+    window.matchMedia = vi.fn().mockReturnValue({ matches: true, addEventListener: noop, removeEventListener: noop });
     const presets = await import('$lib/runtime/scope-presets');
     const spy = vi.spyOn(presets, 'scopePresets').mockReturnValue([
       { kind: 'cw', label: 'CW segment', view: { startHz: 14_000_000, endHz: 14_040_000 } },
     ]);
     try {
       const current = passband();
+      if (!('tuple' in current)) throw new Error('Expected a current passband');
       const { target } = managed(Object.freeze({ ...current, tuple: Object.freeze({ ...current.tuple!, frequencyHz: 14_050_000 }) }));
       const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
       select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -2586,7 +2589,7 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(options).toMatchObject({ sampleSpanHz: 100_000, spanHz: 40_000, tuneHz: 0, showTuneIndicator: false });
       expect(fills).not.toContain(options.passbandFillColor);
       expect(target.querySelector('.passband-overlay')).toBeNull();
-    } finally { spy.mockRestore(); }
+    } finally { spy.mockRestore(); window.matchMedia = media; }
   });
 
   /** The managed data-plane gap: transport drops and frames stop flowing. */
