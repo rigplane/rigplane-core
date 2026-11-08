@@ -21,6 +21,9 @@ function makeMockChannel() {
   const binaryHandlers = new Set<(buf: ArrayBuffer) => void>();
   const stateHandlers = new Set<(state: string) => void>();
   const sessionHandlers = new Set<(transition: { state: string; epoch: number }) => void>();
+  const binaryHistory: Array<(buf: ArrayBuffer) => void> = [];
+  const stateHistory: Array<(state: string) => void> = [];
+  const sessionHistory: Array<(transition: { state: string; epoch: number }) => void> = [];
   let state = 'disconnected';
   let sessionEpoch = 1;
   return {
@@ -29,15 +32,15 @@ function makeMockChannel() {
     connect: vi.fn(),
     disconnect: vi.fn(),
     onBinary: vi.fn((handler: (buf: ArrayBuffer) => void) => {
-      binaryHandlers.add(handler);
+      binaryHistory.push(handler); binaryHandlers.add(handler);
       return () => { binaryHandlers.delete(handler); };
     }),
     onStateChange: vi.fn((handler: (next: string) => void) => {
-      stateHandlers.add(handler);
+      stateHistory.push(handler); stateHandlers.add(handler);
       return () => { stateHandlers.delete(handler); };
     }),
     onSessionTransition: vi.fn((handler: (transition: { state: string; epoch: number }) => void) => {
-      sessionHandlers.add(handler);
+      sessionHistory.push(handler); sessionHandlers.add(handler);
       return () => { sessionHandlers.delete(handler); };
     }),
     /** Fire a binary message to all registered handlers. */
@@ -50,6 +53,8 @@ function makeMockChannel() {
       for (const h of stateHandlers) h(next);
       for (const h of sessionHandlers) h({ state: next, epoch: sessionEpoch });
     },
+    binaryHistory, stateHistory, sessionHistory,
+    _sessionHandlerCount() { return sessionHandlers.size; },
     _binaryHandlerCount() { return binaryHandlers.size; },
     _stateHandlerCount() { return stateHandlers.size; },
   };
@@ -391,6 +396,7 @@ describe.each([
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
     expect(first.mock.lastCall?.[0]).toBe(second.mock.lastCall?.[0]);
+    expect(Object.isFrozen(first.mock.lastCall?.[0])).toBe(true);
     expect(first.mock.lastCall?.[0]).toMatchObject({
       viewStartHz: 14_100_000, viewEndHz: 14_200_000,
     });
@@ -506,5 +512,88 @@ describe.each([
       channel._fire(makeScopeFrameBuffer());
       expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver: 0, freshness: 'fresh' });
     } finally { await controller[driverName].stop(handle); vi.useRealTimers(); vi.restoreAllMocks(); }
+  });
+});
+
+describe('ScopeController retained authority and failure boundaries', () => {
+  it.each(['hardware', 'audio_fft'] as const)('retires %s provider callbacks while preserving the original demand handle and stream', async (source) => {
+    const channel = makeMockChannel(); const controller = new ScopeController(() => channel as never);
+    const driver = source === 'hardware' ? controller.hardwareScopeDriver : controller.audioFftDriver;
+    const key = source === 'hardware' ? 'scope:0' : 'audio-scope:0';
+    controller.setFrameAuthority({ source, receiver: 0, providerGeneration: 1 });
+    const stream = controller.stream(source); const geometry = vi.fn(); const sink = vi.fn();
+    stream.geometry.subscribe(geometry); stream.subscribe(sink);
+    const handle = await driver.start(); channel._setState('connected'); channel._fire(makeScopeFrameBuffer());
+    expect(stream.latest(key)).not.toBeNull();
+    const retiredBinary = channel.binaryHistory.at(-1)!;
+    const retiredState = channel.stateHistory.at(-1)!;
+    const retiredSession = channel.sessionHistory.at(-1)!;
+    controller.setFrameAuthority({ source, receiver: 0, providerGeneration: 2 });
+    expect(controller.stream(source)).toBe(stream);
+    expect(stream.latest(key)).toBeNull();
+    expect(geometry.mock.lastCall?.[0]).toBeNull();
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    expect(channel.connect).toHaveBeenCalledTimes(2);
+    retiredState('connected'); retiredSession({ state: 'connected', epoch: 99 }); retiredBinary(makeScopeFrameBuffer());
+    expect(stream.latest(key)).toBeNull();
+    expect(sink).toHaveBeenCalledTimes(1);
+    channel._setState('connected'); channel._fire(makeScopeFrameBuffer());
+    expect(sink).toHaveBeenCalledTimes(2);
+    const renewed = stream.latest(key);
+    expect(renewed).not.toBeNull();
+    retiredState('reconnecting'); retiredBinary(makeScopeFrameBuffer());
+    expect(stream.latest(key)).toBe(renewed);
+    expect(controller.snapshotHealth(source)).toEqual({ demanded: true, transport: 'connected', frameSeen: true });
+    controller.setFrameAuthority({ source, receiver: 0, providerGeneration: 2 });
+    expect(channel.connect).toHaveBeenCalledTimes(2);
+    await driver.stop(handle);
+    expect(channel.disconnect).toHaveBeenCalledTimes(2);
+    expect([channel._binaryHandlerCount(), channel._stateHandlerCount(), channel._sessionHandlerCount()]).toEqual([0, 0, 0]);
+    retiredBinary(makeScopeFrameBuffer());
+    expect(stream.latest(key)).toBeNull();
+  });
+
+  it('clears selected receiver/source facts while foreign source demand continues', async () => {
+    const channels = { scope: makeMockChannel(), 'audio-scope': makeMockChannel() };
+    const controller = new ScopeController(name => channels[name as keyof typeof channels] as never);
+    const hardware = controller.stream('hardware'); const audio = controller.stream('audio_fft');
+    const geometry = vi.fn(); hardware.geometry.subscribe(geometry);
+    controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 1 });
+    const hw = await controller.hardwareScopeDriver.start(); const au = await controller.audioFftDriver.start();
+    channels.scope._setState('connected'); channels['audio-scope']._setState('connected');
+    channels.scope._fire(makeScopeFrameBuffer()); channels['audio-scope']._fire(makeScopeFrameBuffer());
+    expect(hardware.latest('scope:0')).not.toBeNull();
+    controller.setFrameAuthority({ source: 'hardware', receiver: 1, providerGeneration: 1 });
+    expect(geometry.mock.lastCall?.[0]).toBeNull();
+    channels.scope._fire(makeScopeFrameBuffer());
+    expect(geometry.mock.lastCall?.[0]).toBeNull();
+    const foreign = makeScopeFrameBuffer(); new DataView(foreign).setUint8(1, 1); channels.scope._fire(foreign);
+    expect(geometry.mock.lastCall?.[0]).toMatchObject({ receiver: 1 });
+    controller.setFrameAuthority({ source: 'audio_fft', receiver: 0, providerGeneration: 1 });
+    expect(geometry.mock.lastCall?.[0]).toBeNull();
+    expect(channels.scope.disconnect).not.toHaveBeenCalled();
+    expect(channels['audio-scope'].disconnect).not.toHaveBeenCalled();
+    channels['audio-scope']._fire(makeScopeFrameBuffer());
+    expect(audio.latest('audio-scope:0')).not.toBeNull();
+    expect(controller.snapshotHealth('hardware').demanded).toBe(true);
+    expect(controller.snapshotHealth('audio_fft').demanded).toBe(true);
+    controller.setFrameAuthority(null);
+    await controller.hardwareScopeDriver.stop(hw); await controller.audioFftDriver.stop(au);
+  });
+
+  it.each(['audioFftDriver', 'hardwareScopeDriver'] as const)('keeps surviving %s handles live when another handle stops', async driverName => {
+    const channel = makeMockChannel(); const controller = new ScopeController(() => channel as never);
+    const source = driverName === 'hardwareScopeDriver' ? 'hardware' : 'audio_fft';
+    const stream = controller.stream(source); const sink = vi.fn(); stream.subscribe(sink);
+    const first = await controller[driverName].start(); const second = await controller[driverName].start();
+    channel._setState('connected'); channel._fire(makeScopeFrameBuffer());
+    await controller[driverName].stop(first);
+    expect(channel.disconnect).not.toHaveBeenCalled();
+    expect(controller.snapshotHealth(source)).toEqual({ demanded: true, transport: 'connected', frameSeen: true });
+    channel._fire(makeScopeFrameBuffer());
+    expect(sink).toHaveBeenCalledTimes(2);
+    await controller[driverName].stop(first); await controller[driverName].stop(second);
+    expect(channel.disconnect).toHaveBeenCalledTimes(1);
+    expect(controller.snapshotHealth(source)).toEqual({ demanded: false, transport: 'disconnected', frameSeen: false });
   });
 });

@@ -103,14 +103,16 @@ describe('ScopeStream', () => {
     expect(frame?.pixels?.buffer).toBe(buffer);
     stream.dispose();
   });
-  it('rejects malformed input without replacing latest or notifying sinks', () => {
+  it('rejects malformed input and clears displayed geometry without notifying sinks', () => {
     const input = source(); const malformed = vi.fn();
     const stream = new ScopeStream(input.port, context, 'borrowed', malformed);
     const sink = vi.fn(); const unsubscribe = stream.subscribe(sink);
-    input.emit(); const frame = stream.latest(scopeSlotKey('scope-1', 0));
+    const geometry = vi.fn(); stream.geometry.subscribe(geometry);
+    input.emit();
     input.emit([1]);
     expect(malformed).toHaveBeenCalledWith('short header');
-    expect(stream.latest(scopeSlotKey('scope-1', 0))).toBe(frame);
+    expect(stream.latest(scopeSlotKey('scope-1', 0))).toBeNull();
+    expect(geometry.mock.lastCall?.[0]).toBeNull();
     expect(sink).toHaveBeenCalledTimes(1);
     unsubscribe(); input.emit(); expect(sink).toHaveBeenCalledTimes(1);
     stream.dispose();
