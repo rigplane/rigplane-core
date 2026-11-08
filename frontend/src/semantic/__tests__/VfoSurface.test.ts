@@ -25,8 +25,6 @@ import { createRawSnippet, mount, unmount, flushSync } from 'svelte';
 import { writable, fromStore } from 'svelte/store';
 import type { ComponentProps } from 'svelte';
 import VfoSurface from '../VfoSurface.svelte';
-import ReceiverInstrumentHost from '../ReceiverInstrumentHost.svelte';
-import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import type {
   ReceiverFrequencyMount, ReceiverInstrumentHandles, ReceiverSMeterRenderer,
   ReceiverVfoAppearance,
@@ -3050,82 +3048,6 @@ describe('MOR-2467: main_sub Standard displays receiver-level MAIN/SUB records',
 // `vfoTiles="active"` renders only the ACTIVE VFO's tile — the active
 // receiver's active slot — while every default caller keeps the full list.
 // ---------------------------------------------------------------------------
-describe('MOR-4298 split TX display', () => {
-  it.each(['ab', 'ab_shared', 'main_sub'] as const)('%s keeps the single tile on known TX throughout managed transmission', (vfoScheme) => {
-    const slotted = vfoScheme === 'ab';
-    const caps = { ...FTX1_CAPABILITIES, receivers: vfoScheme === 'ab' ? 1 : 2, vfoScheme,
-      providerGeneration: FTX1_STATE.providerGeneration };
-    const state = editState(FTX1_STATE, (s) => {
-      s.active = 'MAIN'; s.split = true; s.ptt = false;
-      s.main.activeSlot = 'A';
-      s.main.freqHz = 29_600_000;
-      s.main.vfoA = { freqHz: 29_600_000, mode: 'FM', filterNum: 1, dataMode: false };
-      s.main.vfoB = { freqHz: 29_100_000, mode: 'FM', filterNum: 1, dataMode: false };
-      s.sub.freqHz = 29_100_000;
-      s.txTarget = { status: 'known', receiver: slotted ? 'MAIN' : 'SUB', slot: slotted ? 'B' : null, frequencyHz: 29_100_000 };
-      for (const path of ['active', 'split', 'ptt', 'txTarget', 'main.activeSlot', 'main.freqHz',
-        'main.vfoA.freqHz', 'main.vfoA.mode', 'main.vfoA.filterNum',
-        'main.vfoB.freqHz', 'main.vfoB.mode', 'main.vfoB.filterNum', 'sub.freqHz']) {
-        s.fieldStatus![path] = { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 0 };
-      }
-    });
-    const tx = new ManagedAppTxHarness();
-    const model = writable(toRadioViewModel(state, caps, tx.controller.snapshot())!);
-    const live = fromStore(model);
-    const phone = mountSurface({ get viewModel() { return live.current; }, vfoTiles: 'active' });
-    const desktop = mountSurface({ get viewModel() { return live.current; }, vfoTiles: 'all' });
-    const hostedTarget = document.createElement('div'); document.body.appendChild(hostedTarget);
-    const host = mount(ReceiverInstrumentHost, { target: hostedTarget, props: {
-      subscribeControlAuthority: (handler) => {
-        const unsubscribe = model.subscribe((view) => handler({ state, caps, view,
-          session: { state: 'connected', epoch: 1 } }));
-        return unsubscribe;
-      },
-      children: createRawSnippet<[ReceiverInstrumentHandles]>((handles) => ({
-        render: () => '<div></div>',
-        setup: (element) => {
-          const child = mount(VfoSurface, { target: element, props: {
-            get viewModel() { return live.current; }, vfoTiles: 'active',
-            get receiverInstruments() { return handles(); },
-          } });
-          return () => { void unmount(child); };
-        },
-      })),
-    } });
-    components.push(host); flushSync();
-    const frequency = (root: HTMLElement, identity?: string) => root.querySelector(
-      identity ? `[data-vfo-${slotted ? 'slot' : 'receiver'}="${identity}"] [data-vfo-freq]` : '[data-vfo-freq]',
-    )?.textContent?.replace(/\s/g, '');
-    const assertFrequencies = (phoneHz: string) => {
-      expect(phone.querySelectorAll('[data-vfo-tile]')).toHaveLength(1);
-      const expectedIdentity = phoneHz === '29.100.000' ? (slotted ? 'B' : 'SUB') : (slotted ? 'A' : 'MAIN');
-      for (const root of [phone, hostedTarget]) {
-        expect(root.querySelector('[data-vfo-tile]')?.getAttribute(`data-vfo-${slotted ? 'slot' : 'receiver'}`)).toBe(expectedIdentity);
-      }
-      expect(frequency(phone)).toBe(phoneHz);
-      expect(frequency(hostedTarget)).toBe(phoneHz);
-      expect(frequency(desktop, slotted ? 'A' : 'MAIN')).toBe('29.600.000');
-      expect(frequency(desktop, slotted ? 'B' : 'SUB')).toBe('29.100.000');
-    };
-    assertFrequencies('29.600.000');
-    tx.emitServerSnapshot({ intent: 'ptt', observedPtt: 'on' });
-    for (let revision = 0; revision < 3; revision++) {
-      const next = editState(state, (s) => { s.revision += revision + 1; s.ptt = false; });
-      model.set(toRadioViewModel(next, caps, tx.controller.snapshot())!); flushSync();
-      assertFrequencies('29.100.000');
-    }
-    const unknown = editState(state, (s) => { s.txTarget = { status: 'unknown', reason: 'not-observed' }; });
-    model.set(toRadioViewModel(unknown, caps, tx.controller.snapshot())!); flushSync();
-    assertFrequencies('29.600.000');
-    const noSplit = editState(state, (s) => { s.split = false; });
-    model.set(toRadioViewModel(noSplit, caps, tx.controller.snapshot())!); flushSync();
-    assertFrequencies('29.600.000');
-    tx.emitServerSnapshot({ intent: 'rx', observedPtt: 'off' });
-    model.set(toRadioViewModel(state, caps, tx.controller.snapshot())!); flushSync();
-    assertFrequencies('29.600.000');
-  });
-});
-
 describe('MOR-2662 — the one-tile presentation (vfoTiles="active")', () => {
   const ab = topologyFixtures['1/ab'];
   const dual = topologyFixtures['2/main_sub'];

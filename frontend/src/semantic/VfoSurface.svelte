@@ -476,7 +476,6 @@
   }
 
   function hasDigitReadout(vfo: VfoViewModel): boolean {
-    if (singleTileTxTarget && vfo.isTxTarget) return false;
     if (receiverInstruments !== undefined) return vfo.isActiveSlot
       && (vfo.receiver === 'MAIN' || receiverInstruments.subFrequency !== undefined);
     return vfo.isActiveSlot && onTuneFrequency !== undefined
@@ -484,7 +483,6 @@
   }
 
   function hasTunableFrequency(vfo: VfoViewModel): boolean {
-    if (singleTileTxTarget && vfo.isTxTarget) return false;
     if (receiverInstruments !== undefined) return vfo.isActiveSlot
       && receiverInstruments.frequencyTunable(vfo.receiver)
       && (vfo.receiver === 'MAIN' || receiverInstruments.subFrequency !== undefined);
@@ -594,8 +592,7 @@
 
   /**
    * MOR-2662 — the list this surface's semantic `.vfo-list` renders.
-   * `'active'` (the phone) keeps exactly ONE tile: the active VFO's, or the
-   * known split TX target while transmitting. The
+   * `'active'` (the phone) keeps exactly ONE tile: the active VFO's. The
    * startup window — no active receiver observed yet, so NO VFO carries
    * `isActive` — falls back to MAIN's active slot (the same receiver the
    * phone's own header already defaults to), so the tile's slot stays
@@ -603,26 +600,8 @@
    * whose slot view was never seen keeps its one unknown-slot position.
    * Never a second tile in any state.
    */
-  let singleTileTxTarget = $derived(
-    vfoTiles === 'active' && viewModel.split.status === 'known' && viewModel.split.value
-      && viewModel.radioWideIndicators?.rfState === 'transmitting'
-      && viewModel.txTarget.status === 'known'
-      ? viewModel.vfos.find((vfo) => vfo.isTxTarget) : undefined,
-  );
   let listVfos = $derived.by(() => {
     if (vfoTiles !== 'active') return viewModel.vfos;
-    if (singleTileTxTarget && viewModel.txTarget.status === 'known') {
-      return [{
-        ...singleTileTxTarget,
-        frequencyHz: viewModel.txTarget.frequencyHz,
-        display: singleTileTxTarget.display === undefined ? undefined : {
-          ...singleTileTxTarget.display,
-          frequencyHz: viewModel.txTarget.frequencyHz === null
-            ? { state: 'unknown' as const, reason: 'not-observed' as const }
-            : { state: 'current' as const, value: viewModel.txTarget.frequencyHz },
-        },
-      }];
-    }
     const active = viewModel.vfos.filter((vfo) => vfo.isActive);
     if (active.length > 0) return active;
     const mainActiveSlot = viewModel.vfos.filter(
