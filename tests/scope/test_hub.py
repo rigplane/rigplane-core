@@ -519,16 +519,17 @@ async def test_width_requests_above_native_are_granted_at_native_resolution(
     virtual_clock,
 ):
     profile = load_rig(Path("rigs/ic7300.toml")).to_profile()
-    native_source = RadioScopeSource(profile, NativeWriter(), native_width=689)
+    native_source = RadioScopeSource(profile, NativeWriter())
     native_encoder = Encoder()
     native_hub = ScopeHub(encoder=native_encoder)
     native_hub.register("radio689", native_source)
     view = View(10_000_300, 10_002_700)
     wide = await native_hub.subscribe(Subscription("radio689", 0, view, 2800, 20))
-    assert wide.granted.width == 689
+    assert wide.granted.width == 2800
     native_source.feed_frame(
         ScopeFrame(0, 0, 10_000_300, 10_002_700, bytes([160]) * 689, False)
     )
+    assert wide.granted.width == 689
     assert native_encoder.frames[-1].width == 689
     assert native_encoder.frames[-1].pixels == bytes([160]) * 689
     await wide.close()
@@ -537,3 +538,27 @@ async def test_width_requests_above_native_are_granted_at_native_resolution(
     exact = await hub.subscribe(request(1024))
     assert exact.granted.width == 1024
     await exact.close()
+
+
+async def test_queued_radio_frames_keep_their_observed_width_snapshot():
+    import threading
+
+    profile = load_rig(Path("rigs/ic7610.toml")).to_profile()
+    source = RadioScopeSource(profile, NativeWriter())
+    encoder = Encoder()
+    hub = ScopeHub(encoder=encoder)
+    hub.register("radio", source)
+    sub = await hub.subscribe(Subscription("radio", 0, View(10_000_300, 10_002_700), 2800, 20))
+
+    def produce():
+        for width in (475, 689):
+            source.feed_frame(ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * width, False))
+
+    producer = threading.Thread(target=produce)
+    producer.start()
+    producer.join()
+    await await_until(lambda: len(encoder.frames) == 2)
+    assert [frame.width for frame in encoder.frames] == [475, 689]
+    assert [len(frame.pixels) for frame in encoder.frames] == [475, 689]
+    assert source.capabilities().native_width == 689
+    await sub.close()
