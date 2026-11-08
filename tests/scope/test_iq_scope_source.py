@@ -33,3 +33,33 @@ async def test_partial_iq_view_zoom_never_retunes_provider():
     view = View(10_012_000, 10_032_000)
     assert (await source.set_view(view)).coverage == Coverage(10_012_000, 10_024_000)
     assert provider.center_freq_hz == 10_000_000
+
+
+async def test_follow_tracks_provider_retune_through_real_hub():
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import FollowView, Subscription
+
+    provider = FakeIqSource(center_freq_hz=10_000_000, sample_rate_hz=48000,
+                            block_size=4096, tones=[(6000, -6)], seed=21)
+    source = IqFftSource(provider, native_width=512, start_worker=False)
+    encoded = []
+    def encode(frame):
+        encoded.append(frame)
+        return b'frame'
+    hub = ScopeHub(encoder=encode)
+    hub.register('iq', source)
+    sub = await hub.subscribe(Subscription('iq', None, FollowView('vfo', 20000), 512, 20))
+    try:
+        provider.set_center_freq(11_000_000)
+        provider.pump(1)
+        source.producer.process_pending()
+        assert await sub.receive() == b'frame'
+        frame = encoded[-1]
+        assert frame.receiver is None
+        assert not frame.out_of_range
+        assert frame.coverage_start_hz == 10_990_000
+        assert frame.coverage_end_hz == 11_010_000
+        assert frame.pixels is not None
+    finally:
+        await sub.close()
+    assert not provider.is_open
