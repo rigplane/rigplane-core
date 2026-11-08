@@ -59,8 +59,6 @@ const DEFAULT_TIMING: ScopeFrameTiming = {
   clearInterval: (handle) => clearInterval(handle),
 };
 
-const LIVENESS_TICK_MS = 250;
-
 export class ScopeController {
   get hardwareScopeDemanded() { return this._health.hardware.demanded; }
   get hardwareScopeConnected() { return this._health.hardware.transport === 'connected'; }
@@ -78,7 +76,7 @@ export class ScopeController {
   private _hardwareGeneration = 0;
   private _acceptedSequence = 0;
   private _arrivals: Record<ScopeSource, number | null> = { hardware: null, audio_fft: null };
-  private _clockHandle: IntervalHandle | null = null;
+  private _clockHandle: TimerHandle | null = null;
   private _registeredHosts = new WeakSet<object>();
   private _health: Record<ScopeSource, ScopeHealth> = $state({
     hardware: { demanded: false, transport: 'disconnected', frameSeen: false },
@@ -342,17 +340,32 @@ export class ScopeController {
     return Number.isFinite(age) && age >= 0 && age < SCOPE_FRAME_SILENCE_MS;
   }
 
-  /** One shared liveness clock: stale transitions without per-frame timers. */
+  /** Keep the pending earliest wake; new arrivals update timestamps without rearming it. */
   private _ensureClock(): void {
-    const anyLive = (['hardware', 'audio_fft'] as const).some((source) => {
+    const now = this._timing.now();
+    let deadline = Infinity;
+    for (const source of ['hardware', 'audio_fft'] as const) {
       const health = this._readHealth(source);
-      return health.demanded && health.transport === 'connected';
-    });
-    if (anyLive && this._clockHandle === null) {
-      this._clockHandle = this._timing.setInterval(() => this._tick(), LIVENESS_TICK_MS);
-    } else if (!anyLive && this._clockHandle !== null) {
-      this._timing.clearInterval(this._clockHandle);
+      if (!health.demanded || health.transport !== 'connected') continue;
+      const slot = this._streams[source]?.selectedSlot;
+      const selectedAt = slot == null ? undefined : this._slotArrivals[source].get(slot);
+      for (const arrival of [this._arrivals[source], selectedAt]) {
+        if (arrival == null) continue;
+        const age = now - arrival;
+        if (Number.isFinite(age) && age >= 0 && age < SCOPE_FRAME_SILENCE_MS) {
+          deadline = Math.min(deadline, arrival + SCOPE_FRAME_SILENCE_MS);
+        }
+      }
+    }
+    if (!Number.isFinite(deadline)) {
+      if (this._clockHandle !== null) this._timing.clearTimeout(this._clockHandle);
       this._clockHandle = null;
+    } else if (this._clockHandle === null) {
+      this._clockHandle = this._timing.setTimeout(() => {
+        this._clockHandle = null;
+        this._tick();
+        this._ensureClock();
+      }, deadline - now);
     }
   }
 

@@ -30,7 +30,7 @@ import {
   deriveIfShift, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
 } from '$lib/radio/filter-controls';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
-import { resolveLcdSpectrumFrame, toLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
+import { resolveLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
 
 // MOR-3677: `lastObservedMonotonic` is part of every observed FieldStatus
 // the server publishes (the FTX-1/IC-7300 captures carry it), and the
@@ -577,10 +577,10 @@ describe('MOR-2326 typed scope geometry and authority boundaries', () => {
     expect(parsed.ok).toBe(true); if (!parsed.ok) throw new Error(parsed.reason);
     expect(parsed.frame).toMatchObject({ outOfRange: true, viewStartHz: 144_000_000, viewEndHz: 148_000_000, pixels: null });
     expect(parsed.geometry).toMatchObject({ outOfRange: true, hasPixels: false });
-    const candidate = toLcdSpectrumFrame(parsed.frame, parsed.geometry);
-    expect(candidate).toMatchObject({ state: 'out-of-range', startHz: 144_000_000, endHz: 148_000_000, pixels: null });
+    const candidate = parsed.geometry;
+    expect(candidate).toMatchObject({ outOfRange: true, view: { startHz: 144_000_000, endHz: 148_000_000 }, hasPixels: false });
     expect(resolveLcdSpectrumFrame(candidate, { source: 'hardware', receiver: 'SUB' }).state).toBe('out-of-range');
-    expect(resolveLcdSpectrumFrame(toLcdSpectrumFrame(parsed.frame, { ...parsed.geometry, freshness: 'stale' }),
+    expect(resolveLcdSpectrumFrame({ ...parsed.geometry, freshness: 'stale' },
       { source: 'hardware', receiver: 'SUB' }).state).toBe('ghost');
   });
 
@@ -589,12 +589,15 @@ describe('MOR-2326 typed scope geometry and authority boundaries', () => {
       const buffer = wireBuffer(fixtures.radio);
       const parsed = ingressScopeFrame(buffer, { source, sourceId: 'scope', epoch: 3 });
       expect(parsed.ok).toBe(true); if (!parsed.ok) throw new Error(parsed.reason);
-      const result = toLcdSpectrumFrame(parsed.frame, parsed.geometry);
-      expect(result).toEqual({ source: displaySource, receiver: 'MAIN', freshness: 'fresh',
-        startHz: 14_000_000, endHz: 14_100_000, pixels: new Uint8Array([0, 64, 128, 255]) });
+      const result = resolveLcdSpectrumFrame(parsed.geometry, { source: displaySource, receiver: 'MAIN' });
+      expect(result).toEqual({ state: 'live', geometry: parsed.geometry });
+      expect(parsed.geometry).toMatchObject({ source, receiver: 0, freshness: 'fresh',
+        view: { startHz: 14_000_000, endHz: 14_100_000 } });
+      expect(parsed.frame.pixels).toEqual(new Uint8Array([0, 64, 128, 255]));
       expect(Object.isFrozen(parsed.frame)).toBe(true);
-      expect(Object.isFrozen(result)).toBe(true);
-      expect(result!.pixels!.buffer).toBe(buffer);
+      if (result.state === 'ghost') throw new Error(result.reason);
+      expect(result.geometry).toBe(parsed.geometry);
+      expect(parsed.frame.pixels!.buffer).toBe(buffer);
       expect(SCOPE_FRAME_SILENCE_MS).toBe(500);
     });
 
