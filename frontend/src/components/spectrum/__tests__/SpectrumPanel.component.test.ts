@@ -2824,6 +2824,29 @@ describe('managed scope projection (MOR-2367)', () => {
     oldSink(oldFrame, oldSlot); flushSync(); await flushWaterfallPaint();
     cleared(target);
     expect(spectrumRendererHarness.render).toHaveBeenCalledTimes(renderCount);
+    // MOR-4271 review: the stream-effect cleanup CANCELS the panorama
+    // scheduler (dispose would kill it permanently) — after this
+    // unmanaged→managed transition the next CENTER retarget must still
+    // receive animation ticks and reach its target. Re-arm the managed
+    // region, deliver a frame whose center moved, then retarget the managed
+    // tuple's center: the visual center glides to the new confirmed center.
+    region.set('value', {
+      passband: Object.freeze({ state: 'current', tuple: Object.freeze({
+        frequencyHz: 14_050_000, mode: 'USB', widthHz: 2_400, shiftHz: 0, frameMode: 0,
+        startHz: 14_000_000, endHz: 14_100_000 }) }),
+      demanded: true, setDemand: () => {},
+    });
+    emitFrame({ startFreq: 14_010_000, endFreq: 14_110_000 });
+    flushSync();
+    region.set('value', {
+      passband: Object.freeze({ state: 'current', tuple: Object.freeze({
+        frequencyHz: 14_090_000, mode: 'USB', widthHz: 2_400, shiftHz: 0, frameMode: 0,
+        startHz: 14_010_000, endHz: 14_110_000 }) }),
+      demanded: true, setDemand: () => {},
+    });
+    flushSync();
+    const shifts = () => spectrumRendererHarness.render.mock.calls.map((call) => call[4]?.panoramaShiftHz ?? 0);
+    await vi.waitFor(() => expect(shifts().at(-1)).toBe(14_090_000 - 14_060_000));
   });
   it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
     const { target, props, onScopeDemandChange } = managed(projection());

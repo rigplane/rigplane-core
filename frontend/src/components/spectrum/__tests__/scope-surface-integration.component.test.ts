@@ -27,6 +27,8 @@ import { mount, unmount, flushSync } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import { WsChannel } from '$lib/transport/ws-client';
+import { controllerClient } from '$lib/transport/controller-client';
+import { MockWebSocket, instances as wsInstances } from '$lib/transport/__tests__/support/fake-ws-backend';
 import { PresentationResourceHost } from '$lib/runtime/resource-host';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { SpectrumRenderer } from '$lib/renderers/spectrum-renderer';
@@ -352,60 +354,21 @@ function wrapCanvasWidth(canvas: HTMLCanvasElement): void {
 }
 
 // ---------------------------------------------------------------------------
-// Real ScopeController over fake channels (the transport seam)
+// Real ScopeController over real WsChannels backed by MockWebSocket
+// (the transport seam — producer-derived, no hand-rolled channel fake)
 // ---------------------------------------------------------------------------
 
-type FakeScopeChannel = {
-  connect: Mock<() => void>;
-  disconnect: Mock<() => void>;
-  transport?: string;
-  sessionEpoch: number;
-  onBinary(handler: (buffer: ArrayBuffer) => void): () => void;
-  onStateChange(handler: (state: string) => void): () => void;
-  onSessionTransition(handler: (transition: { state: string; epoch: number }) => void): () => void;
-  fire(bytes: Uint8Array<ArrayBuffer>): void;
-  setState(next: string): void;
-};
-function makeFakeScopeChannel(): FakeScopeChannel {
-  const binary = new Set<(buffer: ArrayBuffer) => void>();
-  const states = new Set<(state: string) => void>();
-  const sessions = new Set<(transition: { state: string; epoch: number }) => void>();
-  let transport = 'disconnected';
-  const channel = {
-    connect: vi.fn(() => {
-      if (transport === 'connected') return;
-      transport = 'connected';
-      channel.sessionEpoch += 1;
-      const transition = { state: 'connected', epoch: channel.sessionEpoch };
-      for (const update of states) update(transition.state);
-      for (const update of sessions) update(transition);
-    }),
-    disconnect: vi.fn(() => {
-      transport = 'disconnected';
-      for (const update of states) update('disconnected');
-      for (const update of sessions) update({ state: 'disconnected', epoch: channel.sessionEpoch });
-    }),
-    onBinary(handler: (buffer: ArrayBuffer) => void) { binary.add(handler); return () => { binary.delete(handler); }; },
-    onStateChange(handler: (state: string) => void) { states.add(handler); return () => { states.delete(handler); }; },
-    onSessionTransition(handler: (transition: { state: string; epoch: number }) => void) { sessions.add(handler); return () => { sessions.delete(handler); }; },
-    fire(bytes: Uint8Array<ArrayBuffer>) { for (const handler of binary) handler(bytes.buffer); },
-    sessionEpoch: 0,
-  };
-  Object.defineProperty(channel, 'transport', {
-    configurable: true,
-    get: () => transport,
-  });
-  return channel as unknown as FakeScopeChannel;
-}
+const SCOPE_URL = '/api/v1/scope';
+const AUDIO_SCOPE_URL = '/api/v1/audio-scope';
 
-let harnessChannels: Record<string, FakeScopeChannel> = {};
+let harnessChannels: Record<string, WsChannel> = {};
 let controller: ScopeController;
 let txHarness: ManagedAppTxHarness;
 
 function wireController(): void {
   controller = new ScopeController((name: string) => {
-    harnessChannels[name] ??= makeFakeScopeChannel();
-    return harnessChannels[name] as unknown as WsChannel;
+    harnessChannels[name] ??= new WsChannel(false);
+    return harnessChannels[name]!;
   });
   mockRuntime.scope = {
     stream: (source) => controller.stream(source),
@@ -462,29 +425,54 @@ function encodeScopeWire(overrides: EmitOverrides): Uint8Array<ArrayBuffer> {
   bytes.set(pixels, 16);
   return bytes;
 }
-/** Fire one synthetic hardware frame through the fake channel. */
+/** The MockWebSocket the real channel opened for `name`. */
+function socketFor(name: string): MockWebSocket {
+  const url = name === 'audio-scope' ? AUDIO_SCOPE_URL : SCOPE_URL;
+  const socket = wsInstances.find((candidate) =>
+    candidate.url.includes(url) && !(name === 'scope' && candidate.url.includes(AUDIO_SCOPE_URL)));
+  if (!socket) throw new Error(`no socket opened for ${name} — did the driver connect?`);
+  return socket;
+}
+
+/** Deliver one synthetic hardware frame through the real channel. */
 function emitFrame(overrides: EmitOverrides = {}): void {
   const frame: EmitOverrides = {
     receiver: 0, mode: 0, startFreq: 14_000_000, endFreq: 14_100_000,
     outOfRange: false, ...overrides,
   };
-  harnessChannels.scope!.fire(encodeScopeWire(frame));
+  socketFor('scope').simulateMessage(encodeScopeWire(frame).buffer);
   flushSync();
 }
-/** Fire one synthetic audio-FFT frame through the fake channel. */
+/** Deliver one synthetic audio-FFT frame through the real channel. */
 function emitAudioFrame(overrides: EmitOverrides = {}): void {
   const frame: EmitOverrides = {
     receiver: 1, mode: 1, startFreq: 0, endFreq: 48_000,
     outOfRange: false, ...overrides,
   };
-  harnessChannels['audio-scope'] ??= makeFakeScopeChannel();
-  harnessChannels['audio-scope'].fire(encodeScopeWire(frame));
+  socketFor('audio-scope').simulateMessage(encodeScopeWire(frame).buffer);
   flushSync();
 }
 function deliverGoldenBytes(): void {
-  harnessChannels.scope!.fire(new Uint8Array(goldenScopeWire.radio));
-  harnessChannels['audio-scope']!.fire(new Uint8Array(goldenScopeWire.audio));
+  socketFor('scope').simulateMessage(new Uint8Array(goldenScopeWire.radio).buffer);
+  socketFor('audio-scope').simulateMessage(new Uint8Array(goldenScopeWire.audio).buffer);
   flushSync();
+}
+
+/**
+ * Bring both transports up after mount and assert the channel state and the
+ * controller transport health agree before any frame is delivered.
+ */
+async function openChannels(): Promise<void> {
+  socketFor('scope').simulateOpen();
+  await vi.waitFor(() => {
+    expect(harnessChannels.scope!.state).toBe('connected');
+    expect(controller.snapshotHealth('hardware').transport).toBe('connected');
+  });
+  socketFor('audio-scope').simulateOpen();
+  await vi.waitFor(() => {
+    expect(harnessChannels['audio-scope']!.state).toBe('connected');
+    expect(controller.snapshotHealth('audio_fft').transport).toBe('connected');
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -621,9 +609,10 @@ function canvasesSafe(): Partial<Record<'spectrum' | 'waterfall' | 'audio' | 'am
   };
 }
 
-/** Mount everything, hold every canvas at 0x0, then deliver one frame so the
- *  panel canvases mount (they gate on the first geometry) and also report 0x0. */
-function mountAllUnsized(): ReturnType<typeof canvases> {
+/** Mount everything and hold the audio/amber canvases at 0x0. Frames are
+ *  delivered by the caller AFTER openChannels() — the controller only
+ *  accepts them on a connected transport. */
+function mountAllUnsized(): void {
   mountPanel();
   mountAudioPanel();
   mountAmber();
@@ -631,13 +620,14 @@ function mountAllUnsized(): ReturnType<typeof canvases> {
   const early = canvasesSafe();
   if (early.audio) fireResize(early.audio, 0, 0);
   if (early.amber) fireResize(early.amber, 0, 0);
-  emitFrame();
-  emitAudioFrame();
+}
+
+/** The panel canvases mount on the first accepted frame — report 0x0. */
+function holdPanelCanvasesAtZero(): void {
   intersectAll(true);
   const found = canvases();
   fireResize(found.spectrum, 0, 0);
   fireResize(found.waterfall, 0, 0);
-  return found;
 }
 
 function sizeAllReal(): void {
@@ -662,12 +652,6 @@ function paintCounts(): PaintCounts {
 
 function readSubscription(): { width: number; maxFps: number; sourceId: string } {
   return JSON.parse(panelTarget.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-}
-
-async function waitForAudioChannel(): Promise<void> {
-  await vi.waitFor(() => {
-    expect(harnessChannels['audio-scope']?.transport).toBe('connected');
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +683,13 @@ beforeEach(() => {
     return nextRafId;
   });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafCallbacks.delete(id); });
+  // Real WsChannel objects open real (mock) WebSockets through the global
+  // constructor; scope channels are plain local sockets (no controller
+  // session handshake).
+  wsInstances.length = 0;
+  vi.stubGlobal('WebSocket', MockWebSocket);
+  vi.spyOn(controllerClient, 'sessionMode', 'get').mockReturnValue(false);
+  vi.spyOn(controllerClient, 'protocols').mockReturnValue([]);
   vi.stubGlobal('matchMedia', (query: string) => ({
     matches: false,
     media: query,
@@ -790,7 +781,10 @@ afterEach(async () => {
 describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', () => {
   it('(a) mount at 0x0 then sized paints once without a window resize', async () => {
     mountAllUnsized();
-    await waitForAudioChannel();
+    await openChannels();
+    emitFrame();
+    holdPanelCanvasesAtZero();
+    emitAudioFrame();
 
     // Deliveries while every canvas reports 0x0: nothing may paint.
     emitFrame({ sequence: 2 });
@@ -818,7 +812,10 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
 
   it('(b) 60 frames in one animation frame produce exactly one draw per canvas', async () => {
     mountAllUnsized();
-    await waitForAudioChannel();
+    await openChannels();
+    emitFrame();
+    holdPanelCanvasesAtZero();
+    emitAudioFrame();
     sizeAllReal();
     emitFrame({ sequence: 10 });
     emitAudioFrame({ sequence: 10 });
@@ -851,7 +848,10 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
 
   it('(c) hidden stops all scheduling, the subscription reports maxFps 0, and visibility restores from cache', async () => {
     mountAllUnsized();
-    await waitForAudioChannel();
+    await openChannels();
+    emitFrame();
+    holdPanelCanvasesAtZero();
+    emitAudioFrame();
     sizeAllReal();
     emitFrame({ sequence: 20 });
     emitAudioFrame({ sequence: 20 });
@@ -909,7 +909,10 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
 
   it('(d) a devicePixelRatio change re-applies each backing store exactly once', async () => {
     mountAllUnsized();
-    await waitForAudioChannel();
+    await openChannels();
+    emitFrame();
+    holdPanelCanvasesAtZero();
+    emitAudioFrame();
     const found = canvases(); // wraps canvas.width counting before sizing
     sizeAllReal();
     emitFrame({ sequence: 30 });
@@ -939,7 +942,10 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
 
   it('integration sanity: golden wire frames paint with the fixture pixels unchanged', async () => {
     mountAllUnsized();
-    await waitForAudioChannel();
+    await openChannels();
+    emitFrame();
+    holdPanelCanvasesAtZero();
+    emitAudioFrame();
     sizeAllReal();
     deliverGoldenBytes();
     settleRaf();

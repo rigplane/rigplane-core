@@ -167,6 +167,29 @@ describe('CanvasSurface sizing', () => {
     destroy();
   });
 
+  it('keeps the fractional content box and rounds the backing product (MOR-4271 visual parity)', () => {
+    const { surface, destroy } = createSurface({ stageScale: () => 1 });
+    const canvas = document.createElement('canvas');
+    const onSize = vi.fn();
+    surface.onSizeChanged(onSize);
+    const detach = surface.attach(canvas);
+
+    fireResize(canvas, 914.4, 324.6);
+    flushSync();
+    expect(surface.cssW).toBeCloseTo(914.4, 9);
+    expect(surface.cssH).toBeCloseTo(324.6, 9);
+    expect(surface.sized).toBe(true);
+    // canvasBackingSize rounds css × pixelScale — the pre-surface waterfall
+    // fed the un-floored rect straight into this (a 324.6px box backs 325
+    // device pixels; flooring the rect first changed it to 324 and shifted
+    // the painted top row by a sub-pixel band).
+    expect(canvas.width).toBe(914);
+    expect(canvas.height).toBe(325);
+
+    detach();
+    destroy();
+  });
+
   it('emits sizeChanged once for repeated identical rects', () => {
     const { surface, destroy } = createSurface({ stageScale: () => 1 });
     const canvas = document.createElement('canvas');

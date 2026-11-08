@@ -99,7 +99,10 @@
           contour,
           contourFreq,
         };
-        renderAudioSpectrum(ctx, surface.cssW, surface.cssH, state, rendererState);
+        // The pre-surface component floored the observer rect for drawing;
+        // the surface now carries the fractional box, so the historical
+        // floor lives here.
+        renderAudioSpectrum(ctx, Math.max(1, Math.floor(surface.cssW)), Math.max(1, Math.floor(surface.cssH)), state, rendererState);
       }
     }
   }

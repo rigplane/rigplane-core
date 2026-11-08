@@ -10,6 +10,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import {
+  setLcdContrastPreset,
+} from '$lib/runtime/adapters/lcd-chrome-adapter';
 import AmberAfScope from '../AmberAfScope.svelte';
 
 let component: ReturnType<typeof mount> | undefined;
@@ -17,6 +20,8 @@ let target: HTMLDivElement;
 let rafRequestCount: number;
 let nextHandle = 0;
 let scheduled: Map<number, ReturnType<typeof setTimeout>>;
+let inkFills: string[];
+let currentFillStyle: string;
 
 function macrotask(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
@@ -27,6 +32,9 @@ beforeEach(() => {
   document.body.appendChild(target);
   rafRequestCount = 0;
   scheduled = new Map();
+  inkFills = [];
+  currentFillStyle = '';
+  setLcdContrastPreset('MID');
   // Auto-running rAF: every requested frame runs on the next macrotask, so
   // a perpetual loop cannot hide behind an unflushed manual queue.
   // cancelAnimationFrame really cancels, so unmount stops the loop.
@@ -66,10 +74,19 @@ beforeEach(() => {
   });
   vi.spyOn(Math, 'random').mockReturnValue(0.9);
   const noop = () => {};
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
-    clearRect: noop, setTransform: noop, measureText: (text: string) => ({ width: String(text).length * 8 }),
-    fillText: noop, beginPath: noop, moveTo: noop, lineTo: noop, stroke: noop, fillRect: noop,
-  } as unknown as CanvasRenderingContext2D);
+  const ctx = {
+    clearRect: noop, setTransform: noop,
+    measureText: (text: string) => ({ width: String(text).length * 8 }),
+    beginPath: noop, moveTo: noop, lineTo: noop, stroke: noop,
+    fillRect: () => { inkFills.push(currentFillStyle); },
+    fillText: () => { inkFills.push(currentFillStyle); },
+  } as unknown as CanvasRenderingContext2D;
+  Object.defineProperty(ctx, 'fillStyle', {
+    configurable: true,
+    get: () => currentFillStyle,
+    set: (value: string) => { currentFillStyle = String(value); },
+  });
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx);
 });
 
 afterEach(async () => {
@@ -98,5 +115,38 @@ describe('AmberAfScope on ScopeRenderScheduler (MOR-4271)', () => {
     // display frames pass.
     for (let i = 0; i < 5; i++) await macrotask();
     expect(rafRequestCount).toBe(0);
+  });
+
+  it('an LCD contrast change repaints the ink once, then scheduling goes idle', async () => {
+    // The scope lives on an LCD screen whose --lcd-alpha-* tokens the
+    // contrast preset rewrites; refreshAlphas only runs while rendering.
+    const screen = document.createElement('div');
+    screen.classList.add('lcd-screen');
+    document.body.appendChild(screen);
+    const scopeTarget = document.createElement('div');
+    screen.appendChild(scopeTarget);
+    component = mount(AmberAfScope, {
+      target: scopeTarget,
+      props: { data: new Uint8Array(256).fill(160), mode: 'fill', filterWidth: 2400, filterWidthMax: 3600 },
+    });
+    flushSync();
+    for (let i = 0; i < 4; i++) await macrotask();
+
+    // MID active ink is α=1.00; DIM is α=0.55. No frames are arriving.
+    expect(inkFills).toContain('rgba(26, 16, 0, 1)');
+    inkFills = [];
+    rafRequestCount = 0;
+    setLcdContrastPreset('DIM');
+    flushSync();
+    for (let i = 0; i < 4; i++) await macrotask();
+    // Exactly one wake → at most one requested frame, and the repaint used
+    // the new DIM alpha.
+    expect(rafRequestCount).toBeLessThanOrEqual(1);
+    expect(inkFills).toContain('rgba(26, 16, 0, 0.55)');
+    // Scheduling is idle again: no perpetual re-arming for the ink.
+    rafRequestCount = 0;
+    for (let i = 0; i < 5; i++) await macrotask();
+    expect(rafRequestCount).toBe(0);
+    screen.remove();
   });
 });

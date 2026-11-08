@@ -80,6 +80,12 @@ export class ScopeRenderScheduler {
   private readonly tick = (now: number): void => {
     this.rafId = 0;
     if (this.disposed || !this.dirty) return;
+    // Recheck activity: the surface may have gone hidden or collapsed
+    // between the wake and this animation frame. The rAF is consumed either
+    // way, but the DIRTINESS SURVIVES — the size/visibility wake that
+    // re-activates the surface requests a fresh frame and paints the
+    // still-cached content then.
+    if (!(this.options.active?.() ?? true)) return;
     this.dirty = false;
     this.paint(now);
   };

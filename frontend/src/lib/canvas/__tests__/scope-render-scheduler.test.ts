@@ -91,6 +91,31 @@ describe('ScopeRenderScheduler', () => {
     expect(paint).toHaveBeenCalledTimes(1);
   });
 
+  it('rechecks activity in the tick: dirtiness survives an inactive frame and repaints on the re-activating wake', () => {
+    const t = fakeTiming();
+    const paint = vi.fn();
+    let active = true;
+    const scheduler = new ScopeRenderScheduler(paint, { timing: t.timing, active: () => active });
+    scheduler.wake('frame');
+    expect(t.pendingCount).toBe(1);
+    // The surface goes inactive after the wake but before the frame runs.
+    active = false;
+    t.flush();
+    // The consumed frame painted nothing...
+    expect(paint).not.toHaveBeenCalled();
+    // ...and no frame is pending while inactive.
+    expect(t.pendingCount).toBe(0);
+    // The re-activating wake finds the dirtiness still recorded and paints
+    // the cached content in exactly one frame.
+    active = true;
+    scheduler.wake('visibility');
+    expect(t.pendingCount).toBe(1);
+    t.flush();
+    expect(paint).toHaveBeenCalledTimes(1);
+    t.flush();
+    expect(paint).toHaveBeenCalledTimes(1);
+  });
+
   it('a reentrant wake from inside paint schedules exactly one more frame', () => {
     const t = fakeTiming();
     let scheduler!: ScopeRenderScheduler;
@@ -125,8 +150,7 @@ describe('ScopeRenderScheduler', () => {
     expect(t.requestedCount).toBe(1);
   });
 
-  it('cancel clears the pending frame and dirtiness but stays usable', () => {
-    const t = fakeTiming();
+  it('cancel clears the pending frame and dirtiness but stays usable', () => {    const t = fakeTiming();
     const paint = vi.fn();
     const scheduler = new ScopeRenderScheduler(paint, { timing: t.timing });
     scheduler.wake();

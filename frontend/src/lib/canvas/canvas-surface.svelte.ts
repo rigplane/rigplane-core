@@ -142,8 +142,14 @@ export class CanvasSurface {
     const resizeObserver = new ResizeObserver((entries) => {
       const rect = entries[0]?.contentRect;
       if (!rect) return;
-      const w = Math.max(0, Math.floor(rect.width));
-      const h = Math.max(0, Math.floor(rect.height));
+      // The content box keeps its fractional size: the backing computation
+      // rounds the product (css × pixelScale), and the pre-surface waterfall
+      // fed the un-floored rect straight into it (MOR-4271 visual parity:
+      // flooring here changed the backing height of a 324.6px box from 325
+      // to 324 and shifted the painted top row). Components that
+      // historically floored their draw geometry still do, at the draw.
+      const w = Math.max(0, rect.width);
+      const h = Math.max(0, rect.height);
       if (w === this.cssW && h === this.cssH) return;
       this.cssW = w;
       this.cssH = h;

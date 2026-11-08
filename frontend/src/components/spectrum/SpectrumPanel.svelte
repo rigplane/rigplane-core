@@ -298,7 +298,7 @@
     }
   }
 
-  onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); });
+  onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); panoramaScheduler.dispose(); });
   // RF geometry stays wire-owned. AF axes use observed carrier/polarity;
   // the legacy symmetric fallback is presentation-only.
   let audioProjection = $derived(audioFft ? audioScopeProjection(displayGeometry, runtime.state) : null);
@@ -1398,7 +1398,11 @@
         stopFrames();
         unsubDx();
         releaseScopeDemand();
-        panoramaScheduler.dispose();
+        // The scheduler belongs to the component, not this effect: cancel
+        // the pending frame so a rerun (audioFft/managed transition) starts
+        // clean, but keep it usable — later CENTER retargets must still
+        // receive animation ticks. dispose() is reserved for destruction.
+        panoramaScheduler.cancel();
       };
     });
   });

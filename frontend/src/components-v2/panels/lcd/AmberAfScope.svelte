@@ -2,6 +2,7 @@
   import type { ScopeAudioProjection } from '$lib/runtime/scope-frame';
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
+  import { getLcdContrastPreset } from '$lib/runtime/adapters/lcd-chrome-adapter';
   import { CanvasSurface } from '../../../lib/canvas/canvas-surface.svelte';
   import { ScopeRenderScheduler } from '../../../lib/canvas/scope-render-scheduler';
   import { getStageScale } from '../../../primitives/stage/stage-scale';
@@ -110,8 +111,11 @@
   function draw(): void {
     if (!surface.visible) return;
     const pixels = pushed ? latestPixels : data;
-    const w = surface.cssW;
-    const h = surface.cssH;
+    // The pre-surface component floored the observer rect for drawing; the
+    // surface now carries the fractional box, so the historical floor lives
+    // here.
+    const w = Math.max(1, Math.floor(surface.cssW));
+    const h = Math.max(1, Math.floor(surface.cssH));
     // Detect how fast the knob is turning
     if (filterWidth !== prevTargetFilter) {
       const jump = Math.abs(filterWidth - prevTargetFilter);
@@ -409,6 +413,15 @@
   $effect(() => {
     data; filterWidth; filterWidthMax; ifShift; contour; contourFreq;
     manualNotch; notchFreq; notchFreqDomain; mode; sampleRate; bandwidth;
+    scheduler.wake('view');
+  });
+
+  // LCD contrast (DIM…MAX) repaints the ink even between FFT frames: the
+  // surrounding LCD updates through CSS tokens, while refreshAlphas() only
+  // runs while rendering — the removed perpetual loop used to supply that
+  // repaint for free.
+  $effect(() => {
+    getLcdContrastPreset();
     scheduler.wake('view');
   });
 

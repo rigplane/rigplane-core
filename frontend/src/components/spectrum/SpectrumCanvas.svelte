@@ -59,8 +59,11 @@
   function draw(now: number): void {
     void now;
     if (!surface.visible) return;
-    const cssWidth = surface.cssW;
-    const cssHeight = surface.cssH;
+    // The pre-surface component floored the observer rect for drawing; the
+    // surface now carries the fractional box, so the historical floor lives
+    // here.
+    const cssWidth = Math.max(1, Math.floor(surface.cssW));
+    const cssHeight = Math.max(1, Math.floor(surface.cssH));
     const pixels = latestPixels ?? data;
     const token = latestToken;
     const measuring = trace?.status === 'recording';
