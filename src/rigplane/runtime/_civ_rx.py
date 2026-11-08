@@ -76,7 +76,6 @@ from rigplane.core.tx_observation import (
     OBSERVED_PTT_PATH,
     ObservedPtt,
     normalize_observed_ptt,
-    project_observed_ptt,
 )
 from rigplane.core.state_pipeline_contracts import (
     RECEIVER_ID_ALIASES,
@@ -3539,36 +3538,20 @@ class CivRuntime:
         if frame.receiver is not None or store is None:
             return active
         snapshot = store.snapshot()
-
-        def fresh_value(path: FieldPath) -> Any:
-            try:
-                field = snapshot.field(path)
-            except KeyError:
-                return None
-            if (
-                field.freshness is not FreshnessState.FRESH
-                or field.provider_generation != snapshot.provider_generation
-                or field.max_age is None
-                or not 0 <= snapshot.generated_at_monotonic
-                - field.last_observed_monotonic < field.max_age
-            ):
-                return None
-            return field.value
-
-        split_path = FieldPath.global_("tx_state", "split")
+        try:
+            split = snapshot.field(FieldPath.global_("tx_state", "split"))
+        except KeyError:
+            return None
         if (
-            project_observed_ptt(snapshot) is ObservedPtt.OFF
-            or fresh_value(split_path) is False
+            split.value is False
+            and split.freshness is FreshnessState.FRESH
+            and split.provider_generation == snapshot.provider_generation
+            and split.max_age is not None
+            and 0 <= snapshot.generated_at_monotonic
+            - split.last_observed_monotonic < split.max_age
         ):
             return active
-        for path, on_value in ((OBSERVED_PTT_PATH, ObservedPtt.ON), (split_path, True)):
-            try:
-                field = snapshot.field(path)
-            except KeyError:
-                continue
-            if field.value is on_value:
-                return None
-        return active
+        return None
 
     @staticmethod
     def _decode_level(data: bytes) -> int:

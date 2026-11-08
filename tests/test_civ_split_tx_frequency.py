@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -101,6 +102,7 @@ async def _session(tmp_path: Path) -> AsyncIterator[tuple[Ic7300SerialRadio, Spl
     try:
         await radio.connect()
         assert radio.connected
+        await _ingress(radio, link, ["FEFEE0940F00FD"])
         assert await radio.get_freq() == 29_600_000
         link.split = True
         await _ingress(radio, link, ["FEFEE0940F01FD", "FEFEE0941C0000FD"])
@@ -116,7 +118,7 @@ async def _session(tmp_path: Path) -> AsyncIterator[tuple[Ic7300SerialRadio, Spl
             return isinstance(value, KnownTxTarget) and value.frequency_hz == 29_100_000
 
         await await_until(ready, timeout=15.0, description="web startup A selection and TX target")
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
             yield radio, link, session, f"http://127.0.0.1:{server.port}"
     finally:
         if server is not None:
@@ -167,7 +169,17 @@ async def test_ic7300_public_ingress_split_tx_matches_browser_golden(tmp_path: P
                 actual = _at(payload, path)
                 if path[0] == "fieldStatus":
                     actual = {key: actual[key] for key in expected}
+                    observed_at = actual["lastObservedMonotonic"]
+                    assert isinstance(observed_at, (int, float))
+                    assert math.isfinite(observed_at) and observed_at >= 0
+                    # Compare producer authority rows while pinning their clock origin.
                     actual["lastObservedMonotonic"] = 1000.0
+                    ws_actual = {key: _at(ws_payload, path)[key] for key in expected}
+                    ws_observed_at = ws_actual["lastObservedMonotonic"]
+                    assert isinstance(ws_observed_at, (int, float))
+                    assert math.isfinite(ws_observed_at) and ws_observed_at >= 0
+                    ws_actual["lastObservedMonotonic"] = 1000.0
+                    assert ws_actual == actual
                 else:
                     assert _at(ws_payload, path) == actual
                 actual_set.append([path, actual])
