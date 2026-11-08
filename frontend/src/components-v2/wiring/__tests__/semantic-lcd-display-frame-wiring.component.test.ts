@@ -311,7 +311,7 @@ describe('MOR-2329 semantic LCD stream binding', () => {
   it('contains no raw-frame bypass, pixel store, or replacement frame host', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'), 'utf8');
     expect(source).not.toMatch(/audioScopeFrame|scopeFrame\b|\$lib\/transport|getChannel|onBinary/);
-    expect(source).not.toMatch(/ScopeFrameHost|lcdFrame|\.pixels\b|stream\.subscribe\(/);
+    expect(source).not.toMatch(/FrameHost\b|lcdFrame|\.pixels\b|stream\.subscribe\(/);
     expect(source).toContain('runtime.scope.setFrameAuthority');
     expect(source).toContain('stream.geometry.subscribe');
   });

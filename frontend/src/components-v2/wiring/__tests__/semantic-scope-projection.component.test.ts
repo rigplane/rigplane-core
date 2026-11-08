@@ -626,7 +626,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
       flushSync();
       expect(h.frequency).not.toHaveBeenCalled();
       expect(h.width).not.toHaveBeenCalled();
-      // `subscribeHardware` is the alternate raw-frame path; it must stay idle.
+      // The shared ingress remains singular while local rendering is denied.
       expect(wire.count()).toBe(1);
     });
   it('drops the lease and socket on unmount and never retains prior-session raw display', async () => {

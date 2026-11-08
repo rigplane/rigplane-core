@@ -1,6 +1,7 @@
 /** MOR-1070 stub for `$lib/runtime` — fixture state/caps, no transport. */
 import { harness } from '../harness-state';
 import type { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import { ScopeStream } from '$lib/runtime/scope-stream';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 /**
@@ -65,20 +66,17 @@ export const presentationResources = Object.freeze({
  * and honest disconnected health. An LCD source selection can be observed
  * without inventing a socket, controller, binary frame, or live waveform.
  */
-const fixtureIdleStream = Object.freeze({
-  sourceId: 'fixture-scope',
-  geometry: Object.freeze({ subscribe(listener: (value: null) => void) { listener(null); return () => {}; } }),
-  subscribe(_sink: (frame: never, slotKey: string) => void): () => void { return () => {}; },
-  latest(_slotKey: string): null { return null; },
-  setSlotFilter(_key: string | null): void {},
-  setSessionEpoch(_epoch: number): void {},
-  reset(): void {},
-  setFreshness(_freshness: 'fresh' | 'stale'): void {},
-  receipt: 0,
-});
+const fixtureIdleStreams = {
+  hardware: new ScopeStream({ subscribe: () => () => {}, close: () => {} },
+    { source: 'radio', sourceId: 'fixture-scope', epoch: 1 }, 'borrowed'),
+  audio_fft: new ScopeStream({ subscribe: () => () => {}, close: () => {} },
+    { source: 'audio_fft', sourceId: 'fixture-audio-scope', epoch: 1 }, 'borrowed'),
+};
 const fixtureScope = {
   get hardwareScopeConnected() { return false; },
-  stream(source: 'hardware' | 'audio_fft') { return fixtureIdleStream; },
+  stream(source: 'hardware' | 'audio_fft') { return fixtureIdleStreams[source]; },
+  setFrameAuthority(_authority: Parameters<ScopeController['setFrameAuthority']>[0]): void {},
+  registerPresentationDriver(): void {},
   snapshotHealth(_source: 'hardware' | 'audio_fft') {
     return Object.freeze({ demanded: false, transport: 'disconnected' as const, frameSeen: false });
   },
@@ -116,9 +114,5 @@ export const runtime = {
   get connectionAudio() { return harness.audioRuntime.connectionAudio; },
   get defaultScopeStatus() { return DEFAULT_SCOPE_STATUS; },
   get radioPowerOn() { return null; },
-  // ScopeFrameHost takes the concrete production controller type. This
-  // fixture object implements only the three evidence methods it consumes;
-  // the cast remains at the offline seam rather than teaching production code
-  // about fixture state.
   get scope() { return fixtureScope as unknown as ScopeController; },
 };

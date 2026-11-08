@@ -24,15 +24,8 @@
  * readout still comes from the live tuning store and
  * `BandPlanOverlay`/`SpectrumToolbar` still issue their band-plan fetches.
  *
- * The waterfall receives exactly one row: the panel pushes on a change of
- * `acceptedSequence`, and that never changes here. `WaterfallRenderer` draws
- * only when pushed and runs no animation loop, so the waterfall is that one
- * row over its `#001020` ground rather than a scroll. The spectrum canvas
- * does run a `requestAnimationFrame` loop, but it redraws the same constant
- * bins: `SpectrumRenderer`'s moving average over identical frames is that
- * frame, and its peak hold equals that frame from the first draw on.
  */
-import { mount } from 'svelte';
+import { flushSync, mount } from 'svelte';
 import '../src/app.css';
 import '../src/components-v2/theme/index';
 import SpectrumPanel from '../src/components/spectrum/SpectrumPanel.svelte';
@@ -133,8 +126,9 @@ function encodeWitnessFrame(): ArrayBuffer {
   return bytes.buffer;
 }
 
+let deliverWitness: ((buffer: ArrayBuffer) => void) | null = null;
 const witnessSource: ScopeMessageSource = {
-  subscribe(sink) { sink(encodeWitnessFrame()); return () => {}; },
+  subscribe(sink) { deliverWitness = sink; return () => { deliverWitness = null; }; },
   close: () => {},
 };
 const witnessStream = new ScopeStream(witnessSource,
@@ -173,4 +167,7 @@ mount(SpectrumPanel, {
   },
 });
 
+flushSync();
+if (deliverWitness) (deliverWitness as (buffer: ArrayBuffer) => void)(encodeWitnessFrame());
+flushSync();
 document.body.dataset.harnessReady = 'true';

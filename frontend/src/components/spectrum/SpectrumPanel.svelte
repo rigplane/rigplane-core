@@ -163,7 +163,8 @@
   let scopeConnected = $derived((audioFft
     ? runtime.defaultScopeStatus.transport === 'connected'
     : runtime.scope.hardwareScopeConnected && runtime.scope.hardwareScopeFrameLive
-      && frameGeometry !== null) && (!managed || scopeDemandOn));
+      && frameGeometry !== null) && (!managed || (scopeDemandOn
+      && scopeRegion?.geometryAdmitted !== false)));
   let managedUnavailable = $derived(managed && (!scopeDemandOn || !scopeConnected));
   // R53: when the scope drops the trace goes dark instead of freezing under
   // the disconnect overlay. The unmanaged audio-FFT source keeps its canvas:
@@ -478,6 +479,7 @@
     elementLeft: number;
     authority: SpectrumAuthority;
     geometry: SampleGeometry;
+    view?: View;
   }>;
 
   let resizeCapture = $state<GestureCapture | null>(null);
@@ -514,7 +516,8 @@
     ? scopeRegion.passband.tuple : null);
   let displayStale = $derived(displayTuple !== null && scopeRegion?.passband.state === 'stale');
   // MOR-2464: in CENTER the anchor stays at 50%, the panorama glides under it.
-  let proportionalIndicator = $derived(isFixedScope);
+  let explicitView = $state(false);
+  let proportionalIndicator = $derived(isFixedScope || explicitView);
   let displayFrequencyHz = $derived(managed ? displayTuple?.frequencyHz : spectrumAuthority?.frequencyHz);
   // MOR-4256/MOR-4270: the preview survives only while the captured gesture
   // context still matches — a receiver/provider switch, a retune from
@@ -625,7 +628,7 @@
   // canvas renderer's own clamp does.
   let tuneLinePct = $derived(
     proportionalIndicator && spanHz > 0 && tuneVisible
-      ? Math.min(100, Math.max(0, ((tuneHz - startFreq) / spanHz) * 100))
+      ? Math.min(100, Math.max(0, ((tuneHz - viewportStartFreq) / viewportSpanHz) * 100))
       : 50
   );
   // MOR-2464 focus-gap defect: in CENTER scope mode the carrier reference
@@ -702,20 +705,11 @@
   // input ends. (2) A pending/acknowledged set_freq target. (3) Confirmed
   // `displayFrequencyHz`, which stays the authority. None of the legs emit
   // commands.
-  let panoramaBurstHz = $derived(
-    panoramaActive && spectrumAuthority !== null
-      ? getTuningBurstFrequencyHz(spectrumAuthority.receiver)
-      : null,
-  );
-  let panoramaPendingHz = $derived(
-    panoramaActive && spectrumAuthority !== null
-      ? getPendingFrequencyHz(spectrumAuthority.receiver)
-      : null,
-  );
   // ── Source-independent View model (MOR-4270, scope-view.ts) ──
   // The effective view is `gesture > tuningBurst > pending > confirmed`;
   // the drag writes `gesture`, the tuning legs write their own. Pan/zoom
   // presets edit the View directly (display-only until R4 grants views).
+  let followSpanHz = $state<number | null>(null);
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
   let effectiveView = $state.raw<View>({ startHz: 0, endHz: 0 });
   $effect(() => {
@@ -730,8 +724,9 @@
     const frequency = displayFrequencyHz;
     if (!geometry || frequency === null || frequency === undefined
       || geometry.view.endHz <= geometry.view.startHz) return;
-    const span = geometry.view.endHz - geometry.view.startHz;
-    scopeView.set('confirmed', { startHz: frequency - span / 2, endHz: frequency + span / 2 });
+    const span = followSpanHz ?? geometry.view.endHz - geometry.view.startHz;
+    scopeView.set('confirmed', isFixedScope && followSpanHz === null ? geometry.view
+      : { startHz: frequency - span / 2, endHz: frequency + span / 2 });
   });
   $effect(() => {
     const active = panoramaActive;
@@ -794,12 +789,15 @@
   // key (first frame or a context change), the frame's own center is the
   // viewport — a stale visual center never reaches the renderers.
   let panoramaViewportHz = $derived(
-    panoramaActive && panoramaKeyApplied === panoramaResetKey ? visualCenterHz : centerHz,
+    panoramaActive && panoramaKeyApplied === panoramaResetKey ? visualCenterHz
+      : !audioFft && spanHz > 0 && effectiveView.endHz > effectiveView.startHz ? viewCenterHz(effectiveView) : centerHz,
   );
-  let viewportShiftHz = $derived(panoramaActive ? panoramaViewportHz - centerHz : 0);
-  let viewportStartFreq = $derived(panoramaActive ? panoramaViewportHz - spanHz / 2 : startFreq);
-  let viewportEndFreq = $derived(panoramaActive ? panoramaViewportHz + spanHz / 2 : endFreq);
-  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}`);
+  let viewportSpanHz = $derived(spanHz > 0 && !audioFft && effectiveView.endHz > effectiveView.startHz
+    ? effectiveView.endHz - effectiveView.startHz : spanHz);
+  let viewportShiftHz = $derived(!audioFft ? panoramaViewportHz - centerHz : 0);
+  let viewportStartFreq = $derived(!audioFft && spanHz > 0 ? panoramaViewportHz - viewportSpanHz / 2 : startFreq);
+  let viewportEndFreq = $derived(!audioFft && spanHz > 0 ? panoramaViewportHz + viewportSpanHz / 2 : endFreq);
+  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
@@ -816,12 +814,12 @@
   let scopeAreaWidth = $state(0);
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = isFixedScope
-      ? { follow: 'vfo' as const, spanHz: spanHz > 0 ? spanHz : 100_000 }
+    const view = followSpanHz !== null
+      ? { follow: 'vfo' as const, spanHz: followSpanHz }
       : { startHz: effectiveView.startHz, endHz: effectiveView.endHz };
     return scopeSubscription({
       sourceId: stream.sourceId,
-      receiver: spectrumAuthority?.receiver === 'SUB' ? 1 : spectrumAuthority?.receiver === 'MAIN' ? 0 : null,
+      receiver: spectrumAuthority?.receiver ?? null,
       view, width: scopeAreaWidth, visible: true, maxFps: 20,
     });
   });
@@ -835,18 +833,21 @@
   });
   function applyScopePreset(preset: ScopePreset): void {
     if (preset.kind === 'follow') {
-      // Follow-VFO keeps the granted window; drop any display override.
+      explicitView = false;
+      followSpanHz = 'spanHz' in preset.view ? preset.view.spanHz : spanHz;
       scopeView.set('gesture', null);
       return;
     }
     if ('startHz' in preset.view && 'endHz' in preset.view) {
+      followSpanHz = null;
+      explicitView = true;
       scopeView.set('gesture', { startHz: preset.view.startHz, endHz: preset.view.endHz });
     }
   }
   function nudgeScopeZoom(factor: number): void {
-    const confirmed = scopeView.confirmed;
-    if (confirmed.endHz <= confirmed.startHz) return;
-    scopeView.set('gesture', zoomView(confirmed, factor));
+    if (effectiveView.endHz <= effectiveView.startHz) return;
+    followSpanHz = null;
+    scopeView.set('gesture', zoomView(effectiveView, factor));
   }
 
   // Local brightness only — the radio REF command (0x27/0x19) shifts the
@@ -857,7 +858,10 @@
   let spectrumOptions = $derived<SpectrumOptions>({
     ...defaultSpectrumOptions,
     ...spectrumColorRolesToOptions(resolvedColorRoles),
-    spanHz: audioFft || tuneVisible ? spanHz : 0,
+    spanHz: audioFft || tuneVisible ? viewportSpanHz : 0,
+    sampleSpanHz: spanHz,
+    sampleOffset: audioFft ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleAmplitudeMax: audioFft ? 160 : 80,
     showRfOverlays: !audioFft,
     centerHz: panoramaViewportHz,
     panoramaShiftHz: viewportShiftHz,
@@ -867,12 +871,15 @@
     passbandShiftHz,
     refLevel,
     mode: rxMode,
-    scopeMode,
+    scopeMode: explicitView ? 1 : scopeMode,
   });
 
   let waterfallOptions = $derived<WaterfallOptions>({
     ...defaultWaterfallOptions,
-    spanHz,
+    spanHz: viewportSpanHz,
+    sampleSpanHz: spanHz,
+    sampleOffset: audioFft ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleAmplitudeMax: audioFft ? 160 : 80,
     centerHz: panoramaViewportHz,
     panoramaShiftHz: viewportShiftHz,
     refLevel,
@@ -895,7 +902,7 @@
 
   // Passband overlay position derived from the same geometry as the spectrum renderer.
   let passbandOverlay = $derived(
-    getPassbandGeometry(rxMode, passbandHz, passbandShiftHz, spanHz, 100,
+    getPassbandGeometry(rxMode, passbandHz, passbandShiftHz, viewportSpanHz, 100,
       proportionalIndicator ? tuneLinePct : undefined),
   );
   let pbWidthPct = $derived(passbandOverlay?.widthPx ?? 0);
@@ -1130,6 +1137,7 @@
     dragCandidate = null;
     dragging = false;
     dragCapture = Object.freeze({
+      view: { startHz: viewportStartFreq, endHz: viewportEndFreq },
       pointerId: event.pointerId,
       startX: event.clientX,
       elementLeft: rect.left,
@@ -1177,7 +1185,8 @@
       dragging = true;
       dragSurface?.setPointerCapture?.(event.pointerId);
     }
-    const hzPerPx = (capture.geometry.endFreq - capture.geometry.startFreq)
+    const hzPerPx = (capture.view ? capture.view.endHz - capture.view.startHz
+      : capture.geometry.endFreq - capture.geometry.startFreq)
       / capture.geometry.elementWidth;
     const deltaHz = -dx * hzPerPx;
     const candidate = snapFrequency(Math.round(capture.authority.frequencyHz! + deltaHz));
@@ -1187,9 +1196,9 @@
     // FIX marker.
     gestureCandidateHz = dragCandidate;
     if (panoramaActive) {
-      const confirmed = untrack(() => scopeView.confirmed);
-      scopeView.set('gesture', dragCandidate !== null && confirmed.endHz > confirmed.startHz
-        ? panView(confirmed, dragCandidate - capture.authority.frequencyHz!) : null);
+      const base = capture.view ?? untrack(() => scopeView.confirmed);
+      scopeView.set('gesture', dragCandidate !== null && base.endHz > base.startHz
+        ? panView(base, dragCandidate - capture.authority.frequencyHz!) : base);
     }
   }
 
@@ -1209,6 +1218,8 @@
     // must never also tune, and the browser's follow-up native click
     // event has no listener, so one physical click emits one command.
     const clickTune = !dragging && candidate === null && stable && dragSurface === spectrumArea;
+    const clickView = capture.view;
+    const restoreView = !dragging ? capture.view : undefined;
     dragging = false;
     dragCapture = null;
     dragSurface = null;
@@ -1216,10 +1227,12 @@
     // The pending set_freq leg (or the confirmed frequency) takes over the
     // viewport from here; the preview belongs to the gesture only.
     clearDragPreview();
+    if (restoreView) scopeView.set('gesture', restoreView);
     if (clickTune) {
       const fraction = Math.min(1, Math.max(0,
         (event.clientX - capture.elementLeft) / capture.geometry.elementWidth));
-      handleTune(viewportStartFreq + fraction * spanHz);
+      handleTune(clickView ? clickView.startHz + fraction * (clickView.endHz - clickView.startHz)
+        : viewportStartFreq + fraction * viewportSpanHz);
       return;
     }
     if (!stable || candidate === null || candidate === capture.authority.frequencyHz) return;
@@ -1245,12 +1258,11 @@
     handleDragCancel(event);
   }
 
-  const AUDIO_FFT_AMPLITUDE_MAX = 160;
-  const CENTRAL_SCOPE_AMPLITUDE_MAX = 80;
-
   // R53: the panel keeps no pixels across a drop — replay may only paint a
   // frame the sink actually delivered to THIS display since the last drop.
   let samplePlaneLive = false;
+  let cachedWhileOff = false;
+  let acceptScopeFrame: ((frame: ScopeFrame, slotKey: string) => void) | null = null;
 
   function clearSample(): void {
     const hadSample = samplePlaneLive;
@@ -1305,23 +1317,18 @@
       if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
       const scopeStream = runtime.scope.stream(sourceIsAudio ? 'audio_fft' : 'hardware');
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
-      const stopFrames = scopeStream.subscribe((frame: ScopeFrame, slotKey: string) => {
-        if (!scopeDemandOn) return;
+      cachedWhileOff = false;
+      const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
         const geometry = frameGeometry;
         if (geometry === null) return;
         // Follow the qualified display slot (the geometry's own slot).
         if (slotKey !== scopeSlotKey(geometry.sourceId, geometry.receiver)) return;
         if (geometry.outOfRange && !geometry.hasPixels) return;
+        if (!scopeDemandOn) { cachedWhileOff = true; return; }
         const traceStart = trace?.status === 'recording' ? performance.now() : 0;
         if (traceStart && (sourceIsAudio ? 'audio_fft' : 'hardware') !== traceSource) trace?.stop('source_changed');
         const token = trace?.tokenForFrame(frame) ?? null;
-        // The audio-FFT display reshapes the DC-centered payload for the
-        // central-spectrum renderer (R3 moves this into the renderer).
-        const pixels = sourceIsAudio && frame.pixels
-          ? frame.pixels.slice(Math.floor(frame.pixels.length / 2)).map(value =>
-              Math.round(Math.min(value, AUDIO_FFT_AMPLITUDE_MAX)
-                * CENTRAL_SCOPE_AMPLITUDE_MAX / AUDIO_FFT_AMPLITUDE_MAX))
-          : frame.pixels;
+        const pixels = frame.pixels;
         if (pixels === null) return;
         samplePlaneLive = true;
         spectrumPush?.(pixels, token);
@@ -1331,7 +1338,9 @@
         if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
         else trace?.record('waterfall_suppressed', token, 0, true);
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
-      });
+      };
+      acceptScopeFrame = acceptFrame;
+      const stopFrames = scopeStream.subscribe(acceptFrame);
       if (!sourceIsManaged && scopeDemandOn) acquireScopeDemand();
       const unsubDx = sourceIsAudio ? () => {} : runtime.subscribeDx((msg) => {
         if (managedUnavailable) return;
@@ -1344,12 +1353,25 @@
         }
       });
       return () => {
+        acceptScopeFrame = null;
+        cachedWhileOff = false;
         stopGeometry();
         stopFrames();
         unsubDx();
         releaseScopeDemand();
         if (panoramaRafId) cancelAnimationFrame(panoramaRafId);
       };
+    });
+  });
+  $effect(() => {
+    if (!scopeDemandOn) return;
+    untrack(() => {
+      if (!cachedWhileOff) return;
+      cachedWhileOff = false;
+      const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
+      const slot = stream.selectedSlot;
+      const frame = slot ? stream.latest(slot) : null;
+      if (frame && slot) acceptScopeFrame?.(frame, slot);
     });
   });
 </script>

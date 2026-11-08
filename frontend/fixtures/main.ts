@@ -306,8 +306,6 @@ window.__harness = {
 };
 
 function lcdFixtureAssertions(expected: NonNullable<Fixture['lcd']>) {
-  // MOR-4270: the ScopeFrameHost authority/evidence record is gone with its
-  // owner; the LCD lease and honest idle stream are what the wiring proves.
   const expectedResource = expected.source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
   return [
     {

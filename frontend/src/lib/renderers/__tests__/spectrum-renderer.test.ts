@@ -614,3 +614,13 @@ describe('central audio sample interpretation (MOR-4270)', () => {
     expect(actual.log).toEqual(expected.log);
   });
 });
+
+it('preserves audio clamp/rounding order through averaging and peak hold', () => {
+  const actual = createMockCtx(); const expected = createMockCtx();
+  const a = new SpectrumRenderer(); const b = new SpectrumRenderer();
+  for (const raw of [new Uint8Array([5, 6, 40, 160]), new Uint8Array([5, 6, 255, 0])]) {
+    a.render(actual.ctx, raw, 100, 40, opts({ sampleOffset: 2, sampleAmplitudeMax: 160 }));
+    b.render(expected.ctx, raw.slice(2).map(value => Math.round(Math.min(value, 160) / 2)), 100, 40, opts());
+  }
+  expect(actual.log).toEqual(expected.log);
+});

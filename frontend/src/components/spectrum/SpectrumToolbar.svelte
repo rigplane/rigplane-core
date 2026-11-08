@@ -340,6 +340,32 @@
   </div>
 {/snippet}
 
+{#snippet viewControls()}
+    {#if scopePresets.length > 0}
+      <select
+        class="scope-capsule-select"
+        data-testid="scope-preset-select"
+        aria-label={t('core.scope.presets')}
+        title={t('core.scope.presets')}
+        onchange={(event) => {
+          const index = Number((event.currentTarget as HTMLSelectElement).value);
+          const preset = scopePresets[index];
+          if (Number.isInteger(index) && index >= 0 && preset) onScopePresetSelect?.(preset);
+          (event.currentTarget as HTMLSelectElement).selectedIndex = 0;
+        }}
+      >
+        <option value="">{t('core.scope.presets')}</option>
+        {#each scopePresets as preset, index (preset.kind + preset.label)}
+          <option value={index}>{preset.kind === 'follow' ? t('core.scope.preset.follow') : preset.label}</option>
+        {/each}
+      </select>
+      <button type="button" class="scope-flat-key" data-testid="scope-zoom-out"
+        onclick={() => onScopeZoom?.(2)} title={t('core.scope.zoomOut')}>ZOOM−</button>
+      <button type="button" class="scope-flat-key" data-testid="scope-zoom-in"
+        onclick={() => onScopeZoom?.(0.5)} title={t('core.scope.zoomIn')}>ZOOM+</button>
+    {/if}
+{/snippet}
+
 {#snippet screenGroup(closeMore?: () => void)}
   <div class="toolbar-group step-group toolbar-step-copy" data-testid="scope-more-step">
     <span class="scope-stepper scope-capsule">
@@ -380,29 +406,7 @@
       <option value="thermal">Thermal</option>
       <option value="grayscale">Gray</option>
     </select>
-    {#if scopePresets.length > 0}
-      <select
-        class="scope-capsule-select"
-        data-testid="scope-preset-select"
-        aria-label={t('core.scope.presets')}
-        title={t('core.scope.presets')}
-        onchange={(event) => {
-          const index = Number((event.currentTarget as HTMLSelectElement).value);
-          const preset = scopePresets[index];
-          if (Number.isInteger(index) && index >= 0 && preset) onScopePresetSelect?.(preset);
-          (event.currentTarget as HTMLSelectElement).selectedIndex = 0;
-        }}
-      >
-        <option value="">{t('core.scope.presets')}</option>
-        {#each scopePresets as preset, index (preset.kind + preset.label)}
-          <option value={index}>{preset.kind === 'follow' ? t('core.scope.preset.follow') : preset.label}</option>
-        {/each}
-      </select>
-      <button type="button" class="scope-flat-key" data-testid="scope-zoom-out"
-        onclick={() => onScopeZoom?.(2)} title={t('core.scope.zoomOut')}>ZOOM−</button>
-      <button type="button" class="scope-flat-key" data-testid="scope-zoom-in"
-        onclick={() => onScopeZoom?.(0.5)} title={t('core.scope.zoomIn')}>ZOOM+</button>
-    {/if}
+    {@render viewControls()}
   </div>
   {#if availableLayers.length > 1}
     <div class="more-layers" data-testid="scope-more-layers">
@@ -633,6 +637,7 @@
     </div>
     <div class="toolbar-sub-separator"></div>
     <div class="toolbar-group">
+      {@render viewControls()}
       <select class="toolbar-select" bind:value={colorScheme}>
         <option value="classic">Classic</option>
         <option value="thermal">Thermal</option>

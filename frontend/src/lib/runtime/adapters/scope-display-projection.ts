@@ -9,5 +9,6 @@ import type { ScopePassbandDisplay } from './scope-passband-display';
 export type ManagedScopeRegion = Readonly<{
   passband: ScopePassbandDisplay;
   demanded: boolean;
+  geometryAdmitted?: boolean;
   setDemand(enabled: boolean): void;
 }>;
