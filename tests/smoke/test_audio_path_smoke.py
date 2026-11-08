@@ -495,16 +495,20 @@ async def test_audio_scope_ws_receives_fft_frames(
     host, port = _addr(web_server)
     reader, writer = await _ws_connect(host, port, "/api/v1/scope")
     try:
+        request = Subscription("audio_fft", None, FollowView("vfo", 5000), 1024, 20)
         await _ws_send_text(
             writer,
-            encode_scope_subscription(
-                Subscription("audio_fft", None, FollowView("vfo", 5000), 1024, 20)
-            ),
+            encode_scope_subscription(request),
         )
         opcode, payload = await _ws_recv_frame(reader)
         assert opcode == 0x1
-        assert json.loads(payload)["type"] == "granted", payload.decode()
-        assert decode_scope_granted(payload.decode()).source_id == "audio_fft"
+        grant = decode_scope_granted(payload.decode())
+        assert (grant.source_id, grant.receiver) == (
+            request.source_id,
+            request.receiver,
+        )
+        assert 0 < grant.width <= request.width
+        assert 0 < grant.max_fps <= request.max_fps
         # ensure_relay (first scope client) arms radio RX via the bus.
         assert await await_until(
             lambda: any(s.running for s in usb_rig.backend.rx_streams)
@@ -516,11 +520,34 @@ async def test_audio_scope_ws_receives_fft_frames(
             usb_rig.inject_rx(_noise_pcm(960, seed=chunk + 1))
             await asyncio.sleep(0)
 
-        opcode, payload = await _ws_recv_frame(reader)
-        assert opcode == 0x2
+        # The first observed FFT crop can narrow the provisional grant. Accept
+        # only valid grant updates, within the original frame-receive deadline.
+        async with asyncio.timeout(5.0):
+            while True:
+                opcode, payload = await _ws_recv_frame(reader)
+                if opcode != 0x1:
+                    break
+                grant = decode_scope_granted(payload.decode())
+                assert (grant.source_id, grant.receiver) == (
+                    request.source_id,
+                    request.receiver,
+                )
+                assert 0 < grant.width <= request.width
+                assert 0 < grant.max_fps <= request.max_fps
+            assert opcode == 0x2
         frame = decode_scope_frame_v2(payload)
-        assert frame.source_id == "audio_fft"
-        assert frame.width == 1024
+        assert (frame.source_id, frame.receiver) == (grant.source_id, grant.receiver)
+        assert frame.source == "audio_fft"
+        assert frame.width == grant.width
+        assert (frame.view_start_hz, frame.view_end_hz) == (
+            grant.view.start_hz,
+            grant.view.end_hz,
+        )
+        assert grant.coverage is not None
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+            grant.coverage.start_hz,
+            grant.coverage.end_hz,
+        )
         assert frame.pixels and any(frame.pixels), "FFT pixels are all zero"
     finally:
         await _close_writer(writer)
