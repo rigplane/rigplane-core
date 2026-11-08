@@ -4,6 +4,9 @@ import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { ScopeStream } from '../../../lib/runtime/scope-stream';
 import LcdAfFft from '../LcdAfFft.svelte';
 import LcdRfPanadapter from '../LcdRfPanadapter.svelte';
+import { radio } from '$lib/stores/radio.svelte';
+import type { ServerState } from '$lib/types/state';
+import observedState from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 
 vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
 
@@ -18,6 +21,41 @@ function source(kind: 'radio' | 'audio_fft') {
 }
 
 describe('LCD leaves consume ScopeStream directly', () => {
+  it('retries a refused mounted AF subscription once when observed facts arrive and paints its frame', async () => {
+    const previous = radio.current;
+    radio.current = null;
+    const publish = vi.fn();
+    let receive = (_buffer: ArrayBuffer) => {};
+    const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
+      { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed', undefined, publish);
+    const target = document.createElement('div'); document.body.append(target);
+    const width = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(500);
+    const component = mount(LcdAfFft, { target, props: {
+      scopeStream: stream, receiver: 'MAIN', inputState: 'live', receiverActivity: 'active',
+    } });
+    try {
+      flushSync();
+      expect(publish).toHaveBeenCalledTimes(1);
+      stream.handleMessage({ type: 'error', message: 'audio mapping unavailable' }); flushSync();
+      expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
+      radio.current = observedState as unknown as ServerState; flushSync();
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish.mock.lastCall?.[0]).toMatchObject({ receiver: null, view: { follow: 'vfo', spanHz: 48000 } });
+      stream.handleMessage({ type: 'error', message: 'same facts rejected' }); flushSync();
+      radio.current = { ...radio.current! }; flushSync();
+      expect(publish).toHaveBeenCalledTimes(2);
+      stream.handleMessage({ type: 'granted', sourceId: 'audio_fft', receiver: null,
+        view: { startHz: 14_200_000, endHz: 14_248_000 }, coverage: null, width: 3, fps: 20 });
+      receive(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null,
+        viewStartHz: 14_200_000, viewEndHz: 14_248_000, pixels: new Uint8Array([0, 128, 255]) }));
+      flushSync();
+      expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('live');
+      expect(target.querySelector('.fft-trace')?.getAttribute('d')).toBe('M0.00,92.00 L250.00,50.84 L500.00,10.00');
+      expect(publish).toHaveBeenCalledTimes(2);
+    } finally {
+      await unmount(component); stream.dispose(); target.remove(); width.mockRestore(); radio.current = previous;
+    }
+  });
   it('keeps retained TX-freeze samples live and clears only header-only out-of-range frames', async () => {
     const target = document.createElement('div'); document.body.append(target);
     const wire = source('radio');
