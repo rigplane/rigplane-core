@@ -114,6 +114,30 @@ async function setAfPercent(slider: Locator, percent: number): Promise<void> {
   throw new Error(`AF slider did not reach ${percent}% (reads ${await slider.getAttribute('aria-valuenow')})`);
 }
 
+test('MOR-4273 unity settling rejects a startup peak inside the baseline window', async ({ page }) => {
+  await page.clock.install();
+  await page.clock.runFor(1000);
+  const quiet = amplitude(QUIET_DBFS);
+  await page.evaluate(level => {
+    const win = window as Window & { __RX_OUTPUT__?: OutputWitness; __RX_STARTUP_PEAK_READS__?: number };
+    win.__RX_STARTUP_PEAK_READS__ = 0;
+    const now = performance.now();
+    win.__RX_OUTPUT__ = { rms: [], inputRms: 0, peaks: [
+      { at: now - 700, get peak() { win.__RX_STARTUP_PEAK_READS__! += 1; return level * 1.8; } },
+      { at: now - 50, peak: level },
+    ] };
+  }, quiet);
+  expect(await recentPeak(page, 400)).toBe(quiet);
+  expect(await recentPeak(page, 1000)).toBe(quiet * 1.8);
+  const reads = () => page.evaluate(() => (window as Window & { __RX_STARTUP_PEAK_READS__?: number }).__RX_STARTUP_PEAK_READS__!);
+  const before = await reads();
+  const settling = expectSettledPeak(page, quiet, 0.1);
+  await expect.poll(reads, { message: 'Settling must inspect the startup peak in the 1000ms baseline window' }).toBeGreaterThan(before);
+  await page.clock.runFor(400);
+  await settling;
+  expect(await recentPeak(page, 1000)).toBe(quiet);
+});
+
 const gainTest = test.extend({
   launchOptions: {
     ...(process.env.RIGPLANE_JOURNEY_CHROMIUM
