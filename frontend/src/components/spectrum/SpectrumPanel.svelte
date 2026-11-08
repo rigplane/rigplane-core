@@ -17,6 +17,7 @@
     type ColorSchemeName,
   } from '../../lib/renderers/waterfall-renderer';
   import { presentationResources, runtime } from '../../lib/runtime/frontend-runtime';
+  import { LatestFramePump } from '../../lib/canvas/latest-frame-pump';
   import { type DxSpot } from '../../lib/types/protocol';
   import { getTuningStep } from '../../lib/stores/tuning.svelte';
   import {
@@ -451,13 +452,18 @@
   let dragSurface: HTMLElement | null = null;
   let dragCandidate: number | null = null;
   // MOR-4256: the display-only drag preview. `dragCandidate` stays the
-  // gesture's synchronous truth (the release commit reads it); the preview
-  // republishes it into `$state` at most once per animation frame, so a
-  // 120 Hz pointermove stream schedules no more than one viewport retarget
-  // per frame. It leads the panorama target (CENTER) and the tune
-  // marker/passband (FIX) and emits no commands.
+  // gesture's synchronous truth (the release commit reads it); the shared
+  // latest-wins frame pump (MOR-4206) republishes it into `$state` at most
+  // once per animation frame, so a 120 Hz pointermove stream schedules no
+  // more than one viewport retarget per frame. It leads the panorama
+  // target (CENTER) and the tune marker/passband (FIX) and emits no
+  // commands. The candidate travels in a record because the pump's own
+  // `null` means "no frame pending", not "preview the original frequency".
   let dragPreviewHz = $state<number | null>(null);
-  let dragPreviewRafId = 0;
+  const dragPreviewPump = new LatestFramePump<Readonly<{ hz: number | null }>>((frame) => {
+    // A gesture that already ended publishes nothing.
+    dragPreviewHz = dragCapture !== null ? frame.hz : null;
+  });
   let dragging = $state(false);
 
   let centerHz = $derived(
@@ -481,19 +487,42 @@
   // MOR-2464: in CENTER the anchor stays at 50%, the panorama glides under it.
   let proportionalIndicator = $derived(isFixedScope);
   let displayFrequencyHz = $derived(managed ? displayTuple?.frequencyHz : spectrumAuthority?.frequencyHz);
+  // MOR-4256: the preview survives only while the captured gesture context
+  // still matches — a receiver/provider switch, a retune from another
+  // client or a new frame window retires it immediately instead of holding
+  // a stale target until release (the release-side
+  // `captureFrequencyStillCurrent` already rejects the commit then).
+  let activeDragPreviewHz = $derived.by(() => {
+    const capture = dragCapture;
+    if (dragPreviewHz === null || capture === null) return null;
+    const authority = spectrumAuthority;
+    if (authority?.providerGeneration !== capture.authority.providerGeneration
+      || authority.receiver !== capture.authority.receiver
+      || authority.frequencyHz !== capture.authority.frequencyHz
+      || frameScopeMode !== capture.geometry.frameMode
+      || startFreq !== capture.geometry.startFreq
+      || endFreq !== capture.geometry.endFreq) return null;
+    return dragPreviewHz;
+  });
   let tuneVisible = $derived(
     displayFrequencyHz !== null
       && displayFrequencyHz !== undefined
       && (!proportionalIndicator || (
-        displayFrequencyHz >= startFreq
-        && displayFrequencyHz <= endFreq
+        (displayFrequencyHz >= startFreq
+        && displayFrequencyHz <= endFreq)
+        // MOR-4256: a FIX drag pulling the candidate INTO the window shows
+        // its marker/passband preview even while the confirmed frequency
+        // still sits outside the window.
+        || (activeDragPreviewHz !== null
+          && activeDragPreviewHz >= startFreq
+          && activeDragPreviewHz <= endFreq)
       )),
   );
   // MOR-4256: in FIX scope there is no panorama glide, so the drag preview
   // moves the tune marker and the passband through this shared input
   // instead (in CENTER the renderer anchors the marker at 50% and ignores
   // it — the preview reaches that mode through `panoramaTargetHz`).
-  let tuneHz = $derived(tuneVisible ? (dragPreviewHz ?? displayFrequencyHz!) : 0);
+  let tuneHz = $derived(tuneVisible ? (activeDragPreviewHz ?? displayFrequencyHz!) : 0);
   let confirmedPassband = $derived(
     tuneVisible
       && spectrumAuthority?.mode !== null
@@ -658,7 +687,7 @@
   // viewport follows the gesture from the cached last frame, no scope
   // frame and no command per move.
   let panoramaTargetHz = $derived(panoramaActive
-    ? dragPreviewHz ?? panoramaBurstHz ?? panoramaPendingHz ?? (displayFrequencyHz != null ? displayFrequencyHz : null)
+    ? activeDragPreviewHz ?? panoramaBurstHz ?? panoramaPendingHz ?? (displayFrequencyHz != null ? displayFrequencyHz : null)
     : null);
   // Receiver/provider/span/mode identity resets the motion on change.
   let panoramaResetKey = $derived(panoramaActive
@@ -1001,24 +1030,8 @@
 
   const DRAG_THRESHOLD_PX = 5;
 
-  // MOR-4256: publish the drag candidate into the display-only preview at
-  // most once per animation frame (the same single-rAF-flag pacing
-  // SpectrumCanvas uses for its draws). Latest-wins: the frame callback
-  // reads the freshest candidate; a gesture that already ended publishes
-  // nothing.
-  function scheduleDragPreview(): void {
-    if (dragPreviewRafId) return;
-    dragPreviewRafId = requestAnimationFrame(() => {
-      dragPreviewRafId = 0;
-      dragPreviewHz = dragCapture !== null ? dragCandidate : null;
-    });
-  }
-
   function clearDragPreview(): void {
-    if (dragPreviewRafId) {
-      cancelAnimationFrame(dragPreviewRafId);
-      dragPreviewRafId = 0;
-    }
+    dragPreviewPump.dispose();
     dragPreviewHz = null;
   }
 
@@ -1036,7 +1049,7 @@
     const deltaHz = -dx * hzPerPx;
     const candidate = snapFrequency(Math.round(capture.authority.frequencyHz! + deltaHz));
     dragCandidate = candidate !== capture.authority.frequencyHz ? candidate : null;
-    scheduleDragPreview();
+    dragPreviewPump.push(Object.freeze({ hz: dragCandidate }));
   }
 
   function handleDragEnd(event: PointerEvent): void {
@@ -1079,6 +1092,16 @@
     dragSurface = null;
     dragCandidate = null;
     clearDragPreview();
+  }
+
+  // The waterfall canvas's own tap recognizer captures the pointer on
+  // pointerdown; when the drag crosses its threshold the panel re-captures
+  // the pointer on the drag surface and the canvas's `lostpointercapture`
+  // BUBBLES through this handler. That transfer is not a loss — cancel
+  // only when the capture the drag itself took on its surface is revoked.
+  function handleDragLostCapture(event: PointerEvent): void {
+    if (event.target !== dragSurface) return;
+    handleDragCancel(event);
   }
 
   const AUDIO_FFT_AMPLITUDE_MAX = 160;
@@ -1212,7 +1235,7 @@
         unsubDx();
         releaseScopeDemand();
         if (panoramaRafId) cancelAnimationFrame(panoramaRafId);
-        if (dragPreviewRafId) cancelAnimationFrame(dragPreviewRafId);
+        dragPreviewPump.dispose();
       };
     });
   });
@@ -1298,7 +1321,7 @@
         <div class="tick" style="top: {tick.position}%">{tick.label}</div>
       {/each}
     </div>
-    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} onpointerdown={handleDragStart} onlostpointercapture={handleDragCancel} role="presentation">
+    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
       {:else if scopeTxKnown && !scopeConnected}
@@ -1355,7 +1378,7 @@
   ></div>
   <div class="waterfall-area">
     <div class="waterfall-scale"></div>
-    <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} onlostpointercapture={handleDragCancel} role="presentation">
+    <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#key runtime.state?.providerGeneration}
       <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
         <WaterfallCanvas

@@ -3089,6 +3089,91 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     }
   });
 
+  // The waterfall canvas's tap recognizer captures the pointer on
+  // pointerdown; when the panel drag crosses its threshold the panel
+  // re-captures the pointer on `.waterfall-content` and the canvas's
+  // lostpointercapture bubbles up. That transfer must NOT cancel the drag.
+  it('survives the waterfall canvas capture transfer and still previews and commits once', async () => {
+    const restore = stubReducedMotion();
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame();
+      const { waterfall } = prepareGeometry(target);
+      const canvas = waterfall.querySelector('canvas')!;
+      pointer(canvas, 'pointerdown', 37, 100);
+      pointer(canvas, 'pointermove', 37, 120);
+      // The recognizer's capture on the canvas is released when the panel
+      // takes the pointer over; the bubbling event is not a loss.
+      pointer(canvas, 'lostpointercapture', 37, 120);
+      pointer(canvas, 'pointermove', 37, 130);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      pointer(canvas, 'pointerup', 37, 130);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_035_000, 0);
+    } finally {
+      restore();
+    }
+  });
+
+  it('retires the preview the moment the captured context changes and rejects the release', async () => {
+    const restore = stubReducedMotion();
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      const target = mountPanel();
+      emitFrame();
+      const { spectrum } = prepareGeometry(target);
+      pointer(spectrum, 'pointerdown', 38, 100);
+      pointer(spectrum, 'pointermove', 38, 120);
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
+      // A retune from another client lands mid-drag: the preview anchored
+      // to the captured 14.050 MHz must not retarget the new observation.
+      authorityHarness.state.current = authority({ frequencyHz: 7_050_000 });
+      refreshSpectrumAuthority();
+      await flushPreviewPaint();
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.centerHz).toBe(7_050_000));
+      // The release-side staleness guard already refuses the commit.
+      pointer(spectrum, 'pointerup', 38, 120);
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      expect(mockRuntime.send).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('shows the FIX-mode preview when the drag pulls the candidate into the window from outside it', async () => {
+    const restore = stubReducedMotion();
+    try {
+      // Confirmed frequency sits OUTSIDE the fixed 14.000-14.100 window:
+      // no marker at rest.
+      authorityHarness.state.current = authority({ frequencyHz: 14_200_000 });
+      const target = mountPanel();
+      emitFrame({ mode: 1 });
+      const { spectrum } = prepareGeometry(target);
+      expect(target.querySelector('.waterfall-content .tune-line')).toBeNull();
+
+      pointer(spectrum, 'pointerdown', 39, 100);
+      // dx=300 px at 500 Hz/px pulls the candidate to 14.050 MHz — inside.
+      pointer(spectrum, 'pointermove', 39, 400);
+      await flushPreviewPaint();
+      expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left).toBe('50%');
+      expect(target.querySelector<HTMLElement>('.waterfall-content .passband-overlay')!.style.left).toBe('38%');
+      await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.tuneHz).toBe(14_050_000));
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+      pointer(spectrum, 'pointerup', 39, 400);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
+      // Released: the marker hides again until the radio confirms a
+      // frequency inside the window.
+      expect(target.querySelector('.waterfall-content .tune-line')).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
   it('moves the FIX-mode tune marker and passband with the preview and leaves the panorama parked', async () => {
     const restore = stubReducedMotion();
     try {
