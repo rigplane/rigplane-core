@@ -53,3 +53,16 @@ export function loadScopeWireGolden(name: string): { buffer: ArrayBuffer; expect
   return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
     expected: JSON.parse(readFileSync(resolve(goldenRoot, name.replace('.bin', '.json')), 'utf8')) };
 }
+
+export type AudioScopeGolden = {
+  frame: ScopeWireGolden;
+  audioPassband: { tunedHz: number; carrierOffsetHz: number; sideband: 'upper' | 'lower' | 'both'; lowOffsetHz: number; highOffsetHz: number };
+  input: { mode: string; cwPitchHz: number | null; sampleRateHz: number; fftSize: number; toneHz: number };
+};
+export const audioScopeGoldenNames = ['audio-usb-tone', 'audio-lsb-tone', 'audio-cwu-tone', 'audio-cwl-tone'] as const;
+export function loadAudioScopeGolden(name: string): { buffer: ArrayBuffer; expected: AudioScopeGolden } {
+  const root = resolve(process.cwd(), '../tests/fixtures/audio-scope-render');
+  const bytes = readFileSync(resolve(root, `${name}.bin`));
+  return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    expected: JSON.parse(readFileSync(resolve(root, `${name}.json`), 'utf8')) };
+}

@@ -1,3 +1,5 @@
+import { audioScopeGoldenNames, loadAudioScopeGolden } from '$lib/runtime/__tests__/scope-wire-fixture';
+import { ingressScopeFrame } from '$lib/runtime/adapters/scope-adapter';
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AmberAfScope from '../AmberAfScope.svelte';
@@ -64,14 +66,14 @@ function renderFrame() {
   callback!(0);
 }
 
-function setup(mode: Mode, initial: Uint8Array | null) {
+function setup(mode: Mode, initial: Uint8Array | null, projection?: { zero: number; perHz: number; spanHz: number }) {
   let data = initial;
   let push: ((pixels: Uint8Array | null) => void) | undefined;
   component = mount(AmberAfScope, {
     target,
     props: {
       get data() { return data; },
-      mode,
+      mode, projection,
       filterWidth: 2400,
       filterWidthMax: 3600,
       onRegisterPush: (callback) => { push = callback; },
@@ -209,4 +211,22 @@ it.each(['compact', 'fill', 'dominant'] as const)('clears pushed pixels and hist
   expectZeroActivity();
   canvas.push(initial);
   expectActivity(mode);
+});
+
+it.each(audioScopeGoldenNames)('renders the actual PCM RF-mapped tone in %s at its AF frequency', (name) => {
+  const { buffer, expected } = loadAudioScopeGolden(name);
+  const result = ingressScopeFrame(buffer, { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 });
+  if (!result.ok) throw new Error(result.reason);
+  const view = result.geometry.view, span = view.endHz - view.startHz;
+  const carrier = expected.audioPassband.tunedHz + expected.audioPassband.carrierOffsetHz;
+  const sign = expected.audioPassband.sideband === 'lower' ? -1 : 1;
+  setup('dominant', result.frame.pixels, { zero: (carrier - view.startHz) / span, perHz: sign / span,
+    spanHz: sign === 1 ? view.endHz - carrier : carrier - view.startHz });
+  const peak = bars.reduce((best, bar) => bar[3] > best[3] ? bar : best);
+  const slope = (height - 40) * 0.35;
+  const topHalf = (width * 0.42 - slope) * (2400 / 3600);
+  const left = width / 2 - topHalf - slope, right = width / 2 + topHalf + slope;
+  const afHz = (peak[0] + peak[2] / 2 - left) / (right - left) * 2400;
+  expect(Math.abs(afHz - expected.input.toneHz)).toBeLessThan(100);
+  expect(result.frame.pixels?.buffer).toBe(buffer);
 });
