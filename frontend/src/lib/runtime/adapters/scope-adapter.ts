@@ -5,6 +5,7 @@ export interface ScopeFrame {
   readonly mode: number;
   readonly startFreq: number;
   readonly endFreq: number;
+  readonly outOfRange: boolean;
   readonly pixels: Uint8Array;
 }
 
@@ -15,6 +16,9 @@ export function parseScopeFrame(buf: ArrayBuffer): ScopeFrame | null {
   const mode = view.getUint8(2);
   const startFreq = view.getUint32(3, true);
   const endFreq = view.getUint32(7, true);
+  // Binary Scope Frame RFC in src/rigplane/web/protocol.py:
+  // flags at byte 13, bit 0 = out_of_range; pixels start at byte 16.
+  const outOfRange = (view.getUint8(13) & 0x01) !== 0;
   const pixelCount = view.getUint16(14, true);
   if (16 + pixelCount > view.byteLength) return null;
   return Object.freeze({
@@ -22,6 +26,7 @@ export function parseScopeFrame(buf: ArrayBuffer): ScopeFrame | null {
     mode,
     startFreq,
     endFreq,
+    outOfRange,
     pixels: new Uint8Array(buf, 16, pixelCount),
   });
 }
@@ -61,6 +66,7 @@ export interface ScopeFrameProjectionAuthority {
 
 /** Structural match for the MOR-2321 LCD display-frame model. */
 export interface ScopeDisplayFrameCandidate {
+  readonly state?: 'out-of-range';
   readonly source: 'hardware' | 'audio-fft';
   readonly receiver: 'MAIN' | 'SUB';
   readonly freshness: 'fresh' | 'stale';
@@ -112,12 +118,13 @@ export function toScopeDisplayFrame(
 
   const age = authority.nowMonotonic - envelope.receivedAt;
   const { frame } = envelope;
-  if (age < 0 || !(frame.pixels instanceof Uint8Array) || frame.pixels.length < 2
+  if (age < 0 || !(frame.pixels instanceof Uint8Array) || (!frame.outOfRange && frame.pixels.length < 2)
     || frame.receiver !== envelope.receiver || !Number.isFinite(frame.startFreq)
     || !Number.isFinite(frame.endFreq) || frame.endFreq <= frame.startFreq) return null;
 
   const normalizedBins = Object.freeze(Array.from(frame.pixels, (sample) => sample / 255));
   return Object.freeze({
+    ...(frame.outOfRange ? { state: 'out-of-range' as const } : {}),
     source: envelope.source === 'audio_fft' ? 'audio-fft' : 'hardware',
     receiver: envelope.receiver === 0 ? 'MAIN' : 'SUB',
     freshness: age < SCOPE_FRAME_SILENCE_MS ? 'fresh' : 'stale',

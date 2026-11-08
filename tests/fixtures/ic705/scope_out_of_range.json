@@ -1,0 +1,7 @@
+{
+  "description": "RX-only USB capture, fixed scope, tuned to 146.520 MHz; single segment, no wave bytes.",
+  "civHex": "fefee0a42700000101010000004401000050440101fd",
+  "wireHex": "0100010044950820e59c080100010000",
+  "startHz": 144000000,
+  "endHz": 144500000
+}

@@ -191,6 +191,7 @@ if TYPE_CHECKING:
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
     from ..runtime.managed_tx_composition import ManagedTxCompositionPort
+    from .protocol import ScopeFrameLike  # noqa: TID251
     from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
 
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
@@ -3693,18 +3694,19 @@ class WebServer:
             logger.debug("scope TX probe: unexpected failure", exc_info=True)
             return False
 
-    def _scope_health_check(self, frame: Any) -> None:
+    def _scope_health_check(self, frame: ScopeFrameLike) -> None:
         """Track scope frame arrival and whether frames carry real data.
 
         MOR-3690: every frame arrival refreshes ``_scope_last_frame``
-        (monotonic), non-zero pixels also refresh ``_scope_last_nonzero``.
+        (monotonic). Non-zero pixels or an explicit out-of-range view refresh
+        ``_scope_last_nonzero``: both prove the scope is present, not hidden.
         """
         try:
-            # ScopeFrame has .pixels (bytes-like)
-            pixels = getattr(frame, "pixels", None) or b""
             self._scope_last_frame = time.monotonic()
-            if any(b != 0 for b in pixels):
+            if frame.pixels.strip(b"\0") or frame.out_of_range:
                 self._scope_last_nonzero = self._scope_last_frame
+                if frame.out_of_range:
+                    self._publish_scope_hidden(False, now=self._scope_last_frame)
         except (AttributeError, TypeError):
             logger.debug("scope health check: unexpected frame type", exc_info=True)
 

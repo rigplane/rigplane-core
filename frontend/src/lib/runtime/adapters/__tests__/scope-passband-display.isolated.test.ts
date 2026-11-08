@@ -64,7 +64,7 @@ function receipt(input: ScopePassbandDisplayInput, sequence = 1, overrides: Reco
   const generation = input.caps!.providerGeneration;
   if (typeof generation !== 'number') throw new Error('fixture generation required');
   const envelope = qualifyScopeFrameEnvelope({ receiver, mode: 0,
-    startFreq: 14_000_000, endFreq: 14_100_000, pixels: new Uint8Array([10, 128, 200]), ...overrides,
+    startFreq: 14_000_000, endFreq: 14_100_000, outOfRange: false, pixels: new Uint8Array([10, 128, 200]), ...overrides,
   }, { source: 'hardware', receiver, providerGeneration: generation,
     transportEpoch: 1, receivedAt: 0, acceptedSequence: sequence }, 9)!;
   const authority = Object.freeze({ source: envelope.source, receiver,

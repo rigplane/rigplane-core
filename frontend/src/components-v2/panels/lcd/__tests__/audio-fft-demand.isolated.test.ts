@@ -17,13 +17,7 @@ type DefaultScopeStatusProbe = {
   transport: MockConnectionState;
   frameSeen: boolean;
 };
-type ScopeFrameProbe = Readonly<{
-  receiver: number;
-  mode: number;
-  startFreq: number;
-  endFreq: number;
-  pixels: Uint8Array;
-}>;
+type ScopeFrameProbe = import('$lib/runtime/adapters/scope-adapter').ScopeFrame;
 type AmberAfScopePropsProbe = {
   data: Uint8Array | null;
   bandwidth?: number;
@@ -279,6 +273,7 @@ describe('LCD audio-FFT demand ownership', () => {
         mode: 1,
         startFreq: 14_012_345,
         endFreq: 14_098_765,
+        outOfRange: false,
         pixels: distinctivePixels,
       });
       flushSync();

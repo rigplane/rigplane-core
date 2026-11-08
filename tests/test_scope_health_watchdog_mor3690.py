@@ -37,8 +37,10 @@ real WebServer and RadioPoller — only the hardware is faked.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from unittest.mock import AsyncMock, MagicMock
@@ -47,9 +49,9 @@ import pytest
 
 from rigplane.core.radio_protocol import Radio
 from rigplane.rigctld.state_cache import StateCache
-from rigplane.scope import ScopeFrame
+from rigplane.scope import ScopeAssembler, ScopeFrame
 from rigplane.testing.timing import VirtualClock, await_until
-from rigplane.web.protocol import MSG_TYPE_SCOPE
+from rigplane.web.protocol import MSG_TYPE_SCOPE, encode_scope_frame
 from rigplane.web.radio_poller import EnableScope
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.ws import WS_OP_BINARY
@@ -104,6 +106,58 @@ async def test_all_zero_frames_flowing_writes_nothing(
 
     assert queued == []
     assert _scope_hidden_verdict(srv) is True
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-7610"])
+async def test_captured_out_of_range_is_present_not_hidden(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/ic705/scope_out_of_range.json").read_text()
+    )
+    raw = bytes.fromhex(fixture["civHex"])
+    assert raw[7:9] == b"\x01\x01"  # captured seq=1/max=1: no continuation
+    frame = ScopeAssembler().feed(raw[7:-1], raw[6])
+    assert isinstance(frame, ScopeFrame)
+    assert frame.out_of_range and frame.pixels == b""
+    assert (frame.start_freq_hz, frame.end_freq_hz) == (
+        fixture["startHz"],
+        fixture["endHz"],
+    )
+    wire = encode_scope_frame(frame, 1)
+    assert wire.hex() == fixture["wireHex"]
+    assert wire[13:] == b"\x01\x00\x00"
+    radio = _scope_radio()
+    radio.model = model
+    srv, _, queued = _virtual_scope_server(monkeypatch, virtual_clock, radio=radio)
+    caplog.set_level("INFO", logger="rigplane.web.server")
+    published: list[bool] = []
+    publish = srv._publish_scope_hidden  # noqa: SLF001
+
+    def record(hidden: bool, **kwargs: Any) -> None:
+        published.append(hidden)
+        publish(hidden, **kwargs)
+
+    monkeypatch.setattr(srv, "_publish_scope_hidden", record)
+
+    async def scenario() -> None:
+        await _elapse_scope_windows(
+            virtual_clock,
+            5,
+            between=lambda: srv._scope_health_check(frame),  # noqa: SLF001
+        )
+        assert True not in published
+        assert _scope_hidden_verdict(srv) is False
+        assert "all-zero" not in caplog.text
+        assert not srv._scope_menu_guard_active(now=virtual_clock())  # noqa: SLF001
+        srv._scope_health_check(_live_scope_frame())  # noqa: SLF001
+        await srv._refetch_and_reenable()  # noqa: SLF001
+        assert len(queued) == 1
+
+    await _run_monitor(srv, scenario())
 
 
 @pytest.mark.timeout(30)

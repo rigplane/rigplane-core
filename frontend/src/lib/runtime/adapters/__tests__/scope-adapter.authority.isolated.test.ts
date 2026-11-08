@@ -32,6 +32,7 @@ import {
   deriveIfShift, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
 } from '$lib/radio/filter-controls';
 import { IC7300_CAPABILITIES, IC7300_STATE } from './fixtures/ic7300-profile';
+import { resolveLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
 
 // MOR-3677: `lastObservedMonotonic` is part of every observed FieldStatus
 // the server publishes (the FTX-1/IC-7300 captures carry it), and the
@@ -554,6 +555,7 @@ describe('MOR-1409 A06a1 decoder and purity boundary', () => {
     view.setUint16(14, 1, true); view.setUint8(16, 0xff);
     expect(parseScopeFrame(buffer)).toEqual({
       receiver: 1, mode: 2, startFreq: 14_000_000, endFreq: 14_350_000,
+      outOfRange: false,
       pixels: new Uint8Array([0xff]),
     });
   });
@@ -574,6 +576,7 @@ describe('MOR-2326 pure scope display-frame projection', () => {
     receivedAt: 1_000, acceptedSequence: 1, wireSequence: 65_535,
     frame: Object.freeze({
       receiver: 0, mode: 1, startFreq: 14_000_000, endFreq: 14_100_000,
+      outOfRange: false,
       pixels: new Uint8Array([0, 128, 255]),
     }),
     ...overrides,
@@ -584,6 +587,21 @@ describe('MOR-2326 pure scope display-frame projection', () => {
     source: 'hardware', receiver: 0, providerGeneration: 7, transportEpoch: 3,
     demanded: true, transport: 'connected', nowMonotonic: 1_499,
     ...overrides,
+  });
+
+  it('preserves captured OOR metadata as a distinct display state with no bins', () => {
+    // Pinned to ScopeAssembler + encode_scope_frame by the Python replay test.
+    const buffer = Uint8Array.from(Buffer.from('0100010044950820e59c080100010000', 'hex')).buffer;
+    const frame = parseScopeFrame(buffer)!;
+    expect(frame).toMatchObject({ outOfRange: true, startFreq: 144_000_000, endFreq: 144_500_000 });
+    expect(frame.pixels).toHaveLength(0);
+    const candidate = toScopeDisplayFrame(envelope({ frame }), authority());
+    expect(candidate).toMatchObject({ state: 'out-of-range', startHz: 144_000_000,
+      endHz: 144_500_000, normalizedBins: [] });
+    expect(resolveLcdSpectrumFrame(candidate, { source: 'hardware', receiver: 'MAIN' }).state)
+      .toBe('out-of-range');
+    expect(resolveLcdSpectrumFrame(toScopeDisplayFrame(envelope({ frame }),
+      authority({ nowMonotonic: 1_500 })), { source: 'hardware', receiver: 'MAIN' }).state).toBe('ghost');
   });
 
   it.each([

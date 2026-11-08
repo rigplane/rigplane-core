@@ -25,11 +25,13 @@
     getPendingFrequencyHz,
     getTuningBurstFrequencyHz,
     getVfoHandlers,
+    bindSemanticSurfaceHandlers,
   } from '../../lib/runtime/adapters/panel-adapters';
   import {
     snapSpectrumFilterWidth,
     toSpectrumAuthority,
     type SpectrumAuthority,
+    type ScopeDisplayFrameCandidate,
   } from '../../lib/runtime/adapters/scope-adapter';
   import type { ScopeDisplayProjection } from '../../lib/runtime/adapters/scope-display-projection';
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
@@ -117,6 +119,7 @@
 
   const vfoHandlers = getVfoHandlers();
   const filterHandlers = getFilterHandlers();
+  const scopeHandlers = bindSemanticSurfaceHandlers().scopeControls;
   // This lifecycle is presentation-only: it never replaces radio-confirmed
   // state. It preserves the release target while the existing command
   // lifecycle is busy, then returns to the confirmed radio observation.
@@ -145,6 +148,8 @@
   let scopeDemandOn = $state(true);
   let managed = $derived(scopeProjection !== undefined);
   let managedUnavailable = $derived(managed && (!scopeDemandOn || scopeProjection === null));
+  let rawScopeState = $state<ScopeDisplayFrameCandidate['state']>(undefined);
+  let scopeContentState = $derived(managed ? scopeProjection?.frame.state : rawScopeState);
   let scopeConnected = $derived(managed ? !managedUnavailable : audioFft
     ? runtime.defaultScopeStatus.transport === 'connected'
     : runtime.scope.hardwareScopeConnected && runtime.scope.hardwareScopeFrameLive);
@@ -467,6 +472,7 @@
   let scopeMode = $derived(frameScopeMode);
   let isFixedScope = $derived(isFixedScopeFn(scopeMode));
   let displayTuple = $derived(!managedUnavailable && scopeProjection
+    && scopeContentState !== 'out-of-range'
     && (scopeProjection.passband.state === 'current' || scopeProjection.passband.state === 'stale')
     ? scopeProjection.passband.tuple : null);
   let displayStale = $derived(displayTuple !== null && scopeProjection?.passband.state === 'stale');
@@ -1041,6 +1047,7 @@
   const CENTRAL_SCOPE_AMPLITUDE_MAX = 80;
 
   function clearSample(): void {
+    rawScopeState = undefined;
     sampledReceipt = null;
     scopePixels = null;
     startFreq = 0;
@@ -1096,6 +1103,7 @@
       frameScopeMode = projection.frameMode;
       startFreq = projection.frame.startHz;
       endFreq = projection.frame.endHz;
+      if (projection.frame.state === 'out-of-range') { scopePixels = null; return; }
       if (sampledReceipt !== projection.acceptedSequence) {
         const traceStart = trace?.status === 'recording' ? performance.now() : 0;
         const source: TraceSource = projection.frame.source === 'audio-fft' ? 'audio_fft' : 'hardware';
@@ -1140,6 +1148,8 @@
         frameScopeMode = frame.mode;
         startFreq = sourceIsAudio ? 0 : frame.startFreq;
         endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
+        rawScopeState = frame.outOfRange ? 'out-of-range' : undefined;
+        if (frame.outOfRange) { scopePixels = null; return; }
         scopePixels = pixels;
         spectrumPush?.(pixels, token);
         // MOR-3158: same TX-frozen hold as the managed path above — only
@@ -1259,9 +1269,17 @@
         <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
+      {:else if scopeContentState === 'out-of-range'}
+        <div class="scope-disconnected-overlay scope-out-of-range" data-testid="scope-out-of-range">
+          <span>{t('core.overlay.scopeOutOfRange', {
+            start: (startFreq / 1e6).toFixed(3), end: (endFreq / 1e6).toFixed(3),
+          })}</span>
+          <button type="button" onpointerdown={(event) => event.stopPropagation()}
+            onclick={() => scopeHandlers.onModeChange(0)}>{t('core.overlay.scopeSwitchToCtr')}</button>
+        </div>
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
-      {#if scopeTraceLive}
+      {#if scopeTraceLive && scopeContentState !== 'out-of-range'}
       <SpectrumCanvas data={scopePixels} options={spectrumOptions} {spanHz} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onRegisterPush={(fn) => { spectrumPush = fn; if (managed && scopePixels) fn(scopePixels); }} />
       {/if}
       {#if spectrumCenterReferenceVisible}
@@ -1311,7 +1329,7 @@
     <div class="waterfall-scale"></div>
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} role="presentation">
       {#key runtime.state?.providerGeneration}
-      <div class="waterfall-history" style:visibility={managedUnavailable ? 'hidden' : 'visible'} aria-hidden={managedUnavailable}>
+      <div class="waterfall-history" style:visibility={managedUnavailable || scopeContentState === 'out-of-range' ? 'hidden' : 'visible'} aria-hidden={managedUnavailable || scopeContentState === 'out-of-range'}>
         <WaterfallCanvas
           options={waterfallOptions}
           trace={traceStatus === 'recording' ? trace : null}
@@ -1655,6 +1673,14 @@
     font-family: 'Roboto Mono', monospace;
     letter-spacing: 0.05em;
     pointer-events: none;
+  }
+
+  .scope-out-of-range {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .scope-out-of-range button {
+    pointer-events: auto;
   }
 
   /* Mobile: hide dB scale and waterfall scale to maximize spectrum width */
