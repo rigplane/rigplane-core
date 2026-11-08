@@ -456,13 +456,13 @@ class TestCapabilitiesEndpoint:
         assert data["powerOnCommand"] is expected
 
     @pytest.mark.asyncio
-    async def test_capabilities_ic7300_4m_receive_without_tx_band(self):
-        """MOR-3782: the 4 m range is tunable but offers no TX band.
-
-        The profile's receive envelope covers 70.2 MHz (receiver
-        0.030–74.800 MHz per the Advanced Manual 11a §16), while
-        ``txBands`` — built from the ranges' ``bands`` tables — declares
-        no band covering it, so no IC-7300 gets TX permission at 70 MHz.
+    async def test_capabilities_ic7300_4m_tunable_with_published_tx_row(self):
+        """MOR-3782 kept the 4 m range tunable; MOR-4300 added its band
+        row. The profile's receive envelope covers 70.2 MHz (receiver
+        0.030–74.800 MHz per the Advanced Manual 11a §16), and
+        ``txBands`` publishes the 4 m row with its rated maximum —
+        information, not a permit: whether the radio actually
+        transmits on 70 MHz is the radio's own decision (MOR-4303).
         """
         radio = _make_radio("IC-7300")
         srv = WebServer(radio)
@@ -475,9 +475,13 @@ class TestCapabilitiesEndpoint:
             freq_range["start"] <= 70_200_000 <= freq_range["end"]
             for freq_range in data["freqRanges"]
         )
-        assert not any(
-            band["start"] <= 70_200_000 <= band["end"] for band in data["txBands"]
-        )
+        tx = next((band for band in data["txBands"] if band["name"] == "4m"), None)
+        assert tx == {
+            "name": "4m",
+            "start": 70_000_000,
+            "end": 70_500_000,
+            "maxPowerW": 50,
+        }
 
     @pytest.mark.asyncio
     async def test_capabilities_reports_hardware_and_audio_scope_independently(self):

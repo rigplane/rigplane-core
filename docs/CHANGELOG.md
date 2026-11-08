@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Experimental** — 4 m (70 MHz) band for the IC-7300 and IC-7300MK2: a 4 m band button (tunes 70.200 MHz) with the band's rated power (50 W), and 4 m segments in the IARU Region 1 band-plan overlay. Whether the radio transmits on 70 MHz is left to the radio (only European versions do). Experimental until a real European radio confirms it. (MOR-4300)
+
 ### Removed
 
 - The quiet RX audio hint and its unused profile field `[audio].rx_audio_level_menu` are removed. The public `/api/v1/capabilities` response no longer includes `rxAudioLevelMenu`; API consumers should stop relying on it. (MOR-4294)

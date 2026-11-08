@@ -2,7 +2,7 @@
 # Source: https://www.iaru-r1.org/on-the-air/band-plans/
 # VHF/UHF/SHF sections transcribe the IARU-R1 VHF Handbook v10.03 (Feb 2026):
 # https://www.iaru-r1.org/wp-content/uploads/2026/02/VHF_Handbook_V10_03_final.pdf
-# (printed pages 35-36, 38-39, 41-43, 45-46; transcribed 2026-10-29). Rows the
+# (printed pages 35-39, 41-43, 45-46; transcribed 2026-10-29). Rows the
 # handbook does not state are left out rather than filled from memory.
 
 [meta]
@@ -481,6 +481,49 @@ end = 54_000_000
   mode = "other"
   label = "ALL"
   notes = "All modes, 500 kHz maximum bandwidth; only in Region 1 countries where 52-54 MHz (or parts of it) is allocated, planned as up to four 500 kHz blocks (footnote f)"
+
+# ── 4m (70.0-70.5 MHz, Region 1) ──────────────────────
+# IARU-R1 VHF Handbook v10.03, printed page 37 (section 7.3) and its notes.
+
+[[band]]
+name = "4m"
+start = 70_000_000
+end = 70_500_000
+
+  [[band.segment]]
+  start = 70_000_000
+  end = 70_090_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Telegraphy, MGM, 1000 Hz; coordinated beacons"
+
+  [[band.segment]]
+  start = 70_090_000
+  end = 70_100_000
+  mode = "beacon"
+  label = "BCN"
+  notes = "Beacons, 1000 Hz; temporary and personal beacons"
+
+  [[band.segment]]
+  start = 70_100_000
+  end = 70_250_000
+  mode = "phone"
+  label = "SSB"
+  notes = "Telegraphy, SSB, MGM, 2700 Hz; 70.185 crossband centre of activity, 70.200 centre of activity telegraphy/SSB, 70.250 centre of activity MS"
+
+  [[band.segment]]
+  start = 70_250_000
+  end = 70_294_000
+  mode = "phone"
+  label = "AM/FM"
+  notes = "AM/FM, 12 kHz; 70.260 AM/FM calling, 70.270 MGM centre of activity; usage may vary due to national allocations"
+
+  [[band.segment]]
+  start = 70_294_000
+  end = 70_500_000
+  mode = "phone"
+  label = "FM"
+  notes = "FM channels, 12.5 kHz spacing, 12 kHz; 70.3125/70.3250/70.4875 digital communications, 70.4500 FM calling"
 
 # ── 2m (144-146 MHz, Region 1) ────────────────────────
 # IARU-R1 VHF Handbook v10.03, printed pages 38-40 (section 7.4) and its notes.

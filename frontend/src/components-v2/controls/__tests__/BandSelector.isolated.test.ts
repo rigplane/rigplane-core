@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRawSnippet, mount, unmount, flushSync, type Snippet } from 'svelte';
 import { flattenBands, findActiveBand } from '../band-utils';
+import { validateCapabilities } from '$lib/types/capabilities';
 import type { FreqRange } from '$lib/types/capabilities';
+import goldenFile from '../../../lib/transport/__tests__/fixtures/state-wire-goldens.json';
 
 // ── Fixtures (must be declared before vi.mock factories) ──────────────────
 
@@ -42,8 +44,15 @@ const mockPresetHandlers = {
   onFreqPreset: vi.fn(),
 };
 
+/**
+ * The document the mocked capabilities store serves. The 4 m region
+ * block below swaps in the real-handler documents; every other test
+ * keeps the hand-rolled HF fixture above.
+ */
+let capabilitiesDocument: { freqRanges: FreqRange[] } = { freqRanges: HF_RANGES };
+
 vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => ({ freqRanges: HF_RANGES })),
+  getCapabilities: vi.fn(() => capabilitiesDocument),
   getKeyboardConfig: vi.fn(() => null),
 }));
 
@@ -315,5 +324,47 @@ describe('BandSelector HAM/broadcast split (hamBands prop)', () => {
       .find((el) => el.textContent?.trim() === 'MW') as HTMLElement).click();
     flushSync();
     expect(mockPresetHandlers.onPresetSelect).toHaveBeenCalledWith(1_000_000, 'AM');
+  });
+});
+
+// ── 4 m button from the golden capabilities document (MOR-4300) ────────────
+//
+// The document is what the production IC-7300 server serves over
+// `GET /api/v1/capabilities`. It is produced and pinned by the Python
+// test tests/web/test_state_wire_goldens.py (regenerate with
+// scripts/gen_state_wire_goldens.py) and passes through the real
+// validateCapabilities before the store mock serves it, so the button
+// renders from a contract-valid payload, not a hand-rolled one. The
+// 4 m row is plain profile data: the button is shown in every
+// band-plan region, and the radio itself decides whether it transmits
+// on 70 MHz (MOR-4303).
+describe('BandSelector 4 m button (MOR-4300)', () => {
+  function findButtonByText(container: HTMLElement, text: string): HTMLButtonElement | null {
+    const buttons = container.querySelectorAll<HTMLButtonElement>('button');
+    for (const btn of buttons) {
+      if (btn.textContent?.trim() === text) return btn;
+    }
+    return null;
+  }
+
+  afterEach(() => {
+    capabilitiesDocument = { freqRanges: HF_RANGES };
+  });
+
+  it('renders the 4 m button and tunes its published default', () => {
+    const { capabilities } = (goldenFile as unknown as Record<string, {
+      capabilities: unknown;
+    }>)['IC-7300'];
+    capabilitiesDocument = validateCapabilities(structuredClone(capabilities));
+    const target = mountPanel();
+
+    const fourMetre = findButtonByText(target, '4m');
+    expect(fourMetre).not.toBeNull();
+    fourMetre?.click();
+    flushSync();
+
+    // The IC-7300 4 m row has no bsrCode: the selection is the band
+    // name, the published default (70.200 MHz) and no code.
+    expect(mockBandHandlers.onBandSelect).toHaveBeenCalledWith('4m', 70_200_000, undefined);
   });
 });

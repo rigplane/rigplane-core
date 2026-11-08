@@ -806,7 +806,7 @@ equal_ab = [0xA0]
 # not guaranteed"), so every IC-7300 tunes and receives up to
 # 74.800 MHz. The VHF RX range below carries no `bands` table on
 # purpose: it is tune/receive only, and transmit permission comes
-# from `bands` — no 4 m TX band is declared.
+# from `bands` — the 4 m band is declared in its own range above it.
 
 [[freq_ranges.ranges]]
 label = "HF"
@@ -893,6 +893,29 @@ start_hz = 50_000_000
 end_hz = 54_000_000
 default_hz = 50_125_000
 bsr_code = 0x0A
+
+# MOR-4300: the 4 m band is plain profile data, shown in every
+# band-plan region. EU versions transmit 70.000-70.500 MHz; every
+# version receives it (receiver coverage quote above), and the radio
+# itself decides whether it transmits there (MOR-4303). Edges and
+# power: IC-7300 Advanced Manual (11a), section 16 SPECIFICATIONS —
+# "Transmitter … 70.000000 ~ 70.500000*2" (footnote *2 "Depending
+# on the transceiver version"); "70 MHz band*2 SSB/CW/RTTY/FM 2~50
+# W". No bsr_code: the manual's CI-V "Band stacking register,
+# Command 1A 01" frequency-band-code table lists 01-10 (1.8-50 MHz)
+# and 11 = GENE ("Other than above") — no 70 MHz code exists, so the
+# band button tunes default_hz directly.
+[[freq_ranges.ranges]]
+label = "4m"
+start_hz = 70_000_000
+end_hz = 70_500_000
+
+[[freq_ranges.ranges.bands]]
+name = "4m"
+start_hz = 70_000_000
+end_hz = 70_500_000
+default_hz = 70_200_000
+max_power_w = 50
 
 [[freq_ranges.ranges]]
 label = "VHF RX"
