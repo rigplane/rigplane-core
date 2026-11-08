@@ -1,6 +1,6 @@
 """Max-hold projection of native frequency bins onto a requested view."""
 
-from math import ceil, floor
+from rigplane.core._optional_deps import _require_numpy
 
 from .models import Coverage, View
 
@@ -14,14 +14,29 @@ def max_hold(pixels: bytes, coverage: Coverage, view: View, width: int) -> bytes
         or coverage.start_hz >= view.end_hz
     ):
         return None
-    result = bytearray(width)
+    _require_numpy()
+    import numpy as np
+
     native_scale = len(pixels) / (coverage.end_hz - coverage.start_hz)
     step = (view.end_hz - view.start_hz) / width
-    for column in range(width):
-        start = max(view.start_hz + column * step, coverage.start_hz)
-        end = min(view.start_hz + (column + 1) * step, coverage.end_hz)
-        if start < end:
-            first = max(0, floor((start - coverage.start_hz) * native_scale))
-            last = min(len(pixels), ceil((end - coverage.start_hz) * native_scale))
-            result[column] = max(pixels[first:last], default=0)
-    return bytes(result)
+    edges = view.start_hz + np.arange(width + 1, dtype=np.float64) * step
+    starts = np.maximum(edges[:-1], coverage.start_hz)
+    ends = np.minimum(edges[1:], coverage.end_hz)
+    valid = starts < ends
+    first = np.maximum(
+        0, np.floor((starts[valid] - coverage.start_hz) * native_scale)
+    ).astype(np.intp)
+    last = np.minimum(
+        len(pixels), np.ceil((ends[valid] - coverage.start_hz) * native_scale)
+    ).astype(np.intp)
+    nonempty = first < last
+    result = np.zeros(width, dtype=np.uint8)
+    if nonempty.any():
+        positions = np.flatnonzero(valid)[nonempty]
+        first, last = first[nonempty], last[nonempty]
+        native = np.frombuffer(pixels, dtype=np.uint8)
+        # Adjacent columns meet at one edge. reduceat covers floor-to-floor;
+        # ceil may include the next segment's first bin as well.
+        reduced = np.maximum.reduceat(native[: last[-1]], first)
+        result[positions] = np.maximum(reduced, native[last - 1])
+    return bytes(result.tobytes())

@@ -1,10 +1,8 @@
-"""Server-side SDR scope runtime (MOR-3157).
+"""SDR source construction and CLI configuration (MOR-3157).
 
-Builds an IQ source through an injectable factory (default
-:class:`~rigplane.sdr.soapy_source.SoapyIqSource`), feeds an
-:class:`~rigplane.sdr.iq_scope.IqFftScope`, keeps the IQ window on the
-radio VFO via :class:`~rigplane.sdr.controller.SdrScopeController`, and
-validates the ``--sdr-*`` flags into an :class:`SdrConfig`.
+Builds the production :class:`~rigplane.sdr.soapy_source.SoapyIqSource`
+and validates the ``--sdr-*`` flags into an :class:`SdrConfig`. Shared
+scope composition lives in :mod:`rigplane.sdr.scope_source`.
 
 GPL boundary: SoapySDR loads every module library it finds at import
 time, and distro builds ship GPL-licensed driver modules alongside the
@@ -21,26 +19,18 @@ applied.
 
 from __future__ import annotations
 
-import asyncio
 import glob
 import logging
 import os
 import tempfile
-import time
 from collections.abc import Callable, Mapping, MutableMapping, Sequence
-from dataclasses import replace
-from typing import Any, Literal
+from typing import Any
 
-from rigplane.scope import ScopeFrame
-
-from .controller import SdrScopeController
-from .iq_scope import IqFftScope
 from .protocol import IqSource
-from .types import IqBlock, SdrConfig
+from .types import SdrConfig
 
 __all__ = [
     "SPAN_LIMIT_RATIO",
-    "SdrScopeRuntime",
     "apply_remote_only_env",
     "default_source_factory",
     "remote_only_env_updates",
@@ -52,9 +42,6 @@ logger = logging.getLogger(__name__)
 #: Max display span / sample rate: the controller's per-edge guard band
 #: cannot cover a wider span.
 SPAN_LIMIT_RATIO = 0.6
-
-#: Seconds without a frame after which the SDR counts as dropped.
-FRAME_STALE_S = 2.0
 
 
 def resolve_sdr_config(
@@ -205,219 +192,3 @@ def default_source_factory(config: SdrConfig) -> IqSource:
     from .soapy_source import SoapyIqSource
 
     return SoapyIqSource(config)
-
-
-class SdrScopeRuntime:
-    """One live SDR scope pipeline for ``/api/v1/scope`` (MOR-3157).
-
-    ``source.on_block`` → :class:`IqFftScope` → frame callback; the
-    controller is driven from radio state fed by the server. Frames hop
-    to the event loop via :meth:`asyncio.loop.call_soon_threadsafe` only
-    — the scope worker emits them while holding its lock. :attr:`active`
-    flips ``False`` after ``frame_stale_s`` s without a frame and back
-    when frames return. The read-only status surface for the public
-    ``sdr`` state object (MOR-3201) is :attr:`state`, :attr:`last_error`,
-    :attr:`overflow_count`, :attr:`tx_frozen` and :attr:`span_hz`.
-    """
-
-    def __init__(
-        self,
-        config: SdrConfig,
-        *,
-        source_factory: Callable[[SdrConfig], IqSource] | None = None,
-        scope_factory: Callable[[], IqFftScope] | None = None,
-        clock: Callable[[], float] = time.monotonic,
-        frame_stale_s: float = FRAME_STALE_S,
-    ) -> None:
-        self._config = config
-        self._clock = clock
-        self._frame_stale_s = float(frame_stale_s)
-        self._source_factory = source_factory or default_source_factory
-        self._scope_factory = scope_factory or (
-            lambda: IqFftScope(invert_spectrum=config.invert_spectrum)
-        )
-        self._source: IqSource | None = None
-        self._scope: IqFftScope | None = None
-        self._controller: SdrScopeController | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._frame_sink: Callable[[ScopeFrame], None] | None = None
-        self._started = False
-        self._active = False
-        self._last_frame_s: float | None = None
-        self._started_at_s = 0.0
-        self._last_error: str | None = None
-        self._overflow_count = 0
-
-    @property
-    def started(self) -> bool:
-        """Whether the pipeline is running (between start and stop)."""
-        return self._started
-
-    @property
-    def active(self) -> bool:
-        """Whether SDR frames currently flow (within the stale window)."""
-        return self._started and self._active
-
-    @property
-    def state(
-        self,
-    ) -> Literal["disabled", "starting", "streaming", "reconnecting", "error"]:
-        """Public status state for the web ``sdr`` object (MOR-3201):
-        ``disabled`` = not started; ``starting`` = started, no frame
-        yet; ``streaming`` = a frame within the stale window;
-        ``reconnecting`` = started, no frame within ``frame_stale_s``;
-        ``error`` = the last :meth:`start` failed (a device lost
-        mid-stream reconnects in the background instead)."""
-        if not self._started:
-            return "error" if self._last_error is not None else "disabled"
-        if not self._active:
-            return "reconnecting"
-        return "starting" if self._last_frame_s is None else "streaming"
-
-    @property
-    def last_error(self) -> str | None:
-        """Message of the last failed :meth:`start`; ``None`` otherwise."""
-        return self._last_error
-
-    @property
-    def overflow_count(self) -> int:
-        """Blocks flagged ``overflow`` since the last successful start."""
-        return self._overflow_count
-
-    @property
-    def tx_frozen(self) -> bool:
-        """Whether the controller holds the display TX-freeze (set on
-        the TX rising edge, released ``TX_HOLD_S`` after it); read from
-        ``SdrScopeController._tx_sink_active`` (no public accessor)."""
-        controller = self._controller
-        return controller is not None and controller._tx_sink_active
-
-    @property
-    def span_hz(self) -> int:
-        """Effective display span the controller configured the sink with."""
-        controller = self._controller
-        return controller.span_hz if controller is not None else 0
-
-    @property
-    def frequency_in_range(self) -> bool:
-        """Whether the tracked VFO is inside the source's tunable range."""
-        controller = self._controller
-        return controller.frequency_in_range if controller is not None else True
-
-    def start(
-        self,
-        on_frame: Callable[[ScopeFrame], None],
-        *,
-        freq_hz: int | None = None,
-        tx_active: bool = False,
-    ) -> None:
-        """Build and open the pipeline (running event loop). The seed
-        state retunes the source before it opens: already at the VFO.
-        A source-factory or open failure is recorded in
-        :attr:`last_error` (state ``"error"``) and re-raised."""
-        if self._started:
-            return
-        self._loop = asyncio.get_running_loop()
-        self._frame_sink = on_frame
-
-        try:
-            source = self._source_factory(self._config)
-            scope = self._scope_factory()
-            controller = SdrScopeController(source, scope, self._config, self._clock)
-            controller.on_radio_state(freq_hz, tx_active)
-        except Exception as exc:
-            self._last_error = str(exc)
-            raise
-
-        self._source, self._scope, self._controller = source, scope, controller
-        self._started = self._active = True
-        self._last_frame_s = None
-        self._started_at_s = self._clock()
-        self._last_error = None
-        self._overflow_count = 0
-
-        scope.on_frame(self._on_scope_frame)
-        source.on_block(self._on_block)
-        try:
-            source.open()
-        except Exception as exc:
-            self.stop()
-            self._last_error = str(exc)
-            raise
-        logger.info(
-            "SDR scope started (device=%r, span_hz=%s)",
-            self._config.device_args,
-            controller.span_hz,
-        )
-
-    def stop(self) -> None:
-        """Close the pipeline; idempotent, safe from any thread; clears
-        :attr:`last_error` (a deliberate stop is not an error)."""
-        source, scope = self._source, self._scope
-        self._source = self._scope = self._controller = None
-        self._loop = self._frame_sink = None
-        self._started = False
-        self._active = False
-        self._last_error = None
-        if source is not None:
-            source.on_block(None)
-            source.close()
-        if scope is not None:
-            scope.on_frame(None)
-            scope.close()
-        logger.info("SDR scope stopped")
-
-    def on_radio_state(self, freq_hz: int | None, tx_active: bool) -> None:
-        """Feed one radio state snapshot to the controller."""
-        if self._controller is not None:
-            self._controller.on_radio_state(freq_hz, tx_active)
-
-    def tick(self) -> None:
-        """Run liveness tracking and the controller's periodic actions."""
-        if not self._started:
-            return
-        now = self._clock()
-        last = (
-            self._last_frame_s if self._last_frame_s is not None else self._started_at_s
-        )
-        self._active = (now - last) <= self._frame_stale_s
-        if self._controller is not None:
-            self._controller.tick()
-
-    def _on_block(self, block: IqBlock) -> None:
-        """Reader thread: enqueue one block; centre-0 blocks carry no
-        tuning and are dropped."""
-        scope = self._scope
-        if not self._started or scope is None:
-            return
-        if block.overflow:
-            self._overflow_count += 1
-        if block.center_freq_hz == 0:
-            return
-        scope.feed(block)
-
-    def _on_scope_frame(self, frame: ScopeFrame) -> None:
-        """Scope worker thread (lock held): no I/O — hop to the loop."""
-        loop = self._loop
-        if loop is None:
-            return
-        try:
-            loop.call_soon_threadsafe(self._deliver_frame, frame)
-        except RuntimeError:
-            pass  # loop closed during shutdown; the frame is dropped
-
-    def _deliver_frame(self, frame: ScopeFrame) -> None:
-        """Event loop: mark out-of-range frames, hand over to the sink."""
-        if not self._started:
-            return
-        self._last_frame_s = self._clock()
-        controller = self._controller
-        if (
-            controller is not None
-            and not controller.frequency_in_range
-            and not frame.out_of_range
-        ):
-            frame = replace(frame, out_of_range=True)
-        sink = self._frame_sink
-        if sink is not None:
-            sink(frame)

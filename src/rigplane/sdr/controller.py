@@ -4,7 +4,7 @@ Pure decision logic between the :class:`~rigplane.sdr.protocol.IqSource`
 and :class:`~rigplane.sdr.protocol.IqScopeSink` contracts: no threads,
 no I/O, no DSP. The server feeds radio state through
 :meth:`SdrScopeController.on_radio_state` and calls
-:meth:`SdrScopeController.tick` periodically; time comes from the
+:meth:`SdrScopeController.tick` when an action is due; time comes from the
 injectable ``clock``.
 """
 
@@ -129,6 +129,30 @@ class SdrScopeController:
         return self._retune_pending
 
     @property
+    def target_frequency_hz(self) -> int | None:
+        """Latest desired RF frequency, including the configured IF offset."""
+        return (
+            None
+            if self._freq_hz is None
+            else self._freq_hz + self._config.freq_offset_hz
+        )
+
+    @property
+    def tx_frozen(self) -> bool:
+        """Whether the sink is frozen, including the post-TX hold."""
+        return self._tx_sink_active
+
+    @property
+    def next_action_delay(self) -> float | None:
+        """Seconds until a pending retune or TX release, or no pending action."""
+        deadlines = []
+        if self._retune_pending:
+            deadlines.append(self._last_retune_s + RETUNE_DEBOUNCE_S)
+        if self._tx_release_at is not None:
+            deadlines.append(self._tx_release_at)
+        return max(0.0, min(deadlines) - self._clock()) if deadlines else None
+
+    @property
     def frequency_in_range(self) -> bool:
         """Whether the latest evaluated RF frequency is inside the
         source range; ``True`` before any frequency arrives.
@@ -166,7 +190,7 @@ class SdrScopeController:
     def tick(self) -> None:
         """Apply due deferred actions at the current clock time.
 
-        The server calls this periodically: it executes a retune still
+        The owner calls this when an action is due: it executes a retune still
         pending from the debounce window and releases the TX freeze
         once the hold has elapsed.
         """
@@ -212,7 +236,7 @@ class SdrScopeController:
 
         target_hz = max(low_hz, min(high_hz, rf_hz - sample_rate_hz // 4))
         if target_hz != center_hz:
-            if now - self._last_retune_s < RETUNE_DEBOUNCE_S:
+            if now < self._last_retune_s + RETUNE_DEBOUNCE_S:
                 self._retune_pending = True
                 return
             source.set_center_freq(target_hz)

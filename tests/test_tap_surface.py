@@ -18,9 +18,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-import numpy as np
 import pytest
-from rigplane.scope import ScopeFrame
 
 from rigplane.audio import AudioPacket
 from rigplane.audio.bus import STAGE_RX_PCM, STAGE_RX_POST_DSP, AudioBus
@@ -289,101 +287,6 @@ class _FakeScopeHandler:
         self.frames.append(scope_frame_from_wire(frame))
 
 
-def test_fft_scope_receives_frames_via_named_post_dsp_stage() -> None:
-    """The FFT scope (wired via ``set_pcm_tap`` at server init) is a tap on
-    the named ``rx.post_dsp`` stage — feeding that stage produces scope
-    frames exactly as it did through ``_tap_registry`` before the rename.
-    """
-    from rigplane.web.server import WebConfig, WebServer
-
-    radio = _MatrixRadio(hardware=False, audio=True, sample_rate=48_000)
-    server = WebServer(radio=radio, config=WebConfig())
-    scope = server._audio_fft_scope
-    assert scope is not None, "audio FFT scope not wired"
-    radio.radio_state.main.freq = 14_074_000
-    scope.set_center_freq(14_074_000)
-    scope._last_frame_time = 0.0  # bypass the fps rate-limit for the first frame
-
-    handler = _FakeScopeHandler()
-    server._audio_scope_handlers.add(handler)
-
-    rng = np.random.default_rng(565)
-    registry = server._audio_broadcaster.taps(STAGE_RX_POST_DSP)
-    for _ in range(9):  # 9 × 960 samples (20 ms @ 48 kHz) ≥ 4 FFT windows
-        pcm = (rng.uniform(-1, 1, 960) * 5000).astype(np.int16).tobytes()
-        registry.feed(pcm)
-
-    assert len(handler.frames) >= 1, "FFT scope stopped receiving via rx.post_dsp"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("hardware", "audio", "scope_source"),
-    [
-        (True, False, "hardware"),
-        (False, True, "audio_fft"),
-        (True, True, "hardware"),
-        (False, False, None),
-    ],
-)
-async def test_scope_service_lifecycle_and_serializer_matrix(
-    hardware: bool, audio: bool, scope_source: str | None
-) -> None:
-    from rigplane.web.server import WebConfig, WebServer
-
-    server = WebServer(
-        _MatrixRadio(hardware=hardware, audio=audio),
-        WebConfig(radio_model="IC-7610"),
-    )
-    scope = server._audio_fft_scope
-    assert (scope is not None) is audio
-    if scope is not None:
-        assert scope._sample_rate == 32_000
-
-    broadcaster = server._audio_broadcaster
-    assert (broadcaster._legacy_tap_handle is not None) is (audio and not hardware)
-    main_handler = _FakeScopeHandler()
-    audio_handler = _FakeScopeHandler()
-    server._scope_handlers.add(main_handler)
-    await server.ensure_audio_scope_enabled(audio_handler)
-    assert (broadcaster._legacy_tap_handle is not None) is audio
-    if scope is not None:
-        frame = ScopeFrame(0, 0, 14_000_000, 14_100_000, b"\x01", False)
-        server._dispatch_audio_fft_frame(frame)
-        assert audio_handler.frames == [frame]
-        assert main_handler.frames == ([] if hardware else [frame])
-    server.unregister_audio_scope_handler(audio_handler)
-    assert (broadcaster._legacy_tap_handle is not None) is (audio and not hardware)
-
-    writer = _Writer()
-    await server._serve_capabilities(writer)
-    capabilities = _json_body(writer)
-    assert capabilities["scope"] is hardware
-    assert capabilities["audio"] is audio
-    assert capabilities["audioFftAvailable"] is audio
-    assert capabilities["scopeSource"] == scope_source
-
-
-@pytest.mark.asyncio
-async def test_runtime_hardware_scope_is_cached_for_dispatch_and_teardown() -> None:
-    from rigplane.web.server import WebServer
-
-    radio = _MatrixRadio(hardware=True, audio=True)
-    server = WebServer(radio)
-    audio_handler = _FakeScopeHandler()
-    main_handler = _FakeScopeHandler()
-    server._scope_handlers.add(main_handler)
-    await server.ensure_audio_scope_enabled(audio_handler)
-    radio.capabilities.clear()
-
-    frame = ScopeFrame(0, 0, 14_000_000, 14_100_000, b"\x01", False)
-    server._dispatch_audio_fft_frame(frame)
-    assert audio_handler.frames == [frame]
-    assert main_handler.frames == []
-    server.unregister_audio_scope_handler(audio_handler)
-    assert server._audio_broadcaster._legacy_tap_handle is None
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize("hardware", [False, True])
 async def test_audio_tag_without_proven_route_does_not_advertise_fft(
@@ -397,6 +300,6 @@ async def test_audio_tag_without_proven_route_does_not_advertise_fft(
     writer = _Writer()
     await server._serve_capabilities(writer)
     capabilities = _json_body(writer)
-    assert server._audio_fft_scope is None
+    assert server._audio_scope_source is None
     assert capabilities["audioFftAvailable"] is False
-    assert capabilities["scopeSource"] == ("hardware" if hardware else None)
+    assert capabilities["scopeSource"] is None

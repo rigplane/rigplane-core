@@ -1,8 +1,8 @@
 """Hardware-gated smoke test for MOR-241 — X6200 AUDIO SCOPE delivers frames.
 
-Brings up the real ``/api/v1/audio-scope`` wiring against a physical Xiegu
+Brings up an explicit ``audio_fft`` scope subscription against a physical Xiegu
 X6200 (serial CI-V + USB RX audio) and asserts that at least one FFT
-:class:`ScopeFrame` reaches the audio-scope channel within a few seconds.
+:class:`ScopeWireFrame` reaches the shared scope channel within a few seconds.
 
 OFF BY DEFAULT. This test is double-gated and is skipped in a normal
 ``uv run pytest tests/`` run (CLAUDE.md's standard command collects
@@ -33,7 +33,10 @@ import pytest
 from rigplane.backends.config import SerialBackendConfig
 from rigplane.backends.factory import create_radio
 from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
-from rigplane.scope import ScopeFrame
+from rigplane.scope.models import Subscription, View
+from rigplane.web.protocol import decode_scope_frame_v2
+from rigplane.web.scope_sources import WebScopePcmTap
+from test_audio_scope_dispatch import _seed_audio_facts
 from rigplane.web.server import WebConfig, WebServer
 
 pytestmark = [
@@ -44,18 +47,6 @@ pytestmark = [
         reason="hardware smoke disabled (set RIGPLANE_HW_SMOKE=1 to run)",
     ),
 ]
-
-
-class _RecordingScopeHandler:
-    """Minimal audio-scope handler that records frames it is handed."""
-
-    def __init__(self) -> None:
-        self.frames: list[ScopeFrame] = []
-
-    def enqueue_frame(self, frame: bytes) -> None:
-        from _helpers import scope_frame_from_wire
-
-        self.frames.append(scope_frame_from_wire(frame))
 
 
 @pytest.mark.asyncio
@@ -77,26 +68,30 @@ async def test_x6200_audio_scope_delivers_fft_frames_on_real_hardware(
         assert CAP_SCOPE not in radio.capabilities, "X6200 must have no hardware scope"
 
         server = WebServer(radio=radio, config=WebConfig())
-        assert server._audio_fft_scope is not None
-
-        # Make sure the FFT scope has a valid center frequency so feed_audio's
-        # center_freq>0 gate passes.
-        freq = await radio.get_frequency()
-        assert isinstance(freq, int) and freq > 0
-        server._audio_fft_scope.set_center_freq(freq)
-
-        handler = _RecordingScopeHandler()
-        # ensure_audio_scope_enabled wires the PCM tap + starts the relay so
-        # real RX audio drives the FFT, exactly like a connected browser would.
-        await server.ensure_audio_scope_enabled(handler)
-
-        deadline = asyncio.get_event_loop().time() + 5.0
-        while not handler.frames and asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(0.1)
-
-        assert len(handler.frames) >= 1, (
-            "no audio-scope FFT frames arrived from real X6200 within 5s"
+        assert server._audio_scope_source is not None
+        rx = radio.radio_state.main
+        if not rx.freq or not rx.mode or not rx.filter_width:
+            pytest.skip("radio has not reported audio RF passband geometry")
+        _seed_audio_facts(
+            server, mode=rx.mode, frequency=rx.freq, width=rx.filter_width
         )
-        assert isinstance(handler.frames[0], ScopeFrame)
+        facts = WebScopePcmTap(server).facts()
+        subscription = await server.scope_hub.subscribe(
+            Subscription(
+                "audio_fft",
+                None,
+                View(
+                    facts.tuned_hz + facts.low_offset_hz,
+                    facts.tuned_hz + facts.high_offset_hz,
+                ),
+                1024,
+                20,
+            )
+        )
+        try:
+            wire = await asyncio.wait_for(subscription.receive(), timeout=5)
+            assert decode_scope_frame_v2(wire).source == "audio_fft"
+        finally:
+            await subscription.close()
     finally:
         await radio.disconnect()

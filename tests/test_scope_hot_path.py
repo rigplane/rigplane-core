@@ -10,72 +10,24 @@ import pytest
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.radio import IcomRadio
+from rigplane.backends.ic7300.serial import Ic7300SerialRadio
 from rigplane.scope import ScopeFrame
 from rigplane.types import bcd_encode
-from rigplane.web.handlers.scope import ScopeHandler
-from rigplane.web.protocol import encode_scope_frame
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.ws import WebSocketConnection, negotiate_deflate
 from test_radio import MockTransport
 from test_scope import _seq1_payload
 
 
-@pytest.mark.parametrize("channel", ["scope", "audio_scope", "audio_fft"])
-def test_scope_encode_once_shared_sequence(monkeypatch, channel):
-    server = WebServer()
-    handlers = [ScopeHandler(MagicMock()) for _ in range(3)]
-    for handler in handlers:
-        handler._running = True
-    targets = (
-        server._scope_handlers
-        if channel == "audio_fft"
-        else getattr(server, f"_{channel}_handlers")
-    )
-    targets.update(handlers[:2])
-    encoder = MagicMock(wraps=encode_scope_frame)
-    monkeypatch.setattr(
-        "rigplane.web.server.encode_scope_frame", encoder, raising=False
-    )
-    monkeypatch.setattr(
-        "rigplane.web.handlers.scope.encode_scope_frame", encoder, raising=False
-    )
-    frame = ScopeFrame(0, 0, 14_000_000, 14_100_000, b"\x01\x02", False)
-    broadcast = (
-        server._dispatch_audio_fft_frame
-        if channel == "audio_fft"
-        else getattr(server, f"_broadcast_{channel}")
-    )
-    broadcast(frame)
-    assert encoder.call_count == 1
-    late_targets = server._audio_scope_handlers if channel == "audio_fft" else targets
-    late_targets.add(handlers[2])
-    broadcast(frame)
-    assert encoder.call_count == 2
-    first = [h._frame_queue.get_nowait() for h in handlers[:2]]
-    assert first[0] is first[1]
-    second = [h._frame_queue.get_nowait() for h in handlers]
-    assert second[0] is second[1] is second[2]
-    assert (
-        int.from_bytes(second[0][11:13], "little")
-        == (int.from_bytes(first[0][11:13], "little") + 1) & 0xFFFF
-    )
-    if channel == "audio_fft":
-        # Selecting an SDR splits main scope from the audio-scope channel.
-        monkeypatch.setattr(server, "_sdr_scope_active", lambda: True)
-        broadcast(frame)
-        split = handlers[2]._frame_queue.get_nowait()
-        assert int.from_bytes(split[11:13], "little") == 2
-        for _ in range(3):
-            broadcast(frame)
-        monkeypatch.setattr(server, "_sdr_scope_active", lambda: False)
-        broadcast(frame)
-        joined = [handlers[2]._frame_queue.get_nowait() for _ in range(4)][-1]
-        assert int.from_bytes(joined[11:13], "little") == 6
-
-
-@pytest.mark.parametrize("model", ["IC-7610", "IC-9700"])
-async def test_scope_stamps_without_control_wakeup(monkeypatch, model):
-    radio = IcomRadio("127.0.0.1", model=model)
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(lambda: IcomRadio("127.0.0.1", model="IC-7610"), id="lan-ic7610"),
+        pytest.param(lambda: Ic7300SerialRadio(device="/dev/null"), id="serial-ic7300"),
+    ],
+)
+async def test_scope_stamps_without_control_wakeup(monkeypatch, factory):
+    radio = factory()
     radio._civ_transport = MockTransport()
     radio._connected = True
     server = WebServer(radio, config=WebConfig())
@@ -111,7 +63,11 @@ async def test_scope_stamps_without_control_wakeup(monkeypatch, model):
     while not queue.empty():
         queue.get_nowait()
     radio.last_valid_frame_monotonic = 0.0
-    await radio._civ_runtime._route_civ_frame(wave, generation=radio._civ_epoch)
+    notify = MagicMock(wraps=radio._civ_runtime._notify_change)
+    monkeypatch.setattr(radio._civ_runtime, "_notify_change", notify)
+    for _ in range(1000):
+        await radio._civ_runtime._route_civ_frame(wave, generation=radio._civ_epoch)
+    notify.assert_not_called()
     assert radio.last_valid_frame_monotonic > 0
     event.assert_not_called()
     state.assert_not_called()
@@ -132,25 +88,26 @@ async def test_scope_stream_queue_only_while_iterated(model):
     radio._connected = True
     frame = ScopeFrame(0, 0, 14_000_000, 14_100_000, b"\x01", False)
     assert not hasattr(radio, "_civ_event_queue")
-    assert radio._scope_frame_queue is None
+    assert not hasattr(radio, "_scope_frame_queue")
     radio._civ_runtime._publish_scope_frame(frame)
-    assert radio._scope_frame_queue is None
+    assert not hasattr(radio, "_scope_frame_queue")
 
     stream = radio.scope_stream()
-    assert radio._scope_frame_queue is None
+    assert not hasattr(radio, "_scope_frame_queue")
     pending = asyncio.create_task(anext(stream))
     try:
         await asyncio.sleep(0)
-        assert radio._scope_frame_queue is not None
+        assert len(radio._scope_stream_callbacks) == 1
         radio._civ_runtime._publish_scope_frame(frame)
         assert await pending is frame
         second_stream = radio.scope_stream()
         second = asyncio.create_task(anext(second_stream))
         try:
             await asyncio.sleep(0)
-            queue = radio._scope_frame_queue
+            callbacks = radio._scope_stream_callbacks
             await stream.aclose()
-            assert radio._scope_frame_queue is queue
+            assert radio._scope_stream_callbacks is callbacks
+            assert len(callbacks) == 1
             radio._civ_runtime._publish_scope_frame(frame)
             assert await second is frame
         finally:
@@ -160,7 +117,7 @@ async def test_scope_stream_queue_only_while_iterated(model):
         pending.cancel()
         await stream.aclose()
         radio._connected = False
-    assert radio._scope_frame_queue is None
+    assert not hasattr(radio, "_scope_frame_queue")
 
 
 def test_deflate_negotiates_context_takeover():

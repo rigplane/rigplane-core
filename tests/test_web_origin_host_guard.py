@@ -28,7 +28,6 @@ from rigplane.web.server import WebConfig, WebServer
 WS_PATHS = [
     "/api/v1/ws",
     "/api/v1/scope",
-    "/api/v1/audio-scope",
     "/api/v1/audio",
 ]
 GOOD_KEY = "dGhlIHNhbXBsZSBub25jZQ=="
@@ -63,8 +62,6 @@ class _MemoryWriter:
 
 def _make_srv(**config_kwargs: Any) -> WebServer:
     srv = WebServer(radio=None, config=WebConfig(**config_kwargs))
-    # /api/v1/audio-scope refuses to construct its handler without it.
-    srv._audio_fft_scope = object()
     return srv
 
 
