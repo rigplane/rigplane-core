@@ -115,16 +115,18 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   const run = {conclusion: 'success', run_attempt: 2};
   const routes = {core: true, frontend: false, ci: false, docs: false};
   const gate = ['self-hosted', 'Linux', 'ARM64', 'gate'];
+  const frontendPool = ['self-hosted', 'Linux', 'ARM64', 'build'];
+  const pythonPool = ['self-hosted', 'Linux', 'X64', 'build'];
   const light = ['self-hosted', 'Linux', 'ARM64', 'light'];
   const valid = [
     {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-light-core-1', labels: light},
-    {name: 'quick-frontend', status: 'completed', conclusion: 'skipped', run_attempt: 2, runner_name: null, labels: gate},
-    {name: 'quick-python', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-gate-core-1', labels: gate},
+    {name: 'quick-frontend', status: 'completed', conclusion: 'skipped', run_attempt: 2, runner_name: null, labels: frontendPool},
+    {name: 'quick-python', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'nsu-build-core-1', labels: pythonPool},
     {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-light-core-1', labels: light},
   ];
   const ok = {ok: true, code: 'terminal_match', routeConcordance: true};
   assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), ok);
-  const both = structuredClone(valid); both[1].conclusion = 'success'; both[1].runner_name = 'mm-gate-core-2';
+  const both = structuredClone(valid); both[1].conclusion = 'success'; both[1].runner_name = 'mini-server-build-core-1';
   assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
   const lightClassify = structuredClone(valid); lightClassify[0].labels = light; lightClassify[0].runner_name = 'mm-light-core-2';
   assert.deepEqual(observer.evaluateJobTopology(run, lightClassify, routes, false), ok);
@@ -138,6 +140,12 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   assert.equal(observer.evaluateJobTopology(run, valid, {...routes, frontend: true}, false).code, 'skipped_substantive');
   const hostedWorker = structuredClone(valid); hostedWorker[2].labels = ['ubuntu-latest'];
   assert.equal(observer.evaluateJobTopology(run, hostedWorker, routes, false).code, 'route_mismatch');
+  // MOR-4214: the halves belong on their build pools; the 2 GiB gate pool or a
+  // swapped architecture is a routing mismatch.
+  const gatePython = structuredClone(valid); gatePython[2].labels = gate; gatePython[2].runner_name = 'mm-gate-core-1';
+  assert.equal(observer.evaluateJobTopology(run, gatePython, routes, false).code, 'route_mismatch');
+  const swapped = structuredClone(both); swapped[1].labels = pythonPool;
+  assert.equal(observer.evaluateJobTopology(run, swapped, {...routes, frontend: true}, false).code, 'route_mismatch');
   const buildAggregator = structuredClone(valid); buildAggregator[3].labels = ['self-hosted', 'Linux', 'ARM64', 'build'];
   assert.equal(observer.evaluateJobTopology(run, buildAggregator, routes, false).code, 'route_mismatch');
   assert.equal(observer.evaluateJobTopology(run, valid.filter((job) => job.name !== 'quick-frontend'), routes, false).code, 'route_mismatch');
