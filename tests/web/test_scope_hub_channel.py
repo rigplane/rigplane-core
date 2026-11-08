@@ -803,3 +803,32 @@ async def test_scope_enable_success_starts_new_health_grace(
         await server._refetch_and_reenable()
     assert server._scope_enabled is True
     assert server._scope_started_at == virtual_clock()
+
+
+@pytest.mark.parametrize("model,widths", [("ic7300", (475, 689, 475)), ("ic7610", (689, 475, 689))])
+async def test_observed_native_width_regrants_before_binary_for_existing_client(model, widths, virtual_clock):
+    from rigplane.web.protocol import decode_scope_frame_v2
+
+    server = WebServer(None)
+    source = RadioScopeSource(resolve_radio_profile(model=model), Writer())
+    server.scope_hub.register("radio", source)
+    ws = Socket()
+    handler = ScopeHandler(ws, server)
+    try:
+        await handler._handle_control(encode_scope_subscription(Subscription("radio", 0, View(14_090_000, 14_110_000), 2800, 20)))
+        assert decode_scope_granted(ws.text[-1]).width == 2800
+        for index, width in enumerate(widths):
+            source.feed_frame(ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes([160]) * width, False))
+            await virtual_clock.elapse(0.1)
+            await await_until(lambda: len(ws.binary) == index + 1)
+            assert source.capabilities().native_width == width
+            assert handler._subscription.granted.width == width
+            grant_event, wire_event = ws.events[-2:]
+            assert grant_event[0] == "text"
+            assert decode_scope_granted(grant_event[1]).width == width
+            assert wire_event[0] == "binary"
+            frame = decode_scope_frame_v2(wire_event[1])
+            assert frame.width == width
+            assert frame.pixels == bytes([160]) * width
+    finally:
+        await handler._unsubscribe()

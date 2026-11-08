@@ -152,3 +152,17 @@ async def test_failed_start_and_failed_rollback_preserve_output_off_retry():
     await source.stop()
     assert writer.writes == [True, False, False]
     assert not writer.output
+
+
+@pytest.mark.parametrize("model,width", [("ic7300", 475), ("ic7610", 689)])
+async def test_native_width_is_observed_from_frames(model, width):
+    source = RadioScopeSource(load_rig(Path("rigs") / f"{model}.toml").to_profile(), Writer())
+    assert source.capabilities().native_width is None
+    await source.start()
+    source.feed_frame(ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes([160]) * width, False))
+    assert source.capabilities().native_width == width
+    source.feed_frame(ScopeFrame(0, 0, 14_090_000, 14_110_000, b"", True))
+    assert source.capabilities().native_width == width
+    source.feed_frame(ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes([160]) * (width + 11), False))
+    assert source.capabilities().native_width == width + 11
+    await source.stop()
