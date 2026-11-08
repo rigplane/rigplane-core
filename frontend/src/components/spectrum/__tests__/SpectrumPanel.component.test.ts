@@ -12,6 +12,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import * as svelteClient from 'svelte/internal/client';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import goldenScopeWire from '../../../lib/runtime/__tests__/fixtures/scope-wire.json';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -4560,8 +4561,7 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
       const hardwareSocket = sockets.find((socket) => socket.url.includes('/scope') && !socket.url.includes('audio-scope'))!;
       const audioSocket = sockets.find((socket) => socket.url.includes('audio-scope'))!;
       hardwareSocket.open(); audioSocket.open(); flushSync();
-      const golden = JSON.parse(readFileSync(resolve(import.meta.dirname,
-        '../../../lib/runtime/__tests__/fixtures/scope-wire.json'), 'utf8')) as { radio: number[]; audio: number[] };
+      const golden = goldenScopeWire;
       const radioWire = new Uint8Array(golden.radio).buffer;
       const audioWire = new Uint8Array(golden.audio).buffer;
       hardwareSocket.receive(radioWire); audioSocket.receive(audioWire); flushSync();

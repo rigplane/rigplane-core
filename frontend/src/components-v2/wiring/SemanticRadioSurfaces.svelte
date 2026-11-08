@@ -1500,21 +1500,21 @@
   });
 
   $effect(() => {
-    const authority = scopeAuthority;
     const source = scopeFrameSource;
+    if (source === undefined) return;
+    const authority = scopeAuthority;
     const noReadback = runtime.caps?.vfoReadback === 'none';
     const generation = runtime.state?.providerGeneration;
     const matchingGeneration = generation === runtime.caps?.providerGeneration;
     const secondaryAudio = audioScopeStream !== null && source !== 'audio-fft';
     untrack(() => {
-      runtime.scope.setFrameAuthority(source !== undefined && (authority || noReadback)
+      runtime.scope.setFrameAuthority((authority || noReadback)
         && typeof generation === 'number' && matchingGeneration
         ? { source: source === 'audio-fft' ? 'audio_fft' : 'hardware',
           receiver: authority?.receiver === 'MAIN' ? 0 : authority?.receiver === 'SUB' ? 1 : null,
           providerGeneration: generation } : null, secondaryAudio ? ['audio_fft'] : []);
     });
   });
-  $effect(() => () => { runtime.scope.setFrameAuthority(null); });
 
   $effect(() => {
     const stream = scopeStream;

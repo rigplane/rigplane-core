@@ -441,11 +441,12 @@ describe('one managed scope owner through the real region and panel', () => {
   });
   it('keeps one geometry owner per consumer and resets display state on disposal', async () => {
     const watch = vi.spyOn(h.scope.stream('hardware').geometry, 'subscribe');
-    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
     await render(); expect(watch).toHaveBeenCalledTimes(2); expect(wire.count()).toBe(1); expect(h.listeners.size).toBe(1);
     await unmount(component!); component = null; flushSync(); await Promise.resolve();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
-    expect(wire.count()).toBe(0); expect(authority.mock.calls.at(-1)).toEqual([null]);
+    expect(wire.count()).toBe(0); expect(h.scope.stream('hardware').selectedSlot).toBeNull();
+    expect(h.scope.snapshotHealth('hardware')).toEqual({ demanded: false, transport: 'disconnected', frameSeen: false });
+    expect(h.scope.stream('hardware').latest('scope:0')).toBeNull();
     renew(11, true); await render(); expect(overlay()).toBeNull();
     expect(watch).toHaveBeenCalledTimes(4); renew(12); wire.frame(); expect(overlay()).not.toBeNull();
   });
