@@ -1321,6 +1321,38 @@ def _listener(backlog: int = 1) -> socket.socket:
     return sock
 
 
+@pytest.mark.parametrize("descriptor_kind", ["regular", "pipe-read", "pipe-write"])
+def test_owned_socket_fd_count_never_duplicates_non_sockets(
+    descriptor_kind: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    read_fd, write_fd = os.pipe()
+    try:
+        with (tmp_path / "regular-file").open("wb") as regular:
+            descriptors = {
+                "regular": regular.fileno(),
+                "pipe-read": read_fd,
+                "pipe-write": write_fd,
+            }
+
+            def refuse_dup(fd: int) -> int:
+                raise AssertionError(f"duplicated non-socket descriptor {fd}")
+
+            monkeypatch.setattr(
+                soak_driver,
+                "os",
+                SimpleNamespace(
+                    listdir=lambda _: [str(descriptors[descriptor_kind])],
+                    fstat=os.fstat,
+                    dup=refuse_dup,
+                    close=os.close,
+                ),
+            )
+            assert soak_driver._owned_socket_fd_count(frozenset()) == 0
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
 def test_owned_socket_fd_count_sees_only_run_owned_ports() -> None:
     """Unrelated listener sockets and a pipe are invisible (no regular
     file is covered by this test); owned sockets count while open, by
