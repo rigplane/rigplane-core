@@ -123,10 +123,14 @@ async def test_failed_pcm_tap_release_can_be_retried():
 
 
 @pytest.mark.parametrize("old_count", [3072, 4096])
-async def test_geometry_change_discards_pcm_and_fft_history(old_count, virtual_clock, monkeypatch):
+async def test_geometry_change_discards_pcm_and_fft_history(
+    old_count, virtual_clock, monkeypatch
+):
     import rigplane.audio.fft_scope as fft_module
 
-    virtual_clock.scope_to(monkeypatch, fft_module)
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(fft_module, "time", SimpleNamespace(monotonic=virtual_clock))
     await virtual_clock.elapse(1)
     facts = AudioPassband(14_100_000, 300, 2700, "upper")
     tap = Tap()
@@ -134,7 +138,9 @@ async def test_geometry_change_discards_pcm_and_fft_history(old_count, virtual_c
     frames = []
     source.on_frame(frames.append)
     await source.start()
-    tone = (np.sin(2 * np.pi * 1500 * np.arange(old_count) / 48000) * 16000).astype("<i2")
+    tone = (np.sin(2 * np.pi * 1500 * np.arange(old_count) / 48000) * 16000).astype(
+        "<i2"
+    )
     tap.callback(tone.tobytes())
     frames.clear()
     facts = AudioPassband(7_100_000, -2700, -300, "lower")
