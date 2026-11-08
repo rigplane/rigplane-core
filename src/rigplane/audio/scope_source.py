@@ -121,7 +121,6 @@ class AudioFftSource:
     async def stop(self) -> None:
         if not self._active:
             return
-        self._active = False
         try:
             self.producer.on_frame(None)
         finally:
@@ -129,6 +128,7 @@ class AudioFftSource:
                 self.producer.stop()
             finally:
                 await self._tap.release()
+                self._active = False
 
     def on_frame(self, callback: Callable[[NativeFrame], None]) -> Callable[[], None]:
         self._callbacks.append(callback)
