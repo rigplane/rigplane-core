@@ -115,3 +115,27 @@ async def test_failed_output_off_can_be_retried():
         await source.stop()
     await source.stop()
     assert writer.writes == [True, False, False]
+
+
+async def test_failed_start_and_failed_rollback_preserve_output_off_retry():
+    class AppliedWriter(Writer):
+        def __init__(self):
+            super().__init__()
+            self.output = False
+
+        async def set_output(self, enabled):
+            self.writes.append(enabled)
+            if enabled:
+                self.output = True
+                raise RuntimeError("enable reply lost")
+            if self.writes.count(False) == 1:
+                raise RuntimeError("disable reply lost")
+            self.output = False
+
+    writer = AppliedWriter()
+    source = RadioScopeSource(load_rig(Path("rigs/ic7300.toml")).to_profile(), writer)
+    with pytest.raises(RuntimeError, match="disable reply lost"):
+        await source.start()
+    await source.stop()
+    assert writer.writes == [True, False, False]
+    assert not writer.output

@@ -120,3 +120,36 @@ async def test_failed_pcm_tap_release_can_be_retried():
     assert tap.attempts == 2
     assert tap.releases == 1
     assert tap.callback is None
+
+
+@pytest.mark.parametrize("old_count", [3072, 4096])
+async def test_geometry_change_discards_pcm_and_fft_history(old_count, virtual_clock, monkeypatch):
+    import rigplane.audio.fft_scope as fft_module
+
+    virtual_clock.scope_to(monkeypatch, fft_module)
+    await virtual_clock.elapse(1)
+    facts = AudioPassband(14_100_000, 300, 2700, "upper")
+    tap = Tap()
+    source = AudioFftSource(tap, lambda: facts)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    tone = (np.sin(2 * np.pi * 1500 * np.arange(old_count) / 48000) * 16000).astype("<i2")
+    tap.callback(tone.tobytes())
+    frames.clear()
+    facts = AudioPassband(7_100_000, -2700, -300, "lower")
+    noise = np.random.default_rng(12).integers(-100, 101, 4096, dtype=np.int16)
+    await virtual_clock.elapse(0.1)
+    tap.callback(noise[:1024].tobytes())
+    assert not frames
+    tap.callback(noise[1024:].tobytes())
+    assert len(frames) == 1
+    reference_tap = Tap()
+    reference = AudioFftSource(reference_tap, lambda: facts)
+    expected = []
+    reference.on_frame(expected.append)
+    await reference.start()
+    reference_tap.callback(noise.tobytes())
+    assert frames[0] == expected[0]
+    await source.stop()
+    await reference.stop()

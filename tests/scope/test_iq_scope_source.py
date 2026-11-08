@@ -102,3 +102,92 @@ async def test_failed_iq_provider_close_can_be_retried():
     await source.stop()
     assert provider.close_attempts == 2
     assert not provider.is_open
+
+
+class SampleProvider(FakeIqSource):
+    def __init__(self, samples, **kwargs):
+        super().__init__(block_size=4096, **kwargs)
+        self.samples = samples
+
+    def _generate_samples(self):
+        return self.samples
+
+
+async def test_new_iq_geometry_discards_old_fft_average():
+    from rigplane.sdr.types import IqBlock
+
+    noise = (np.random.default_rng(22).normal(size=4096) +
+             1j * np.random.default_rng(23).normal(size=4096)).astype(np.complex64) * 0.001
+    tone = np.exp(2j * np.pi * 6000 * np.arange(4096) / 48000).astype(np.complex64)
+    for center, rate in [(11_000_000, 48000), (10_000_000, 96000)]:
+        provider = SampleProvider(tone, center_freq_hz=10_000_000, sample_rate_hz=48000)
+        source = IqFftSource(provider, start_worker=False)
+        frames = []
+        source.on_frame(frames.append)
+        await source.start()
+        provider.pump(1)
+        source.producer.process_pending()
+        provider.set_center_freq(center)
+        provider.set_sample_rate(rate)
+        # Exercise block metadata even if provider properties have already changed.
+        block = IqBlock(noise, center, rate, 1.0)
+        source._feed(block)
+        source.producer.process_pending()
+        reference_provider = SampleProvider(noise, center_freq_hz=center, sample_rate_hz=rate)
+        reference = IqFftSource(reference_provider, start_worker=False)
+        expected = []
+        reference.on_frame(expected.append)
+        await reference.start()
+        reference_provider.pump(1)
+        reference.producer.process_pending()
+        assert frames[-1] == expected[-1]
+        await source.stop()
+        await reference.stop()
+
+
+import pytest
+
+
+@pytest.mark.parametrize("narrow_first", [False, True])
+@pytest.mark.parametrize("close_narrow", [False, True])
+async def test_shared_iq_keeps_full_capture_for_both_views(narrow_first, close_narrow, virtual_clock):
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+
+    provider = FakeIqSource(center_freq_hz=10_000_000, sample_rate_hz=48000,
+                            block_size=4096, tones=[(-12000, -6), (6000, -6)], seed=21)
+    source = IqFftSource(provider, native_width=1024, start_worker=False)
+    encoded = []
+    def encode(frame):
+        encoded.append(frame)
+        return b"frame"
+    hub = ScopeHub(encoder=encode)
+    hub.register("iq", source)
+    views = [View(9_976_000, 10_024_000), View(10_000_000, 10_012_000)]
+    order = [1, 0] if narrow_first else [0, 1]
+    handles = {}
+    for i in order:
+        handles[i] = await hub.subscribe(Subscription("iq", None, views[i], 512, 20))
+    try:
+        for step in range(2):
+            await virtual_clock.elapse(0.1)
+            encoded.clear()
+            provider.pump(1)
+            source.producer.process_pending()
+            for i, handle in handles.items():
+                assert await handle.receive() == b"frame"
+                frame = next(f for f in encoded if f.view_start_hz == views[i].start_hz)
+                assert frame.coverage_start_hz == views[i].start_hz
+                assert frame.coverage_end_hz == views[i].end_hz
+                pixels = np.frombuffer(frame.pixels, dtype=np.uint8)
+                peaks = [6000] if i == 1 else [-12000, 6000]
+                for offset in peaks:
+                    index = int((10_000_000 + offset - views[i].start_hz) * 512 /
+                                (views[i].end_hz - views[i].start_hz))
+                    assert pixels[max(0, index - 2):index + 3].max() > 100
+            if step == 0:
+                await handles.pop(1 if close_narrow else 0).close()
+    finally:
+        for handle in handles.values():
+            await handle.close()
+    assert not provider.is_open
