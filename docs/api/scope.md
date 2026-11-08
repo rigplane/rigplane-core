@@ -35,8 +35,12 @@ An absolute view uses `{"startHz":14100000,"endHz":14200000}` instead of
 granted at native resolution instead of being upsampled; the granted message
 reports the actual width. For radio sources, `RadioScopeSource.feed_frame` in
 `src/rigplane/runtime/radio_scope_source.py` observes native width from the
-assembled pixel payload. Before the first pixel-bearing frame the native width
-is unknown and the initial grant provisionally echoes the requested width.
+assembled pixel payload separately for each receiver; null and out-of-range
+frames retain that receiver's prior width. Audio FFT native width is the emitted
+passband crop's bin count, not the full FFT size; see
+`src/rigplane/audio/scope_source.py: AudioFftSource._emit`.
+If native width is unknown for the requested receiver, the initial grant
+provisionally echoes the requested width.
 When the observed width changes, the server sends an updated `granted` before
 the corresponding binary frame; existing subscriptions need no new request.
 Send another subscription with the same key to change its view, width or rate;
@@ -44,8 +48,11 @@ Send another subscription with the same key to change its view, width or rate;
 `{"type":"unsubscribe","sourceId":"radio","receiver":0}`. Bare
 `{"type":"unsubscribe"}` and socket close release all subscriptions. A rejected
 update preserves the previous subscriptions; errors include `sourceId` and
-`receiver` when a valid target can be parsed. The hub starts the producer on
-first active demand and stops it on last release.
+`receiver` when a valid target can be parsed. The hub starts the producer when
+the first positive-rate subscription arrives and stops it when none remain,
+including when all retained subscriptions have `maxFps: 0`. An initially paused
+subscription does not start the producer. See
+`src/rigplane/scope/hub.py: ScopeHub.subscribe` and `ScopeHub._unsubscribe`.
 
 Frames use the typed v2 schema in
 `src/rigplane/scope/models.py: ScopeWireFrame`, encoded by
