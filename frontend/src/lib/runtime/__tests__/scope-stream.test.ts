@@ -171,3 +171,18 @@ it('cancels a geometry receipt wait and refuses epoch-zero or malformed geometry
   input.emit(); expect(sink).toHaveBeenCalledTimes(1);
   stream.dispose();
 });
+
+it('advances selected geometry receipt only on a matching valid-session frame and retains its floor across resets', () => {
+  const input = source(); const stream = new ScopeStream(input.port, context, 'borrowed');
+  stream.setSlotFilter(scopeSlotKey('scope-1', 0));
+  expect(stream.geometryReceipt).toBe(0);
+  input.emit(); expect(stream.geometryReceipt).toBe(1);
+  input.emit(fixtures.audio); expect(stream.receipt).toBe(2); expect(stream.geometryReceipt).toBe(1);
+  stream.setFreshness('stale'); expect(stream.geometryReceipt).toBe(1);
+  stream.reset(); expect(stream.geometryReceipt).toBe(1);
+  stream.setSessionEpoch(0); input.emit(); expect(stream.receipt).toBe(3); expect(stream.geometryReceipt).toBe(1);
+  stream.setSessionEpoch(8); input.emit(fixtures.audio); expect(stream.geometryReceipt).toBe(1);
+  const next = vi.fn(); stream.subscribeNextGeometry(stream.geometryReceipt, next);
+  input.emit(); expect(stream.geometryReceipt).toBe(5); expect(next).toHaveBeenCalledTimes(1);
+  stream.dispose();
+});

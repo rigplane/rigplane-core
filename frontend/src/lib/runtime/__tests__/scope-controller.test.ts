@@ -752,3 +752,22 @@ it('keeps unrelated raw audio running until it becomes an additional qualified s
   expect(audio.latest('audio-scope:0')).toBeNull();
   await controller.hardwareScopeDriver.stop(hardwareHandle); await controller.audioFftDriver.stop(audioHandle);
 });
+
+it.each(['hardware', 'audio_fft'] as const)('rebinds explicit wildcard %s authority on provider change and fences retired callbacks', async source => {
+  const channel = makeMockChannel(); const controller = new ScopeController(() => channel as never);
+  const driver = source === 'hardware' ? controller.hardwareScopeDriver : controller.audioFftDriver;
+  const key = source === 'hardware' ? 'scope:0' : 'audio-scope:0';
+  controller.setFrameAuthority({ source, receiver: null, providerGeneration: 1 });
+  const stream = controller.stream(source); const sink = vi.fn(); stream.subscribe(sink);
+  const handle = await driver.start(); channel._setState('connected'); channel._fire(makeScopeFrameBuffer());
+  expect(sink).toHaveBeenCalledTimes(1);
+  const retired = channel.binaryHistory.at(-1)!;
+  controller.setFrameAuthority({ source, receiver: null, providerGeneration: 2 });
+  expect(channel.connect).toHaveBeenCalledTimes(2); expect(channel.disconnect).toHaveBeenCalledTimes(1);
+  expect(controller.stream(source)).toBe(stream); expect(stream.latest(key)).toBeNull();
+  retired(makeScopeFrameBuffer()); expect(sink).toHaveBeenCalledTimes(1); expect(stream.latest(key)).toBeNull();
+  channel._setState('connected'); channel._fire(makeScopeFrameBuffer()); expect(sink).toHaveBeenCalledTimes(2);
+  const current = stream.latest(key); retired(makeScopeFrameBuffer()); expect(stream.latest(key)).toBe(current);
+  await driver.stop(handle); expect(channel.disconnect).toHaveBeenCalledTimes(2);
+  expect([channel._binaryHandlerCount(), channel._stateHandlerCount(), channel._sessionHandlerCount()]).toEqual([0, 0, 0]);
+});
