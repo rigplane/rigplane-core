@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ScopeController } from '../scope-controller.svelte';
 import { scopeWire } from './scope-wire-fixture';
 import type { WsChannel } from '$lib/transport/ws-client';
+import { scopeSubscriptionSurface } from '../scope-view';
 
 function channel() {
   const binary = new Set<(buffer: ArrayBuffer) => void>();
@@ -30,7 +31,57 @@ function channel() {
 }
 const request = (sourceId: string, receiver: number | null) => ({ sourceId, receiver,
   view: { follow: 'vfo' as const, spanHz: 100_000 }, width: 2800, maxFps: 20 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+describe('scope subscription retirement', () => {
+  it('mounts and repeatedly unmounts an undemanded phone surface without channel writes', async () => {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const handle = await owner.audioFftDriver.start(); change('connected');
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+    vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+    const node = document.createElement('div');
+    Object.defineProperty(node, 'clientWidth', { value: 390 });
+    const surface = scopeSubscriptionSurface(node, { stream: owner.stream('hardware'),
+      receiver: 0, view: request('radio', 0).view });
+    expect(owner.stream('hardware').subscriptions).toHaveLength(1);
+    expect(port.sendRaw).not.toHaveBeenCalled();
+    surface.destroy(); surface.destroy();
+    expect(port.sendRaw).not.toHaveBeenCalled();
+    await owner.audioFftDriver.stop(handle);
+  });
+
+  it.each(['disconnected', 'refused'] as const)('does not retire a %s subscription that was never sent', async state => {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    owner.stream('hardware').setSubscription(request('radio', 0));
+    if (state === 'refused') port.sendRaw.mockReturnValue(false);
+    const handle = await owner.hardwareScopeDriver.start();
+    if (state === 'refused') change('connected');
+    port.sendRaw.mockClear();
+    await owner.hardwareScopeDriver.stop(handle);
+    await owner.hardwareScopeDriver.stop(handle);
+    expect(port.sendRaw).not.toHaveBeenCalled();
+  });
+
+  it.each(['surface-first', 'driver-first'] as const)('sends exactly one unsubscribe in %s teardown order', async order => {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const keepOpen = await owner.audioFftDriver.start(); change('connected');
+    const stream = owner.stream('hardware'), token = Symbol('surface');
+    stream.updateSurfaceSubscription(token, request('radio', 0));
+    const handle = await owner.hardwareScopeDriver.start();
+    expect(port.sendRaw).toHaveBeenCalledExactlyOnceWith({ type: 'subscribe', ...request('radio', 0) });
+    if (order === 'driver-first') await owner.hardwareScopeDriver.stop(handle);
+    stream.removeSurfaceSubscription(token); stream.removeSurfaceSubscription(token);
+    await owner.hardwareScopeDriver.stop(handle); await owner.hardwareScopeDriver.stop(handle);
+    expect(port.sendRaw.mock.calls.map(call => call[0])).toEqual([
+      { type: 'subscribe', ...request('radio', 0) },
+      { type: 'unsubscribe', sourceId: 'radio', receiver: 0 },
+    ]);
+    await owner.audioFftDriver.stop(keepOpen);
+  });
+});
 
 describe('one multiplexed subscribed scope channel', () => {
   it('opens once, routes radio/audio zero-copy, pauses hidden demand, and releases one source at a time', async () => {
