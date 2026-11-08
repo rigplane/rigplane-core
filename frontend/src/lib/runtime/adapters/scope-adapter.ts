@@ -103,6 +103,11 @@ export function scopeSlotKey(sourceId: string, receiver: number | null): string 
   return receiver === null ? `${sourceId}:*` : `${sourceId}:${receiver}`;
 }
 
+/** Producer identity used for continuity diagnostics; local session identity is separate. */
+export function scopeFrameTraceIdentity(frame: ScopeFrame) {
+  return { sourceId: frame.sourceId, receiver: frame.receiver, sourceEpoch: frame.epoch };
+}
+
 /** Display metadata derived by the ingress owner; pixel payload stays on the frame sink. */
 export function scopeFrameDisplayFacts(frame: ScopeFrame): Pick<ScopeGeometry, 'view' | 'width' | 'hasPixels' | 'outOfRange'> {
   return {
@@ -139,6 +144,15 @@ import type { ServerState } from '$lib/types/state';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import { toRadioViewModel } from './radio-view-model-adapter';
+
+/** Configured selection is distinct from source availability, including failed optional providers. */
+export function resolveScopeSourceId(caps: Pick<Capabilities, 'scopeDefaultSourceId' | 'scopeSources' | 'scopeSource'> | null): ScopeFrame['source'] | null {
+  if (caps?.scopeDefaultSourceId != null) return caps.scopeDefaultSourceId;
+  if (caps?.scopeSources) return caps.scopeSources.includes('radio') ? 'radio'
+    : caps.scopeSources.includes('iq_fft') ? 'iq_fft' : caps.scopeSources.includes('audio_fft') ? 'audio_fft' : null;
+  return caps?.scopeSource === 'sdr' ? 'iq_fft' : caps?.scopeSource === 'hardware' ? 'radio'
+    : caps?.scopeSource === 'audio_fft' ? 'audio_fft' : null;
+}
 
 type DeepReadonly<T> = T extends readonly (infer U)[] ? readonly DeepReadonly<U>[]
   : T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;

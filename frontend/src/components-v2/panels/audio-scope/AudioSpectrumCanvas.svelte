@@ -9,7 +9,7 @@
     /** FFT pixel data from AudioFftScope (0-160 range) */
     data: Uint8Array | null;
     /** Register a push callback for streaming updates */
-    onRegisterPush?: (fn: (data: Uint8Array) => void) => void;
+    onRegisterPush?: (fn: (data: Uint8Array | null) => void) => void;
     /** Effective bandwidth of the FFT data in Hz */
     bandwidth: number;
     /** Filter passband width in Hz */
@@ -63,6 +63,7 @@
   let visible = true;
   let mounted = false;
   let latestPixels: Uint8Array | null = null;
+  let pushed = false;
   const rendererState = new AudioSpectrumRendererState();
 
   function scheduleDraw(): void {
@@ -73,11 +74,12 @@
   function draw(): void {
     rafId = 0;
     if (!visible) return;
-    const pixels = latestPixels ?? data;
+    const pixels = pushed ? latestPixels : data;
 
-    if (canvas && pixels && cssWidth > 1 && cssHeight > 1) {
+    if (canvas && cssWidth > 1 && cssHeight > 1) {
       const ctx = canvas.getContext('2d');
       if (ctx) {
+        if (pixels === null) rendererState.reset();
         const state: SpectrumState = {
           pixels,
           bandwidth,
@@ -127,8 +129,8 @@
   });
 
   onMount(() => {
-    onRegisterPush?.((pixels: Uint8Array) => {
-      latestPixels = pixels;
+    onRegisterPush?.((pixels: Uint8Array | null) => {
+      pushed = true; latestPixels = pixels;
       scheduleDraw();
     });
 

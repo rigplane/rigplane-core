@@ -55,9 +55,9 @@ export class ScopeStream {
 
   get subscription(): ScopeSubscription | null { return this.subscriptionValue; }
 
-  updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription): void {
+  updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription, retry = true): boolean {
     this.surfaces.set(token, subscription);
-    this.publishSurfaceDemand();
+    return this.publishSurfaceDemand(retry);
   }
 
   removeSurfaceSubscription(token: symbol): void {
@@ -67,7 +67,7 @@ export class ScopeStream {
 
   get subscriptions(): readonly ScopeSubscription[] { return this.subscriptionsValue; }
 
-  private publishSurfaceDemand(): void {
+  private publishSurfaceDemand(retry = true): boolean {
     const groups = new Map<string, ScopeSubscription[]>();
     for (const request of this.surfaces.values()) {
       const key = `${request.sourceId}:${request.receiver}`;
@@ -81,7 +81,7 @@ export class ScopeStream {
       next.push({ ...selected, width: Math.max(...candidates.map(request => request.width)),
         maxFps: Math.max(...candidates.map(request => request.maxFps)) });
     }
-    this.applySubscriptions(next);
+    return this.applySubscriptions(next, retry);
   }
 
   setSubscription(subscription: ScopeSubscription): void {
@@ -89,15 +89,18 @@ export class ScopeStream {
     this.applySubscriptions([subscription]);
   }
 
-  private applySubscriptions(next: readonly ScopeSubscription[]): void {
+  private applySubscriptions(next: readonly ScopeSubscription[], retry = true): boolean {
     const key = JSON.stringify(next);
     if (key === this.subscriptionKey) {
-      if (this.retryNeeded) {
+      if (retry && this.retryNeeded) {
         this.retryNeeded = false;
+        this.errorStore.set(null);
         for (const request of next) this.publishSubscription?.(request, request);
+        return true;
       }
-      return;
+      return false;
     }
+    this.retryNeeded = false;
     const previous = this.subscriptionsValue;
     this.subscriptionKey = key;
     this.subscriptionsValue = next.map(request => ({ ...request, view: { ...request.view } }));
@@ -113,6 +116,7 @@ export class ScopeStream {
       const old = previous.find(prior => prior.sourceId === request.sourceId && prior.receiver === request.receiver) ?? null;
       if (JSON.stringify(old) !== JSON.stringify(request)) this.publishSubscription?.(request, old);
     }
+    return true;
   }
 
   private matchingSubscription(facts: { readonly sourceId: string; readonly receiver: number | null }): ScopeSubscription | null {

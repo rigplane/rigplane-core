@@ -181,7 +181,7 @@
   let dataActive = $derived(!!rx?.dataMode);
 
   let fftBandwidth = $state<number | undefined>(undefined);
-  let fftPush: ((data: Uint8Array) => void) | null = null;
+  let fftPush: ((data: Uint8Array | null) => void) | null = null;
   let showFft = $derived(cockpitProps.hasAudioFft);
 
   // ── Indicator token arrays ──
@@ -337,17 +337,21 @@
     // MOR-4270: one stream sink — pixels go straight to the canvas push,
     // the rarely-changing bandwidth is a geometry fact.
     const stream = runtime.scope.stream('audio_fft');
+    let hasPixels = false;
+    const clearPixels = () => { if (hasPixels) fftPush?.(null); hasPixels = false; };
     const stopGeometry = stream.geometry.subscribe((geometry) => {
+      if (geometry === null) clearPixels();
       fftBandwidth = geometry && geometry.view.endHz > geometry.view.startHz
         ? geometry.view.endHz - geometry.view.startHz : undefined;
     });
     const unsubscribe = stream.subscribe((frame) => {
-      if (frame.pixels) fftPush?.(frame.pixels);
+      hasPixels = frame.pixels !== null; fftPush?.(frame.pixels);
     });
     let released = false;
     return () => {
       if (released) return;
       released = true;
+      clearPixels();
       unsubscribe();
       stopGeometry();
       presentationResources.release(lease);

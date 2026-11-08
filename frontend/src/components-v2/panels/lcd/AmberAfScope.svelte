@@ -8,7 +8,7 @@
     /** FFT pixel data from AudioFftScope (0-160 range) */
     data: Uint8Array | null;
     /** Register a push callback for streaming updates */
-    onRegisterPush?: (fn: (data: Uint8Array) => void) => void;
+    onRegisterPush?: (fn: (data: Uint8Array | null) => void) => void;
     /** Filter width — raw index from radio (e.g. 0-36 for FTX-1 SSB) or Hz */
     filterWidth?: number;
     /** Max filter width value (index or Hz) for normalization */
@@ -64,6 +64,7 @@
   let rafId = 0;
   let visible = true;
   let latestPixels: Uint8Array | null = null;
+  let pushed = false;
 
   // LCD ink prefix — alpha is scaled by `--lcd-alpha-*` tokens read off
   // the nearest `.lcd-screen` ancestor each frame (plan §2.4).
@@ -100,7 +101,7 @@
 
   function draw(): void {
     if (!visible) { rafId = 0; return; }
-    const pixels = latestPixels ?? data;
+    const pixels = pushed ? latestPixels : data;
     let w = cssWidth;
     let h = cssHeight;
     if ((w <= 1 || h <= 1) && canvas) {
@@ -424,8 +425,9 @@
   }
 
   onMount(() => {
-    onRegisterPush?.((pixels: Uint8Array) => {
-      latestPixels = pixels;
+    onRegisterPush?.((pixels: Uint8Array | null) => {
+      pushed = true; latestPixels = pixels;
+      if (pixels === null) { smoothed = null; runningMax = null; }
     });
 
     document.addEventListener('visibilitychange', onVisibilityChange);

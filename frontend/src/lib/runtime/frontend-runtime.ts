@@ -323,7 +323,7 @@ class FrontendRuntime {
       return;
     }
 
-    scopeController.configureSources(caps.scopeSources ?? []);
+    scopeController.configureSources(caps.scopeSources ?? [], caps.scopeDefaultSourceId);
     const presentationCaps = derivePresentationCapabilities(caps);
     this._defaultScopeSource = presentationCaps.scope.defaultSource;
     presentationResources.configure('hardware-scope', {

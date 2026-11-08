@@ -2,7 +2,7 @@
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { tick } from 'svelte';
   import { t } from '$lib/i18n';
-  import { scopeFrameDisplayFacts } from '../../lib/runtime/adapters/scope-adapter';
+  import { scopeFrameDisplayFacts, scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
   import type { ScopeFrameSource } from './DualSdrFace.svelte';
 
   interface Props { scopeSource: ScopeFrameSource; slotKey: string; receiver: 0 | 1; }
@@ -54,7 +54,9 @@
     }
     display();
     const unsubscribe = source.subscribe((frame, key) => {
-      if (key !== selected) return;
+      const stream = source.subscriptionStream;
+      const currentSlot = stream ? scopeSlotKey(stream.sourceId, stream.kind === 'radio' ? receiver : null) : selected;
+      if (key !== currentSlot) return;
       pixels = frame.pixels;
       facts = scopeFrameDisplayFacts(frame);
       display();

@@ -1,17 +1,20 @@
-import type { ScopeFrame } from './adapters/scope-adapter';
+import { scopeFrameTraceIdentity, type ScopeFrame } from './adapters/scope-adapter';
 
 export type TraceSource = 'hardware' | 'audio_fft';
 export type TraceToken = Readonly<{
   runId: string;
   source: TraceSource;
   transportEpoch: number;
+  sourceId: string;
+  receiver: number | null;
+  sourceEpoch: number;
   wireSequence: number;
   acceptedSequence: number;
 }>;
 export type TraceReceipt = Readonly<{
   kind: 'accepted';
   frame: ScopeFrame;
-  token: Omit<TraceToken, 'runId'>;
+  token: Omit<TraceToken, 'runId' | 'sourceId' | 'receiver' | 'sourceEpoch'>;
   callbackAt: number;
   acceptedAt: number;
 }> | Readonly<{
@@ -70,7 +73,7 @@ export class ScopeRenderTrace {
   private rejected = 0;
   private wireGaps = 0;
   private readonly lastCallbackAt = new Map<TraceSource, number>();
-  private readonly lastWire = new Map<TraceSource, { epoch: number; sequence: number }>();
+  private readonly lastWire = new Map<string, number>();
   private frames = new WeakMap<ScopeFrame, TraceToken>();
   private readonly acceptedIndex = new Map<number, TraceToken>();
   private readonly geometry: Partial<Record<'waterfall' | 'spectrum', Geometry>> = {};
@@ -131,7 +134,7 @@ export class ScopeRenderTrace {
       return;
     }
     const { frame, callbackAt, acceptedAt } = observation;
-    const token: TraceToken = Object.freeze({ runId: this.runId, ...observation.token });
+    const token: TraceToken = Object.freeze({ runId: this.runId, ...observation.token, ...scopeFrameTraceIdentity(frame) });
     if (!Number.isSafeInteger(token.acceptedSequence) || token.acceptedSequence <= 0
       || !Number.isSafeInteger(token.transportEpoch) || token.transportEpoch <= 0
       || !Number.isSafeInteger(token.wireSequence) || token.wireSequence < 0
@@ -144,12 +147,13 @@ export class ScopeRenderTrace {
     this.acceptedIndex.set(token.acceptedSequence, token);
     if (this.acceptedIndex.size > MAX_INDEX) this.acceptedIndex.delete(this.acceptedIndex.keys().next().value!);
     this.accepted += 1;
-    const previous = this.lastWire.get(token.source);
-    if (previous?.epoch === token.transportEpoch && token.wireSequence !== ((previous.sequence + 1) >>> 0)) {
+    const wireKey = JSON.stringify([token.sourceId, token.receiver, token.sourceEpoch, token.transportEpoch]);
+    const previous = this.lastWire.get(wireKey);
+    if (previous !== undefined && token.wireSequence !== ((previous + 1) >>> 0)) {
       this.wireGaps += 1;
       this.record('wire_gap', token, 0, true, callbackAt);
     }
-    this.lastWire.set(token.source, { epoch: token.transportEpoch, sequence: token.wireSequence });
+    this.lastWire.set(wireKey, token.wireSequence);
     const previousCallback = this.lastCallbackAt.get(token.source);
     const gap = previousCallback === undefined ? null : callbackAt - previousCallback;
     this.lastCallbackAt.set(token.source, callbackAt);

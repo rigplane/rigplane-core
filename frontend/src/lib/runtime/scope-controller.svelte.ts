@@ -114,8 +114,9 @@ export class ScopeController {
     return this._streams[source]!;
   }
 
-  configureSources(sourceIds: readonly string[]): void {
-    const selected = sourceIds.includes('radio') ? 'radio' : sourceIds.includes('iq_fft') ? 'iq_fft' : null;
+  configureSources(sourceIds: readonly string[], defaultSourceId?: 'radio' | 'iq_fft' | 'audio_fft' | null): void {
+    const selected = defaultSourceId === 'radio' || defaultSourceId === 'iq_fft' ? defaultSourceId
+      : sourceIds.includes('radio') ? 'radio' : sourceIds.includes('iq_fft') ? 'iq_fft' : null;
     if (selected) this.stream('hardware').setSource(selected === 'radio' ? 'radio' : 'iq_fft', selected);
     if (sourceIds.includes('audio_fft')) this.stream('audio_fft').setSource('audio_fft', 'audio_fft');
   }

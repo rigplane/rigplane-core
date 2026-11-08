@@ -273,6 +273,7 @@ export interface Capabilities {
   antennas?: number;      // Number of antenna ports
   hasRxAntenna?: boolean;
   scopeSources?: readonly string[];
+  scopeDefaultSourceId?: 'radio' | 'audio_fft' | 'iq_fft' | null;
   scopeSource?: string | null;  // "hardware", "audio_fft", or null
   audioFftAvailable?: boolean;  // true when audio FFT scope is available (even with hardware scope)
   scopeConfig?: ScopeConfig;

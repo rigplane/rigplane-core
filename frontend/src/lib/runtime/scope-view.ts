@@ -91,6 +91,9 @@ export function scopeSubscriptionSurface(node: Element, initial: {
   let cssWidth = node.clientWidth;
   let intersecting = typeof IntersectionObserver === 'undefined';
   let disposed = false;
+  let attempted = false;
+  let attemptedRevision: string | undefined;
+  let stopError = () => {};
   const publish = () => {
     if (disposed || parameters.stream === null) return;
     if (cssWidth <= 0 && parameters.stream.subscription === null) return;
@@ -98,11 +101,12 @@ export function scopeSubscriptionSurface(node: Element, initial: {
     const stageScale = layoutWidth > 0 ? node.getBoundingClientRect().width / layoutWidth : 1;
     const scale = Number.isFinite(stageScale) && stageScale > 0 ? stageScale : 1;
     const width = Math.max(1, Math.min(65535, Math.round(cssWidth * scale * (window.devicePixelRatio || 1))));
-    parameters.stream.updateSurfaceSubscription(token, scopeSubscription({
-      sourceId: parameters.stream.sourceId, receiver: parameters.receiver,
+    const sent = parameters.stream.updateSurfaceSubscription(token, scopeSubscription({
+      sourceId: parameters.stream.sourceId, receiver: parameters.stream.kind === 'radio' ? parameters.receiver : null,
       view: parameters.view, width, visible: intersecting && !document.hidden && cssWidth > 0,
       maxFps: parameters.maxFps ?? 20,
-    }));
+    }), !attempted || attemptedRevision !== parameters.revision);
+    if (sent) { attempted = true; attemptedRevision = parameters.revision; }
   };
   const resize = new ResizeObserver(entries => {
     cssWidth = entries[0]?.contentRect.width ?? node.clientWidth;
@@ -123,14 +127,20 @@ export function scopeSubscriptionSurface(node: Element, initial: {
   resize.observe(node); intersection?.observe(node);
   document.addEventListener('visibilitychange', publish);
   window.addEventListener('resize', publish);
+  const watchError = () => parameters.stream?.error.subscribe(error => {
+    if (error !== null && attempted && attemptedRevision !== parameters.revision) publish();
+  }) ?? (() => {});
   ratioChanged();
+  stopError = watchError();
   return {
     update(next: typeof initial) {
-      if (next.stream !== parameters.stream) parameters.stream?.removeSurfaceSubscription(token);
+      const changed = next.stream !== parameters.stream;
+      if (changed) { stopError(); parameters.stream?.removeSurfaceSubscription(token); attempted = false; }
       parameters = next; publish();
+      if (changed) stopError = watchError();
     },
     destroy() {
-      disposed = true; resize.disconnect(); intersection?.disconnect(); transform.disconnect();
+      disposed = true; stopError(); resize.disconnect(); intersection?.disconnect(); transform.disconnect();
       ratio?.removeEventListener('change', ratioChanged);
       document.removeEventListener('visibilitychange', publish); window.removeEventListener('resize', publish);
       parameters.stream?.removeSurfaceSubscription(token);

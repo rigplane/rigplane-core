@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveScopeSourceId, audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
@@ -134,9 +135,7 @@
   // lifecycle is busy, then returns to the confirmed radio observation.
   let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
   // --- Component state ---
-  let selectedScopeId = $derived(runtime.caps?.scopeSources?.includes('radio') ? 'radio'
-    : runtime.caps?.scopeSources?.includes('iq_fft') ? 'iq_fft'
-    : runtime.caps?.scopeSources?.includes('audio_fft') ? 'audio_fft' : runtime.caps?.scopeSource);
+  let selectedScopeId = $derived(resolveScopeSourceId(runtime.caps));
   let audioFft = $derived(selectedScopeId === 'audio_fft');
   // MOR-3158: the SDR source rides the same hardware rendering path —
   // RF-center geometry, the existing set-frequency click-to-tune, the
@@ -145,7 +144,7 @@
   // is additive: the toolbar badge/selector and the TX-frozen waterfall
   // hold. The public `sdr` leaf is the generated `SdrStatusPublic`
   // (MOR-3201); an absent leaf reads as null, never a fabricated default.
-  let sdrSource = $derived(selectedScopeId === 'iq_fft' || selectedScopeId === 'sdr');
+  let sdrSource = $derived(selectedScopeId === 'iq_fft');
   let sdrState = $derived(sdrSource ? runtime.state?.sdr ?? null : null);
   let sdrTxFrozen = $derived(sdrState?.txFrozen === true);
   // Every source the info payload advertises next to the selected SDR
@@ -806,7 +805,7 @@
   let scopeAreaWidth = $state(0);
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
+    const view = audioFft || followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
       ? { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) }
       : { startHz: effectiveView.startHz, endHz: effectiveView.endHz };
     return scopeSubscription({
@@ -1478,7 +1477,7 @@
     </div>
     <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} bind:clientWidth={scopeAreaWidth} use:scopeSubscriptionSurface={{
       stream: runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware'),
-      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, revision: spectrumAuthority?.digest,
+      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
     }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
