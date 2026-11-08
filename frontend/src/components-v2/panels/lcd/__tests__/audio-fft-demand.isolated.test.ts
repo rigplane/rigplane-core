@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => {
   const stateHandlers = new Set<(state: MockConnectionState) => void>();
   let state: MockConnectionState = 'disconnected';
   let epoch = 0;
+  const messageHandlers = new Set<(message: import('$lib/types/protocol').WsIncoming) => void>();
   const sessionHandlers = new Set<(value: { state: MockConnectionState; epoch: number }) => void>();
   const setState = (next: MockConnectionState) => {
     if (next === 'connected' && state !== 'connected') epoch += 1;
@@ -50,7 +51,11 @@ const mocks = vi.hoisted(() => {
       setState('connected');
     }),
     disconnect: vi.fn(() => { setState('disconnected'); }),
-    sendRaw: vi.fn(() => true), onMessage: () => () => {},
+    sendRaw: vi.fn((_message: Record<string, unknown>) => true),
+    onMessage(handler: (message: import('$lib/types/protocol').WsIncoming) => void) {
+      messageHandlers.add(handler); return () => messageHandlers.delete(handler);
+    },
+    message(message: import('$lib/types/protocol').WsIncoming) { messageHandlers.forEach(handler => handler(message)); },
     onBinary: vi.fn((handler: (data: ArrayBuffer) => void) => {
       binaryHandlers.add(handler);
       return () => { binaryHandlers.delete(handler); };
@@ -352,8 +357,6 @@ describe('LCD audio-FFT demand ownership', () => {
       if (cleanup) await cleanup();
       clearCapabilities();
       for (const target of targets) target.remove();
-      vi.doUnmock('$lib/transport/http-client');
-      vi.doUnmock('$lib/transport/ws-client');
       vi.unstubAllGlobals();
       vi.resetModules();
     }
@@ -366,3 +369,80 @@ describe('LCD audio-FFT demand ownership', () => {
     }
   });
 });
+
+
+it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
+  '%s retries a refused audio mapping when observed facts arrive without resize or VFO qualification', async name => {
+    vi.resetModules(); vi.clearAllMocks();
+    vi.doMock('../AmberAfScope.svelte', async importOriginal => {
+      const actual = await importOriginal<typeof import('../AmberAfScope.svelte')>();
+      const Child = actual.default as unknown as (anchor: Node, props: AmberAfScopePropsProbe) => unknown;
+      return { default: (anchor: Node, props: AmberAfScopePropsProbe) => {
+        const register = props.onRegisterPush;
+        props.onRegisterPush = push => register?.(pixels => { scopeChildProbe.pushed(pixels); push(pixels); });
+        return Child(anchor, props);
+      } };
+    });
+    vi.doMock('../../audio-scope/AudioSpectrumCanvas.svelte', async importOriginal => {
+      const actual = await importOriginal<typeof import('../../audio-scope/AudioSpectrumCanvas.svelte')>();
+      const Child = actual.default as unknown as (anchor: Node, props: AmberAfScopePropsProbe) => unknown;
+      return { default: (anchor: Node, props: AmberAfScopePropsProbe) => {
+        const register = props.onRegisterPush;
+        props.onRegisterPush = push => register?.(pixels => { scopeChildProbe.pushed(pixels); push(pixels); });
+        return Child(anchor, props);
+      } };
+    });
+    vi.stubGlobal('fetch' , vi.fn(async () => ({ ok: true, status: 200,
+      json: async () => ({ protocol_version: 1, mode: 'local' }) })));
+    let resizes = 0;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: (entries: { contentRect: { width: number; height: number } }[]) => void) {}
+      observe() { resizes++; this.callback([{ contentRect: { width: 400, height: 100 } }]); }
+      disconnect() {}
+    });
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const { flushSync, mount, unmount } = await import('svelte');
+    const { runtime } = await import('$lib/runtime/frontend-runtime');
+    const { setRadioState } = await import('$lib/stores/radio.svelte');
+    const { setCapabilities, clearCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const { toSpectrumAuthority } = await import('$lib/runtime/adapters/scope-adapter');
+    const Component = name === 'AudioSpectrumPanel'
+      ? (await import('../../audio-scope/AudioSpectrumPanel.svelte')).default
+      : name === 'AmberScope' ? (await import('../AmberScope.svelte')).default
+        : (await import('../AmberCockpit.svelte')).default;
+    const target = document.createElement('div'); document.body.append(target);
+    const cleanup = await runtime.bootstrap();
+    const caps = { ...canonicalCapabilities, vfoScheme: 'ab' as const, vfoReadback: 'none' as const };
+    setCapabilities(caps);
+    const initial = radioState(1); initial.active = null; initial.main!.mode = null; initial.main!.filterWidth = null;
+    setRadioState(initial);
+    const component = mount(Component, { target });
+    const subscriptions = () => mocks.channel.sendRaw.mock.calls.filter(([message]) => message.type === 'subscribe');
+    try {
+      flushSync(); await Promise.resolve(); flushSync();
+      expect(subscriptions()).toHaveLength(1);
+      mocks.channel.message({ type: 'error', sourceId: 'audio_fft', receiver: null, message: 'mode/filter unavailable' });
+      flushSync(); expect(scopeChildProbe.pushed).not.toHaveBeenCalled();
+      const resizeCount = resizes;
+      const known = radioState(2); known.active = null;
+      known.fieldStatus = Object.fromEntries(['main.freqHz', 'main.mode', 'main.filterWidth', 'main.dataMode'].map(path => [path,
+        { storePath: path, observed: true, freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: 2 }]));
+      expect(toSpectrumAuthority(known, caps)).toBeNull();
+      expect(setRadioState(known)).toBe(true);
+      flushSync(); await Promise.resolve(); flushSync();
+      expect(resizes).toBe(resizeCount);
+      expect(subscriptions()).toHaveLength(2);
+      mocks.channel.message({ type: 'granted', sourceId: 'audio_fft', receiver: null,
+        view: { startHz: 14000000, endHz: 14100000 }, coverage: { startHz: 14000000, endHz: 14100000 }, width: 4, fps: 20 });
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenCalledTimes(1);
+      const unrelated = { ...known, revision: 3, stateRevision: 3, observationSeq: 3,
+        main: { ...known.main!, sMeter: 7 } };
+      setRadioState(unrelated); flushSync();
+      expect(subscriptions()).toHaveLength(2);
+    } finally {
+      await unmount(component); await cleanup(); clearCapabilities(); target.remove();
+      vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules();
+    }
+  },
+);
