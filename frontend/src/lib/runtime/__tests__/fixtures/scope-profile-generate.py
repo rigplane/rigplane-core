@@ -1,4 +1,5 @@
 """Generate scope-profile-caps.json on the mini from the shipped profiles."""
+
 import json
 
 from rigplane.profiles import resolve_radio_profile
@@ -26,4 +27,8 @@ def ranges(model):
     ]
 
 
-print(json.dumps({model: ranges(model) for model in ("IC-705", "IC-7610")}, separators=(",", ":")))
+print(
+    json.dumps(
+        {model: ranges(model) for model in ("IC-705", "IC-7610")}, separators=(",", ":")
+    )
+)
