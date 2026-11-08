@@ -259,14 +259,10 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         SetScopeSpan,
         SwitchScopeReceiver,
     )
-    from rigplane.web.scope_sources import WebRadioScopeWriter
-
     server = WebServer(_scope_radio(), WebConfig(radio_model="IC-7610"))
-    source = RadioScopeSource(
-        resolve_radio_profile(model="ic7610"), WebRadioScopeWriter(server)
-    )
-    server._radio_scope_source = source
-    server.scope_hub.register("radio", source)
+    assert server.scope_hub is not None
+    source = server._radio_scope_source
+    assert source is not None
     listener = MagicMock()
     listener.wait_closed = AsyncMock()
     server._server = listener
