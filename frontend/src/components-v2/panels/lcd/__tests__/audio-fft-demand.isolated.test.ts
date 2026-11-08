@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -49,6 +50,7 @@ const mocks = vi.hoisted(() => {
       setState('connected');
     }),
     disconnect: vi.fn(() => { setState('disconnected'); }),
+    sendRaw: vi.fn(() => true), onMessage: () => () => {},
     onBinary: vi.fn((handler: (data: ArrayBuffer) => void) => {
       binaryHandlers.add(handler);
       return () => { binaryHandlers.delete(handler); };
@@ -278,13 +280,10 @@ describe('LCD audio-FFT demand ownership', () => {
       expect(cockpitUnsubscribe).not.toHaveBeenCalled();
 
       await vi.waitFor(() => expect(mocks.channel.connect).toHaveBeenCalledTimes(1));
-      const buffer = new ArrayBuffer(21), wire = new DataView(buffer);
-      wire.setUint8(0, 1); wire.setUint8(2, 1);
-      wire.setUint32(3, 14_012_345, true); wire.setUint32(7, 14_098_765, true); wire.setUint16(14, 5, true);
-      const distinctivePixels = new Uint8Array(buffer, 16); distinctivePixels.set([3, 17, 91, 205, 254]);
+      const buffer = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, viewStartHz: 14_012_345, viewEndHz: 14_098_765, pixels: new Uint8Array([3, 17, 91, 205, 254]) });
       mocks.channel.fire(buffer);
       flushSync();
-      const delivered = stream.latest('audio-scope:0')!.pixels!;
+      const delivered = stream.latest('audio_fft:*')!.pixels!;
       expect(delivered.buffer).toBe(buffer);
       expect(scopeChildProbe.pushed).toHaveBeenCalledExactlyOnceWith(delivered);
       expect(scopeChildProbe.props?.data).toBeNull();
@@ -294,8 +293,8 @@ describe('LCD audio-FFT demand ownership', () => {
       flushSync();
       await vi.waitFor(() => expect(mocks.channel.connect).toHaveBeenCalledTimes(1));
       expect(presentationResources.snapshot('audio-fft').demand).toBe(2);
-      expect(mocks.getChannel).toHaveBeenCalledExactlyOnceWith('audio-scope');
-      expect(mocks.channel.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/audio-scope');
+      expect(mocks.getChannel).toHaveBeenCalledExactlyOnceWith('scope');
+      expect(mocks.channel.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/scope');
       expect(mocks.channel.onBinary).toHaveBeenCalledTimes(1);
       expect(mocks.channel.onStateChange).toHaveBeenCalledTimes(1);
       expect(mocks.channel.binaryHandlerCount()).toBe(1);

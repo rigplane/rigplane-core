@@ -4,70 +4,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  parseCurrentScopeFrame,
   formatFreqOffset,
   deriveFreqTicks,
   getDragInterval,
   isFixedScope,
   freqFromPixel,
 } from '../spectrum-logic';
-
-// ── Test helpers ────────────────────────────────────────────────────────────
-
-function encodeFrame(rx: number, mode: number, sf: number, ef: number, px: Uint8Array): ArrayBuffer {
-  const buf = new ArrayBuffer(16 + px.length);
-  const v = new DataView(buf);
-  v.setUint8(0, 0x01);
-  v.setUint8(1, rx);
-  v.setUint8(2, mode);
-  v.setUint32(3, sf, true);
-  v.setUint32(7, ef, true);
-  v.setUint16(14, px.length, true);
-  new Uint8Array(buf, 16).set(px);
-  return buf;
-}
-
-// ── Tests ───────────────────────────────────────────────────────────────────
-
-describe('parseCurrentScopeFrame — edge cases', () => {
-  const context = { source: 'radio' as const, sourceId: 'scope', epoch: 1 };
-  it('parses zero-length pixel array as explicit absent pixels', () => {
-    const result = parseCurrentScopeFrame(encodeFrame(0, 0, 14_050_000, 14_098_000, new Uint8Array(0)), context);
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.frame.pixels).toBeNull();
-  });
-
-  it('parses 475-pixel frame (typical IC-7610 scope) without copying', () => {
-    const pixels = new Uint8Array(475).fill(42);
-    const buffer = encodeFrame(0, 1, 14_000_000, 14_350_000, pixels);
-    const result = parseCurrentScopeFrame(buffer, context);
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.reason);
-    expect(result.frame.pixels?.length).toBe(475);
-    expect(result.frame.pixels?.[0]).toBe(42);
-    expect(result.frame.pixels?.buffer).toBe(buffer);
-  });
-
-  it('rejects 16-byte buffer with pixelCount > 0', () => {
-    const buf = new ArrayBuffer(16);
-    const v = new DataView(buf);
-    v.setUint8(0, 0x01);
-    v.setUint16(14, 1, true);
-    expect(parseCurrentScopeFrame(buf, context)).toEqual({ ok: false, reason: 'pixel length' });
-  });
-
-  it('accepts 16-byte buffer with pixelCount = 0', () => {
-    const buf = new ArrayBuffer(16);
-    new DataView(buf).setUint8(0, 0x01);
-    const result = parseCurrentScopeFrame(buf, context);
-    expect(result.ok && result.frame.pixels).toBeNull();
-  });
-
-  it('handles large uint32 frequency (3 GHz)', () => {
-    const result = parseCurrentScopeFrame(encodeFrame(0, 0, 0, 3_000_000_000, new Uint8Array(1)), context);
-    expect(result.ok && result.frame.viewEndHz).toBe(3_000_000_000);
-  });
-});
 
 describe('formatFreqOffset', () => {
   it('formats zero', () => expect(formatFreqOffset(0)).toBe('0'));

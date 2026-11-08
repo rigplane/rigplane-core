@@ -5,6 +5,7 @@
  * decoder and the bandwidth computation that drives AmberAfScope.
  */
 import { describe, it, expect } from 'vitest';
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
 import type { ScopeFrame } from '$lib/runtime/scope-frame';
 
@@ -15,17 +16,8 @@ function encodeFrame(
   endFreq: number,
   pixels: Uint8Array,
 ): ArrayBuffer {
-  const buf = new ArrayBuffer(16 + pixels.length);
-  const view = new DataView(buf);
-  view.setUint8(0, 0x01);            // MSG_TYPE_SCOPE
-  view.setUint8(1, receiver);
-  view.setUint8(2, 0);               // mode (0=CTR default for this test helper)
-  view.setUint32(3, startFreq, true);
-  view.setUint32(7, endFreq, true);
-  // bytes 11-13 reserved
-  view.setUint16(14, pixels.length, true);
-  new Uint8Array(buf, 16).set(pixels);
-  return buf;
+  return scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver,
+    viewStartHz: startFreq, viewEndHz: endFreq, pixels });
 }
 
 // ── parseScopeFrame ───────────────────────────────────────────────────────────
@@ -33,14 +25,14 @@ function encodeFrame(
 const context = { source: 'audio_fft' as const, sourceId: 'audio-scope', epoch: 1 };
 
 describe('parseCurrentScopeFrame', () => {
-  it('rejects buffers smaller than the 16-byte header with a typed reason', () => {
+  it('rejects buffers smaller than the 56-byte header with a typed reason', () => {
     expect(parseCurrentScopeFrame(new ArrayBuffer(15), context))
       .toEqual({ ok: false, reason: 'short header' });
   });
 
   it('rejects a wrong message-type byte with a typed reason', () => {
-    const buf = new ArrayBuffer(20);
-    new DataView(buf).setUint8(0, 0x02);
+    const buf = new ArrayBuffer(56);
+    new DataView(buf).setUint8(0, 0x01);
     expect(parseCurrentScopeFrame(buf, context))
       .toEqual({ ok: false, reason: 'message type' });
   });
@@ -49,7 +41,7 @@ describe('parseCurrentScopeFrame', () => {
     const pixels = new Uint8Array(10);
     const buf = encodeFrame(0, 14_050_000, 14_074_000, pixels);
     // Truncate so pixelCount (10) extends past byteLength
-    expect(parseCurrentScopeFrame(buf.slice(0, 20), context))
+    expect(parseCurrentScopeFrame(buf.slice(0, -1), context))
       .toEqual({ ok: false, reason: 'pixel length' });
   });
 
