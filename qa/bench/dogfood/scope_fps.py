@@ -2,6 +2,7 @@
 
 Run ``uv run python qa/bench/dogfood/scope_fps.py --radio simulator --transport sim --both``.
 Sequence gaps are expected under rate limiting; repeats and backwards movement fail.
+PASS requires usable pixel frames at least 80% of the granted frame rate.
 """
 
 from __future__ import annotations
@@ -30,6 +31,8 @@ from rigplane.web.protocol import (  # noqa: TID251
     decode_scope_granted,
     encode_scope_subscription,
 )
+
+MIN_PIXEL_DELIVERY_RATIO = 0.80
 
 
 def sequence_step(previous: int, current: int) -> int:
@@ -173,6 +176,14 @@ async def collect(
                 raise ValueError("scope socket closed before measurement ended")
         if not arrivals or not pixel_frames:
             raise ValueError("no in-range pixel frames received")
+        if granted.max_fps <= 0:
+            raise ValueError("a paused grant cannot measure delivery")
+        delivery_ratio = pixel_frames / (duration * granted.max_fps)
+        if delivery_ratio < MIN_PIXEL_DELIVERY_RATIO:
+            raise ValueError(
+                f"delivery below 80% of granted fps: {delivery_ratio:.1%} "
+                f"({pixel_frames} usable frames in {duration:g}s at {granted.max_fps:g} fps)"
+            )
         return {
             "source_id": granted.source_id,
             "width": granted.width,
@@ -181,6 +192,7 @@ async def collect(
             "pixel_frames": pixel_frames,
             "null_frames": null_frames,
             "out_of_range_frames": out_of_range_frames,
+            "pixel_delivery_ratio": delivery_ratio,
             **summarize(arrivals, byte_count, duration),
         }
 
