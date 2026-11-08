@@ -59,6 +59,7 @@ from .parser import (
 )
 from .transport import (
     CatCommandRejected,
+    CatQueryResponse,
     CatTimeoutError,
     CatTransportError,
     YaesuCatTransport,
@@ -1426,15 +1427,7 @@ class YaesuCatRadio:
         capture = self._tuner_provider_generation
         provider_generation = None if capture is None else capture()
 
-        def committed() -> None:
-            nonlocal writer, reconnects
-            nonlocal capture, provider_generation
-            writer = transport._writer
-            reconnects = transport.stats.reconnects
-            capture = self._tuner_provider_generation
-            provider_generation = None if capture is None else capture()
-
-        raw = await transport.query(read_cmd, on_committed=committed, **query_kwargs)
+        raw = await transport.query(read_cmd, **query_kwargs)
 
         parser = self._parsers.get(cmd_name)
         if parser is None:
@@ -1466,16 +1459,21 @@ class YaesuCatRadio:
                 _decode_atu_response(result)
         except (TypeError, ValueError):
             semantic_valid = False
-        if (
-            self._transport is transport
-            and transport.connected
-            and _digit_fields_valid(result)
-            and semantic_valid
-            and self._transport._writer is writer
-            and self._identity_generation == identity_generation
-            and self._transport.stats.reconnects == reconnects
+        connection_current = (
+            transport.connected
+            and transport._writer is writer
+            and transport.stats.reconnects == reconnects
             and self._tuner_provider_generation is capture
             and (capture is None or capture() == provider_generation)
+        )
+        if isinstance(raw, CatQueryResponse):
+            connection_current = raw.is_current()
+        if (
+            self._transport is transport
+            and connection_current
+            and _digit_fields_valid(result)
+            and semantic_valid
+            and self._identity_generation == identity_generation
         ):
             self._transport.last_valid_frame_monotonic = time.monotonic()
         return result
@@ -4036,6 +4034,7 @@ class YaesuCatRadio:
 
     def _bind_tuner_provider_generation(self, capture: Callable[[], int]) -> None:
         self._tuner_provider_generation = capture
+        self._transport.bind_provider_generation(capture)
 
     async def _read_atu_route(self) -> tuple[str, str, int, Callable[[], bool]]:
         transport = self._transport

@@ -162,6 +162,17 @@ class TransportStats:
 # ── Transport ─────────────────────────────────────────────────────────
 
 
+class CatQueryResponse(str):
+    """A normal CAT reply retaining the currency of its wire exchange."""
+
+    is_current: Callable[[], bool]
+
+    def __new__(cls, response: str, is_current: Callable[[], bool]) -> CatQueryResponse:
+        reply = super().__new__(cls, response)
+        reply.is_current = is_current
+        return reply
+
+
 class YaesuCatTransport:
     """Async serial transport for Yaesu CAT protocol.
 
@@ -205,7 +216,11 @@ class YaesuCatTransport:
         self._exchange_gate = PriorityExchangeGate()
         self._stats = TransportStats()
         self._last_reconnect: float = 0.0
+        self._capture_provider_generation: Callable[[], int] | None = None
         self.last_valid_frame_monotonic: float | None = None
+
+    def bind_provider_generation(self, capture: Callable[[], int]) -> None:
+        self._capture_provider_generation = capture
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -535,7 +550,6 @@ class YaesuCatTransport:
         expect_rejection: bool = False,
         is_current: Callable[[], bool] | None = None,
         tier: ExchangeTier = ExchangeTier.ORDINARY,
-        on_committed: Callable[[], None] | None = None,
     ) -> str:
         """Send a GET command and return the matching response.
 
@@ -557,8 +571,6 @@ class YaesuCatTransport:
             tier: Admission tier for the exchange gate. A managed
                 confirming read rides its own write's tier so it is never
                 queued behind ordinary polls.
-            on_committed: Capture the connection after admission, once the
-                request bytes have been accepted by the writer.
 
         Returns:
             Response line (without trailing ``;``).
@@ -570,12 +582,21 @@ class YaesuCatTransport:
         """
         async with self._exchange_gate.exchange(tier=tier):
             await self.flush_rx()
-            if on_committed is None:
-                await self._raw_write(command, is_current=is_current)
-            else:
-                await self._raw_write(
-                    command, is_current=is_current, on_committed=on_committed
+            writer = self._writer
+            reconnects = self._stats.reconnects
+            capture = self._capture_provider_generation
+            generation = None if capture is None else capture()
+
+            def response_is_current() -> bool:
+                return (
+                    self.connected
+                    and self._writer is writer
+                    and self._stats.reconnects == reconnects
+                    and self._capture_provider_generation is capture
+                    and (capture is None or capture() == generation)
                 )
+
+            await self._raw_write(command, is_current=is_current)
             self._stats.queries += 1
 
             # Expected reply prefixes (MOR-3677): a data reply starts with
@@ -630,7 +651,7 @@ class YaesuCatTransport:
 
                 # ── Match! ──
                 self._stats.record_success()
-                return response
+                return CatQueryResponse(response, response_is_current)
 
             # Exhausted all attempts
             self._stats.record_error(f"no match for {command}")
