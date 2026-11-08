@@ -1,64 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import fixtures from './fixtures/scope-wire.json';
+import { scopeFixtures as fixtures } from './scope-wire-fixture';
 import { ingressScopeFrame, parseCurrentScopeFrame, scopeSlotKey } from '../adapters/scope-adapter';
 import { projectScopeCoverage } from '../scope-frame';
 import type { ScopeGeometry } from '../scope-frame';
 
 const context = { source: 'radio' as const, sourceId: 'scope-1', epoch: 7 };
 const wire = (bytes: number[]) => Uint8Array.from(bytes).buffer;
-
-describe('current scope wire → ScopeFrame', () => {
-  it.each(['radio', 'audio'] as const)('decodes real %s encoder bytes without copying', (name) => {
-    const buffer = wire(fixtures[name]);
-    const source = name === 'radio' ? 'radio' : 'audio_fft';
-    const result = parseCurrentScopeFrame(buffer, { ...context, source });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(result.reason);
-    expect(result.frame).toMatchObject({
-      source, sourceId: 'scope-1', epoch: 7, sentAtMs: null,
-      receiver: name === 'radio' ? 0 : 1, seq: name === 'radio' ? 65535 : 17,
-      viewStartHz: name === 'radio' ? 14_000_000 : 7_100_000,
-      coverageEndHz: name === 'radio' ? 14_100_000 : 7_103_000,
-      width: name === 'radio' ? 4 : 3, outOfRange: false,
-    });
-    expect(result.frame.pixels?.buffer).toBe(buffer);
-    expect(result.frame.pixels?.byteOffset).toBe(16);
-    expect(result.frame.pixels?.byteLength).toBe(result.frame.width);
-  });
-  it('preserves outOfRange and represents absent pixels explicitly', () => {
-    const result = parseCurrentScopeFrame(wire(fixtures.outOfRange), context);
-    expect(result.ok && result.frame).toMatchObject({ receiver: 1, outOfRange: true, pixels: null, width: 0 });
-  });
-  it('returns typed malformed results for short, wrong-type and truncated messages', () => {
-    expect(parseCurrentScopeFrame(new ArrayBuffer(0), context)).toEqual({ ok: false, reason: 'short header' });
-    const wrong = [...fixtures.radio]; wrong[0] = 0x10;
-    expect(parseCurrentScopeFrame(wire(wrong), context)).toEqual({ ok: false, reason: 'message type' });
-    expect(parseCurrentScopeFrame(wire(fixtures.radio.slice(0, -1)), context)).toEqual({ ok: false, reason: 'pixel length' });
-    const backwards = wire(fixtures.radio);
-    new DataView(backwards).setUint32(7, 13_000_000, true);
-    expect(parseCurrentScopeFrame(backwards, context)).toEqual({ ok: false, reason: 'frequency range' });
-  });
-});
-
-describe('scope ingress slot + geometry derivation', () => {
-  it('derives the slot key and the qualified geometry in one ingress pass', () => {
-    const result = ingressScopeFrame(wire(fixtures.radio), context);
-    if (!result.ok) throw new Error(result.reason);
-    expect(result.slotKey).toBe(scopeSlotKey('scope-1', 0));
-    expect(result.geometry).toMatchObject({
-      source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0, width: 4,
-      outOfRange: false, hasPixels: true, freshness: 'fresh',
-      view: { startHz: 14_000_000, endHz: 14_100_000 },
-      coverage: { startHz: 14_000_000, endHz: 14_100_000 },
-    });
-  });
-  it('carries the out-of-range state into geometry without pixels', () => {
-    const result = ingressScopeFrame(wire(fixtures.outOfRange), context);
-    if (!result.ok) throw new Error(result.reason);
-    expect(result.geometry).toMatchObject({ outOfRange: true, hasPixels: false });
-    expect(result.slotKey).toBe(scopeSlotKey('scope-1', 1));
-  });
-});
 
 const geometry: ScopeGeometry = {
   source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0, width: 4,
@@ -100,12 +47,12 @@ describe('coverage projection', () => {
 
 it('keeps coverage for producer TX-frozen bytes that retain pixels with the out-of-range flag', () => {
   const buffer = wire(fixtures.radio); const header = new DataView(buffer);
-  header.setUint8(13, header.getUint8(13) | 1);
+  header.setUint8(2, header.getUint8(2) | 1);
   const result = ingressScopeFrame(buffer, context);
   expect(result.ok).toBe(true); if (!result.ok) throw new Error(result.reason);
   expect(result.frame.outOfRange).toBe(true); expect(result.geometry.outOfRange).toBe(true);
   expect(result.geometry.hasPixels).toBe(true);
-  expect(result.frame.pixels).toEqual(new Uint8Array(fixtures.radio.slice(16)));
+  expect(result.frame.pixels).toEqual(new Uint8Array(fixtures.radio.slice(56 + "scope-1".length)));
   expect(result.frame.pixels!.buffer).toBe(buffer);
   expect(projectScopeCoverage(result.geometry, result.geometry.view)).toEqual({
     covered: [{ start: 0, end: 1, sampleStart: 0, sampleEnd: 1 }], hatched: [],

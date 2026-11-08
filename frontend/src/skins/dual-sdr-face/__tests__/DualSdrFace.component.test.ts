@@ -6,6 +6,7 @@ import { createClassComponent } from 'svelte/legacy';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { ReceiverIndicatorViewModel } from '../../../semantic/radio-view-model';
 import type { ScopeFrame } from '../../../lib/runtime/scope-frame';
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { parseCurrentScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
 import { findPlaceholderTokens } from '../../../lib/placeholder-token-rule';
 
@@ -37,10 +38,7 @@ import DualSdrFace from '../DualSdrFace.svelte';
 
 /** Builds the typed wire frame the shared stream delivers. */
 function wireFrame(pixels: Uint8Array, startFreq = 1, endFreq = 2, receiver = 0): ScopeFrame {
-  const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
-  wire.setUint8(0, 1); wire.setUint8(1, receiver);
-  wire.setUint32(3, startFreq, true); wire.setUint32(7, endFreq, true);
-  wire.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
+  const buffer = scopeWire({ pixels, viewStartHz: startFreq, viewEndHz: endFreq, receiver });
   const result = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1 });
   if (!result.ok) throw new Error(result.reason);
   return result.frame;

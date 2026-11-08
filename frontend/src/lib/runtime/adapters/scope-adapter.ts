@@ -60,6 +60,42 @@ export function parseCurrentScopeFrame(buffer: ArrayBuffer, context: CurrentScop
   }) };
 }
 
+import type { ScopeGranted, ScopeSubscription } from '../scope-view';
+
+/** Qualify the server's negotiation facts before they enter stream geometry. */
+export function parseScopeGranted(message: unknown): ScopeGranted | null {
+  if (message === null || typeof message !== 'object') return null;
+  const value = message as Record<string, unknown>;
+  const view = (input: unknown): input is ScopeGranted['view'] => {
+    if (input === null || typeof input !== 'object') return false;
+    const candidate = input as Record<string, unknown>;
+    return typeof candidate.startHz === 'number' && Number.isFinite(candidate.startHz) && candidate.startHz >= 0
+      && typeof candidate.endHz === 'number' && Number.isFinite(candidate.endHz) && candidate.endHz > candidate.startHz;
+  };
+  if (value.type !== 'granted' || typeof value.sourceId !== 'string' || !/^[!-~]{1,255}$/.test(value.sourceId)
+    || !(value.receiver === null || (Number.isInteger(value.receiver) && (value.receiver as number) >= 0 && (value.receiver as number) < 65535))
+    || !view(value.view) || !(value.coverage === null || view(value.coverage))
+    || !Number.isInteger(value.width) || (value.width as number) < 1 || (value.width as number) > 65535
+    || typeof value.fps !== 'number' || !Number.isFinite(value.fps) || value.fps < 0) return null;
+  if (value.coverage && (value.coverage.startHz < value.view.startHz || value.coverage.endHz > value.view.endHz)) return null;
+  return { type: 'granted', sourceId: value.sourceId, receiver: value.receiver as number | null,
+    view: { ...value.view }, coverage: value.coverage === null ? null : { ...value.coverage }, width: value.width as number, fps: value.fps };
+}
+
+export function scopeGrantedGeometry(grant: ScopeGranted, context: CurrentScopeContext): ScopeGeometry {
+  return { source: context.source, sourceId: grant.sourceId, receiver: grant.receiver,
+    mode: context.mode ?? 0, width: grant.width, view: grant.view,
+    coverage: grant.coverage ?? { startHz: grant.view.startHz, endHz: grant.view.startHz },
+    outOfRange: false, hasPixels: false, freshness: 'stale' };
+}
+
+/** The stream accepts pixels and grants only from its selected subscription identity. */
+export function scopeMatchesSubscription(
+  facts: { readonly sourceId: string; readonly receiver: number | null }, subscription: ScopeSubscription | null,
+): boolean {
+  return subscription === null || (facts.sourceId === subscription.sourceId && facts.receiver === subscription.receiver);
+}
+
 /** The one LCD/SDR silence boundary. A frame is stale at this exact age. */
 export const SCOPE_FRAME_SILENCE_MS = 500;
 

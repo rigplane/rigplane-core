@@ -1,20 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { ScopeStream } from '../../../lib/runtime/scope-stream';
 import LcdAfFft from '../LcdAfFft.svelte';
 import LcdRfPanadapter from '../LcdRfPanadapter.svelte';
+
+vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
 
 function source(kind: 'radio' | 'audio_fft') {
   let receive = (_buffer: ArrayBuffer) => {};
   const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
     { source: kind, sourceId: kind, epoch: 1 }, 'borrowed');
   return { stream, frame(receiver = 0, pixels = [0, 128, 255], outOfRange = false) {
-    const bytes = new ArrayBuffer(16 + pixels.length);
-    const view = new DataView(bytes);
-    view.setUint8(0, 1); view.setUint8(1, receiver);
-    view.setUint32(3, 14_200_000, true); view.setUint32(7, 14_300_000, true);
-    view.setUint8(13, outOfRange ? 1 : 0);
-    view.setUint16(14, pixels.length, true); new Uint8Array(bytes, 16).set(pixels);
+    const bytes = scopeWire({ source: kind, sourceId: kind, receiver: kind === 'audio_fft' ? null : receiver, viewStartHz: 14_200_000, viewEndHz: 14_300_000, outOfRange, pixels: pixels.length > 0 ? Uint8Array.from(pixels) : null });
     receive(bytes); flushSync();
   } };
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onMount } from 'svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { deriveAudioSpectrumProps } from '$lib/runtime/adapters/panel-adapters';
@@ -42,7 +43,7 @@
       }
     });
     const unsubscribe = stream.subscribe((frame) => {
-      if (frame.pixels) fftPush?.(frame.pixels);
+      if (frame.pixels && visible && !document.hidden) fftPush?.(frame.pixels);
     });
     let released = false;
     return () => {
@@ -55,7 +56,10 @@
   });
 </script>
 
-<div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible}>
+<div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible} use:scopeSubscriptionSurface={{
+  stream: runtime.scope.stream('audio_fft'), receiver: null,
+  view: { follow: 'vfo', spanHz: 48000 },
+}}>
   <AudioSpectrumCanvas
     data={null}
     onRegisterPush={(fn) => { fftPush = fn; }}

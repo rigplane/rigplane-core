@@ -89,7 +89,7 @@
   <ReceiverNeedleSMeter value={meterValue} />
   <output class="frequency" data-frequency data-state={obsState(vfo?.display?.frequencyHz, vfo?.frequencyHz)} style:min-height="1em" style:min-width={`${frequencyCh}ch`}>{frequencyText}</output>
   <div class="secondary">{vfo?.label ?? ''} · {modeText} · {filterText}</div>
-  <ReceiverScopeWaterfall {scopeSource} slotKey={scopeSource.slotKeys[receiver]} />
+  <ReceiverScopeWaterfall {scopeSource} {receiver} slotKey={scopeSource.slotKeys[receiver]} />
 </section>
 
 <style>

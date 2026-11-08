@@ -24,7 +24,7 @@ import {
   ingressScopeFrame, parseCurrentScopeFrame, SCOPE_FRAME_SILENCE_MS, snapSpectrumFilterWidth, toSpectrumAuthority,
 } from '../scope-adapter';
 import { ScopeController } from '../../scope-controller.svelte';
-import fixtures from '../../__tests__/fixtures/scope-wire.json';
+import { scopeWire, scopeFixtures as fixtures } from '../../__tests__/scope-wire-fixture';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import {
   deriveIfShift, measuredPbtRawToHz, PBT_MEASURED_STEP_HZ,
@@ -546,12 +546,8 @@ describe('MOR-1409 A06a1 deterministic filter-width snapping', () => {
 
 describe('MOR-1409 A06a1 decoder and purity boundary', () => {
   it('keeps wire receiver, mode, span and pixels unchanged', () => {
-    const buffer = new ArrayBuffer(17);
-    const view = new DataView(buffer);
-    view.setUint8(0, 0x01); view.setUint8(1, 1); view.setUint8(2, 2);
-    view.setUint32(3, 14_000_000, true); view.setUint32(7, 14_350_000, true);
-    view.setUint16(14, 1, true); view.setUint8(16, 0xff);
-    const parsed = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 3 });
+    const buffer = scopeWire({ sourceId: 'scope', epoch: 3, receiver: 1, viewStartHz: 14_000_000, viewEndHz: 14_350_000, pixels: new Uint8Array([255]) });
+    const parsed = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 3, mode: 2 });
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) throw new Error(parsed.reason);
     expect(parsed.frame).toEqual({ source: 'radio', sourceId: 'scope', epoch: 3, receiver: 1,
@@ -586,7 +582,7 @@ describe('MOR-2326 typed scope geometry and authority boundaries', () => {
 
   it.each([['radio', 'hardware'], ['audio_fft', 'audio-fft']] as const)(
     'projects nominal %s bytes without normalization or copying', (source, displaySource) => {
-      const buffer = wireBuffer(fixtures.radio);
+      const buffer = scopeWire({ source, sourceId: 'scope', receiver: 0 });
       const parsed = ingressScopeFrame(buffer, { source, sourceId: 'scope', epoch: 3 });
       expect(parsed.ok).toBe(true); if (!parsed.ok) throw new Error(parsed.reason);
       const result = resolveLcdSpectrumFrame(parsed.geometry, { source: displaySource, receiver: 'MAIN' });
@@ -602,10 +598,10 @@ describe('MOR-2326 typed scope geometry and authority boundaries', () => {
     });
 
   it.each([0, 65_535])('keeps wire sequence %i diagnostic independently of session identity', seq => {
-    const buffer = wireBuffer(fixtures.radio); new DataView(buffer).setUint16(11, seq, true);
+    const buffer = wireBuffer(fixtures.radio); new DataView(buffer).setUint32(12, seq, true);
     const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 3 });
     expect(parsed.ok).toBe(true); if (!parsed.ok) throw new Error(parsed.reason);
-    expect(parsed.frame.seq).toBe(seq); expect(parsed.frame.epoch).toBe(3);
+    expect(parsed.frame.seq).toBe(seq); expect(parsed.frame.epoch).toBe(7);
   });
 
   it.each(['source', 'receiver', 'provider', 'transport epoch', 'demand', 'transport state'] as const)(
@@ -616,11 +612,13 @@ describe('MOR-2326 typed scope geometry and authority boundaries', () => {
       let state = 'disconnected'; let epoch = 1;
       const transition = (next: string) => { state = next; for (const f of states) f(next); for (const f of sessions) f({ state, epoch }); };
       const channel = { get state() { return state; }, get sessionEpoch() { return epoch; },
+        sendRaw: () => true, onMessage: () => () => {},
         connect: () => transition('connecting'), disconnect: () => transition('disconnected'),
         onBinary: (f: (buffer: ArrayBuffer) => void) => { binary.add(f); return () => binary.delete(f); },
         onStateChange: (f: (state: string) => void) => { states.add(f); return () => states.delete(f); },
         onSessionTransition: (f: (event: { state: string; epoch: number }) => void) => { sessions.add(f); return () => sessions.delete(f); } };
       const controller = new ScopeController(() => channel as never);
+      controller.stream('hardware').setSource('radio', 'scope-1');
       controller.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 7 });
       const stream = controller.stream('hardware'); const geometry = vi.fn(); stream.geometry.subscribe(geometry);
       const handle = await controller.hardwareScopeDriver.start(); transition('connected');

@@ -13,6 +13,16 @@ export interface ScopeSubscription {
   readonly maxFps: number;
 }
 
+export interface ScopeGranted {
+  readonly type: 'granted';
+  readonly sourceId: string;
+  readonly receiver: number | null;
+  readonly view: View;
+  readonly coverage: View | null;
+  readonly width: number;
+  readonly fps: number;
+}
+
 export function viewCenterHz(view: View): number { return (view.startHz + view.endHz) / 2; }
 export function viewSpanHz(view: View): number { return view.endHz - view.startHz; }
 export function panView(view: View, deltaHz: number): View {
@@ -65,5 +75,65 @@ export function scopeSubscription(input: {
     view: input.view,
     width: input.width,
     maxFps: input.visible && input.width > 0 ? input.maxFps : 0,
+  };
+}
+
+/** Demand-only surface observation; renderers keep their existing size/scheduling owners. */
+export function scopeSubscriptionSurface(node: Element, initial: {
+  stream: import('./scope-stream').ScopeStream | null;
+  receiver: number | null;
+  view: ScopeViewRequest;
+  maxFps?: number;
+  revision?: string;
+}) {
+  let parameters = initial;
+  const token = Symbol('scope surface');
+  let cssWidth = node.clientWidth;
+  let intersecting = typeof IntersectionObserver === 'undefined';
+  let disposed = false;
+  const publish = () => {
+    if (disposed || parameters.stream === null) return;
+    if (cssWidth <= 0 && parameters.stream.subscription === null) return;
+    const layoutWidth = (node instanceof HTMLElement ? node.offsetWidth : node.clientWidth) || cssWidth;
+    const stageScale = layoutWidth > 0 ? node.getBoundingClientRect().width / layoutWidth : 1;
+    const scale = Number.isFinite(stageScale) && stageScale > 0 ? stageScale : 1;
+    const width = Math.max(1, Math.min(65535, Math.round(cssWidth * scale * (window.devicePixelRatio || 1))));
+    parameters.stream.updateSurfaceSubscription(token, scopeSubscription({
+      sourceId: parameters.stream.sourceId, receiver: parameters.receiver,
+      view: parameters.view, width, visible: intersecting && !document.hidden && cssWidth > 0,
+      maxFps: parameters.maxFps ?? 20,
+    }));
+  };
+  const resize = new ResizeObserver(entries => {
+    cssWidth = entries[0]?.contentRect.width ?? node.clientWidth;
+    publish();
+  });
+  const intersection = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
+    intersecting = entries[0]?.isIntersecting === true;
+    publish();
+  });
+  let ratio: MediaQueryList | null = null;
+  const ratioChanged = () => {
+    ratio?.removeEventListener('change', ratioChanged);
+    ratio = typeof window.matchMedia === 'function' ? window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`) : null;
+    ratio?.addEventListener('change', ratioChanged); publish();
+  };
+  const transform = new MutationObserver(publish);
+  for (let parent: Element | null = node; parent; parent = parent.parentElement) transform.observe(parent, { attributes: true, attributeFilter: ['style', 'class'] });
+  resize.observe(node); intersection?.observe(node);
+  document.addEventListener('visibilitychange', publish);
+  window.addEventListener('resize', publish);
+  ratioChanged();
+  return {
+    update(next: typeof initial) {
+      if (next.stream !== parameters.stream) parameters.stream?.removeSurfaceSubscription(token);
+      parameters = next; publish();
+    },
+    destroy() {
+      disposed = true; resize.disconnect(); intersection?.disconnect(); transform.disconnect();
+      ratio?.removeEventListener('change', ratioChanged);
+      document.removeEventListener('visibilitychange', publish); window.removeEventListener('resize', publish);
+      parameters.stream?.removeSurfaceSubscription(token);
+    },
   };
 }

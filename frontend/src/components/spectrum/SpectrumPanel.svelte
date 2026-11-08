@@ -39,7 +39,7 @@
   import { projectScopeCoverage, type ScopeCoverageProjection } from '../../lib/runtime/scope-frame';
   import { scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
   import {
-    createScopeView, panView, viewCenterHz, zoomView, scopeSubscription,
+    createScopeView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
     type View,
   } from '../../lib/runtime/scope-view';
   import { scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
@@ -134,7 +134,10 @@
   // lifecycle is busy, then returns to the confirmed radio observation.
   let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
   // --- Component state ---
-  let audioFft = $derived(runtime.caps?.scopeSource === 'audio_fft');
+  let selectedScopeId = $derived(runtime.caps?.scopeSources?.includes('radio') ? 'radio'
+    : runtime.caps?.scopeSources?.includes('iq_fft') ? 'iq_fft'
+    : runtime.caps?.scopeSources?.includes('audio_fft') ? 'audio_fft' : runtime.caps?.scopeSource);
+  let audioFft = $derived(selectedScopeId === 'audio_fft');
   // MOR-3158: the SDR source rides the same hardware rendering path —
   // RF-center geometry, the existing set-frequency click-to-tune, the
   // hardware scope stream and leases — because the backend feeds the
@@ -142,7 +145,7 @@
   // is additive: the toolbar badge/selector and the TX-frozen waterfall
   // hold. The public `sdr` leaf is the generated `SdrStatusPublic`
   // (MOR-3201); an absent leaf reads as null, never a fabricated default.
-  let sdrSource = $derived(runtime.caps?.scopeSource === 'sdr');
+  let sdrSource = $derived(selectedScopeId === 'iq_fft' || selectedScopeId === 'sdr');
   let sdrState = $derived(sdrSource ? runtime.state?.sdr ?? null : null);
   let sdrTxFrozen = $derived(sdrState?.txFrozen === true);
   // Every source the info payload advertises next to the selected SDR
@@ -223,7 +226,7 @@
     const caps = runtime.caps;
     const state = runtime.state;
     return {
-      selectedSource: typeof caps?.scopeSource === 'string' ? caps.scopeSource : null,
+      selectedSource: selectedScopeId ?? null,
       providerGeneration: typeof state?.providerGeneration === 'number' && Number.isSafeInteger(state.providerGeneration)
         ? state.providerGeneration : null,
       activeReceiver: typeof state?.active === 'string' ? state.active : null,
@@ -808,19 +811,21 @@
     if (reason === 'no pixels') return t('core.scope.hatch.noPixels');
     return t('core.scope.hatch.widerThanCoverage');
   }
-  // The typed subscription value: computed here and (until R4's server
-  // support) intentionally unsent — surfaced as a debug attribute.
   let scopeAreaWidth = $state(0);
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = followSpanHz !== null
-      ? { follow: 'vfo' as const, spanHz: followSpanHz }
+    const view = followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
+      ? { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) }
       : { startHz: effectiveView.startHz, endHz: effectiveView.endHz };
     return scopeSubscription({
       sourceId: stream.sourceId,
-      receiver: spectrumAuthority?.receiver ?? null,
+      receiver: audioFft || sdrSource ? null : spectrumAuthority?.receiver ?? 0,
       view, width: scopeAreaWidth, visible: true, maxFps: 20,
     });
+  });
+  $effect(() => {
+    const mode = spectrumAuthority?.scopeControls?.mode.reading;
+    if (mode?.status === 'known') runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware').setMode(mode.value);
   });
   // Band-plan presets (MOR-4270 item 3) derived from profile data.
   let scopePresetOptions = $derived.by(() => {
@@ -1336,6 +1341,7 @@
       clearSample();
       if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
       const scopeStream = runtime.scope.stream(sourceIsAudio ? 'audio_fft' : 'hardware');
+      const stopError = scopeStream.error.subscribe(error => { if (error) clearSample(); });
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
@@ -1375,6 +1381,7 @@
       return () => {
         acceptScopeFrame = null;
         cachedWhileOff = false;
+        stopError();
         stopGeometry();
         stopFrames();
         unsubDx();
@@ -1477,7 +1484,10 @@
         <div class="tick" style="top: {tick.position}%">{tick.label}</div>
       {/each}
     </div>
-    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} bind:clientWidth={scopeAreaWidth} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
+    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} bind:clientWidth={scopeAreaWidth} use:scopeSubscriptionSurface={{
+      stream: runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware'),
+      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, revision: spectrumAuthority?.digest,
+    }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
       {:else if scopeTxKnown && !scopeConnected}

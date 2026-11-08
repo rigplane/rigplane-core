@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import { scopeWire } from './scope-wire-fixture';
 import type { WsChannel } from '$lib/transport/ws-client';
 
 function fakeChannel() {
@@ -18,6 +19,8 @@ function fakeChannel() {
       for (const update of sessions) update({ state, epoch });
     },
     disconnect() { state = 'disconnected'; for (const update of states) update(state); },
+    sendRaw: vi.fn(() => true),
+    onMessage: () => () => {},
     onBinary(handler: (buffer: ArrayBuffer) => void) { binary.add(handler); return () => binary.delete(handler); },
     onStateChange(handler: (state: string) => void) { states.add(handler); return () => states.delete(handler); },
     onSessionTransition(handler: (transition: { state: string; epoch: number }) => void) {
@@ -31,9 +34,7 @@ function fakeChannel() {
   };
 }
 
-// Real Python-encoder golden bytes (see fixtures/generate-scope-wire.py).
-const RADIO_FRAME = [1, 0, 0, 128, 159, 213, 0, 32, 38, 215, 0, 255, 255, 0, 4, 0, 0, 64, 128, 255];
-const radioAt = (seq: number) => { const bytes = [...RADIO_FRAME]; bytes[11] = seq; bytes[12] = 0; bytes[16] = seq; return bytes; };
+const radioAt = (seq: number, source: 'hardware' | 'audio_fft' = 'hardware') => Array.from(new Uint8Array(scopeWire({ source: source === 'audio_fft' ? 'audio_fft' : 'radio', sourceId: source === 'audio_fft' ? 'audio_fft' : 'scope', seq, pixels: new Uint8Array([seq & 255, 64, 128, 255]) })));
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -125,7 +126,7 @@ it.each(['hardware', 'audio_fft'] as const)('expires a phased %s receipt at its 
   const driver = source === 'hardware' ? controller.hardwareScopeDriver : controller.audioFftDriver;
   const handle = await driver.start();
   try {
-    now = 50; vi.advanceTimersByTime(50); channel.receive(radioAt(0));
+    now = 50; vi.advanceTimersByTime(50); channel.receive(radioAt(0, source));
     now = 549; vi.advanceTimersByTime(499);
     expect(geometry.mock.lastCall?.[0]).toMatchObject({ freshness: 'fresh' });
     expect(controller.snapshotHealth(source).frameSeen).toBe(true);

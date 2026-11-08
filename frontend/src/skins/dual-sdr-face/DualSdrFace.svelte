@@ -10,6 +10,7 @@
     subscribeHealth?(listener: (live: boolean) => void): () => void;
     /** The stream slot keys for receiver 0 and 1, computed by the source owner. */
     readonly slotKeys: readonly [string, string];
+    readonly subscriptionStream?: import('$lib/runtime/scope-stream').ScopeStream;
   }
   interface Props { view: RadioViewModel; scopeSource: ScopeFrameSource; onPreChange?: (level: number) => void; }
   let { view, scopeSource, onPreChange }: Props = $props();

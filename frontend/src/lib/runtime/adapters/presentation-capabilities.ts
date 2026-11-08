@@ -72,7 +72,7 @@ export function derivePresentationCapabilities(caps: Capabilities): Presentation
 
   const hardwareScopeAvailable = agreed(
     caps.scope, 'scope', 'scope-capability-contradiction',
-  );
+  ) || caps.scopeSources?.includes('iq_fft') === true;
   const runtimeAudio = agreed(caps.audio, 'audio', 'audio-capability-contradiction');
   const rawFft = caps.audioFftAvailable ?? false;
   if (typeof rawFft !== 'boolean') diagnostics.push('malformed-audio-fft');
@@ -82,7 +82,10 @@ export function derivePresentationCapabilities(caps: Capabilities): Presentation
     ...(hardwareScopeAvailable ? ['hardware' as const] : []),
     ...(audioFftAvailable ? ['audio_fft' as const] : []),
   ];
-  const source = caps.scopeSource;
+  const source = caps.scopeSources
+    ? caps.scopeSources.includes('radio') || caps.scopeSources.includes('iq_fft') ? 'hardware'
+      : caps.scopeSources.includes('audio_fft') ? 'audio_fft' : null
+    : caps.scopeSource;
   const defaultSource = (source === 'hardware' && hardwareScopeAvailable)
     || (source === 'audio_fft' && audioFftAvailable) ? source : null;
   if (source != null && defaultSource === null) diagnostics.push('invalid-scope-source');

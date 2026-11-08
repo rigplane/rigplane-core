@@ -135,7 +135,7 @@ export class ScopeRenderTrace {
     if (!Number.isSafeInteger(token.acceptedSequence) || token.acceptedSequence <= 0
       || !Number.isSafeInteger(token.transportEpoch) || token.transportEpoch <= 0
       || !Number.isSafeInteger(token.wireSequence) || token.wireSequence < 0
-      || token.wireSequence > 0xffff) {
+      || token.wireSequence > 0xffffffff) {
       this.rejected += 1;
       this.record('rejected', null, 0, true, callbackAt);
       return;
@@ -145,7 +145,7 @@ export class ScopeRenderTrace {
     if (this.acceptedIndex.size > MAX_INDEX) this.acceptedIndex.delete(this.acceptedIndex.keys().next().value!);
     this.accepted += 1;
     const previous = this.lastWire.get(token.source);
-    if (previous?.epoch === token.transportEpoch && token.wireSequence !== ((previous.sequence + 1) & 0xffff)) {
+    if (previous?.epoch === token.transportEpoch && token.wireSequence !== ((previous.sequence + 1) >>> 0)) {
       this.wireGaps += 1;
       this.record('wire_gap', token, 0, true, callbackAt);
     }

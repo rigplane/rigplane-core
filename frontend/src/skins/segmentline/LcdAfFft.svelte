@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import type { ScopeStream } from '$lib/runtime/scope-stream';
   import type { ScopeGeometry } from '$lib/runtime/scope-frame';
   export type LcdAfFftInputState = 'live' | 'missing' | 'stale' | 'unknown' | 'unsupported';
@@ -23,7 +24,7 @@
     const live = inputState === 'live' && receiverActivity === 'active'
       && geometry?.source === 'audio_fft' && geometry.freshness === 'fresh'
       && !geometry.outOfRange && geometry.hasPixels
-      && geometry.receiver === (receiver === 'MAIN' ? 0 : receiver === 'SUB' ? 1 : -1)
+      && (geometry.receiver === null || geometry.receiver === (receiver === 'MAIN' ? 0 : receiver === 'SUB' ? 1 : -1))
       && pixels !== null && pixels.length > 1;
     const bins = live ? pixels! : EMPTY_BINS;
     svg.dataset.fftMode = live ? 'live' : 'safe-empty';
@@ -57,6 +58,7 @@
 
 {#if inputState !== 'unsupported'}
   <svg
+    use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: null, view: { follow: 'vfo', spanHz: 48000 } }}
     bind:this={svg}
     data-testid="lcd-af-fft"
     data-fft-mode="safe-empty"

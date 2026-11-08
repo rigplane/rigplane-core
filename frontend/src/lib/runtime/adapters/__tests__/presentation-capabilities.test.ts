@@ -105,3 +105,13 @@ describe('derivePresentationCapabilities', () => {
     expect(result).not.toHaveProperty('extensionFact');
   });
 });
+
+
+it('discovers radio, IQ and audio defaults when the legacy selected-source hint is null', () => {
+  for (const [scopeSources, expected] of [[['radio', 'audio_fft'], 'hardware'], [['iq_fft', 'audio_fft'], 'hardware'], [['audio_fft'], 'audio_fft']] as const) {
+    const result = derivePresentationCapabilities(caps({ scope: scopeSources.includes('radio' as never), scopeSource: null,
+      capabilities: scopeSources.includes('radio' as never) ? ['audio', 'scope'] : ['audio'], scopeSources }));
+    expect(result.scope.defaultSource).toBe(expected);
+    expect(result.scope.availableSources).toContain(expected);
+  }
+});

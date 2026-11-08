@@ -1525,11 +1525,13 @@
     const generation = runtime.state?.providerGeneration;
     const matchingGeneration = generation === runtime.caps?.providerGeneration;
     const secondaryAudio = audioScopeStream !== null && source !== 'audio-fft';
+    const observedMode = canonicalView?.scopeControls?.mode.reading;
     untrack(() => {
+      if (observedMode?.status === 'known') runtime.scope.stream(source === 'audio-fft' ? 'audio_fft' : 'hardware').setMode(observedMode.value);
       runtime.scope.setFrameAuthority((authority || noReadback)
         && typeof generation === 'number' && matchingGeneration
         ? { source: source === 'audio-fft' ? 'audio_fft' : 'hardware',
-          receiver: authority?.receiver === 'MAIN' ? 0 : authority?.receiver === 'SUB' ? 1 : null,
+          receiver: source === 'audio-fft' ? null : authority?.receiver === 'MAIN' ? 0 : authority?.receiver === 'SUB' ? 1 : null,
           providerGeneration: generation } : null, secondaryAudio ? ['audio_fft'] : []);
     });
   });

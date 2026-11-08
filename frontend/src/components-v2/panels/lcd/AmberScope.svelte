@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onDestroy } from 'svelte';
   import { deriveAmberScopeProps } from '$lib/runtime/adapters/panel-adapters';
   import {
@@ -358,7 +359,9 @@
     </div>
 
     <!-- ═══ Scope: dominant AfScope ═══ -->
-    <div class="lcd-scope" style:grid-area="scope">
+    <div class="lcd-scope" style:grid-area="scope" use:scopeSubscriptionSurface={{
+      stream: runtime.scope.stream('audio_fft'), receiver: null, view: { follow: 'vfo', spanHz: 48000 },
+    }}>
       {#if showFft}
         <AmberAfScope
           data={null}

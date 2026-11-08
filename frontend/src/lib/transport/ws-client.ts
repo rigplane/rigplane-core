@@ -217,6 +217,14 @@ export class WsChannel {
     this._subscribeMsg = msg;
   }
 
+  /** JSON controls are not command envelopes and are never queued across sessions. */
+  sendRaw(message: Record<string, unknown>): boolean {
+    if ((controllerClient.remote || controllerClient.session) && !controllerClient.current(this.controllerEpoch)) return false;
+    if (this.ws?.readyState !== WebSocket.OPEN || this._state !== 'connected') return false;
+    this.ws.send(JSON.stringify(message));
+    return true;
+  }
+
   private _onVisibilityChange = () => {
     if (isTabHidden()) {
       // Pause the retry loop — cancel any already-scheduled reconnect, but

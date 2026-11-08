@@ -1,11 +1,12 @@
 <script lang="ts">
+  import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { tick } from 'svelte';
   import { t } from '$lib/i18n';
   import { scopeFrameDisplayFacts } from '../../lib/runtime/adapters/scope-adapter';
   import type { ScopeFrameSource } from './DualSdrFace.svelte';
 
-  interface Props { scopeSource: ScopeFrameSource; slotKey: string; }
-  let { scopeSource, slotKey }: Props = $props();
+  interface Props { scopeSource: ScopeFrameSource; slotKey: string; receiver: 0 | 1; }
+  let { scopeSource, slotKey, receiver }: Props = $props();
   let canvas = $state<HTMLCanvasElement>();
   let surface = $state<HTMLDivElement>();
   let axis = $state<HTMLDivElement>();
@@ -66,7 +67,8 @@
   });
 </script>
 
-<div bind:this={surface} class="scope" data-scope-state="unknown">
+<div bind:this={surface} use:scopeSubscriptionSurface={{ stream: scopeSource.subscriptionStream ?? null,
+  receiver, view: { follow: 'vfo', spanHz: 100000 } }} class="scope" data-scope-state="unknown">
   <canvas bind:this={canvas} aria-label="Receiver spectrum" data-supplied-pixels="0"></canvas>
   <div bind:this={axis} class="axis" hidden></div>
   <div bind:this={notice} class="out-of-range" role="status" hidden></div>
