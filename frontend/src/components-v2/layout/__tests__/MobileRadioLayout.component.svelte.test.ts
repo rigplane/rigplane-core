@@ -2136,9 +2136,12 @@ describe('MOR-4298 real mobile split TX wire seam', () => {
       steps: { name: string; envelope: Record<string, unknown>; managedTransmit: unknown; expectedHeaderHz: number }[];
     };
     const { default: stateGoldens } = await import('$lib/transport/__tests__/fixtures/state-wire-goldens.json');
-    const baseline = (stateGoldens as Record<string, {
-      capabilities: unknown; allUnobserved: Record<string, unknown>;
-    }>)[golden.model];
+    const goldens: Record<string, {
+      capabilities?: Record<string, unknown>;
+      allUnobserved?: Record<string, unknown>;
+      allObserved?: Record<string, unknown>;
+    }> = stateGoldens;
+    const baseline = goldens[golden.model];
     const { MockWebSocket, instances } = await import('$lib/transport/__tests__/support/fake-ws-backend');
     const originalWebSocket = globalThis.WebSocket;
     const originalFetch = globalThis.fetch;

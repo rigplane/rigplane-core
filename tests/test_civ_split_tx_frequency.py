@@ -52,7 +52,11 @@ class SplitLink(_FakeSerialCivLink):
         if query in (b"\x19\x00", b"\x07\xd2"):
             return
         if query == b"\x03":
-            payload = b"\x03" + bcd_encode(self.operating_hz) if self.answer_frequency else None
+            payload = (
+                b"\x03" + bcd_encode(self.operating_hz)
+                if self.answer_frequency
+                else None
+            )
         elif query == b"\x04":
             payload = b"\x04\x01\x02"
         elif query == b"\x0f":
@@ -70,10 +74,14 @@ class SplitLink(_FakeSerialCivLink):
         else:
             payload = b"\xfa"
         if payload is not None:
-            self.queue_response(bytes((0xFE, 0xFE, frame[3], frame[2])) + payload + b"\xfd")
+            self.queue_response(
+                bytes((0xFE, 0xFE, frame[3], frame[2])) + payload + b"\xfd"
+            )
 
 
-async def _ingress(radio: Ic7300SerialRadio, link: SplitLink, frames: list[str]) -> None:
+async def _ingress(
+    radio: Ic7300SerialRadio, link: SplitLink, frames: list[str]
+) -> None:
     marker = build_civ_frame(
         0xE0, radio.profile.civ_addr, 0x19, sub=0x00, data=bytes((link.model_id,))
     )
@@ -91,7 +99,9 @@ async def _ingress(radio: Ic7300SerialRadio, link: SplitLink, frames: list[str])
 
 
 @asynccontextmanager
-async def _session(tmp_path: Path) -> AsyncIterator[tuple[Ic7300SerialRadio, SplitLink, aiohttp.ClientSession, str]]:
+async def _session(
+    tmp_path: Path,
+) -> AsyncIterator[tuple[Ic7300SerialRadio, SplitLink, aiohttp.ClientSession, str]]:
     link = SplitLink()
     radio = Ic7300SerialRadio(
         device="/dev/rigplane-test-no-hardware",
@@ -117,13 +127,21 @@ async def _session(tmp_path: Path) -> AsyncIterator[tuple[Ic7300SerialRadio, Spl
 
         def ready() -> bool:
             try:
-                value = radio.state_store.snapshot().field("global.tx_state.tx_target").value
+                value = (
+                    radio.state_store.snapshot()
+                    .field("global.tx_state.tx_target")
+                    .value
+                )
             except KeyError:
                 return False
             return isinstance(value, KnownTxTarget) and value.frequency_hz == 29_100_000
 
-        await await_until(ready, timeout=15.0, description="web startup A selection and TX target")
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
+        await await_until(
+            ready, timeout=15.0, description="web startup A selection and TX target"
+        )
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10.0)
+        ) as session:
             yield radio, link, session, f"http://127.0.0.1:{server.port}"
     finally:
         if server is not None:
@@ -139,7 +157,9 @@ def _at(document: dict[str, Any], path: list[str]) -> Any:
     return value
 
 
-async def test_ic7300_public_ingress_split_tx_matches_browser_golden(tmp_path: Path) -> None:
+async def test_ic7300_public_ingress_split_tx_matches_browser_golden(
+    tmp_path: Path,
+) -> None:
     golden = json.loads(_GOLDEN.read_text())
     captured = []
     async with _session(tmp_path) as (radio, link, session, base):
@@ -152,7 +172,9 @@ async def test_ic7300_public_ingress_split_tx_matches_browser_golden(tmp_path: P
             async with session.get(base + "/api/v1/state") as response:
                 assert response.status == 200
                 payload = await response.json()
-            async with session.ws_connect(base.replace("http", "ws") + "/api/v1/ws") as ws:
+            async with session.ws_connect(
+                base.replace("http", "ws") + "/api/v1/ws"
+            ) as ws:
                 async with asyncio.timeout(5):
                     while True:
                         message = json.loads((await ws.receive()).data)
@@ -207,7 +229,9 @@ async def test_ic7300_public_ingress_split_tx_matches_browser_golden(tmp_path: P
             assert managed == step["managedTransmit"], step["name"]
 
 
-async def test_public_get_freq_during_split_tx_does_not_poison_rx_fallback(tmp_path: Path) -> None:
+async def test_public_get_freq_during_split_tx_does_not_poison_rx_fallback(
+    tmp_path: Path,
+) -> None:
     async with _session(tmp_path) as (radio, link, _session_, _base):
         link.ptt = True
         link.operating_hz = 29_100_000
@@ -220,7 +244,9 @@ async def test_public_get_freq_during_split_tx_does_not_poison_rx_fallback(tmp_p
 
 
 @asynccontextmanager
-async def _frequency_radio(model: str) -> AsyncIterator[tuple[Ic7300SerialRadio, SplitLink]]:
+async def _frequency_radio(
+    model: str,
+) -> AsyncIterator[tuple[Ic7300SerialRadio, SplitLink]]:
     profile = resolve_radio_profile(model=model)
     link = SplitLink(model_id=profile.civ_addr)
     radio = Ic7300SerialRadio(
@@ -247,25 +273,49 @@ async def test_public_frequency_ingress_without_polled_vfo_readback_keeps_rx(
     async with _frequency_radio(model) as (radio, link):
         addr = radio.profile.civ_addr
         if split_on:
-            await _ingress(radio, link, [build_civ_frame(0xE0, addr, 0x0F, data=b"\x01").hex()])
+            await _ingress(
+                radio, link, [build_civ_frame(0xE0, addr, 0x0F, data=b"\x01").hex()]
+            )
         await _ingress(
-            radio, link, [build_civ_frame(0xE0, addr, 0x03, data=bcd_encode(29_600_000)).hex()]
+            radio,
+            link,
+            [build_civ_frame(0xE0, addr, 0x03, data=bcd_encode(29_600_000)).hex()],
         )
         assert radio.radio_state.main.freq == 29_600_000
         assert radio.state_cache.freq == 29_600_000
-        assert radio.state_store.snapshot().field("receiver.0.active.freq_mode.freq_hz").value == 29_600_000
+        assert (
+            radio.state_store.snapshot()
+            .field("receiver.0.active.freq_mode.freq_hz")
+            .value
+            == 29_600_000
+        )
 
 
 @pytest.mark.parametrize("command", [0x00, 0x03])
-async def test_public_ic7300_frequency_before_split_observation_keeps_rx(command: int) -> None:
+async def test_public_ic7300_frequency_before_split_observation_keeps_rx(
+    command: int,
+) -> None:
     async with _frequency_radio("IC-7300") as (radio, link):
         await _ingress(
-            radio, link,
-            [build_civ_frame(0x00 if command == 0x00 else 0xE0, 0x94, command, data=bcd_encode(29_600_000)).hex()],
+            radio,
+            link,
+            [
+                build_civ_frame(
+                    0x00 if command == 0x00 else 0xE0,
+                    0x94,
+                    command,
+                    data=bcd_encode(29_600_000),
+                ).hex()
+            ],
         )
         assert radio.radio_state.main.freq == 29_600_000
         assert radio.state_cache.freq == 29_600_000
-        assert radio.state_store.snapshot().field("receiver.0.active.freq_mode.freq_hz").value == 29_600_000
+        assert (
+            radio.state_store.snapshot()
+            .field("receiver.0.active.freq_mode.freq_hz")
+            .value
+            == 29_600_000
+        )
 
 
 async def test_public_ic7300_stale_split_on_still_drops_keyup_frequency() -> None:
@@ -283,4 +333,9 @@ async def test_public_ic7300_stale_split_on_still_drops_keyup_frequency() -> Non
         await _ingress(radio, link, ["FEFEE094000000102900FD"])
         assert radio.radio_state.main.freq == 29_600_000
         assert radio.state_cache.freq == 29_600_000
-        assert radio.state_store.snapshot().field("receiver.0.active.freq_mode.freq_hz").value == 29_600_000
+        assert (
+            radio.state_store.snapshot()
+            .field("receiver.0.active.freq_mode.freq_hz")
+            .value
+            == 29_600_000
+        )

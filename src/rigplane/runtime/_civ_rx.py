@@ -3544,9 +3544,12 @@ class CivRuntime:
         ):
             return active
         acquisition = profile.state_acquisition
-        if acquisition is None or not acquisition.capability_for(
-            _profile_path_for_observation(acquisition, active)
-        ).can_poll:
+        if (
+            acquisition is None
+            or not acquisition.capability_for(
+                _profile_path_for_observation(acquisition, active)
+            ).can_poll
+        ):
             return active
         try:
             split = store.field(FieldPath.global_("tx_state", "split"))
