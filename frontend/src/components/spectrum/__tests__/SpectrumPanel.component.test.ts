@@ -1949,10 +1949,8 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     const target = mountPanel();
     emitFrame();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
-    // MOR-2464 ruling: the CENTER frame itself proves the ruler's
-    // position — the static reference shows without a strict frequency
-    // Observation, in both areas; the passband stays hidden.
-    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(2);
+    // A mode-less v2 frame does not prove CENTER when control facts are missing.
+    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(0);
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
@@ -3596,6 +3594,13 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     const vfo = vi.spyOn(adapters, 'getVfoHandlers').mockImplementation(actualAdapters.getVfoHandlers);
     const getCapabilities = vi.spyOn(capabilities, 'getCapabilities')
       .mockImplementation(actualCapabilities.getCapabilities);
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const advancePreview = async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      flushSync();
+      await vi.advanceTimersByTimeAsync(1);
+      flushSync();
+    };
     try {
       const state: ServerState = structuredClone(IC7300_STATE);
       state.main!.freqHz = 14_050_000;
@@ -3625,9 +3630,9 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       pointer(spectrum, 'pointerdown', 42, 100);
       for (const x of [120, 133]) {
         pointer(spectrum, 'pointermove', 42, x);
-        await flushPreviewPaint();
-        await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz)
-          .toBe(x === 120 ? -10_000 : -16_000));
+        await advancePreview();
+        expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz)
+          .toBe(x === 120 ? -10_000 : -16_000);
         expect(digits()).toContain(String(x === 120 ? 14_040_000 : 14_034_000));
         expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBe(x === 120 ? 14_040_000 : 14_034_000);
         expect(send).toHaveBeenCalledTimes(1);
@@ -3643,9 +3648,9 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration, scopeControls: testScopeControls(state.scopeControls!.mode!) });
       refreshSpectrumAuthority();
       emitFrame({ mode: state.scopeControls!.mode!, startFreq: 13_990_000, endFreq: 14_090_000 });
-      await flushPreviewPaint();
+      await advancePreview();
       expect(digits()).toContain('14034000');
-      pointer(spectrum, 'pointermove', 42, 133); await flushPreviewPaint();
+      pointer(spectrum, 'pointermove', 42, 133); await advancePreview();
       expect(digits()).toContain('14034000');
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
       pointer(spectrum, 'pointerup', 42, 133);
@@ -3655,8 +3660,10 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       const final = commands.getCommandLifecycles().at(-1)!;
       commands.acknowledgeCommand(final.id, final.originalEpoch, final.originalEpoch);
       expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
-      await vi.waitFor(() => expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBeNull());
-      await flushPreviewPaint();
+      await vi.advanceTimersByTimeAsync(201);
+      flushSync();
+      expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBeNull();
+      await advancePreview();
       expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
       expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(-6_000);
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
@@ -3669,7 +3676,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(radio.setRadioState(stale)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
       authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration, scopeControls: testScopeControls(state.scopeControls!.mode!) });
-      refreshSpectrumAuthority(); await flushPreviewPaint();
+      refreshSpectrumAuthority(); await advancePreview();
       expect(digits()).toContain('14034000');
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
       const confirmed = structuredClone(stale);
@@ -3679,11 +3686,11 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(radio.setRadioState(confirmed)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
       authorityHarness.state.current = authority({ frequencyHz: settledHz, providerGeneration: state.providerGeneration, scopeControls: testScopeControls(state.scopeControls!.mode!) });
-      refreshSpectrumAuthority(); await flushPreviewPaint();
+      refreshSpectrumAuthority(); await advancePreview();
       expect(actualAdapters.getPendingFrequencyHz(0)).toBeNull();
       expect(digits()).toContain(String(settledHz));
       expect(radio.setRadioState(stale)).toBe(false);
-      await flushPreviewPaint(); expect(digits()).toContain(String(settledHz));
+      await advancePreview(); expect(digits()).toContain(String(settledHz));
     } finally {
       send.mockRestore();
       scopeCommandHarness.dispatch.mockReset();
@@ -3694,6 +3701,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       radio.resetRadioState();
       capabilities.clearCapabilities();
       restore();
+      vi.useRealTimers();
     }
   });
 
