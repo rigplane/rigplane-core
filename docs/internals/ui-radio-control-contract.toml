@@ -15,6 +15,7 @@ public_metadata_fields = [
   "server.main", "server.sub", "server.scopeControls",
   "server.connection", "server.radioDetail", "server.radioHealth",
   "server.sdr",
+  "server.audioReceive",
   "server.wsClients", "server.fieldStatus", "server.publicStateSeq",
 ]
 
@@ -410,8 +411,8 @@ intents = []
 command_route = "runtime lifecycle, not a radio command"
 observation_route = "existing runtime connection/profile facts"
 field_paths = ["connection.connection.connected", "connection.connection.radio_ready", "connection.connection.control_connected", "connection.connection.status", "health.health.server_reachable", "health.health.radio_link", "health.health.readiness", "health.health.likely_cause", "health.health.since_ms", "health.health.last_error"]
-field_path_gaps = []
-public_fields = ["connection.rigConnected", "connection.radioReady", "connection.controlConnected", "connection.liveness", "radioDetail.status", "radioHealth.serverReachable", "radioHealth.radioLink", "radioHealth.readiness", "radioHealth.likelyCause", "radioHealth.sinceMs", "radioHealth.lastError"]
+field_path_gaps = ["radio.connection_identity (server-side attribute, not a StateStore path)", "radio startup busy hold (server-side attribute, not a StateStore path)"]
+public_fields = ["connection.rigConnected", "connection.radioReady", "connection.controlConnected", "connection.liveness", "connection.identity", "connection.session", "radioDetail.status", "radioHealth.serverReachable", "radioHealth.radioLink", "radioHealth.readiness", "radioHealth.likelyCause", "radioHealth.sinceMs", "radioHealth.lastError"]
 ws_property = "same versioned state epoch as radio truth"
 selector = "shared connection/readiness selector"
 pending = "WS/audio/scope transport session lifecycle may remain local and distinctly named"
