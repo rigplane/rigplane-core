@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fixtures from './fixtures/scope-wire.json';
-import { parseCurrentScopeFrame, projectScopeCoverage } from '../scope-frame';
+import { ingressScopeFrame, parseCurrentScopeFrame, scopeSlotKey } from '../../adapters/scope-adapter';
+import { projectScopeCoverage } from '../scope-frame';
 import type { ScopeGeometry } from '../scope-frame';
 
 const context = { source: 'radio' as const, sourceId: 'scope-1', epoch: 7 };
@@ -39,8 +40,28 @@ describe('current scope wire → ScopeFrame', () => {
   });
 });
 
+describe('scope ingress slot + geometry derivation', () => {
+  it('derives the slot key and the qualified geometry in one ingress pass', () => {
+    const result = ingressScopeFrame(wire(fixtures.radio), context);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.slotKey).toBe(scopeSlotKey('scope-1', 0));
+    expect(result.geometry).toMatchObject({
+      source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0,
+      outOfRange: false, hasPixels: true, freshness: 'fresh',
+      view: { startHz: 14_000_000, endHz: 14_100_000 },
+      coverage: { startHz: 14_000_000, endHz: 14_100_000 },
+    });
+  });
+  it('carries the out-of-range state into geometry without pixels', () => {
+    const result = ingressScopeFrame(wire(fixtures.outOfRange), context);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.geometry).toMatchObject({ outOfRange: true, hasPixels: false });
+    expect(result.slotKey).toBe(scopeSlotKey('scope-1', 1));
+  });
+});
+
 const geometry: ScopeGeometry = {
-  source: 'radio', sourceId: 'scope-1', receiver: 0,
+  source: 'radio', sourceId: 'scope-1', receiver: 0, mode: 0,
   view: { startHz: 20, endHz: 80 }, coverage: { startHz: 30, endHz: 70 },
   outOfRange: false, hasPixels: true, freshness: 'fresh',
 };
