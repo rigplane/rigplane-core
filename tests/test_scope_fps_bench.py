@@ -66,11 +66,21 @@ def test_frame_validation_checks_the_granted_consumer_contract() -> None:
         (bytes(1024), 10, 7, "delivery below 80%"),
         (bytes(1024), 10, 8, None),
     ],
-    ids=["null", "complete-low-fps", "under-10-percent", "under-70-percent", "boundary-80-percent"],
+    ids=[
+        "null",
+        "complete-low-fps",
+        "under-10-percent",
+        "under-70-percent",
+        "boundary-80-percent",
+    ],
 )
 async def test_collect_requires_pixel_delivery_and_reports_valid_null_states(
-    pixels: bytes | None, granted_fps: int, frame_count: int,
-    expected_error: str | None, virtual_clock, monkeypatch
+    pixels: bytes | None,
+    granted_fps: int,
+    frame_count: int,
+    expected_error: str | None,
+    virtual_clock,
+    monkeypatch,
 ) -> None:
     virtual_clock.scope_to(monkeypatch, bench)
     view = View(14_100_000, 14_200_000)
@@ -79,11 +89,14 @@ async def test_collect_requires_pixel_delivery_and_reports_valid_null_states(
     )
     messages = [
         aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, encode_scope_granted(grant), ""),
-        *(aiohttp.WSMessage(
-            aiohttp.WSMsgType.BINARY,
-            encode_scope_frame_v2(replace(frame(), pixels=pixels, seq=seq)),
-            "",
-        ) for seq in range(1, frame_count + 1)),
+        *(
+            aiohttp.WSMessage(
+                aiohttp.WSMsgType.BINARY,
+                encode_scope_frame_v2(replace(frame(), pixels=pixels, seq=seq)),
+                "",
+            )
+            for seq in range(1, frame_count + 1)
+        ),
     ]
 
     class Socket:

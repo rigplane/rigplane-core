@@ -62,6 +62,14 @@ the standalone decoder are in `tests/fixtures/scope-wire/`.
 Equal coverage edges represent no covered range. The total length is
 `56 + L + (width if pixels are present else 0)`.
 
+The headless simulator benchmark is
+`uv run python qa/bench/dogfood/scope_fps.py --radio simulator --transport sim --both`.
+It requests concurrent 1024-pixel/10-fps and 2800-pixel/20-fps streams. A normal
+in-range run passes only when usable pixel delivery reaches at least 80% of
+each granted frame rate; native sequence gaps caused by rate limiting are
+allowed. Null and out-of-range states are counted separately and do not count
+towards usable pixel delivery. See `qa/bench/dogfood/scope_fps.py: collect`.
+
 ## Overview
 
 Icom radios with spectrum scope (IC-7610, IC-7300, IC-705, etc.) stream real-time spectrum data over the CI-V protocol as unsolicited `0x27 0x00` packets. The `rigplane` library reassembles these multi-sequence bursts and delivers complete frames via callback.
