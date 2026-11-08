@@ -1019,12 +1019,18 @@ class ControlHandler:
             # WebServer always returns the canonical shared-encoder baseline.
             if not isinstance(initial, dict):
                 initial = {"type": "full", "data": {}}
+            # From here through the connect-time snapshots the queue is
+            # registered: every exit — including a cancellation that lands
+            # inside either snapshot's awaits — must unregister it.
             try:
                 msg = {
                     "type": "state_update",
                     "data": initial,
                 }
                 await self._ws.send_text(encode_json(msg))
+                self._enqueue_current_dx_spots()
+                await self._send_current_audio_session()
+                await self._send_current_managed_tx_document()
             except BaseException as exc:
                 logger.debug("control: failed to send initial state", exc_info=True)
                 self._server.unregister_control_event_queue(
@@ -1033,9 +1039,6 @@ class ControlHandler:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 return
-            self._enqueue_current_dx_spots()
-            await self._send_current_audio_session()
-            await self._send_current_managed_tx_document()
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
         try:
             # Inside the try, so the finally below owns every exit from here on;

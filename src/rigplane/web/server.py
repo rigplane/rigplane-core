@@ -26,6 +26,7 @@ import ctypes.util
 import functools
 import gzip as _gzip
 import ipaddress
+import binascii
 import json
 import logging
 import math
@@ -134,7 +135,13 @@ from ._delta_encoder import (  # noqa: TID251
     copy_state_tree,
     top_level_delta,
 )
-from .api_contract import WEB_API_CONTRACT_VERSION, CivIngressPayload  # noqa: TID251
+from .api_contract import (  # noqa: TID251
+    WEB_API_CONTRACT_VERSION,
+    CivIngressPayload,
+    ConnectionIdentityRecord,
+    ConnectionSessionRecord,
+    ManagedTransmitDocument,
+)
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
 from .handlers import (  # noqa: TID251
@@ -889,7 +896,7 @@ def _serialize_max_power(profile: "RadioProfile", radio: object) -> dict[str, ob
 
 def _startup_busy_session_payload(
     busy: bool, retry_in_seconds: float | None
-) -> dict[str, object]:
+) -> ConnectionSessionRecord:
     """The served ``connection.session`` object (MOR-3391 part 2).
 
     Always present: ``busy`` false and ``retryInSeconds`` null outside a
@@ -901,12 +908,15 @@ def _startup_busy_session_payload(
 def _stable_record_key(record: Mapping[str, object] | None) -> str:
     """A hashable, order-stable key component for one fact record (MOR-4279).
 
-    The public-state delivery key compares whole records; JSON with sorted
-    keys is stable across builds and distinguishes every value change.
+    The public-state delivery key compares whole records; hex-encoded JSON
+    with sorted keys is stable across builds, distinguishes every value
+    change, and contains no characters an HTTP entity-tag forbids (the
+    same key feeds ``_public_state_etag``).
     """
     if record is None:
         return "null"
-    return json.dumps(record, sort_keys=True, default=str)
+    raw = json.dumps(record, sort_keys=True, default=str).encode()
+    return binascii.hexlify(raw).decode()
 
 
 def _serialize_keyboard_config(profile: "RadioProfile") -> dict[str, object] | None:
@@ -1318,6 +1328,7 @@ class WebServer:
         self._audio_broadcaster = AudioBroadcaster(
             radio,
             on_client_count_change=self._broadcast_ws_client_state_update,
+            on_rx_start_status_change=self._on_rx_start_status_change,
             adaptive_egress=self._config.audio_adaptive_egress,
         )
         self._hardware_scope_available = _supports_scope(radio)
@@ -1726,7 +1737,7 @@ class WebServer:
             return True, None
         return True, float(retry)
 
-    def _connection_identity_payload(self) -> dict[str, object] | None:
+    def _connection_identity_payload(self) -> ConnectionIdentityRecord | None:
         """The served ``connection.identity`` object (MOR-3071).
 
         ``None`` when the radio has no identity yet — no connect attempt
@@ -1757,7 +1768,7 @@ class WebServer:
             "answeredId": identity.answered_id,
         }
 
-    def _connection_session_payload(self) -> dict[str, object]:
+    def _connection_session_payload(self) -> ConnectionSessionRecord:
         """The served ``connection.session`` object (MOR-3391 part 2).
 
         The ONE producer of this record: ``GET /api/v1/info`` and the
@@ -2181,6 +2192,21 @@ class WebServer:
         if not target_queues:
             return
         self._broadcast_state_update(force=True, queues=target_queues)
+
+    def _on_rx_start_status_change(self) -> None:
+        """Deliver a public-state update when the RX-start record changed.
+
+        MOR-4279: the retained ``audioReceive`` failure is set on a relay
+        start failure and dropped on invalidation even when no audio client
+        came or went (tap-only relays), so the client-count hook alone
+        would miss the change. Force one delivery; the delivery key keeps
+        unchanged facts silent on every other path.
+        """
+        if self._stopping:
+            return
+        if not self._control_event_queues:
+            return
+        self._broadcast_state_update(force=True)
 
     def _broadcast_state_update(
         self,
@@ -5610,7 +5636,7 @@ class WebServer:
         writer: asyncio.StreamWriter,
         status: int,
         reason: str,
-        payload: dict[str, Any],
+        payload: Mapping[str, object],
     ) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode()
         await _send_response(
@@ -5878,7 +5904,7 @@ class WebServer:
                 },
             )
 
-    async def _managed_tx_document(self) -> dict[str, object]:
+    async def _managed_tx_document(self) -> ManagedTransmitDocument:
         authority = self._managed_tx_authority()
         projection = None if authority is None else await authority.snapshot()
         observed_ptt = project_observed_ptt(self.command_state_store.snapshot())
@@ -5888,15 +5914,23 @@ class WebServer:
             sampled_at=datetime.now(UTC),
         )
 
-    async def current_managed_tx_document(self) -> dict[str, object]:
+    async def current_managed_tx_document(self) -> ManagedTransmitDocument:
         """Connect-time managed-transmit document in the event shape (MOR-4279).
 
         The same record the ``managed_transmit_changed`` event carries and
         ``GET /api/v1/managed-transmit`` serves; ``ControlHandler`` sends it
         once next to the connect-time state baseline so a fresh client
-        needs no initial HTTP fetch.
+        needs no initial HTTP fetch. The delivered ``observedPtt`` also
+        seeds the change-announcement baseline, so the first physical
+        transition after a late connect is announced instead of silently
+        swallowed by the first broadcast's seeding.
         """
-        return await self._managed_tx_document()
+        document = await self._managed_tx_document()
+        if self._last_announced_observed_ptt is None:
+            self._last_announced_observed_ptt = ObservedPtt(
+                document["txObservation"]["observedPtt"]
+            )
+        return document
 
     async def _managed_tx_unavailable(self, writer: asyncio.StreamWriter) -> None:
         await self._send_json(

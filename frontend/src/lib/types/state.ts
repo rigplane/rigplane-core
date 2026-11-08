@@ -367,8 +367,8 @@ export interface AudioReceiveFailurePublic {
   stage: string;
   code: string;
   reason: string;
-  holder: string | null;
-  candidates: AudioDeviceCandidatePublic[];
+  holder?: string | null;
+  candidates?: AudioDeviceCandidatePublic[];
 }
 /**
  * One offered audio device of an RX-start failure record.

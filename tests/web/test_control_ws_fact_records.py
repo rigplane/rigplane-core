@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
@@ -104,7 +108,15 @@ class _Authority:
 
 
 class _AudioSessionSource:
-    """Object identity holder for a staged RX-start failure."""
+    """Object identity holder for a staged RX-start failure.
+
+    Carries ``subscribe_rx`` so the broadcaster's route resolution accepts
+    it as the session-first RX source (the staged failure then survives a
+    ``rx_start_status`` read instead of self-healing away).
+    """
+
+    def subscribe_rx(self) -> None:
+        return None
 
 
 class _FactsRadio:
@@ -113,6 +125,7 @@ class _FactsRadio:
     backend_id = "rigplane"
     model = "FAKE-FACTS"
     capabilities: set[str] = {"audio"}
+    has_usb_audio = True
 
     def __init__(self) -> None:
         from rigplane.profiles import resolve_radio_profile
@@ -456,3 +469,138 @@ async def test_managed_tx_pushes_coalesce_to_the_latest_document() -> None:
     events = _managed_tx_events(queue)
     assert len(events) == 1, events
     assert events[0]["data"]["txObservation"] == {"observedPtt": "on"}
+
+
+async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
+    """A real control-WS client gets every fact group through the socket.
+
+    Covers the production entrypoint: hello, the connect-time state
+    baseline with identity/session/audioReceive, the connect-time
+    managed-transmit document, and the change-driven document push.
+    """
+    tests_root = Path(__file__).resolve().parents[1]
+    if str(tests_root) not in sys.path:
+        # The shared WS handshake helpers live in the unpackaged tests root;
+        # make them importable when this packaged test module runs alone.
+        sys.path.insert(0, str(tests_root))
+    from test_web_server import _ws_connect, _ws_recv_frame  # noqa: E402
+
+    radio = _FactsRadio()
+    radio.radio_ready = True
+    server = _server(radio=radio, authority=_Authority())
+    _observe_ptt(server, ObservedPtt.OFF)
+    server._server = await asyncio.start_server(  # noqa: SLF001
+        server._accept_client,
+        "127.0.0.1",
+        0,  # noqa: SLF001
+    )
+    try:
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/ws")
+        try:
+            hello_seen = baseline_seen = document_seen = False
+            for _ in range(6):
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if message["type"] == "hello":
+                    hello_seen = True
+                elif message["type"] == "state_update":
+                    baseline_seen = True
+                    connection = message["data"]["data"]["connection"]
+                    assert connection["identity"]["status"] == "verified"
+                    assert connection["session"]["busy"] is True
+                    assert message["data"]["data"]["audioReceive"] == {
+                        "schemaVersion": 1,
+                        "failure": None,
+                    }
+                elif (
+                    message["type"] == "event"
+                    and message["name"] == "managed_transmit_changed"
+                ):
+                    document_seen = True
+                    assert message["data"]["txObservation"] == {"observedPtt": "off"}
+                if hello_seen and baseline_seen and document_seen:
+                    break
+            assert hello_seen and baseline_seen and document_seen
+
+            # A managed-TX change reaches the connected client within one event.
+            _observe_ptt(server, ObservedPtt.ON)
+            server._on_managed_tx_changed()  # noqa: SLF001
+            await _await_managed_tx_publication(server)
+            for _ in range(6):
+                _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                message = json.loads(payload)
+                if (
+                    message.get("type") == "event"
+                    and message.get("name") == "managed_transmit_changed"
+                ):
+                    assert message["data"]["txObservation"] == {"observedPtt": "on"}
+                    break
+            else:
+                pytest.fail("managed_transmit_changed never arrived")
+        finally:
+            writer.close()
+            await writer.wait_closed()
+    finally:
+        server._server.close()  # noqa: SLF001
+        await server._server.wait_closed()  # noqa: SLF001
+
+
+async def test_connect_document_seeds_the_observed_ptt_baseline() -> None:
+    """The connect document's observation counts as the announced baseline.
+
+    Without the seed, a client that connects on ``off`` misses the first
+    physical ``on``: the first broadcast would silently seed the marker
+    instead of announcing the changed document.
+    """
+    server = _server(radio=_FactsRadio(), authority=_Authority())
+    _observe_ptt(server, ObservedPtt.OFF)
+    queue = _register(server)
+
+    await server.current_managed_tx_document()
+    assert server._last_announced_observed_ptt is ObservedPtt.OFF  # noqa: SLF001
+
+    _observe_ptt(server, ObservedPtt.ON)
+    server._last_state_broadcast = 0.0  # noqa: SLF001
+    server._broadcast_state_update()  # noqa: SLF001
+    await _await_managed_tx_publication(server)
+
+    events = _managed_tx_events(queue)
+    assert len(events) == 1
+    assert events[0]["data"]["txObservation"] == {"observedPtt": "on"}
+
+
+async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None:
+    """A tap-only RX-start failure change re-delivers the state leaf.
+
+    No audio client came or went (the client-count hook stays silent);
+    the RX-start status change itself must trigger one delivery.
+    """
+    radio = _FactsRadio()
+    server = _server(radio=radio)
+    queue: BoundedQueue[dict[str, Any]] = BoundedQueue(maxsize=100)
+    server.register_control_event_queue(queue)
+    assert _drain(queue) == []
+
+    failure = (
+        radio,
+        radio.audio_session,
+        "usb_topology_unavailable",
+        (),
+        None,
+    )
+    server._audio_broadcaster._rx_start_failure = failure  # noqa: SLF001
+    # The set path notifies through the relay-start failure site; emulate the
+    # mutation + notification exactly as _start_relay does.
+    server._audio_broadcaster._notify_rx_start_status_change()  # noqa: SLF001
+
+    updates = [event for event in _drain(queue) if event.get("type") == "state_update"]
+    assert len(updates) == 1, updates
+    audio_receive = updates[0]["data"]["changed"]["audioReceive"]
+    assert audio_receive["failure"]["reason"] == "usb_topology_unavailable"
+
+    # Dropping the failure again delivers the recovered record.
+    server._audio_broadcaster.invalidate_rx_start_status()  # noqa: SLF001
+    updates = [event for event in _drain(queue) if event.get("type") == "state_update"]
+    assert len(updates) == 1, updates
+    audio_receive = updates[0]["data"]["changed"]["audioReceive"]
+    assert audio_receive["failure"] is None

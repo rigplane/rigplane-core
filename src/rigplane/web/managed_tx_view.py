@@ -10,6 +10,8 @@ from rigplane.core.tx_observation import ObservedPtt
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection
 from rigplane.runtime.managed_tx_state import ManagedTxIntent, ManagedTxIntentKind
 
+from .api_contract import ManagedTransmitDocument, ManagedTxIntentRecord  # noqa: TID251
+
 __all__ = ["build_managed_tx_view"]
 
 
@@ -18,8 +20,13 @@ def build_managed_tx_view(
     observed_ptt: ObservedPtt,
     *,
     sampled_at: datetime,
-) -> dict[str, object]:
-    """Serialize one authority snapshot and independent observed PTT evidence."""
+) -> ManagedTransmitDocument:
+    """Serialize one authority snapshot and independent observed PTT evidence.
+
+    THE producer of the managed-transmit document record (MOR-4279): the
+    HTTP endpoint and the control-WS ``managed_transmit_changed`` event
+    serialize this same typed record.
+    """
 
     sampled_at_text = _utc_milliseconds(sampled_at)
     if projection is None:
@@ -80,7 +87,7 @@ def build_managed_tx_view(
     }
 
 
-def _intent_view(intent: ManagedTxIntent) -> dict[str, str]:
+def _intent_view(intent: ManagedTxIntent) -> ManagedTxIntentRecord:
     if intent.kind is ManagedTxIntentKind.RX:
         return {"kind": "rx"}
     if intent.kind is ManagedTxIntentKind.TRANSMIT:
