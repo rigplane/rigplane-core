@@ -1392,9 +1392,7 @@ async def test_http_power_endpoint_matches_the_golden_documents() -> None:
                     if path[0] == "fieldStatus":
                         actual = {key: actual[key] for key in expected}
                     assert actual == expected
-        power_commands = [
-            frame[4:-1] for frame in link.sent_frames if frame[4] == 0x18
-        ]
+        power_commands = [frame[4:-1] for frame in link.sent_frames if frame[4] == 0x18]
         assert power_commands == [b"\x18\x00", b"\x18\x01"]
     finally:
         await radio.disconnect()
