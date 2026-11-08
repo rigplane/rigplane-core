@@ -43,6 +43,28 @@ describe('MOR-1425 tuning accumulator', () => {
     expect(getTuningBurstTargetHz(0)).toBe(14_019_000);
   });
 
+  it('certifies own drag observations without consuming markers and fences context and epoch', () => {
+    let epoch = 1;
+    let context = 'MAIN:A';
+    const drag = createTuningAccumulator({ emit, epoch: () => epoch, context: () => context,
+      acceptedTarget: ({ frequency }) => emit.mock.calls.some(([, hz]) => hz === frequency) });
+    drag.jump(0, 14_040_000, 14_050_000, 1, true);
+    drag.jump(0, 14_030_000, 14_050_000, 1, true);
+    expect(drag.acceptsObservation(0, 14_040_000, 2)).toBe(true);
+    expect(drag.acceptsObservation(0, 14_040_000, 2)).toBe(true);
+    expect(drag.acceptsObservation(0, 7_050_000, 2)).toBe(false);
+    expect(drag.acceptsObservation(1, 14_040_000, 2)).toBe(false);
+    expect(drag.acceptsObservation(0, 14_040_000, 0)).toBe(false);
+    drag.jump(0, 14_020_000, 14_040_000, 2, true);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(getTuningBurstTargetHz(0)).toBe(14_020_000);
+    context = 'MAIN:B';
+    expect(drag.acceptsObservation(0, 14_040_000, 2)).toBe(false);
+    context = 'MAIN:A'; epoch++;
+    expect(drag.acceptsObservation(0, 14_040_000, 2)).toBe(false);
+    drag.cancel();
+  });
+
   it('(f) emits an isolated single step immediately, unpaced', () => {
     acc.step(0, 14_074_000, 14_075_000, 1);
     expect(emit).toHaveBeenCalledExactlyOnceWith(0, 14_075_000);
