@@ -11,6 +11,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The red BUSY lamp is gone. In its place an SQL tag shows next to the receiver tags whenever the squelch is closed or partly closed (level above 0), on every band, and nothing shows while the squelch is fully open. The radio's squelch-open status is no longer read over CI-V. (MOR-4223)
+
+### Fixed
+
+- Memory recall now puts the radio on the channel. `set_memory_mode` with `group` (the RECALL button of the memory list) selected the group and the channel but never sent the bare `08` "Select the Memory mode", so a radio in the VFO mode acknowledged both frames and stayed where it was. The recall now ends with that `08`, requires an ACK for every frame (a NAK or any other answer fails the command), and works on the channel-addressed IC-7300, IC-7300MK2 and IC-7610 as well (group 0). Not yet verified on hardware. (MOR-4219)
+- Windows USB audio: selection failures now offer explicit audio device candidates when USB topology or endpoint name matching is unavailable, and matching accounts for Windows' numbered endpoint prefixes. (MOR-4119)
+- Web UI: the memory list (local channels and the radio's own list with Reload, More and Recall) is no longer shown inline on the station page. The Memory panel now holds a Memory button that opens the list in the shared dialog. Escape, the close button or a backdrop click close it, Tab stays inside, and the list scrolls within the window. The radio's list still loads with the page. The frequency-entry dialog it reuses now also closes on Escape after focus fell out of it, without the Escape also clearing RIT/XIT. (MOR-4220)
+
+## [3.1.2rc4] — 2026-11-03
+
+This is the fourth release candidate of 3.1.2. It fixes one thing on top of
+3.1.2rc3: the first shutdown signal now starts the release of a transmitter keyed
+through rigctld, HTTP or a controller session before the web server shuts down.
+
+### Fixed
+
+- `web` and `station`: the first SIGTERM/SIGINT now starts managed-TX release for rigctld, HTTP and controller-session owners before web teardown. Admitted ON effects are fenced at the final wire check immediately on that signal. A second signal defers task cancellation until protected releases finish or reach their own bounds; a third still exits immediately. Late owner handbacks reuse the shutdown release without sending another OFF (MOR-4102, MOR-3999, #4470).
+
+## [3.1.2rc3] — 2026-11-03
+
+This is the third release candidate of 3.1.2. It fixes one thing on top of
+3.1.2rc2: a Windows COM port held by another program is now reported as busy
+instead of an unknown error.
+
+### Fixed
+
+- Windows: when another program holds the COM port of a USB radio, opening it is now classified as `serial_busy` (a Windows access-denied or sharing-violation error) and `serial_not_found` for a missing port, instead of `serial_unknown`, so the local API and the apps built on it can tell the user that another program is using the port. Classification reads only the Windows error number, never the localized message text, so it works on every Windows language. POSIX handling is unchanged. (MOR-4105, #4468)
+
+## [3.1.2rc2] — 2026-11-02
+
+This is the second release candidate of 3.1.2. It fixes mode changes out of a
+DATA mode on the IC-705, garbled RX audio from capture devices with more than
+two channels, stuttering RX audio in a hidden browser tab, rigctld writes held
+up by a lost or refused read, and the audio bridge not starting when the radio
+connects after the server. Details below.
+
+### Changed
+
+- Test-suite stability: the IC-9700 and IC-7300MK2 LAN simulators take their behaviour from the capability profile, timing tests share one virtual-clock helper, and a collection-time check stops new wall-clock tests from being added.
+
+### Fixed
+
+- IC-705 and other radios with DATA-less modes: changing from a DATA mode (for example USB-D) to a mode without DATA (CW, CW-R, RTTY) no longer sends the DATA flag with the new mode. The radio refused that command and stayed in the DATA mode while the change was reported as done. Profiles now declare which modes accept DATA (`[data_mode].modes`). (MOR-4036, #4459)
+- RX audio from a capture device with more than two input channels (PipeWire "pulse", BlackHole, multi-channel interfaces) is no longer garbage: the first two device channels are taken as left and right and mixed down to the delivered layout. (MOR-4029, #4461)
+- Web UI: RX audio no longer stutters heavily while the browser tab is hidden (for example on Android with battery management). The jitter buffer widens while the page is hidden and drops the excess backlog when the page is shown again, so playback does not stay seconds behind. (MOR-3965, #4462)
+- rigctld with several clients: a frequency read whose answer from the radio is lost no longer delays another client's frequency change by up to two seconds (for example a WSJT-X poll and a spot click). A read gives up the radio command slot after 0.25 s while it keeps waiting for its answer. (MOR-3888, #4463)
+- A read the radio refuses (CI-V NAK) now counts as answered instead of timing out: the web server no longer waits 10 s at every IC-705 start for the tuner status, and rigctld stops logging repeated read timeouts for refused reads. A refused read that is required for safe operation still fails startup. (MOR-4058, #4464)
+- `rigplane web` started before the radio is connected no longer turns the audio bridge off for the whole run: the bridge auto-start now waits until the radio is connected, then starts as before. An explicit `--bridge=<DEVICE>` still fails at once. (MOR-2922, #4458)
+
+## [3.1.2rc1] — 2026-11-01
+
+This is the first release candidate of 3.1.2. It adds an exclusive-preferred
+capture mode for USB radio codecs on Windows, with notices that tell you when
+another program holds the codec or Windows silences it, faster recovery of a
+silently dropped LAN session, FTX-1 filter-width fixes, steadier RX playback,
+a unicast liveness probe for LAN radios, and more. Details by area below.
+
+### Added
+
+- `probe_lan_radio` — a public unicast liveness probe for Icom LAN radios: sends the radio's own "Are You There" handshake to one known host and control port (retransmitting through the window) and returns `True` on the first "I Am Here" and `False` on timeout or when the OS reports the host unreachable, never raising for an unreachable host, so callers can give up on an unreachable saved radio in seconds instead of waiting out a full connect cycle. Import it from `rigplane` or `rigplane.backends.discovery`.
+
+### Changed
+
+- Every CI-V frequency field is read and written by one shared codec, so frequency encoding no longer differs between commands.
+- Test-suite stability: new pins for USB audio pairing of renamed endpoints on the IC-7610 shape, the TX observation conformance now runs on virtual time, and two timing-dependent tests were made deterministic.
+
+### Fixed
+
+- Windows: a radio's USB codec no longer has to deliver digital silence when the Windows AI noise suppression ("Audio enhancements") is on for its capture input. A new capture mode for serial and Yaesu CAT radios, `exclusive-preferred` (`--usb-capture-mode`, `ICOM_USB_CAPTURE_MODE`, `capture_mode` on the backend configs), pairs the codec on WASAPI for both directions and opens it in WASAPI exclusive mode, which bypasses those effects; when Windows refuses the exclusive open it opens shared WASAPI instead and logs that once. Saved `MME|...` device selectors keep working and resolve to the same endpoint on WASAPI. The default stays `shared` (other programs can use the codec at the same time); when a shared capture stays silent for ten seconds on Windows, the log and the RX audio notice now say to turn off "Audio enhancements" for that input in Windows Sound settings. When another program holds the codec exclusively, so both the exclusive open and the shared fallback are refused, RX start now fails with the category `device_in_use` and the message "The radio's audio input is in use by another program. Close it, then turn the audio on again." On Windows the message names the program ("...in use by wsjtx.exe...") when the audio sessions of the capture endpoint show it, and stays generic otherwise.
+- A LAN session the radio drops without a notice now recovers in about 6-8 seconds instead of after about a minute: on the first stall the watchdog asks the control session by token renewal, and when the radio rejects it, the session is released and logged in again at once. A slow or unanswered renewal keeps the existing patience.
+- The scope reference level (REF) steps on a 5 dB grid and stays inside the range the radio's profile declares.
+- RX audio playback holds a small fill target (150 ms) and compensates for the drift between the radio's clock and the sound device's clock, instead of building up a full second of buffered audio and dropping a frame per write.
+- FTX-1: a filter-width answer of `SH 00` is reported as the radio default, with no Hz value, and the UI shows the radio-default and NARROW filter-width states instead of an unknown width.
+- Yaesu CAT replies are matched to the whole query, not only the command prefix, so a late reply to a sibling query is skipped instead of being taken as the answer; this fixes the FTX-1 SUB narrow-filter read.
+- The scope-health watchdog leaves a radio alone while it is in its own menu and sends all-zero scope frames, instead of restarting the scope.
+
 ## [3.1.0rc1] — 2026-10-31
 
 This is the first release candidate of 3.1. It adds a TCI listener for
@@ -5058,7 +5136,11 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.0rc1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc4...HEAD
+[3.1.2rc4]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2rc4
+[3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
+[3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
+[3.1.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.1...v3.1.2rc1
 [3.1.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.0.1...v3.1.0rc1
 [3.0.1]: https://github.com/rigplane/rigplane-core/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/rigplane/rigplane-core/compare/v3.0.0rc1...v3.0.0

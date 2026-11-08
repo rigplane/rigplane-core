@@ -35,7 +35,7 @@ from rigplane.web.radio_poller import (
 
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_radio_poller_coverage import _make_radio
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 _FORBIDDEN_SOURCES = frozenset({"command_response", "poll_response"})
 

@@ -37,9 +37,14 @@ def test_shipped_profiles_declare_memory_addressing_and_capability() -> None:
     # read listing stays off: no memory_read capability was added.
     ic7300 = get_radio_profile("IC-7300")
     assert replace(ic7300.memory, write_layout=None) == MemoryProfile(
-        "channel", 0, 0, 1, 99
+        "channel", 0, 0, 1, 99, recall=True
     )
     assert "memory_read" not in ic7300.capabilities
+    # MOR-4219: the channel-addressed Icom profiles recall too (08 + channel,
+    # then the bare 08); the IC-9700's band-addressed memory does not.
+    assert get_radio_profile("IC-7300MK2").memory.recall is True
+    assert get_radio_profile("IC-7610").memory.recall is True
+    assert ic9700.memory.recall is False
 
 
 def test_shipped_profiles_declare_the_verified_write_layout() -> None:
@@ -169,11 +174,20 @@ def test_largest_accepted_band_code_loads(tmp_path: Path) -> None:
     assert config.to_profile().memory.last_group == 99
 
 
-def test_recall_is_accepted_only_for_group_channel_addressing(tmp_path: Path) -> None:
+def test_recall_is_accepted_for_group_channel_and_channel_addressing(
+    tmp_path: Path,
+) -> None:
     group = _GOOD.replace("band_channel", "group_channel").replace(
         "last_channel = 99", "last_channel = 99\nrecall = true"
     )
     assert _load(tmp_path, group).to_profile().memory.recall is True
+    channel = (
+        _GOOD.replace("band_channel", "channel")
+        .replace("first_group = 1", "first_group = 0")
+        .replace("last_group = 3", "last_group = 0")
+        .replace("last_channel = 99", "last_channel = 99\nrecall = true")
+    )
+    assert _load(tmp_path, channel).to_profile().memory.recall is True
 
 
 _GOOD_WRITE_LAYOUT = """

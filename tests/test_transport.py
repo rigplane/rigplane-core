@@ -188,6 +188,9 @@ class TestConnectionState:
         t._tx_guards[9] = lambda: True
         t.rx_last_seq = 8
         t.rx_missing[7] = 2
+        t._rx_next = 7
+        t._rx_held[8] = (b"held", 0, 8, 0)
+        t._rx_given_up.append(6)
         t.remote_id = 0xEF167A45
         t._packet_queue.put_nowait(b"stale-packet")
         loop = _FakeLoop(("192.168.2.194", 50002))
@@ -212,6 +215,9 @@ class TestConnectionState:
         assert t._tx_guards == {}
         assert t.rx_last_seq is None
         assert t.rx_missing == {}
+        assert t._rx_next is None  # MOR-4205: ordering restarts with the session
+        assert t._rx_held == {}
+        assert not t._rx_given_up
 
     @pytest.mark.asyncio
     async def test_connect_with_prebound_socket(self) -> None:

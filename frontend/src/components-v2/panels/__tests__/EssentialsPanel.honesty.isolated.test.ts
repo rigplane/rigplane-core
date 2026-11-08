@@ -243,3 +243,58 @@ describe('EssentialsPanel AF level command-feedback wiring (MOR-2910)', () => {
     vi.useRealTimers();
   });
 });
+
+// MOR-4210: in LIVE the mobile AF slider is the browser volume, which runs
+// past 100% into makeup gain. The radio AF lane (confirmed at 50% here) must
+// neither cap nor replace it; outside LIVE the radio's 0..1 range stays.
+describe('EssentialsPanel LIVE browser volume above 100% (MOR-4210)', () => {
+  function renderLive(afLevel: number, monitorMode = 'live'): HTMLElement {
+    afFeedback.value = afFeedbackOf(0.5);
+    host = document.createElement('div');
+    document.body.appendChild(host);
+    instance = mount(EssentialsPanel, {
+      target: host,
+      props: {
+        ...baseProps(afLevel),
+        rxAudio: { monitorMode, afLevel },
+        onAfLevelChange: afHandler.onAfLevelChange,
+      },
+    });
+    flushSync();
+    return host;
+  }
+
+  function afSlider(): HTMLElement {
+    const slider = host?.querySelector<HTMLElement>('[aria-label="AF Level"]');
+    if (!slider) throw new Error('AF Level slider not found');
+    return slider;
+  }
+
+  it('reads back the browser volume above 100% on a 0..2 range', () => {
+    const t = renderLive(1.5);
+    expect(afSlider().getAttribute('aria-valuemax')).toBe('2');
+    expect(afSlider().getAttribute('aria-valuenow')).toBe('1.5');
+    expect(vcValueFor(t, 'AF Level')).toBe('150%');
+  });
+
+  it('reads back the top of the browser range as 200%', () => {
+    expect(vcValueFor(renderLive(2), 'AF Level')).toBe('200%');
+  });
+
+  it('adjusts the browser volume above 100%', () => {
+    vi.useFakeTimers();
+    const calls: number[] = [];
+    afHandler.onAfLevelChange = (value: number) => calls.push(value);
+    renderLive(1.5);
+    afSlider().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    vi.advanceTimersByTime(50);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBeCloseTo(1.51, 12);
+    vi.useRealTimers();
+  });
+
+  it('keeps the radio 0..1 range outside LIVE', () => {
+    renderLive(0.5, 'local');
+    expect(afSlider().getAttribute('aria-valuemax')).toBe('1');
+  });
+});

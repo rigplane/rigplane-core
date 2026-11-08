@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1257,11 +1258,18 @@ async def test_failed_core_setters_leave_radio_state_unchanged() -> None:
 
 
 async def test_radio_reports_actionable_connection_failure() -> None:
-    # Default timeout: refusal is immediate, no short budget is needed.
-    radio = RigctldClientRadio(host="127.0.0.1", port=9)
+    # A bound but never-listening loopback socket refuses at once on every
+    # host and cannot be taken by another process while we hold it. A fixed
+    # low port does not: WSL2 drops SYNs to closed ports below the ephemeral
+    # range, so the connect hangs until the timeout instead of being refused.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as closed:
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+        # Default timeout: refusal is immediate, no short budget is needed.
+        radio = RigctldClientRadio(host="127.0.0.1", port=port)
 
-    with pytest.raises(RadioConnectionError, match="127.0.0.1:9"):
-        await radio.connect()
+        with pytest.raises(RadioConnectionError, match=f"127.0.0.1:{port}"):
+            await radio.connect()
 
 
 async def test_radio_rejects_unsupported_data_mode() -> None:
@@ -1464,6 +1472,32 @@ async def test_command_drains_stray_preceding_line() -> None:
         await transport.connect()
         try:
             # Must NOT raise; real RPRT 0 follows the stray line.
+            await transport.command("L AF 0.784")
+        finally:
+            await transport.close()
+
+
+@pytest.mark.realtime(
+    reason="the reply is split by a real 0.3 s gap, against the transport's real 1 ms re-sync"
+)
+@pytest.mark.xfail(
+    strict=True,
+    raises=CommandError,
+    reason=(
+        "known follow-up of MOR-4214: RigctldTransport.command waits only 1 ms "
+        "(transport.py, re-sync readline timeout=0.001) for the RPRT behind a stray "
+        "line, so a reply split across TCP segments reads the stray line as malformed"
+    ),
+)
+async def test_command_drains_stray_line_sent_apart_from_its_rprt() -> None:
+    """The stray-line case of the test above, with the reply in two writes."""
+    behavior = FakeRigctldBehavior(
+        extra_lines={"L AF 0.784": b"0.0392157\n"}, extra_line_gap_s=0.3
+    )
+    async with FakeRigctldServer(behavior=behavior) as server:
+        transport = RigctldTransport(host=server.host, port=server.port)
+        await transport.connect()
+        try:
             await transport.command("L AF 0.784")
         finally:
             await transport.close()

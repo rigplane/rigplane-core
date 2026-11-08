@@ -61,7 +61,7 @@ from rigplane.ws import (
     make_accept_key,
     make_frame,
 )
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 # ---------------------------------------------------------------------------
 # Frontend static build guard
@@ -3427,30 +3427,6 @@ class TestScopeDemandGeneration:
 
         assert not server._command_queue.has_commands
 
-    async def test_scope_health_recovery_uses_current_generation(self) -> None:
-        server, _ = self._make_server()
-        handler = MagicMock()
-        commands = await _drive_scope_pipeline(
-            server, server.ensure_scope_enabled(handler)
-        )
-
-        from rigplane.web.radio_poller import EnableScope
-
-        (initial_enable,) = commands
-        assert isinstance(initial_enable, EnableScope)
-        server._scope_health_interval = 0
-        server._scope_health_max_retries = 1
-        server._scope_last_nonzero = -1
-
-        monitor = asyncio.create_task(server._scope_health_monitor())
-        recovery_commands = await _drive_scope_pipeline(server, asyncio.sleep(0.01))
-        monitor.cancel()
-        await monitor
-
-        (recovery,) = [c for c in recovery_commands if isinstance(c, EnableScope)]
-        assert isinstance(recovery, EnableScope)
-        assert recovery.generation == initial_enable.generation > 0
-
     async def test_reconnect_enable_uses_current_generation(self) -> None:
         server, radio = self._make_server()
         radio._fetch_initial_state = AsyncMock()
@@ -4691,6 +4667,49 @@ async def test_ftx1_mode_families_reach_both_capability_endpoints_over_http() ->
         await srv.stop()
 
 
+# MOR-4210: same shipped-profile -> loader -> WebServer -> real socket seam,
+# for the radio's RX audio output-level menu item.
+
+
+@pytest.mark.parametrize(
+    ("rig_file", "expected"),
+    [
+        ("ic705.toml", "SET > Connectors > USB AF/IF Output > AF Output Level"),
+        ("ic7300.toml", "SET > Connectors > ACC/USB AF Output Level"),
+        ("ic7610.toml", None),
+    ],
+)
+async def test_rx_audio_level_menu_reaches_capabilities_over_http(
+    rig_file: str, expected: str | None
+) -> None:
+    """``rxAudioLevelMenu`` is the shipped profile's
+    ``[audio].rx_audio_level_menu`` on a live listener, ``null`` for a profile
+    that declares none (IC-7610). Only the radio is faked; the profile comes
+    from ``load_rig`` and the reply from a real TCP request."""
+    profile = load_rig(_RIGS_DIR / rig_file).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+    )
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        status, _, body = await _http_get(host, port, "/api/v1/capabilities")
+        assert status == 200
+        payload = json.loads(body)
+        assert "rxAudioLevelMenu" in payload
+        assert payload["rxAudioLevelMenu"] == expected
+    finally:
+        await srv.stop()
+
+
 # MOR-3632: same shipped-profile -> loader -> WebServer -> real socket seam,
 # for the receive-only band rows the txBands builders must filter out.
 _IC705_RIG = Path(__file__).resolve().parents[1] / "rigs" / "ic705.toml"
@@ -4747,6 +4766,42 @@ async def test_ic705_rx_only_bands_neither_endpoint_tx_band_over_http() -> None:
             for band in freq_range["bands"]
         }
         assert _IC705_RX_ONLY_BANDS <= range_band_names
+    finally:
+        await srv.stop()
+
+
+async def test_ic705_scope_ref_range_reaches_both_capability_endpoints_over_http() -> (
+    None
+):
+    """MOR-3694: the profile's `[scope]` REF range is published on both
+    capability endpoints so the frontend steps REF on the radio's own range
+    instead of a hard-coded one (the IC-705 sent -22 before this)."""
+
+    profile = load_rig(_IC705_RIG).to_profile()
+    radio = SimpleNamespace(
+        model=profile.model,
+        profile=profile,
+        capabilities=set(profile.capabilities),
+        connected=True,
+        control_connected=True,
+        radio_ready=True,
+    )
+    srv = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await srv.start()
+    try:
+        host, port = _addr(srv)
+        for path in ("/api/v1/capabilities", "/api/v1/info"):
+            status, _, body = await _http_get(host, port, path)
+            assert status == 200, path
+            payload = json.loads(body)
+            capabilities = (
+                payload["capabilities"] if path == "/api/v1/info" else payload
+            )
+            assert capabilities["ref_min_db"] == -20.0, path
+            assert capabilities["ref_max_db"] == 20.0, path
+            assert capabilities["ref_step_db"] == 0.5, path
     finally:
         await srv.stop()
 

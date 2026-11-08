@@ -41,7 +41,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxState,
     ReleasePlan,
 )
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 
 class TestParseFrequency:
@@ -891,6 +891,26 @@ class TestBackendArgs:
         args = p.parse_args(["--rx-device", "IC-7610 USB Audio", "status"])
         assert args.rx_device == "IC-7610 USB Audio"
 
+    def test_usb_capture_mode_default_is_shared(self, monkeypatch):
+        monkeypatch.delenv("ICOM_USB_CAPTURE_MODE", raising=False)
+        args = _build_parser().parse_args(["status"])
+        assert args.usb_capture_mode == "shared"
+
+    def test_usb_capture_mode_override(self):
+        args = _build_parser().parse_args(
+            ["--usb-capture-mode", "exclusive-preferred", "status"]
+        )
+        assert args.usb_capture_mode == "exclusive-preferred"
+
+    def test_usb_capture_mode_env(self, monkeypatch):
+        monkeypatch.setenv("ICOM_USB_CAPTURE_MODE", "exclusive-preferred")
+        args = _build_parser().parse_args(["status"])
+        assert args.usb_capture_mode == "exclusive-preferred"
+
+    def test_usb_capture_mode_rejects_unknown_value(self):
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["--usb-capture-mode", "raw", "status"])
+
     def test_tx_device_default_none(self):
         p = _build_parser()
         args = p.parse_args(["status"])
@@ -1023,6 +1043,33 @@ class TestBuildBackendConfig:
         assert isinstance(config, SerialBackendConfig)
         assert config.rx_device == "IC-7610 RX"
         assert config.tx_device == "IC-7610 TX"
+
+    @pytest.mark.parametrize(
+        "backend,config_type",
+        [
+            ("serial", SerialBackendConfig),
+            ("yaesu-cat", YaesuCatBackendConfig),
+        ],
+    )
+    async def test_usb_capture_mode_reaches_the_backend_config(
+        self, backend, config_type
+    ):
+        args = _build_parser().parse_args(
+            [
+                "--backend",
+                backend,
+                "--serial-port",
+                "/dev/tty.usb0",
+                "--usb-capture-mode",
+                "exclusive-preferred",
+                "--model",
+                "IC-7300" if backend == "serial" else "FTX-1",
+                "status",
+            ]
+        )
+        config = await _build_backend_config(args)
+        assert isinstance(config, config_type)
+        assert config.capture_mode == "exclusive-preferred"
 
     async def test_serial_ptt_mode_passed(self):
         p = _build_parser()
@@ -3082,6 +3129,26 @@ class _BusyHoldWebServer:
         self.events.append("finish")
 
 
+class _BridgeRecordingWebServer(_BusyHoldWebServer):
+    """``_BusyHoldWebServer`` plus the eager bridge attempt (MOR-2922).
+
+    Records ``bridge-started`` next to ``bridge-deferred`` so a test can
+    tell the eager auto-start from the deferred arming apart; the eager
+    start still raises the busy-hold fake's ``LoopbackNotFoundError``,
+    which the CLI's auto path degrades from gracefully.
+    """
+
+    async def start_audio_bridge(self, **kwargs: Any) -> None:
+        self.events.append("bridge-started")
+        await super().start_audio_bridge(**kwargs)
+
+    async def serve_forever(self, **kwargs: Any) -> None:
+        import asyncio
+
+        kwargs["on_started"]()
+        raise asyncio.CancelledError
+
+
 def _busy_hold_composition() -> Any:
     composition = create_autospec(ManagedTxComposition, instance=True)
     composition.bind_state_store = AsyncMock()
@@ -3298,6 +3365,84 @@ class TestStartupBusyHoldOrdering:
         assert radio.enter_cancelled is True
         assert len(radio.exits) == 1
         composition.transport_ready.assert_not_awaited()
+
+
+class _NoPortRadio:
+    """A not-connected radio with NO identity hold (the MOR-2922 shape).
+
+    MOR-2876's no-port start: the serial port cannot be opened, the
+    watchdog keeps retrying it, and the connect-time identity read never
+    ran — so ``serial_identity_hold`` is ``None`` while ``connected`` is
+    False.
+    """
+
+    model = "IC-7610"
+    connected = False
+
+
+class TestWebBridgeAutoDeferUntilConnected:
+    """MOR-2922: ``--bridge=auto`` waits out a not-connected radio."""
+
+    @staticmethod
+    def _args(*extra: str) -> Any:
+        return _build_parser().parse_args(
+            [
+                "--host",
+                "1.2.3.4",
+                "--model",
+                "IC-7610",
+                "web",
+                "--no-rigctld",
+                *extra,
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_auto_bridge_defers_when_the_radio_is_not_connected(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The no-port start defers the auto bridge instead of failing it."""
+
+        from rigplane.cli import _cmd_web
+
+        radio = _NoPortRadio()
+        _BridgeRecordingWebServer.instances.clear()
+        with (
+            patch("rigplane.web.server.WebServer", _BridgeRecordingWebServer),
+            patch("rigplane.cli._detect_loopback_hint", return_value=None),
+            caplog.at_level(logging.WARNING),
+        ):
+            rc = await _cmd_web(radio, self._args())
+
+        assert rc == 0
+        server = _BridgeRecordingWebServer.instances[-1]
+        assert "bridge-deferred" in server.events
+        assert "bridge-started" not in server.events
+        assert any(
+            record.name == "rigplane.cli"
+            and "audio bridge auto-start deferred" in record.getMessage()
+            for record in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_auto_bridge_still_starts_eagerly_when_connected(self) -> None:
+        """A connected radio with no hold keeps today's eager auto-start."""
+
+        from rigplane.cli import _cmd_web
+
+        radio = _NoPortRadio()
+        radio.connected = True
+        _BridgeRecordingWebServer.instances.clear()
+        with (
+            patch("rigplane.web.server.WebServer", _BridgeRecordingWebServer),
+            patch("rigplane.cli._detect_loopback_hint", return_value=None),
+        ):
+            rc = await _cmd_web(radio, self._args())
+
+        assert rc == 0
+        server = _BridgeRecordingWebServer.instances[-1]
+        assert "bridge-started" in server.events
+        assert "bridge-deferred" not in server.events
 
 
 class _GrantGatedLifecycleMechanism:
@@ -3798,11 +3943,16 @@ class TestFirstSignalShutdownBound:
                 pass
 
             async def serve_forever(
-                self, *, on_started=None, on_shutdown_signal=None, on_tx_release=None
+                self,
+                *,
+                on_started=None,
+                on_shutdown_signal=None,
+                on_tx_release=None,
+                before_cancel_all=None,
             ) -> None:
                 on_started()
                 on_shutdown_signal()
-                hooks.append(on_tx_release)
+                hooks.extend([on_tx_release, before_cancel_all])
 
         hooks: list[object] = []
         backstop = MagicMock()
@@ -3811,7 +3961,7 @@ class TestFirstSignalShutdownBound:
             assert await _cmd_web(AsyncMock(), args, shutdown_backstop=backstop) == 0
 
         backstop.arm.assert_called_once_with()
-        assert hooks == [backstop.protect]
+        assert hooks == [backstop.protect, backstop.wait_for_releases]
 
     def test_the_bound_sums_the_step_bounds_and_a_margin(self) -> None:
         from rigplane import cli

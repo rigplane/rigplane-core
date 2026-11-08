@@ -83,7 +83,10 @@ const VIEWPORTS: ViewportSpec[] = [
  * (see `frontend/src/lib/i18n/pseudo.ts` header).
  *
  * All six render on the desktop app-shell under every supported locale,
- * `qps-ploc` included. The radio model is deliberately NOT asserted:
+ * `qps-ploc` included — `VFO` inside the memory dialog: its only
+ * app-shell source is the memory surface ("VFO -> M", ">>VFO"), which
+ * MOR-4220 moved from the page into the dialog the Memory button opens,
+ * so the check opens the dialog for it. The radio model is deliberately NOT asserted:
  * no surface this suite drives renders the model string at all (the
  * fixtures publish `mockCapabilities.model` and it never reaches the
  * DOM), so there is no verbatim model text to guard. Mobile is excluded
@@ -91,7 +94,9 @@ const VIEWPORTS: ViewportSpec[] = [
  * carries no SUB/RTTY/VFO text at all, so the desktop-wide token set
  * cannot honestly apply there.
  */
-const GLOSSARY_TOKENS_DESKTOP = ['MAIN', 'SUB', 'USB', 'LSB', 'RTTY', 'VFO'];
+const GLOSSARY_TOKENS_DESKTOP = ['MAIN', 'SUB', 'USB', 'LSB', 'RTTY'];
+/** Rendered by the memory surface, which lives in the memory dialog (MOR-4220). */
+const GLOSSARY_TOKENS_MEMORY_DIALOG = ['VFO'];
 
 /**
  * Characters that can only come from the `qps-ploc` transform in
@@ -339,6 +344,16 @@ async function assertGlossaryTokens(
       `${surfaceLabel}: glossary token "${token}" missing`,
     ).toContainText(token, { useInnerText: true });
   }
+  await page.getByTestId('memory-open').click();
+  const dialog = page.getByRole('dialog');
+  for (const token of GLOSSARY_TOKENS_MEMORY_DIALOG) {
+    await expect(
+      dialog,
+      `${surfaceLabel}: glossary token "${token}" missing from the memory dialog`,
+    ).toContainText(token, { useInnerText: true });
+  }
+  await page.keyboard.press('Escape');
+  await expect(dialog, `${surfaceLabel}: memory dialog did not close`).toHaveCount(0);
 }
 
 /**

@@ -58,6 +58,7 @@ class ReceiverState:
     vfo_b: VfoSlotState = field(default_factory=VfoSlotState)
     active_slot: str = "A"  # "A" or "B"
     filter_width: int | None = None
+    filter_width_radio_default: bool | None = None
     att: int = 0  # dB: 0, 3, 6, …, 45
     preamp: int = 0  # 0=off, 1=P1, 2=P2
     nb: bool = False

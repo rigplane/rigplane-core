@@ -32,7 +32,7 @@ from rigplane.core.types import ctcss_booleans_for_tone_squelch_type
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
-from .radio import _ctcss_index_to_centihz
+from .radio import FilterWidthReading, _ctcss_index_to_centihz
 from .transport import CatCommandRejected, CatTimeoutError, CatTransportError
 
 if TYPE_CHECKING:
@@ -108,6 +108,14 @@ _VOX_ON = FieldPath.global_("tx_state", "vox_on")
 # emitted in the slow lane.
 _MAIN_FILTER_WIDTH = FieldPath.active("main", "freq_mode", "filter_width")
 _SUB_FILTER_WIDTH = FieldPath.active("sub", "freq_mode", "filter_width")
+# The radio-default flag twins (MOR-3677): published by the same SH read as
+# the width above, under the same narrow gate — one CAT query, two leaves.
+_MAIN_FILTER_WIDTH_RADIO_DEFAULT = FieldPath.active(
+    "main", "freq_mode", "filter_width_radio_default"
+)
+_SUB_FILTER_WIDTH_RADIO_DEFAULT = FieldPath.active(
+    "sub", "freq_mode", "filter_width_radio_default"
+)
 _MAIN_IF_SHIFT = FieldPath.receiver("main", "operator_controls", "if_shift")
 _SUB_IF_SHIFT = FieldPath.receiver("sub", "operator_controls", "if_shift")
 _MAIN_NARROW = FieldPath.receiver("main", "operator_toggles", "narrow")
@@ -289,6 +297,10 @@ class YaesuObservationRadio(Protocol):
     async def read_filter_width(
         self, receiver: int = 0, mode: str | None = None
     ) -> int | None: ...
+
+    async def read_filter_width_reading(
+        self, receiver: int = 0, mode: str | None = None
+    ) -> FilterWidthReading: ...
 
     async def read_if_shift(self, receiver: int = 0) -> int: ...
 
@@ -549,18 +561,54 @@ class YaesuObservationAdapter:
                 width=_MAIN_FILTER_WIDTH,
             )
             if self._available(_MAIN_FILTER_WIDTH):
-                ok, value = await self._safe_read(
-                    "main.filter_width",
-                    self.radio.read_filter_width(0, mode=main_mode),
-                    lambda: self.radio.read_filter_width(0, mode=main_mode),
-                    paths=(_MAIN_FILTER_WIDTH,),
-                )
-                if ok:
-                    observations.append(
-                        adapter.observation(
-                            _MAIN_FILTER_WIDTH, value, native_id="read_filter_width"
-                        )
+                # MOR-3677: profiles declaring the flag (FTX-1 only) take
+                # the twin-leaf read; every other profile keeps the legacy
+                # single-value read. Both leaves share the width's narrow
+                # gate and timestamp — the flag always emits, including
+                # False, so a stale True cannot persist.
+                if self._can_poll(_MAIN_FILTER_WIDTH_RADIO_DEFAULT):
+                    ok, reading = await self._safe_read(
+                        "main.filter_width",
+                        self.radio.read_filter_width_reading(0, mode=main_mode),
+                        lambda: self.radio.read_filter_width_reading(0, mode=main_mode),
+                        paths=(
+                            _MAIN_FILTER_WIDTH,
+                            _MAIN_FILTER_WIDTH_RADIO_DEFAULT,
+                        ),
                     )
+                    if ok and reading is not None:
+                        timestamp = self.clock()
+                        observations.append(
+                            adapter.observation(
+                                _MAIN_FILTER_WIDTH,
+                                reading.hz,
+                                native_id="read_filter_width",
+                                timestamp_monotonic=timestamp,
+                            )
+                        )
+                        observations.append(
+                            adapter.observation(
+                                _MAIN_FILTER_WIDTH_RADIO_DEFAULT,
+                                reading.radio_default,
+                                native_id="read_filter_width_reading",
+                                timestamp_monotonic=timestamp,
+                            )
+                        )
+                else:
+                    ok, value = await self._safe_read(
+                        "main.filter_width",
+                        self.radio.read_filter_width(0, mode=main_mode),
+                        lambda: self.radio.read_filter_width(0, mode=main_mode),
+                        paths=(_MAIN_FILTER_WIDTH,),
+                    )
+                    if ok:
+                        observations.append(
+                            adapter.observation(
+                                _MAIN_FILTER_WIDTH,
+                                value,
+                                native_id="read_filter_width",
+                            )
+                        )
         if (
             self._has_runtime_capability("dual_rx")
             and self._has_runtime_capability("filter_width")
@@ -575,18 +623,52 @@ class YaesuObservationAdapter:
                 width=_SUB_FILTER_WIDTH,
             )
             if self._available(_SUB_FILTER_WIDTH):
-                ok, value = await self._safe_read(
-                    "sub.filter_width",
-                    self.radio.read_filter_width(1, mode=sub_mode),
-                    lambda: self.radio.read_filter_width(1, mode=sub_mode),
-                    paths=(_SUB_FILTER_WIDTH,),
-                )
-                if ok:
-                    observations.append(
-                        adapter.observation(
-                            _SUB_FILTER_WIDTH, value, native_id="read_filter_width"
-                        )
+                # MOR-3677: the SUB twin of the MAIN branch above — the
+                # twin-leaf read when the profile declares the flag, the
+                # legacy single-value read otherwise.
+                if self._can_poll(_SUB_FILTER_WIDTH_RADIO_DEFAULT):
+                    ok, reading = await self._safe_read(
+                        "sub.filter_width",
+                        self.radio.read_filter_width_reading(1, mode=sub_mode),
+                        lambda: self.radio.read_filter_width_reading(1, mode=sub_mode),
+                        paths=(
+                            _SUB_FILTER_WIDTH,
+                            _SUB_FILTER_WIDTH_RADIO_DEFAULT,
+                        ),
                     )
+                    if ok and reading is not None:
+                        timestamp = self.clock()
+                        observations.append(
+                            adapter.observation(
+                                _SUB_FILTER_WIDTH,
+                                reading.hz,
+                                native_id="read_filter_width",
+                                timestamp_monotonic=timestamp,
+                            )
+                        )
+                        observations.append(
+                            adapter.observation(
+                                _SUB_FILTER_WIDTH_RADIO_DEFAULT,
+                                reading.radio_default,
+                                native_id="read_filter_width_reading",
+                                timestamp_monotonic=timestamp,
+                            )
+                        )
+                else:
+                    ok, value = await self._safe_read(
+                        "sub.filter_width",
+                        self.radio.read_filter_width(1, mode=sub_mode),
+                        lambda: self.radio.read_filter_width(1, mode=sub_mode),
+                        paths=(_SUB_FILTER_WIDTH,),
+                    )
+                    if ok:
+                        observations.append(
+                            adapter.observation(
+                                _SUB_FILTER_WIDTH,
+                                value,
+                                native_id="read_filter_width",
+                            )
+                        )
         return tuple(observations)
 
     def observed_ptt_observation(

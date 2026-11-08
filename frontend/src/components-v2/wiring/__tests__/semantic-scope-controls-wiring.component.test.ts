@@ -170,6 +170,9 @@ const liveCaps = (tags: readonly string[]): Capabilities => ({
   webrtc: { available: false, enabled: false },
   txBands: [{ start: 14000000, end: 14350000, name: '20m' }],
   scopeSource: 'hardware', audioFftAvailable: false,
+  // MOR-3694: a declared REF range — the REF steppers fail closed without
+  // one, and this fixture drives them.
+  ref_min_db: -30, ref_max_db: 10, ref_step_db: 0.5,
 } as unknown as Capabilities);
 
 /** `scope` + `dual_rx` is what makes the FULL group (incl. `dual`/`receiver`)

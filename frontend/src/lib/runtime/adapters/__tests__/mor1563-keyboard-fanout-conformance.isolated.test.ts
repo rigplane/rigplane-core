@@ -80,11 +80,12 @@
  * it the same way. `cycle_data_mode` has a domain of size 1
  * (`caps.dataModeCount === 1`) — the wrap target equals the current value,
  * the mathematically correct result of modulo-1, not evidence of
- * MOR-1454's "ignores declared options" failure mode. `scope_span_step`/
- * `scope_ref_step` use fixed clamp bounds hardcoded in
- * `dispatchKeyboardRadioAction` itself, with no scope-range capability on
- * this profile to check them against — an honest baseline, not a finding.
- * `adjust_af_level`/`adjust_rf_gain` were MOR-1577 above, not this angle:
+ * MOR-1454's "ignores declared options" failure mode. `scope_span_step`
+ * keeps its fixed 0-7 index domain (the SPAN presets' own index space);
+ * `scope_ref_step` steps on the 5 dB UI grid clamped to the
+ * caps-declared `ref_min_db`/`ref_max_db` range this fixture now carries
+ * (MOR-3694 — the pre-fix code clamped to a hard-coded -30..10 and
+ * refused every half-dB readback). `adjust_af_level`/`adjust_rf_gain` were MOR-1577 above, not this angle:
  * the fixture DOES declare their domain (`{ delta }`), and the handler now
  * reads it and scales against `caps.controls.af_level`/`rf_gain`'s declared
  * `raw_min`/`raw_max` rather than a hardcoded step.
@@ -146,6 +147,7 @@ import {
 } from './conformance/harness';
 import { PROFILES } from './conformance/profiles';
 import { dispatchKeyboardRadioAction } from '../../commands/panel-commands';
+import { stepRef } from '../../../../components/spectrum/spectrum-toolbar-logic';
 import { resetSharedTuningAccumulatorForTests } from '../../commands/tuning-accumulator';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 
@@ -161,6 +163,13 @@ const filterCount = IC7300_CAPABILITIES.filters.length;
 const dataModeCount = IC7300_CAPABILITIES.dataModeCount!;
 const afLevelRange = IC7300_CAPABILITIES.controls!.af_level!;
 const rfGainRange = IC7300_CAPABILITIES.controls!.rf_gain!;
+// MOR-3694: the fixture's declared REF range (the IC-7300 profile's
+// `[scope] ref_min_db`/`ref_max_db`, captured through the same server
+// serializer as every other capability field).
+const refRange = {
+  min: IC7300_CAPABILITIES.ref_min_db!,
+  max: IC7300_CAPABILITIES.ref_max_db!,
+};
 
 // MOR-2513: wire leaves are nullable; the CASES arithmetic below is only
 // honest when these fixture observations are present. Throw (never
@@ -173,6 +182,10 @@ if (typeof main.preamp !== 'number') throw new Error('fixture main.preamp observ
 if (typeof main.att !== 'number') throw new Error('fixture main.att observed');
 if (typeof scope.span !== 'number') throw new Error('fixture scopeControls.span observed');
 if (typeof scope.refDb !== 'number') throw new Error('fixture scopeControls.refDb observed');
+if (typeof IC7300_CAPABILITIES.ref_min_db !== 'number'
+  || typeof IC7300_CAPABILITIES.ref_max_db !== 'number') {
+  throw new Error('fixture scope REF range declared (MOR-3694)');
+}
 const probeAfLevel = main.afLevel;
 const probeRfGain = main.rfGain;
 
@@ -247,8 +260,8 @@ const CASES: readonly KeyboardCase[] = [
     frames: [['set_scope_span', { span: Math.max(0, Math.min(7, scope.span + 1)) }]],
     gate: 'scopeControls.span observed; clamp bounds (0-7) are hardcoded, not caps-declared' },
   { action: 'scope_ref_step', params: { direction: 'up' },
-    frames: [['set_scope_ref', { ref: Math.max(-30, Math.min(10, scope.refDb + 5)) }]],
-    gate: 'scopeControls.refDb observed; clamp bounds (-30..10) are hardcoded, not caps-declared' },
+    frames: [['set_scope_ref', { ref: stepRef(scope.refDb, 1, refRange) }]],
+    gate: 'scopeControls.refDb observed; steps on the 5 dB grid clamped to the caps-declared ref range (MOR-3694)' },
   { action: 'scope_toggle_hold', frames: [['set_scope_hold', { on: !scope.hold }]],
     gate: 'scopeControls.hold observed boolean' },
   { action: 'scope_toggle_dual', frames: [],
@@ -323,7 +336,15 @@ describe('IC-7300 fixture — keyboard action fan-out conformance (MOR-1563)', (
   // these prove the `direction`-based fallback path documented in the
   // header ("explicit delta wins") is still intact after the fix, exercised
   // with a synthetic `{ direction }` param no fixture binding actually sends.
-  it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-1577): adjust_af_level dispatches set_af_level given {direction}', () => {
+  it('HANDLER-CAPABILITY PROBE (not profile behavior, MOR-3694): scope_ref_step refuses without a declared ref range', () => {
+    h.caps = fixtureCaps(profile);
+    delete h.caps.ref_min_db;
+    delete h.caps.ref_max_db;
+    delete h.caps.ref_step_db;
+    expectRefusal(() => dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } }));
+  });
+
+  it('HANDLER-CAPABILITY PROBE (MOR-1577): adjust_af_level dispatches set_af_level given {direction}', () => {
     expectFrames(
       () => dispatchKeyboardRadioAction({ action: 'adjust_af_level', params: { direction: 'up' } }),
       [['set_af_level', {

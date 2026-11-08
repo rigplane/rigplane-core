@@ -65,7 +65,7 @@ from rigplane_testkit.yaesu import FakeCatRadio
 
 from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 from test_yaesu_audio import FakeAudioDriver
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 _PCM_FRAME = b"\x01\x02\x03\x04"
 
@@ -482,9 +482,11 @@ async def test_yaesu_cat_identity_hold_reestablishes_once_after_completion() -> 
 
             session.reestablish = _gated_reestablish  # type: ignore[method-assign]
 
-            # The reconnect's ID read falls inside the silence window (the
-            # transport query times out at ~1 s), then the re-read answers.
-            fake.silence(1.2)
+            # The reconnect's ID reads fall inside the silence window (the
+            # transport query times out at ~1 s at each baud of the connect
+            # order — 38400, 9600, 115200, MOR-4207), then the re-read
+            # answers.
+            fake.silence(3.2)
             await radio.connect()  # returns while the identity hold owns the port
             assert not radio.connected
             assert driver.rx_running is False  # nothing re-armed during the hold

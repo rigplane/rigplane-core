@@ -691,6 +691,10 @@ class RigConfig:
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
+    # MOR-4036: ``[data_mode].modes`` — names from ``[modes].list`` of the
+    # modes that can carry the DATA flag. ``None`` = undeclared (the runtime
+    # keeps the current DATA flag on a mode change, the unchanged default).
+    data_mode_modes: tuple[str, ...] | None = None
     protocol_type: str = "civ"
     protocol_address: int | None = None
     protocol_baud: int | None = None
@@ -728,6 +732,10 @@ class RigConfig:
     # at full level. The FTX-1 sets "left" (USB RX audio is on L only, so the
     # average with a silent R loses 6 dB).
     rx_audio_channel: str = "mix"
+    # Radio menu item that sets its RX audio output level to the computer
+    # (MOR-4210), shown when browser RX audio stays quiet. None = undeclared.
+    # Keyword-only so the fields after it keep their positions.
+    rx_audio_level_menu: str | None = field(default=None, kw_only=True)
     write_only_controls: tuple[str, ...] = ()
     # Per-check_id fixed-value declarations (MOR-2105 part 2): check_id ->
     # source establishing that this radio has only one legal value for that
@@ -941,6 +949,7 @@ class RigConfig:
             data_mode_count=self.data_mode_count,
             data_mode_labels=self.data_mode_labels,
             data_mode_inputs=self.data_mode_inputs,
+            data_mode_modes=self.data_mode_modes,
             # isinstance, not membership: a declared-absent entry
             # (AbsentCommandSpec, MOR-2005 step 4a) is a dict key too, but
             # it means the opposite of "the radio has this command" — see
@@ -953,6 +962,7 @@ class RigConfig:
                 self.commands.get("set_selected_mode"), CivCommandSpec
             ),
             protocol_type=self.protocol_type,
+            default_baud=self.default_baud,
             hamlib_model_id=self.hamlib_model_id,
             controls=controls,
             meter_calibrations=self.meter_calibrations,
@@ -973,6 +983,7 @@ class RigConfig:
             sample_rate_by_codec=self.sample_rate_by_codec,
             browser_rx_transport=self.browser_rx_transport,
             browser_rx_transcode_to_opus=self.browser_rx_transcode_to_opus,
+            rx_audio_level_menu=self.rx_audio_level_menu,
             write_only_controls=frozenset(self.write_only_controls),
             fixed_value_checks=dict(self.fixed_value_checks),
             state_acquisition=self.state_acquisition,
@@ -2377,9 +2388,10 @@ def _parse_memory(
     recall = raw.get("recall", False)
     if not isinstance(recall, bool):
         raise RigLoadError(f"{filename}: [memory].recall must be a boolean")
-    if recall and addressing != "group_channel":
+    if recall and addressing == "band_channel":
         raise RigLoadError(
-            f"{filename}: [memory].recall is only implemented for group_channel"
+            f"{filename}: [memory].recall is only implemented for group_channel "
+            "and channel addressing"
         )
     groups: dict[str, tuple[int, ...]] = {}
     for key in ("dd_groups", "offset_10mhz_groups"):
@@ -3275,6 +3287,35 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_labels = (
             dict(data_mode_section["labels"]) if "labels" in data_mode_section else None
         )
+        raw_modes = data_mode_section.get("modes")
+        if raw_modes is None:
+            data_mode_modes = None
+        else:
+            # MOR-4036: the modes that can carry the DATA flag — names as
+            # written in [modes].list, validated the same fail-loud way as
+            # [modes].families above.
+            if not isinstance(raw_modes, list) or not raw_modes:
+                raise RigLoadError(
+                    f"{filename}: [data_mode].modes must be a non-empty array"
+                )
+            for index, entry in enumerate(raw_modes):
+                if not isinstance(entry, str):
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].modes[{index}] must be a string"
+                    )
+                if entry not in modes:
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].modes[{index}] names mode "
+                        f"{entry!r} that is not in [modes].list"
+                    )
+            seen: set[str] = set()
+            for index, entry in enumerate(raw_modes):
+                if entry in seen:
+                    raise RigLoadError(
+                        f"{filename}: [data_mode].modes[{index}] repeats mode {entry!r}"
+                    )
+                seen.add(entry)
+            data_mode_modes = tuple(raw_modes)
         raw_inputs = data_mode_section.get("inputs")
         if raw_inputs is not None:
             if not isinstance(raw_inputs, list) or not raw_inputs:
@@ -3312,10 +3353,12 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_count = 1
         data_mode_labels = {"0": "OFF", "1": "DATA"}
         data_mode_inputs = None
+        data_mode_modes = None
     else:
         data_mode_count = 0
         data_mode_labels = None
         data_mode_inputs = None
+        data_mode_modes = None
 
     # Parse [controls] (optional)
     controls_raw = data.get("controls")
@@ -3394,6 +3437,7 @@ def load_rig(path: Path) -> RigConfig:
     browser_rx_transport: str | None = None
     browser_rx_transcode_to_opus: bool | None = None
     rx_audio_channel: str = "mix"
+    rx_audio_level_menu: str | None = None
     audio_section = data.get("audio")
     if audio_section is not None:
         if not isinstance(audio_section, dict):
@@ -3487,6 +3531,13 @@ def load_rig(path: Path) -> RigConfig:
                     f"{sorted(VALID_RX_AUDIO_CHANNELS)}, got {rx_channel_raw!r}"
                 )
             rx_audio_channel = rx_channel_raw
+        if "rx_audio_level_menu" in audio_section:
+            level_menu_raw = audio_section["rx_audio_level_menu"]
+            if not isinstance(level_menu_raw, str) or not level_menu_raw.strip():
+                raise RigLoadError(
+                    f"{filename}: [audio].rx_audio_level_menu must be a non-empty string"
+                )
+            rx_audio_level_menu = level_menu_raw.strip()
 
     usb_identity: UsbAudioIdentity | None = None
     usb_section = data.get("usb")
@@ -3652,6 +3703,7 @@ def load_rig(path: Path) -> RigConfig:
         data_mode_count=data_mode_count,
         data_mode_labels=data_mode_labels,
         data_mode_inputs=data_mode_inputs,
+        data_mode_modes=data_mode_modes,
         protocol_type=protocol_type,
         protocol_address=protocol_address,
         protocol_baud=protocol_baud,
@@ -3675,6 +3727,7 @@ def load_rig(path: Path) -> RigConfig:
         browser_rx_transport=browser_rx_transport,
         browser_rx_transcode_to_opus=browser_rx_transcode_to_opus,
         rx_audio_channel=rx_audio_channel,
+        rx_audio_level_menu=rx_audio_level_menu,
         write_only_controls=write_only_controls,
         fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,

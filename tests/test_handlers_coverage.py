@@ -90,6 +90,7 @@ from rigplane.web.radio_poller import (
     SetRitStatus,
     SetRitTxStatus,
     SetScopeEdge,
+    SetScopeRef,
     SetScopeRbw,
     SetScopeVbw,
     SetSplit,
@@ -908,6 +909,66 @@ async def test_enqueue_command_variants(
     assert isinstance(cmd, expected_type)
     for key, value in expected_attrs.items():
         assert getattr(cmd, key) == value
+
+
+# ---------------------------------------------------------------------------
+# MOR-3694: set_scope_ref refuses (never clamps) a REF outside the active
+# profile's declared [scope] range. The check must live at the handler: the
+# command queue acks immediately and the encoder's ValueError fires later
+# inside the poller task, where no client ever sees it.
+# ---------------------------------------------------------------------------
+
+
+def _scope_ref_radio(profile: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        capabilities={"scope"},
+        profile=profile,
+        model=getattr(profile, "model", "fixture"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_set_scope_ref_accepts_the_declared_ic705_minimum() -> None:
+    queue = _QueueRecorder()
+    server = SimpleNamespace(command_queue=queue)
+    handler = _control_handler(
+        radio=_scope_ref_radio(resolve_radio_profile(model="IC-705")), server=server
+    )
+    result = await handler._enqueue_command("set_scope_ref", {"ref": -20})
+    assert result == {"ref": -20}
+    assert queue.items == [SetScopeRef(-20)]
+
+
+@pytest.mark.asyncio
+async def test_set_scope_ref_refuses_below_the_declared_ic705_range() -> None:
+    """The owner's bug: -/+ stepping sent -22 to the IC-705 four times."""
+    queue = _QueueRecorder()
+    server = SimpleNamespace(command_queue=queue)
+    handler = _control_handler(
+        radio=_scope_ref_radio(resolve_radio_profile(model="IC-705")), server=server
+    )
+    with pytest.raises(ValueError, match=r"-22"):
+        await handler._enqueue_command("set_scope_ref", {"ref": -22})
+    assert queue.items == []
+
+
+@pytest.mark.asyncio
+async def test_set_scope_ref_refuses_when_profile_declares_no_range() -> None:
+    """Fail closed: no declared range means no REF write at all (the same
+    refusal the frontend's disabled -/+ keys produce), never a fallback
+    range."""
+    profile = replace(
+        resolve_radio_profile(model="IC-705"),
+        scope_ref_min_db=None,
+        scope_ref_max_db=None,
+        scope_ref_step_db=None,
+    )
+    queue = _QueueRecorder()
+    server = SimpleNamespace(command_queue=queue)
+    handler = _control_handler(radio=_scope_ref_radio(profile), server=server)
+    with pytest.raises(ValueError, match="declares no scope reference range"):
+        await handler._enqueue_command("set_scope_ref", {"ref": 0})
+    assert queue.items == []
 
 
 def _ftx1_width_default_radio() -> SimpleNamespace:
@@ -2089,7 +2150,10 @@ async def test_control_run_skips_non_utf8_text_frame() -> None:
             self.unregistered = 0
 
         def register_control_event_queue(
-            self, queue: object, session_id: str | None = None
+            self,
+            queue: object,
+            session_id: str | None = None,
+            leaf_deltas: bool = False,
         ) -> dict[str, object]:
             self.registered += 1
             return {"type": "full", "data": {}}

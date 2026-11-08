@@ -11,10 +11,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from unittest.mock import patch
+from typing import ClassVar
 
 import pytest
 import rigplane.commands as raw_commands
 
+from rigplane.core.transport import IcomCivTransport
 from rigplane import IC_7610_ADDR
 from rigplane.rig_loader import load_rig
 from rigplane.commands import (
@@ -815,6 +817,19 @@ class TestScopeCommandBuilders:
         assert frame[5] == 0x19
         assert frame[6:9] == b"\x10\x50\x01"
 
+    def test_scope_set_ref_with_ic705_bounds_accepts_plus_15(self, cmd_map) -> None:
+        """MOR-3694: caller-supplied bounds are the radio's declared range
+        (the IC-705's -20.0..+20.0), not the encoder's IC-7610 default."""
+        frame = scope_set_ref(15.0, cmd_map=cmd_map, ref_bounds=(-20.0, 20.0))
+        # +15.0 dB → [10dB=1, 1dB=5] [0.1dB=0, 0] [sign=plus]
+        assert frame[6:9] == b"\x15\x00\x00"
+
+    def test_scope_set_ref_with_bounds_rejects_outside_declared_range(
+        self, cmd_map
+    ) -> None:
+        with pytest.raises(ValueError, match=r"-20\.0 to 20\.0"):
+            scope_set_ref(21.0, cmd_map=cmd_map, ref_bounds=(-20.0, 20.0))
+
     def test_scope_set_speed(self, cmd_map) -> None:
         frame = scope_set_speed(1, cmd_map=cmd_map)
         assert frame[4] == 0x27
@@ -951,6 +966,9 @@ class TestScopeCommandBuilders:
 
 class MockTransport:
     """Minimal mock transport for radio integration tests."""
+
+    #: The LAN transport's ingress-order contract (MOR-4209).
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
 
     def __init__(self) -> None:
         self._responses: asyncio.Queue[bytes] = asyncio.Queue()

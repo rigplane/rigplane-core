@@ -1,6 +1,7 @@
 """Pure deterministic simulator state engine (MOR-3599): plain-value state,
 capability-validated ops, injected clock, seeded RNG, ordered event queue,
-JSON-friendly trace. No sockets/asyncio/rigplane imports; no TOML here.
+JSON-friendly trace. No sockets/asyncio imports, and rigplane only for the shared
+clock (rigplane.testing.timing); no TOML here.
 """
 
 from __future__ import annotations
@@ -12,7 +13,9 @@ from dataclasses import dataclass, field
 from itertools import count
 from math import isfinite
 from types import MappingProxyType
-from typing import Protocol
+
+# The clock lives in the shipped package (one mechanism); re-exported here through __all__.
+from rigplane.testing.timing import Clock, ManualClock  # noqa: F401
 
 __all__ = tuple(
     "Capabilities Clock ManualClock Marker Ok Outcome OutOfRange ReceiverState "
@@ -24,36 +27,6 @@ __all__ = tuple(
 _READ_PLURALS = MappingProxyType(
     {"level": "levels", "switch": "switches", "selector": "selectors"}
 )
-
-
-class Clock(Protocol):
-    def __call__(self) -> float: ...
-
-
-@dataclass
-class ManualClock:
-    """Deterministic test clock; ``advance(dt)`` moves and returns time."""
-
-    start: float = 0.0
-
-    def __post_init__(self) -> None:
-        start = float(self.start)
-        if not isfinite(start):
-            raise ValueError(f"ManualClock start must be finite: {start}")
-        self._now = start
-
-    def __call__(self) -> float:
-        return self._now
-
-    def advance(self, dt: float) -> float:
-        step = float(dt)
-        if not isfinite(step) or step < 0:
-            raise ValueError(f"advance dt must be finite and non-negative: {step}")
-        moved = self._now + step
-        if not isfinite(moved):
-            raise ValueError(f"advance to non-finite time: {self._now} + {step}")
-        self._now = moved
-        return self._now
 
 
 @dataclass(frozen=True)

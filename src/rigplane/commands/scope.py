@@ -282,7 +282,7 @@ def _resolve_scope_fixed_edge_range(start_hz: int) -> int:
     )
 
 
-def _scope_ref_encode(ref: float) -> bytes:
+def _scope_ref_encode(ref: float, bounds: tuple[float, float] | None = None) -> bytes:
     """Encode scope reference level as 3-byte Icom BCD format.
 
     Wire format (IC-7610 CI-V Reference p.15, Command 27 19):
@@ -290,11 +290,18 @@ def _scope_ref_encode(ref: float) -> bytes:
       byte 1: high nibble = 0.1 dB digit (0 or 5), low nibble = 0 (fixed)
       byte 2: 0x00 = positive, 0x01 = negative
 
-    Range: -30.0 to +10.0 dB in 0.5 dB steps.
+    ``bounds`` is the radio's declared adjustable range (profile
+    ``[scope]`` ``ref_min_db``/``ref_max_db``), supplied by the caller
+    because ``commands/`` may not import ``profiles/`` — the same contract
+    as ``scope_set_span``'s ``presets``. ``None`` keeps this encoder's
+    historical default, the IC-7610 CI-V Reference p.15 range
+    (-30.0 to +10.0 in 0.5 dB steps); the shipped Icom profiles all
+    declare their own range, so the runtime always passes one.
     Example: -5.0 dB → [0x05, 0x00, 0x01]
     """
-    if not -30.0 <= ref <= 10.0:
-        raise ValueError(f"scope ref must be -30.0 to +10.0 dB, got {ref}")
+    minimum, maximum = bounds if bounds is not None else (-30.0, 10.0)
+    if not minimum <= ref <= maximum:
+        raise ValueError(f"scope ref must be {minimum} to {maximum} dB, got {ref}")
     is_negative = ref < 0
     tenths = int(round(abs(ref) * 10))
     tens_db = tenths // 100  # 10 dB digit (0-3)
@@ -658,13 +665,22 @@ def scope_set_ref(
     *,
     cmd_map: CommandMap,
     receiver: int | None = None,
+    ref_bounds: tuple[float, float] | None = None,
 ) -> bytes:
+    """Build the 0x27 0x19 SET frame for reference level *ref*.
+
+    ``ref_bounds`` is the radio's declared adjustable range (profile
+    ``[scope]`` ``ref_min_db``/``ref_max_db``), supplied by the caller
+    because ``commands/`` may not import ``profiles/`` — the same contract
+    as ``scope_set_span``'s ``presets``. ``None`` keeps the encoder's
+    historical IC-7610 default range.
+    """
     return _build_from_map(
         cmd_map,
         "get_scope_ref",
         to_addr=to_addr,
         from_addr=from_addr,
-        data=_scope_payload(_scope_ref_encode(ref), receiver),
+        data=_scope_payload(_scope_ref_encode(ref, ref_bounds), receiver),
     )
 
 

@@ -31,7 +31,8 @@ The read-only producer and status publisher independently run `.github/scripts/q
 For a completed legacy run, `.github/scripts/quick-v2-metadata-policy-v1.js: bindRunPullRequest` requires exactly one
 recorded `run.pull_requests` entry and binds its PR number, head, base, and repository identity. The current open PR
 association must be unique and match that tuple; a shared head cannot remap an old run to another PR, and the recorded
-base must equal live `main`.
+base must equal live `main`. GitHub reports the PR's current head in that entry, so a run superseded by a newer
+push (usually cancelled by quick's concurrency) is `stale_head`: the workflow-run leg publishes nothing and stays green.
 
 After the assessments match, `.github/scripts/quick-v2-metadata-policy-v1.js: rebindForPublication` rereads the run
 attempt and job topology, verifies the recorded PR association again, and makes the PR plus live `main` its final API

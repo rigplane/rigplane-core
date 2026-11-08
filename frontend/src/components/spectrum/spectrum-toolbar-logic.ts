@@ -63,6 +63,48 @@ export function clampBrt(current: number, delta: number): number {
   return Math.max(-30, Math.min(30, current + delta));
 }
 
-export function clampRef(current: number, delta: number): number {
-  return Math.max(-30, Math.min(10, current + delta));
+/* ── Scope REF stepping (MOR-3694) ── */
+
+/** The radio's declared scope REF adjustable range, from the profile's
+ *  `[scope]` section published through capabilities. */
+export interface RefRange {
+  readonly min: number;
+  readonly max: number;
+}
+
+/** The REF −/+ button grid, in dB. A UI constant: `ref_step_db` is the
+ *  radio's own resolution (0.5 dB on the shipped Icom rigs), not the
+ *  button step. */
+export const REF_STEP_DB = 5;
+
+/**
+ * Next REF value on the {@link REF_STEP_DB} grid from ANY current value,
+ * clamped to the declared range.
+ *
+ * From an off-grid readback the step lands on the NEIGHBOURING grid point
+ * in the step's direction (−4 down → −5, −4 up → 0; the half-dB −4.5
+ * behaves the same), and from a grid point it moves one full step. The
+ * result is always an in-range integer.
+ */
+export function stepRef(current: number, direction: -1 | 1, range: RefRange): number {
+  const stepped = direction < 0
+    ? Math.ceil(current / REF_STEP_DB) * REF_STEP_DB - REF_STEP_DB
+    : Math.floor(current / REF_STEP_DB) * REF_STEP_DB + REF_STEP_DB;
+  return Math.max(range.min, Math.min(range.max, stepped));
+}
+
+/**
+ * The declared REF range from a capabilities payload, or `null` when the
+ * active radio publishes none (older server, profile without `[scope]`
+ * range fields). `null` means the REF steppers FAIL CLOSED — there is no
+ * fallback range.
+ */
+export function refRangeFromCaps(
+  caps: { ref_min_db?: unknown; ref_max_db?: unknown } | null | undefined,
+): RefRange | null {
+  const { ref_min_db: min, ref_max_db: max } = caps ?? {};
+  return typeof min === 'number' && typeof max === 'number'
+    && Number.isFinite(min) && Number.isFinite(max) && min <= max
+    ? { min, max }
+    : null;
 }

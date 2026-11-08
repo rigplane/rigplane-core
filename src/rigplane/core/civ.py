@@ -12,6 +12,8 @@ from enum import StrEnum
 from .types import CivFrame
 
 _REQUEST_DATA_PREFIX_COMMANDS = frozenset({0x07, 0x25, 0x26})
+#: CI-V broadcast address: a transceive frame sent to it answers no request.
+_BROADCAST_ADDR = 0x00
 _REQUEST_DATA_PREFIX_LENGTHS: dict[tuple[int, int | None], tuple[int, ...]] = {
     (0x1A, 0x00): (3, 4),
 }
@@ -26,6 +28,7 @@ __all__ = [
     "PttReplyLedger",
     "is_directed_ptt_reply",
     "iter_civ_frames",
+    "read_identity_from_frame",
     "request_key_from_frame",
 ]
 
@@ -160,6 +163,7 @@ class _AckWaiter:
     generation: int
     nak_only: bool = False
     response_key: CivRequestKey | None = None
+    refused_read: CivRequestKey | None = None
 
 
 @dataclass(slots=True)
@@ -192,6 +196,22 @@ def request_key_from_frame(frame: CivFrame) -> CivRequestKey:
             )
             else b""
         ),
+    )
+
+
+def read_identity_from_frame(frame: CivFrame) -> CivRequestKey:
+    """The whole identity of an outgoing read, every selector byte kept.
+
+    MOR-4058: :func:`request_key_from_frame` keeps only the selector bytes a
+    reply must echo to be matched, so two ``1A 05`` menu reads share one
+    response key. A refusal (bare ``FA``) has no payload to tell them apart:
+    it must name the read by everything the read carried.
+    """
+    return CivRequestKey(
+        command=frame.command,
+        sub=frame.sub,
+        receiver=frame.receiver,
+        data_prefix=frame.data,
     )
 
 
@@ -233,6 +253,9 @@ class CivRequestTracker:
         self._ack_backlog_drops = 0
         self._ack_orphans = 0
         self._ack_unclaimed_at: float | None = None
+        # MOR-4058: reads a refusal (bare FA) retired, oldest first, until
+        # ``take_refused_reads`` hands them to the acquisition scheduler.
+        self._refused_reads: list[CivRequestKey] = []
 
     @property
     def pending_count(self) -> int:
@@ -327,11 +350,14 @@ class CivRequestTracker:
         consume_backlog: bool = True,
         nak_only: bool = False,
         response_key: CivRequestKey | None = None,
+        refused_read: CivRequestKey | None = None,
     ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
 
         ``response_key`` is read for a sink (``wait=False``) only; ``resolve``
-        says when a data response retires that sink.
+        says when a data response retires that sink. ``refused_read`` (sinks
+        only, :func:`read_identity_from_frame`) is what
+        :meth:`take_refused_reads` reports when a refusal retires the sink.
 
         Returns:
             - Future when ``wait=True`` (caller awaits ACK/NAK)
@@ -372,9 +398,23 @@ class CivRequestTracker:
                 created_monotonic=created,
                 generation=self._generation,
                 response_key=response_key,
+                refused_read=refused_read,
             )
         )
         return token
+
+    def take_refused_reads(self) -> tuple[CivRequestKey, ...]:
+        """Return and forget the reads a refusal retired since the last call.
+
+        MOR-4058: a fire-and-forget read waits on a sink carrying its
+        ``response_key``. When a bare ``0xFA`` retires such a sink, the
+        radio has answered that read with a refusal: a terminal answer, not
+        a lost one. Radios answer in order, so the refusal belongs to the
+        oldest sink still open — the same attribution every ACK/NAK here
+        gets.
+        """
+        refused, self._refused_reads = tuple(self._refused_reads), []
+        return refused
 
     def register_response(self, key: CivRequestKey) -> asyncio.Future[CivFrame]:
         """Register a pending request that expects a specific data response."""
@@ -499,8 +539,20 @@ class CivRequestTracker:
         self._generation += 1
         return self._generation
 
-    def resolve(self, event: CivEvent, *, generation: int | None = None) -> bool:
-        """Resolve a pending request from an incoming event."""
+    def resolve(
+        self,
+        event: CivEvent,
+        *,
+        generation: int | None = None,
+        ordered_ingress: bool = False,
+    ) -> bool:
+        """Resolve a pending request from an incoming event.
+
+        ``ordered_ingress`` is the transport's contract that frames arrive in
+        the order the radio sent them (``SerialCivTransport.ordered_ingress``
+        vs ``IcomTransport.ordered_ingress``). Only then does an answer prove
+        that the older fire-and-forget sinks' answers are lost (MOR-4209).
+        """
         if generation is not None and generation != self._generation:
             return False
 
@@ -525,6 +577,11 @@ class CivRequestTracker:
                     return True
                 elif waiter.future is None:
                     # Successfully sunk an ACK for a fire-and-forget request
+                    if (
+                        event.type is CivEventType.NAK
+                        and waiter.refused_read is not None
+                    ):
+                        self._refused_reads.append(waiter.refused_read)
                     return True
 
             # Park short-lived orphan ACK/NAK frames, bounded and TTL-pruned.
@@ -565,6 +622,11 @@ class CivRequestTracker:
                         pending.future.set_result(frame)
                     return True
                 i += 1
+            # An unsolicited broadcast (transceive) answers no request: it
+            # must not take a pending read's sink (MOR-4209), or the read's
+            # own answer later finds nothing to retire.
+            if frame.to_addr == _BROADCAST_ADDR:
+                return False
             # Otherwise it retires the oldest sink whose ``response_key`` it
             # matches.
             for index, waiter in enumerate(self._ack_waiters):
@@ -572,10 +634,35 @@ class CivRequestTracker:
                     waiter.response_key, frame
                 ):
                     del self._ack_waiters[index]
+                    if ordered_ingress:
+                        self._retire_sinks_passed_by(index)
                     return True
             return False
 
         return False
+
+    def _retire_sinks_passed_by(self, answered_index: int) -> None:
+        """Drop the sinks older than the one a directed answer just retired.
+
+        MOR-4209: sinks are registered by the commander's single worker right
+        before their frame goes out, so their order is the wire order, and the
+        radio answers in that order. On a transport that keeps that order on
+        the way back (``ordered_ingress``) an answer to a later request therefore
+        means every older sink's answer (data, FB or FA) was lost. Left open,
+        the oldest of them took the next bare FA, which then named the wrong
+        read as refused (:meth:`take_refused_reads`, MOR-4058) while the read
+        the radio really refused stayed open. Blocking waiters are left alone:
+        a raw transaction registers before its own pacing gap, so its place in
+        this list is not its place on the wire.
+        """
+        kept: list[_AckWaiter] = []
+        for waiter in self._ack_waiters[:answered_index]:
+            if waiter.future is not None:
+                kept.append(waiter)
+            elif waiter.response_key is None:
+                # A write's FB/FA can no longer be told from a later one.
+                self.note_ack_unclaimed()
+        self._ack_waiters[:answered_index] = kept
 
     def fail_all(self, exc: Exception) -> None:
         """Fail all pending requests and clear the tracker."""
@@ -584,6 +671,7 @@ class CivRequestTracker:
                 w.future.set_exception(exc)
         self._ack_waiters.clear()
         self._ack_backlog.clear()
+        self._refused_reads.clear()
 
         for pending in self._response_waiters:
             if not pending.future.done():

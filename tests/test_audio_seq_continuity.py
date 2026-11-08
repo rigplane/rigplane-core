@@ -127,7 +127,7 @@ def _rebuild_stubs(radio: IcomRadio) -> Iterator[None]:
     """Let ``soft_reconnect`` rebuild CI-V and audio over offline transports."""
     with ExitStack() as stack:
         stack.enter_context(
-            patch("rigplane.transport.IcomTransport", _OfflineAudioTransport)
+            patch("rigplane.transport.IcomCivTransport", _OfflineAudioTransport)
         )
         stack.enter_context(
             patch(

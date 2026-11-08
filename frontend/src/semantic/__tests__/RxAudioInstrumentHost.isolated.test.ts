@@ -473,7 +473,8 @@ describe('RxAudioInstrumentHost radio-AF raw range (MOR-1676)', () => {
   it('keeps the browser volume on the 0.01 lattice with the raw range published', () => {
     const r = render(rawAfPublication({ rxEnabled: true }), audio(0.2, true, 'live'));
     const lease = r.slider().rendererLease;
-    expect(lease.view.domain.max).toBe(1);
+    // MOR-4210: the browser volume runs to 2 (makeup gain), still on 0.01 steps.
+    expect(lease.view.domain.max).toBe(2);
     expect(lease.key({ key: 'ArrowRight', fine: false })).toBe(true);
     expect(r.onAfLevelChange).toHaveBeenCalledExactlyOnceWith(0.21);
   });

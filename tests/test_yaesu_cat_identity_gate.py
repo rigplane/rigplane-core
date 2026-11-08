@@ -31,7 +31,7 @@ from rigplane.core.radio_protocol import (
 )
 from rigplane.exceptions import ConnectionError as RadioConnectionError
 from rigplane.rig_loader import load_rig
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 _RIGS_DIR = Path(__file__).parents[1] / "rigs"
 # Bench-measured FTX-1 IF; frame (see tests/test_ftx1_radio.py,
@@ -67,6 +67,19 @@ class FakeCatTransport:
         self.answers: list[str | Exception] = list(answers)
         self.probe_gate: asyncio.Event | None = None
         self.on_probe: Callable[[], None] | None = None
+        self.baudrate = 38400
+
+    def set_baudrate(self, baudrate: int) -> bool:
+        """``YaesuCatTransport.set_baudrate`` on a port with no pyserial object.
+
+        Closed, the rate is remembered for the open; open, it cannot be
+        retuned — so the connect-time baud search (MOR-4207) asks nothing
+        more and these pins keep their one ``ID;`` per connect.
+        """
+        if self.connected:
+            return False
+        self.baudrate = baudrate
+        return True
 
     async def connect(self) -> None:
         self.connect_calls += 1

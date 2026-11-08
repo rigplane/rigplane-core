@@ -38,6 +38,7 @@ the `--backend` option in the [CLI reference](cli.md).
 | PTT mode | `ptt_mode` | `--serial-ptt-mode` | `ICOM_SERIAL_PTT_MODE` | `civ` | Serial PTT control mode (`civ` supported) |
 | RX device | `rx_device` | `--rx-device` | `ICOM_USB_RX_DEVICE` | auto | USB audio RX device selector (name, index, or hardware id) |
 | TX device | `tx_device` | `--tx-device` | `ICOM_USB_TX_DEVICE` | auto | USB audio TX device selector (name, index, or hardware id) |
+| Capture mode | `capture_mode` | `--usb-capture-mode` | `ICOM_USB_CAPTURE_MODE` | `shared` | Windows capture mode of the USB audio codec: `shared` or `exclusive-preferred` ([details](#windows-capture-mode)) |
 | CI-V Address | `radio_addr` | `--radio-addr` | — | from the radio profile (`model`) | Radio's CI-V address |
 | Timeout | `timeout` | `--timeout` | — | `5.0` | Operation timeout (seconds) |
 
@@ -50,6 +51,29 @@ rigplane --backend serial --model IC-7610 freq 14.074m
 # List available USB audio devices
 rigplane --list-audio-devices
 ```
+
+### Windows capture mode
+
+On Windows, the default AI noise suppression ("Audio enhancements") of a
+capture input can gate a radio's receive audio into digital silence. The
+`capture_mode` of a serial or Yaesu CAT radio decides how its USB audio codec
+is opened:
+
+- `shared` (default): the codec is opened through the Windows shared audio
+  engine (MME). Other programs, WSJT-X pointed at the codec for example, can
+  use the codec at the same time. If the receive audio stays silent, turn off
+  "Audio enhancements" for that input in Windows Sound settings. RigPlane
+  changes no Windows setting; it shows a notice that names this fix when the
+  input stays silent.
+- `exclusive-preferred`: both directions are paired on WASAPI and opened in
+  WASAPI exclusive mode, which bypasses the engine and its effects. While
+  RigPlane holds the codec no other program can use it. When Windows refuses
+  the exclusive open (the codec is busy), RigPlane opens it in shared WASAPI
+  instead and logs that once.
+
+Saved device selectors that name a host API (for example `MME|name:...`) keep
+working in `exclusive-preferred`: they resolve to the same endpoint on WASAPI.
+Other platforms ignore the setting.
 
 ## Connection Parameters (LAN, reference)
 

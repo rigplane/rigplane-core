@@ -268,6 +268,8 @@ export function withModeFilter(fixture: RadioViewModel): RadioViewModel {
     currentFilter: known(1),
     filterChoices: ['FIL1', 'FIL2', 'FIL3'],
     filterWidth: known(2400),
+    // MOR-3677: a fully-observed group carries a known width display.
+    filterWidthDisplay: { state: 'known', hz: 2400, stale: false },
     filterWidthMin: known(50),
     filterWidthMax: known(3600),
   };
@@ -517,6 +519,10 @@ export function withScopeControls(fixture: RadioViewModel): RadioViewModel {
     speed: known(4),
     hold: known(false),
     refDb: known(-5),
+    // MOR-3694: the profile-declared REF range the adapter derives from
+    // capabilities. This fixture carries an IC-7610-shaped range; override
+    // to `null` for the fail-closed cases and to ±20 for the IC-705 shape.
+    refRange: Object.freeze({ min: -30, max: 10 }),
     dual: known(false),
     receiver: known(0),
     duringTx: known(false),

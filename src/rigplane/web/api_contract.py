@@ -24,6 +24,25 @@ class WebSocketRoute(TypedDict):
 class ResponseFieldContract(TypedDict):
     required: tuple[str, ...]
     result_values: NotRequired[tuple[str, ...]]
+    # Optional-but-stable fields: present only when the active profile
+    # declares them (MOR-3694's scope REF range). Listed so the stable
+    # surface documents them without demanding them from every radio.
+    optional: NotRequired[tuple[str, ...]]
+
+
+class CivIngressPayload(TypedDict):
+    """``GET /api/v1/runtime`` ``civIngress``: inbound CI-V order counters of
+    a LAN radio's CI-V transport (MOR-4205), ``null`` without one.
+
+    ``ordered`` is the transport's ``ordered_ingress``; the counters are its
+    ``rx_order_stats`` (``rigplane.core.transport.RxOrderStats``).
+    """
+
+    ordered: bool
+    reordered: int
+    duplicate: int
+    lost: int
+    late: int
 
 
 STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
@@ -176,6 +195,8 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "bridge",
             "process",
             "lastError",
+            # MOR-4205: ``CivIngressPayload`` or null.
+            "civIngress",
         )
     },
     "/api/v1/station": {
@@ -216,7 +237,13 @@ RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {
             "audioConfig",
             "webrtc",
             "cwText",
-        )
+        ),
+        # MOR-3694: the profile's declared `[scope]` REF range, snake_case
+        # as in the profile. Present only when the active profile declares
+        # it; clients fail closed (disable REF stepping) without it.
+        # MOR-4210: the profile's `[audio].rx_audio_level_menu`, `null`
+        # when undeclared; absent when no profile is resolved.
+        "optional": ("ref_min_db", "ref_max_db", "ref_step_db", "rxAudioLevelMenu"),
     },
     "/api/v1/managed-transmit": {
         "required": (

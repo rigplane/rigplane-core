@@ -48,6 +48,7 @@ __all__ = [
     "RuleSpec",
     "TxPolicy",
     "get_radio_profile",
+    "preferred_serial_bauds",
     "resolve_radio_profile",
     "KeyboardBinding",
     "KeyboardConfig",
@@ -501,6 +502,12 @@ class RadioProfile:
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
+    # MOR-4036: ``[data_mode].modes`` — names as written in the rig TOML
+    # ``[modes].list`` of the modes that can carry the DATA flag. The 0x26
+    # selected-mode set drops the preserved DATA flag when the target mode
+    # is not among them. ``None`` = undeclared: the runtime keeps the
+    # current DATA flag (the unchanged pre-MOR-4036 behaviour).
+    data_mode_modes: tuple[str, ...] | None = None
     # When True, MAIN set_mode routes through CI-V 0x26 0x00 (set selected
     # receiver mode) instead of the bare 0x06. Data-driven: derived from the
     # profile declaring a ``set_selected_mode`` command (e.g. Xiegu X6200,
@@ -541,6 +548,10 @@ class RadioProfile:
     sample_rate_by_codec: dict[str, int] | None = None
     browser_rx_transport: str | None = None
     browser_rx_transcode_to_opus: bool | None = None
+    # ``[audio].rx_audio_level_menu`` (MOR-4210): the radio menu item that sets
+    # its RX audio output level to the computer. None = undeclared.
+    # Keyword-only so the fields after it keep their positions.
+    rx_audio_level_menu: str | None = field(default=None, kw_only=True)
     # Capability names whose validate checks route through the set-and-observe
     # engine path (no read-first) instead of read-modify-verify-restore. Data-
     # driven from ``[validation].write_only_controls`` in the rig TOML (MOR-208).
@@ -602,6 +613,11 @@ class RadioProfile:
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
     usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
+    # MOR-4207: ``[radio].default_baud`` — the serial baud the radio is run at
+    # (for the Icom CI-V profiles 115200, the serial scope minimum). Serial
+    # discovery probes these bauds first (:func:`preferred_serial_bauds`).
+    # Keyword-only and appended so no positional argument shifts.
+    default_baud: int = field(default=19200, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:
@@ -867,6 +883,21 @@ def get_radio_profile(name_or_id: str) -> RadioProfile:
         known = ", ".join(sorted(_ensure_loaded().keys()))
         raise KeyError(f"Unknown radio profile {name_or_id!r}. Known models: {known}")
     return profile
+
+
+def preferred_serial_bauds(protocol_type: str) -> tuple[int, ...]:
+    """The loaded profiles' ``default_baud`` values for *protocol_type*, highest first.
+
+    MOR-4207: the bauds serial discovery opens a port at before the
+    protocol's other documented rates. Profile data, so a new radio changes
+    the order through its TOML only.
+    """
+    bauds = {
+        profile.default_baud
+        for profile in _ensure_loaded().values()
+        if profile.protocol_type == protocol_type
+    }
+    return tuple(sorted(bauds, reverse=True))
 
 
 def resolve_radio_profile(

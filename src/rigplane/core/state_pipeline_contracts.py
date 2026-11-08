@@ -528,24 +528,20 @@ TX_METER_FIELD_NAMES: Final[frozenset[str]] = frozenset(
 #: ``split`` are here, which is why they are control rather than panel
 #: despite being operator-adjustable. ``tuner_status`` is here: the end of
 #: a tune is radio-driven, so the TUNE badge follows the poll cadence, and
-#: the setting class would clear it up to 30 s late. ``dcd`` is here for
-#: the same reason (MOR-3630): the squelch-open BUSY lamp is radio-driven
-#: RX status, and the setting class would move it up to 30 s late on a
-#: stretched serial fit. A 2 s cadence costs one cheap single-byte read
-#: per receiver per 2 s — 0.5 q/s, inside every shipped transport budget.
+#: the setting class would clear it up to 30 s late.
 CONTROL_FIELD_NAMES: Final[frozenset[str]] = frozenset(
     {
         "af_level",
         "rf_gain",
         "squelch",
         "filter_width",
+        "filter_width_radio_default",
         "split",
         "tx_target",
         "active",
         "power_level",
         "dual_watch",
         "tuner_status",
-        "dcd",
     }
 )
 #: Everything the operator reaches by turning a knob or opening a menu —
@@ -554,6 +550,7 @@ PANEL_ADJUSTABLE_FIELD_NAMES: Final[frozenset[str]] = frozenset(
     {
         "auto_notch",
         "filter_width",
+        "filter_width_radio_default",
         "if_shift",
         "manual_notch",
         "manual_notch_freq",
@@ -1433,6 +1430,10 @@ def _receiver_specs(receiver_id: str) -> tuple[FieldSpec, ...]:
             "int",
             writable=True,
             unit="hz",
+        ),
+        spec(
+            FieldPath.active(receiver_id, "freq_mode", "filter_width_radio_default"),
+            "bool",
         ),
         spec(
             FieldPath.active(receiver_id, "freq_mode", "filter_num"),

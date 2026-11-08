@@ -158,6 +158,9 @@ function scopeFacts(overrides: Record<string, unknown> = {}) {
     speed: field(1),
     hold: field(false),
     refDb: field(0),
+    // MOR-3694: the IC-705/IC-7300 declared REF range the adapter now
+    // derives from capabilities; `null` overrides exercise fail-closed.
+    refRange: Object.freeze({ min: -20, max: 20 }),
     dual: field(false),
     receiver: field(0),
     duringTx: field(false),
@@ -388,6 +391,91 @@ describe('scope-control intents', () => {
     flushSync();
     expectOnlyScopeCall('onRefChange', 0);
   });
+
+  /** The desktop REF group's [−, +] buttons, in DOM order. */
+  function desktopRefButtons(root: HTMLElement): HTMLButtonElement[] {
+    const group = Array.from(root.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+      .find((item) => item.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')!;
+    return Array.from(group.querySelectorAll<HTMLButtonElement>('button'));
+  }
+
+  it('snaps REF onto the 5 dB grid from an off-grid readback (MOR-3694)', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(-4) }) });
+    const target = mountToolbar();
+    const [minus, plus] = desktopRefButtons(target);
+    minus.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', -5);
+    clearIntentSpies();
+    plus.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 0);
+  });
+
+  it('steps REF from a half-dB readback instead of refusing it', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(-4.5) }) });
+    const target = mountToolbar();
+    const [minus, plus] = desktopRefButtons(target);
+    expect(minus.disabled).toBe(false);
+    minus.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', -5);
+    clearIntentSpies();
+    plus.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 0);
+  });
+
+  it('clamps REF at the declared range ends, never dispatching beyond them', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(20) }) });
+    const target = mountToolbar();
+    const [, plus] = desktopRefButtons(target);
+    plus.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', 20);
+    clearIntentSpies();
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(-20) }) });
+    const floorTarget = mountToolbar();
+    const [minus] = desktopRefButtons(floorTarget);
+    minus.click();
+    flushSync();
+    expectOnlyScopeCall('onRefChange', -20);
+  });
+
+  it('fails closed: no declared range disables REF minus/plus/reset with no dispatch', () => {
+    authorityHarness.current = authority({
+      scopeControls: scopeFacts({ refDb: field(0), refRange: null }),
+    });
+    const target = mountToolbar();
+    const [minus, plus] = desktopRefButtons(target);
+    expect(minus.disabled).toBe(true);
+    expect(plus.disabled).toBe(true);
+    // A bypassed click on the disabled key must still dispatch nothing.
+    minus.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    plus.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
+    flushSync();
+    const reset = target.querySelector<HTMLButtonElement>('[aria-label="Reset reference"]')!;
+    expect(reset.disabled).toBe(true);
+    reset.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    expect(binderHarness.scopeControls.onRefChange).not.toHaveBeenCalled();
+  });
+
+  it('renders an out-of-declared-range readback (-22) as unread: empty value, disabled keys', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(-22) }) });
+    const target = mountToolbar();
+    const group = Array.from(target.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+      .find((item) => item.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')!;
+    const [minus] = Array.from(group.querySelectorAll<HTMLButtonElement>('button'));
+    expect(minus.disabled).toBe(true);
+    expect(group.querySelector('.toolbar-value')!.textContent).toBe('');
+    minus.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    flushSync();
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+  });
 });
 
 // ── Exact known domains and fail-closed fields ─────────────────────────────
@@ -418,10 +506,16 @@ describe('known-value rendering', () => {
     },
   );
 
-  it.each([-30, -1, 0, 1, 10])('renders exact reference %i', (value) => {
+  it.each([-20, -1, 0, 1, 20])('renders exact reference %i', (value) => {
     authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(value) }) });
     const target = mountToolbar();
     expect(target.textContent).toContain(value > 0 ? `+${value}` : String(value));
+  });
+
+  it('renders a half-dB reference readback verbatim (MOR-3694)', () => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(-4.5) }) });
+    const target = mountToolbar();
+    expect(target.textContent).toContain('-4.5');
   });
 
   it('renders exact edge, hold, dual and physical MAIN/SUB values', () => {
@@ -452,7 +546,7 @@ const failClosedCases: readonly FieldCase[] = [
   { name: 'speed', valid: 1, invalid: 3,
     find: (root) => buttons(root).find((item) => item.title === 'Decrease speed') },
   { name: 'hold', valid: false, invalid: 0, find: (root) => button(root, 'HOLD') },
-  { name: 'refDb', valid: 0, invalid: 11,
+  { name: 'refDb', valid: 0, invalid: 21,
     find: (root) => Array.from(root.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
       .find((group) => group.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')
       ?.querySelector<HTMLButtonElement>('button') ?? undefined },
@@ -555,7 +649,7 @@ describe('unread speed, REF and receiver (MOR-2658)', () => {
   });
 
   it('renders known REF values exactly as before, on desktop and mobile', () => {
-    for (const value of [-30, 0, 10]) {
+    for (const value of [-20, 0, 20]) {
       authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(value) }) });
       const target = mountToolbar();
       const expected = value > 0 ? `+${value}` : String(value);

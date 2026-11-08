@@ -5,6 +5,7 @@ TDD: these tests were written FIRST, then the implementation.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import textwrap
@@ -740,6 +741,54 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         assert rig.rf_sql_control_model == "combined"
 
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            # MOR-3694: every shipped scope-REF rig declares its 27 19
+            # adjustable range. IC-705/IC-7300/IC-9700 are -20.0..+20.0 in
+            # 0.5 dB steps (owner-confirmed on the IC-705 bench radio; the
+            # IC-7300MK2 CI-V guide p.25 documents the same range for that
+            # radio, and ic7300mk2.toml already declared it); the IC-7610 is
+            # -30.0..+10.0 (IC-7610 CI-V Reference p.15).
+            ("ic705.toml", (-20.0, 20.0, 0.5)),
+            ("ic7300.toml", (-20.0, 20.0, 0.5)),
+            ("ic7300mk2.toml", (-20.0, 20.0, 0.5)),
+            ("ic9700.toml", (-20.0, 20.0, 0.5)),
+            ("ic7610.toml", (-30.0, 10.0, 0.5)),
+        ],
+    )
+    def test_scope_ref_range_parsed_from_shipped_scope_rigs(self, name, expected):
+        """MOR-3694: the loader parses `[scope]` REF range fields."""
+        profile = load_rig(RIGS_DIR / name).to_profile()
+        assert profile.scope_ref_min_db == expected[0], name
+        assert profile.scope_ref_max_db == expected[1], name
+        assert profile.scope_ref_step_db == expected[2], name
+
+    def test_every_scope_ref_capable_profile_declares_a_ref_range(self):
+        """MOR-3694 conformance: a rig that can set the scope REF level must
+        declare its adjustable range, or every REF control fails closed.
+
+        Scope-REF-capable means the profile both declares the ``scope``
+        capability and binds the 27 19 REF command — the two facts the UI
+        and the web handler gate on.
+        """
+        checked = 0
+        for path in sorted(
+            path for path in RIGS_DIR.glob("*.toml") if not path.name.startswith("_")
+        ):
+            profile = load_rig(path).to_profile()
+            if "scope" not in profile.capabilities:
+                continue
+            if not profile.supports_command("get_scope_ref"):
+                continue
+            assert profile.scope_ref_min_db is not None, path.name
+            assert profile.scope_ref_max_db is not None, path.name
+            assert profile.scope_ref_step_db is not None, path.name
+            assert profile.scope_ref_min_db < profile.scope_ref_max_db, path.name
+            assert profile.scope_ref_step_db > 0, path.name
+            checked += 1
+        assert checked >= 5, "expected the five shipped Icom scope rigs"
+
     def test_ic7610_marks_scope_controls_and_filter_shape_startup_optional(self):
         rig = load_rig(RIGS_DIR / "ic7610.toml")
         acquisition = rig.to_profile().state_acquisition
@@ -798,6 +847,51 @@ labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
         rig = load_rig(RIGS_DIR / name)
         assert rig.data_mode_inputs == expected
         assert rig.to_profile().data_mode_inputs == expected
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            # MOR-4036: [data_mode].modes — the modes that can carry DATA.
+            # IC-705: DATA exists in SSB, AM, FM (instruction manual /
+            # Hamlib); bench-verified 2026-11-02 that CW+DATA is NAKed.
+            ("ic705.toml", ("USB", "LSB", "AM", "FM")),
+            # X6200: PDF page 10 Table 3 documents LSB-D and USB-D only.
+            ("x6200.toml", ("USB", "LSB")),
+        ],
+    )
+    def test_data_mode_modes_reach_runtime_profile(self, name, expected):
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.data_mode_modes == expected, name
+        assert rig.to_profile().data_mode_modes == expected, name
+
+    def test_data_mode_modes_undeclared_is_none_for_shipped_rigs(self):
+        # MOR-4036: rigs without a sourced fact (X6100 among them) stay
+        # undeclared — None keeps the runtime's old preserve-the-flag path.
+        for name in ("x6100.toml", "ic7610.toml", "ic7300.toml"):
+            profile = load_rig(RIGS_DIR / name).to_profile()
+            assert profile.data_mode_modes is None, name
+
+    @pytest.mark.parametrize(
+        ("modes", "message"),
+        [
+            ('["USB", "NOPE"]', r"names mode 'NOPE' that is not in \[modes\].list"),
+            ("[]", "modes must be a non-empty array"),
+            ('["USB", "USB"]', "repeats mode 'USB'"),
+            ('["USB", 3]', r"modes\[1\] must be a string"),
+            ('"USB"', "modes must be a non-empty array"),
+        ],
+    )
+    def test_data_mode_modes_reject_invalid_metadata(self, tmp_path, modes, message):
+        text = re.sub(
+            r"\[data_mode\]\n",
+            f"[data_mode]\nmodes = {modes}\n",
+            TEMPLATE_PATH.read_text(),
+            count=1,
+        )
+        path = tmp_path / "invalid-data-mode-modes.toml"
+        path.write_text(text)
+        with pytest.raises(RigLoadError, match=message):
+            load_rig(path)
 
     @pytest.mark.parametrize(
         ("inputs", "message"),
@@ -3029,6 +3123,49 @@ browser_rx_transcode_to_opus = true
         assert rig.browser_rx_transcode_to_opus is None
         assert profile.tx_codec is None
         assert profile.default_sample_rate_hz is None
+
+    @pytest.mark.parametrize(
+        ("name", "menu"),
+        [
+            ("ic705.toml", "SET > Connectors > USB AF/IF Output > AF Output Level"),
+            ("ic7300.toml", "SET > Connectors > ACC/USB AF Output Level"),
+            ("ic7610.toml", None),
+        ],
+    )
+    def test_rx_audio_level_menu_reaches_the_profile(self, name, menu):
+        """MOR-4210: the USB AF output menu item is profile data."""
+        rig = load_rig(RIGS_DIR / name)
+        assert rig.rx_audio_level_menu == menu
+        assert rig.to_profile().rx_audio_level_menu == menu
+
+    @pytest.mark.parametrize("cls", [RigConfig, RadioProfile])
+    def test_rx_audio_level_menu_keeps_existing_positional_arguments(self, cls):
+        """MOR-4210: a caller that passes positionally every field that
+        existed before ``rx_audio_level_menu`` still gets each value in its
+        own field (``write_only_controls`` stays a control set, not the
+        menu string)."""
+        rig = load_rig(RIGS_DIR / "ic7300.toml")
+        original = rig if cls is RigConfig else rig.to_profile()
+        names = [
+            f.name
+            for f in dataclasses.fields(cls)
+            if f.init and not f.kw_only and f.name != "rx_audio_level_menu"
+        ]
+        keywords = {
+            f.name: getattr(original, f.name)
+            for f in dataclasses.fields(cls)
+            if f.init and f.kw_only and f.name != "rx_audio_level_menu"
+        }
+        rebuilt = cls(*(getattr(original, name) for name in names), **keywords)
+        for name in names:
+            assert getattr(rebuilt, name) == getattr(original, name), name
+        assert rebuilt.rx_audio_level_menu is None
+
+    @pytest.mark.parametrize("value", ['""', '"   "', "100", "true"])
+    def test_rx_audio_level_menu_must_be_a_non_empty_string(self, tmp_path, value):
+        toml = _MINIMAL_TOML + f"\n[audio]\nrx_audio_level_menu = {value}\n"
+        with pytest.raises(RigLoadError, match=r"\[audio\].rx_audio_level_menu"):
+            load_rig(_write_toml(tmp_path, toml))
 
     def test_unknown_tx_codec_rejected(self, tmp_path):
         toml = _MINIMAL_TOML + '\n[audio]\ntx_codec = "BOGUS_CODEC"\n'

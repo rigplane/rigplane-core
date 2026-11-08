@@ -1237,6 +1237,7 @@ Notable fields:
 | `receivers` | `int` | Receiver count from active profile |
 | `modeFamilies` | `object` | Profile `[modes] families`: family name -> mode names, e.g. `{"cw": ["CW-U", "CW-L"]}`. `{}` when the profile declares none. Also in `/api/v1/info` `capabilities`. Use it instead of guessing a radio's CW mode names. |
 | `vfoScheme` | `"ab"` \| `"main_sub"` \| `"ab_shared"` \| `"single"` | VFO label scheme |
+| `rxAudioLevelMenu` | `string` \| `null` | Profile `[audio].rx_audio_level_menu`: the radio menu item that sets its RX audio output level to the computer. `null` when the profile declares none; absent when no profile is resolved |
 | `freqRanges[].bands[].bsrCode` | `int` (optional) | Band Stack Register code for `set_band` |
 | `maxPowerW` | `int` (optional) | The profile's flat rated maximum TX power in watts (`[power].max_watts`): the base the per-band `txBands[].maxPowerW` rows are compared with. Absent when the profile declares none. Also in `/api/v1/info` `capabilities` |
 | `txBands[].maxPowerW` | `int` (optional) | Rated maximum TX power of that band in watts (profile band row `max_power_w`), never above `maxPowerW`. The RF power slider follows the band the active receiver is on, by `powerUnit`: `raw_255` keeps the full range and labels the level in watts (level x band maximum); `watts` scales the range to the band maximum over the flat `maxPowerW`. Full range and a percent label when no band declares a maximum, `powerUnit` is absent or the frequency is unknown. It is display data only: a power value that is sent is never clamped or rescaled by it |
@@ -1355,9 +1356,9 @@ appends only the failure category, and `reason` carries the same category
 (`src/rigplane/web/handlers/audio.py: AudioBroadcaster._notify_relay_start_failure`).
 The category is one of the publishable `AudioStartFailureReason` values
 (`usb_topology_names`, `usb_topology_unavailable`, `usb_ambiguous`,
-`open_timeout`, `format`, `other`) classified by
+`open_timeout`, `device_in_use`, `format`, `other`) classified by
 `src/rigplane/audio/usb_driver.py: audio_start_failure_reason`. Exception text
-is never sent, so the frame is safe to show a remote client; the same category
+is never sent, so the frame is safe to show a remote client (the one deliberate detail is `holder`, the executable file name of the program holding the radio's audio input, present only with `device_in_use` and only when it could be found); the same category
 appears under `audioReceive.failure.reason` in `GET /api/v1/info`.
 
 ### `/api/v1/ws` command envelope

@@ -53,7 +53,7 @@
  * ONE UI-SIDE CONDITION THE HANDLER LACKS (non-blocking, named for the
  * record): `set_scope_edge` is UI-unreachable at THIS fixture's own current
  * mode (`mode=0`, CTR) — both toolbar surfaces gate EDGE's visibility on
- * `isEdgeApplicable` (`spectrum-toolbar-logic.ts:44-46`: FIX(1)/S-F(3) only),
+ * `isEdgeApplicable` (`spectrum-toolbar-logic.ts`: FIX(1)/S-F(3) only),
  * while `onEdgeChange` itself carries no such mode-conditional check at all
  * and dispatches for any in-range edge value regardless of the current mode
  * (walked below as-is). This is NOT a MOR-1576 finding: it is

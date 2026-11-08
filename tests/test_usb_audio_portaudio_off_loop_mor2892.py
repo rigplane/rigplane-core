@@ -35,6 +35,7 @@ from rigplane.audio.usb_driver import (
 )
 
 from _portaudio_pool_helpers import drain_pool
+from rigplane.testing.timing import VirtualClock, await_until
 
 _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default — keeps this suite fast while
@@ -1033,25 +1034,51 @@ async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
 async def test_actual_windows_resolver_mapping_shares_selection_deadline(
     monkeypatch: pytest.MonkeyPatch, windows_selection: None
 ) -> None:
+    await _assert_windows_resolver_mapping_shares_selection_deadline(
+        monkeypatch, mapping_submission_delay_s=0.0
+    )
+
+
+@pytest.mark.timeout(120)
+async def test_actual_windows_resolver_mapping_shares_selection_deadline_under_load(
+    monkeypatch: pytest.MonkeyPatch, windows_selection: None
+) -> None:
+    for _ in range(50):
+        await _assert_windows_resolver_mapping_shares_selection_deadline(
+            monkeypatch, mapping_submission_delay_s=0.02
+        )
+
+
+async def _assert_windows_resolver_mapping_shares_selection_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mapping_submission_delay_s: float,
+) -> None:
     from rigplane.audio.usb_driver import bounded_portaudio_pool
     from test_usb_pairing_windows import _inject_windows, _synthetic_session
 
     total_budget = 0.25
-    tolerance = 0.01
+    enum_budget_consumed = 0.07
+    clock = VirtualClock(0.0)
     backend, sd = _inject_windows(monkeypatch, _synthetic_session())
     driver = UsbAudioDriver(
-        backend=backend, serial_port="COM3", capture_open_timeout=total_budget
+        backend=backend,
+        serial_port="COM3",
+        capture_open_timeout=total_budget,
+        monotonic=clock,
     )
     devices = backend.list_devices()
     gate = threading.Event()
     entered = threading.Event()
     sdk_threads: list[int] = []
-    submissions: list[tuple[str, float, float]] = []
+    submissions: list[tuple[str, float]] = []
     before = bounded_portaudio_pool.inflight
     run_bounded = bounded_portaudio_pool.run_bounded
 
     async def record_submission(fn, *, what, direction, timeout, warn_on_timeout=True):
-        submissions.append((what, time.monotonic(), timeout))
+        if len(submissions) == 2 and mapping_submission_delay_s:
+            await asyncio.sleep(mapping_submission_delay_s)
+        submissions.append((what, timeout))
         return await run_bounded(
             fn,
             what=what,
@@ -1061,7 +1088,7 @@ async def test_actual_windows_resolver_mapping_shares_selection_deadline(
         )
 
     def delayed_list():
-        time.sleep(0.07)
+        clock.advance(enum_budget_consumed)
         return devices
 
     query = sd.query_devices
@@ -1080,34 +1107,35 @@ async def test_actual_windows_resolver_mapping_shares_selection_deadline(
             await driver.start_rx(lambda _frame: None)
         assert entered.is_set(), "actual resolver must reach the gated SDK call"
         assert sdk_threads and all(t != threading.get_ident() for t in sdk_threads)
-        assert [what for what, _, _ in submissions] == [
+        assert [what for what, _ in submissions] == [
             "device enumeration",
             "optional USB topology",
             "device enumeration",
         ]
-        _, enum_entry, enum_timeout = submissions[0]
-        _, pnp_entry, pnp_timeout = submissions[1]
-        _, mapping_entry, mapping_timeout = submissions[2]
-        original_deadline = enum_entry + enum_timeout
-        assert 0 < enum_timeout <= total_budget
-        assert abs(mapping_entry + mapping_timeout - original_deadline) < tolerance
+        enum_timeout = submissions[0][1]
+        pnp_timeout = submissions[1][1]
+        mapping_timeout = submissions[2][1]
+        selection_deadline = total_budget
+        assert enum_timeout == pytest.approx(selection_deadline, abs=1e-6)
+        assert mapping_timeout == pytest.approx(
+            selection_deadline - enum_budget_consumed, abs=1e-6
+        ), "mapping must reuse the original selection deadline, not a fresh budget"
         assert mapping_timeout < enum_timeout - 0.05
         reserve = min(0.25, total_budget / 4)
         assert 0 < pnp_timeout <= 0.02
-        assert pnp_entry + pnp_timeout <= original_deadline - reserve + tolerance
+        assert enum_budget_consumed + pnp_timeout <= selection_deadline - reserve + 1e-6
         assert bounded_portaudio_pool.inflight == before + 1
         assert not backend.rx_streams
         assert driver.selected_rx_device is None
         assert driver.selected_tx_device is None
     finally:
         gate.set()
-        drain_deadline = time.monotonic() + 2
-        while (
-            bounded_portaudio_pool.inflight != before
-            and time.monotonic() < drain_deadline
-        ):
-            await asyncio.sleep(0.005)
-        assert bounded_portaudio_pool.inflight == before
+        await await_until(
+            lambda: bounded_portaudio_pool.inflight == before,
+            timeout=2.0,
+            description="abandoned resolver worker to drain",
+        )
+        await drain_pool()
     assert driver.selected_rx_device is None
     assert driver.selected_tx_device is None
     assert not backend.rx_streams

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { RxPlayer } from '../rx-player';
+import {
+  RX_AF_LEVEL_MAX, RX_MAKEUP_GAIN_MAX, RxPlayer, afLevelToRxGain, softLimitCurve,
+} from '../rx-player';
 import { AUDIO_HEADER_SIZE, MSG_TYPE_RX, CODEC_OPUS, CODEC_PCM16, SAMPLE_RATE, FRAME_DURATION_MS } from '../constants';
 
 let ctx: any;
@@ -7,6 +9,8 @@ beforeEach(() => {
   const gains: any[] = [];
   const panners: any[] = [];
   const splitters: any[] = [];
+  const shapers: any[] = [];
+  const srcs: any[] = [];
   ctx = {
     state: 'running', sampleRate: SAMPLE_RATE, currentTime: 0, destination: {},
     resume: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined),
@@ -25,14 +29,24 @@ beforeEach(() => {
       splitters.push(s);
       return s;
     }),
+    createWaveShaper: vi.fn(() => {
+      const w = { curve: null, oversample: 'none', connect: vi.fn() };
+      shapers.push(w);
+      return w;
+    }),
     createBuffer: vi.fn((ch: number, n: number, sr: number) => {
       const planes = Array.from({ length: ch }, () => new Float32Array(n));
       return { duration: n / sr, length: n, numberOfChannels: ch,
         getChannelData: (channel: number) => planes[channel] };
     }),
     _lastSrc: null as any,
+    _srcs: srcs,
     createBufferSource: vi.fn(function (this: any) {
-      const src = { buffer: null, connect: vi.fn(), start: vi.fn() };
+      const src = {
+        buffer: null, connect: vi.fn(), start: vi.fn(), stop: vi.fn(),
+        addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      };
+      srcs.push(src);
       ctx._lastSrc = src;
       return src;
     }),
@@ -41,6 +55,7 @@ beforeEach(() => {
     _gains: gains,
     _panners: panners,
     _splitters: splitters,
+    _shapers: shapers,
   };
   (globalThis as any).AudioContext = function () { return ctx; } as any;
 });
@@ -52,6 +67,12 @@ function pcm16(n: number): ArrayBuffer {
   v.setUint8(0, MSG_TYPE_RX); v.setUint8(1, CODEC_PCM16);
   v.setUint16(4, SAMPLE_RATE / 100, true); v.setUint8(6, 1); v.setUint8(7, FRAME_DURATION_MS);
   return buf;
+}
+
+// Stub document.hidden (own property; delete restores the prototype getter).
+// get()-based so a test can flip visibility mid-run, as MOR-3965 does.
+function setHidden(hidden: boolean): void {
+  Object.defineProperty(document, 'hidden', { configurable: true, get: () => hidden });
 }
 
 describe('local RX playback diagnostics', () => {
@@ -204,11 +225,11 @@ describe('local RX playback diagnostics', () => {
 describe('RxPlayer', () => {
   it('creates AudioContext and routing graph on start', () => {
     const p = new RxPlayer(); p.start();
-    expect(ctx.createGain).toHaveBeenCalledTimes(3);  // preGain + mainGain + subGain
-    // Terminal nodes in the new graph are the two stereo panners.
-    const [mainP, subP] = ctx._panners;
-    expect(mainP.connect).toHaveBeenCalledWith(ctx.destination);
-    expect(subP.connect).toHaveBeenCalledWith(ctx.destination);
+    // preGain + mainGain + subGain + limiter input scale (MOR-4210)
+    expect(ctx.createGain).toHaveBeenCalledTimes(4);
+    // The terminal node is the output limiter.
+    const [shaper] = ctx._shapers;
+    expect(shaper.connect).toHaveBeenCalledWith(ctx.destination);
     expect(p.active).toBe(true); p.stop();
   });
   it('is inactive before start and after stop', () => {
@@ -226,7 +247,7 @@ describe('RxPlayer', () => {
   it('clamps volume and applies to gain', () => {
     const p = new RxPlayer(); p.start();
     p.volume = -1; expect(p.volume).toBe(0);
-    p.volume = 5; expect(p.volume).toBe(1);
+    p.volume = 5; expect(p.volume).toBe(RX_AF_LEVEL_MAX);
     p.volume = 0.3; expect(ctx._gain.gain.value).toBeCloseTo(0.3); p.stop();
   });
   it('processes PCM16 frame and schedules playback', () => {
@@ -250,20 +271,21 @@ describe('RxPlayer audio routing (#753)', () => {
   it('builds splitter + 2 gains + 2 panners graph on start', () => {
     const p = new RxPlayer();
     p.start();
-    // 3 gains: preGain + mainGain + subGain
-    expect(ctx._gains.length).toBe(3);
+    // 4 gains: preGain + mainGain + subGain + limiter input scale
+    expect(ctx._gains.length).toBe(4);
     expect(ctx._panners.length).toBe(2);
     expect(ctx._splitters.length).toBe(1);
     p.stop();
   });
 
-  it('default state: focus=both, split=off → both gains on unity, panners centred', () => {
+  it('default state: focus=both, split=off → both channels at unity after the centre pan, panners centred', () => {
     const p = new RxPlayer();
     p.start();
     const [_pre, mainG, subG] = ctx._gains;
     const [mainP, subP] = ctx._panners;
-    expect(mainG.gain.value).toBe(1);
-    expect(subG.gain.value).toBe(1);
+    // MOR-4210: the gain stage cancels the centre pan's -3 dB.
+    expect(mainG.gain.value * centrePanEar).toBeCloseTo(1, 12);
+    expect(subG.gain.value * centrePanEar).toBeCloseTo(1, 12);
     expect(mainP.pan.value).toBe(0);
     expect(subP.pan.value).toBe(0);
     p.stop();
@@ -274,7 +296,7 @@ describe('RxPlayer audio routing (#753)', () => {
     p.start();
     p.setFocus('main');
     const [_pre, mainG, subG] = ctx._gains;
-    expect(mainG.gain.value).toBe(1);
+    expect(mainG.gain.value * centrePanEar).toBeCloseTo(1, 12);
     expect(subG.gain.value).toBe(0);
     p.stop();
   });
@@ -285,7 +307,7 @@ describe('RxPlayer audio routing (#753)', () => {
     p.setFocus('sub');
     const [_pre, mainG, subG] = ctx._gains;
     expect(mainG.gain.value).toBe(0);
-    expect(subG.gain.value).toBe(1);
+    expect(subG.gain.value * centrePanEar).toBeCloseTo(1, 12);
     p.stop();
   });
 
@@ -297,8 +319,8 @@ describe('RxPlayer audio routing (#753)', () => {
     p.setFocus('main');
     p.setFocus('both');
     const [_pre, mainG, subG] = ctx._gains;
-    expect(mainG.gain.value).toBeCloseTo(0.5012, 3);  // -6 dB
-    expect(subG.gain.value).toBeCloseTo(0.2512, 3);   // -12 dB
+    expect(mainG.gain.value * centrePanEar).toBeCloseTo(0.5012, 3);  // -6 dB
+    expect(subG.gain.value * centrePanEar).toBeCloseTo(0.2512, 3);   // -12 dB
     p.stop();
   });
 
@@ -353,6 +375,231 @@ describe('RxPlayer audio routing (#753)', () => {
     const [preGain] = ctx._gains;
     expect(preGain.gain.value).toBeCloseTo(0.42);
     p.stop();
+  });
+
+  it('split stereo keeps the hard-panned channels at their own gain (no centre compensation)', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.setSplitStereo(true);
+    const [_pre, mainG, subG] = ctx._gains;
+    // A hard pan already sends the mono channel to one ear at full level.
+    expect(mainG.gain.value).toBe(1);
+    expect(subG.gain.value).toBe(1);
+    p.stop();
+  });
+});
+
+/** Ear gain of a StereoPannerNode at pan 0 on mono input: the Web Audio
+ *  spec's equal-power law, cos(pi/4) (about -3 dB). */
+const centrePanEar = Math.cos(Math.PI / 4);
+
+/** WaveShaperNode curve lookup per the Web Audio spec: linear interpolation
+ *  over [-1, 1], inputs beyond the ends take the end values. */
+function shape(curve: Float32Array, x: number): number {
+  const n = curve.length;
+  const v = ((n - 1) / 2) * (x + 1);
+  if (v <= 0) return curve[0];
+  if (v >= n - 1) return curve[n - 1];
+  const k = Math.floor(v);
+  const f = v - k;
+  return (1 - f) * curve[k] + f * curve[k + 1];
+}
+
+/** One sample through the player's output stage as built: preGain → main
+ *  gain → centre pan ear → limiter input scale → shaper curve. */
+function outputSample(p: RxPlayer, x: number): number {
+  const [pre, main, , limiterIn] = ctx._gains;
+  const [shaper] = ctx._shapers;
+  void p;
+  return shape(shaper.curve, x * pre.gain.value * main.gain.value * centrePanEar * limiterIn.gain.value);
+}
+
+/** A mono PCM16 frame whose samples alternate +peak/-peak (peak in 0..1). */
+function pcm16Peak(n: number, peak: number): ArrayBuffer {
+  const buf = pcm16(n);
+  const v = new DataView(buf);
+  const value = Math.round(peak * 32767);
+  for (let i = 0; i < n; i++) v.setInt16(AUDIO_HEADER_SIZE + i * 2, i % 2 ? -value : value, true);
+  return buf;
+}
+
+describe('quiet RX source detection (MOR-4210)', () => {
+  const dbfs = (db: number) => Math.pow(10, db / 20);
+  let now = 0;
+  beforeEach(() => { now = 0; vi.spyOn(performance, 'now').mockImplementation(() => now); });
+  afterEach(() => { vi.restoreAllMocks(); });
+  /** Feed one 20 ms frame per 20 ms of clock for `ms` milliseconds. */
+  const feedFor = (p: RxPlayer, ms: number, peak: number) => {
+    for (let t = 0; t < ms; t += 20) { p.feed(pcm16Peak(960, peak)); now += 20; }
+  };
+
+  it('reports a low source after 20 s of audible audio that never reaches -12 dBFS', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 19_900, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    feedFor(p, 200, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(true);
+    p.stop();
+    expect(p.sourceLevelLow).toBe(false);
+  });
+
+  it('clears on the first frame at or above -12 dBFS', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 20_100, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(true);
+    p.feed(pcm16Peak(960, dbfs(-11)));
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  it('does not call the IC-705 maximum (-7.8 dBFS peak) low', () => {
+    const p = new RxPlayer(); p.start();
+    for (let t = 0; t < 40_000; t += 1000) {
+      feedFor(p, 980, dbfs(-25));
+      p.feed(pcm16Peak(960, dbfs(-7.8))); now += 20;
+    }
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  it('never calls digital silence low (squelch closed says nothing about level)', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 45_000, 0);
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  // Review round 1: the 20 s are audible audio, not wall time since the
+  // first frame — closed-squelch silence counts for nothing.
+  it('does not call one quiet frame after 20 s of silence low', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 20_000, 0);
+    feedFor(p, 20, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    feedFor(p, 19_900, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    feedFor(p, 100, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(true);
+    p.feed(pcm16Peak(960, dbfs(-6)));
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+
+  it('counts audible time across squelch gaps', () => {
+    const p = new RxPlayer(); p.start();
+    for (let burst = 0; burst < 4; burst += 1) {
+      feedFor(p, 5_000, dbfs(-20));
+      feedFor(p, 10_000, 0);
+    }
+    expect(p.sourceLevelLow).toBe(true);
+    p.stop();
+  });
+
+  it('restarts the window on flush', () => {
+    const p = new RxPlayer(); p.start();
+    feedFor(p, 19_000, dbfs(-20));
+    p.flush();
+    feedFor(p, 2_000, dbfs(-20));
+    expect(p.sourceLevelLow).toBe(false);
+    p.stop();
+  });
+});
+
+describe('RX makeup gain and output limiter (MOR-4210)', () => {
+  it('maps AF level 100% to exact unity and 200% to +20 dB', () => {
+    expect(afLevelToRxGain(0)).toBe(0);
+    expect(afLevelToRxGain(0.5)).toBe(0.5);
+    expect(afLevelToRxGain(1)).toBe(1);
+    expect(20 * Math.log10(afLevelToRxGain(1.5))).toBeCloseTo(10, 9);
+    expect(20 * Math.log10(afLevelToRxGain(2))).toBeCloseTo(20, 9);
+    expect(afLevelToRxGain(2)).toBeCloseTo(RX_MAKEUP_GAIN_MAX, 12);
+    expect(afLevelToRxGain(5)).toBeCloseTo(RX_MAKEUP_GAIN_MAX, 12);
+    expect(afLevelToRxGain(-1)).toBe(0);
+    expect(afLevelToRxGain(Number.NaN)).toBe(0);
+  });
+
+  it('applies the mapped gain to preGain and reports the AF level as volume', () => {
+    const p = new RxPlayer();
+    p.start();
+    const [pre] = ctx._gains;
+    p.volume = 1; expect(pre.gain.value).toBe(1);
+    p.volume = 2; expect(pre.gain.value).toBeCloseTo(10, 12);
+    expect(p.volume).toBe(2);
+    p.stop();
+  });
+
+  it('starts a new graph at the stored makeup gain', () => {
+    const p = new RxPlayer();
+    p.volume = 2;
+    p.start();
+    expect(ctx._gains[0].gain.value).toBeCloseTo(10, 12);
+    p.stop();
+  });
+
+  it('sends the destination only the limiter output', () => {
+    const p = new RxPlayer();
+    p.start();
+    const [, , , limiterIn] = ctx._gains;
+    const [mainP, subP] = ctx._panners;
+    const [shaper] = ctx._shapers;
+    expect(mainP.connect).toHaveBeenCalledWith(limiterIn);
+    expect(subP.connect).toHaveBeenCalledWith(limiterIn);
+    expect(limiterIn.connect).toHaveBeenCalledWith(shaper);
+    expect(shaper.connect).toHaveBeenCalledWith(ctx.destination);
+    const intoDestination = [...ctx._gains, ...ctx._panners, ...ctx._splitters, ...ctx._shapers]
+      .filter(node => node.connect.mock.calls.some((call: unknown[]) => call[0] === ctx.destination));
+    expect(intoDestination).toEqual([shaper]);
+    expect(shaper.curve).toBeInstanceOf(Float32Array);
+    p.stop();
+  });
+
+  it('keeps every output sample at or below 0 dBFS at +20 dB on a full-scale source', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.volume = 2;
+    let peak = 0;
+    for (let i = 0; i < 4800; i++) {
+      const x = Math.sin((2 * Math.PI * 1000 * i) / SAMPLE_RATE);  // 0 dBFS sine
+      peak = Math.max(peak, Math.abs(outputSample(p, x)));
+    }
+    expect(peak).toBeLessThanOrEqual(1);
+    expect(peak).toBeGreaterThan(0.95);  // loud, not muted by the limiter
+    p.stop();
+  });
+
+  it('keeps the IC-705 measured source (-7.8 dBFS peak) under 0 dBFS at every makeup step', () => {
+    const p = new RxPlayer();
+    p.start();
+    const sourcePeak = Math.pow(10, -7.8 / 20);
+    for (let level = 1; level <= RX_AF_LEVEL_MAX + 1e-9; level += 0.05) {
+      p.volume = level;
+      for (const x of [sourcePeak, -sourcePeak]) {
+        expect(Math.abs(outputSample(p, x))).toBeLessThanOrEqual(1);
+      }
+    }
+    p.stop();
+  });
+
+  it('passes quiet audio unchanged at AF 100% (no level jump for existing users)', () => {
+    const p = new RxPlayer();
+    p.start();
+    p.volume = 1;
+    for (const x of [0, 0.001, -0.01, 0.1, -0.3, 0.45]) {
+      expect(outputSample(p, x)).toBeCloseTo(x, 5);
+    }
+    p.stop();
+  });
+
+  it('builds a monotonic, odd-symmetric curve that never exceeds full scale', () => {
+    const curve = softLimitCurve();
+    const mid = (curve.length - 1) / 2;
+    expect(Number.isInteger(mid)).toBe(true);
+    expect(curve[mid]).toBe(0);
+    for (let k = 1; k < curve.length; k++) {
+      expect(curve[k]).toBeGreaterThanOrEqual(curve[k - 1]);
+      expect(Math.abs(curve[k])).toBeLessThan(1);
+      expect(curve[curve.length - 1 - k]).toBeCloseTo(-curve[k], 7);
+    }
   });
 });
 
@@ -558,6 +805,219 @@ describe('RxPlayer link-quality stats (MOR-585)', () => {
   });
 });
 
+describe('RxPlayer hidden-tab burst absorption (MOR-3965)', () => {
+  afterEach(() => { delete (document as any).hidden; });
+
+  it('absorbs a 2 s burst while hidden, then keeps absorbing later bursts', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    // A throttled background tab delivers WS frames in one burst at a
+    // single currentTime — 100 x 20 ms frames = 2 s of audio at once.
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(100);
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().underruns).toBe(0);
+    const starts = ctx._srcs.map((s: any) => s.start.mock.calls[0][0]);
+    expect(starts[0]).toBeCloseTo(0.4, 5);   // primed at the 400 ms background floor
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i] - starts[i - 1]).toBeCloseTo(0.02, 6);  // contiguous, no re-prime
+    }
+    // The clock moved on; the next burst continues the same timeline.
+    ctx.currentTime = 2.0;
+    for (let i = 0; i < 20; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(120);
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().underruns).toBe(0);
+    expect(ctx._srcs[100].start.mock.calls[0][0]).toBeCloseTo(2.4, 5);
+    p.stop();
+  });
+
+  it('drops the same burst at the foreground ceiling while visible (foreground unchanged)', () => {
+    setHidden(false);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    // Foreground bounds: starts 0.05..0.29 (13 frames fit under 300 ms), 87 dropped.
+    expect(p.stats().playback.scheduledFrames).toBe(13);
+    expect(p.stats().droppedFrames).toBe(87);
+    p.stop();
+  });
+
+  it('trims the hidden backlog to the foreground ceiling when the page becomes visible', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));  // sources at 0.4 .. 2.38 s
+    setHidden(false);
+    ctx.currentTime = 1.003;   // odd clock value — no FP tie with the 20 ms grid
+    document.dispatchEvent(new Event('visibilitychange'));
+    const starts = ctx._srcs.map((s: any) => s.start.mock.calls[0][0]);
+    const now = 1.003, limit = now + 0.3;
+    for (let i = 0; i < starts.length; i++) {
+      if (starts[i] > limit) expect(ctx._srcs[i].stop).toHaveBeenCalledTimes(1);
+      if (starts[i] <= now) expect(ctx._srcs[i].stop).not.toHaveBeenCalled();
+    }
+    // 55 whole not-yet-started buffers beyond the limit were dropped in one trim.
+    expect(p.stats().droppedFrames).toBe(55);
+    // Schedule head is back within the foreground bounds (297 ms ≤ 300 ms)…
+    expect(p.stats().bufferDepthMs).toBe(297);
+    // …and the next frame continues right after the kept tail, with no gap
+    // and no spurious underrun.
+    p.feed(pcm16(960));
+    expect(ctx._srcs[100].start.mock.calls[0][0]).toBeCloseTo(1.3, 5);
+    expect(ctx._srcs[100].stop).not.toHaveBeenCalled();
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
+  it('flush() stops pending sources without counting drops (MOR-3965 reconnect)', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    ctx.currentTime = 0;
+    for (let i = 0; i < 10; i++) p.feed(pcm16(960));
+    p.flush();
+    for (const s of ctx._srcs) expect(s.stop).toHaveBeenCalledTimes(1);
+    expect(p.stats().droppedFrames).toBe(0);
+    ctx.currentTime = 5; p.feed(pcm16(960));
+    expect(ctx._srcs.at(-1).start.mock.calls[0][0]).toBeCloseTo(5.4, 5);
+    expect(p.stats().underruns).toBe(0);
+    p.stop();
+  });
+
+  it('respects configured bounds wider than the background constants while hidden', () => {
+    setHidden(true);
+    const p = new RxPlayer(); p.start();
+    p.setJitterBounds(1000, 8000);
+    ctx.currentTime = 0;
+    p.feed(pcm16(960));
+    expect(ctx._lastSrc.start.mock.calls[0][0]).toBeCloseTo(1.0, 5);  // configured floor wins
+    for (let i = 0; i < 249; i++) p.feed(pcm16(960));   // ~5 s backlog: beyond 4 s, within 8 s
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().playback.scheduledFrames).toBe(250);
+    p.stop();
+  });
+
+  it('detaches the visibilitychange listener on stop()', () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    try {
+      const p = new RxPlayer(); p.start();
+      const added = add.mock.calls.filter(([event]) => event === 'visibilitychange');
+      expect(added.length).toBe(1);
+      p.stop();
+      expect(remove).toHaveBeenCalledWith('visibilitychange', added[0][1]);
+    } finally {
+      add.mockRestore(); remove.mockRestore();
+    }
+  });
+});
+
+describe('RxPlayer delivery stalls while the window is not focused (MOR-4221)', () => {
+  // The audio clock keeps running while the page's main thread is starved
+  // (App Nap, an unfocused WKWebView); the WS frames then arrive late and all
+  // at once. FRAME is the 20 ms frame period the server sends at.
+  const FRAME = 0.02;
+  let tick: number;
+  const at = (frames: number) => frames * FRAME;
+  function steady(p: RxPlayer, frames: number): void {
+    for (let i = 0; i < frames; i++) { tick++; ctx.currentTime = at(tick); p.feed(pcm16(960)); }
+  }
+  /** The main thread stalls for `seconds`, then delivers every frame that
+   *  piled up during the stall in one burst. */
+  function stall(p: RxPlayer, seconds: number): void {
+    const burst = Math.round(seconds / FRAME);
+    tick += burst;
+    ctx.currentTime = at(tick);
+    for (let i = 0; i < burst; i++) p.feed(pcm16(960));
+  }
+  beforeEach(() => { tick = 0; setHidden(false); });
+  afterEach(() => { delete (document as any).hidden; });
+
+  it('keeps every late burst and runs dry only on the first stall (visible window, 1 s stalls)', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 100);
+    stall(p, 1.0);
+    // The first stall is unavoidable: nothing is known about stalls yet.
+    expect(p.stats().underruns).toBe(1);
+    steady(p, 100);
+    stall(p, 1.0);
+    steady(p, 100);
+    stall(p, 1.0);
+    // The kept burst deepened the buffer by the stall, so the next two stalls
+    // find audio still queued: no new underrun, and no frame dropped at the
+    // old 300 ms ceiling.
+    expect(p.stats().underruns).toBe(1);
+    expect(p.stats().droppedFrames).toBe(0);
+    expect(p.stats().playback.scheduledFrames).toBe(100 * 3 + 50 * 3);
+    // After the first stall the timeline is contiguous: no gap, no re-prime.
+    const starts = ctx._srcs.map((src: any) => src.start.mock.calls[0][0]);
+    for (let i = 102; i < starts.length; i++) {
+      expect(starts[i] - starts[i - 1]).toBeCloseTo(FRAME, 6);
+    }
+    p.stop();
+  });
+
+  it('leaves the foreground bounds alone below the stall threshold', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 50);
+    tick += 10; ctx.currentTime = at(tick);   // a 200 ms hiccup: ordinary jitter
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(50 + 13);
+    expect(p.stats().droppedFrames).toBe(87);
+    p.stop();
+  });
+
+  it('forgets the stalls on flush() (reconnect)', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 50);
+    stall(p, 1.0);
+    p.flush();
+    ctx.currentTime += 5;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(50 + 50 + 13);
+    expect(p.stats().droppedFrames).toBe(87);
+    p.stop();
+  });
+
+  it('does not take a paused stream that restarts (audio_start) for a stall', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 50);
+    ctx.currentTime += 10;        // the server stopped the stream for 10 s
+    p.start();                    // audio_start re-invokes start() on the running context
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames).toBe(50 + 13);
+    p.stop();
+  });
+
+  it('does not re-record an ended stall from a burst delivered after the window is back', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 100);
+    tick += 50; ctx.currentTime = at(tick);   // 1 s stall; the buffer ran dry
+    window.dispatchEvent(new Event('focus'));  // focus returns before the burst lands
+    for (let i = 0; i < 50; i++) p.feed(pcm16(960));
+    // Foreground bounds again: the burst is cut at the 300 ms ceiling, the
+    // latency is not held at ~1 s.
+    expect(p.stats().bufferDepthMs).toBeLessThanOrEqual(310);   // 50 ms floor + 13 frames
+    expect(p.stats().playback.scheduledFrames).toBe(100 + 13);
+    p.stop();
+  });
+
+  it('returns to the configured latency when the window is back in the foreground', () => {
+    const p = new RxPlayer(); p.start();
+    steady(p, 100);
+    stall(p, 1.0);
+    expect(p.stats().bufferDepthMs).toBeGreaterThan(1000);
+    window.dispatchEvent(new Event('focus'));
+    expect(p.stats().bufferDepthMs).toBeLessThanOrEqual(300);
+    // And the next burst is bounded by the configured ceiling again.
+    const before = p.stats().playback.scheduledFrames;
+    for (let i = 0; i < 100; i++) p.feed(pcm16(960));
+    expect(p.stats().playback.scheduledFrames - before).toBeLessThan(10);
+    p.stop();
+  });
+});
+
 describe('RxPlayer mid-stream codec switch (MOR-588)', () => {
   // Adaptive egress (server-side controller) switches PCM16↔Opus
   // mid-stream; the codec byte travels per frame. The player must
@@ -607,6 +1067,31 @@ describe('RxPlayer mid-stream codec switch (MOR-588)', () => {
     expect(FakeAudioDecoder.instances.length).toBe(1);
     expect(p.stats().playback).toMatchObject({ validFrames: 2, decodedFrames: 2, scheduledFrames: 2 });
     expect(FakeAudioDecoder.instances[0].config?.codec).toBe('opus');
+    p.stop();
+  });
+
+  it('flush() discards Opus output still pending in the old decoder (MOR-3965 reconnect)', () => {
+    const p = new RxPlayer(); p.start();
+    // A delayed (background) decoder: output arrives only when released.
+    const pending: Array<() => void> = [];
+    const decode = vi.spyOn(FakeAudioDecoder.prototype, 'decode').mockImplementation(function (this: any) {
+      const init = this.init;
+      pending.push(() => init.output({
+        numberOfFrames: 480, numberOfChannels: 1, sampleRate: SAMPLE_RATE,
+        copyTo: vi.fn(), close: vi.fn(),
+      }));
+    });
+    p.feed(opus());
+    const old = FakeAudioDecoder.instances[0];
+    p.flush();                       // reconnect before the decode finished
+    expect(old.state).toBe('closed');
+    pending.forEach(release => release());   // the old output lands late
+    expect(ctx.createBufferSource).not.toHaveBeenCalled();
+    decode.mockRestore();
+    p.feed(opus());                  // fresh frames use a fresh decoder
+    expect(FakeAudioDecoder.instances.length).toBe(2);
+    expect(FakeAudioDecoder.instances[1].state).toBe('configured');
+    expect(ctx.createBufferSource).toHaveBeenCalledTimes(1);
     p.stop();
   });
 

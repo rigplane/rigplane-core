@@ -49,6 +49,7 @@ the caller did not explicitly override codec or sample rate.
 | `sample_rate_by_codec`        | table string→int  | no       | Per-codec default sample rate used by the resolver for RX and TX. Keys must be `AudioCodec` names. |
 | `browser_rx_transport`        | string            | no       | Browser consumer transport policy: `"auto"`, `"pcm"`, or `"opus"`. |
 | `browser_rx_transcode_to_opus`| bool              | no       | Whether browser RX may transcode radio-native audio to Opus. This is not a radio-native codec setting. |
+| `rx_audio_level_menu`         | string            | no       | The radio menu item that sets its RX audio output level to the computer, served as `rxAudioLevelMenu` in `/api/v1/capabilities` (`null` when undeclared). |
 
 Example:
 
@@ -301,6 +302,17 @@ as an argument — `commands/` may not import `profiles/`, so the runtime
 reads the resolved profile and passes the list in. A profile that omits
 this key therefore decodes and encodes no span at all.
 
+The `ref_*_db` triple is the 0x19 reference level's adjustable range
+(MOR-3694). Every shipped profile that declares the `scope` capability and
+binds the 0x19 command declares all three (a conformance test enforces
+it); `ref_step_db` is the radio's own resolution (0.5 dB on the Icom
+rigs), not the UI stepping grid. The web server publishes the triple on
+both capability endpoints under these same names; the frontend steps REF
+on a 5 dB grid clamped to this range and the `set_scope_ref` handler
+refuses values outside it. A profile that omits the triple gets REF
+stepping that fails closed on both ends — disabled keys, refused writes —
+never a fallback range.
+
 ## `[attenuator]` — Attenuator Steps
 
 Optional section. Defines available attenuator values for the radio.
@@ -475,7 +487,7 @@ Additional optional fields:
 |------------------|--------|----------|--------------------------------------------------|
 | `encoding`       | string | no       | `"segmented_bcd_index"` (default, Icom BCD index), `"raw_byte_index"` (raw byte index), or `"table_index"` (Yaesu) |
 | `first_code`     | int    | no       | First wire code carrying a width value (default `0`). Codes below it carry no Hz value (e.g. the FTX-1 code-00 "(Default)"). The loader reads it as `filter_width_first_code` (`rig_loader.py: load_rig`, first_code default 0; `radio_default_code` must sit below it) and Yaesu width lookups index the per-mode table as `code - first_code`. |
-| `radio_default_code` | int | no     | Writeable code returning the width to the radio's own mode-dependent default. Must sit below `first_code`. |
+| `radio_default_code` | int | no     | Writeable code returning the width to the radio's own mode-dependent default. Must sit below `first_code`. Read side (MOR-3677): a width answer equal to this code carries no Hz value; the Yaesu read reports it as a null width plus the `filter_width_radio_default` observation flag. |
 | `width_min_hz`   | int    | no       | Minimum IF filter width in Hz                    |
 | `width_max_hz`   | int    | no       | Maximum IF filter width in Hz                    |
 
@@ -664,7 +676,10 @@ the FTX-1 declares the CAT pair `get_memory_channel` (MR) and `get_memory_tag` (
 `"channel"` (FTX-1, one numbered list, group 0 only); the first two also pick the
 `1A 00` record layout; `first_group`/`last_group` bound the
 group number or band code, `first_channel`/`last_channel` the channel;
-`recall = true` marks profiles whose select commands recall a listed channel.
+`recall = true` marks profiles whose select commands recall a channel: the
+group (`08 A0`, `group_channel` only), the channel (`08` + channel), then the
+Memory mode (bare `08`); allowed for `group_channel` and `channel` addressing
+(MOR-4219).
 `dd_groups` lists groups/bands where mode byte `0x22` is DD;
 `offset_10mhz_groups` lists groups/bands with the offset's 10 MHz digit.
 Both default to `[]` and accept only lists of unique integers within

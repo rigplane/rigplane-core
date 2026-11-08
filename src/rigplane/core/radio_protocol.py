@@ -1699,6 +1699,24 @@ def serial_identity_hold(radio: object) -> RadioIdentityStatus | None:
     return identity.status
 
 
+def radio_audio_ready(radio: object) -> bool:
+    """Whether the radio link can serve a radio-RX start now (MOR-2922).
+
+    One shared predicate for the audio-bridge auto-start's two sides:
+    the CLI's arming condition and the web server's deferred-start wait
+    ask the same question, so they can never drift apart. It is ``True``
+    only when the radio reports itself connected AND no connect-time
+    identity hold (:func:`serial_identity_hold`) owns the link. While it
+    is ``False`` — the serial port never opened (the MOR-2876 no-port
+    start) or the identity read has not answered (MOR-3078) — the
+    bridge's first demand, the radio-RX subscribe, would be refused.
+    """
+
+    if not bool(getattr(radio, "connected", False)):
+        return False
+    return serial_identity_hold(radio) is None
+
+
 @runtime_checkable
 class RelativeVfoReadbackCapable(Protocol):
     """Radio can read Selected/Unselected VFOs without selecting or swapping."""

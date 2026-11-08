@@ -35,6 +35,7 @@ from rigplane.audio.backend import (
     FakeAudioBackend,
     FakeRxStream,
     FakeTxStream,
+    TxPlayoutPolicy,
     _RxFramer,
 )
 from rigplane.audio.usb_driver import UsbAudioDriver
@@ -91,6 +92,7 @@ class _RecordingBackend(FakeAudioBackend):
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        playout: TxPlayoutPolicy = "adaptive",
     ) -> FakeTxStream:
         self.tx_calls.append(
             {
@@ -98,6 +100,7 @@ class _RecordingBackend(FakeAudioBackend):
                 "sample_rate": sample_rate,
                 "channels": channels,
                 "frame_ms": frame_ms,
+                "playout": playout,
             }
         )
         return super().open_tx(
@@ -105,6 +108,7 @@ class _RecordingBackend(FakeAudioBackend):
             sample_rate=sample_rate,
             channels=channels,
             frame_ms=frame_ms,
+            playout=playout,
         )
 
 
@@ -212,7 +216,13 @@ _SCENARIOS: list[
             "deliver_channels": 2,
             "rx_audio_channel": "mix",
         },
-        {"device": 7, "sample_rate": 48_000, "channels": 2, "frame_ms": 20},
+        {
+            "device": 7,
+            "sample_rate": 48_000,
+            "channels": 2,
+            "frame_ms": 20,
+            "playout": "immediate",
+        },
     ),
     (
         # X6200: 2-ch request on a mono capture endpoint clamps (MOR-238).
@@ -233,7 +243,13 @@ _SCENARIOS: list[
             "deliver_channels": 1,
             "rx_audio_channel": "mix",
         },
-        {"device": 4, "sample_rate": 48_000, "channels": 2, "frame_ms": 20},
+        {
+            "device": 4,
+            "sample_rate": 48_000,
+            "channels": 2,
+            "frame_ms": 20,
+            "playout": "immediate",
+        },
     ),
     (
         # FTX-1: mono request on a stereo-native device opens native and
@@ -256,7 +272,13 @@ _SCENARIOS: list[
             "deliver_channels": 1,
             "rx_audio_channel": "left",
         },
-        {"device": 7, "sample_rate": 48_000, "channels": 1, "frame_ms": 20},
+        {
+            "device": 7,
+            "sample_rate": 48_000,
+            "channels": 1,
+            "frame_ms": 20,
+            "playout": "immediate",
+        },
     ),
 ]
 

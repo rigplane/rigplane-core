@@ -28,11 +28,12 @@ const FROZEN: Record<string, readonly string[]> = {
   ],
   validateRxAudio: [
     'monitorMode', 'liveAudio', 'afLevel', 'receiverAfLevels', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent',
+    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent', 'sourceLow',
   ],
+  validateRxSourceLow: ['menu'],
   validateModeFilter: [
     'currentMode', 'modeChoices', 'currentFilter', 'filterChoices', 'filterWidth',
-    'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
+    'filterWidthDisplay', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
   ],
   validateFilterPassband: [
     'filterShape', 'filterShapeControlStructural', 'ifShift', 'ifShiftControlStructural',
@@ -60,7 +61,7 @@ const FROZEN: Record<string, readonly string[]> = {
     'reversePaddle', 'apf', 'twinPeak',
   ],
   validateScopeControls: [
-    'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+    'mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'refRange', 'dual', 'receiver',
     'duringTx', 'centerType', 'vbwNarrow', 'rbw',
   ],
   validateScopeDisplay: ['source', 'health', 'hardwareConnected'],

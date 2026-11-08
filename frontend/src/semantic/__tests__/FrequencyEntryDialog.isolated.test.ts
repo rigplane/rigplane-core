@@ -69,4 +69,58 @@ describe('FrequencyEntryDialog', () => {
     expect(target.querySelector('[role="status"]')?.textContent).toBe('Frequency confirmed.');
     unmount(component);
   });
+
+  it('takes its own heading and close label (MOR-4220: the Memory dialog)', () => {
+    const component = mount(FrequencyEntryDialog, {
+      target, props: { open: true, title: 'Memory', closeLabel: 'Close', children: content },
+    });
+    flushSync();
+    const dialog = target.querySelector<HTMLElement>('[role="dialog"]')!;
+    const heading = dialog.querySelector('h2')!;
+    expect(heading.textContent).toBe('Memory');
+    expect(dialog.getAttribute('aria-labelledby')).toBe(heading.id);
+    expect(dialog.querySelector('button.close')?.getAttribute('aria-label')).toBe('Close');
+    unmount(component);
+  });
+
+  it('closes on Escape and pulls Tab back inside after focus fell out of it (MOR-4220)', async () => {
+    const onclose = vi.fn();
+    const component = mount(FrequencyEntryDialog, {
+      target, props: { open: true, targetLabel: 'VFO A', onclose, children: content },
+    });
+    flushSync();
+    await Promise.resolve();
+    (document.activeElement as HTMLElement).blur();
+    expect(document.activeElement).toBe(document.body);
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+    expect(document.activeElement).toBe(target.querySelector('[data-dialog-input]'));
+    expect(onclose).not.toHaveBeenCalled();
+
+    // The closing Escape never reaches a global shortcut listener.
+    const shortcut = vi.fn();
+    window.addEventListener('keydown', shortcut);
+    (document.activeElement as HTMLElement).blur();
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    expect(onclose).toHaveBeenCalledOnce();
+    expect(shortcut).not.toHaveBeenCalled();
+    // A key the dialog itself handled is not handled twice.
+    target.querySelector<HTMLElement>('[data-dialog-input]')!.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    expect(onclose).toHaveBeenCalledTimes(2);
+    expect(shortcut).not.toHaveBeenCalled();
+    window.removeEventListener('keydown', shortcut);
+    unmount(component);
+  });
+
+  it('keeps the frequency-entry heading and close label by default', () => {
+    const component = mount(FrequencyEntryDialog, {
+      target, props: { open: true, targetLabel: 'VFO A', children: content },
+    });
+    flushSync();
+    expect(target.querySelector('h2')?.textContent).toBe('Set frequency — VFO A');
+    expect(target.querySelector('button.close')?.getAttribute('aria-label')).toBe('Close frequency entry');
+    unmount(component);
+  });
 });

@@ -24,6 +24,7 @@ from rigplane.core.civ import (
     PttReplyLedger,
     is_directed_ptt_reply,
     iter_civ_frames,
+    read_identity_from_frame,
     request_key_from_frame,
 )
 from rigplane.commands.commander import IcomCommander, Priority
@@ -95,7 +96,11 @@ from rigplane.core.types import (
 )
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime import radio_reconnect
-from rigplane.runtime._state_queries import tx_target_max_age
+from rigplane.runtime._state_queries import (
+    acquisition_query_resolver_for_profile,
+    read_identity_for_query,
+    tx_target_max_age,
+)
 from rigplane.runtime.meter_cal import interpolate_meter
 
 if TYPE_CHECKING:
@@ -114,6 +119,7 @@ _FREQ_BCD_LEN = 5
 _SCOPE_BACKLOG_SHED_THRESHOLD = 256
 _SCOPE_BACKLOG_KEEP_LATEST = 64
 _RAW_RECEIVED_FRAME_BYTES_LIMIT = 256
+_POWER_ON_PATH = FieldPath.global_("tx_state", "power_on")
 
 #: Fallback freshness TTLs for CI-V observations, keyed ``(scope, family,
 #: name)`` — rig-blind, and read by ``_observation_max_age`` only for a path
@@ -1554,6 +1560,16 @@ class CivRuntime:
         is completely silent hands off after ``_SILENT_OPENCLOSE_DEADLINE``;
         a live port that merely leaves queries unanswered keeps the 60 s
         patience.
+
+        Before that patience window starts, the control session itself is
+        probed once (MOR-3703) — but only while a LAN control session is
+        live; without one there is nothing to ask and the path is the old
+        one, with no extra awaits. A renewal the radio answers with the
+        recorded reject means the LAN session is gone, so recovery is
+        requested immediately instead of after the deadline. An OK answer —
+        a standby radio answers renewals while its CI-V DATA is silent —
+        a late OK, no answer or a probe that cannot be sent keeps the
+        patience.
         """
         recovering = False
         recovery_start: float = 0.0
@@ -1636,9 +1652,31 @@ class CivRuntime:
                             q_size,
                             evidence,
                         )
+                        # The stall may be the radio refusing OUR session, not
+                        # the stream: ask before the patient OpenClose window
+                        # (MOR-3703). A renewal answered with the recorded
+                        # reject means no amount of OpenClose patience will
+                        # restart the CI-V stream — escalate to a re-login
+                        # now. Anything else (OK, a late OK, no answer, a
+                        # probe that could not be sent, or no live control
+                        # session to ask at all) keeps the patience: a
+                        # standby radio answers renewals while CI-V stays
+                        # quiet and must never escalate on this probe.
+                        self._host._civ_stream_ready = False
+                        dead = await self._probe_control_session()
+                        if dead == "reject":
+                            logger.warning(
+                                "civ-data-watchdog: control session dead "
+                                "(reject) before the OpenClose patience, "
+                                "requesting recovery now"
+                            )
+                            self.request_recovery_now("control session dead: reject")
+                            return
                         recovering = True
                         self._host._civ_recovering = True
-                        self._host._civ_stream_ready = False
+                        # The patience window starts at this stall tick's
+                        # ``now``: a probe that ran and said nothing consumes
+                        # part of the window, it never extends it.
                         recovery_start = now
 
                     elapsed_recovery = now - recovery_start
@@ -1686,6 +1724,37 @@ class CivRuntime:
                         self._host._civ_stream_ready = True
         except asyncio.CancelledError:
             pass
+
+    async def _probe_control_session(self) -> str | None:
+        """Ask the radio whether the control session is still ours.
+
+        Thin wrapper over :meth:`ControlPhaseRuntime.probe_control_session`
+        for the data watchdog's stall path (MOR-3703). Without a live LAN
+        control session — the same ``_ctrl_transport._udp_transport`` read
+        the post-recovery re-arm uses — there is nothing to ask, so the
+        verdict is ``None`` without a single await and the caller keeps its
+        OpenClose patience unchanged. A probe that cannot be sent (dead
+        control transport) or fails unexpectedly says nothing about the
+        session either; it maps to ``None`` — the same verdict an
+        unanswered renewal gets.
+        """
+        ctrl = getattr(self._host, "_ctrl_transport", None)
+        if ctrl is None or getattr(ctrl, "_udp_transport", None) is None:
+            return None
+        try:
+            return await self._host._control_phase.probe_control_session()
+        except (ConnectionError, TimeoutError, OSError) as exc:
+            logger.debug(
+                "civ-data-watchdog: control session probe failed: %s",
+                exc,
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "civ-data-watchdog: unexpected error probing the control session",
+                exc_info=True,
+            )
+            return None
 
     def _spawn_recovery_task(
         self,
@@ -2111,8 +2180,17 @@ class CivRuntime:
             )
         self._publish_civ_event(event)
         claimed: _CivDataTransaction | None = None
-        if self._host._civ_request_tracker.resolve(event, generation=generation):
+        transport = self._host._civ_transport
+        if self._host._civ_request_tracker.resolve(
+            event,
+            generation=generation,
+            # MOR-4209: the transport's typed ingress-order contract; a test
+            # double without it (e.g. a mock) reads as unordered.
+            ordered_ingress=transport is not None and transport.ordered_ingress is True,
+        ):
             claimed = self._claim_civ_data_transaction(event)
+        if event.type is CivEventType.NAK:
+            self._record_refused_reads()
         if event.type is CivEventType.RESPONSE and not isinstance(
             claimed.owner if claimed is not None else None, _AuthoritativePttRead
         ):
@@ -2459,13 +2537,15 @@ class CivRuntime:
         elif self._host._profile.infers_power_on_from_liveness:
             # MOR-2544: the profile declares power control but no power-status
             # query, so a decoded frame from the radio is itself the power
-            # evidence — a powered-off radio answers nothing. Re-stamp
-            # ``power_on=True`` on every response that reaches this point
-            # (the relative-VFO early return above — 0x00/0x01/0x03/0x04/
-            # 0x25/0x26 on ``selected_unselected`` profiles such as
-            # IC-7300/IC-705 — observes no power and clears no retained
-            # command) so the 30 s fallback TTL never decays it while
-            # answers keep arriving. 0x18 readbacks are excluded: they
+            # evidence — a powered-off radio answers nothing. A response
+            # that reaches this point re-stamps ``power_on=True`` whenever
+            # ``_inferred_power_on_due`` says so (the relative-VFO early
+            # return above — 0x00/0x01/0x03/0x04/0x25/0x26 on
+            # ``selected_unselected`` profiles such as IC-7300/IC-705 —
+            # observes no power and clears no retained command) so the
+            # 30 s fallback TTL never decays it while answers keep
+            # arriving at least once per half TTL. 0x18 readbacks are
+            # excluded: they
             # carry the explicit truth and must not be clobbered. 0xFA/0xFB
             # and our own echo never reach this function:
             # ``_route_civ_frame`` turns them into ACK/NAK events and drops
@@ -2479,16 +2559,17 @@ class CivRuntime:
             # only its retention paths and would silently drop this global
             # observation.
             self._host._last_commanded_powerstat = None
-            observations = observations + (
-                _replace_dataclass(
-                    self._observation(
-                        FieldPath.global_("tx_state", "power_on"),
-                        True,
-                        frame=frame,
+            if self._inferred_power_on_due(generation=store_provider_generation):
+                observations = observations + (
+                    _replace_dataclass(
+                        self._observation(
+                            _POWER_ON_PATH,
+                            True,
+                            frame=frame,
+                        ),
+                        provider_generation=store_provider_generation,
                     ),
-                    provider_generation=store_provider_generation,
-                ),
-            )
+                )
 
         for observation in observations:
             try:
@@ -2507,6 +2588,27 @@ class CivRuntime:
                     observation.path,
                     exc_info=True,
                 )
+
+    def _inferred_power_on_due(self, *, generation: int) -> bool:
+        """Whether this answer must re-stamp the liveness-inferred ``power_on``.
+
+        MOR-4211: the re-stamp only keeps the field from decaying, so an
+        answer skips it while the store already holds a FRESH ``True`` of
+        this provider generation stamped less than half its TTL ago.
+        """
+
+        try:
+            field = self._host._state_store.field(_POWER_ON_PATH)
+        except KeyError:
+            return True
+        if (
+            field.value is not True
+            or field.freshness is not FreshnessState.FRESH
+            or field.provider_generation != generation
+            or field.max_age is None
+        ):
+            return True
+        return time.monotonic() - field.last_observed_monotonic >= field.max_age / 2
 
     def _record_coalesced_meter_observation(self, observation: Observation) -> bool:
         if observation.path.family.value != "meters":
@@ -2580,7 +2682,7 @@ class CivRuntime:
         coalesced "burst".
         """
         try:
-            field = self._host._state_store.snapshot().field(path)
+            field = self._host._state_store.field(path)
         except KeyError:
             return False
         return now - field.last_observed_monotonic < window
@@ -2612,6 +2714,12 @@ class CivRuntime:
         scheduler = getattr(self._host, "_acquisition_scheduler", None)
         if not isinstance(scheduler, AcquisitionScheduler):
             return
+        # MOR-4058: any accepted answer ends a refusal, requested or not.
+        scheduler.end_refusals(
+            path
+            for path in scheduler.refused_paths()
+            if _field_paths_match(path, observation.path)
+        )
         for request in scheduler.pending_requests():
             matched_paths = tuple(
                 path
@@ -2642,6 +2750,40 @@ class CivRuntime:
                 request_id=request.id,
                 paths=[str(path) for path in matched_paths],
                 changed=bool(changeset.changes),
+            )
+
+    def _record_refused_reads(self) -> None:
+        """Tell the acquisition scheduler which declared reads were refused.
+
+        MOR-4058: a refusal retired a fire-and-forget read's sink
+        (``CivRequestTracker.take_refused_reads``). Every declared path whose
+        query goes out under that read's request key is refused; the
+        scheduler records it as a terminal answer for both polling seats.
+        """
+        refused = self._host._civ_request_tracker.take_refused_reads()
+        scheduler = getattr(self._host, "_acquisition_scheduler", None)
+        if not refused or not isinstance(scheduler, AcquisitionScheduler):
+            return
+        profile = self._host._profile
+        resolve = acquisition_query_resolver_for_profile(profile)
+        scope_receiver = self._host._radio_state.scope_controls.receiver
+        paths = []
+        for path in scheduler.declared_paths():
+            query = resolve(path)
+            if (
+                query is not None
+                and read_identity_for_query(
+                    query, scope_receiver, profile.supports_cmd29
+                )
+                in refused
+            ):
+                paths.append(path)
+        if paths:
+            scheduler.record_read_refusal(paths, now=time.monotonic())
+            self._record_state_diagnostic(
+                "acquisition_refused",
+                "civ_rx.scheduler",
+                paths=sorted(str(path) for path in paths),
             )
 
     def _record_scheduler_results_for_changeset(self, changeset: ChangeSet) -> None:
@@ -3093,7 +3235,7 @@ class CivRuntime:
         elif frame.command == 0x18 and len(frame.data) == 1:
             observations.append(
                 self._observation(
-                    FieldPath.global_("tx_state", "power_on"),
+                    _POWER_ON_PATH,
                     bool(frame.data[0]),
                     frame=frame,
                 )
@@ -4393,7 +4535,10 @@ class CivRuntime:
             # Memory channel read: 1A 00 + band/group and channel. A clear
             # writes FF after the address, a write carries a whole record.
             return True
-        if frame.command == 0x17:
+        if frame.command in (0x08, 0x17):
+            # 0x08: every form selects (the bare 08 is "Select the Memory
+            # mode", MOR-4219) and is answered with an ACK/NAK; no shipped
+            # profile declares a memory-mode read.
             return False
         if frame.command == 0x27:
             # Scope-control GETs for subs 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A,
@@ -4522,6 +4667,9 @@ class CivRuntime:
             token_or_future = tracker.register_ack(
                 wait=False,
                 response_key=request_key if expects_response else None,
+                refused_read=(
+                    read_identity_from_frame(parsed_frame) if expects_response else None
+                ),
             )
             if isinstance(token_or_future, int):
                 ack_sink_token = token_or_future

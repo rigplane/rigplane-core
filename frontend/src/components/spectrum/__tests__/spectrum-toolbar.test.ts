@@ -10,7 +10,8 @@ import {
   SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
   toggleLayer, isLayerVisible,
   isSpanApplicable, isEdgeApplicable,
-  clampSpan, clampSpeed, clampBrt, clampRef,
+  clampSpan, clampSpeed, clampBrt, stepRef, refRangeFromCaps,
+  type RefRange,
 } from '../spectrum-toolbar-logic';
 
 function nextReceiver(current: number): number {
@@ -196,19 +197,63 @@ describe('BRT level clamping', () => {
   });
 });
 
-describe('REF level clamping', () => {
+describe('REF stepping on the 5 dB grid (MOR-3694)', () => {
+  const ic705: RefRange = { min: -20, max: 20 };
+  const ic7610: RefRange = { min: -30, max: 10 };
 
-  it('REF range is -30 to +10 (asymmetric)', () => {
-    expect(clampRef(10, 5)).toBe(10);
-    expect(clampRef(-30, -5)).toBe(-30);
+  it('steps down from an off-grid integer readback onto the grid: -4 -> -5, up -> 0', () => {
+    expect(stepRef(-4, -1, ic705)).toBe(-5);
+    expect(stepRef(-4, 1, ic705)).toBe(0);
   });
 
-  it('normal increment', () => {
-    expect(clampRef(0, 5)).toBe(5);
+  it('steps from a half-dB readback: -4.5 down -> -5, up -> 0', () => {
+    expect(stepRef(-4.5, -1, ic705)).toBe(-5);
+    expect(stepRef(-4.5, 1, ic705)).toBe(0);
   });
 
-  it('normal decrement', () => {
-    expect(clampRef(0, -5)).toBe(-5);
+  it('steps by 5 from a grid point', () => {
+    expect(stepRef(0, 1, ic705)).toBe(5);
+    expect(stepRef(0, -1, ic705)).toBe(-5);
+    expect(stepRef(5, -1, ic705)).toBe(0);
+    expect(stepRef(1, 1, ic705)).toBe(5);
+  });
+
+  it('clamps to the declared IC-705 range at both ends', () => {
+    expect(stepRef(20, 1, ic705)).toBe(20);
+    expect(stepRef(-20, -1, ic705)).toBe(-20);
+    expect(stepRef(19, 1, ic705)).toBe(20);
+    expect(stepRef(-19, -1, ic705)).toBe(-20);
+    expect(stepRef(19, -1, ic705)).toBe(15);
+    expect(stepRef(-19, 1, ic705)).toBe(-15);
+  });
+
+  it('honours a different declared range (IC-7610 -30..10)', () => {
+    expect(stepRef(10, 1, ic7610)).toBe(10);
+    expect(stepRef(-30, -1, ic7610)).toBe(-30);
+    expect(stepRef(9, 1, ic7610)).toBe(10);
+  });
+
+  it('never emits an out-of-range or non-integer value, even from an out-of-range start', () => {
+    const down = stepRef(-22, -1, ic705);
+    expect(Number.isInteger(down)).toBe(true);
+    expect(down).toBeGreaterThanOrEqual(ic705.min);
+    expect(down).toBeLessThanOrEqual(ic705.max);
+    expect(down).toBe(-20);
+    expect(stepRef(-22, 1, ic705)).toBe(-20);
+  });
+});
+
+describe('refRangeFromCaps (MOR-3694)', () => {
+  it('reads the declared range from capability fields', () => {
+    expect(refRangeFromCaps({ ref_min_db: -20, ref_max_db: 20 })).toEqual({ min: -20, max: 20 });
+    expect(refRangeFromCaps({ ref_min_db: -30.0, ref_max_db: 10.0 })).toEqual({ min: -30, max: 10 });
+  });
+
+  it('fails closed to null when no range is published', () => {
+    expect(refRangeFromCaps({})).toBeNull();
+    expect(refRangeFromCaps(null)).toBeNull();
+    expect(refRangeFromCaps(undefined)).toBeNull();
+    expect(refRangeFromCaps({ ref_min_db: -20 })).toBeNull();
   });
 });
 

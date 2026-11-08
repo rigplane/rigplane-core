@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rigplane"
-version = "3.1.0rc1"
+version = "3.1.2rc4"
 description = "Multi-vendor radio control library and Web UI with native providers and planned Hamlib-backed CAT coverage"
 readme = "README.md"
 license = "MIT"
@@ -137,6 +137,7 @@ markers = [
     "property: Hypothesis property-based tests under tests/property",
 ]
 testpaths = ["tests"]
+realtime_baseline = "tests/realtime_baseline.txt"
 # Repo root on sys.path so tests can import the top-level rigplane_testkit package.
 pythonpath = ["."]
 python_files = ["test_*.py"]

@@ -381,6 +381,22 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 return Mode[self._state_cache.mode], self._state_cache.filter_width
             raise
 
+    def _data_mode_for_mode(self, mode: Mode, current: int) -> int:
+        """The DATA flag to send for ``mode`` given the receiver's ``current``.
+
+        MOR-4036: a mode change must not carry DATA into a mode that cannot
+        have it (the IC-705 NAKs ``26 00 03 01 01``, CW+DATA, and stays in
+        the old mode). When the profile declares ``[data_mode].modes``, the
+        flag survives only into a mode named there; undeclared (``None``)
+        keeps the old preserve-the-flag behaviour. Profile names are the
+        hyphenated ``[modes].list`` strings ("CW-R"), so the enum name's
+        underscores map onto them the same way ``commands/memory.py`` does.
+        """
+        allowed = self._profile.data_mode_modes
+        if allowed is None or mode.name.replace("_", "-") in allowed:
+            return current
+        return 0
+
     async def _set_mode_main(
         self,
         mode: Mode,
@@ -393,9 +409,12 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
             # Rigs declaring ``set_selected_mode`` (e.g. X6200) ignore the bare
             # 0x06 mode-set; route through CI-V 0x26 0x00 with the full
             # (mode, data_mode, filter) tuple so a mode-only change preserves
-            # the radio's current data-mode and filter.
+            # the radio's current data-mode and filter. A mode that cannot
+            # carry DATA gets data_mode 0 instead (MOR-4036).
             target = self._radio_state.receiver("MAIN")
-            data_mode = int(getattr(target, "data_mode", 0) or 0)
+            data_mode = self._data_mode_for_mode(
+                mode, int(getattr(target, "data_mode", 0) or 0)
+            )
             resolved_filter = (
                 filter_width
                 if filter_width is not None

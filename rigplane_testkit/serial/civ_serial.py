@@ -66,11 +66,23 @@ wave-output enable is refused with a NAK on a link whose baud is below
 gated.
 
 Faults are scriptable and deterministic: ``delay_identity_answer``,
-``answer_identity_after_reconnect_only``, ``wrong_model_id``, ``silence``
+``answer_identity_after_reconnect_only``, ``wrong_model_id``,
+``lose_next_answer`` (one request heard, its answer lost), ``silence``
 (the MOR-2861 case: link open, nothing answers), ``usb_vanish`` /
 ``usb_reappear`` (reads, writes and new opens raise ``ENODEV``, the class
 ``core/serial_open.py: serial_open_diagnostic`` maps to
-``serial_not_found``).
+``serial_not_found``), ``refuse_next`` (one request heard and NAKed instead
+of handled).
+
+Memory (MOR-4219), for a profile with a ``[memory]`` section: ``08`` + a
+2-byte BCD channel selects the memory channel and ``08 A0`` + a 2-byte BCD
+group the memory group (group+channel addressing only), each within the
+profile's bounds or NAKed; neither leaves the VFO mode. The bare ``08``
+switches to the Memory mode (the IC-7300 manual's "Select the Memory mode";
+its store-in-VFO-mode steps select the channel without leaving the VFO
+mode). In the Memory mode the operating frequency and mode are the selected
+channel's, when :meth:`CivSerialFake.store_memory` filled it. The fake starts
+in the VFO mode on the profile's first group and channel.
 """
 
 from __future__ import annotations
@@ -116,6 +128,8 @@ _SUB_SCOPE_WAVE = 0x00
 _SUB_SCOPE_PANEL = 0x10
 _SUB_SCOPE_OUTPUT = 0x11
 _CMD_VFO = 0x07  # VFO / receiver select; 07 D2 reads the selected receiver
+_CMD_MEMORY = 0x08  # bare: Memory mode; + channel / A0 + group: select
+_SUB_MEMORY_GROUP = 0xA0
 _SUB_SELECTED_RECEIVER = 0xD2
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
@@ -293,6 +307,7 @@ class CivSerialFake:
         self._identity_after_reconnect_only = False
         self._model_id_override: bytes | None = None
         self._silent_until = 0.0
+        self._lost_answers: list[int] = []
         self._vanished = False
         self._answers_at_baud = answers_at_baud
         self._locks_to_first_baud = locks_to_first_baud
@@ -311,6 +326,15 @@ class CivSerialFake:
         self._tx_on_switch_s = 0.0 if tx_on_switch_s is None else tx_on_switch_s
         self._tx_off_switch_s = 0.0 if tx_off_switch_s is None else tx_off_switch_s
         self._ptt_switch_handle: asyncio.TimerHandle | None = None
+        self._memory = profile.memory
+        self._memory_mode = False
+        self._memory_slot = (
+            (0, 0)
+            if self._memory is None
+            else (self._memory.first_group, self._memory.first_channel)
+        )
+        self._memories: dict[tuple[int, int], tuple[int, int, int]] = {}
+        self._refused: list[int] = []
         # The ``time()``/``call_at()`` object delayed replies and the PTT
         # switch schedule on; tests mount a manual clock here, and the
         # running asyncio loop is resolved at use time by default.
@@ -465,6 +489,27 @@ class CivSerialFake:
         return self._ptt
 
     @property
+    def memory_mode(self) -> bool:
+        """True in the Memory mode, False in the VFO mode."""
+        return self._memory_mode
+
+    @property
+    def memory_slot(self) -> tuple[int, int]:
+        """The selected memory ``(group, channel)``; group 0 on a channel list."""
+        return self._memory_slot
+
+    def store_memory(
+        self,
+        group: int,
+        channel: int,
+        frequency_hz: int,
+        mode: int,
+        filter_width: int = 1,
+    ) -> None:
+        """Test setup: a stored memory channel (frequency, mode byte, filter)."""
+        self._memories[(group, channel)] = (frequency_hz, mode, filter_width)
+
+    @property
     def s_meter(self) -> int:
         return self._s_meter
 
@@ -533,6 +578,16 @@ class CivSerialFake:
                 candidate = bytes([self._model_id[0] ^ 0xFF])
             model_id = candidate
         self._model_id_override = bytes(model_id)
+
+    def refuse_next(self, command: int) -> None:
+        """The next request with this command byte is NAKed, not handled."""
+        self._refused.append(command)
+
+    def lose_next_answer(self, command: int) -> None:
+        """MOR-3888: the radio hears the next *command* request but its answer
+        never arrives (the echo still does), as when a reply is lost on the
+        link. Writes and every other request are answered as usual."""
+        self._lost_answers.append(command)
 
     def silence(self, for_seconds: float) -> None:
         """MOR-2861: the link stays open and nothing answers for the window.
@@ -633,6 +688,9 @@ class CivSerialFake:
         reply = self._answer(parsed, connection, frame)
         if reply is None:
             return
+        if parsed.command in self._lost_answers:
+            self._lost_answers.remove(parsed.command)
+            return
         delay = self._answer_delay_s(parsed, reply)
         identity_fault = (
             parsed.command == _CMD_TRANSCEIVER_ID and self._identity_delay_s > 0
@@ -690,6 +748,9 @@ class CivSerialFake:
         self, parsed: CivFrame, connection: "_Connection", frame: bytes
     ) -> bytes | None:
         cmd = parsed.command
+        if cmd in self._refused and parsed.to_addr == self._civ_addr:
+            self._refused.remove(cmd)
+            return self._nak()
         if self._recorded_answers is not None and parsed.receiver is not None:
             # Command29-wrapped: answered from the recording or NAKed, never
             # unwrapped into a native handler.
@@ -778,6 +839,8 @@ class CivSerialFake:
                 sub=_SUB_S_METER,
                 data=_level_bcd_encode(self._s_meter),
             )
+        if cmd == _CMD_MEMORY and self._memory is not None and parsed.receiver is None:
+            return self._memory_select(parsed.data)
         if (
             cmd == _CMD_SCOPE
             and self._scope is not None
@@ -793,6 +856,33 @@ class CivSerialFake:
             if recorded is not None:
                 return recorded
         return self._nak()
+
+    def _memory_select(self, data: bytes) -> bytes:
+        """``08``: the Memory mode, a channel or (``08 A0``) a group."""
+        memory = self._memory
+        assert memory is not None
+        group, channel = self._memory_slot
+        if not data:
+            self._memory_mode = True
+        elif len(data) == 2:
+            channel = _bcd_byte(data[0]) * 100 + _bcd_byte(data[1])
+            if not memory.first_channel <= channel <= memory.last_channel:
+                return self._nak()
+        elif (
+            len(data) == 3
+            and data[0] == _SUB_MEMORY_GROUP
+            and memory.addressing == "group_channel"
+        ):
+            group = _bcd_byte(data[1]) * 100 + _bcd_byte(data[2])
+            if not memory.first_group <= group <= memory.last_group:
+                return self._nak()
+        else:
+            return self._nak()
+        self._memory_slot = (group, channel)
+        stored = self._memories.get(self._memory_slot)
+        if self._memory_mode and stored is not None:
+            self._frequency_hz, self._mode, self._filter_width = stored
+        return self._ack()
 
     def _scope_switch(self, parsed: CivFrame, connection: "_Connection") -> bytes:
         """``27 10`` (scope panel) and ``27 11`` (wave output): read or set."""

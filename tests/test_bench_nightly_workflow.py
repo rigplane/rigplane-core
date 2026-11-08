@@ -18,6 +18,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "bench-nightly.yml"
+WORKFLOW_TEXT = WORKFLOW_PATH.read_text(encoding="utf-8")
 
 EXPECTED_OUTCOMES = {
     "Outcome: not configured": "steps.config.outputs.configured == 'false'",
@@ -166,6 +167,94 @@ def test_radio_matrix_stays_independent() -> None:
     assert re.search(r"^      max-parallel: 1$", job_text, re.MULTILINE), (
         "max-parallel must stay 1 so the bench radios are probed one at a time"
     )
+
+
+def test_matrix_runs_on_comes_from_each_entry() -> None:
+    job_text = _radio_job_text()
+    assert re.search(
+        r"^    runs-on: \$\{\{ fromJSON\(matrix\.runs_on\) \}\}$",
+        job_text,
+        re.MULTILINE,
+    ), "each matrix entry must supply runs_on; the job must not hard-code one runner"
+    assert 'runs_on: \'["self-hosted", "macOS", "ARM64", "bench"]\'' in job_text
+    assert 'runs_on: \'["self-hosted", "Linux", "ARM64", "light"]\'' in job_text
+
+
+def test_strategy_matrix_does_not_reference_secrets() -> None:
+    job_text = _radio_job_text()
+    strategy_match = re.search(
+        r"^    strategy:\n(?:(?:^      .*\n)|(?:^        .*\n))*",
+        job_text,
+        re.MULTILINE,
+    )
+    assert strategy_match is not None, "radio job strategy block missing"
+    strategy_text = strategy_match.group(0)
+    assert "secrets." not in strategy_text, (
+        "secrets context is invalid inside jobs.<id>.strategy; resolve at step env"
+    )
+
+
+def test_serial_device_secret_resolved_in_step_env() -> None:
+    steps = _named_steps(_step_blocks(_radio_job_text()))
+    expected = (
+        "ICOM_SERIAL_DEVICE: ${{ matrix.config_kind == 'serial' && "
+        "secrets.BENCH_FTX1_SERIAL || '' }}"
+    )
+    for step_name in ("Check radio configuration", "Validate"):
+        block = steps[step_name]
+        assert expected in block, (
+            f"{step_name} must resolve BENCH_FTX1_SERIAL at step env"
+        )
+    assert "matrix.icom_serial_device" not in _radio_job_text()
+
+
+def test_simulator_lifecycle_uses_process_group() -> None:
+    steps = _named_steps(_step_blocks(_radio_job_text()))
+    start = _run_text(steps["Start IC-7610 LAN simulator"]) or ""
+    stop = _run_text(steps["Stop IC-7610 LAN simulator"]) or ""
+    assert "setsid uv run python scripts/bench/ic7610_lan_simulator.py" in start
+    assert 'kill -TERM -- "-$(cat "$RUNNER_TEMP/sim.pid")"' in stop
+
+
+def test_matrix_matches_current_bench_inventory() -> None:
+    job_text = _radio_job_text()
+    assert "radio: ftx1" in job_text
+    assert "radio: ic7610-sim" in job_text
+    assert "label: IC-7610 (simulator)" in job_text
+    for dropped in (
+        "radio: ic705",
+        "radio: ic7300",
+        "radio: ic7610\n",
+        "label: IC-705",
+        "BENCH_IC705_SERIAL",
+        "BENCH_IC7300_SERIAL",
+        "BENCH_IC7610_HOST",
+    ):
+        assert dropped not in job_text, (
+            f"removed bench leg still in workflow: {dropped!r}"
+        )
+
+
+def test_workflow_uses_only_self_hosted_runners() -> None:
+    hosted = (
+        "ubuntu-latest",
+        "ubuntu-slim",
+        "macos-latest",
+        "windows-latest",
+        "macos-13",
+        "macos-14",
+    )
+    found = [label for label in hosted if label in WORKFLOW_TEXT]
+    assert not found, f"GitHub-hosted runner labels must not appear: {found}"
+
+
+def test_config_check_uses_matrix_config_kind_not_radio_id() -> None:
+    steps = _named_steps(_step_blocks(_radio_job_text()))
+    block = steps["Check radio configuration"]
+    run = _run_text(block) or ""
+    assert 'case "$CONFIG_KIND" in' in run
+    assert 'if [ "$RADIO" = ic7610 ]' not in run
+    assert "matrix.radio ==" not in block
 
 
 def test_outcome_steps_fail_the_job() -> None:

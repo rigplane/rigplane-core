@@ -67,7 +67,7 @@
   import { readingText } from '../primitives/reading-text';
   import {
     MODE_BUTTONS, SPAN_LABELS, SPEED_LABELS,
-    isSpanApplicable, isEdgeApplicable, clampSpan, clampSpeed, clampRef,
+    isSpanApplicable, isEdgeApplicable, clampSpan, clampSpeed, stepRef,
   } from '../components/spectrum/spectrum-toolbar-logic';
 
   /** On/off leaves, `[field, label, reservedWidth]`. */
@@ -231,10 +231,19 @@
       return { field, invoke: () => onSpeedChange?.(clampSpeed(numberOf(field!), delta)) };
     });
   }
+  /* MOR-3694: REF steps on the 5 dB grid against the DECLARED range
+   *  (`sc.refRange`, from capabilities). No declared range ⇒ blocked —
+   *  the keys render disabled and invoke is a no-op (fail closed, never
+   *  a fallback range). */
   function refInstrument(delta: -5 | 5) {
     return bindActionInstrument(() => {
       const field = sc?.refDb;
-      return { field, invoke: () => onRefChange?.(clampRef(numberOf(field!), delta)) };
+      const range = sc?.refRange ?? null;
+      return {
+        field,
+        blocked: range === null,
+        invoke: () => onRefChange?.(stepRef(numberOf(field!), delta === -5 ? -1 : 1, range!)),
+      };
     });
   }
 
@@ -272,12 +281,17 @@
         context: rendererContext ?? null, field: sc?.[field], label: delta < 0 ? '−' : '+',
         accessibleLabel: `${delta < 0 ? 'Decrease' : 'Increase'} ${label}`,
         // MOR-2565: the span keys stay inert while the mode is unread.
-        blocked: field === 'span' ? modeKnown === undefined : undefined,
+        // MOR-3694: the REF keys stay inert without a declared range.
+        blocked: field === 'span'
+          ? modeKnown === undefined
+          : field === 'refDb'
+            ? (sc?.refRange ?? null) === null
+            : undefined,
         invoke: () => {
           const current = numberOf(sc![field]);
           if (field === 'span') onSpanChange?.(clampSpan(current, delta as -1 | 1));
           else if (field === 'speed') onSpeedChange?.(clampSpeed(current, delta as -1 | 1));
-          else onRefChange?.(clampRef(current, delta as -5 | 5));
+          else onRefChange?.(stepRef(current, (delta as -5 | 5) === -5 ? -1 : 1, sc!.refRange!));
         },
       }));
       actionSeats.set(key, seat);

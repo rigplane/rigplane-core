@@ -99,6 +99,14 @@ class ReceiverStatePublic(_Strict):
     dataMode: int | None = None
 
     filterWidth: int | None = None
+    # True when the radio's width answer is the profile-declared
+    # ``radio_default_code`` (no Hz value); the ``filterWidth`` leaf is null
+    # then. This observation leaf shares its snake_case name with the
+    # ``filter_width_radio_default`` CAPABILITY tag, which is a different
+    # namespace: the tag means "the reset command is writeable"
+    # (``capabilities.py``), this leaf means "the last read WAS the
+    # radio default" (MOR-3677).
+    filterWidthRadioDefault: bool | None = None
     att: int | None = None
     preamp: int | None = None
     nb: bool | None = None
@@ -478,10 +486,17 @@ class ServerStatePublic(_Strict):
 class StateUpdateEnvelope(_Strict):
     """WS ``state_update`` delta/full envelope (``_delta_encoder.py``).
 
-    The full frame carries ``data`` (a complete :class:`ServerStatePublic`); the
-    delta frame carries ``changed`` (a shallow top-level partial of the same
-    shape) and optional ``removed`` keys. Envelope-only sequence fields
-    (``transportSeq`` etc.) live here, not inside the state object.
+    The full frame carries ``data`` (a complete :class:`ServerStatePublic`).
+    A delta frame comes in one of two renderings of the same diff:
+
+    - top-level (no ``deltaVersion``): ``changed`` holds each changed
+      top-level value whole and ``removed`` the dropped top-level keys;
+    - leaf (``deltaVersion: 2``, sent to a ``/api/v1/ws?state_delta=2``
+      client): ``set`` holds ``[path, value]`` pairs and ``unset`` paths,
+      a path being the object keys from the state root.
+
+    Envelope-only sequence fields (``transportSeq`` etc.) live here, not
+    inside the state object.
     """
 
     type: Literal["full", "delta"]
@@ -493,6 +508,9 @@ class StateUpdateEnvelope(_Strict):
     data: ServerStatePublic | None = None
     changed: dict[str, object] | None = None
     removed: list[str] | None = None
+    deltaVersion: Literal[2] | None = None
+    set: list[tuple[list[str], object]] | None = None
+    unset: list[list[str]] | None = None
     stateRevision: int | None = None
     freshnessRevision: int | None = None
     observationSeq: int | None = None

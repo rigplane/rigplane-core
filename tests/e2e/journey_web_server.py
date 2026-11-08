@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import math
+import struct
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
 from rigplane.audio.bus import AudioBus
+from rigplane.audio.lan_stream import SYNTHETIC_RX_IDENT, AudioPacket
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -42,22 +46,48 @@ class JourneyRadio(SerialMockRadio):
         return (*super().baseline_observations(), active_receiver)
 
 
+# RX tone of JourneyAudioRadio: 20 ms PCM16 mono frames at 48 kHz, the
+# relay's default format for a radio that names no ``audio_codec`` (web
+# handlers/audio.py: AudioBroadcaster). 1 kHz puts a sample on each crest,
+# so a frame's sample peak is the tone amplitude itself.
+_TONE_RATE_HZ = 48_000
+_TONE_HZ = 1_000
+_TONE_FRAME_SAMPLES = 960
+
+
+def _tone_amplitude(level_file: Path) -> float:
+    """The tone amplitude for the dBFS number in ``level_file``; 0 (silence)
+    while the file is missing or empty."""
+    try:
+        text = level_file.read_text().strip()
+    except FileNotFoundError:
+        return 0.0
+    return 10 ** (float(text) / 20) if text else 0.0
+
+
 class JourneyAudioRadio(JourneyRadio):
     """JourneyRadio plus the minimum RX-audio stand-in the LIVE journey needs.
 
-    Exactly three members: ``has_usb_audio`` (class attribute, the
-    UsbAudioCapable sentinel) keeps the profile's ``audio`` tag through
-    web runtime_helpers.runtime_capabilities; ``audio_bus`` returns the real
-    AudioBus the web relay subscribes to, kept in the ``_audio_bus`` slot
-    web server._runtime_audio_bus_payload reads; ``start_audio_rx_opus``
-    accepts the ``jitter_depth`` keyword audio.bus.AudioBus._begin_rx passes
-    (the inherited SerialMockRadio signature does not) and emits nothing —
+    ``has_usb_audio`` (class attribute, the UsbAudioCapable sentinel) keeps
+    the profile's ``audio`` tag through web runtime_helpers.runtime_capabilities;
+    ``audio_bus`` returns the real AudioBus the web relay subscribes to, kept
+    in the ``_audio_bus`` slot web server._runtime_audio_bus_payload reads;
+    ``start_audio_rx_opus`` accepts the ``jitter_depth`` keyword
+    audio.bus.AudioBus._begin_rx passes (the inherited SerialMockRadio
+    signature does not). Without ``tone_level_file`` it emits nothing —
     audio.bus.AudioSubscription.__anext__ returns None while active, so the
-    relay keeps running on an idle bus.
+    relay keeps running on an idle bus. With it, RX delivers a 1 kHz tone
+    whose level (dBFS) the spec writes to that file; ``stop_audio_rx_opus``
+    ends it.
     """
 
     has_usb_audio = True
     _audio_bus: AudioBus | None = None
+
+    def __init__(self, *, model: str, tone_level_file: Path | None = None) -> None:
+        super().__init__(model=model)
+        self._tone_level_file = tone_level_file
+        self._tone_task: asyncio.Task[None] | None = None
 
     @property
     def audio_bus(self) -> AudioBus:
@@ -68,7 +98,36 @@ class JourneyAudioRadio(JourneyRadio):
     async def start_audio_rx_opus(
         self, callback: Any, *, jitter_depth: int = 5
     ) -> None:
-        return None
+        if self._tone_level_file is not None and self._tone_task is None:
+            self._tone_task = asyncio.get_running_loop().create_task(
+                self._emit_tone(callback, self._tone_level_file)
+            )
+
+    async def stop_audio_rx_opus(self) -> None:
+        task, self._tone_task = self._tone_task, None
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    async def _emit_tone(self, callback: Any, level_file: Path) -> None:
+        loop = asyncio.get_running_loop()
+        frame_s = _TONE_FRAME_SAMPLES / _TONE_RATE_HZ
+        wave = [
+            math.sin(2 * math.pi * _TONE_HZ * n / _TONE_RATE_HZ)
+            for n in range(_TONE_FRAME_SAMPLES)
+        ]
+        due = loop.time()
+        seq = 0
+        while True:
+            scale = min(1.0, _tone_amplitude(level_file)) * 32767
+            data = struct.pack(
+                f"<{_TONE_FRAME_SAMPLES}h", *(round(scale * v) for v in wave)
+            )
+            callback(AudioPacket(ident=SYNTHETIC_RX_IDENT, send_seq=seq, data=data))
+            seq = (seq + 1) & 0xFFFF
+            due += frame_s
+            await asyncio.sleep(max(0.0, due - loop.time()))
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,6 +150,17 @@ def parse_args() -> argparse.Namespace:
         "--audio",
         action="store_true",
         help="serve with the RX-audio-capable JourneyAudioRadio instead of JourneyRadio",
+    )
+    parser.add_argument(
+        "--model",
+        default="IC-7610",
+        help="rig profile the fake resolves (default: IC-7610)",
+    )
+    parser.add_argument(
+        "--rx-tone-level-file",
+        default=None,
+        type=Path,
+        help="with --audio: RX carries a 1 kHz tone at the dBFS level this file holds",
     )
     parser.add_argument(
         "--panorama-audio",
@@ -139,7 +209,11 @@ async def run() -> None:
             audio_sample_rate=48000,
         )
     else:
-        radio = JourneyAudioRadio() if args.audio else JourneyRadio()
+        radio = (
+            JourneyAudioRadio(model=args.model, tone_level_file=args.rx_tone_level_file)
+            if args.audio
+            else JourneyRadio(model=args.model)
+        )
     try:
         await radio.connect()
         if args.freq is not None:

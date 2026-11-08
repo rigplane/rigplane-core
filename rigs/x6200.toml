@@ -258,6 +258,15 @@ list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }
 
+# count/labels match the loader's feature-only default (count = 1,
+# OFF/DATA) — the table exists so the DATA-capable modes can be declared.
+# Source: PDF page 10 (Table 3 — Mode, Data & filter bandwidth) documents
+# the -D variants for LSB and USB only (MOR-4036).
+[data_mode]
+count = 1
+labels = { "0" = "OFF", "1" = "DATA" }
+modes = ["USB", "LSB"]
+
 [filters]
 list = ["FIL1", "FIL2", "FIL3"]
 # MOR-706 live USB CI-V 0xA4 evidence: 0x1A/0x03 returns one raw byte for the

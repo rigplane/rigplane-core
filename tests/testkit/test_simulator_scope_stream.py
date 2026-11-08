@@ -9,7 +9,14 @@ import pytest
 
 from rigplane_testkit.icom import MockIcomRadio
 from testkit.ic7610_fakes import _answer_table
-from testkit.test_simulator_faults import _HOST, _UdpClient, _header, _login, _openclose
+from testkit.test_simulator_faults import (
+    _HOST,
+    _UdpClient,
+    _header,
+    _is_echo_of,
+    _login,
+    _openclose,
+)
 
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/ic7610/civ_pairs.jsonl"
 _ACK = bytes.fromhex("fefee098fbfd")
@@ -83,7 +90,7 @@ async def _wire_scope(
 ) -> bytes:
     request = _packet(payload, seq)
     client.send(request, sim.civ_port)
-    assert await client.recv() == request  # recorded LAN echo precedes reply
+    assert _is_echo_of(await client.recv(), request)  # recorded LAN echo precedes reply
     reply = await client.recv()
     return reply[0x15:]
 
@@ -111,7 +118,9 @@ async def test_default_with_table_preserves_recorded_fb_and_no_waves() -> None:
 
 async def test_panel_set_starts_with_output_off() -> None:
     clock = _Clock()
-    sim = MockIcomRadio(scope_stream=True, clock=clock)
+    # The recorded scope window is the dual-receiver IC-7610's: SUB waves
+    # only load for a dual-receiver personality (MOR-3907).
+    sim = MockIcomRadio(scope_stream=True, clock=clock, dual_receiver=True)
     await sim.start()
     client = await _client()
     try:
@@ -134,7 +143,9 @@ async def test_panel_set_starts_with_output_off() -> None:
 
 async def test_recorded_bytes_and_distinct_receiver_cadences() -> None:
     clock = _Clock()
-    sim = MockIcomRadio(scope_stream=True, clock=clock)
+    # The recorded scope window is the dual-receiver IC-7610's: SUB waves
+    # only load for a dual-receiver personality (MOR-3907).
+    sim = MockIcomRadio(scope_stream=True, clock=clock, dual_receiver=True)
     await sim.start()
     client = await _client()
     try:
@@ -162,7 +173,9 @@ async def test_recorded_bytes_and_distinct_receiver_cadences() -> None:
 
 async def test_delayed_consumer_gets_no_catchup_burst() -> None:
     clock = _Clock()
-    sim = MockIcomRadio(scope_stream=True, clock=clock)
+    # The recorded scope window is the dual-receiver IC-7610's: SUB waves
+    # only load for a dual-receiver personality (MOR-3907).
+    sim = MockIcomRadio(scope_stream=True, clock=clock, dual_receiver=True)
     await sim.start()
     client = await _client()
     try:
@@ -184,7 +197,9 @@ async def test_delayed_consumer_gets_no_catchup_burst() -> None:
 @pytest.mark.parametrize("fault", ["stall", "standby"])
 async def test_fault_silence_resumes_at_cadence_without_backlog(fault: str) -> None:
     clock = _Clock()
-    sim = MockIcomRadio(scope_stream=True, clock=clock)
+    # The recorded scope window is the dual-receiver IC-7610's: SUB waves
+    # only load for a dual-receiver personality (MOR-3907).
+    sim = MockIcomRadio(scope_stream=True, clock=clock, dual_receiver=True)
     await sim.start()
     client = await _client()
     try:
