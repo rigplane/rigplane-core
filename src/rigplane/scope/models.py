@@ -148,6 +148,16 @@ class NativeFrame:
 
 
 @dataclass(frozen=True)
+class ScopeTarget:
+    source_id: str
+    receiver: int | None
+
+    def __post_init__(self) -> None:
+        _identity(self.source_id)
+        _receiver(self.receiver)
+
+
+@dataclass(frozen=True)
 class Subscription:
     source_id: str
     receiver: int | None

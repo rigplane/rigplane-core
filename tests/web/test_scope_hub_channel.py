@@ -7,7 +7,7 @@ import pytest
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio_scope_source import RadioScopeSource
 from rigplane.scope import ScopeFrame
-from rigplane.scope.models import Subscription, View
+from rigplane.scope.models import ScopeTarget, Subscription, View
 from rigplane.testing.timing import await_until
 from rigplane.web.api_contract import STABLE_WEBSOCKET_ROUTES
 from rigplane.web.handlers.scope import ScopeHandler
@@ -528,20 +528,23 @@ async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previo
             "selected", receiver, View(14_100_000, 14_102_400), 1024, 10
         )
         await handler._handle_control(encode_scope_subscription(first))
-        previous = handler._subscription
+        previous = next(iter(handler._streams.values())).subscription
         await handler._handle_control(
             encode_scope_subscription(Subscription("selected", 9, first.view, 1024, 10))
         )
-        assert handler._subscription is previous
+        assert next(iter(handler._streams.values())).subscription is previous
         assert writer.output == [True]
         await handler._handle_control(
             encode_scope_subscription(
                 Subscription("selected", receiver, first.view, 2800, 20)
             )
         )
-        assert handler._subscription is not previous
+        assert next(iter(handler._streams.values())).subscription is not previous
         # Radio width is provisional until a frame arrives; FFT width is known.
-        assert handler._subscription.granted.width == native_width
+        assert (
+            next(iter(handler._streams.values())).subscription.granted.width
+            == native_width
+        )
         assert writer.output == [True]
     finally:
         await handler._unsubscribe()
@@ -568,7 +571,7 @@ async def test_server_drains_scope_before_stopping_command_executor(monkeypatch)
     async def stop_executor(received):
         assert received is server
         assert writer.output == [True, False]
-        assert handler._subscription is None
+        assert not handler._streams
 
     monkeypatch.setattr(web_startup, "stop_web_server", stop_executor)
     try:
@@ -615,7 +618,7 @@ async def test_stopping_server_rejects_new_demand():
         )
     )
     assert writer.output == []
-    assert handler._subscription is None
+    assert not handler._streams
 
 
 @pytest.mark.asyncio
@@ -696,12 +699,12 @@ async def test_shutdown_cleanup_failure_keeps_other_sources_releasing(
             )
         )
         handlers.append(handler)
-    failed_subscription = handlers[0]._subscription
+    failed_subscription = next(iter(handlers[0]._streams.values())).subscription
 
     async def stop_executor(received):
         assert received is server
         assert healthy.output == [True, False]
-        assert all(handler._subscription is None for handler in handlers)
+        assert all(not handler._streams for handler in handlers)
 
     monkeypatch.setattr(web_startup, "stop_web_server", stop_executor)
     try:
@@ -838,7 +841,10 @@ async def test_observed_native_width_regrants_before_binary_for_existing_client(
             await virtual_clock.elapse(0.1)
             await await_until(lambda: len(ws.binary) == index + 1)
             assert source.capabilities().native_width == width
-            assert handler._subscription.granted.width == width
+            assert (
+                next(iter(handler._streams.values())).subscription.granted.width
+                == width
+            )
             grant_event, wire_event = ws.events[-2:]
             assert grant_event[0] == "text"
             assert decode_scope_granted(grant_event[1]).width == width
@@ -872,7 +878,9 @@ async def test_one_real_scope_socket_multiplexes_radio_and_audio():
     server._audio_broadcaster = AudioBroadcaster(_RelayRadio())
     _seed_audio_facts(server)
     tap = WebScopePcmTap(server)
-    server.scope_hub.register("audio_fft", AudioFftSource(tap, tap.facts, fft_size=2048))
+    server.scope_hub.register(
+        "audio_fft", AudioFftSource(tap, tap.facts, fft_size=2048)
+    )
     simulator = MockIcomRadio(scope_stream=True)
     assembler = ScopeAssembler()
     native = None
@@ -888,11 +896,17 @@ async def test_one_real_scope_socket_multiplexes_radio_and_audio():
                     ("radio", 0, View(native.start_freq_hz, native.end_freq_hz)),
                     ("audio_fft", None, View(14_074_000, 14_076_400)),
                 ):
-                    await ws.send_str(encode_scope_subscription(Subscription(source_id, receiver, view, 1024, 20)))
+                    await ws.send_str(
+                        encode_scope_subscription(
+                            Subscription(source_id, receiver, view, 1024, 20)
+                        )
+                    )
                     assert (await ws.receive_json(timeout=5))["sourceId"] == source_id
                 assert writer.output == [True]
                 radio.feed_frame(native)
-                server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(np.ones(8192, dtype=np.int16).tobytes())
+                server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(
+                    np.ones(8192, dtype=np.int16).tobytes()
+                )
                 received = set()
                 while len(received) < 2:
                     message = await ws.receive(timeout=5)
@@ -901,8 +915,12 @@ async def test_one_real_scope_socket_multiplexes_radio_and_audio():
                     else:
                         assert message.type == aiohttp.WSMsgType.TEXT
                 assert received == {"radio", "audio_fft"}
-                await ws.send_json({"type": "unsubscribe", "sourceId": "audio_fft", "receiver": None})
-                await await_until(lambda: server._audio_broadcaster._subscription is None)
+                await ws.send_json(
+                    {"type": "unsubscribe", "sourceId": "audio_fft", "receiver": None}
+                )
+                await await_until(
+                    lambda: server._audio_broadcaster._subscription is None
+                )
                 assert writer.output == [True]
                 radio.feed_frame(native)
                 message = await ws.receive(timeout=5)
@@ -910,3 +928,118 @@ async def test_one_real_scope_socket_multiplexes_radio_and_audio():
         await await_until(lambda: writer.output == [True, False])
     finally:
         await server.stop()
+
+
+async def test_multiplex_updates_and_targeted_errors_preserve_sibling_streams():
+    import json
+
+    server = WebServer(None)
+    writer = Writer()
+    source = RadioScopeSource(resolve_radio_profile(model="ic7610"), writer)
+    server.scope_hub.register("radio", source)
+    ws = Socket()
+    handler = ScopeHandler(ws, server)
+    view = View(14_090_000, 14_110_000)
+    try:
+        for receiver in (0, 1):
+            await handler._handle_control(
+                encode_scope_subscription(
+                    Subscription("radio", receiver, view, 200, 20)
+                )
+            )
+        original = dict(handler._streams)
+        await handler._handle_control(
+            encode_scope_subscription(Subscription("radio", 0, view, 100, 10))
+        )
+        assert len(handler._streams) == 2
+        assert (
+            handler._streams[ScopeTarget("radio", 1)]
+            is original[ScopeTarget("radio", 1)]
+        )
+        assert (
+            handler._streams[ScopeTarget("radio", 0)]
+            is not original[ScopeTarget("radio", 0)]
+        )
+        assert writer.output == [True]
+        previous = dict(handler._streams)
+        invalid = json.loads(
+            encode_scope_subscription(Subscription("radio", 0, view, 100, 10))
+        )
+        invalid["width"] = 0
+        await handler._handle_control(json.dumps(invalid))
+        assert handler._streams == previous
+        error = json.loads(ws.text[-1])
+        assert error["type"] == "error"
+        assert (error["sourceId"], error["receiver"]) == ("radio", 0)
+        await handler._handle_control(
+            '{"type":"unsubscribe","sourceId":"radio","receiver":true}'
+        )
+        assert handler._streams == previous
+        await handler._handle_control(
+            '{"type":"unsubscribe","sourceId":"radio","receiver":0}'
+        )
+        assert set(handler._streams) == {ScopeTarget("radio", 1)}
+        assert writer.output == [True]
+        await handler._handle_control('{"type":"unsubscribe"}')
+        assert not handler._streams
+        assert writer.output == [True, False]
+    finally:
+        await handler._unsubscribe()
+
+
+async def test_multiplex_cleanup_attempts_all_streams_after_one_stop_fails():
+    class FailingWriter(Writer):
+        fail = True
+
+        async def set_output(self, enabled):
+            await super().set_output(enabled)
+            if not enabled and self.fail:
+                raise RuntimeError("restore failed")
+
+    server = WebServer(None)
+    bad, good = FailingWriter(), Writer()
+    handler = ScopeHandler(Socket(), server)
+    failed = None
+    try:
+        for name, writer in (("bad", bad), ("good", good)):
+            server.scope_hub.register(
+                name, RadioScopeSource(resolve_radio_profile(model="ic7300"), writer)
+            )
+            await handler._handle_control(
+                encode_scope_subscription(
+                    Subscription(name, 0, View(14_090_000, 14_110_000), 100, 20)
+                )
+            )
+        failed = handler._streams[ScopeTarget("bad", 0)].subscription
+        with pytest.raises(RuntimeError, match="restore failed"):
+            await handler._unsubscribe()
+        assert not handler._streams
+        assert good.output == [True, False]
+    finally:
+        bad.fail = False
+        if failed is not None:
+            await failed.close()
+        await handler._unsubscribe()
+
+
+async def test_cancelling_multiplex_socket_releases_every_subscription():
+    server = WebServer(None)
+    writers = [Writer(), Writer()]
+    handler = ScopeHandler(Socket(), server)
+    for name, writer in zip(("first", "second"), writers, strict=True):
+        server.scope_hub.register(
+            name, RadioScopeSource(resolve_radio_profile(model="ic7300"), writer)
+        )
+        await handler._handle_control(
+            encode_scope_subscription(
+                Subscription(name, 0, View(14_090_000, 14_110_000), 100, 20)
+            )
+        )
+    task = asyncio.create_task(handler.run())
+    await await_until(lambda: handler in server._scope_handlers)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not handler._streams
+    assert handler not in server._scope_handlers
+    assert all(writer.output == [True, False] for writer in writers)

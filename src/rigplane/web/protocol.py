@@ -10,6 +10,7 @@ from rigplane.scope.models import (
     Coverage,
     FollowView,
     GrantedSubscription,
+    ScopeTarget,
     ScopeWireFrame,
     SourceKind,
     Subscription,
@@ -31,6 +32,8 @@ __all__ = [
     "decode_scope_frame_v2",
     "encode_scope_subscription",
     "decode_scope_subscription",
+    "decode_scope_target",
+    "decode_scope_unsubscribe",
     "encode_scope_granted",
     "decode_scope_granted",
 ]
@@ -240,6 +243,22 @@ def decode_scope_subscription(text: str) -> Subscription:
         obj["width"],
         obj["maxFps"],
     )
+
+
+def decode_scope_target(text: str) -> ScopeTarget:
+    obj = decode_json(text)
+    if "sourceId" not in obj or "receiver" not in obj:
+        raise ValueError("missing subscription target")
+    return ScopeTarget(obj["sourceId"], obj["receiver"])
+
+
+def decode_scope_unsubscribe(text: str) -> ScopeTarget | None:
+    obj = decode_json(text)
+    if obj == {"type": "unsubscribe"}:
+        return None
+    if set(obj) != {"type", "sourceId", "receiver"} or obj["type"] != "unsubscribe":
+        raise ValueError("invalid unsubscribe fields")
+    return ScopeTarget(obj["sourceId"], obj["receiver"])
 
 
 def encode_scope_granted(granted: GrantedSubscription) -> str:

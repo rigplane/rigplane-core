@@ -113,5 +113,5 @@ async def test_scope_pong_does_not_require_a_subscription() -> None:
     ws = _scope_ws(json.dumps({"type": "ping"}))
     handler = ScopeHandler(ws)
     await handler.run()
-    assert handler._subscription is None
+    assert not handler._streams
     assert _sent_json(ws.send_text) == [{"type": "pong"}]

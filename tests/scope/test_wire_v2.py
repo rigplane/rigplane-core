@@ -9,6 +9,7 @@ from rigplane.scope.models import (
     Coverage,
     FollowView,
     GrantedSubscription,
+    ScopeTarget,
     ScopeWireFrame,
     Subscription,
     View,
@@ -17,6 +18,8 @@ from rigplane.web.protocol import (
     decode_scope_frame_v2,
     encode_scope_frame_v2,
     decode_scope_subscription,
+    decode_scope_target,
+    decode_scope_unsubscribe,
     encode_scope_subscription,
     encode_scope_granted,
     decode_scope_granted,
@@ -219,3 +222,29 @@ def parse_fixture_json(text: str) -> ScopeWireFrame:
         fields["seq"],
         fields["sent_at_ms"],
     )
+
+
+def test_targeted_scope_unsubscribe_contract():
+    target = ScopeTarget("radio", 1)
+    text = '{"type":"unsubscribe","sourceId":"radio","receiver":1}'
+    assert decode_scope_unsubscribe(text) == target
+    assert decode_scope_target(text) == target
+    assert decode_scope_unsubscribe('{"type":"unsubscribe"}') is None
+    assert decode_scope_unsubscribe(
+        '{"type":"unsubscribe","sourceId":"audio_fft","receiver":null}'
+    ) == ScopeTarget("audio_fft", None)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"type":"unsubscribe","sourceId":"radio"}',
+        '{"type":"unsubscribe","receiver":0}',
+        '{"type":"unsubscribe","sourceId":"radio","receiver":true}',
+        '{"type":"unsubscribe","sourceId":"radio","receiver":0,"extra":1}',
+        '{"type":"unsubscribe","sourceId":"","receiver":0}',
+    ],
+)
+def test_invalid_targeted_unsubscribe_is_rejected(text):
+    with pytest.raises(ValueError):
+        decode_scope_unsubscribe(text)

@@ -8,8 +8,10 @@ Spectrum and waterfall data from the radio's scope display.
 
 ## WebSocket subscriptions
 
-`/api/v1/scope` carries the selected radio, audio FFT or IQ FFT source. The
-former `/api/v1/audio-scope` endpoint is removed. Opening a socket does not
+`/api/v1/scope` multiplexes radio, audio FFT and IQ FFT subscriptions on one
+physical WebSocket. Each subscription is keyed by `sourceId` and `receiver`;
+a subscribe with the same key replaces only that subscription, while distinct
+keys coexist. The former `/api/v1/audio-scope` endpoint is removed. Opening a socket does not
 start a source: send a subscription first. Source IDs are `radio`, `audio_fft`
 and `iq_fft` when the corresponding producer is available.
 
@@ -37,10 +39,13 @@ assembled pixel payload. Before the first pixel-bearing frame the native width
 is unknown and the initial grant provisionally echoes the requested width.
 When the observed width changes, the server sends an updated `granted` before
 the corresponding binary frame; existing subscriptions need no new request.
-Send another subscription to change the view,
-source, width or rate; `maxFps: 0` pauses the subscription. Closing the socket
-releases its demand. The hub starts the producer on first active demand and
-stops it on last release.
+Send another subscription with the same key to change its view, width or rate;
+`maxFps: 0` pauses that subscription. To release one stream, send
+`{"type":"unsubscribe","sourceId":"radio","receiver":0}`. Bare
+`{"type":"unsubscribe"}` and socket close release all subscriptions. A rejected
+update preserves the previous subscriptions; errors include `sourceId` and
+`receiver` when a valid target can be parsed. The hub starts the producer on
+first active demand and stops it on last release.
 
 Frames use the typed v2 schema in
 `src/rigplane/scope/models.py: ScopeWireFrame`, encoded by
