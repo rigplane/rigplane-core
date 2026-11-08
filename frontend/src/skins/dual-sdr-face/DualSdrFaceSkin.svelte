@@ -1,19 +1,24 @@
 <script lang="ts">
   import { runtime } from '$lib/runtime/frontend-runtime';
+  import { scopeSlotKey } from '$lib/runtime/adapters/scope-adapter';
   import StatusBar from '../../components-v2/layout/StatusBar.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import DualSdrFace from './DualSdrFace.svelte';
 
   const hardwareScope = {
-    subscribe: (listener: Parameters<typeof runtime.scope.subscribeHardware>[0]) =>
-      runtime.scope.subscribeHardware(listener),
+    subscribe: (listener: (frame: import('$lib/runtime/scope-frame').ScopeFrame, slotKey: string) => void) =>
+      runtime.scope.stream('hardware').subscribe(listener),
     subscribeHealth: (listener: (live: boolean) => void) =>
       runtime.scope.subscribeHealth((source, health) => {
         if (source === 'hardware') {
           listener(health.transport === 'connected' && health.frameSeen);
         }
       }),
+    slotKeys: (() => {
+      const stream = runtime.scope.stream('hardware');
+      return [scopeSlotKey(stream.sourceId, 0), scopeSlotKey(stream.sourceId, 1)] as const;
+    })(),
   };
 
   $effect(() => {

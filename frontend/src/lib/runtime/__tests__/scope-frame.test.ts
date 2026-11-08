@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fixtures from './fixtures/scope-wire.json';
-import { ingressScopeFrame, parseCurrentScopeFrame, scopeSlotKey } from '../../adapters/scope-adapter';
+import { ingressScopeFrame, parseCurrentScopeFrame, scopeSlotKey } from '../adapters/scope-adapter';
 import { projectScopeCoverage } from '../scope-frame';
 import type { ScopeGeometry } from '../scope-frame';
 

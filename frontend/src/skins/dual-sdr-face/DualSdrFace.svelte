@@ -1,21 +1,26 @@
 <script lang="ts">
   import type { RadioViewModel } from '../../semantic/radio-view-model';
-  import type { ScopeFrame } from '../../lib/runtime/adapters/scope-adapter';
+  import type { ScopeFrame } from '../../lib/runtime/scope-frame';
   import ReceiverInstrumentCluster from './ReceiverInstrumentCluster.svelte';
   import { readingText } from '../../primitives/reading-text';
   import { usable } from '../../primitives/control-instruments/control-instrument-behavior';
+  /** MOR-4270: frames arrive with their ingress-owned slot key; receivers never re-read frame metadata. */
   export interface ScopeFrameSource {
-    subscribe(listener: (frame: ScopeFrame) => void): () => void;
+    subscribe(listener: (frame: ScopeFrame, slotKey: string) => void): () => void;
     subscribeHealth?(listener: (live: boolean) => void): () => void;
+    /** The stream slot keys for receiver 0 and 1, computed by the source owner. */
+    readonly slotKeys: readonly [string, string];
   }
   interface Props { view: RadioViewModel; scopeSource: ScopeFrameSource; onPreChange?: (level: number) => void; }
   let { view, scopeSource, onPreChange }: Props = $props();
   let frames: [ScopeFrame | null, ScopeFrame | null] = $state([null, null]);
   $effect(() => {
-    const unsubscribeFrames = scopeSource.subscribe((incoming) => {
-      if (incoming.receiver !== 0 && incoming.receiver !== 1) return;
-      const frame = Object.freeze({ ...incoming, pixels: new Uint8Array(incoming.pixels) }) as ScopeFrame;
-      frames = incoming.receiver === 0 ? [frame, frames[1]] : [frames[0], frame];
+    const [mainKey, subKey] = scopeSource.slotKeys;
+    const unsubscribeFrames = scopeSource.subscribe((incoming, slotKey) => {
+      // The typed pixel view rides the message buffer the stream retains — no copy.
+      const frame = Object.freeze(incoming);
+      frames = slotKey === mainKey ? [frame, frames[1]]
+        : slotKey === subKey ? [frames[0], frame] : frames;
     });
     const unsubscribeHealth = scopeSource.subscribeHealth?.((live) => {
       if (!live) frames = [null, null];

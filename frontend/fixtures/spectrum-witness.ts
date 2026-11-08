@@ -8,12 +8,14 @@
  * `ptt-harness.html`/`ptt-main.ts`: a standalone page in the same fixtures
  * server, not a new fixture id in `catalog.ts`.
  *
- * WHAT IS FROZEN. The panel takes `scopeProjection`, which puts it on its
- * "managed" path: frame geometry, bins and passband then come from that prop
- * instead of from a scope-frame subscription. `FRAME` below is a constant, so
- * no clock and no scope transport reaches the trace, the waterfall or the
- * tune-line/passband overlay. `binByte` is integer-only arithmetic over the
- * bin index — no `Math.random`, no `Date`, no transcendental function.
+ * WHAT IS FROZEN. MOR-4270: the panel consumes the shared `ScopeStream`, so
+ * the witness feeds ONE constant frame through the real ingress parse (the
+ * same 16-byte wire layout the server encoder emits) into a synthetic
+ * stream patched onto the controller singleton, and hands the panel a
+ * frozen managed region for the passband. No clock and no scope transport
+ * reaches the trace, the waterfall or the tune-line/passband overlay.
+ * `binByte` is integer-only arithmetic over the bin index — no
+ * `Math.random`, no `Date`, no transcendental function.
  *
  * WHAT IS NOT. Rendering and state projection stay production-real. The
  * witness replaces only the panel's frequency and filter output callbacks
@@ -34,7 +36,9 @@ import { mount } from 'svelte';
 import '../src/app.css';
 import '../src/components-v2/theme/index';
 import SpectrumPanel from '../src/components/spectrum/SpectrumPanel.svelte';
-import type { ScopeDisplayProjection } from '../src/lib/runtime/adapters/scope-display-projection';
+import { ScopeStream } from '../src/lib/runtime/scope-stream';
+import type { ScopeMessageSource } from '../src/lib/runtime/scope-stream';
+import { scopeController } from '../src/lib/runtime/scope-controller.svelte';
 import {
   getFilterHandlers,
   getVfoHandlers,
@@ -112,21 +116,38 @@ const TUNE_HZ = 14_100_000;
 /** 0 = CTR. In CTR the panel draws the tune line at 50% and never hides it. */
 const FRAME_MODE = 0;
 
-const FRAME: ScopeDisplayProjection = Object.freeze({
-  frame: Object.freeze({
-    source: 'hardware',
-    receiver: 'MAIN',
-    freshness: 'fresh',
-    startHz: START_HZ,
-    endHz: END_HZ,
-    normalizedBins: Object.freeze(
-      Array.from({ length: BIN_COUNT }, (_, index) => binByte(index) / 255),
-    ),
-  }),
-  frameMode: FRAME_MODE,
-  acceptedSequence: 1,
+// One real wire frame: the same little-endian 16-byte header + payload the
+// server encoder produces (protocol.py), parsed by the production ingress.
+function encodeWitnessFrame(): ArrayBuffer {
+  const bytes = new Uint8Array(16 + BIN_COUNT);
+  const view = new DataView(bytes.buffer);
+  view.setUint8(0, 1);                       // message type
+  view.setUint8(1, 0);                       // receiver MAIN
+  view.setUint8(2, FRAME_MODE);
+  view.setUint32(3, START_HZ, true);
+  view.setUint32(7, END_HZ, true);
+  view.setUint16(11, 1, true);               // wire sequence
+  view.setUint8(13, 0);                      // flags
+  view.setUint16(14, BIN_COUNT, true);
+  for (let index = 0; index < BIN_COUNT; index += 1) bytes[16 + index] = binByte(index);
+  return bytes.buffer;
+}
+
+const witnessSource: ScopeMessageSource = {
+  subscribe(sink) { sink(encodeWitnessFrame()); return () => {}; },
+  close: () => {},
+};
+const witnessStream = new ScopeStream(witnessSource,
+  { source: 'radio', sourceId: 'scope', epoch: 1 }, 'borrowed');
+// The witness owns no socket: the synthetic stream replaces the singleton's
+// shared stream and the health getters read as an honest connected viewer.
+(scopeController as unknown as { stream(): typeof witnessStream }).stream = () => witnessStream;
+Object.defineProperty(scopeController, 'hardwareScopeConnected', { get: () => true });
+Object.defineProperty(scopeController, 'hardwareScopeFrameLive', { get: () => true });
+
+const REGION = Object.freeze({
   passband: Object.freeze({
-    state: 'current',
+    state: 'current' as const,
     tuple: Object.freeze({
       frequencyHz: TUNE_HZ,
       mode: 'USB',
@@ -137,12 +158,14 @@ const FRAME: ScopeDisplayProjection = Object.freeze({
       endHz: END_HZ,
     }),
   }),
+  demanded: true,
+  setDemand: () => {},
 });
 
 mount(SpectrumPanel, {
   target: document.getElementById('app')!,
   props: {
-    scopeProjection: FRAME,
+    scopeRegion: REGION,
     scopeDemanded: true,
     hideScopeControls: true,
     hideSourceControls: true,

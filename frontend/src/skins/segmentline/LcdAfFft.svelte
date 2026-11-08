@@ -2,25 +2,25 @@
   export type LcdAfFftInputState = 'live' | 'missing' | 'stale' | 'unknown' | 'unsupported';
 
   interface Props {
-    normalizedBins?: readonly number[] | null;
+    /** Typed payload straight from the shared scope stream (MOR-4270). */
+    pixels?: Uint8Array | null;
     inputState: LcdAfFftInputState;
     receiverActivity: 'active' | 'inactive' | 'unknown';
   }
 
-  let { normalizedBins = null, inputState, receiverActivity }: Props = $props();
+  let { pixels = null, inputState, receiverActivity }: Props = $props();
 
-  const EMPTY_BINS = new Float32Array(64);
+  const EMPTY_BINS = new Uint8Array(64);
   let hasUsableInput = $derived(
     inputState === 'live'
       && receiverActivity === 'active'
-      && normalizedBins !== null
-      && normalizedBins.length > 1
-      && normalizedBins.every(Number.isFinite),
+      && pixels !== null
+      && pixels.length > 1,
   );
-  let renderBins = $derived(hasUsableInput ? normalizedBins! : EMPTY_BINS);
-  let path = $derived(Array.from(renderBins, (value, index) => {
+  let renderBins = $derived(hasUsableInput ? pixels! : EMPTY_BINS);
+  let path = $derived(Array.from(renderBins, (sample, index) => {
     const x = (index / (renderBins.length - 1)) * 500;
-    const y = 92 - Math.max(0, Math.min(1, value)) * 82;
+    const y = 92 - Math.max(0, Math.min(255, sample)) / 255 * 82;
     return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
   }).join(' '));
 </script>

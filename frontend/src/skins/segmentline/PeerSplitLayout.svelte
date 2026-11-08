@@ -16,7 +16,9 @@
   // see `DualReceiverCockpit.svelte`'s identical import for the full
   // rationale (MOR-1070 evidence run finding N4).
   import '../../components-v2/theme/index';
+  import type { Readable } from 'svelte/store';
   import ScaledStage from '../../primitives/stage/ScaledStage.svelte';
+  import LcdFrameValue from './LcdFrameValue.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
   import { projectPeerSplitDisplay } from '../../semantic/radio-display-model';
@@ -60,19 +62,25 @@
   );
 </script>
 
-{#snippet readonlyDisplay(view: RadioViewModel, selectedFrame?: LcdSpectrumFrame)}
+{#snippet readonlyDisplay(view: RadioViewModel, frameStore: Readable<LcdSpectrumFrame | null>)}
+  <!-- MOR-4270: pixels arrive through the store subscription (the stream
+       sink behind it), never through a per-frame `$state` prop. -->
   {@const model = projectPeerSplitDisplay(view)}
-  {#snippet peer()}<PeerSplitDisplay {model} />{/snippet}
-  {#snippet dominant()}<DominantUnifiedDisplay {model} spectrumFrame={selectedFrame} />{/snippet}
-  {#snippet centerstage()}<CenterstageDisplay {model} audioFftFrame={selectedFrame} />{/snippet}
-  {#snippet panadapter()}<PanadapterDisplay {model} rfFrame={selectedFrame} />{/snippet}
-  <LcdDisplayVariant
-    variant={displayVariant}
-    {peer}
-    {dominant}
-    {centerstage}
-    {panadapter}
-  />
+  <LcdFrameValue store={frameStore}>
+    {#snippet children(selectedFrame)}
+      {#snippet peer()}<PeerSplitDisplay {model} />{/snippet}
+      {#snippet dominant()}<DominantUnifiedDisplay {model} spectrumFrame={selectedFrame} />{/snippet}
+      {#snippet centerstage()}<CenterstageDisplay {model} audioFftFrame={selectedFrame} />{/snippet}
+      {#snippet panadapter()}<PanadapterDisplay {model} rfFrame={selectedFrame} />{/snippet}
+      <LcdDisplayVariant
+        variant={displayVariant}
+        {peer}
+        {dominant}
+        {centerstage}
+        {panadapter}
+      />
+    {/snippet}
+  </LcdFrameValue>
 {/snippet}
 
 <div class="peer-split-holder">

@@ -31,7 +31,7 @@
   <canvas bind:this={canvas} aria-label="Receiver spectrum" data-supplied-pixels={frame?.pixels.length ?? 0}></canvas>
   <!-- MOR-2692: unread frame → no output, an unlit slot; the axis separator
        is ' · ', never a dash. -->
-  {#if frame !== null}<div class="axis">{frame.startFreq} · {frame.endFreq}</div>{/if}
+  {#if frame !== null}<div class="axis">{frame.viewStartHz} · {frame.viewEndHz}</div>{/if}
 </div>
 
 <style>

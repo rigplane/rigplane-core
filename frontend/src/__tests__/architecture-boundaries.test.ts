@@ -928,8 +928,15 @@ describe('radio authority boundary (MOR-1406)', () => {
 });
 
 describe('scope metadata ingress owners (MOR-4270)', () => {
-  it.each(['scope-frame.ts', 'scope-stream.ts'])('allows %s to consume frame metadata', async (owner) => {
+  it('allows only the adapter ingress owner to consume frame metadata', async () => {
     const code = `import type { ScopeFrame } from '$lib/runtime/scope-frame';\nexport function receiver(frame: ScopeFrame){ return frame.receiver; }`;
-    expect(await authorityRuleIds(code, `src/lib/runtime/${owner}`)).toEqual([]);
+    expect(await authorityRuleIds(code, 'src/lib/runtime/adapters/scope-adapter.ts')).toEqual([]);
   }, ARCH_LINT_TIMEOUT_MS);
+  it.each(['scope-frame.ts', 'scope-stream.ts'])(
+    'rejects %s re-reading frame metadata outside the ingress owner',
+    async (consumer) => {
+      const code = `import type { ScopeFrame } from '$lib/runtime/scope-frame';\nexport function receiver(frame: ScopeFrame){ return frame.receiver; }`;
+      expect(await authorityRuleIds(code, `src/lib/runtime/${consumer}`))
+        .toContain('radio-authority/scope-metadata');
+    }, ARCH_LINT_TIMEOUT_MS);
 });

@@ -87,7 +87,7 @@ function audioFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFrame
     freshness: 'fresh',
     startHz: 0,
     endHz: 24_000,
-    normalizedBins: [0, 0.5, 1],
+    pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -130,7 +130,7 @@ describe('DominantUnifiedDisplay', () => {
     ];
     const target = render({
       ...model, receivers: subActiveReceivers, activeReceiver: subActiveReceivers[1],
-    }, audioFrame({ receiver: 'SUB', normalizedBins: [0, 0.5, 1] }));
+    }, audioFrame({ receiver: 'SUB', pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)) }));
 
     expect(target.querySelector('[data-testid="lcd-dominant-main"]')?.getAttribute('data-receiver-activity')).toBe('inactive');
     expect(target.querySelector('[data-testid="lcd-dominant-sub"]')?.getAttribute('data-receiver-activity')).toBe('active');
@@ -147,7 +147,7 @@ describe('DominantUnifiedDisplay', () => {
     ];
     const target = render({ ...model, receivers: unknownReceivers, activeReceiver: null }, {
       source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
-      startHz: 0, endHz: 24_000, normalizedBins: [1, 0.5, 0],
+      startHz: 0, endHz: 24_000, pixels: Uint8Array.from([1, 0.5, 0], value => Math.round(value * 255)),
     });
 
     expect(target.querySelector('[data-testid="lcd-dominant-scope-unknown"]')).not.toBeNull();
@@ -201,7 +201,7 @@ describe('DominantUnifiedDisplay', () => {
     ['stale', audioFrame({ freshness: 'stale' })],
     ['source mismatch', audioFrame({ source: 'hardware' })],
     ['receiver mismatch', audioFrame({ receiver: 'SUB' })],
-    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', startHz: 0, endHz: 0, normalizedBins: [0] }],
+    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', startHz: 0, endHz: 0, pixels: Uint8Array.from([0], value => Math.round(value * 255)) }],
   ])('fails closed to an empty AF trace for %s input', (_label, spectrumFrame) => {
     const target = render(model, spectrumFrame);
 

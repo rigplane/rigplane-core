@@ -36,14 +36,10 @@ const ACQUISITION_OWNERS = new Set([
   'src/lib/transport/http-client.ts',
   'src/lib/transport/ws-client.ts',
 ]);
+// MOR-4270: the ingress owner is the adapter alone — every other consumer
+// reads the qualified geometry facts and slot keys it derives.
 const SCOPE_METADATA_OWNERS = new Set([
-  'src/components-v2/panels/audio-scope/AudioSpectrumPanel.svelte',
-  'src/components-v2/panels/lcd/AmberCockpit.svelte',
-  'src/components-v2/panels/lcd/AmberScope.svelte',
-  'src/components/spectrum/SpectrumPanel.svelte',
   'src/lib/runtime/adapters/scope-adapter.ts',
-  'src/lib/runtime/scope-frame.ts',
-  'src/lib/runtime/scope-stream.ts',
 ]);
 const READ_ONLY_SEAMS = [
   'src/lib/runtime/adapters',

@@ -23,13 +23,13 @@ function render(index: number, view: RadioViewModel) {
   const model = projectPeerSplitDisplay(view);
   const frame = {
     source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh',
-    startHz: 0, endHz: 4_000, normalizedBins: [0, 0.5, 1],
+    startHz: 0, endHz: 4_000, pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)),
   };
+  const model = projectPeerSplitDisplay(view);
   component = mount(variants[index], {
     target,
     props: {
-      model, normalizedFftBins: { MAIN: frame.normalizedBins },
-      audioFftFrame: frame, spectrumFrame: frame,
+      model, audioFftFrame: frame, spectrumFrame: frame,
     },
   });
   return target;

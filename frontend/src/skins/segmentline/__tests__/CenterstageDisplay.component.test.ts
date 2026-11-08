@@ -96,7 +96,7 @@ function audioFftFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFr
     freshness: 'fresh',
     startHz: 0,
     endHz: 4_000,
-    normalizedBins: [0, 0.5, 1],
+    pixels: Uint8Array.from([0, 0.5, 1], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -155,7 +155,7 @@ describe('CenterstageDisplay', () => {
   it.each([
     ['missing', undefined],
     ['stale', audioFftFrame({ freshness: 'stale' })],
-    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', normalizedBins: [0] }],
+    ['malformed', { source: 'audio-fft', receiver: 'MAIN', freshness: 'fresh', pixels: Uint8Array.from([0], value => Math.round(value * 255)) }],
     ['source mismatch', audioFftFrame({ source: 'hardware' })],
     ['receiver mismatch', audioFftFrame({ receiver: 'SUB' })],
   ])('fails the audio FFT closed for a %s frame', (_case, frame) => {

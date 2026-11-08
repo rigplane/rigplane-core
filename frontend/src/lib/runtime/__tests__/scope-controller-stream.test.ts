@@ -12,6 +12,7 @@ function fakeChannel() {
     get sessionEpoch() { return epoch; },
     get state() { return state; },
     connect() {
+      if (state === 'connected') return;
       state = 'connected'; epoch += 1;
       for (const update of states) update(state);
       for (const update of sessions) update({ state, epoch });
@@ -38,9 +39,10 @@ afterEach(() => { vi.restoreAllMocks(); });
 
 describe('ScopeController shared streams (MOR-4270)', () => {
   it('exposes one stream per source over the same channel the driver opens', () => {
-    const channel = fakeChannel();
+    const channels = new Map<string, ReturnType<typeof fakeChannel>>();
     const controller = new ScopeController(vi.fn((name: string) => {
-      expect(['scope', 'audio-scope']).toContain(name);
+      let channel = channels.get(name);
+      if (!channel) { channel = fakeChannel(); channels.set(name, channel); }
       return channel as unknown as WsChannel;
     }));
     expect(controller.stream('hardware')).toBe(controller.stream('hardware'));
@@ -48,7 +50,7 @@ describe('ScopeController shared streams (MOR-4270)', () => {
     const sink = vi.fn();
     controller.stream('hardware').subscribe(sink);
     controller.hardwareScopeDriver.start();
-    channel.connect();
+    const channel = channels.get('scope')!;
     const buffer = channel.receive(radioAt(2));
     const [frame, slotKey] = sink.mock.lastCall!;
     expect(frame.pixels.buffer).toBe(buffer); // zero copies to the renderer sink
@@ -60,11 +62,10 @@ describe('ScopeController shared streams (MOR-4270)', () => {
   it('counts accepted frames monotonically and publishes trace receipts with channel identity', () => {
     vi.spyOn(performance, 'now').mockReturnValue(1_000);
     const channel = fakeChannel();
-    const controller = new ScopeController(vi.fn(() => channel as unknown as WsChannel));
+    const controller = new ScopeController(vi.fn((name: string) => name === 'scope' ? channel as unknown as WsChannel : fakeChannel() as unknown as WsChannel));
     const receipts: unknown[] = [];
     controller.subscribeTraceReceipt((receipt) => receipts.push(receipt));
     controller.hardwareScopeDriver.start();
-    channel.connect();
     channel.receive(radioAt(0));
     channel.receive(radioAt(1));
     const accepted = receipts.filter((receipt) => (receipt as { kind: string }).kind === 'accepted');
@@ -82,14 +83,11 @@ describe('ScopeController shared streams (MOR-4270)', () => {
     const controller = new ScopeController(vi.fn(() => channel as unknown as WsChannel));
     const stream = controller.stream('hardware');
     controller.hardwareScopeDriver.start();
-    channel.connect();
     channel.receive(radioAt(0));
     expect(stream.latest('scope:0')).not.toBeNull();
     channel.disconnect();
     channel.connect();
     expect(stream.latest('scope:0')).toBeNull();
-    const geometry = stream.geometry.subscribe(() => {});
-    void geometry;
   });
 
   it('marks stale through the liveness clock instead of per-frame timers', () => {
@@ -102,7 +100,6 @@ describe('ScopeController shared streams (MOR-4270)', () => {
       const geometry: unknown[] = [];
       stream.geometry.subscribe((value) => geometry.push(value));
       controller.hardwareScopeDriver.start();
-      channel.connect();
       channel.receive(radioAt(0));
       expect((geometry.at(-1) as { freshness: string } | null)?.freshness).toBe('fresh');
       vi.advanceTimersByTime(900);

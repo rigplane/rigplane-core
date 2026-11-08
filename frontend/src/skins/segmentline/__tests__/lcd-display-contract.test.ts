@@ -17,7 +17,7 @@ function frame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFrame {
     freshness: 'fresh',
     startHz: 14_200_000,
     endHz: 14_300_000,
-    normalizedBins: [0.1, 0.7, 0.3],
+    pixels: Uint8Array.from([0.1, 0.7, 0.3], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -32,7 +32,7 @@ describe('LCD display-frame contract', () => {
       expect(result).toEqual({ state: 'live', frame: candidate });
       if (result.state === 'live') {
         expect(result.frame).toBe(candidate);
-        expect(result.frame.normalizedBins).toBe(candidate.normalizedBins);
+        expect(result.frame.pixels).toBe(candidate.pixels);
       }
     },
   );
@@ -61,13 +61,12 @@ describe('LCD display-frame contract', () => {
     frame({ endHz: Number.POSITIVE_INFINITY }),
     frame({ startHz: 14_300_000, endHz: 14_300_000 }),
     frame({ startHz: 14_300_000, endHz: 14_200_000 }),
-    frame({ normalizedBins: [] }),
-    frame({ normalizedBins: [0.5] }),
-    frame({ normalizedBins: [0, Number.NaN] }),
-    frame({ normalizedBins: [0, Number.POSITIVE_INFINITY] }),
-    frame({ normalizedBins: [-0.01, 0.5] }),
-    frame({ normalizedBins: [0.5, 1.01] }),
-    frame({ normalizedBins: Array(2) }),
+    frame({ pixels: Uint8Array.from([], value => Math.round(value * 255)) }),
+    frame({ pixels: Uint8Array.from([0.5], value => Math.round(value * 255)) }),
+    frame({ pixels: new Uint8Array(0) }),
+    frame({ pixels: new Uint8Array(1) }),
+    frame({ pixels: null }),
+    frame({ pixels: 'not-a-payload' as unknown as Uint8Array }),
   ])('rejects malformed production input without fabricating renderable data', (candidate) => {
     const result = resolveLcdSpectrumFrame(candidate, EXPECT_HARDWARE_MAIN);
 

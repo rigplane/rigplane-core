@@ -1,7 +1,5 @@
 /** MOR-1070 stub for `$lib/runtime` — fixture state/caps, no transport. */
-import {
-  harness, type FixtureFrameAuthority, type FixtureFrameEvidence,
-} from '../harness-state';
+import { harness } from '../harness-state';
 import type { ScopeController } from '$lib/runtime/scope-controller.svelte';
 import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
@@ -62,47 +60,29 @@ export const presentationResources = Object.freeze({
 });
 
 /**
- * The real ScopeFrameHost owns selection and resolution. This fixture-local
- * controller only supplies its input contract: the authority set by that host
- * is mirrored back with a null envelope, disconnected transport, and no
- * demand. Thus an LCD source selection can be observed without inventing a
- * socket, controller, binary frame, zero-fill, or live waveform.
+ * MOR-4270: the fixture-local controller supplies the shared-stream contract
+ * the wiring consumes — an idle stream per source (null geometry, no frames)
+ * and honest disconnected health. An LCD source selection can be observed
+ * without inventing a socket, controller, binary frame, or live waveform.
  */
+const fixtureIdleStream = Object.freeze({
+  sourceId: 'fixture-scope',
+  geometry: Object.freeze({ subscribe(listener: (value: null) => void) { listener(null); return () => {}; } }),
+  subscribe(_sink: (frame: never, slotKey: string) => void): () => void { return () => {}; },
+  latest(_slotKey: string): null { return null; },
+  setSlotFilter(_key: string | null): void {},
+  setSessionEpoch(_epoch: number): void {},
+  reset(): void {},
+  setFreshness(_freshness: 'fresh' | 'stale'): void {},
+  receipt: 0,
+});
 const fixtureScope = {
   get hardwareScopeConnected() { return false; },
-  subscribeFrameEvidence(_listener: () => void): () => void { return () => {}; },
-  setFrameAuthority(authority: FixtureFrameAuthority | null): void {
-    harness.frameAuthority = authority === null ? null : Object.freeze({ ...authority });
+  stream(source: 'hardware' | 'audio_fft') { return fixtureIdleStream; },
+  snapshotHealth(_source: 'hardware' | 'audio_fft') {
+    return Object.freeze({ demanded: false, transport: 'disconnected' as const, frameSeen: false });
   },
-  snapshotFrameEvidence() {
-    const authority = harness.frameAuthority ?? {
-      source: 'hardware' as const, receiver: null, providerGeneration: null,
-    };
-    const evidence: FixtureFrameEvidence = {
-      envelope: null,
-      authority: {
-        ...authority,
-      },
-      transportEpoch: null,
-      demanded: false,
-      transport: 'disconnected',
-      nowMonotonic: 0,
-    };
-    harness.frameEvidence = Object.freeze({
-      ...evidence,
-      authority: Object.freeze({ ...evidence.authority }),
-    });
-    return Object.freeze({
-      envelope: evidence.envelope,
-      authority: Object.freeze({
-        ...evidence.authority,
-        transportEpoch: evidence.transportEpoch,
-        demanded: evidence.demanded,
-        transport: evidence.transport,
-        nowMonotonic: evidence.nowMonotonic,
-      }),
-    });
-  },
+  subscribeHealth(_listener: () => void): () => void { return () => {}; },
 };
 
 export const runtime = {

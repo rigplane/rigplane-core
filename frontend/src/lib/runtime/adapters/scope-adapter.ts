@@ -1,138 +1,70 @@
-/** Runtime-owned decoder for binary audio-scope frames. */
+/**
+ * Runtime-owned ingress for binary scope frames (MOR-4270). This file is the
+ * declared `scope_metadata` owner: every read of receiver/mode/span metadata
+ * from a `ScopeFrame` lives here, downstream consumers receive the qualified
+ * `ScopeGeometry` facts and the slot key instead.
+ */
 
-export interface ScopeFrame {
-  readonly receiver: number;
-  readonly mode: number;
-  readonly startFreq: number;
-  readonly endFreq: number;
-  readonly outOfRange: boolean;
-  readonly pixels: Uint8Array;
-}
+import type {
+  CurrentScopeContext,
+  ScopeFrame,
+  ScopeFreshness,
+  ScopeGeometry,
+  ScopeParseError,
+  ScopeParseResult,
+} from '$lib/runtime/scope-frame';
 
-export function parseScopeFrame(buf: ArrayBuffer): ScopeFrame | null {
-  const view = new DataView(buf);
-  if (view.byteLength < 16 || view.getUint8(0) !== 0x01) return null;
-  const receiver = view.getUint8(1);
-  const mode = view.getUint8(2);
-  const startFreq = view.getUint32(3, true);
-  const endFreq = view.getUint32(7, true);
-  // Binary Scope Frame RFC in src/rigplane/web/protocol.py:
-  // flags at byte 13, bit 0 = out_of_range; pixels start at byte 16.
-  const outOfRange = (view.getUint8(13) & 0x01) !== 0;
-  const pixelCount = view.getUint16(14, true);
-  if (16 + pixelCount > view.byteLength) return null;
-  return Object.freeze({
-    receiver,
-    mode,
-    startFreq,
-    endFreq,
-    outOfRange,
-    pixels: new Uint8Array(buf, 16, pixelCount),
-  });
+export type {
+  CurrentScopeContext, ScopeFrame, ScopeFreshness, ScopeGeometry,
+  ScopeParseError, ScopeParseResult,
+} from '$lib/runtime/scope-frame';
+
+export function parseCurrentScopeFrame(buffer: ArrayBuffer, context: CurrentScopeContext): ScopeParseResult {
+  if (buffer.byteLength < 16) return { ok: false, reason: 'short header' };
+  const wire = new DataView(buffer);
+  if (wire.getUint8(0) !== 1) return { ok: false, reason: 'message type' };
+  const width = wire.getUint16(14, true);
+  if (buffer.byteLength !== 16 + width) return { ok: false, reason: 'pixel length' };
+  const startHz = wire.getUint32(3, true);
+  const endHz = wire.getUint32(7, true);
+  const outOfRange = (wire.getUint8(13) & 1) !== 0;
+  if (width > 0 && !outOfRange && endHz <= startHz) return { ok: false, reason: 'frequency range' };
+  return { ok: true, frame: {
+    source: context.source, sourceId: context.sourceId, epoch: context.epoch,
+    receiver: wire.getUint8(1), seq: wire.getUint16(11, true), sentAtMs: null,
+    viewStartHz: startHz, viewEndHz: endHz, coverageStartHz: startHz, coverageEndHz: endHz,
+    width, pixels: width === 0 ? null : new Uint8Array(buffer, 16, width), outOfRange,
+  } };
 }
 
 /** The one LCD/SDR silence boundary. A frame is stale at this exact age. */
 export const SCOPE_FRAME_SILENCE_MS = 500;
 
-export type QualifiedScopeSource = 'hardware' | 'audio_fft';
-
-/**
- * Runtime-qualified receipt. `wireSequence` is diagnostic continuity only;
- * the locally accepted sequence and the three authority epochs are the
- * lifecycle identity.
- */
-export interface QualifiedScopeFrameEnvelope {
-  readonly source: QualifiedScopeSource;
-  readonly receiver: 0 | 1;
-  readonly providerGeneration: number;
-  readonly transportEpoch: number;
-  readonly receivedAt: number;
-  readonly acceptedSequence: number;
-  readonly wireSequence: number;
-  readonly frame: ScopeFrame;
+export function scopeSlotKey(sourceId: string, receiver: number | null): string {
+  return receiver === null ? `${sourceId}:*` : `${sourceId}:${receiver}`;
 }
 
-export type ScopeFrameReceiptIdentity = Omit<QualifiedScopeFrameEnvelope, 'frame' | 'wireSequence'>;
+/** One ingress pass: the typed frame, its qualified geometry and the slot key it belongs to. */
+export type ScopeIngressResult =
+  | { readonly ok: true; readonly frame: ScopeFrame; readonly geometry: ScopeGeometry; readonly slotKey: string }
+  | { readonly ok: false; readonly reason: ScopeParseError };
 
-export interface ScopeFrameProjectionAuthority {
-  readonly source: QualifiedScopeSource;
-  readonly receiver: 0 | 1 | null;
-  readonly providerGeneration: number | null;
-  readonly transportEpoch: number | null;
-  readonly demanded: boolean;
-  readonly transport: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
-  readonly nowMonotonic: number;
-}
-
-/** Structural match for the MOR-2321 LCD display-frame model. */
-export interface ScopeDisplayFrameCandidate {
-  readonly state?: 'out-of-range';
-  readonly source: 'hardware' | 'audio-fft';
-  readonly receiver: 'MAIN' | 'SUB';
-  readonly freshness: 'fresh' | 'stale';
-  readonly startHz: number;
-  readonly endHz: number;
-  readonly normalizedBins: readonly number[];
-}
-
-const safeNonnegativeInteger = (value: unknown): value is number =>
-  Number.isSafeInteger(value) && (value as number) >= 0;
-const safePositiveInteger = (value: unknown): value is number =>
-  Number.isSafeInteger(value) && (value as number) > 0;
-
-export function qualifyScopeFrameEnvelope(
-  frame: ScopeFrame,
-  identity: ScopeFrameReceiptIdentity,
-  wireSequence: number,
-): QualifiedScopeFrameEnvelope | null {
-  if ((frame.receiver !== 0 && frame.receiver !== 1) || frame.receiver !== identity.receiver
-    || !safeNonnegativeInteger(identity.providerGeneration)
-    || !safePositiveInteger(identity.transportEpoch)
-    || !Number.isFinite(identity.receivedAt) || identity.receivedAt < 0
-    || !safePositiveInteger(identity.acceptedSequence)
-    || !safeNonnegativeInteger(wireSequence) || wireSequence > 0xffff) return null;
-  const retainedFrame = Object.freeze({ ...frame, pixels: new Uint8Array(frame.pixels) });
-  return Object.freeze({ ...identity, wireSequence, frame: retainedFrame });
-}
-
-/**
- * Pure projection only: no store, clock, timer, transport, or alternate-source read.
- * The caller supplies one monotonic snapshot from the controller's domain.
- */
-export function toScopeDisplayFrame(
-  envelope: QualifiedScopeFrameEnvelope | null,
-  authority: ScopeFrameProjectionAuthority,
-): ScopeDisplayFrameCandidate | null {
-  if (!envelope || !authority.demanded || authority.transport !== 'connected'
-    || authority.receiver === null || !safeNonnegativeInteger(authority.providerGeneration)
-    || !safePositiveInteger(authority.transportEpoch)
-    || envelope.source !== authority.source || envelope.receiver !== authority.receiver
-    || envelope.providerGeneration !== authority.providerGeneration
-    || envelope.transportEpoch !== authority.transportEpoch
-    || !safeNonnegativeInteger(envelope.providerGeneration)
-    || !safePositiveInteger(envelope.transportEpoch)
-    || !safePositiveInteger(envelope.acceptedSequence)
-    || !safeNonnegativeInteger(envelope.wireSequence)
-    || !Number.isFinite(envelope.receivedAt) || envelope.receivedAt < 0
-    || !Number.isFinite(authority.nowMonotonic)) return null;
-
-  const age = authority.nowMonotonic - envelope.receivedAt;
-  const { frame } = envelope;
-  if (age < 0 || !(frame.pixels instanceof Uint8Array) || (!frame.outOfRange && frame.pixels.length < 2)
-    || frame.receiver !== envelope.receiver || !Number.isFinite(frame.startFreq)
-    || !Number.isFinite(frame.endFreq) || frame.endFreq <= frame.startFreq) return null;
-
-  const normalizedBins = Object.freeze(Array.from(frame.pixels, (sample) => sample / 255));
-  return Object.freeze({
-    // SDR TX freeze also sets the flag but retains the last live pixels.
-    ...(frame.outOfRange && frame.pixels.length === 0 ? { state: 'out-of-range' as const } : {}),
-    source: envelope.source === 'audio_fft' ? 'audio-fft' : 'hardware',
-    receiver: envelope.receiver === 0 ? 'MAIN' : 'SUB',
-    freshness: age < SCOPE_FRAME_SILENCE_MS ? 'fresh' : 'stale',
-    startHz: frame.startFreq,
-    endHz: frame.endFreq,
-    normalizedBins,
-  });
+export function ingressScopeFrame(buffer: ArrayBuffer, context: CurrentScopeContext): ScopeIngressResult {
+  const parsed = parseCurrentScopeFrame(buffer, context);
+  if (!parsed.ok) return parsed;
+  const frame = parsed.frame;
+  return {
+    ok: true,
+    frame,
+    geometry: {
+      source: frame.source, sourceId: frame.sourceId, receiver: frame.receiver,
+      mode: new DataView(buffer).getUint8(2), // scope mode byte — owner-qualified metadata
+      view: { startHz: frame.viewStartHz, endHz: frame.viewEndHz },
+      coverage: { startHz: frame.coverageStartHz, endHz: frame.coverageEndHz },
+      outOfRange: frame.outOfRange, hasPixels: frame.pixels !== null, freshness: 'fresh',
+    },
+    slotKey: scopeSlotKey(frame.sourceId, frame.receiver),
+  };
 }
 
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';

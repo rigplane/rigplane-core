@@ -3,8 +3,8 @@
  */
 
 // Compatibility exports: the runtime adapter owns the binary wire decoder.
-export { parseScopeFrame } from '$lib/runtime/adapters/scope-adapter';
-export type { ScopeFrame } from '$lib/runtime/adapters/scope-adapter';
+export { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
+export type { ScopeFrame, ScopeParseResult } from '$lib/runtime/adapters/scope-adapter';
 
 // --- Scale helpers ---
 export function formatFreqOffset(hz: number): string {

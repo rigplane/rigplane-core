@@ -10,7 +10,6 @@
 
   // ── Scope WS connection ──
 
-  let fftPixels = $state<Uint8Array | null>(null);
   let fftBandwidth = $state(48000);
   let fftPush: ((data: Uint8Array) => void) | null = null;
   let panel: HTMLDivElement;
@@ -33,18 +32,24 @@
     runtime.scope.registerPresentationDriver(presentationResources);
     if (!visible) return;
     const lease = presentationResources.acquire('audio-fft', 'AudioSpectrumPanel');
-    const unsubscribe = runtime.scope.subscribe((frame) => {
-      fftPixels = frame.pixels;
-      if (frame.endFreq > frame.startFreq) {
-        fftBandwidth = frame.endFreq - frame.startFreq;
+    // MOR-4270: one stream sink — pixels go straight to the canvas push;
+    // the rarely-changing bandwidth is a geometry fact (F15 double
+    // scheduling is gone: no per-frame `$state` pixels).
+    const stream = runtime.scope.stream('audio_fft');
+    const stopGeometry = stream.geometry.subscribe((geometry) => {
+      if (geometry && geometry.view.endHz > geometry.view.startHz) {
+        fftBandwidth = geometry.view.endHz - geometry.view.startHz;
       }
-      fftPush?.(frame.pixels);
+    });
+    const unsubscribe = stream.subscribe((frame) => {
+      if (frame.pixels) fftPush?.(frame.pixels);
     });
     let released = false;
     return () => {
       if (released) return;
       released = true;
       unsubscribe();
+      stopGeometry();
       presentationResources.release(lease);
     };
   });
@@ -52,7 +57,6 @@
 
 <div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible}>
   <AudioSpectrumCanvas
-    data={fftPixels}
     onRegisterPush={(fn) => { fftPush = fn; }}
     bandwidth={fftBandwidth}
     filterWidth={p.filterWidth}

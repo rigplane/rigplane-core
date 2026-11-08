@@ -256,7 +256,6 @@
   ]);
 
   // FFT scope connection — reactive to capabilities
-  let fftPixels = $state<Uint8Array | null>(null);
   let fftBandwidth = $state<number | undefined>(undefined);
   let fftPush: ((data: Uint8Array) => void) | null = null;
   let showFft = $derived(scopeProps.hasAudioFft);
@@ -267,16 +266,22 @@
 
     runtime.scope.registerPresentationDriver(presentationResources);
     const lease = presentationResources.acquire('audio-fft', 'AmberScope');
-    const unsubscribe = runtime.scope.subscribe((frame) => {
-      fftPixels = frame.pixels;
-      fftBandwidth = frame.endFreq > frame.startFreq ? frame.endFreq - frame.startFreq : undefined;
-      fftPush?.(frame.pixels);
+    // MOR-4270: one stream sink — pixels go straight to the canvas push,
+    // the rarely-changing bandwidth is a geometry fact.
+    const stream = runtime.scope.stream('audio_fft');
+    const stopGeometry = stream.geometry.subscribe((geometry) => {
+      fftBandwidth = geometry && geometry.view.endHz > geometry.view.startHz
+        ? geometry.view.endHz - geometry.view.startHz : undefined;
+    });
+    const unsubscribe = stream.subscribe((frame) => {
+      if (frame.pixels) fftPush?.(frame.pixels);
     });
     let released = false;
     return () => {
       if (released) return;
       released = true;
       unsubscribe();
+      stopGeometry();
       presentationResources.release(lease);
     };
   });
@@ -356,7 +361,6 @@
     <div class="lcd-scope" style:grid-area="scope">
       {#if showFft}
         <AmberAfScope
-          data={fftPixels}
           onRegisterPush={(fn) => { fftPush = fn; }}
           filterWidth={safeFilterWidth}
           filterWidthMax={filterProps.filterWidthMax}

@@ -26,8 +26,8 @@
     source: 'audio-fft',
     receiver: model.activeReceiver?.receiver ?? null,
   }));
-  const activeSpectrumBins = $derived(
-    spectrumResolution.state === 'live' ? spectrumResolution.frame.normalizedBins : undefined,
+  const activeSpectrumPixels = $derived(
+    spectrumResolution.state === 'live' ? spectrumResolution.frame.pixels : null,
   );
 
   const activeDsp = $derived(model.activeReceiver?.dsp ?? {
@@ -211,7 +211,7 @@
       {#if model.activeReceiver}
         <LcdFilterScope
           receiver={model.activeReceiver}
-          normalizedBins={activeSpectrumBins}
+          pixels={activeSpectrumPixels}
         />
       {:else}
         <div

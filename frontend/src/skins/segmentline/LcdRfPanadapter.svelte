@@ -34,6 +34,7 @@
   const PLOT_BOTTOM = 116;
   const PLOT_HEIGHT = PLOT_BOTTOM - PLOT_TOP;
 
+  const EMPTY_BINS = new Uint8Array(0);
   let { receiver, frame, carrierHz, passband }: Props = $props();
 
   function formatFrequency(hz: number): string {
@@ -48,7 +49,7 @@
   const liveFrame = $derived(resolution.state === 'live' ? resolution.frame : null);
   const frameReason = $derived(resolution.state === 'ghost' ? resolution.reason : resolution.state);
   const spanHz = $derived(liveFrame === null ? 0 : liveFrame.endHz - liveFrame.startHz);
-  const renderBins = $derived(liveFrame?.normalizedBins ?? []);
+  const renderBins = $derived(liveFrame?.pixels ?? EMPTY_BINS);
   const axisTicks: readonly AxisTick[] = $derived.by(() => {
     if (liveFrame === null) return [];
     return [0, 0.25, 0.5, 0.75, 1].map((ratio) => {
@@ -122,7 +123,7 @@
     {/if}
     {#each renderBins as sample, index}
       {@const binWidth = PLOT_WIDTH / renderBins.length}
-      {@const displaySample = spectrumDisplayAmplitude(sample * 255, 0)}
+      {@const displaySample = spectrumDisplayAmplitude(sample, 0)}
       {@const binHeight = displaySample * (PLOT_HEIGHT - 4)}
       <rect
         class="rf-bin"

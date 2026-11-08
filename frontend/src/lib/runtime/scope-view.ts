@@ -38,6 +38,8 @@ export function createScopeView(confirmed: View) {
       listener(current);
       return () => listeners.delete(listener);
     },
+    /** The confirmed leg — the base a gesture pans from. */
+    get confirmed(): View { return legs.confirmed!; },
     set(leg: Leg, value: View | null): void {
       if (leg === 'confirmed' && value === null) return;
       legs[leg] = value;

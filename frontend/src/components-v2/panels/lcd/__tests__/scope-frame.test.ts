@@ -5,7 +5,8 @@
  * decoder and the bandwidth computation that drives AmberAfScope.
  */
 import { describe, it, expect } from 'vitest';
-import { parseScopeFrame, type ScopeFrame } from '$lib/runtime/adapters/scope-adapter';
+import { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
+import type { ScopeFrame } from '$lib/runtime/scope-frame';
 
 /** Encode a scope frame in the binary wire format. */
 function encodeFrame(
@@ -29,41 +30,47 @@ function encodeFrame(
 
 // ── parseScopeFrame ───────────────────────────────────────────────────────────
 
-describe('parseScopeFrame', () => {
-  it('returns null for buffers smaller than the 16-byte header', () => {
-    expect(parseScopeFrame(new ArrayBuffer(15))).toBeNull();
+const context = { source: 'audio_fft' as const, sourceId: 'audio-scope', epoch: 1 };
+
+describe('parseCurrentScopeFrame', () => {
+  it('rejects buffers smaller than the 16-byte header with a typed reason', () => {
+    expect(parseCurrentScopeFrame(new ArrayBuffer(15), context))
+      .toEqual({ ok: false, reason: 'short header' });
   });
 
-  it('returns null when first byte is not 0x01', () => {
+  it('rejects a wrong message-type byte with a typed reason', () => {
     const buf = new ArrayBuffer(20);
     new DataView(buf).setUint8(0, 0x02);
-    expect(parseScopeFrame(buf)).toBeNull();
+    expect(parseCurrentScopeFrame(buf, context))
+      .toEqual({ ok: false, reason: 'message type' });
   });
 
-  it('returns null when declared pixelCount exceeds buffer length', () => {
+  it('rejects a declared pixelCount that exceeds the buffer length', () => {
     const pixels = new Uint8Array(10);
     const buf = encodeFrame(0, 14_050_000, 14_074_000, pixels);
     // Truncate so pixelCount (10) extends past byteLength
-    expect(parseScopeFrame(buf.slice(0, 20))).toBeNull();
+    expect(parseCurrentScopeFrame(buf.slice(0, 20), context))
+      .toEqual({ ok: false, reason: 'pixel length' });
   });
 
-  it('parses immutable receiver, mode, frequency, and pixel facts from a valid frame', () => {
+  it('parses receiver, view and pixel facts from a valid frame without copying', () => {
     const pixels = new Uint8Array([10, 20, 30, 40, 50]);
     const buf = encodeFrame(0, 14_050_000, 14_098_000, pixels);
-    const frame = parseScopeFrame(buf);
-    expect(frame).not.toBeNull();
-    expect(Object.isFrozen(frame)).toBe(true);
-    expect(frame!.receiver).toBe(0);
-    expect(frame!.mode).toBe(0);
-    expect(frame!.startFreq).toBe(14_050_000);
-    expect(frame!.endFreq).toBe(14_098_000);
-    expect(Array.from(frame!.pixels)).toEqual([10, 20, 30, 40, 50]);
+    const result = parseCurrentScopeFrame(buf, context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.frame.receiver).toBe(0);
+    expect(result.frame.viewStartHz).toBe(14_050_000);
+    expect(result.frame.viewEndHz).toBe(14_098_000);
+    expect(result.frame.pixels?.buffer).toBe(buf);
+    expect(Array.from(result.frame.pixels!)).toEqual([10, 20, 30, 40, 50]);
   });
 
   it('handles receiver = 1 (sub-receiver)', () => {
     const pixels = new Uint8Array(3);
     const buf = encodeFrame(1, 7_000_000, 7_048_000, pixels);
-    expect(parseScopeFrame(buf)!.receiver).toBe(1);
+    const result = parseCurrentScopeFrame(buf, context);
+    expect(result.ok && result.frame.receiver).toBe(1);
   });
 });
 
@@ -71,13 +78,12 @@ describe('parseScopeFrame', () => {
 
 /**
  * Derives the FFT data bandwidth in Hz from a parsed frame.
- * This mirrors: fftBandwidth = frame.endFreq > frame.startFreq
- *               ? frame.endFreq - frame.startFreq : undefined
+ * This mirrors: fftBandwidth = geometry.view.endHz > geometry.view.startHz
+ *               ? endHz - startHz : undefined
  */
-function deriveBandwidth(frame: ScopeFrame): number | undefined {
-  return frame.endFreq > frame.startFreq
-    ? frame.endFreq - frame.startFreq
-    : undefined;
+function deriveBandwidth(parse: { ok: true; frame: ScopeFrame }): number | undefined {
+  const { viewEndHz, viewStartHz } = parse.frame;
+  return viewEndHz > viewStartHz ? viewEndHz - viewStartHz : undefined;
 }
 
 describe('deriveBandwidth', () => {
@@ -85,9 +91,11 @@ describe('deriveBandwidth', () => {
     const center = 14_074_000;
     const sampleRate = 48_000;
     // Full spectrum: ±24 kHz around center
-    const frame = parseScopeFrame(
-      encodeFrame(0, center - sampleRate / 2, center + sampleRate / 2, new Uint8Array(2049)),
-    )!;
+    const frame = parseCurrentScopeFrame(
+      encodeFrame(0, center - sampleRate / 2, center + sampleRate / 2, new Uint8Array(2049)), context,
+    );
+    if (!frame.ok) throw new Error(frame.reason);
+    const parsed = frame;
     expect(deriveBandwidth(frame)).toBe(sampleRate); // 48000 Hz
   });
 
@@ -95,9 +103,11 @@ describe('deriveBandwidth', () => {
     const center = 14_074_000;
     // Use integer Hz values (backend rounds to integer bin boundaries)
     const halfHz = 1764; // 76 bins × ~23 Hz/bin ≈ 1764 Hz
-    const frame = parseScopeFrame(
-      encodeFrame(0, center - halfHz, center + halfHz, new Uint8Array(153)),
-    )!;
+    const frame = parseCurrentScopeFrame(
+      encodeFrame(0, center - halfHz, center + halfHz, new Uint8Array(153)), context,
+    );
+    if (!frame.ok) throw new Error(frame.reason);
+    const parsed = frame;
     expect(deriveBandwidth(frame)).toBe(2 * halfHz); // 3528 Hz
     // Should be much less than full 48 kHz
     expect(deriveBandwidth(frame)!).toBeLessThan(4000);
@@ -106,20 +116,21 @@ describe('deriveBandwidth', () => {
   it('returns cropped bandwidth for AM 10000 Hz mode', () => {
     const center = 7_200_000;
     const halfHz = 4992; // 213 bins × ~23 Hz/bin ≈ 4992 Hz (integer)
-    const frame = parseScopeFrame(
-      encodeFrame(0, center - halfHz, center + halfHz, new Uint8Array(427)),
-    )!;
+    const frame = parseCurrentScopeFrame(
+      encodeFrame(0, center - halfHz, center + halfHz, new Uint8Array(427)), context,
+    );
+    if (!frame.ok) throw new Error(frame.reason);
     const bw = deriveBandwidth(frame)!;
     expect(bw).toBe(2 * halfHz); // 9984 Hz
     expect(bw).toBeGreaterThan(9000);
     expect(bw).toBeLessThan(11000);
   });
 
-  it('returns undefined when endFreq <= startFreq (malformed frame)', () => {
-    const frame = parseScopeFrame(
-      encodeFrame(0, 14_074_000, 14_074_000, new Uint8Array(10)),
-    )!;
-    expect(deriveBandwidth(frame)).toBeUndefined();
+  it('reports a typed frequency-range rejection for a zero-span frame', () => {
+    const frame = parseCurrentScopeFrame(
+      encodeFrame(0, 14_074_000, 14_074_000, new Uint8Array(10)), context,
+    );
+    expect(frame).toEqual({ ok: false, reason: 'frequency range' });
   });
 });
 

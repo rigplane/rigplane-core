@@ -80,8 +80,8 @@
       receiver: model.activeReceiver?.receiver ?? null,
     }),
   );
-  const activeFftBins = $derived(
-    activeAudioFft.state === 'live' ? activeAudioFft.frame.normalizedBins : undefined,
+  const activeFftPixels = $derived(
+    activeAudioFft.state === 'live' ? activeAudioFft.frame.pixels : null,
   );
   const telemetry = $derived([
     { label: 'VD', field: model.telemetry.drainVoltage },
@@ -163,7 +163,7 @@
     data-identity={activeIdentity}
     style:opacity={activeIdentity === 'unknown' ? 0.34 : 1}
   >
-    <LcdFilterScope receiver={active} normalizedBins={activeFftBins} />
+    <LcdFilterScope receiver={active} pixels={activeFftPixels} />
   </section>
 
   <footer class="telemetry-only" data-testid="centerstage-telemetry">

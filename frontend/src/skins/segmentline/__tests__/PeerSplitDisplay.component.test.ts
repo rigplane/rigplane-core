@@ -74,13 +74,13 @@ afterEach(() => {
 });
 
 function render(
-  normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>,
+  pixelsByReceiver?: Partial<Record<'MAIN' | 'SUB', Uint8Array>>,
   displayModel: PeerSplitDisplayModel = model,
 ) {
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(PeerSplitDisplay, {
-    target, props: { model: displayModel, normalizedFftBins },
+    target, props: { model: displayModel },
   });
   return target;
 }
@@ -149,10 +149,10 @@ describe('PeerSplitDisplay', () => {
     expect(fft[0].querySelector('.fft-trace')?.getAttribute('d')).toMatch(/^M0\.00,92\.00 L/);
   });
 
-  it('renders supplied active-receiver bins but ignores bins for an inactive receiver', () => {
-    const target = render({ MAIN: [0, 0.5, 1], SUB: [1, 0.5, 0] });
+  it('renders safe-empty AF insets until the wiring supplies a frame path', () => {
+    const target = render();
     const fft = target.querySelectorAll('[data-testid="lcd-af-fft"]');
-    expect(fft[0].getAttribute('data-fft-mode')).toBe('live');
+    expect(fft[0].getAttribute('data-fft-mode')).toBe('safe-empty');
     expect(fft[1].getAttribute('data-fft-mode')).toBe('safe-empty');
   });
 

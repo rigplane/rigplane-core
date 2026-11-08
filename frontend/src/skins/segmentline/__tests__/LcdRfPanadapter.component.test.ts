@@ -22,7 +22,7 @@ function hardwareFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFr
     freshness: 'fresh',
     startHz: 14_200_000,
     endHz: 14_300_000,
-    normalizedBins: [0.15, 0.7, 0.35],
+    pixels: Uint8Array.from([0.15, 0.7, 0.35], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -65,7 +65,8 @@ describe('LcdRfPanadapter', () => {
     ['source-mismatch', hardwareFrame({ source: 'audio-fft' })],
     ['receiver-mismatch', hardwareFrame({ receiver: 'SUB' })],
     ['invalid', hardwareFrame({ endHz: 14_200_000 })],
-    ['invalid', hardwareFrame({ normalizedBins: [0.1, Number.NaN] })],
+    ['invalid', hardwareFrame({ pixels: new Uint8Array(1) })],
+    ['invalid', hardwareFrame({ pixels: null })],
     ['invalid', { state: 'unsupported' }],
   ] as const)('fails closed for a %s frame', (reason, frame) => {
     const target = render(frame, 'MAIN', 14_250_000, {
@@ -88,12 +89,12 @@ describe('LcdRfPanadapter', () => {
     expect(target.querySelectorAll('[data-rf-bin],.rf-axis,.rf-carrier')).toHaveLength(0);
   });
 
-  it('takes RF bins and the absolute frequency axis only from the live frame', () => {
-    const bins = [0.15, 0.7, 0.35, 0.9];
+  it('takes RF pixels and the absolute frequency axis only from the live frame', () => {
+    const pixels = Uint8Array.from([38, 179, 89, 230]);
     const target = render(hardwareFrame({
       startHz: 7_000_000,
       endHz: 7_200_000,
-      normalizedBins: bins,
+      pixels,
     }));
     const scope = target.querySelector('[data-testid="lcd-rf-panadapter"]');
 
@@ -104,7 +105,7 @@ describe('LcdRfPanadapter', () => {
       .map((node) => Number(node.getAttribute('data-axis-frequency'))))
       .toEqual([7_000_000, 7_050_000, 7_100_000, 7_150_000, 7_200_000]);
     expect([...target.querySelectorAll('[data-rf-bin]')]
-      .map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual(bins);
+      .map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual([...pixels]);
   });
 
   it.each([
@@ -173,13 +174,13 @@ describe('LcdRfPanadapter', () => {
 });
 
 describe('LcdRfPanadapter hardware amplitude parity', () => {
-  it('keeps normalized raw bins immutable while applying the shared display transfer', () => {
-    const bins = Object.freeze([0, 40 / 255, 80 / 255, 1]);
-    const target = render(hardwareFrame({ normalizedBins: bins }));
+  it('keeps raw pixels immutable while applying the shared display transfer', () => {
+    const pixels = new Uint8Array([0, 40, 80, 255]);
+    const target = render(hardwareFrame({ pixels }));
     const rendered = [...target.querySelectorAll('[data-rf-bin]')];
 
-    expect([...bins]).toEqual([0, 40 / 255, 80 / 255, 1]);
-    expect(rendered.map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual(bins);
+    expect([...pixels]).toEqual([0, 40, 80, 255]);
+    expect(rendered.map((node) => Number(node.getAttribute('data-rf-sample')))).toEqual([...pixels]);
     expect(rendered.map((node) => Number(node.getAttribute('height')))).toEqual([
       0,
       spectrumDisplayAmplitude(40, 0) * 94,

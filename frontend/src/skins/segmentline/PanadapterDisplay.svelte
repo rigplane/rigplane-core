@@ -11,16 +11,12 @@
 
   interface Props {
     model: PeerSplitDisplayModel;
-    normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>;
     rfFrame?: unknown;
   }
 
-  let { model, normalizedFftBins = {}, rfFrame }: Props = $props();
+  let { model, rfFrame }: Props = $props();
 
   const activeReceiver = $derived(model.activeReceiver);
-  const activeAfBins = $derived(
-    activeReceiver === null ? undefined : normalizedFftBins[activeReceiver.receiver],
-  );
   const activeCarrierHz = $derived(
     activeReceiver?.frequency.state === 'known' ? activeReceiver.frequency.value : undefined,
   );
@@ -93,7 +89,7 @@
     <aside class="active-inset">
       <div class="af-block">
         {#if activeReceiver !== null}
-          <LcdFilterScope receiver={activeReceiver} normalizedBins={activeAfBins} />
+          <LcdFilterScope receiver={activeReceiver} pixels={null} />
         {:else}
           <div class="unknown-af">
             <span>AF · BANDPASS</span>

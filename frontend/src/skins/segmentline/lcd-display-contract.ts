@@ -1,7 +1,13 @@
+import type { ScopeFrame, ScopeGeometry } from '$lib/runtime/scope-frame';
+
 export type LcdSpectrumSource = 'audio-fft' | 'hardware';
 export type LcdSpectrumReceiver = 'MAIN' | 'SUB';
 export type LcdSpectrumFreshness = 'fresh' | 'stale';
 
+/**
+ * MOR-4270: the LCD frame carries the typed pixel payload (a view over the
+ * wire buffer, never normalized bins) plus the qualified geometry facts.
+ */
 export interface LcdSpectrumFrame {
   readonly state?: 'out-of-range';
   readonly source: LcdSpectrumSource;
@@ -9,7 +15,7 @@ export interface LcdSpectrumFrame {
   readonly freshness: LcdSpectrumFreshness;
   readonly startHz: number;
   readonly endHz: number;
-  readonly normalizedBins: readonly number[];
+  readonly pixels: Uint8Array | null;
 }
 
 export interface LcdSpectrumFrameExpectation {
@@ -30,6 +36,25 @@ export type LcdSpectrumFrameResolution =
   | { readonly state: 'out-of-range'; readonly frame: LcdSpectrumFrame }
   | { readonly state: 'ghost'; readonly reason: LcdSpectrumFrameGhostReason };
 
+/** Project the typed frame + qualified geometry into the LCD display frame. */
+export function toLcdSpectrumFrame(frame: ScopeFrame, geometry: ScopeGeometry): LcdSpectrumFrame | null {
+  const source: LcdSpectrumSource | null = geometry.source === 'radio' ? 'hardware'
+    : geometry.source === 'audio_fft' ? 'audio-fft' : null;
+  const receiver: LcdSpectrumReceiver | null = geometry.receiver === 0 ? 'MAIN'
+    : geometry.receiver === 1 ? 'SUB' : null;
+  if (source === null || receiver === null) return null;
+  return Object.freeze({
+    ...(geometry.outOfRange && !geometry.hasPixels ? { state: 'out-of-range' as const } : {}),
+    source,
+    receiver,
+    freshness: geometry.freshness,
+    startHz: geometry.view.startHz,
+    endHz: geometry.view.endHz,
+    // SDR TX freeze also sets the flag but retains the last live pixels.
+    pixels: geometry.hasPixels ? frame.pixels : null,
+  });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -43,16 +68,9 @@ function hasKnownQualifiers(value: Record<string, unknown>): boolean {
 function hasValidGeometry(value: Record<string, unknown>): boolean {
   if (typeof value.startHz !== 'number' || !Number.isFinite(value.startHz)
     || typeof value.endHz !== 'number' || !Number.isFinite(value.endHz)
-    || value.endHz <= value.startHz
-    || !Array.isArray(value.normalizedBins)
-    || (value.state !== 'out-of-range' && value.normalizedBins.length < 2)) return false;
-
-  for (const sample of value.normalizedBins) {
-    if (typeof sample !== 'number' || !Number.isFinite(sample) || sample < 0 || sample > 1) {
-      return false;
-    }
-  }
-  return true;
+    || value.endHz <= value.startHz) return false;
+  if (value.state === 'out-of-range') return true;
+  return value.pixels instanceof Uint8Array && value.pixels.length >= 2;
 }
 
 export function resolveLcdSpectrumFrame(

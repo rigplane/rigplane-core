@@ -44,7 +44,9 @@
   import { MemoryListController } from '$lib/runtime/memory-list.svelte';
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
-  import { ScopeFrameHost, type ScopeFramePresentation } from '$lib/runtime/scope-frame-host';
+  import { writable, type Readable } from 'svelte/store';
+  import { scopeSlotKey } from '$lib/runtime/adapters/scope-adapter';
+  import type { ScopeGeometry } from '$lib/runtime/scope-frame';
   import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay } from '$lib/runtime/adapters/scope-passband-display';
   import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -163,8 +165,9 @@
     type StripSlot,
   } from './dual-receiver-strips';
   import { guardRadioViewModel } from './radio-view-model-guard';
-  import type {
-    LcdSpectrumFrame, LcdSpectrumFrameResolution, LcdSpectrumSource,
+  import {
+    resolveLcdSpectrumFrame, toLcdSpectrumFrame,
+    type LcdSpectrumFrame, type LcdSpectrumSource,
   } from '../../skins/segmentline/lcd-display-contract';
 
   /**
@@ -215,7 +218,7 @@
      *  owns the print. */
     bandPermitCaption?: boolean;
     displayFrameSource?: LcdSpectrumSource;
-    readonlyDisplay?: Snippet<[RadioViewModel, LcdSpectrumFrame?]>;
+    readonlyDisplay?: Snippet<[RadioViewModel, Readable<LcdSpectrumFrame | null>]>;
     /**
      * MOR-2442 — opt-in for a BARE consumer (mobile's self-contained default
      * composition, where neither `children` nor `regions`/`regionContent` is
@@ -1416,6 +1419,11 @@
       finiteAppearance: selectedFiniteAppearance, rendererContext: ritXitFiniteRendererContext,
     });
 
+  // ── Shared scope stream wiring (MOR-4270) ──
+  // One shared stream per page (the controller owns the channels); this
+  // wiring binds the qualified display slot, mirrors the geometry store and
+  // feeds the readonly LCD frame store. Pixels never enter `$state` here.
+  //
   // MOR-2442 — a bare consumer passes `scopeManaged` instead of `children`,
   // so hardware detection must not demand the hosted snippet.
   let scopeFrameSource = $derived(
@@ -1427,15 +1435,11 @@
       && (hostedChildren !== undefined || (regions && regionContent !== undefined) || scopeManaged),
   );
   let scopeDemanded = $state(true);
-  let scopePresentation = $state.raw<ScopeFramePresentation | null>(null);
   let scopePassband = $state.raw(EMPTY_SCOPE_PASSBAND_DISPLAY);
-  let selectedDisplayFrame = $state.raw<LcdSpectrumFrame | undefined>(undefined);
-  let scopeFrameHost: ScopeFrameHost | null = null;
-  let stopWatchingScopeFrameHost: (() => void) | null = null;
-
-  function acceptDisplayFrameResolution(resolution: LcdSpectrumFrameResolution): void {
-    selectedDisplayFrame = resolution.state === 'live' ? resolution.frame : undefined;
-  }
+  let scopeGeometry = $state.raw<ScopeGeometry | null>(null);
+  const lcdFrame = writable<LcdSpectrumFrame | null>(null);
+  let scopeStream = $derived.by(() => scopeFrameSource === undefined ? null
+    : runtime.scope.stream(scopeFrameSource === 'audio-fft' ? 'audio_fft' : 'hardware'));
 
   function refreshScopePassband(): void {
     if (!managedScope && untrack(() => scopePassband === EMPTY_SCOPE_PASSBAND_DISPLAY)) return;
@@ -1443,52 +1447,35 @@
     const vfo = active.length === 1 ? active[0] : null;
     const selection = vfo && (vfo.slot.kind === 'slotted' || vfo.slot.kind === 'unslotted')
       ? { receiver: vfo.receiver, slot: vfo.slot.kind === 'slotted' ? vfo.slot.id : 'single' as const } : null;
-    const input = { state: runtime.state, caps: runtime.caps, selection, session: controlSession,
-      frame: managedScope && scopeDemanded ? scopePresentation : null };
-    scopePassband = untrack(() => projectScopePassbandDisplay(scopePassband, input));
-  }
-  function acceptScopePresentation(presentation: ScopeFramePresentation): void {
-    scopePresentation = presentation;
-    if (scopeDemanded) acceptDisplayFrameResolution(presentation.resolution);
-    else selectedDisplayFrame = undefined;
-    untrack(refreshScopePassband);
-  }
-  let watchingManagedScope: boolean | null = null;
-  function ensureScopeFrameHost(): ScopeFrameHost {
-    scopeFrameHost ??= new ScopeFrameHost(runtime.scope);
-    if (watchingManagedScope !== managedScope) {
-      stopWatchingScopeFrameHost?.();
-      scopePresentation = null;
-      untrack(refreshScopePassband);
-      watchingManagedScope = managedScope;
-      stopWatchingScopeFrameHost = managedScope
-        ? scopeFrameHost.subscribePresentation(acceptScopePresentation)
-        : scopeFrameHost.subscribe(acceptDisplayFrameResolution);
-    }
-    return scopeFrameHost;
+    const stream = scopeStream;
+    const authority = scopeAuthority;
+    const facts = stream && authority && managedScope && scopeDemanded
+      ? {
+        source: scopeFrameSource === 'audio-fft' ? 'audio_fft' as const : 'hardware' as const,
+        receiver: authority.receiver === 'SUB' ? 1 : 0,
+        providerGeneration: authority.providerGeneration,
+        demanded: runtime.scope.snapshotHealth(scopeFrameSource === 'audio-fft' ? 'audio_fft' : 'hardware').demanded,
+        transport: runtime.scope.snapshotHealth(scopeFrameSource === 'audio-fft' ? 'audio_fft' : 'hardware').transport,
+        geometry: scopeGeometry,
+        receipt: stream.receipt,
+      } : null;
+    scopePassband = untrack(() => projectScopePassbandDisplay(scopePassband,
+      { state: runtime.state, caps: runtime.caps, selection, session: controlSession, frame: facts }));
   }
   function setManagedScopeDemand(enabled: boolean): void {
     scopeDemanded = enabled;
-    if (!enabled) selectedDisplayFrame = undefined;
+    if (!enabled) lcdFrame.set(null);
     untrack(refreshScopePassband);
   }
   let managedScopeRegionValue: ManagedScopeRegion | undefined = $derived.by(() => {
-    // MOR-3094 — with the raw fallback active there is no managed region
-    // (and no managed lease): SpectrumPanel owns the hardware-scope demand
-    // through its own raw path instead.
-    if (!managedScope || rawScopeFallback) return undefined;
-    const resolution = scopePresentation?.resolution;
-    const frameMode = scopePresentation?.envelope?.frame.mode;
-    const acceptedSequence = scopePresentation?.envelope?.acceptedSequence;
-    const projection = scopeDemanded && (resolution?.state === 'live' || resolution?.state === 'out-of-range')
-      && typeof frameMode === 'number' && Number.isSafeInteger(frameMode) && acceptedSequence !== undefined
-      ? { frame: resolution.frame, frameMode, acceptedSequence, passband: scopePassband.display } : null;
-    return { projection, demanded: scopeDemanded, setDemand: setManagedScopeDemand };
+    if (!managedScope) return undefined;
+    return { passband: scopePassband.display, demanded: scopeDemanded, setDemand: setManagedScopeDemand };
   });
   // MOR-2442 — the bare `scopeManaged` consumer binds the same region the
   // hosted/region consumers read through `InstrumentComposition`/snippet
   // arguments; either way it is exactly one owner of the scope lease.
   $effect(() => { managedScopeRegion = managedScopeRegionValue; });
+  // Runs per state update and per geometry change only — never per pixel frame.
   $effect(refreshScopePassband);
 
   let scopeAuthority = $derived.by(() => {
@@ -1507,55 +1494,73 @@
       ? { source, receiver: receiver.receiver, providerGeneration: stateGeneration }
       : null;
   });
-  let scopeLeaseGeneration = $derived(scopeAuthority?.providerGeneration ?? null);
-  // MOR-3094 — when the caps explicitly declare `vfoReadback: 'none'` and
-  // the active receiver is not observed, `scopeAuthority` stays null and
-  // the managed lease below is withheld forever, so the waterfall went dark
-  // on that radio shape. With the hardware scope source, matched current
-  // generations and a ready control connection, release the managed region
-  // so SpectrumPanel reuses its raw hardware-scope path
-  // (`acquireScopeDemand` + `subscribeHardware`). No MAIN/SUB authority is
-  // invented: every gesture gate still reads `toSpectrumAuthority`, which
-  // stays null while the active receiver is unobserved. Once the receiver
-  // is observed, `scopeAuthority` resolves and the managed region (and its
-  // lease) resumes. Single-receiver radios resolve the active receiver
-  // tautologically (MOR-1421), so this never triggers for them.
-  let rawScopeFallback = $derived.by(() => {
-    if (scopeFrameSource !== 'hardware' || scopeAuthority !== null) return false;
-    const caps = runtime.caps;
-    if (!caps || caps.vfoReadback !== 'none') return false;
-    const stateGeneration = runtime.state?.providerGeneration;
-    const capsGeneration = caps.providerGeneration;
-    if (typeof stateGeneration !== 'number' || !Number.isSafeInteger(stateGeneration) || stateGeneration < 0
-      || typeof capsGeneration !== 'number' || !Number.isSafeInteger(capsGeneration) || capsGeneration < 0
-      || stateGeneration !== capsGeneration) return false;
-    if (controlSession.state !== 'connected'
-      || !Number.isSafeInteger(controlSession.epoch) || controlSession.epoch < 0) return false;
-    return canonicalView?.activeReceiver.status !== 'known';
-  });
-  $effect(() => {
-    const source = scopeFrameSource;
-    if (source === undefined) {
-      scopeFrameHost?.updateAuthority(null);
-      selectedDisplayFrame = undefined;
-      scopePresentation = null;
-      untrack(refreshScopePassband);
-      return;
-    }
 
-    const host = ensureScopeFrameHost();
+  // The qualified display slot. MOR-3094: an UNKNOWN receiver opens the
+  // wildcard slot ONLY when the caps explicitly declare `vfoReadback:
+  // 'none'` — otherwise the display stays closed (a slot that matches no
+  // frame) until receiver identity arrives; no MAIN/SUB authority is
+  // invented and the raw fallback path stays deleted.
+  let scopeSlot = $derived.by(() => {
+    const stream = scopeStream;
     const authority = scopeAuthority;
+    if (!stream) return null;
+    if (authority !== null && (authority.receiver === 'MAIN' || authority.receiver === 'SUB')) {
+      return scopeSlotKey(stream.sourceId, authority.receiver === 'MAIN' ? 0 : 1);
+    }
+    return scopeFrameSource === 'audio-fft' || runtime.caps?.vfoReadback === 'none'
+      ? null : `${stream.sourceId}:closed`;
+  });
+  let scopeSlotCurrent: string | null = null;
+  $effect(() => {
+    const slot = scopeSlot;
     untrack(() => {
-      host.updateAuthority(authority);
-      if (managedScope) acceptScopePresentation(host.snapshotPresentation());
-      else acceptDisplayFrameResolution(host.snapshot());
+      scopeSlotCurrent = slot;
+      scopeStream?.setSlotFilter(slot);
+    });
+  });
+  // MOR-2321: a provider-generation change retires the previous provider's
+  // frames instead of adopting them as current evidence.
+  let scopeGenerationApplied: number | null = null;
+  $effect(() => {
+    const generation = scopeLeaseGeneration;
+    untrack(() => {
+      if (scopeGenerationApplied !== null && generation !== scopeGenerationApplied) scopeStream?.reset();
+      scopeGenerationApplied = generation;
     });
   });
 
   $effect(() => {
+    const stream = scopeStream;
+    untrack(() => {
+      scopeGeometry = null;
+      lcdFrame.set(null);
+    });
+    if (!stream) return;
+    const stopGeometry = stream.geometry.subscribe((geometry) => { scopeGeometry = geometry; });
+    const stopFrames = stream.subscribe((frame, slotKey) => {
+      if (!scopeDemanded) return;
+      const geometry = scopeGeometry;
+      if (geometry === null) return;
+      if (scopeSlotCurrent !== null && slotKey !== scopeSlotCurrent) return;
+      const expectation = {
+        source: scopeFrameSource === 'audio-fft' ? 'audio-fft' as const : 'hardware' as const,
+        receiver: geometry.receiver === 0 ? 'MAIN' as const : geometry.receiver === 1 ? 'SUB' as const : null,
+      };
+      const resolution = resolveLcdSpectrumFrame(toLcdSpectrumFrame(frame, geometry), expectation);
+      lcdFrame.set(resolution.state === 'live' ? resolution.frame : null);
+    });
+    return () => { stopGeometry(); stopFrames(); };
+  });
+
+  // MOR-3094 unified: the SRS owns the demand for every managed mount,
+  // including unknown-receiver radios — the wildcard slot displays the
+  // frames while every receiver-dependent projection stays closed. (The
+  // authority OBJECT gets a new identity per recompute; only its primitive
+  // generation is tracked, by the reset effect below.)
+  let scopeLeaseGeneration = $derived(scopeAuthority?.providerGeneration ?? null);
+  $effect(() => {
     const source = scopeFrameSource;
-    if (source === undefined || (managedScope && (!scopeDemanded || scopeLeaseGeneration === null))) return;
-    ensureScopeFrameHost();
+    if (source === undefined || (managedScope && !scopeDemanded)) return;
     const resource = source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
     const lease = presentationResources.acquire(resource, 'SemanticRadioSurfaces.readonlyDisplay');
     let active = true;
@@ -1564,17 +1569,6 @@
       active = false;
       presentationResources.release(lease);
     };
-  });
-
-  onDestroy(() => {
-    const stop = stopWatchingScopeFrameHost;
-    const host = scopeFrameHost;
-    stopWatchingScopeFrameHost = null;
-    scopeFrameHost = null;
-    scopePresentation = null;
-    selectedDisplayFrame = undefined;
-    scopePassband = EMPTY_SCOPE_PASSBAND_DISPLAY;
-    try { stop?.(); } finally { host?.dispose(); }
   });
 
   let pbtPresentation: PbtPresentationState = $state(EMPTY_PBT_PRESENTATION);
@@ -1608,7 +1602,6 @@
       }
     }
     controlSession = next;
-    untrack(refreshScopePassband);
   });
   onDestroy(() => unsubscribePbtSession?.());
   const pbtEvidence = (): PbtPresentationEvidence => {
@@ -2151,7 +2144,7 @@
   >
   {#snippet children(ritXitInstruments)}
   {#if readonlyDisplay}
-    {#if view}{@render readonlyDisplay(view, selectedDisplayFrame)}{/if}
+    {#if view}{@render readonlyDisplay(view, lcdFrame)}{/if}
   {:else}
   {#if view}
     {#if strips === 'dual'}

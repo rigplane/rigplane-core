@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
-import { ScopeFrameHost } from '$lib/runtime/scope-frame-host';
 import { WaterfallRenderer } from '$lib/renderers/waterfall-renderer';
 import WaterfallCanvas from '../WaterfallCanvas.svelte';
 
@@ -64,6 +63,14 @@ describe('same-session scope delivery across hidden rendering', () => {
         return id as unknown as ReturnType<typeof setTimeout>;
       },
       clearTimeout(id: ReturnType<typeof setTimeout>) { timers.delete(id as unknown as number); },
+      // MOR-4270: the controller's one shared liveness clock (repeating).
+      setInterval(callback: () => void, delay: number) {
+        const id = ++timerId;
+        const arm = () => { timers.set(id, { at: now + delay, callback: () => { callback(); arm(); } }); };
+        arm();
+        return id as unknown as ReturnType<typeof setInterval>;
+      },
+      clearInterval(id: ReturnType<typeof setInterval>) { timers.delete(id as unknown as number); },
     };
     function advance(ms: number) {
       now += ms;
@@ -110,8 +117,8 @@ describe('same-session scope delivery across hidden rendering', () => {
     const pushed = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     const socket = channel();
     const controller = new ScopeController(() => socket as never, timing);
-    const host = new ScopeFrameHost(controller);
-    host.updateAuthority({ source: 'hardware', receiver: 'MAIN', providerGeneration: 1 });
+    let geometryState: import('$lib/runtime/scope-frame').ScopeGeometry | null = null;
+    controller.stream('hardware').geometry.subscribe((geometry) => { geometryState = geometry; });
     const target = document.createElement('div');
     document.body.append(target);
     let push: ((pixels: Uint8Array) => void) | undefined;
@@ -131,11 +138,13 @@ describe('same-session scope delivery across hidden rendering', () => {
     flushSync();
     const arrivals: number[] = [];
     const accepted: { id: number; sequence: number; receivedAt: number }[] = [];
-    const unsubscribe = host.subscribePresentation((presentation) => {
-      if (presentation.resolution.state !== 'live' || !presentation.envelope) return;
-      const pixels = Uint8Array.from(presentation.resolution.frame.normalizedBins, (bin) => Math.round(bin * 255));
-      accepted.push({ id: pixels[0], sequence: presentation.envelope.acceptedSequence, receivedAt: presentation.envelope.receivedAt });
-      push?.(pixels);
+    controller.subscribeTraceReceipt((receipt) => {
+      if (receipt.kind !== 'accepted') return;
+      accepted.push({ id: receipt.frame.pixels![0]!, sequence: receipt.token.acceptedSequence,
+        receivedAt: receipt.acceptedAt });
+    });
+    const unsubscribe = controller.stream('hardware').subscribe((frame) => {
+      if (frame.pixels) push?.(frame.pixels);
     });
     const handle = await controller.hardwareScopeDriver.start();
     socket.connected();
@@ -164,7 +173,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(arrivals).toEqual(mode === 'continued' ? [...baselineIds, ...ids] : baselineIds);
       advance(2 * 60 * 60 * 1000);
       flushSync();
-      expect(host.snapshotPresentation().resolution.state).toBe('ghost');
+      expect(geometryState?.freshness).toBe('stale');
       hidden = false;
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
@@ -196,7 +205,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(paint).toHaveBeenCalledTimes(paintedIds.length);
       expect(accepted[0].receivedAt).toBe(0);
       expect(accepted.at(-1)?.receivedAt).toBe(now);
-      expect(host.snapshotPresentation().resolution.state).toBe('live');
+      expect(geometryState?.freshness).toBe('fresh');
       expect(socket.sessionEpoch).toBe(1);
       expect(socket.connect).toHaveBeenCalledTimes(1);
       // Painting went through rAF scheduling and nothing is left pending:
@@ -207,7 +216,6 @@ describe('same-session scope delivery across hidden rendering', () => {
     } finally {
       unsubscribe();
       await controller.hardwareScopeDriver.stop(handle);
-      host.dispose();
       await unmount(component);
       target.remove();
       expect(timers.size).toBe(0);

@@ -15,7 +15,9 @@ import type { ScopeDisplayProjection } from '$lib/runtime/adapters/scope-display
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
-import { parseScopeFrame, qualifyScopeFrameEnvelope, toScopeDisplayFrame,
+import { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import type { WsChannel } from '$lib/transport/ws-client';
+import {
   type ScopeFrame, type SpectrumAuthority, type SpectrumFilterRule } from '$lib/runtime/adapters/scope-adapter';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
 import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
@@ -123,6 +125,18 @@ Object.defineProperty(globalThis, 'localStorage', {
 
 type TestLease = Readonly<{ resource: 'hardware-scope'; sessionEpoch: string; id: number }>;
 type TestScopeFrame = ScopeFrame;
+// MOR-4270: the harness mounts the REAL ScopeController against fake
+// channels, so every frame assertion runs the real ingress, stream and
+// sink path (zero-copy included). The bridge is assigned after imports.
+type ScopeBridge = {
+  stream(source: 'hardware' | 'audio_fft'): ReturnType<ScopeController['stream']>;
+  registerPresentationDriver: ScopeController['registerPresentationDriver'];
+  subscribeTraceReceipt: ScopeController['subscribeTraceReceipt'];
+  snapshotHealth: ScopeController['snapshotHealth'];
+  subscribeHealth: ScopeController['subscribeHealth'];
+  readonly hardwareScopeConnected: boolean;
+  readonly hardwareScopeFrameLive: boolean;
+};
 
 const runtimeHarness = vi.hoisted(() => {
   const state = {
@@ -137,6 +151,12 @@ const runtimeHarness = vi.hoisted(() => {
     nextLeaseId: 0,
     hardwareUnsubscribe: vi.fn(),
     dxUnsubscribe: vi.fn(),
+    driverBridge: {
+      startHardware: (() => Object.freeze({ resource: 'hardware-scope' as const, sessionEpoch: 'test', id: 0 })) as () => unknown,
+      stopHardware: () => {},
+      startAudio: (() => Object.freeze({ resource: 'audio-fft' as const })) as () => unknown,
+      stopAudio: () => {},
+    },
   };
   const runtime = {
     get state() { return state.currentState; },
@@ -144,23 +164,9 @@ const runtimeHarness = vi.hoisted(() => {
     get controlSession() { return state.currentSession; },
     onTxAudioDied: () => () => {},
     defaultScopeStatus: { transport: 'connected' },
-    scope: {
-      registerPresentationDriver: vi.fn(),
-      subscribe: vi.fn(() => () => {}),
-      subscribeTraceReceipt: vi.fn((_observer: (receipt: TraceReceipt) => void) => () => {}),
-      get hardwareScopeConnected() { return state.mockScopeConnected; },
-      get hardwareScopeFrameLive() { return state.mockScopeFrameLive; },
-      subscribeHardware: vi.fn((handler: (frame: TestScopeFrame) => void) => {
-        state.capturedHardwareFrame = handler;
-        return state.hardwareUnsubscribe;
-      }),
-    },
-    acquireHardwareScope: vi.fn(() => Object.freeze({
-      resource: 'hardware-scope' as const,
-      sessionEpoch: 'test',
-      id: ++state.nextLeaseId,
-    })),
-    releaseHardwareScope: vi.fn((_lease: TestLease) => true),
+    scope: null as unknown as ScopeBridge,
+    acquireHardwareScope: vi.fn(() => state.driverBridge.startHardware()),
+    releaseHardwareScope: vi.fn((lease: unknown) => state.driverBridge.stopHardware(lease)),
     subscribeDx: vi.fn((handler: (message: unknown) => void) => {
       state.capturedDxMessage = handler;
       return state.dxUnsubscribe;
@@ -171,6 +177,97 @@ const runtimeHarness = vi.hoisted(() => {
 });
 
 const mockRuntime = runtimeHarness.runtime;
+
+// ── MOR-4270: real ScopeController over fake channels (the transport seam) ──
+type FakeScopeChannel = {
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+  state: string;
+  sessionEpoch: number;
+  onBinary(handler: (buffer: ArrayBuffer) => void): () => void;
+  onStateChange(handler: (state: string) => void): () => void;
+  onSessionTransition(handler: (transition: { state: string; epoch: number }) => void): () => void;
+  fire(bytes: Uint8Array): void;
+  setState(next: string): void;
+};
+function makeFakeScopeChannel(): FakeScopeChannel {
+  const binary = new Set<(buffer: ArrayBuffer) => void>();
+  const states = new Set<(state: string) => void>();
+  const sessions = new Set<(transition: { state: string; epoch: number }) => void>();
+  let epoch = 0;
+  const channel: FakeScopeChannel = {
+    get state() { return (channel as { transport?: string }).transport ?? 'disconnected'; },
+    set state(next: string) { (channel as { transport?: string }).transport = next; },
+    sessionEpoch: 0,
+    connect: vi.fn(() => {
+      if ((channel as { transport?: string }).transport === 'connected') return;
+      (channel as { transport?: string }).transport = 'connected';
+      channel.sessionEpoch += 1;
+      const transition = { state: 'connected', epoch: channel.sessionEpoch };
+      for (const update of states) update(transition.state);
+      for (const update of sessions) update(transition);
+    }),
+    disconnect: vi.fn(() => {
+      (channel as { transport?: string }).transport = 'disconnected';
+      for (const update of states) update('disconnected');
+      for (const update of sessions) update({ state: 'disconnected', epoch: channel.sessionEpoch });
+    }),
+    onBinary(handler) { binary.add(handler); return () => { binary.delete(handler); }; },
+    onStateChange(handler) { states.add(handler); return () => { states.delete(handler); }; },
+    onSessionTransition(handler) { sessions.add(handler); return () => { sessions.delete(handler); }; },
+    fire(bytes: Uint8Array) { for (const handler of binary) handler(bytes.buffer); },
+    setState(next: string) {
+      (channel as { transport?: string }).transport = next;
+      const transition = { state: next, epoch: channel.sessionEpoch };
+      for (const update of states) update(next);
+      for (const update of sessions) update(transition);
+    },
+  } as FakeScopeChannel;
+  return channel;
+}
+const harnessChannels: Record<string, FakeScopeChannel> = {};
+const scopeControllerHarness = new ScopeController(
+  (name: string) => {
+    harnessChannels[name] ??= makeFakeScopeChannel();
+    return harnessChannels[name] as unknown as WsChannel;
+  },
+);
+runtimeHarness.runtime.scope = {
+  stream: (source) => scopeControllerHarness.stream(source),
+  registerPresentationDriver: (host, config) => scopeControllerHarness.registerPresentationDriver(host, config),
+  subscribeTraceReceipt: (observer) => scopeControllerHarness.subscribeTraceReceipt(observer),
+  snapshotHealth: (source) => scopeControllerHarness.snapshotHealth(source),
+  subscribeHealth: (listener) => scopeControllerHarness.subscribeHealth(listener),
+  get hardwareScopeConnected() {
+    return runtimeHarness.state.mockScopeConnected ?? scopeControllerHarness.hardwareScopeConnected;
+  },
+  get hardwareScopeFrameLive() {
+    return runtimeHarness.state.mockScopeFrameLive ?? scopeControllerHarness.hardwareScopeFrameLive;
+  },
+};
+runtimeHarness.state.driverBridge.startHardware = () => scopeControllerHarness.hardwareScopeDriver.start() as never;
+runtimeHarness.state.driverBridge.stopHardware = (lease: unknown) => {
+  void scopeControllerHarness.hardwareScopeDriver.stop(lease as never);
+};
+runtimeHarness.state.driverBridge.startAudio = () => scopeControllerHarness.audioFftDriver.start() as never;
+runtimeHarness.state.driverBridge.stopAudio = (lease: unknown) => {
+  void scopeControllerHarness.audioFftDriver.stop(lease as never);
+};
+// Observes trace-receipt subscriptions through the real controller.
+const traceReceiptSubscriptions: Array<(receipt: TraceReceipt) => void> = [];
+{
+  const realSubscribe = scopeControllerHarness.subscribeTraceReceipt.bind(scopeControllerHarness);
+  (scopeControllerHarness as unknown as { subscribeTraceReceipt: typeof realSubscribe })
+    .subscribeTraceReceipt = (observer) => {
+    traceReceiptSubscriptions.push(observer);
+    const stop = realSubscribe(observer);
+    return () => {
+      const index = traceReceiptSubscriptions.indexOf(observer);
+      if (index >= 0) traceReceiptSubscriptions.splice(index, 1);
+      stop();
+    };
+  };
+}
 
 const scopeCommandHarness = vi.hoisted(() => ({ dispatch: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async (original) => ({
@@ -344,7 +441,11 @@ const appTxHostHarness = vi.hoisted(() => ({
 }));
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
-  presentationResources: { acquire: vi.fn(() => ({ resource: 'audio-fft', id: 1 })), release: vi.fn() },
+  presentationResources: {
+    configure: vi.fn(),
+    acquire: vi.fn(() => runtimeHarness.state.driverBridge.startAudio()),
+    release: vi.fn((lease: unknown) => runtimeHarness.state.driverBridge.stopAudio(lease)),
+  },
   runtime: runtimeHarness.runtime,
 }));
 
@@ -511,6 +612,7 @@ const IC7300_STEPPED_CAPABILITIES = {
 
 let components: ReturnType<typeof mount>[] = [];
 let txHarness: ManagedAppTxHarness;
+const harnessLeases: unknown[] = [];
 
 // MOR-4256 review: the authority fixtures satisfy the producer's real
 // `SpectrumAuthority` contract (scope-adapter) — including the full
@@ -589,18 +691,41 @@ function freshPbtOnlyIc7300State() {
   };
 }
 
-function emitFrame(overrides: Partial<TestScopeFrame> = {}): TestScopeFrame {
-  const frame = Object.freeze({
-    receiver: 0,
-    mode: 0,
-    startFreq: 14_000_000,
-    endFreq: 14_100_000,
-    outOfRange: false, pixels: new Uint8Array(475).fill(64),
-    ...overrides,
-  });
-  runtimeHarness.state.capturedHardwareFrame?.(frame);
+/** Frame overrides encoded onto the real wire layout and fired through the fake channel. */
+type EmitOverrides = {
+  receiver?: number;
+  mode?: number;
+  startFreq?: number;
+  endFreq?: number;
+  outOfRange?: boolean;
+  pixels?: Uint8Array | null;
+  sequence?: number;
+};
+function encodeScopeWire(overrides: EmitOverrides): Uint8Array {
+  const pixels = overrides.pixels ?? new Uint8Array(475).fill(64);
+  const bytes = new Uint8Array(16 + pixels.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint8(0, 1);
+  view.setUint8(1, overrides.receiver ?? 0);
+  view.setUint8(2, overrides.mode ?? 0);
+  view.setUint32(3, overrides.startFreq ?? 14_000_000, true);
+  view.setUint32(7, overrides.endFreq ?? 14_100_000, true);
+  view.setUint16(11, (overrides.sequence ?? 1) & 0xffff, true);
+  view.setUint8(13, overrides.outOfRange ? 1 : 0);
+  view.setUint16(14, pixels.length, true);
+  bytes.set(pixels, 16);
+  return bytes;
+}
+function emitFrame(overrides: EmitOverrides = {}): EmitOverrides {
+  const frame: EmitOverrides = {
+    receiver: 0, mode: 0, startFreq: 14_000_000, endFreq: 14_100_000,
+    outOfRange: false, ...overrides,
+  };
+  const pixels = (overrides.pixels ?? new Uint8Array(475).fill(64)) as Uint8Array;
+  harnessChannels.scope ??= makeFakeScopeChannel();
+  harnessChannels.scope.fire(encodeScopeWire(frame));
   flushSync();
-  return frame;
+  return { ...frame, pixels };
 }
 
 // MOR-4206: the waterfall paints from a requestAnimationFrame callback (the
@@ -674,6 +799,11 @@ function mountPanel(props: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   components = [];
+  for (const name of Object.keys(harnessChannels)) {
+    const channel = harnessChannels[name]!;
+    channel.disconnect();
+  }
+  for (const name of Object.keys(harnessChannels)) delete harnessChannels[name];
   storageMap.clear();
   txHarness = new ManagedAppTxHarness();
   appTxHostHarness.controller = txHarness.controller;
@@ -704,6 +834,7 @@ beforeEach(() => {
 
 afterEach(() => {
   components.forEach((c) => unmount(c));
+  for (const lease of harnessLeases.splice(0)) mockRuntime.releaseHardwareScope(lease);
   expect(txHarness.trace()).toEqual([]);
   expect(txHarness.listenerCount()).toBe(0);
   appTxHostHarness.controller = null;
@@ -720,19 +851,21 @@ describe('SpectrumPanel component', () => {
   it('keeps trace controls absent in an ordinary build', () => {
     const target = mountPanel();
     expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
-    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).not.toHaveBeenCalled();
+    emitFrame();
+    expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
   });
 
   it('starts and stops a candidate trace only on explicit clicks without opening a source', () => {
     vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
     const target = mountPanel();
+    emitFrame();
     const controls = target.querySelector('[aria-label="Scope render trace"]');
     expect(controls).not.toBeNull();
     const start = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Start trace')!;
     expect(start.disabled).toBe(false);
     start.click();
     flushSync();
-    expect(runtimeHarness.runtime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+    expect(traceReceiptSubscriptions).toHaveLength(1);
     expect(controls?.textContent).toContain('recording');
     expect(runtimeHarness.runtime.acquireHardwareScope).toHaveBeenCalledTimes(1);
     const stop = [...controls!.querySelectorAll('button')].find((button) => button.textContent === 'Stop trace')!;
@@ -747,26 +880,30 @@ describe('SpectrumPanel component', () => {
     const observe = vi.spyOn(ScopeRenderTrace.prototype, 'observe');
     const first = mountPanel();
     const second = mountPanel();
+    emitFrame();
     for (const panel of [first, second]) {
       (panel.querySelector('[aria-label="Scope render trace"] button') as HTMLButtonElement).click();
     }
     flushSync();
-    const subscriptions = vi.mocked(runtimeHarness.runtime.scope.subscribeTraceReceipt).mock.calls;
+    const subscriptions = traceReceiptSubscriptions.splice(-2);
     expect(subscriptions).toHaveLength(2);
-    const frame = Object.freeze({ receiver: 0, mode: 0, startFreq: 1, endFreq: 2, outOfRange: false, pixels: new Uint8Array(4) });
+    const frame = Object.freeze({ source: 'radio' as const, sourceId: 'scope', epoch: 1,
+      receiver: 0, viewStartHz: 1, viewEndHz: 2, coverageStartHz: 1, coverageEndHz: 2,
+      width: 4, pixels: new Uint8Array(4), outOfRange: false, seq: 1, sentAtMs: null });
     const receipt = { kind: 'accepted' as const, frame, token: { source: 'hardware' as const,
       transportEpoch: 1, wireSequence: 1, acceptedSequence: 1 }, callbackAt: performance.now(), acceptedAt: performance.now() };
-    subscriptions[0][0](receipt);
-    subscriptions[1][0](receipt);
+    subscriptions[0](receipt);
+    subscriptions[1](receipt);
     expect(observe).toHaveBeenCalledTimes(2);
     expect(observe.mock.contexts[0]).not.toBe(observe.mock.contexts[1]);
-    subscriptions[0][0]({ ...receipt, token: { ...receipt.token, source: 'audio_fft' } });
+    subscriptions[0]({ ...receipt, token: { ...receipt.token, source: 'audio_fft' } });
     expect(observe).toHaveBeenCalledTimes(2);
   });
 
   it.each(['source', 'receiver'] as const)('stops a trace when selected %s changes without another frame', (change) => {
     vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
     const target = mountPanel();
+    emitFrame();
     const start = target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!;
     start.click();
     flushSync();
@@ -778,7 +915,9 @@ describe('SpectrumPanel component', () => {
     flushSync();
     expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('stopped (source_changed)');
     expect(push).not.toHaveBeenCalled();
-    expect(mockRuntime.scope.subscribeTraceReceipt).toHaveBeenCalledTimes(1);
+    // The stopped trace released its receipt subscription and nothing
+    // resubscribed without another frame.
+    expect(traceReceiptSubscriptions.splice(0)).toHaveLength(0);
   });
   it('mounts without errors', () => {
     const target = mountPanel();
@@ -820,7 +959,7 @@ describe('SpectrumPanel component', () => {
     mountPanel();
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(1);
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledWith('SpectrumPanel');
-    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledTimes(1);
+    expect(harnessChannels.scope?.connect).toHaveBeenCalledTimes(1);
     expect(mockRuntime.subscribeDx).toHaveBeenCalledTimes(1);
   });
 
@@ -851,7 +990,6 @@ describe('SpectrumPanel component', () => {
     unmount(component);
     expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledTimes(2);
     expect(mockRuntime.releaseHardwareScope).toHaveBeenLastCalledWith(currentLease);
-    expect(runtimeHarness.state.hardwareUnsubscribe).toHaveBeenCalledTimes(1);
     expect(runtimeHarness.state.dxUnsubscribe).toHaveBeenCalledTimes(1);
   });
 
@@ -893,15 +1031,9 @@ describe('SpectrumPanel component', () => {
 
   it('ignores shared runtime frames while VIEW is OFF', () => {
     const target = mountPanel();
+    emitFrame();
     target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
-    runtimeHarness.state.capturedHardwareFrame?.({
-      receiver: 0,
-      mode: 1,
-      startFreq: 14_000_000,
-      endFreq: 14_350_000,
-      outOfRange: false, pixels: new Uint8Array(475).fill(64),
-    });
-    flushSync();
+    emitFrame({ mode: 1, endFreq: 14_350_000 });
     expect(target.querySelector('.freq-axis')).toBeNull();
   });
 
@@ -948,14 +1080,7 @@ describe('SpectrumPanel component', () => {
 
   it('renders runtime hardware frames and DX spots', () => {
     const target = mountPanel();
-    runtimeHarness.state.capturedHardwareFrame?.({
-      receiver: 0,
-      mode: 1,
-      startFreq: 14_000_000,
-      endFreq: 14_350_000,
-      outOfRange: false, pixels: new Uint8Array(475).fill(64),
-    });
-    flushSync();
+    emitFrame({ mode: 1, endFreq: 14_350_000 });
     expect(target.querySelector('.freq-axis')).not.toBeNull();
 
     runtimeHarness.state.capturedDxMessage?.({
@@ -984,7 +1109,7 @@ describe('SpectrumPanel component', () => {
       expect(spectrumPanelSource).not.toContain(legacyAuthority);
     }
     expect(spectrumPanelSource).toContain('runtime.acquireHardwareScope');
-    expect(spectrumPanelSource).toContain('runtime.scope.subscribeHardware');
+    expect(spectrumPanelSource).toContain("runtime.scope.stream(sourceIsAudio ? 'audio_fft' : 'hardware')");
     expect(spectrumPanelSource).toContain('runtime.subscribeDx');
     expect(spectrumPanelSource).not.toContain('runtime.send');
     expect(spectrumPanelSource).not.toContain('patchActiveReceiver');
@@ -1665,12 +1790,17 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
   });
 
-  it('removes exactly the two Panel legacy exceptions while retaining sample ownership', () => {
-    expect(authorityPluginSource.match(/src\/components\/spectrum\/SpectrumPanel\.svelte/g))
-      .toHaveLength(1);
-    expect(authorityContractSource.match(/src\/components\/spectrum\/SpectrumPanel\.svelte/g))
-      .toHaveLength(2);
-    expect(authorityPluginSource).toContain('const SCOPE_METADATA_OWNERS');
+  it('shrinks the scope-metadata owners to the single ingress adapter (MOR-4270)', () => {
+    const owners = authorityPluginSource.match(
+      /const SCOPE_METADATA_OWNERS = new Set\(\[([\s\S]*?)\]\);/,
+    )!;
+    expect(owners[1]).toContain('src/lib/runtime/adapters/scope-adapter.ts');
+    expect(owners[1]).not.toContain('SpectrumPanel.svelte');
+    expect(owners[1]).not.toContain('AmberScope');
+    expect(owners[1]).not.toContain('AmberCockpit');
+    expect(owners[1]).not.toContain('AudioSpectrumPanel');
+    expect(owners[1]).not.toContain('scope-stream.ts');
+    expect(owners[1]).not.toContain('scope-frame.ts');
     expect(authorityContractSource).toContain('id = "spectrum_payload"');
     expect(authorityContractSource).toContain('id = "scope_metadata_owner"');
   });
@@ -1869,7 +1999,7 @@ describe('opaque semantic scope snippet forwarding (MOR-2358)', () => {
     expect(target.querySelector('.tune-line')).toBeNull();
     const viewer = target.querySelector<HTMLButtonElement>('[aria-label="Scope viewer"]')!;
     expect(viewer.textContent).toContain('Viewer ON'); viewer.click(); flushSync(); expect(viewer.textContent).toContain('Viewer OFF');
-    expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
+    expect(scopeControllerHarness.stream('hardware').receipt).toBe(0);
   });
 });
 
@@ -1902,9 +2032,8 @@ describe('SDR scope source routing (MOR-3158)', () => {
     const target = mountPanel();
     // Hardware transport routing: the IQ-derived ScopeFrames arrive on the
     // hardware channel with its leases (MOR-3158 contract assumption).
-    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledOnce();
+    expect(harnessChannels.scope?.connect).toHaveBeenCalledOnce();
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
-    expect(mockRuntime.scope.subscribe).not.toHaveBeenCalled();
     expect(target.querySelector('.audio-source-label')).toBeNull();
     expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
     const badge = target.querySelector<HTMLElement>('[data-testid="scope-source-badge"]')!;
@@ -2092,48 +2221,50 @@ describe('SDR scope source routing (MOR-3158)', () => {
   });
 
   it('holds managed waterfall pushes under the TX marker too', async () => {
-    function sdrProjection(sequence: number, outOfRange = false): ScopeDisplayProjection {
-      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
-        startFreq: 14_000_000, endFreq: 14_100_000, outOfRange, pixels: new Uint8Array([0, 128, 255]) },
-      { source: 'hardware', receiver: 0, providerGeneration: 17, transportEpoch: 1,
-        receivedAt: 10, acceptedSequence: sequence }, sequence)!;
-      const frame = toScopeDisplayFrame(envelope, { source: 'hardware', receiver: 0,
-        providerGeneration: 17, transportEpoch: 1, demanded: true, transport: 'connected', nowMonotonic: 10 })!;
-      return Object.freeze({
-        frame,
-        frameMode: 0, acceptedSequence: sequence,
-        passband: Object.freeze({ state: 'current', tuple: Object.freeze({
-          frequencyHz: 14_050_250, mode: 'USB', widthHz: 2_400, shiftHz: 0,
-          frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 }) }),
+    function sdrProjection(sequence: number, outOfRange = false) {
+      emitFrame({
+        startFreq: 14_000_000, endFreq: 14_100_000, sequence,
+        outOfRange, pixels: new Uint8Array([0, 128, 255]),
       });
+      return Object.freeze({ state: 'current' as const, tuple: Object.freeze({
+        frequencyHz: 14_050_250, mode: 'USB', widthHz: 2_400, shiftHz: 0,
+        frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 }) });
     }
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
     try {
       selectSdrSource();
-      const props = new SvelteMap<string, unknown>([['projection', sdrProjection(1)]]);
+      harnessLeases.push(mockRuntime.acquireHardwareScope());
+      const props = new SvelteMap<string, unknown>([['projection',
+        Object.freeze({ state: 'unknown', reason: 'not-observed' })]]);
       const target = mountPanel({
-        get scopeProjection() { return props.get('projection'); },
+        get scopeRegion() {
+          return Object.freeze({ passband: props.get('projection'),
+            demanded: true, setDemand: () => {} });
+        },
         scopeDemanded: true,
       });
+      emitFrame();
+      props.set('projection', sdrProjection(1));
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledTimes(1);
-      // The first delivered projection paints (fresh gate) and the next
+      expect(push).toHaveBeenCalled();
+      const afterFirst = push.mock.calls.length;
+      // The first delivered frame paints (fresh gate) and the next
       // live-spaced one latches steady painting.
       for (let sequence = 2; sequence <= 6; sequence += 1) {
         clock += 83;
         props.set('projection', sdrProjection(sequence)); flushSync();
         await flushWaterfallPaint();
       }
-      expect(push).toHaveBeenCalledTimes(6);
+      expect(push).toHaveBeenCalledTimes(afterFirst + 5);
       replaceSdrLeaf(sdrLeaf({ txFrozen: true }));
       flushSync();
       expect(target.querySelector('[data-testid="sdr-tx-frozen"]')).not.toBeNull();
       clock += 83;
       props.set('projection', sdrProjection(7, true)); flushSync();
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledTimes(6);
+      expect(push).toHaveBeenCalledTimes(afterFirst + 5);
       expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
       expect(target.querySelector<HTMLElement>('.waterfall-history')!.style.visibility).toBe('visible');
       expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
@@ -2142,7 +2273,7 @@ describe('SDR scope source routing (MOR-3158)', () => {
       clock += 83;
       props.set('projection', sdrProjection(8)); flushSync();
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledTimes(7);
+      expect(push).toHaveBeenCalledTimes(afterFirst + 6);
     } finally {
       nowSpy.mockRestore();
       push.mockRestore();
@@ -2151,16 +2282,18 @@ describe('SDR scope source routing (MOR-3158)', () => {
 });
 
 describe('managed scope projection (MOR-2367)', () => {
-  function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current', frameMode = 0): ScopeDisplayProjection {
-    return Object.freeze({
-      frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
-        startHz: 14_000_000, endHz: 14_100_000, normalizedBins: Object.freeze([0, 0.5, 1]) }),
-      frameMode, acceptedSequence: 1,
-      passband: state === 'current' || state === 'stale'
-        ? Object.freeze({ state, tuple: Object.freeze({ frequencyHz: 14_050_250, mode: 'USB',
-          widthHz: 2_400, shiftHz: 0, frameMode, startHz: 14_000_000, endHz: 14_100_000 }) })
-        : { state, reason: 'not-observed' },
-    });
+  // MOR-4270: the managed region carries the passband display; frames and
+  // geometry come from the shared stream (emitFrame drives the fake
+  // channel) and the 'projection gap' is frame silence (health frameLive
+  // forced false), exactly the observation the old null projection modelled.
+  function passband(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current', frameMode = 0) {
+    return state === 'current' || state === 'stale'
+      ? Object.freeze({ state, tuple: Object.freeze({ frequencyHz: 14_050_250, mode: 'USB',
+        widthHz: 2_400, shiftHz: 0, frameMode, startHz: 14_000_000, endHz: 14_100_000 }) })
+      : Object.freeze({ state, reason: 'not-observed' });
+  }
+  function projection(state: 'current' | 'stale' | 'unknown' | 'unsupported' = 'current', frameMode = 0) {
+    return passband(state, frameMode);
   }
   // MOR-2464: the static CENTER reference must appear in BOTH the spectrum
   // area and over the waterfall — asserted together, never via one generic
@@ -2175,13 +2308,45 @@ describe('managed scope projection (MOR-2367)', () => {
     }
   }
   function managed(initial: ReturnType<typeof projection> | null | undefined) {
+    // The wiring's managed lease, stood in for by the harness: frames must
+    // flow through the shared stream exactly as they do under SRS.
+    harnessLeases.push(mockRuntime.acquireHardwareScope());
     const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
     const onScopeDemandChange = vi.fn((enabled: boolean) => props.set('demanded', enabled));
     const target = mountPanel({
-      get scopeProjection() { return props.get('projection'); },
-      get scopeDemanded() { return props.get('demanded'); }, onScopeDemandChange,
+      get scopeRegion() {
+        return props.get('projection') === null ? Object.freeze({
+          passband: Object.freeze({ state: 'unknown', reason: 'not-observed' }),
+          demanded: props.get('demanded') as boolean,
+          setDemand: onScopeDemandChange,
+        }) : Object.freeze({
+          passband: props.get('projection'),
+          demanded: props.get('demanded') as boolean,
+          setDemand: onScopeDemandChange,
+        });
+      },
+      get scopeDemanded() { return props.get('demanded') as boolean; }, onScopeDemandChange,
     });
+    emitFrame();
     return { target, props, onScopeDemandChange };
+  }
+  /** The managed data-plane gap: transport drops and frames stop flowing. */
+  function silenceFrames(): void {
+    runtimeHarness.state.mockScopeFrameLive = false;
+    harnessChannels.scope?.setState('disconnected');
+    flushSync();
+  }
+  function resumeFrames(): void {
+    runtimeHarness.state.mockScopeFrameLive = true;
+    harnessChannels.scope?.setState('connected');
+    flushSync();
+    emitFrame();
+  }
+  function resumeFramesWith(pixels: Uint8Array): void {
+    runtimeHarness.state.mockScopeFrameLive = true;
+    harnessChannels.scope?.setState('connected');
+    flushSync();
+    emitFrame({ pixels });
   }
   function cleared(target: HTMLElement) {
     // The static CENTER tune-line is deliberately NOT in this list: it is
@@ -2195,17 +2360,13 @@ describe('managed scope projection (MOR-2367)', () => {
   it.each(['managed', 'raw'] as const)('shows captured OOR edges and CTR action on the %s path, then recovers', (path) => {
     radio.current = structuredClone(IC7300_STATE);
     expect(setCapabilities(structuredClone(IC7300_CAPABILITIES))).toBe(true);
-    const frame = parseScopeFrame(Uint8Array.from(Buffer.from(
-      '0100010044950820e59c080100010000', 'hex')).buffer)!;
-    const envelope = qualifyScopeFrameEnvelope(frame, { source: 'hardware', receiver: 0,
-      providerGeneration: 17, transportEpoch: 1, receivedAt: 10, acceptedSequence: 1 }, 1)!;
-    const candidate = toScopeDisplayFrame(envelope, { source: 'hardware', receiver: 0,
-      providerGeneration: 17, transportEpoch: 1, demanded: true, transport: 'connected', nowMonotonic: 10 });
-    const resolution = resolveLcdSpectrumFrame(candidate, { source: 'hardware', receiver: 'MAIN' });
-    const input = resolution.state === 'ghost' ? null : { frame: resolution.frame,
-      frameMode: 1, acceptedSequence: 1, passband: EMPTY_SCOPE_PASSBAND_DISPLAY.display };
-    const mounted = path === 'managed' ? managed(input) : { target: mountPanel(), props: null };
-    if (path === 'raw') { runtimeHarness.state.capturedHardwareFrame!(frame); flushSync(); }
+    // Recorded IC-705 out-of-range bytes (tests/fixtures/ic705/scope_out_of_range.json):
+    // FIX mode, receiver MAIN, 144.000–144.500 MHz, flags bit 0 set, no pixels.
+    const mounted = path === 'managed' ? managed(passband()) : { target: mountPanel(), props: null };
+    if (path === 'raw') { emitFrame(); flushSync(); }
+    emitFrame({ mode: 1, startFreq: 144_000_000, endFreq: 144_500_000,
+      outOfRange: true, pixels: new Uint8Array(0) });
+    flushSync();
     const overlay = mounted.target.querySelector('[data-testid="scope-out-of-range"]');
     expect(overlay).not.toBeNull();
     expect(overlay!.textContent).toContain('Frequency outside the fixed scope edges');
@@ -2215,42 +2376,40 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(scopeCommandHarness.dispatch).toHaveBeenCalledExactlyOnceWith({
       name: 'set_scope_mode', params: { mode: 0 },
     });
-    if (mounted.props) { mounted.props.set('projection', projection()); flushSync(); }
+    if (mounted.props) { resumeFrames(); }
     else emitFrame();
     expect(mounted.target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
   });
-  it.each([null, 'current'] as const)('never acquires or subscribes raw scope for managed %s', (kind) => {
+  it.each([null, 'current'] as const)('never acquires a raw hardware lease for managed %s', (kind) => {
     const { target } = managed(kind === null ? null : projection());
-    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
-    expect(mockRuntime.scope.subscribeHardware).not.toHaveBeenCalled();
-    emitFrame();
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalledWith('SpectrumPanel');
     if (kind === null) {
+      silenceFrames();
       cleared(target);
       // MOR-2464: with frequency evidence the static CENTER reference
-      // stays visible in BOTH areas through the projection gap.
+      // stays visible in BOTH areas through the frame-silence gap.
       expectCenterReference(target, true);
     } else expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
   });
-  it('preserves waterfall history across a transient missing projection', () => {
+  it('preserves waterfall history across a transient frame silence', () => {
     const destroy = vi.spyOn(WaterfallRenderer.prototype, 'destroy');
-    const { target, props } = managed(projection());
+    const { target } = managed(projection());
     const before = destroy.mock.calls.length;
-    props.set('projection', null); flushSync();
+    silenceFrames();
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
-    props.set('projection', projection()); flushSync();
+    resumeFrames();
     expect(destroy.mock.calls.length).toBe(before);
     expect(target.querySelector('.waterfall-content canvas')).not.toBeNull();
     destroy.mockRestore();
   });
-  it('keeps a recording through a missing projection but ends it on selection change without a frame', () => {
+  it('keeps a recording through frame silence but ends it on selection change without a frame', () => {
     vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', '1');
-    const { target, props } = managed(projection());
+    const { target } = managed(projection());
     target.querySelector<HTMLButtonElement>('[aria-label="Scope render trace"] button')!.click();
     flushSync();
-    props.set('projection', null);
-    flushSync();
+    silenceFrames();
     expect(target.querySelector('[aria-label="Scope render trace"]')?.textContent).toContain('recording');
     runtimeHarness.state.currentCaps = Object.freeze({ scopeSource: 'audio_fft' });
     refreshSpectrumAuthority();
@@ -2264,43 +2423,30 @@ describe('managed scope projection (MOR-2367)', () => {
       configurable: true, get: () => ({ providerGeneration: generations.get('current') }),
     });
     try {
-      const { target, props } = managed(projection());
+      const { target } = managed(projection());
       const first = target.querySelector('.waterfall-content canvas');
-      props.set('projection', null); flushSync();
+      silenceFrames();
       generations.set('current', 18); flushSync();
-      props.set('projection', projection()); flushSync();
+      resumeFrames();
       expect(target.querySelector('.waterfall-content canvas')).not.toBe(first);
     } finally {
       Object.defineProperty(runtimeHarness.state, 'currentState', original);
     }
   });
-  it('keeps omitted and explicit undefined projections on the legacy acquisition path', () => {
-    mountPanel(); mountPanel({ scopeProjection: undefined });
+  it('keeps unmanaged mounts on their own hardware lease', () => {
+    mountPanel(); mountPanel({ scopeRegion: undefined });
     expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledTimes(2);
-    expect(mockRuntime.scope.subscribeHardware).toHaveBeenCalledTimes(2);
-  });
-  it('clears after legacy-to-managed null and rejects a captured late raw callback', () => {
-    const { target, props } = managed(undefined);
-    emitFrame(); const oldCallback = runtimeHarness.state.capturedHardwareFrame!;
-    expect(target.querySelector('.passband-overlay')).not.toBeNull();
-    props.set('projection', null); flushSync(); cleared(target);
-    expectCenterReference(target, true);
-    oldCallback({ receiver: 0, mode: 0, startFreq: 14_000_000, endFreq: 14_100_000, outOfRange: false, pixels: new Uint8Array([90, 90]) });
-    flushSync(); cleared(target);
-    expectCenterReference(target, true);
-    expect(runtimeHarness.state.hardwareUnsubscribe).toHaveBeenCalledOnce();
-    expect(mockRuntime.releaseHardwareScope).toHaveBeenCalledOnce();
+    expect(harnessChannels.scope?.connect).toHaveBeenCalledTimes(2);
   });
   it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
     const shared = mockRuntime.acquireHardwareScope();
     const { target, props, onScopeDemandChange } = managed(projection());
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
-    expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([0, 128, 255]);
     const { waterfall } = prepareGeometry(target);
     const zone = waterfall.querySelector('.passband-resize-zone')!;
     pointer(zone, 'pointerdown', 80, 100); pointer(waterfall, 'pointermove', 80, 130);
     const oldCanvas = target.querySelector('canvas');
-    if (boundary === 'null') props.set('projection', null);
+    if (boundary === 'null') silenceFrames();
     else target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click();
     flushSync(); cleared(target);
     // MOR-2464: a projection gap keeps the static CENTER reference in both
@@ -2309,26 +2455,27 @@ describe('managed scope projection (MOR-2367)', () => {
     else expectCenterReference(target, true);
     expect(oldCanvas?.isConnected).toBe(false);
     expect(runtimeHarness.state.mockScopeConnected).toBe(true);
-    expect(mockRuntime.acquireHardwareScope).toHaveBeenCalledOnce();
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalledWith('SpectrumPanel');
     expect(mockRuntime.releaseHardwareScope).not.toHaveBeenCalled();
     pointer(window, 'pointerup', 80, 130);
     const { spectrum } = prepareGeometry(target);
     pointer(spectrum, 'pointerdown', 81, 100); pointer(spectrum, 'pointermove', 81, 130); pointer(spectrum, 'pointerup', 81, 130);
     target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }));
-    emitFrame(); cleared(target);
+    if (boundary === 'null') { silenceFrames(); } else { flushSync(); }
+    cleared(target);
     if (boundary === 'off') expectCenterReference(target, false);
     else expectCenterReference(target, true);
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
     if (boundary === 'off') {
       expect(onScopeDemandChange).toHaveBeenCalledWith(false);
-      props.set('projection', null); flushSync();
+      silenceFrames();
       target.querySelector<HTMLButtonElement>('.scope-demand-toggle')!.click(); flushSync();
       expect(onScopeDemandChange).toHaveBeenLastCalledWith(true); cleared(target);
-      // Demand back ON with the projection still gone: reference returns.
+      // Demand back ON while frames are still silent: reference returns.
       expectCenterReference(target, true);
     }
-    props.set('projection', projection()); flushSync();
+    props.set('projection', projection()); resumeFrames();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     mockRuntime.releaseHardwareScope(shared);
   });
@@ -2349,12 +2496,12 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
     expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
-    // Focus pause: the projection drops; only the static reference
-    // survives in both areas — no passband geometry is invented from it.
-    props.set('projection', null); flushSync();
+    // Focus pause: frames go silent; only the static reference survives in
+    // both areas — no passband geometry is invented from it.
+    silenceFrames();
     expectCenterReference(target, true);
     expect(target.querySelector('.passband-overlay')).toBeNull();
-    props.set('projection', projection()); flushSync();
+    props.set('projection', projection()); resumeFrames();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
   });
@@ -2371,28 +2518,28 @@ describe('managed scope projection (MOR-2367)', () => {
     // The post-clear frameScopeMode default (0) is NOT proof of CENTER —
     // the authority's observed FIX scope-control mode must keep the
     // reference hidden in both areas.
-    props.set('projection', null); flushSync();
+    silenceFrames();
     expectCenterReference(target, false);
   });
   it('keeps the static CENTER reference through a strict authority freshness gap in the same session', () => {
     const { target, props } = managed(projection());
     expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
     expect(target.querySelector('.waterfall-content .tune-line')).not.toBeNull();
-    // Focus gap: the projection drops AND the strict authority nulls
+    // Focus gap: frames go silent AND the strict authority nulls
     // while provider/session/receiver identity is unchanged. The static
     // ruler must not require a strictly fresh frequency to stay drawn.
-    props.set('projection', null); flushSync();
+    silenceFrames();
     authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
     expectCenterReference(target, true);
     // Refocus: frames and authority return; the normal path resumes.
     authorityHarness.state.current = authority(); refreshSpectrumAuthority(); flushSync();
-    props.set('projection', projection()); flushSync();
+    props.set('projection', projection()); resumeFrames();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
   });
   it('clears the remembered mode on a provider identity change', () => {
     const { target, props } = managed(projection());
-    props.set('projection', null); flushSync();
+    silenceFrames();
     authorityHarness.state.current = null;
     runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 18, active: 'MAIN' });
     refreshSpectrumAuthority(); flushSync();
@@ -2410,7 +2557,7 @@ describe('managed scope projection (MOR-2367)', () => {
     refreshSpectrumAuthority();
     const { target, props } = managed(projection('current', 1));
     expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')).not.toBeNull();
-    props.set('projection', null); flushSync();
+    silenceFrames();
     authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
     expectCenterReference(target, false);
   });
@@ -2447,9 +2594,9 @@ describe('managed scope projection (MOR-2367)', () => {
     pointer(waterfall.querySelector('.passband-resize-zone')!, 'pointerdown', 89, 100);
     pointer(waterfall, 'pointermove', 89, 130);
     const initial = projection('stale');
-    if (initial.passband.state !== 'stale') throw new Error('stale fixture required');
-    const translated = { ...initial, passband: { ...initial.passband, translated: true,
-      tuple: { ...initial.passband.tuple, frequencyHz: 14_051_000 } } };
+    if (initial.state !== 'stale') throw new Error('stale fixture required');
+    const translated = { ...initial, translated: true as const,
+      tuple: { ...initial.tuple, frequencyHz: 14_051_000 } };
     props.set('projection', translated); flushSync();
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
@@ -2461,9 +2608,9 @@ describe('managed scope projection (MOR-2367)', () => {
     pointer(window, 'pointerup', 89, 130);
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
-    props.set('projection', { ...translated, acceptedSequence: 2,
-      frame: { ...translated.frame, startHz: 14_001_000, endHz: 14_101_000 },
-      passband: { ...translated.passband, tuple: { ...translated.passband.tuple, startHz: 14_001_000, endHz: 14_101_000 } } });
+    emitFrame({ startFreq: 14_001_000, endFreq: 14_101_000, sequence: 2, pixels: new Uint8Array([0, 128, 255]) });
+    props.set('projection', { ...translated,
+      tuple: { ...translated.tuple, startHz: 14_001_000, endHz: 14_101_000 } });
     flushSync();
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
@@ -2497,18 +2644,17 @@ describe('managed scope projection (MOR-2367)', () => {
       session: { state: 'connected', epoch: 1 }, frame: null };
     let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
     const { target, props } = managed(null);
-    function present(now: number, center: number): void {
-      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
-        startFreq: center - 50_000, endFreq: center + 50_000, outOfRange: false, pixels: new Uint8Array([10, 100, 200]) },
-      { source: 'hardware', receiver: 0, providerGeneration: 1, transportEpoch: 1,
-        receivedAt: now, acceptedSequence: ++sequence }, 1)!;
-      const authority = { source: 'hardware' as const, receiver: 0 as const, providerGeneration: 1,
-        transportEpoch: 1, demanded: true, transport: 'connected' as const, nowMonotonic: now };
-      const frame = toScopeDisplayFrame(envelope, authority);
-      const resolution = resolveLcdSpectrumFrame(frame, { source: 'hardware', receiver: 'MAIN' });
+    const hardwareStream = scopeControllerHarness.stream('hardware');
+    let streamGeometry: import('$lib/runtime/scope-frame').ScopeGeometry | null = null;
+    hardwareStream.geometry.subscribe((geometry) => { streamGeometry = geometry; });
+    function present(_now: number, center: number): void {
+      emitFrame({ startFreq: center - 50_000, endFreq: center + 50_000,
+        pixels: new Uint8Array([10, 100, 200]), sequence: ++sequence });
       state = deliver(); input.state = state;
-      input.frame = { envelope, authority, resolution }; result = projectScopePassbandDisplay(result, input);
-      props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
+      input.frame = { source: 'hardware', receiver: 0, providerGeneration: 1,
+        demanded: true, transport: 'connected', geometry: streamGeometry, receipt: hardwareStream.receipt };
+      result = projectScopePassbandDisplay(result, input);
+      props.set('projection', result.display); flushSync();
     }
     present(0, 14_074_000); expect(result.display.state).toBe('current');
     rx.vfoA!.freqHz = 14_075_000; draft.fieldStatus['main.vfoA.freqHz'].lastObservedMonotonic = 11;
@@ -2591,21 +2737,20 @@ describe('managed scope projection (MOR-2367)', () => {
     const input: ScopePassbandDisplayInput = { state, caps, selection: null,
       session: { state: 'connected', epoch: 1 }, frame: null };
     const { target, props } = managed(null); let result = EMPTY_SCOPE_PASSBAND_DISPLAY; let sequence = 0;
+    const hardwareStream = scopeControllerHarness.stream('hardware');
+    let streamGeometry: import('$lib/runtime/scope-frame').ScopeGeometry | null = null;
+    hardwareStream.geometry.subscribe((geometry) => { streamGeometry = geometry; });
     function present(center: number): void {
       state = deliver(); input.state = state;
       const active = toRadioViewModel(state, caps)!.vfos.filter(vfo => vfo.isActive);
       const vfo = active.length === 1 ? active[0] : null;
       input.selection = vfo?.slot.kind === 'slotted' ? { receiver: vfo.receiver, slot: vfo.slot.id } : null;
-      const envelope = qualifyScopeFrameEnvelope({ receiver: 0, mode: 0,
-        startFreq: center - 50_000, endFreq: center + 50_000, outOfRange: false, pixels: new Uint8Array([10, 100, 200]) },
-      { source: 'hardware', receiver: 0, providerGeneration: 1, transportEpoch: 1,
-        receivedAt: 0, acceptedSequence: ++sequence }, 1)!;
-      const authority = { source: 'hardware' as const, receiver: 0 as const, providerGeneration: 1,
-        transportEpoch: 1, demanded: true, transport: 'connected' as const, nowMonotonic: 0 };
-      const frame = toScopeDisplayFrame(envelope, authority);
-      input.frame = { envelope, authority, resolution: resolveLcdSpectrumFrame(frame, { source: 'hardware', receiver: 'MAIN' }) };
+      emitFrame({ startFreq: center - 50_000, endFreq: center + 50_000,
+        pixels: new Uint8Array([10, 100, 200]), sequence: ++sequence });
+      input.frame = { source: 'hardware', receiver: 0, providerGeneration: 1,
+        demanded: true, transport: 'connected', geometry: streamGeometry, receipt: hardwareStream.receipt };
       result = projectScopePassbandDisplay(result, input);
-      props.set('projection', { frame, frameMode: 0, acceptedSequence: sequence, passband: result.display }); flushSync();
+      props.set('projection', result.display); flushSync();
     }
     present(14_074_000); expect(result.display.state).toBe('current');
     rx.activeSlot = 'B'; draft.fieldStatus['main.activeSlot'].lastObservedMonotonic = 20;
@@ -2649,32 +2794,33 @@ describe('managed scope projection (MOR-2367)', () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     let clock = 0;
     const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock);
-    const sequenced = (sequence: number): ScopeDisplayProjection =>
-      ({ ...projection(), acceptedSequence: sequence });
+    const pixels = new Uint8Array([0, 128, 255]);
+    const sequenced = (sequence: number) => emitFrame({ pixels, sequence });
     try {
       const { target, props } = managed(projection());
+      emitFrame({ pixels, sequence: 1 });
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledTimes(1);
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
       const firstCanvas = target.querySelector('.waterfall-content canvas');
       // Ordinary live-spaced deliveries with distinct sequences establish
       // a paint history before the recovery frame below.
       for (let sequence = 2; sequence <= 6; sequence += 1) {
         clock += 83;
-        props.set('projection', sequenced(sequence)); flushSync();
+        sequenced(sequence);
         await flushWaterfallPaint();
       }
-      expect(push).toHaveBeenCalledTimes(6);
-      props.set('projection', null); flushSync(); const afterClear = push.mock.calls.length;
+      const afterLoop = push.mock.calls.length;
+      silenceFrames(); const afterClear = afterLoop;
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('hidden');
-      emitFrame(); await flushWaterfallPaint(); expect(push).toHaveBeenCalledTimes(afterClear);
+      emitFrame({ pixels }); await flushWaterfallPaint(); expect(push).toHaveBeenCalledTimes(afterLoop);
       clock += 83;
-      props.set('projection', sequenced(7)); flushSync();
+      const beforeResume = push.mock.calls.length;
+      resumeFramesWith(pixels);
       await flushWaterfallPaint();
       expect(target.querySelector('.waterfall-content canvas')).toBe(firstCanvas);
       expect(target.querySelector<HTMLElement>('.waterfall-history')?.style.visibility).toBe('visible');
       expect([...push.mock.calls.at(-1)![0]]).toEqual([0, 128, 255]);
-      expect(push).toHaveBeenCalledTimes(afterClear + 1);
+      expect(push).toHaveBeenCalledTimes(beforeResume + 1);
     } finally {
       nowSpy.mockRestore();
       push.mockRestore();
@@ -2743,15 +2889,15 @@ describe('managed scope projection (MOR-2367)', () => {
       push.mockRestore();
     }
   });
-  it.each(['tap', 'pan'] as const)('cancels an in-flight %s and DX coordinates when managed projection becomes null', (gesture) => {
-    const { target, props } = managed(projection()); const { spectrum, waterfall } = prepareGeometry(target);
+  it.each(['tap', 'pan'] as const)('cancels an in-flight %s and DX coordinates when managed frames go silent', (gesture) => {
+    const { target } = managed(projection()); const { spectrum, waterfall } = prepareGeometry(target);
     const surface = gesture === 'tap' ? waterfall.querySelector('canvas')! : spectrum;
     const spot = { spotter: 'N0CALL', freq: 14_075_410, call: 'K1ABC', comment: 'test', time_utc: '1200', timestamp: 1 };
     runtimeHarness.state.capturedDxMessage?.({ type: 'dx_spot', spot }); flushSync();
     expect(target.querySelector('.dx-badge')).not.toBeNull();
     pointer(surface, 'pointerdown', 86, 100);
     if (gesture === 'pan') pointer(surface, 'pointermove', 86, 120);
-    props.set('projection', null); flushSync();
+    silenceFrames();
     pointer(surface, 'pointerup', 86, 120);
     runtimeHarness.state.capturedDxMessage?.({ type: 'dx_spot', spot }); flushSync();
     expect(target.querySelector('.dx-badge')).toBeNull(); cleared(target);
@@ -2773,7 +2919,7 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.tune-line')).toBeNull();
     props.set('projection', projection()); flushSync(); cleared(target);
     expect(target.querySelector('.tune-line')).toBeNull();
-    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalled();
+    expect(mockRuntime.acquireHardwareScope).not.toHaveBeenCalledWith('SpectrumPanel');
     props.set('demanded', true); flushSync();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
   });
@@ -2786,7 +2932,7 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('27%');
     setFilterWidthLifecycle({ outcome: { phase } }); flushSync();
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
-    expect(input.passband).toEqual(projection().passband);
+    expect(input).toEqual(projection());
   });
 });
 
@@ -3352,9 +3498,15 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       emitFrame();
       const { spectrum } = prepareGeometry(target);
       pointer(spectrum, 'pointerdown', 36, 100);
+      // Settle any paint scheduled by the frame delivery first, so the
+      // counted window starts from a clean rAF slate.
+      await flushPreviewPaint();
       vi.mocked(requestAnimationFrame).mockClear();
-      // A 120 Hz pointermove stream inside ONE animation frame.
+      // A 120 Hz pointermove stream inside ONE animation frame: the View
+      // takes every candidate synchronously while the canvas keeps AT MOST
+      // one pending redraw request.
       pointer(spectrum, 'pointermove', 36, 110);
+      expect(vi.mocked(requestAnimationFrame)).toHaveBeenCalledTimes(1);
       pointer(spectrum, 'pointermove', 36, 120);
       pointer(spectrum, 'pointermove', 36, 130);
       expect(vi.mocked(requestAnimationFrame)).toHaveBeenCalledTimes(1);
@@ -3377,28 +3529,37 @@ describe('center panorama motion (MOR-2464)', () => {
     widthHz: 2_400, shiftHz: 0, frameMode: 0, startHz: 14_000_000, endHz: 14_100_000 });
   // Frame centered on `centerHz` (±halfSpan); `translatedDeltaHz` builds the
   // translated-stale variant whose frequency leads the frame.
+  // MOR-4270: the frame window rides real wire frames (emitFrame) and the
+  // region carries the passband tuple; `translatedDeltaHz` keeps building
+  // the translated-stale variant.
   function panoramaProjection(centerHz = 14_050_000, halfSpan = 50_000, sequence = 1,
-    translatedDeltaHz?: number): ScopeDisplayProjection {
+    translatedDeltaHz?: number) {
     const start = centerHz - halfSpan;
     const end = centerHz + halfSpan;
     const tuple = Object.freeze({ ...PANORAMA_TUPLE,
       frequencyHz: 14_050_000 + (translatedDeltaHz ?? centerHz - 14_050_000),
       startHz: translatedDeltaHz === undefined ? start : PANORAMA_TUPLE.startHz,
       endHz: translatedDeltaHz === undefined ? end : PANORAMA_TUPLE.endHz });
-    return Object.freeze({
-      frame: Object.freeze({ source: 'hardware', receiver: 'MAIN', freshness: 'fresh',
-        startHz: start, endHz: end, normalizedBins: Object.freeze([0, 0.5, 1]) }),
-      frameMode: 0, acceptedSequence: sequence,
-      passband: Object.freeze(translatedDeltaHz === undefined
-        ? { state: 'current', tuple }
-        : { state: 'stale', translated: true, tuple }),
-    }) as ScopeDisplayProjection;
+    emitFrame({
+      startFreq: translatedDeltaHz === undefined ? start : PANORAMA_TUPLE.startHz,
+      endFreq: translatedDeltaHz === undefined ? end : PANORAMA_TUPLE.endHz,
+      sequence,
+    });
+    return Object.freeze(translatedDeltaHz === undefined
+      ? { state: 'current' as const, tuple }
+      : { state: 'stale' as const, translated: true as const, tuple });
   }
-  function mountPanorama(initial: ScopeDisplayProjection) {    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
+  function mountPanorama(initial: ReturnType<typeof panoramaProjection>) {
+    const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
+    harnessLeases.push(mockRuntime.acquireHardwareScope());
     const target = mountPanel({
-      get scopeProjection() { return props.get('projection'); },
+      get scopeRegion() {
+        return Object.freeze({ passband: props.get('projection'),
+          demanded: props.get('demanded') as boolean, setDemand: () => {} });
+      },
       get scopeDemanded() { return props.get('demanded') as boolean; },
     });
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000 });
     return { target, props };
   }
   const recordedShifts = (): number[] =>

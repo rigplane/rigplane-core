@@ -68,8 +68,6 @@ harness.tx = { ...IDLE_TX, ...fixture.tx };
 harness.modGuard = fixture.modGuard ?? { visible: false, sourceLabel: null };
 harness.audioRuntime = { ...DEFAULT_AUDIO_RUNTIME, ...fixture.audioRuntime };
 harness.calls = [];
-harness.frameAuthority = null;
-harness.frameEvidence = null;
 harness.presentationAcquires = [];
 
 // The theme layer is opt-in exactly like the sibling entries: the default

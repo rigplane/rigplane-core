@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fixtures from './fixtures/scope-wire.json';
 import { ScopeStream } from '../scope-stream';
 import type { ScopeMessageSource } from '../scope-stream';
-import { scopeSlotKey } from '../../adapters/scope-adapter';
+import { scopeSlotKey } from '../adapters/scope-adapter';
 
 function source() {
   const sinks = new Set<(buffer: ArrayBuffer) => void>();
@@ -48,8 +48,9 @@ describe('ScopeStream', () => {
     }
     expect(writes).toBe(2); // initial null + first geometry
     expect(sink).toHaveBeenCalledTimes(100);
-    expect(stream.receipt).toBeGreaterThanOrEqual(101);
+    expect(stream.receipt).toBe(100);
     input.emit(fixtures.audio);
+    expect(stream.receipt).toBe(101);
     expect(stream.latest(scopeSlotKey('scope-1', 0))?.seq).toBe(99);
     expect(stream.latest(scopeSlotKey('scope-1', 1))?.seq).toBe(17);
     unwatch(); stream.dispose();

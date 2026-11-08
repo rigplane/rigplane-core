@@ -51,7 +51,10 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
     acquireHardwareScope: lifecycle.acquire,
     releaseHardwareScope: lifecycle.release,
     scope: {
-      subscribeHardware: vi.fn(() => () => {}),
+      stream: vi.fn(() => ({
+        sourceId: 'scope',
+        subscribe: vi.fn(() => () => {}),
+      })),
       subscribeHealth: vi.fn(() => () => {}),
     },
   },
@@ -123,7 +126,7 @@ describe('DualSdrFaceSkin production entrypoint', () => {
   );
 
   it('uses the canonical hardware scope and grants no command callback', () => {
-    expect(source).toContain('runtime.scope.subscribeHardware(listener)');
+    expect(source).toContain("runtime.scope.stream('hardware').subscribe(listener)");
     expect(source).toContain('runtime.scope.subscribeHealth');
     expect(source).toContain("runtime.acquireHardwareScope('DualSdrFace')");
     expect(source).toContain('runtime.releaseHardwareScope(lease)');

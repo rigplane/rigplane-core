@@ -9,10 +9,10 @@
 
   interface Props {
     receiver: PeerSplitReceiverDisplay;
-    normalizedBins?: readonly number[];
+    pixels?: Uint8Array | null;
   }
 
-  let { receiver, normalizedBins }: Props = $props();
+  let { receiver, pixels = null }: Props = $props();
 
   const envelopes = $derived(filterEnvelopes(receiver));
 </script>
@@ -23,8 +23,8 @@
   </span>
   <div class="scope-plot">
     <LcdAfFft
-      {normalizedBins}
-      inputState={fftInputState(receiver, normalizedBins)}
+      {pixels}
+      inputState={fftInputState(receiver, pixels)}
       receiverActivity={receiver.activity}
     />
     <svg

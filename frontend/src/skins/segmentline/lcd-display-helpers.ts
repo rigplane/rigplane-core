@@ -136,12 +136,12 @@ export function filterEnvelopes(receiver: PeerSplitReceiverDisplay): FilterEnvel
 
 export function fftInputState(
   receiver: PeerSplitReceiverDisplay,
-  normalizedBins: readonly number[] | undefined,
+  pixels: Uint8Array | null | undefined,
 ): LcdAfFftInputState {
   if (receiver.spectrum === 'unsupported') return 'unsupported';
   if (receiver.spectrum === 'unknown') return 'unknown';
   if (receiver.spectrum === 'inactive') return 'missing';
-  return normalizedBins?.length ? 'live' : 'missing';
+  return pixels?.length ? 'live' : 'missing';
 }
 
 export function notchIndicators(

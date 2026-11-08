@@ -66,7 +66,7 @@ function hardwareFrame(overrides: Partial<LcdSpectrumFrame> = {}): LcdSpectrumFr
     freshness: 'fresh',
     startHz: 14_200_000,
     endHz: 14_300_000,
-    normalizedBins: [0.1, 0.6, 0.25, 0.8],
+    pixels: Uint8Array.from([0.1, 0.6, 0.25, 0.8], value => Math.round(value * 255)),
     ...overrides,
   };
 }
@@ -81,13 +81,13 @@ afterEach(() => {
 
 function render(
   displayModel: PeerSplitDisplayModel = model,
-  normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>,
+  pixelsByReceiver?: Partial<Record<'MAIN' | 'SUB', Uint8Array>>,
   rfFrame?: unknown,
 ): HTMLElement {
   const target = document.createElement('div');
   document.body.appendChild(target);
   component = mount(PanadapterDisplay, {
-    target, props: { model: displayModel, normalizedFftBins, rfFrame },
+    target, props: { model: displayModel, rfFrame },
   });
   return target;
 }
@@ -157,10 +157,10 @@ describe('PanadapterDisplay', () => {
     const frame = hardwareFrame();
     const target = render(model, undefined, frame);
 
-    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(frame.normalizedBins.length);
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength([...frame.pixels].length);
     expect([...target.querySelectorAll('[data-rf-bin]')]
       .map((node) => Number(node.getAttribute('data-rf-sample'))))
-      .toEqual(frame.normalizedBins);
+      .toEqual([...frame.pixels]);
     expect(target.querySelector('.rf-carrier')?.getAttribute('data-carrier-hz'))
       .toBe('14250000');
     expect(target.querySelector('.rf-passband')?.getAttribute('data-passband-mode'))
@@ -217,10 +217,12 @@ describe('PanadapterDisplay', () => {
     component = null;
     document.body.innerHTML = '';
 
-    const live = render(model, { MAIN: [0.1, 0.5, 0.9] });
-    expect(live.querySelectorAll('[data-testid="lcd-af-fft"]')).toHaveLength(1);
-    expect(live.querySelector('[data-testid="lcd-af-fft"]')
-      ?.getAttribute('data-fft-mode')).toBe('live');
+    const rfOnly = render(model, undefined, hardwareFrame());
+    expect(rfOnly.querySelectorAll('[data-testid="lcd-af-fft"]')).toHaveLength(1);
+    // The AF inset carries no frame path in the panadapter variant: it
+    // stays safe-empty rather than fabricating an AF trace.
+    expect(rfOnly.querySelector('[data-testid="lcd-af-fft"]')
+      ?.getAttribute('data-fft-mode')).toBe('safe-empty');
   });
 
   it('keeps AF geometry safe-empty when active receiver identity is unknown', () => {

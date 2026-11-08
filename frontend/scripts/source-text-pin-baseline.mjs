@@ -202,7 +202,6 @@ export const SOURCE_TEXT_PIN_BASELINE = Object.freeze([
   "src/lib/runtime/__tests__/frontend-runtime.isolated.test.ts::FrontendRuntime RX LIVE intent > keeps panel commands behind the runtime authority",
   "src/lib/runtime/__tests__/scope-controller.test.ts::ScopeController > keeps default construction inert and resolves transport on first start",
   "src/lib/runtime/__tests__/scope-controller.test.ts::ScopeController > keeps the panel on one demand lease without transport or hardware fallback",
-  "src/lib/runtime/__tests__/scope-frame-host.test.ts::ScopeFrameHost MOR-2326 lifecycle > keeps timers, transport, wall clock, freshness inputs, and fallback out of the host",
   "src/lib/runtime/adapters/__tests__/band-adapter.test.ts::band determinism in (state, caps) (MOR-1294) > the shipped band-plan module reads no store",
   "src/lib/runtime/adapters/__tests__/conformance/fixture-provenance.guard.test.ts::fixture provenance staleness guard (MOR-1557) > profileName > capabilities: has every field Capabilities now requires",
   "src/lib/runtime/adapters/__tests__/conformance/fixture-provenance.guard.test.ts::fixture provenance staleness guard (MOR-1557) > profileName > state.%s: carries no receiver field ReceiverStatePublic no longer defines",

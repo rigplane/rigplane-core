@@ -2,7 +2,6 @@
   "$schema": {
     "_comment": "Pilot locale (ja-JP). Mirrors every translatable key from en-US.json. Brand names (RigPlane, Tower, rigctld, Hamlib, CI-V) and radio abbreviations (VFO, CW, SSB, USB, LSB, AM, FM, DATA, TX, RX, RIT, XIT, DSP, MHz, kHz, Hz, dB, dBm, etc.) MUST stay verbatim in English even inside Japanese sentences. Per-locale reserved terms follow strategy glossary §2.D ja-JP: callsign=コールサイン, squelch=スケルチ, band plan=バンドプラン. Polite form (です/ます) throughout. Half-width digits, Latin letters and units; full-width Japanese punctuation. See ../CONTRIBUTING.md."
   },
-
   "common.action.save": "保存",
   "common.action.cancel": "キャンセル",
   "common.action.ok": "OK",
@@ -12,12 +11,10 @@
   "common.action.copy": "コピー",
   "common.action.copied": "コピーしました",
   "common.dialog.confirmTitle": "確認",
-
   "core.app.backendError": "サーバーエラー: {detail}",
   "core.app.serverUnreachable": "何度試してもサーバーに接続できません。接続を確認して手動で再読み込みしてください。",
   "core.app.retryIndicator": "再試行 {attempt}/{max}、次の試行まで {seconds} 秒…",
   "core.app.presentationError": "このレイアウトを読み込めませんでした。無線機との接続には影響ありません。ページを再読み込みして再試行してください。",
-
   "core.rxTx.rf.unconfirmed": "送信が確認されていません",
   "core.rxTx.fault.reset.action": "TX フォルトを閉じる",
   "core.rxTx.fault.reset.note": "フォルトを消去してキー操作を再度有効にします。送信は行いません。",
@@ -42,7 +39,6 @@
   "core.rxTx.fault.reason.pttNotAuthoritative": "無線機からの最初の確認済み PTT の読み取りを待っています",
   "core.rxTx.fault.reason.noConfirmedPttOff": "キー操作を開始できる確認済みの PTT オフの読み取りがまだありません",
   "core.rxTx.fault.reason.authorityEpochMismatch": "PTT の読み取り値は以前の制御セッションのものです",
-
   "core.statusbar.connection.connected": "接続済み",
   "core.statusbar.connection.notConnected": "未接続",
   "core.statusbar.connection.connectingTo": "{radio} に {transport} で接続中…",
@@ -102,7 +98,6 @@
   "core.statusbar.nowPlaying.band": "バンド:",
   "core.statusbar.nowPlaying.details": "詳細:",
   "core.statusbar.nowPlaying.source": "ソース:",
-
   "core.settings.title": "設定",
   "core.settings.dialogLabel": "設定",
   "core.settings.language.label": "言語",
@@ -129,7 +124,6 @@
   "core.settings.workspace.importPasteLabel": "またはワークスペース JSON を貼り付け",
   "core.settings.workspace.importButton": "インポート",
   "core.settings.workspace.importRejectedTitle": "インポートは拒否されました",
-
   "core.overlay.poweredOff.label": "トランシーバーの電源が切れています",
   "core.overlay.poweredOff.notAnsweringLabel": "トランシーバーが応答しません — 電源が切れている可能性があります",
   "core.overlay.poweredOff.notConnectedLabel": "トランシーバーが接続されていません — シリアルポートを開けませんでした",
@@ -144,12 +138,18 @@
   "core.overlay.scopeDisconnected": "スコープが切断されました — 再接続中…",
   "core.overlay.scopeOutOfRange": "周波数が固定スコープの範囲外です（{start}–{end} MHz）",
   "core.overlay.scopeSwitchToCtr": "CTR に切り替え",
+  "core.scope.presets": "スコープのプリセット",
+  "core.scope.preset.follow": "VFO に追従",
+  "core.scope.zoomIn": "パノラマ表示を拡大",
+  "core.scope.zoomOut": "パノラマ表示を縮小",
+  "core.scope.hatch.outOfRange": "固定スコープ範囲外の周波数",
+  "core.scope.hatch.noPixels": "スコープデータなし",
+  "core.scope.hatch.widerThanCoverage": "表示範囲がスコープのカバー範囲を超えています",
   "core.overlay.scopeTransmitting": "送信中 — 送信中は無線機からパノラマが送られません",
   "core.overlay.audioLinkLost": "音声リンクが切断されました — 再接続中…",
   "core.overlay.rxSilence": "ラジオからの音声がありません: サーバーはデジタル無音のみを受信しています。macOS では、サーバーを起動するプログラムにマイクの使用を許可するか、ラジオの USB オーディオ出力を確認してください。Windows では、Windows のサウンド設定でこの入力の「オーディオ拡張」をオフにしてください。",
   "core.overlay.rxSourceLow": "無線機からの音声が小さいです。無線機の音声出力レベルを上げてください。",
   "core.overlay.rxSourceLowMenu": "無線機からの音声が小さいです。無線機の音声出力レベルを上げてください：{menu}。",
-
   "core.diagnostics.sendReport.title": "診断レポートを送信",
   "core.diagnostics.sendReport.confirm": "レポートを送信",
   "core.diagnostics.attachedFiles.one": "ファイル 1 件を添付",
@@ -190,13 +190,11 @@
   "core.diagnostics.sendReport.error.uploadFailed": "アップロードに失敗しました: {detail}",
   "core.diagnostics.sendReport.error.network": "ネットワークエラーです。接続を確認して再試行してください。",
   "core.diagnostics.sendReport.error.unexpected": "予期しないエラー: {detail}",
-
   "core.installPrompt.install": "インストール",
   "core.installPrompt.dismiss": "閉じる",
   "core.installPrompt.iosInstruction": "📤 をタップして「ホーム画面に追加」を選択",
   "core.installPrompt.androidInstruction": "⋮ メニュー → 「アプリをインストール」",
   "core.installPrompt.desktopInstruction": "最適な体験のためにブラウザのメニューからインストールしてください",
-
   "core.toast.notificationsLabel": "通知",
   "core.toast.dismiss": "通知を閉じる",
   "core.toast.licenseExpired": "ライセンスの有効期限が切れました。続けるには再アクティベートしてください。",
@@ -221,9 +219,7 @@
   "core.toast.rxAudioStationDeviceNeeded": "無線機の音声デバイスを自動でペアリングできませんでした。ステーションの音声デバイスはステーションのコンピューターで選択する必要があります。ステーションを運用している方が音声デバイス設定から選択できます。",
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
-
   "core.memory.open": "メモリー",
-
   "core.mobile.nav.label": "トランシーバーのナビゲーション",
   "core.mobile.nav.tab.vfo": "VFO",
   "core.mobile.nav.tab.spectrum": "スペクトラム",
@@ -258,7 +254,6 @@
   "core.mobile.tune.upFast": "高速で周波数を上げる",
   "core.spectrum.autoStep.onTitle": "自動ステップはオン — ステップは運用モードに従います。クリックすると現在のステップを固定して追従を停止します。",
   "core.spectrum.autoStep.offTitle": "自動ステップはオフ — ステップは手動設定のままです。クリックすると再度オンになり、モードのデフォルトのステップに切り替わります。",
-
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.dataMode.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.agcPanel.pendingAnnouncement": "保留中、まだ確認されていません",
@@ -266,10 +261,8 @@
   "core.dsp.notch.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.modePanel.modInputAria": "変調入力ソース",
   "core.modePanel.pendingAnnouncement": "保留中、まだ確認されていません",
-
   "core.antenna.blocked.transmitterUnconfirmed": "送信機がオフであることを確認するのを待っています",
   "core.antenna.blocked.tunerNotReady": "チューナーがアイドルであることを確認するのを待っています",
-
   "core.vfo.groupLabel": "VFO",
   "core.vfo.receiverGroupLabel": "受信機 {receiver}",
   "core.vfo.radioWideGroupLabel": "無線機全体の操作",
@@ -296,7 +289,6 @@
   "core.vfo.dualWatch.label": "Dual watch",
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
-
   "core.band.tx.defaultPermit.unread": "{frequency} での TX:",
   "core.band.tx.defaultPermit.status.allowed": "許可",
   "core.band.tx.defaultPermit.status.denied": "禁止",
@@ -311,7 +303,6 @@
   "core.band.tx.caveat.denied": "この周波数では TX が許可されていますが、実際の周波数での送信は許可されていません: {reason}",
   "core.band.tx.caveat.unknown": "この周波数では TX が許可されていますが、実際の送信周波数は未確認です: {reason}",
   "core.band.tx.defaultPermit.label": "{frequency} での TX: {status}",
-
   "core.vfo.ops.equalize": "VFO を等しくする",
   "core.vfo.ops.swap": "VFO を入れ替え",
   "core.vfo.splitDigest.rx": "RX {frequency}",
@@ -322,7 +313,6 @@
   "core.vfo.split.unknownReason": "無線機はまだ split の状態を確認していません。",
   "core.vfo.dualWatch.unknownReason": "無線機はまだ dual watch の状態を確認していません。",
   "core.vfo.ops.identityUnknownReason": "無線機はどちらの VFO が A でどちらが B かをまだ確認していません — 先に Select VFO A または Select VFO B を押してください。",
-
   "core.filter.passband.pendingChip": "保留中 {target} Hz",
   "core.filter.passband.control.pbtInner": "PBT inner",
   "core.filter.passband.control.pbtOuter": "PBT outer",
@@ -337,30 +327,24 @@
   "core.rfFrontEnd.preamp.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.dsp.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.repeater.pendingAnnouncement": "保留中、まだ確認されていません",
-
   "core.txGuard.modInputNotLan": "MOD 入力が {source} のため LAN 経由の音声は送信 (TX) されません。",
   "core.txGuard.modInputNotLanUnknown": "MOD 入力が LAN ではないため LAN 経由の音声は送信 (TX) されません。",
   "core.txGuard.setLan": "LAN に設定",
   "core.txGuard.dismiss": "MOD 入力の警告を閉じる",
   "core.txGuard.autoLanLabel": "ウェブからの送信 (TX) 時に MOD 入力を自動的に LAN へ切り替える",
   "core.txGuard.autoLanHelp": "ウェブから TX を開始すると、アクティブなモードグループの MOD 入力が自動的に LAN に切り替わり、TX 終了後に元の設定へ戻ります。TX 中に接続が切れた場合、次回接続時に復元されるまで LAN のままになります。",
-
   "core.error.transport.timeout.title": "接続がタイムアウトしました",
   "core.error.transport.timeout.body": "{host} から応答がありません。トランシーバーの電源が入っており、到達可能であることを確認してください。",
   "core.error.literalBrace.example": "プレースホルダーを参照するには '{'name} と書きます。",
-
   "core.disabledReason.missing": "このトランシーバーではサポートされていません",
   "core.disabledReason.unobserved": "まだ観測されていません",
   "core.disabledReason.mutuallyExclusiveControl": "無効: 別の制御がアクティブです",
   "core.disabledReason.receiverLacksControl": "このレシーバーでは使用できません",
-
   "glossary.callsign": "コールサイン",
   "glossary.squelch": "スケルチ",
   "glossary.bandPlan": "バンドプラン",
-
   "core.cwKeyer.breakIn.blocked": "TX 不許可: {reason}",
   "core.cwKeyer.breakIn.label": "ブレークイン",
-
   "core.cwKeyer.breakInDelay.valueText.unavailable": "ブレークイン遅延は利用できません",
   "core.cwKeyer.breakInDelay.valueText.draft": "下書き {draft}; 最終確定 {confirmed}",
   "core.cwKeyer.breakInDelay.valueText.requested": "要求 {displayed}; 最終確定 {confirmed}",

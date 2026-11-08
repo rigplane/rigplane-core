@@ -14,10 +14,9 @@
 
   interface Props {
     model: PeerSplitDisplayModel;
-    normalizedFftBins?: Partial<Record<'MAIN' | 'SUB', readonly number[]>>;
   }
 
-  let { model, normalizedFftBins = {} }: Props = $props();
+  let { model }: Props = $props();
 
   const topLeft: readonly LcdFlagRailItem[] = $derived([
     { label: 'VOX', icon: 'VOX', field: model.top.vox },
@@ -131,7 +130,6 @@
         <LcdLinearSMeter field={receiver.sMeter} />
         <LcdFilterScope
           {receiver}
-          normalizedBins={normalizedFftBins[receiver.receiver]}
         />
       </section>
     {/each}

@@ -2,7 +2,6 @@
   "$schema": {
     "_comment": "Source catalog for RigPlane Core. See CONTRIBUTING.md for the contributor flow. Keys follow scope.subscope.verbOrNoun (lowerCamelCase, ASCII, [a-zA-Z0-9.], <=80 chars). Interpolation uses {name}. A literal opening brace is written as '{'. Plurals use CLDR suffixes (.zero/.one/.two/.few/.many/.other). Glossary tokens (VFO/CW/MHz/brand names like RigPlane, Tower, rigctld, Hamlib) must never be translated — see frontend/src/lib/i18n/CONTRIBUTING.md sections 'Non-translatable tokens' and 'Glossary tokens'."
   },
-
   "common.action.save": "Save",
   "common.action.cancel": "Cancel",
   "common.action.ok": "OK",
@@ -12,12 +11,10 @@
   "common.action.copy": "Copy",
   "common.action.copied": "Copied",
   "common.dialog.confirmTitle": "Confirm",
-
   "core.app.backendError": "Backend error: {detail}",
   "core.app.serverUnreachable": "Server unreachable after multiple attempts. Check connection and reload manually.",
   "core.app.retryIndicator": "Retry {attempt}/{max}, next attempt in {seconds}s…",
   "core.app.presentationError": "This layout failed to load. The radio connection is unaffected — reload the page to try again.",
-
   "core.statusbar.connection.connected": "Connected",
   "core.statusbar.connection.notConnected": "Not Connected",
   "core.statusbar.connection.connectingTo": "Connecting to {radio} on {transport}…",
@@ -77,7 +74,6 @@
   "core.statusbar.nowPlaying.band": "Band:",
   "core.statusbar.nowPlaying.details": "Details:",
   "core.statusbar.nowPlaying.source": "Source:",
-
   "core.settings.title": "SETTINGS",
   "core.settings.dialogLabel": "Settings",
   "core.settings.language.label": "Language",
@@ -85,7 +81,6 @@
   "core.settings.language.choose": "Choose language",
   "core.settings.language.srHint": "Selecting a language updates the UI immediately and is saved on this device.",
   "core.settings.language.devLocaleSuffix": "developer pseudo-locale",
-
   "core.settings.workspace.title": "Workspace",
   "core.settings.workspace.layoutLabel": "Layout",
   "core.settings.workspace.designLanguageLabel": "Design language",
@@ -105,7 +100,6 @@
   "core.settings.workspace.importPasteLabel": "Or paste workspace JSON",
   "core.settings.workspace.importButton": "Import",
   "core.settings.workspace.importRejectedTitle": "Import rejected",
-
   "core.overlay.poweredOff.label": "Radio is powered off",
   "core.overlay.poweredOff.notAnsweringLabel": "Radio does not answer — it may be switched off",
   "core.overlay.poweredOff.notConnectedLabel": "Radio not connected — the serial port did not open",
@@ -120,12 +114,18 @@
   "core.overlay.scopeDisconnected": "Scope disconnected — reconnecting…",
   "core.overlay.scopeOutOfRange": "Frequency outside the fixed scope edges ({start}–{end} MHz)",
   "core.overlay.scopeSwitchToCtr": "Switch to CTR",
+  "core.scope.presets": "Scope presets",
+  "core.scope.preset.follow": "Follow VFO",
+  "core.scope.zoomIn": "Zoom in the panorama view",
+  "core.scope.zoomOut": "Zoom out the panorama view",
+  "core.scope.hatch.outOfRange": "Frequency outside the fixed scope edges",
+  "core.scope.hatch.noPixels": "No scope data",
+  "core.scope.hatch.widerThanCoverage": "View wider than the delivered scope coverage",
   "core.overlay.scopeTransmitting": "Transmitting — the radio sends no panorama during transmit",
   "core.overlay.audioLinkLost": "Audio link lost — reconnecting…",
   "core.overlay.rxSilence": "No audio from the radio: the server receives only digital silence. On macOS, give Microphone permission to the program that starts the server, or check the radio's USB audio output. On Windows, turn off \"Audio enhancements\" for this input in Windows Sound settings.",
   "core.overlay.rxSourceLow": "Radio audio is quiet. Raise the radio's audio output level.",
   "core.overlay.rxSourceLowMenu": "Radio audio is quiet. Raise the radio's audio output level: {menu}.",
-
   "core.diagnostics.sendReport.title": "Send Diagnostic Report",
   "core.diagnostics.sendReport.confirm": "Send Report",
   "core.diagnostics.attachedFiles.one": "1 file attached",
@@ -166,13 +166,11 @@
   "core.diagnostics.sendReport.error.uploadFailed": "Upload failed: {detail}",
   "core.diagnostics.sendReport.error.network": "Network error. Check your connection and try again.",
   "core.diagnostics.sendReport.error.unexpected": "Unexpected error: {detail}",
-
   "core.installPrompt.install": "Install",
   "core.installPrompt.dismiss": "Dismiss",
   "core.installPrompt.iosInstruction": "Tap 📤 then \"Add to Home Screen\"",
   "core.installPrompt.androidInstruction": "Tap ⋮ menu → \"Install app\"",
   "core.installPrompt.desktopInstruction": "Install via browser menu for the best experience",
-
   "core.toast.notificationsLabel": "Notifications",
   "core.toast.dismiss": "Dismiss notification",
   "core.toast.licenseExpired": "Your license has expired. Reactivate to continue.",
@@ -197,9 +195,7 @@
   "core.toast.rxAudioStationDeviceNeeded": "The radio's audio devices could not be paired automatically. The station's audio device has to be chosen on the station computer — whoever runs the station can do it in its audio device settings.",
   "core.toast.txAudioStopped": "TX audio stopped — the transmission ended early",
   "core.toast.unknown": "Something went wrong. Try again later.",
-
   "core.memory.open": "Memory",
-
   "core.mobile.nav.label": "Radio navigation",
   "core.mobile.nav.tab.vfo": "VFO",
   "core.mobile.nav.tab.spectrum": "Spectrum",
@@ -232,13 +228,11 @@
   "core.mobile.tune.downStep": "Tune down one step",
   "core.mobile.tune.upStep": "Tune up one step",
   "core.mobile.tune.upFast": "Tune up fast",
-
   "core.spectrum.autoStep.onTitle": "Auto step is on — the tuning step follows the operating mode. Click to lock the current step and stop following.",
   "core.spectrum.autoStep.offTitle": "Auto step is off — the tuning step stays at your manual setting. Click to turn it back on and snap to the mode's default step.",
   "core.spectrum.more": "More",
   "core.spectrum.toggleOff": "Off",
   "core.spectrum.toggleOn": "On",
-
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.modInputAria": "Modulation input source",
   "core.modePanel.pendingAnnouncement": "Pending, not yet confirmed",
@@ -246,7 +240,6 @@
   "core.agcPanel.pendingAnnouncement": "Pending, not yet confirmed",
   "core.rfFrontEnd.att.pendingAnnouncement": "Pending, not yet confirmed",
   "core.dsp.notch.pendingAnnouncement": "Pending, not yet confirmed",
-
   "core.vfo.groupLabel": "VFOs",
   "core.vfo.receiverGroupLabel": "Receiver {receiver}",
   "core.vfo.radioWideGroupLabel": "Radio-wide controls",
@@ -287,7 +280,6 @@
   "core.vfo.dualWatch.label": "Dual watch",
   "core.vfo.state.on": "on",
   "core.vfo.state.off": "off",
-
   "core.vfo.ops.equalize": "Equalize VFOs",
   "core.vfo.ops.swap": "Swap VFOs",
   "core.vfo.splitDigest.rx": "RX {frequency}",
@@ -298,7 +290,6 @@
   "core.vfo.split.unknownReason": "The radio has not confirmed the split state yet.",
   "core.vfo.dualWatch.unknownReason": "The radio has not confirmed the dual watch state yet.",
   "core.vfo.ops.identityUnknownReason": "The radio has not confirmed which VFO is A and which is B yet — press Select VFO A or Select VFO B first.",
-
   "core.band.tx.reason.outOfBand": "your transmit frequency is outside the configured transmit ranges — tune the transmitting VFO into an allowed band",
   "core.band.tx.reason.targetUnknown": "the radio has not confirmed the frequency it would transmit on",
   "core.band.tx.reason.rangesNotConfigured": "no transmit ranges are configured for this radio, so permission cannot be checked here",
@@ -313,16 +304,13 @@
   "core.band.tx.defaultPermit.status.denied": "denied",
   "core.band.entry.reason.receiverUnconfirmed": "active receiver not confirmed — no VFO to send the frequency to",
   "core.band.entry.reason.boundsUnknown": "tuning limits unknown — entry cannot be validated",
-
   "core.cwKeyer.breakIn.blocked": "TX not permitted: {reason}",
   "core.cwKeyer.breakIn.label": "Break-in",
-
   "core.cwKeyer.breakInDelay.valueText.unavailable": "Break-in delay unavailable",
   "core.cwKeyer.breakInDelay.valueText.draft": "Draft {draft}; last confirmed {confirmed}",
   "core.cwKeyer.breakInDelay.valueText.requested": "Requested {displayed}; last confirmed {confirmed}",
   "core.cwKeyer.breakInDelay.valueText.outcome": "Confirmed {confirmed}; request {requested} {phase}",
   "core.cwKeyer.breakInDelay.valueText.confirmed": "Confirmed {confirmed}",
-
   "core.rxTx.blocked.permitUnknown": "your transmit frequency's permission has not been confirmed",
   "core.rxTx.blocked.fault": "an unresolved TX fault is blocking the key",
   "core.rxTx.blocked.busy": "a TX session is already in progress",
@@ -354,23 +342,19 @@
   "core.rxTx.fault.reason.pttNotAuthoritative": "waiting for the first confirmed PTT reading from the radio",
   "core.rxTx.fault.reason.noConfirmedPttOff": "no confirmed PTT-off reading to key from yet",
   "core.rxTx.fault.reason.authorityEpochMismatch": "the PTT reading belongs to an earlier control session",
-
   "core.disabledReason.missing": "Not supported by this radio",
   "core.disabledReason.unobserved": "Not yet observed",
   "core.disabledReason.mutuallyExclusiveControl": "Disabled: another control is active",
   "core.disabledReason.receiverLacksControl": "Not available on this receiver",
-
   "core.txGuard.modInputNotLan": "MOD input is {source}, not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.modInputNotLanUnknown": "MOD input is not LAN — your voice from the web will not be transmitted (TX).",
   "core.txGuard.setLan": "Set LAN",
   "core.txGuard.dismiss": "Dismiss MOD input warning",
   "core.txGuard.autoLanLabel": "Auto-switch MOD input to LAN for web TX",
   "core.txGuard.autoLanHelp": "When TX starts from the web, the active mode group's MOD input is switched to LAN and restored after TX. If the connection drops mid-TX, the input stays on LAN until the next session restores it.",
-
   "core.error.transport.timeout.title": "Connection Timed Out",
   "core.error.transport.timeout.body": "No response from {host}. Check that the radio is powered on and reachable.",
   "core.error.literalBrace.example": "Use '{'name} to refer to a placeholder.",
-
   "glossary.callsign": "callsign",
   "glossary.squelch": "squelch",
   "glossary.bandPlan": "band plan"
