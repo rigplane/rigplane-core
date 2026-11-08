@@ -1510,6 +1510,12 @@
       ? { source, receiver: receiver.receiver, providerGeneration: stateGeneration }
       : null;
   });
+  let scopeLeaseQualified = $derived(scopeAuthority !== null || (
+    runtime.caps?.vfoReadback === 'none'
+      && Number.isSafeInteger(runtime.state?.providerGeneration)
+      && (runtime.state?.providerGeneration ?? -1) >= 0
+      && runtime.state?.providerGeneration === runtime.caps?.providerGeneration
+  ));
 
   $effect(() => {
     const source = scopeFrameSource;
@@ -1546,7 +1552,7 @@
   // frames while every receiver-dependent projection stays closed.
   $effect(() => {
     const source = scopeFrameSource;
-    if (source === undefined || (managedScope && !scopeDemanded)) return;
+    if (source === undefined || (managedScope && (!scopeDemanded || !scopeLeaseQualified))) return;
     const resource = source === 'audio-fft' ? 'audio-fft' : 'hardware-scope';
     const lease = presentationResources.acquire(resource, 'SemanticRadioSurfaces.readonlyDisplay');
     let active = true;
