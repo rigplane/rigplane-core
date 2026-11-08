@@ -244,3 +244,122 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
             await asyncio.gather(closing, return_exceptions=True)
         await radio.disconnect()
         await sim.stop()
+
+
+@pytest.mark.parametrize("pending_stage", [0, 1, 2])
+@pytest.mark.timeout(10)
+async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
+    pending_stage, virtual_clock, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    from rigplane.web.radio_poller import (
+        PttOff,
+        SetScopeMode,
+        SetScopeSpan,
+        SwitchScopeReceiver,
+    )
+    from rigplane.web.scope_sources import WebRadioScopeWriter
+
+    server = WebServer(_scope_radio(), WebConfig(radio_model="IC-7610"))
+    source = RadioScopeSource(
+        resolve_radio_profile(model="ic7610"), WebRadioScopeWriter(server)
+    )
+    server._radio_scope_source = source
+    server.scope_hub.register("radio", source)
+    listener = MagicMock()
+    listener.wait_closed = AsyncMock()
+    server._server = listener
+    events = []
+    futures = []
+    replacement_commands = []
+    replacing = False
+    put_ordered = server.command_queue.put_ordered
+
+    def enqueue(command, **kwargs):
+        put_ordered(command, **kwargs)
+        future = kwargs.get("future")
+        if future is None:
+            return
+        futures.append(future)
+        if replacing:
+            replacement_commands.append(command)
+        if not replacing or len(replacement_commands) <= pending_stage:
+            future.set_result(None)
+
+    monkeypatch.setattr(server.command_queue, "put_ordered", enqueue)
+    poller = MagicMock()
+    poller.stop.side_effect = lambda: events.append("poller-stopped")
+
+    async def drain(*, timeout):
+        assert events[-1] == "client-teardown"
+        entries = server.command_queue.drain_entries()
+        assert any(isinstance(entry.command, PttOff) for entry in entries)
+        events.append("tx-drain")
+
+    async def restore():
+        assert events[-1] == "tx-drain"
+        events.append("scope-restored")
+
+    poller.drain_tx_safety_commands = AsyncMock(side_effect=drain)
+    poller.restore_scope_after_shutdown = AsyncMock(side_effect=restore)
+    server._radio_poller = poller
+    handler = ScopeHandler(Socket(), server)
+    server.register_scope_handler(handler)
+    request = encode_scope_subscription(
+        Subscription("radio", 0, View(14_090_000, 14_110_000), 100, 10)
+    )
+    await handler._handle_control(request)
+    assert handler._streams
+    server.command_queue.drain_entries()
+    poller.stop()
+    replacing = True
+    replacement = asyncio.create_task(handler._handle_control(request))
+
+    async def client():
+        try:
+            await replacement
+            await asyncio.Event().wait()
+        finally:
+            server.command_queue.put_ordered(PttOff())
+            events.append("client-teardown")
+
+    client_task = asyncio.create_task(client())
+    server._client_tasks.add(client_task)
+    stopping = None
+    try:
+        await virtual_clock.elapse(0)
+        assert not replacement.done()
+        assert [type(command) for command in replacement_commands] == [
+            SwitchScopeReceiver, SetScopeMode, SetScopeSpan
+        ][: pending_stage + 1]
+        pending = futures[-1]
+        assert not pending.done()
+        stopping = asyncio.create_task(server.stop())
+        await virtual_clock.elapse(0.5)
+        assert stopping.done(), "pending replacement view prevented shutdown drain"
+        await stopping
+        assert pending.cancelled()
+        assert replacement.done()
+        assert client_task.done()
+        assert len(replacement_commands) == pending_stage + 1
+        assert all(future.done() for future in futures)
+        assert not server._scope_command_futures
+        assert not server.command_queue.has_commands
+        assert not handler._streams
+        assert not source._active
+        assert not source._callbacks
+        assert not server._scope_enabled
+        assert not server._scope_enable_failed
+        assert server._server is None
+        listener.close.assert_called_once()
+        listener.wait_closed.assert_awaited_once()
+        assert events[-3:] == ["client-teardown", "tx-drain", "scope-restored"]
+    finally:
+        for future in futures:
+            if not future.done():
+                future.set_exception(RuntimeError("test shutdown recovery"))
+        if stopping is None:
+            stopping = asyncio.create_task(server.stop())
+        await virtual_clock.elapse(0)
+        await asyncio.gather(stopping, client_task, replacement, return_exceptions=True)
