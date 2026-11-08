@@ -11,7 +11,9 @@ async def test_sender_closes_failed_connection():
     ws = AsyncMock()
     ws.send_binary.side_effect = OSError("closed")
     subscription = AsyncMock(spec=HubSubscription)
-    grant = GrantedSubscription("radio", None, View(14_000_000, 14_100_000), None, 2, 30)
+    grant = GrantedSubscription(
+        "radio", None, View(14_000_000, 14_100_000), None, 2, 30
+    )
     subscription.receive_delivery.return_value = (grant, b"frame")
     handler = ScopeHandler(ws)
     await handler._sender(subscription, grant.width)
