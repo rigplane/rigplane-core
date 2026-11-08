@@ -828,6 +828,37 @@ describe('coherent RF passband display', () => {
     expect(Object.isFrozen(tuple(current))).toBe(true); expect(current).not.toHaveProperty('frame');
   });
 
+  it.each([false, true])('retires unchanged pixel-less geometry (outOfRange=%s)', (outOfRange) => {
+    const input = fixture(); const current = project(input);
+    receipt(input, 2, { pixels: new Uint8Array(), outOfRange });
+    expect(input.frame!.geometry).toMatchObject({ hasPixels: false, outOfRange });
+    expect(project(input, current).display.state).toBe('unknown');
+    expect(project(input).display.state).toBe('unknown');
+  });
+
+  it.each([false, true])('requires renewed readbacks and a newer selected receipt after a pixel gap (outOfRange=%s)', (outOfRange) => {
+    const input = fixture(); let result = project(input);
+    receipt(input, 2, { pixels: new Uint8Array(), outOfRange });
+    result = project(input, result);
+    receipt(input, 3); result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
+    result = project(input, result); expect(result.display.state).toBe('unknown');
+    status(input, 'main.ifShift', { lastObservedMonotonic: 11 });
+    receipt(input, 2); result = project(input, result);
+    expect(result.display.state).toBe('unknown');
+    receipt(input, 4);
+    expect(project(input, result).display.state).toBe('current');
+  });
+
+  it('keeps retained-pixel out-of-range geometry admissible', () => {
+    const input = fixture(); const current = project(input);
+    receipt(input, 2, { outOfRange: true });
+    expect(input.frame!.geometry).toMatchObject({ hasPixels: true, outOfRange: true });
+    expect(project(input, current).display.state).toBe('current');
+    expect(project(input).display.state).toBe('current');
+  });
+
   it('requires each geometry marker and a newer accepted receipt after retirement', () => {
     const input = fixture(); const current = project(input);
     edit(input, (s) => { s.main!.mode = 'LSB'; });
