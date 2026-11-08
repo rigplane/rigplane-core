@@ -94,11 +94,6 @@ vi.mock('../../stores/audio.svelte', () => ({
   setTxError: vi.fn(),
 }));
 
-vi.mock('$lib/stores/capabilities.svelte', async (importOriginal) => ({
-  ...await importOriginal<typeof import('$lib/stores/capabilities.svelte')>(),
-  getCapabilities: vi.fn(() => null),
-}));
-
 class FakeWebSocket {
   static OPEN = 1;
   static CONNECTING = 0;
@@ -667,15 +662,16 @@ describe('AudioManager websocket subscriptions', () => {
 
   it('sends rx audio_start when startRx is called after config already opened the websocket', async () => {
     const { audioManager } = await import('../audio-manager');
-    const { getCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const { setCapabilities } = await import('$lib/stores/capabilities.svelte');
     const wire = structuredClone(stateWireGoldens['IC-7610'].capabilities);
-    vi.mocked(getCapabilities).mockReturnValueOnce(validateCapabilities({
+    expect(setCapabilities(validateCapabilities({
       ...wire, capabilities: [...wire.capabilities, 'lan_dual_rx_audio_routing'],
-    }));
+    }))).toBe(true);
 
     audioManager.setAudioConfig({ focus: 'main', split_stereo: true });
     const ws = FakeWebSocket.instances[0];
     ws.open();
+    expect(ws.sent).toContain(JSON.stringify({ type: 'audio_config', focus: 'main', split_stereo: true }));
     ws.sent = [];
 
     audioManager.startRx();
