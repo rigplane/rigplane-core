@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from rigplane.sdr import FakeIqSource
 from rigplane.sdr.scope_source import IqFftSource
@@ -113,54 +114,61 @@ class SampleProvider(FakeIqSource):
         return self.samples
 
 
-async def test_new_iq_geometry_discards_old_fft_average():
+@pytest.mark.parametrize("center,rate", [(11_000_000, 48000), (10_000_000, 96000)])
+async def test_new_iq_geometry_discards_old_fft_average(center, rate):
     from rigplane.sdr.types import IqBlock
 
-    noise = (np.random.default_rng(22).normal(size=4096) +
-             1j * np.random.default_rng(23).normal(size=4096)).astype(np.complex64) * 0.001
+    noise = (
+        np.random.default_rng(22).normal(size=4096)
+        + 1j * np.random.default_rng(23).normal(size=4096)
+    ).astype(np.complex64) * 0.001
     tone = np.exp(2j * np.pi * 6000 * np.arange(4096) / 48000).astype(np.complex64)
-    for center, rate in [(11_000_000, 48000), (10_000_000, 96000)]:
-        provider = SampleProvider(tone, center_freq_hz=10_000_000, sample_rate_hz=48000)
-        source = IqFftSource(provider, start_worker=False)
-        frames = []
-        source.on_frame(frames.append)
-        await source.start()
-        provider.pump(1)
-        source.producer.process_pending()
-        provider.set_center_freq(center)
-        provider.set_sample_rate(rate)
-        # Exercise block metadata even if provider properties have already changed.
-        block = IqBlock(noise, center, rate, 1.0)
-        source._feed(block)
-        source.producer.process_pending()
-        reference_provider = SampleProvider(noise, center_freq_hz=center, sample_rate_hz=rate)
-        reference = IqFftSource(reference_provider, start_worker=False)
-        expected = []
-        reference.on_frame(expected.append)
-        await reference.start()
-        reference_provider.pump(1)
-        reference.producer.process_pending()
-        assert frames[-1] == expected[-1]
-        await source.stop()
-        await reference.stop()
-
-
-import pytest
+    provider = SampleProvider(tone, center_freq_hz=10_000_000, sample_rate_hz=48000)
+    source = IqFftSource(provider, start_worker=False)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    provider.pump(1)
+    source.producer.process_pending()
+    block = IqBlock(noise, center, rate, 1.0)
+    source._feed(block)
+    source.producer.process_pending()
+    reference_provider = SampleProvider(
+        noise, center_freq_hz=center, sample_rate_hz=rate
+    )
+    reference = IqFftSource(reference_provider, start_worker=False)
+    expected = []
+    reference.on_frame(expected.append)
+    await reference.start()
+    reference_provider.pump(1)
+    reference.producer.process_pending()
+    assert frames[-1] == expected[-1]
+    await source.stop()
+    await reference.stop()
 
 
 @pytest.mark.parametrize("narrow_first", [False, True])
 @pytest.mark.parametrize("close_narrow", [False, True])
-async def test_shared_iq_keeps_full_capture_for_both_views(narrow_first, close_narrow, virtual_clock):
+async def test_shared_iq_keeps_full_capture_for_both_views(
+    narrow_first, close_narrow, virtual_clock
+):
     from rigplane.scope.hub import ScopeHub
     from rigplane.scope.models import Subscription
 
-    provider = FakeIqSource(center_freq_hz=10_000_000, sample_rate_hz=48000,
-                            block_size=4096, tones=[(-12000, -6), (6000, -6)], seed=21)
+    provider = FakeIqSource(
+        center_freq_hz=10_000_000,
+        sample_rate_hz=48000,
+        block_size=4096,
+        tones=[(-12000, -6), (6000, -6)],
+        seed=21,
+    )
     source = IqFftSource(provider, native_width=1024, start_worker=False)
     encoded = []
+
     def encode(frame):
         encoded.append(frame)
         return b"frame"
+
     hub = ScopeHub(encoder=encode)
     hub.register("iq", source)
     views = [View(9_976_000, 10_024_000), View(10_000_000, 10_012_000)]
@@ -182,12 +190,72 @@ async def test_shared_iq_keeps_full_capture_for_both_views(narrow_first, close_n
                 pixels = np.frombuffer(frame.pixels, dtype=np.uint8)
                 peaks = [6000] if i == 1 else [-12000, 6000]
                 for offset in peaks:
-                    index = int((10_000_000 + offset - views[i].start_hz) * 512 /
-                                (views[i].end_hz - views[i].start_hz))
-                    assert pixels[max(0, index - 2):index + 3].max() > 100
+                    index = int(
+                        (10_000_000 + offset - views[i].start_hz)
+                        * 512
+                        / (views[i].end_hz - views[i].start_hz)
+                    )
+                    assert pixels[max(0, index - 2) : index + 3].max() > 100
             if step == 0:
                 await handles.pop(1 if close_narrow else 0).close()
     finally:
         for handle in handles.values():
             await handle.close()
     assert not provider.is_open
+
+
+async def test_geometry_replacement_closes_old_worker_and_stop_closes_new_worker():
+    provider = FakeIqSource(center_freq_hz=10_000_000, sample_rate_hz=48000)
+    source = IqFftSource(provider)
+    assert source.producer._thread is None
+    await source.start()
+    provider.pump(1)
+    old_producer = source.producer
+    old_worker = old_producer._thread
+    assert old_worker is not None and old_worker.is_alive()
+    provider.set_center_freq(11_000_000)
+    provider.pump(1)
+    assert not old_worker.is_alive()
+    assert old_producer._closed
+    new_worker = source.producer._thread
+    assert new_worker is not None and new_worker.is_alive()
+    await source.stop()
+    assert not new_worker.is_alive()
+    assert not provider.is_open
+
+
+async def test_failed_close_does_not_restart_fft_for_retained_callback():
+    class RetainedProvider(FakeIqSource):
+        def __init__(self):
+            super().__init__(center_freq_hz=10_000_000, sample_rate_hz=48000)
+            self.close_attempts = 0
+            self.detach_attempts = 0
+
+        def on_block(self, callback):
+            if callback is None:
+                self.detach_attempts += 1
+                if self.detach_attempts == 1:
+                    raise RuntimeError("detach failed")
+            super().on_block(callback)
+
+        def close(self):
+            self.close_attempts += 1
+            if self.close_attempts == 1:
+                raise RuntimeError("close failed")
+            super().close()
+
+    provider = RetainedProvider()
+    source = IqFftSource(provider, start_worker=False)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    provider.pump(1)
+    with pytest.raises(RuntimeError, match="close failed"):
+        await source.stop()
+    try:
+        provider.set_center_freq(11_000_000)
+        provider.pump(1)
+        source.producer.process_pending()
+        assert not frames
+    finally:
+        await source.stop()
