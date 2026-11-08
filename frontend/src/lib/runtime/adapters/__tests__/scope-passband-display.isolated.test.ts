@@ -3,8 +3,7 @@ import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
 import { deriveIfShift, pbtRangeFromCaps } from '$lib/radio/filter-controls';
 import { getPassbandEdgesHz } from '../../../../components/spectrum/passband-geometry';
-import { resolveLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-display-contract';
-import { qualifyScopeFrameEnvelope, toScopeDisplayFrame, toSpectrumAuthority } from '../scope-adapter';
+import { ingressScopeFrame, toSpectrumAuthority } from '../scope-adapter';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { IC7300_CAPABILITIES } from './fixtures/ic7300-profile';
 import { editCaps, editState } from '../../../transport/__tests__/support/state-edit';
@@ -63,15 +62,19 @@ function receipt(input: ScopePassbandDisplayInput, sequence = 1, overrides: Reco
   const receiver = input.selection?.receiver === 'SUB' ? 1 : 0;
   const generation = input.caps!.providerGeneration;
   if (typeof generation !== 'number') throw new Error('fixture generation required');
-  const envelope = qualifyScopeFrameEnvelope({ receiver, mode: 0,
-    startFreq: 14_000_000, endFreq: 14_100_000, outOfRange: false, pixels: new Uint8Array([10, 128, 200]), ...overrides,
-  }, { source: 'hardware', receiver, providerGeneration: generation,
-    transportEpoch: 1, receivedAt: 0, acceptedSequence: sequence }, 9)!;
-  const authority = Object.freeze({ source: envelope.source, receiver,
-    providerGeneration: envelope.providerGeneration, transportEpoch: envelope.transportEpoch,
-    demanded: true, transport: 'connected' as const, nowMonotonic: 0 });
-  input.frame = Object.freeze({ envelope, authority, resolution: resolveLcdSpectrumFrame(
-    toScopeDisplayFrame(envelope, authority), { source: 'hardware', receiver: input.selection!.receiver }) });
+  const pixels = overrides.pixels instanceof Uint8Array ? overrides.pixels : new Uint8Array([10, 128, 200]);
+  const buffer = new ArrayBuffer(16 + pixels.length); const wire = new DataView(buffer);
+  wire.setUint8(0, 1); wire.setUint8(1, typeof overrides.receiver === 'number' ? overrides.receiver : receiver);
+  wire.setUint8(2, typeof overrides.mode === 'number' ? overrides.mode : 0);
+  wire.setUint32(3, typeof overrides.startFreq === 'number' ? overrides.startFreq : 14_000_000, true);
+  wire.setUint32(7, typeof overrides.endFreq === 'number' ? overrides.endFreq : 14_100_000, true);
+  wire.setUint8(13, overrides.outOfRange === true ? 1 : 0); wire.setUint16(14, pixels.length, true);
+  new Uint8Array(buffer, 16).set(pixels);
+  const ingress = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1 });
+  if (!ingress.ok) throw new Error(`invalid fixture: ${ingress.reason}`);
+  input.frame = Object.freeze({ source: 'hardware', receiver, providerGeneration: generation,
+    transportEpoch: 1, demanded: true, transport: 'connected', geometry: ingress.geometry, receipt: sequence });
+
 }
 /**
  * MOR-4213: a change reaches the projector the way production delivers it —
@@ -95,8 +98,8 @@ function renew(input: ScopePassbandDisplayInput, marker = 11, sequence = 2): voi
     for (const leaf of Object.values(s.fieldStatus!)) Object.assign(leaf,
       { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: marker });
   });
-  const f = input.frame?.envelope?.frame;
-  receipt(input, sequence, f ? { mode: f.mode, startFreq: f.startFreq, endFreq: f.endFreq } : {});
+  const f = input.frame?.geometry;
+  receipt(input, sequence, f ? { mode: f.mode, startFreq: f.view.startHz, endFreq: f.view.endHz } : {});
 }
 const project = (input: ScopePassbandDisplayInput, previous = EMPTY_SCOPE_PASSBAND_DISPLAY) =>
   projectScopePassbandDisplay(previous, input);
@@ -235,7 +238,7 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
     }
     receipt(input, 2); result = project(input, result);
     expect(result.display.state).toBe('unknown');
-    input.frame = { ...input.frame!, resolution: { state: 'ghost', reason: 'stale' } };
+    input.frame = { ...input.frame!, geometry: null };
     result = project(input, result); expect(result.selectionRecovery).toBeNull();
     receipt(input, 3, { startFreq: 14_040_000, endFreq: 14_140_000 });
     result = project(input, result); expect(result.display.state).toBe('unknown');
@@ -363,7 +366,7 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     }],
     ['caps', (i) => { editCapabilities(i, (c) => { c.filterWidthMax = 9000; }); }],
     ['control epoch', (i) => { i.session!.epoch = 2; }],
-    ['scope epoch', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, transportEpoch: 2 } }; }],
+    ['scope epoch', (i) => { i.frame = { ...i.frame!, transportEpoch: 2 }; }],
     ['receiver', (i) => { edit(i, (s) => { s.active = 'SUB'; }); }],
     ['slot', (i) => { i.selection!.slot = 'B'; edit(i, (s) => { s.main!.activeSlot = 'B'; }); status(i, 'main.activeSlot', { lastObservedMonotonic: 12 }); }],
     ['mode', (i) => { edit(i, (s) => { s.main!.mode = 'LSB'; s.main!.vfoA!.mode = 'LSB'; }); status(i, 'main.mode', { lastObservedMonotonic: 12 }); status(i, 'main.vfoA.mode', { lastObservedMonotonic: 12 }); }],
@@ -373,8 +376,8 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     ['span', (i) => receipt(i, 3, { endFreq: 14_200_000 })],
     ['band definitions', (i) => { editCapabilities(i, (c) => { c.freqRanges[0].bands![5].end += 100; }); }],
     ['null frame', (i) => { i.frame = null; }],
-    ['500ms frame silence', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, nowMonotonic: 500 } }; }],
-    ['off', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, demanded: false } }; }],
+    ['500ms frame silence', (i) => { i.frame = { ...i.frame!, geometry: { ...i.frame!.geometry!, freshness: 'stale' } }; }],
+    ['off', (i) => { i.frame = { ...i.frame!, demanded: false }; }],
   ];
   it.each(hard)('retires a translated tuple on %s without replay after return', (_name, change) => {
     const input = banded(); let result = project(input); tune(input, 14_075_000, 11); result = project(input, result);
@@ -797,30 +800,30 @@ describe('coherent RF passband display', () => {
   });
   it.each([499, 500, -1, NaN])('honors frame age %s without another timer', (age) => {
     const input = fixture(); const current = project(input);
-    input.frame = { ...input.frame!, authority: { ...input.frame!.authority, nowMonotonic: age } };
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: age === 499 ? 'fresh' : 'stale' } };
     expect(project(input, current).display.state).toBe(age === 499 ? 'current' : 'unknown');
   });
   it.each(['ghost', 'receiver', 'source', 'transport', 'demand', 'scope epoch', 'disconnect'])(
     'invalidates %s evidence without changing command authority', (kind) => {
       const input = fixture(); const current = project(input); const strict = toSpectrumAuthority(input.state, input.caps);
       const f = input.frame!;
-      if (kind === 'ghost') input.frame = { ...f, resolution: { state: 'ghost', reason: 'stale' } };
-      if (kind === 'receiver') input.frame = { ...f, authority: { ...f.authority, receiver: 1 } };
-      if (kind === 'source') input.frame = { ...f, authority: { ...f.authority, source: 'audio_fft' } };
-      if (kind === 'transport') input.frame = { ...f, authority: { ...f.authority, transport: 'reconnecting' } };
-      if (kind === 'demand') input.frame = { ...f, authority: { ...f.authority, demanded: false } };
-      if (kind === 'scope epoch') input.frame = { ...f, authority: { ...f.authority, transportEpoch: 2 } };
+      if (kind === 'ghost') input.frame = { ...f, geometry: null };
+      if (kind === 'receiver') input.frame = { ...f, receiver: 1 };
+      if (kind === 'source') input.frame = { ...f, source: 'audio_fft' };
+      if (kind === 'transport') input.frame = { ...f, transport: 'reconnecting' };
+      if (kind === 'demand') input.frame = { ...f, demanded: false };
+      if (kind === 'scope epoch') input.frame = { ...f, transportEpoch: 2 };
       if (kind === 'disconnect') input.session = { state: 'disconnected', epoch: 1 };
       expect(project(input, current).display.state).toBe('unknown');
       expect(toSpectrumAuthority(input.state, input.caps)).toEqual(strict);
     });
   it('does not mutate input, prior tuple, strict model, or shared pixels', () => {
     const input = fixture(); const before = JSON.stringify(input); const model = toRadioViewModel(input.state, input.caps);
-    const pixels = input.frame!.envelope!.frame.pixels;
-    const samples = Array.from(pixels);
+    const geometry = input.frame!.geometry;
+    const view = structuredClone(geometry!.view);
     const current = project(input); const previous = structuredClone(current); project(input, current);
     expect(JSON.stringify(input)).toBe(before); expect(current).toEqual(previous);
-    expect(input.frame!.envelope!.frame.pixels).toBe(pixels); expect(Array.from(pixels)).toEqual(samples);
+    expect(input.frame!.geometry).toBe(geometry); expect(geometry!.view).toEqual(view);
     expect(toRadioViewModel(input.state, input.caps)).toEqual(model);
     expect(Object.isFrozen(tuple(current))).toBe(true); expect(current).not.toHaveProperty('frame');
   });
@@ -864,7 +867,7 @@ describe('coherent RF passband display', () => {
   it('retires a matching transport-epoch transition and rejects accepted-receipt regression', () => {
     const input = fixture(); const current = project(input);
     const epoch = () => { const frame = input.frame!; input.frame = { ...frame,
-      envelope: { ...frame.envelope!, transportEpoch: 2 }, authority: { ...frame.authority, transportEpoch: 2 } }; };
+      transportEpoch: 2 }; };
     epoch(); const retired = project(input, current); expect(retired.display.state).toBe('unknown');
     renew(input, 11, 3); epoch(); const renewed = project(input, retired);
     expect(renewed.display.state).toBe('current');
@@ -913,8 +916,7 @@ describe('coherent RF passband display', () => {
     const input = fixture(); const current = project(input); stale(input, 'main.filterWidth');
     Object.assign(input, { pending: { frequencyHz: 7_000_000, widthHz: 900 } });
     const f = input.frame!; input.frame = { ...f,
-      envelope: { ...f.envelope!, acceptedSequence: 2, receivedAt: 100_000, wireSequence: 999 },
-      authority: { ...f.authority, nowMonotonic: 100_001 } };
+      receipt: 2 };
     const result = project(input, current);
     expect(result.display.state).toBe('stale'); expect(tuple(result)).toBe(tuple(current));
     // MOR-2425/R40: the strict authority holds the last observed width too.
