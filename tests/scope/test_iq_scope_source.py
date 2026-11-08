@@ -1,21 +1,26 @@
+import math
+import time
+
 import numpy as np
 import pytest
 
 from rigplane.sdr import FakeIqSource
-from rigplane.sdr.controller import SdrScopeController
+from rigplane.sdr.controller import SdrScopeController, TX_HOLD_S
 from rigplane.sdr.scope_source import IqFftSource
 from rigplane.sdr.types import SdrConfig
 from rigplane.scope.models import Coverage, FollowView, View
 
 
-def controlled_source(provider, virtual_clock, *, tx_active=False, invert=False):
+def controlled_source(
+    provider, virtual_clock, *, tx_active=False, invert=False, clock_offset=1_000_000
+):
     config = SdrConfig(
         "fake", sample_rate_hz=48000, span_hz=6000, freq_offset_hz=8_000_000
     )
 
     def controller_factory(sink):
         controller = SdrScopeController(
-            provider, sink, config, clock=lambda: virtual_clock() + 1_000_000
+            provider, sink, config, clock=lambda: virtual_clock() + clock_offset
         )
         controller.on_radio_state(14_100_000, tx_active)
         return controller
@@ -54,7 +59,9 @@ async def test_controller_seeds_rf_before_open_without_cropping_capture(
         provider.pump(1)
         source.producer.process_pending()
         assert frames[-1].coverage == Coverage(22_064_000, 22_112_000)
-        assert abs(np.argmax(np.frombuffer(frames[-1].pixels, dtype=np.uint8)) - peak) <= 1
+        assert (
+            abs(np.argmax(np.frombuffer(frames[-1].pixels, dtype=np.uint8)) - peak) <= 1
+        )
     finally:
         await source.stop()
     assert not source.active and not provider.is_open
@@ -84,7 +91,34 @@ async def test_controller_initial_tx_freeze_releases_after_hold(virtual_clock):
         await source.stop()
 
 
-async def test_controller_retune_debounce_and_stop_cancel_pending_actions(virtual_clock):
+@pytest.mark.parametrize("clock_offset", [0, 1_000_000])
+async def test_early_tx_deadline_callback_waits_without_spinning(
+    virtual_clock, clock_offset
+):
+    provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
+    source = controlled_source(
+        provider, virtual_clock, tx_active=True, clock_offset=clock_offset
+    )
+    await source.start()
+    try:
+        source.on_radio_state(None, False)
+        resolution = max(
+            time.get_clock_info("monotonic").resolution, math.ulp(virtual_clock())
+        )
+        # asyncio may run a timer up to one clock resolution early. Keep
+        # virtual time inside that window so a premature callback must defer.
+        virtual_clock.advance(TX_HOLD_S - resolution / 2)
+        await virtual_clock.elapse(resolution / 4)
+        assert source.tx_frozen
+        await virtual_clock.elapse(resolution * 2)
+        assert not source.tx_frozen
+    finally:
+        await source.stop()
+
+
+async def test_controller_retune_debounce_and_stop_cancel_pending_actions(
+    virtual_clock,
+):
     provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
     source = controlled_source(provider, virtual_clock)
     await source.start()
@@ -123,6 +157,40 @@ async def test_controller_outside_provider_range_marks_native_frame(virtual_cloc
         assert frames[-1].out_of_range
     finally:
         await source.stop()
+
+
+@pytest.mark.parametrize("failure", ["factory", "open"])
+async def test_composition_start_failure_closes_owned_worker(failure):
+    class Provider(FakeIqSource):
+        def open(self):
+            if failure == "open":
+                raise RuntimeError("open failed")
+            super().open()
+
+    provider = Provider(center_freq_hz=0, sample_rate_hz=48000)
+
+    def factory(sink):
+        if failure == "factory":
+            raise RuntimeError("factory failed")
+        controller = SdrScopeController(provider, sink, SdrConfig("fake"))
+        controller.on_radio_state(14_100_000, False)
+        return controller
+
+    source = IqFftSource(provider, controller_factory=factory)
+    standby = source.producer
+    assert standby._thread is None
+    try:
+        with pytest.raises(RuntimeError, match=f"{failure} failed"):
+            await source.start()
+        assert not source.active and not provider.is_open
+        thread = source.producer._thread
+        if failure == "open":
+            assert thread is not None
+        assert thread is None or not thread.is_alive()
+    finally:
+        await source.stop()
+        source.producer.close()
+        standby.close()
 
 
 async def test_real_iq_provider_full_coverage_peak_and_restart():
@@ -311,11 +379,14 @@ async def test_geometry_change_enqueues_on_existing_worker(monkeypatch):
     assert old_worker is not None and old_worker.is_alive()
     close = MagicMock(wraps=old_producer.close)
     monkeypatch.setattr(old_producer, "close", close)
-    provider.set_center_freq(11_000_000)
-    provider.pump(1)
-    close.assert_not_called()
-    assert source.producer is old_producer
-    assert old_worker.is_alive()
-    await source.stop()
+    try:
+        provider.set_center_freq(11_000_000)
+        provider.pump(1)
+        close.assert_not_called()
+        assert source.producer is old_producer
+        assert old_worker.is_alive()
+    finally:
+        await source.stop()
+        old_producer.close()
     assert not old_worker.is_alive()
     assert not provider.is_open
