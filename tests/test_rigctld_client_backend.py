@@ -1258,18 +1258,19 @@ async def test_failed_core_setters_leave_radio_state_unchanged() -> None:
 
 
 async def test_radio_reports_actionable_connection_failure() -> None:
-    # A bound but never-listening loopback socket refuses at once on every
-    # host and cannot be taken by another process while we hold it. A fixed
-    # low port does not: WSL2 drops SYNs to closed ports below the ephemeral
-    # range, so the connect hangs until the timeout instead of being refused.
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as closed:
-        closed.bind(("127.0.0.1", 0))
-        port = closed.getsockname()[1]
-        # Default timeout: refusal is immediate, no short budget is needed.
-        radio = RigctldClientRadio(host="127.0.0.1", port=port)
+    # Take a free ephemeral port, then release it: nothing listens there, so
+    # the connect is refused at once on Linux and macOS. A socket that stays
+    # bound without listen() is not a substitute: macOS swallows the SYN and
+    # the connect hangs until the timeout. A fixed low port is not one either:
+    # WSL2 drops SYNs to closed ports below the ephemeral range.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    # Default timeout: refusal is immediate, no short budget is needed.
+    radio = RigctldClientRadio(host="127.0.0.1", port=port)
 
-        with pytest.raises(RadioConnectionError, match=f"127.0.0.1:{port}"):
-            await radio.connect()
+    with pytest.raises(RadioConnectionError, match=f"127.0.0.1:{port}"):
+        await radio.connect()
 
 
 async def test_radio_rejects_unsupported_data_mode() -> None:
