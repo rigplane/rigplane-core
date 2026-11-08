@@ -101,7 +101,7 @@ async def test_scope_handler_sender_uses_only_send_binary() -> None:
     """ScopeHandler forwards hub-owned bytes through only send_binary."""
     from unittest.mock import AsyncMock
     from rigplane.scope.hub import HubSubscription
-    from rigplane.scope.models import ScopeWireFrame
+    from rigplane.scope.models import GrantedSubscription, ScopeWireFrame, View
     from rigplane.web.protocol import encode_scope_frame_v2
 
     fake = FakeConnection()
@@ -124,6 +124,7 @@ async def test_scope_handler_sender_uses_only_send_binary() -> None:
         )
     )
     subscription = AsyncMock(spec=HubSubscription)
-    subscription.receive.side_effect = [data, StopAsyncIteration]
-    await handler._sender(subscription)
+    grant = GrantedSubscription("radio", None, View(14_000_000, 14_100_000), None, 2, 30)
+    subscription.receive_delivery.side_effect = [(grant, data), StopAsyncIteration]
+    await handler._sender(subscription, grant.width)
     assert fake.sent_binary == [data]
