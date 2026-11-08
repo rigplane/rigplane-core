@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,17 @@ class _Writer:
         return int(self.buffer.split(b" ", 2)[1])
 
     @property
+    def _head(self) -> str:
+        return self.buffer.split(b"\r\n\r\n", 1)[0].decode("ascii")
+
+    def header(self, name: str) -> str | None:
+        for line in self._head.split("\r\n")[1:]:
+            key, _, value = line.partition(":")
+            if key.strip().lower() == name.lower():
+                return value.strip()
+        return None
+
+    @property
     def payload(self) -> dict[str, object]:
         body = self.buffer.split(b"\r\n\r\n", 1)[1]
         return json.loads(body or b"{}")
@@ -108,15 +120,30 @@ class _Authority:
 
 
 class _AudioSessionSource:
-    """Object identity holder for a staged RX-start failure.
+    """Session-first RX source the broadcaster's route resolution accepts.
 
-    Carries ``subscribe_rx`` so the broadcaster's route resolution accepts
-    it as the session-first RX source (the staged failure then survives a
-    ``rx_start_status`` read instead of self-healing away).
+    ``fail`` flips between a raising and a working ``subscribe_rx`` so a
+    test can drive the production ``ensure_relay()`` transitions: a failed
+    relay start retains the failure record, a later successful retry
+    drops it — both notify through ``on_rx_start_status_change``.
     """
 
-    def subscribe_rx(self) -> None:
-        return None
+    def __init__(self) -> None:
+        self.fail = False
+        self._drained = asyncio.Event()
+
+    async def subscribe_rx(self, _name: str) -> object:
+        if self.fail:
+            raise OSError("rx start failed")
+
+        return self
+
+    def __aiter__(self) -> object:
+        return self
+
+    async def __anext__(self) -> object:
+        await self._drained.wait()
+        raise StopAsyncIteration
 
 
 class _FactsRadio:
@@ -471,6 +498,82 @@ async def test_managed_tx_pushes_coalesce_to_the_latest_document() -> None:
     assert events[0]["data"]["txObservation"] == {"observedPtt": "on"}
 
 
+async def test_cancellation_during_connect_snapshot_unregisters_the_queue() -> None:
+    """A cancel inside the connect-time snapshot await cleans registration.
+
+    The queue, leaf-delta set and session mapping registered by
+    ``run()`` must not outlive a handler cancelled while the
+    managed-transmit document getter is still awaiting.
+    """
+    import contextlib
+
+    from rigplane.web.handlers.control import ControlHandler
+
+    server = _server(radio=_FactsRadio())
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_document() -> dict[str, object]:
+        blocked.set()
+        await release.wait()
+        raise AssertionError("cancelled before the getter finished")
+
+    server.current_managed_tx_document = blocking_document  # type: ignore[method-assign]
+
+    class _CaptureWs:
+        async def send_text(self, _text: str) -> None:
+            return None
+
+        async def recv(self) -> tuple[int, bytes]:
+            raise EOFError()
+
+    handler = ControlHandler(
+        _CaptureWs(),  # type: ignore[arg-type]
+        None,
+        "test-version",
+        "FAKE-FACTS",
+        server=server,
+        session_id="cancel-probe",
+    )
+    task = asyncio.get_running_loop().create_task(handler.run())
+    await blocked.wait()
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert server._control_event_queues == set()  # noqa: SLF001
+    assert server._leaf_delta_queues == set()  # noqa: SLF001
+    assert server._session_queues.get("cancel-probe") is None  # noqa: SLF001
+
+
+async def test_state_etag_is_a_valid_opaque_tag_and_conditional_get_304s() -> None:
+    """The fact-record delivery-key components keep the ETag well-formed.
+
+    A raw JSON component would embed ``"`` inside the quoted validator,
+    which RFC 9110 opaque-tags forbid; hex encoding keeps it visible-ASCII.
+    """
+    server = _server(radio=_FactsRadio())
+    writer = _Writer()
+    await server._handle_http(  # noqa: SLF001
+        writer,  # type: ignore[arg-type]
+        "GET",
+        "/api/v1/state",
+    )
+    assert writer.status == 200
+    etag = writer.header("etag")
+    assert etag is not None
+    assert re.fullmatch(r'"[\x21\x23-\x7e]+"', etag), etag
+
+    conditional = _Writer()
+    await server._handle_http(  # noqa: SLF001
+        conditional,  # type: ignore[arg-type]
+        "GET",
+        "/api/v1/state",
+        headers={"if-none-match": etag},
+    )
+    assert conditional.status == 304
+
+
 async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
     """A real control-WS client gets every fact group through the socket.
 
@@ -522,27 +625,84 @@ async def test_real_control_ws_receives_the_fact_records_end_to_end() -> None:
                     break
             assert hello_seen and baseline_seen and document_seen
 
-            # A managed-TX change reaches the connected client within one event.
-            _observe_ptt(server, ObservedPtt.ON)
-            server._on_managed_tx_changed()  # noqa: SLF001
-            await _await_managed_tx_publication(server)
+            # A managed-TX change through the real authority listener (the
+            # production wiring: subscribe_changes -> _on_managed_tx_changed)
+            # reaches the connected client within one event.
+            from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+            from rigplane.runtime.managed_tx_config import ManagedTxTotConfig
+            from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+            from rigplane.runtime.managed_tx_fence import TxAbortFence
+            from rigplane.runtime.managed_tx_state import ActuationResult
+
+            class _AcceptingActuator:
+                async def actuate(self, *_args: object, **_kwargs: object) -> object:
+                    return ActuationResult.ACCEPTED
+
+            class _MemoryConfig:
+                def __init__(self) -> None:
+                    self._config = ManagedTxTotConfig(10.0)
+
+                @property
+                def config(self) -> ManagedTxTotConfig:
+                    return self._config
+
+                def set_timeout_seconds(self, value: object) -> ManagedTxTotConfig:
+                    del value
+                    return self._config
+
+            authority = ManagedTxAuthority(
+                ManagedTxEffectLane(_AcceptingActuator()),
+                _MemoryConfig(),  # type: ignore[arg-type]
+                TxAbortFence(),
+                provider_generation=7,
+            )
+            server._bind_managed_tx_hint(authority)  # noqa: SLF001
+            try:
+                _observe_ptt(server, ObservedPtt.ON)
+                await authority.ptt_down("e2e-owner")
+                for _ in range(6):
+                    _, payload = await _ws_recv_frame(reader, timeout=5.0)
+                    message = json.loads(payload)
+                    if (
+                        message.get("type") == "event"
+                        and message.get("name") == "managed_transmit_changed"
+                    ):
+                        assert message["data"]["txObservation"] == {"observedPtt": "on"}
+                        managed = message["data"]["managedTransmit"]
+                        assert managed["status"] == "available"
+                        assert managed["intent"]["kind"] in ("ptt", "transmit")
+                        break
+                else:
+                    pytest.fail("managed_transmit_changed never arrived")
+            finally:
+                await authority.ptt_up("e2e-owner")
+                await authority.close()
+
+            # An identity change through the production reconnect-status
+            # entry re-delivers the connection record to the socket.
+            radio.connection_identity = RadioIdentity(
+                status=RadioIdentityStatus.IDENTITY_MISMATCH,
+                expected_model="FAKE-FACTS",
+                answered_model="IC-7300",
+                answered_id="94",
+            )
+            server._on_reconnect_status({"state": "connected", "attempt": 1})  # noqa: SLF001
             for _ in range(6):
                 _, payload = await _ws_recv_frame(reader, timeout=5.0)
                 message = json.loads(payload)
-                if (
-                    message.get("type") == "event"
-                    and message.get("name") == "managed_transmit_changed"
-                ):
-                    assert message["data"]["txObservation"] == {"observedPtt": "on"}
+                if message.get("type") == "state_update":
+                    connection = message["data"]["changed"]["connection"]
+                    assert connection["identity"]["status"] == "identity_mismatch"
                     break
             else:
-                pytest.fail("managed_transmit_changed never arrived")
+                pytest.fail("identity delta never arrived")
         finally:
             writer.close()
             await writer.wait_closed()
     finally:
         server._server.close()  # noqa: SLF001
         await server._server.wait_closed()  # noqa: SLF001
+        await server.stop()
 
 
 async def test_connect_document_seeds_the_observed_ptt_baseline() -> None:
@@ -570,10 +730,11 @@ async def test_connect_document_seeds_the_observed_ptt_baseline() -> None:
 
 
 async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None:
-    """A tap-only RX-start failure change re-delivers the state leaf.
+    """Tap-only RX-start failure and recovery re-deliver the state leaf.
 
-    No audio client came or went (the client-count hook stays silent);
-    the RX-start status change itself must trigger one delivery.
+    Driven through the production ``ensure_relay()`` transitions (audio
+    scope / CW auto-tune path): no audio client came or went, so the
+    client-count hook stays silent — the status change itself delivers.
     """
     radio = _FactsRadio()
     server = _server(radio=radio)
@@ -581,26 +742,36 @@ async def test_rx_start_failure_change_is_pushed_without_audio_clients() -> None
     server.register_control_event_queue(queue)
     assert _drain(queue) == []
 
-    failure = (
-        radio,
-        radio.audio_session,
-        "usb_topology_unavailable",
-        (),
-        None,
-    )
-    server._audio_broadcaster._rx_start_failure = failure  # noqa: SLF001
-    # The set path notifies through the relay-start failure site; emulate the
-    # mutation + notification exactly as _start_relay does.
-    server._audio_broadcaster._notify_rx_start_status_change()  # noqa: SLF001
+    relay_task: asyncio.Task[None] | None = None
+    try:
+        radio.audio_session.fail = True
+        await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
 
-    updates = [event for event in _drain(queue) if event.get("type") == "state_update"]
-    assert len(updates) == 1, updates
-    audio_receive = updates[0]["data"]["changed"]["audioReceive"]
-    assert audio_receive["failure"]["reason"] == "usb_topology_unavailable"
+        updates = [
+            event for event in _drain(queue) if event.get("type") == "state_update"
+        ]
+        assert len(updates) == 1, updates
+        audio_receive = updates[0]["data"]["changed"]["audioReceive"]
+        assert audio_receive["failure"]["reason"] == "other"
 
-    # Dropping the failure again delivers the recovered record.
-    server._audio_broadcaster.invalidate_rx_start_status()  # noqa: SLF001
-    updates = [event for event in _drain(queue) if event.get("type") == "state_update"]
-    assert len(updates) == 1, updates
-    audio_receive = updates[0]["data"]["changed"]["audioReceive"]
-    assert audio_receive["failure"] is None
+        # A retry that succeeds drops the retained failure and delivers the
+        # recovered record (the relay keeps running on the fake source).
+        radio.audio_session.fail = False
+        await server._audio_broadcaster.ensure_relay()  # noqa: SLF001
+        updates = [
+            event for event in _drain(queue) if event.get("type") == "state_update"
+        ]
+        assert len(updates) == 1, updates
+        audio_receive = updates[0]["data"]["changed"]["audioReceive"]
+        assert audio_receive["failure"] is None
+        relay_task = server._audio_broadcaster._relay_task  # noqa: SLF001
+    finally:
+        radio.audio_session._drained.set()  # noqa: SLF001
+        task = (
+            relay_task
+            if relay_task is not None
+            else server._audio_broadcaster._relay_task  # noqa: SLF001
+        )
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

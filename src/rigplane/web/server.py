@@ -915,7 +915,9 @@ def _stable_record_key(record: Mapping[str, object] | None) -> str:
     """
     if record is None:
         return "null"
-    raw = json.dumps(record, sort_keys=True, default=str).encode()
+    raw = json.dumps(
+        record, sort_keys=True, separators=(",", ":"), default=str
+    ).encode()
     return binascii.hexlify(raw).decode()
 
 
@@ -2447,7 +2449,10 @@ class WebServer:
                 return "1" if value else "0"
             if value is None:
                 return "none"
-            return str(value)
+            # RFC 9110 entity-tags allow only visible ASCII (no space, no
+            # DQUOTE); tuple reprs carry ", " separators, so spaces are
+            # stripped to keep the whole validator well-formed.
+            return str(value).replace(" ", "")
 
         return '"{}"'.format(
             "-".join(

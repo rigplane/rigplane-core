@@ -1360,7 +1360,13 @@ class AudioBroadcaster:
                     subscription.stop()
                 return
             self._subscription = subscription
-            self._rx_start_failure = None
+            if self._rx_start_failure is not None:
+                # A retry succeeded where the previous attempt failed
+                # (MOR-4279): the retained failure is dropped and control
+                # clients learn the record recovered — a tap-only relay
+                # has no client-count change that would carry the news.
+                self._rx_start_failure = None
+                self._notify_rx_start_status_change()
             self._relay_task = asyncio.create_task(self._relay_loop())
         except Exception as exc:
             if source is not None and not self._rx_start_current(
