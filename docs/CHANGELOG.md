@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The quiet RX audio hint and its unused profile field `[audio].rx_audio_level_menu` are removed. The public `/api/v1/capabilities` response no longer includes `rxAudioLevelMenu`; API consumers should stop relying on it. (MOR-4294)
+
 ### Changed
 
 - The red BUSY lamp is gone. In its place an SQL tag shows next to the receiver tags whenever the squelch is closed or partly closed (level above 0), on every band, and nothing shows while the squelch is fully open. The radio's squelch-open status is no longer read over CI-V. (MOR-4223)

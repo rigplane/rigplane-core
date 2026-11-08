@@ -376,10 +376,6 @@ export interface RxAudioViewModel {
   /** MOR-2792: the server's RX capture is delivering only digital silence
    *  (bit-exact zeros). Cleared as soon as a non-zero frame arrives. */
   rxSilent: boolean;
-  /** MOR-4210: present while LIVE browser audio runs from a quiet source.
-   *  `menu` is the radio menu item that raises its output level, `null`
-   *  when the profile names none. */
-  readonly sourceLow?: { readonly menu: string | null };
 }
 
 /**
@@ -1953,7 +1949,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'monitorMode', 'liveAudio', 'afLevel', 'receiverAfLevels', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent', 'sourceLow',
+    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent',
   ], path);
   const afLevels = v.receiverAfLevels === undefined
     ? undefined : record(v.receiverAfLevels, `${path}.receiverAfLevels`);
@@ -1978,16 +1974,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
     }),
     modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
     rxSilent: v.rxSilent === true,
-    ...(v.sourceLow === undefined ? {} : {
-      sourceLow: validateRxSourceLow(v.sourceLow, `${path}.sourceLow`),
-    }),
   };
-}
-
-function validateRxSourceLow(value: unknown, path: string): { readonly menu: string | null } {
-  const v = record(value, path);
-  exactKeys(v, ['menu'], path);
-  return { menu: nullableString(v.menu, `${path}.menu`) };
 }
 
 /** A capability-derived choice set: plain strings, no field-shape wrapper —

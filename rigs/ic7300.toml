@@ -35,7 +35,6 @@ data_len_max = 475
 codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 # IC-7300 Advanced Manual (rev 11a), MENU > SET > Connectors:
 # "ACC/USB AF Output Level (Default: 50%)" for [ACC] and [USB] (MOR-4210).
-rx_audio_level_menu = "SET > Connectors > ACC/USB AF Output Level"
 
 [usb]
 # W1 Windows recording: tests/fixtures/usb_audio/windows/w1-gtr7-ic7300.json.

@@ -151,15 +151,6 @@ export function softLimitCurve(): Float32Array<ArrayBuffer> {
   return curve;
 }
 
-// Quiet-source detection (MOR-4210). The source counts as low once decoded
-// frames carrying sound (a frame peak above LOW_SOURCE_SILENCE) add up to
-// LOW_SOURCE_WINDOW_MS of audio with no frame peak at or above
-// LOW_SOURCE_PEAK; silent frames add nothing, and the first louder frame
-// clears it. Peaks are the decoded source, before gain.
-const LOW_SOURCE_PEAK = dbToLinear(-12);
-const LOW_SOURCE_SILENCE = dbToLinear(-60);
-const LOW_SOURCE_WINDOW_MS = 20_000;
-
 export class RxPlayer {
   private ctx: AudioContext | null = null;
   private preGain: GainNode | null = null;
@@ -213,8 +204,6 @@ export class RxPlayer {
   private _resumeAttempt = 0;
   private _decodedObservation: DecodedObservation | null = null;
   private _decodedObservedAt: number | null = null;
-  private _lowAudibleMs = 0;
-  private _sourceLevelLow = false;
 
   constructor(private readonly diagnosticEnabled = false) {}
 
@@ -249,11 +238,6 @@ export class RxPlayer {
   set volume(v: number) {
     this._volume = Math.max(0, Math.min(RX_AF_LEVEL_MAX, v));
     if (this.preGain) this.preGain.gain.value = afLevelToRxGain(this._volume);
-  }
-
-  /** True while the decoded source has stayed quiet (see LOW_SOURCE_*). */
-  get sourceLevelLow(): boolean {
-    return this._sourceLevelLow;
   }
 
   get focus(): RxAudioFocus {
@@ -351,7 +335,6 @@ export class RxPlayer {
     this._playback = emptyPlayback();
     this._decodedObservation = null;
     this._decodedObservedAt = null;
-    this._resetSourceLevel();
     this.resetDecoder();
     this.lastCodec = null;
     this._detachResumeListeners();
@@ -541,28 +524,12 @@ export class RxPlayer {
     // deliver old audio into the freshly flushed timeline; the next Opus
     // frame lazily configures a fresh one.
     this.resetDecoder();
-    this._resetSourceLevel();
     this.nextPlayTime = 0;
   }
 
   private _resetStall(): void {
     this._lastScheduleAt = null;
     this._stallSec = 0;
-  }
-
-  private _resetSourceLevel(): void {
-    this._lowAudibleMs = 0;
-    this._sourceLevelLow = false;
-  }
-
-  private _observeSourcePeak(peak: number, durationMs: number): void {
-    if (peak >= LOW_SOURCE_PEAK) {
-      this._resetSourceLevel();
-      return;
-    }
-    if (peak <= LOW_SOURCE_SILENCE) return;
-    this._lowAudibleMs += durationMs;
-    if (this._lowAudibleMs >= LOW_SOURCE_WINDOW_MS) this._sourceLevelLow = true;
   }
 
   // ── PCM16 playback ──
@@ -663,7 +630,6 @@ export class RxPlayer {
     }
     this._playback.decodedFrames = Math.min(MAX_COUNTER, this._playback.decodedFrames + 1);
     this._playback.pcmPeak = Math.round(Math.min(1, peak) * 100);
-    this._observeSourcePeak(peak, buffer.duration * 1000);
   }
 
   private _recordDecodedObservation(buffer: AudioBuffer): void {

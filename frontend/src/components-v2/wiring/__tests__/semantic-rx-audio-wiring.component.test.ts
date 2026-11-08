@@ -1361,38 +1361,19 @@ describe('single composition operational disable (MOR-1342)', () => {
   });
 });
 
-/* ── MOR-4210: quiet RX source names the radio's own menu item ── */
-
-describe('the quiet-source line on the RX audio surface (MOR-4210)', () => {
-  const MENU = 'SET > Connectors > ACC/USB AF Output Level';
-  const withMenu = (menu: string | null) => {
-    h.caps = { ...(h.caps as Capabilities), rxAudioLevelMenu: menu };
-  };
-
-  it('names the profile menu item while LIVE audio stays quiet', () => {
-    withMenu(MENU);
+describe('quiet RX audio (MOR-4294)', () => {
+  it('shows no quiet-source hint while LIVE audio stays quiet', () => {
     h.sourceLevelLow = true;
     renderHostedFace();
-    expect(text('source-low')).toBe(
-      `Radio audio is quiet. Raise the radio's audio output level: ${MENU}.`,
-    );
-  });
-
-  it('falls back to the generic line when the profile names no menu item', () => {
-    withMenu(null);
-    h.sourceLevelLow = true;
-    renderHostedFace();
-    expect(text('source-low')).toBe("Radio audio is quiet. Raise the radio's audio output level.");
+    expect(el('source-low')).toBeNull();
   });
 
   it('shows nothing while the source is not quiet', () => {
-    withMenu(MENU);
     renderHostedFace();
     expect(el('source-low')).toBeNull();
   });
 
   it('shows nothing outside LIVE monitoring', () => {
-    withMenu(MENU);
     h.sourceLevelLow = true;
     h.rxEnabled = false;
     h.audio = { muted: false, rxEnabled: false, volume: 42 };
