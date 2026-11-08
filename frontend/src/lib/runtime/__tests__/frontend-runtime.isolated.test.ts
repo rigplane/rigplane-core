@@ -570,7 +570,7 @@ describe('FrontendRuntime.bootstrap()', () => {
     await cleanup();
   });
 
-  it('preserves explicit SUB activation over a control reconnect and supported capability publication', async () => {
+  it('persists explicit SUB activation without replaying bootstrap config on capability republication', async () => {
     localStorage.setItem('icom.audio.focus', 'main');
     const wire = structuredClone(stateWireGoldens['IC-7610'].capabilities);
     const caps = validateCapabilities({
@@ -592,12 +592,14 @@ describe('FrontendRuntime.bootstrap()', () => {
     makeVfoHandlers().onSubVfoClick();
     expect(dispatchRadioIntent).toHaveBeenLastCalledWith({ name: 'set_vfo', params: { vfo: 'SUB' } });
     expect(audioManager.setAudioConfig).toHaveBeenLastCalledWith({ focus: 'sub' });
+    expect(localStorage.getItem('icom.audio.focus')).toBe('sub');
+    vi.mocked(audioManager.setAudioConfig).mockClear();
 
     vi.mocked(getCapabilities).mockReturnValue(null);
     listener(null);
     vi.mocked(getCapabilities).mockReturnValue(caps);
     listener(caps);
-    expect(audioManager.setAudioConfig).toHaveBeenLastCalledWith({ focus: 'sub' });
+    expect(audioManager.setAudioConfig).not.toHaveBeenCalled();
     expect(localStorage.getItem('icom.audio.focus')).toBe('sub');
 
     vi.mocked(getRadioState).mockReturnValue(null);
