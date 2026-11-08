@@ -62,6 +62,7 @@ class AudioFftSource:
         self._fps = fps
         self._callbacks: list[Callable[[NativeFrame], None]] = []
         self._active = False
+        self._streaming = False
         self._frame_facts = facts()
         self.producer = self._make_producer()
 
@@ -112,6 +113,7 @@ class AudioFftSource:
         self.producer = self._make_producer()
         self.producer.on_frame(self._emit)
         self._active = True
+        self._streaming = True
         try:
             await self._tap.acquire(self._feed)
         except BaseException:
@@ -119,6 +121,7 @@ class AudioFftSource:
             raise
 
     async def stop(self) -> None:
+        self._streaming = False
         if not self._active:
             return
         try:
@@ -140,12 +143,19 @@ class AudioFftSource:
         return unsubscribe
 
     def _feed(self, pcm: bytes) -> None:
-        if self._active:
-            self._frame_facts = self._facts()
+        if self._streaming:
+            facts = self._facts()
+            if facts != self._frame_facts:
+                self.producer.stop()
+                self.producer = self._make_producer()
+                self.producer.on_frame(self._emit)
+            self._frame_facts = facts
             self.producer.set_center_freq(int(self._frame_facts.tuned_hz))
             self.producer.feed_audio(pcm)
 
     def _emit(self, frame: ScopeFrame) -> None:
+        if not self._streaming:
+            return
         facts = self._frame_facts
         positive = frame.pixels[len(frame.pixels) // 2 :]
         sign = 1 if facts.sideband == "upper" else -1
