@@ -1,3 +1,10 @@
+/**
+ * MOR-4298 Python counterpart:
+ * tests/test_civ_split_tx_frequency.py::test_ic7300_public_ingress_split_tx_matches_browser_golden.
+ * Both consume tests/golden/ic7300-split-tx-wire.json: identical CI-V replies
+ * produce the public state and managed-transmit API documents delivered here
+ * through the real WS client, runtime, HTTP client and mobile layout.
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
@@ -114,7 +121,7 @@ vi.mock('$lib/stores/audio.svelte', () => ({
 }));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
-    onChange: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), setOperatorNotifier: vi.fn() },
+    onChange: () => () => {}, onTxAudioDied: () => () => {}, getAppliedAudioConfig: () => null, start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(), setOperatorNotifier: vi.fn() },
 }));
 vi.mock('$lib/utils/tx-permit', async (importOriginal) => ({
   ...await importOriginal<typeof import('$lib/utils/tx-permit')>(),
@@ -2104,5 +2111,100 @@ describe('MobileRadioLayout radio-link line', () => {
     vi.mocked(getRigConnected).mockReturnValue(false);
     vi.mocked(getRadioLinkState).mockReturnValue('degraded');
     expect(lineIn(mountMobile())).toBeNull();
+  });
+});
+
+describe('MOR-4298 real mobile split TX wire seam', () => {
+  it.each([false, true])('landscape=%s: keeps the visible header on TX until observed RX', async (landscape) => {
+    vi.resetModules();
+    vi.doUnmock('$lib/stores/radio.svelte');
+    vi.doUnmock('$lib/stores/connection.svelte');
+    vi.doUnmock('$lib/stores/audio.svelte');
+    vi.doUnmock('$lib/stores/capabilities.svelte');
+    vi.doUnmock('$lib/stores/tuning.svelte');
+    vi.doUnmock('$lib/runtime/props/panel-props');
+    vi.doUnmock('$lib/runtime/commands/panel-commands');
+    vi.doUnmock('$lib/runtime/tx-controller/managed-app-host');
+    vi.doUnmock('$lib/transport/ws-client');
+    vi.doUnmock('$lib/utils/tx-permit');
+    vi.doUnmock('../../display/FrequencyDisplay.svelte');
+    vi.doUnmock('../../meters/LinearSMeter.svelte');
+    vi.doUnmock('../../panels/DockMeterPanel.svelte');
+    vi.doMock('../../../components/spectrum/SpectrumPanel.svelte', () => ({ default: function S() { return {}; } }));
+    const golden = JSON.parse(readFileSync('../tests/golden/ic7300-split-tx-wire.json', 'utf8')) as {
+      model: string;
+      steps: { name: string; envelope: Record<string, unknown>; managedTransmit: unknown; expectedHeaderHz: number }[];
+    };
+    const { default: stateGoldens } = await import('$lib/transport/__tests__/fixtures/state-wire-goldens.json');
+    const baseline = (stateGoldens as Record<string, {
+      capabilities: unknown; allUnobserved: Record<string, unknown>;
+    }>)[golden.model];
+    const { MockWebSocket, instances } = await import('$lib/transport/__tests__/support/fake-ws-backend');
+    const originalWebSocket = globalThis.WebSocket;
+    const originalFetch = globalThis.fetch;
+    let document = golden.steps[0].managedTransmit;
+    globalThis.fetch = vi.fn(async (input) => {
+      const url = String(input);
+      const body = url.includes('/managed-transmit') ? document
+        : url.includes('/capabilities') ? baseline.capabilities : {};
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
+    // @ts-expect-error install the server-side WS test double
+    globalThis.WebSocket = MockWebSocket;
+    instances.length = 0;
+    const svelte = await import('svelte');
+    const client = await import('$lib/transport/ws-client');
+    let mounted: ReturnType<typeof svelte.mount> | undefined;
+    try {
+      const { validateCapabilities } = await import('$lib/types/capabilities');
+      const capabilityStore = await import('$lib/stores/capabilities.svelte');
+      const radioStore = await import('$lib/stores/radio.svelte');
+      const managedStore = await import('$lib/stores/managed-transmit.svelte');
+      const { provideManagedAppTxHost } = await import('$lib/runtime/tx-controller/managed-app-host');
+      const { default: Layout } = await import('../MobileRadioLayout.svelte');
+      const capabilities = validateCapabilities(structuredClone(baseline.capabilities));
+      expect(capabilityStore.setCapabilities(capabilities)).toBe(true);
+      client.connect('ws://test/api/v1/ws');
+      const socket = instances[0]; socket.simulateOpen();
+      socket.simulateMessage(JSON.stringify({ type: 'state_update', data: baseline.allUnobserved }));
+      const target = window.document.createElement('div'); window.document.body.appendChild(target);
+      setViewport(landscape);
+      const HostedMobile = (anchor: Parameters<typeof Layout>[0], props: Parameters<typeof Layout>[1]) => {
+        const host = provideManagedAppTxHost({
+          registerPreDisconnectBarrier: () => () => {}, lifecycleReleaseSource: () => () => {},
+        });
+        svelte.onDestroy(host.dispose);
+        host.refreshAuthority(radioStore.getRadioState()?.providerGeneration ?? null);
+        return Layout(anchor, props);
+      };
+      mounted = svelte.mount(HostedMobile, { target }); svelte.flushSync();
+      const header = () => target.querySelector(landscape ? '.m-ls-vfo .freq' : '.m-vfo-freq .freq')
+        ?.textContent?.replace(/\s/g, '');
+      for (const step of golden.steps) {
+        document = step.managedTransmit;
+        socket.simulateMessage(JSON.stringify({ type: 'state_update', data: step.envelope }));
+        const previousRevision = managedStore.managedTransmitAppliedRevision();
+        socket.simulateMessage(JSON.stringify({ type: 'event', name: 'managed_transmit_changed' }));
+        await vi.waitFor(() => expect(managedStore.managedTransmitAppliedRevision()).toBeGreaterThan(previousRevision));
+        svelte.flushSync();
+        expect(radioStore.getRadioState()?.main.freqHz, step.name).toBe(29_600_000);
+        const expected = step.expectedHeaderHz === 29_100_000 ? '29.100.000' : '29.600.000';
+        expect(header(), step.name).toBe(expected);
+        if (step.expectedHeaderHz === 29_100_000) {
+          const commands = await import('$lib/stores/commands.svelte');
+          const id = `mor4298-${step.name}`;
+          const command = commands.beginCommand({ id, name: 'set_freq', params: { freq: 29_650_000, receiver: 0 }, originalEpoch: client.getControlSession().epoch });
+          svelte.flushSync();
+          expect(header(), 'pending RX tune must not replace TX frequency').toBe('29.100.000');
+          commands.failCommand(id, command.originalEpoch, command.originalEpoch, 'test completed');
+        }
+      }
+    } finally {
+      if (mounted) await svelte.unmount(mounted);
+      client.disconnect();
+      globalThis.WebSocket = originalWebSocket;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
   });
 });
