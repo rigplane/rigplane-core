@@ -37,20 +37,20 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => txHarness.controller,
 }));
 
-vi.mock('$lib/runtime', () => ({
-  runtime: {
-    // MOR-1312 slice 12B (rebase fix): `SemanticRadioSurfaces`'s scope-display
-    // snapshot reads `runtime.scope.hardwareScopeConnected` directly; this
-    // fixture's own `scope` store shape (`subscribe`) is unrelated but shares
-    // the same key. `AmberScope` here does not mount `SemanticRadioSurfaces`,
-    // so this is defensive rather than a live hazard.
-    scope: { subscribe: vi.fn(() => vi.fn()), hardwareScopeConnected: false },
-    defaultScopeStatus: {
-      source: null, available: false, resourceSelected: false, demand: 0,
-      lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+vi.mock('$lib/runtime', async () => {
+  const { ScopeStream } = await import('$lib/runtime/scope-stream');
+  const scopeStream = new ScopeStream({ subscribe: () => () => {}, close() {} },
+    { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed');
+  return {
+    runtime: {
+      scope: { stream: () => scopeStream, hardwareScopeConnected: false },
+      defaultScopeStatus: {
+        source: null, available: false, resourceSelected: false, demand: 0,
+        lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
+      },
     },
-  },
-}));
+  };
+});
 
 // panel-props is a presentation-only seam here; AGC gating is driven by the
 // real field-status resolver, not these adapters.
@@ -122,13 +122,15 @@ function agcChip(target: HTMLElement): HTMLElement | undefined {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   components = [];
   vi.clearAllMocks();
 });
 
-afterEach(() => {
-  components.forEach((c) => unmount(c));
+afterEach(async () => {
+  await Promise.all(components.map((c) => unmount(c)));
   document.body.innerHTML = '';
+  vi.unstubAllGlobals();
 });
 
 // ── Tests ───────────────────────────────────────────────────────────────────
