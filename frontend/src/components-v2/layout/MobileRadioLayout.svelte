@@ -218,6 +218,12 @@
     // spectrum — the same `hasSpectrum()` gate as the panorama itself.
     ...(hasSpectrum() ? [{ id: 'scope', label: t('core.mobile.chip.scope') }] : []),
     { id: 'scan', label: t('core.mobile.chip.scan') },
+    // MOR-4299 (item 3): the MEMORY chip carries the desktop's semantic
+    // Memory instrument (same controller/handlers/dialog). Ungated, like
+    // the desktop: the surface's own radio-side list keeps the
+    // `memory_read` gate (`memoryReadable` in SemanticRadioSurfaces), so a
+    // radio without it (e.g. IC-7300) still gets the memory channels here.
+    { id: 'memory', label: t('core.mobile.chip.memory') },
     { id: 'rf', label: t('core.mobile.chip.rf') },
     // DSP chip carries the level/threshold controls that ESSENTIALS exposes
     // only as on/off toggles (codex P2 on PR #925 — removing the SETUP
@@ -858,6 +864,19 @@
         <CollapsiblePanel title="SCAN" panelId="m-scan" collapsible={false}>
           <ScanPanel />
         </CollapsiblePanel>
+      </section>
+    {:else if activeChipId === 'memory'}
+      <section class="m-section" id="m-chip-panel-memory" role="tabpanel">
+        <!-- MOR-4299 (item 3): the desktop's semantic Memory instrument —
+             the same MemoryListController, the same getMemoryHandlers()
+             intents, the same dialog (SemanticRadioSurfaces' memorySurface
+             snippet); its SemanticControlPanel frame carries the MEMORY
+             title, so no panel wrapper of this layout's own. The explicit
+             `true` (allowBare) is the MOR-2895 SCOPE-tab precedent: the
+             mobile manifest declares no `memory` zone, and the hosted
+             mount's allowBareSurfaces is false, so without it `zoned()`
+             rendered NOTHING here. -->
+        {@render instruments.memory(true)}
       </section>
     {:else if activeChipId === 'rf'}
       <section class="m-section" id="m-chip-panel-rf" role="tabpanel">
