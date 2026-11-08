@@ -15,7 +15,9 @@ import type { Route } from '@playwright/test';
 import type { Capabilities } from '../../../src/lib/types/capabilities';
 import type { ServerState, ReceiverState } from '../../../src/lib/types/state';
 
-export const mockLocalControllerStatus = { protocol_version: 1, mode: 'local' } as const;
+// ControllerAuthority.status() for an idle local authority.
+export const mockLocalControllerStatus = { protocol_version: 1, mode: 'local', state: 'idle', generation: 0,
+  ttl_ms: 6000, heartbeat_ms: 2000, remaining_ms: 0 } as const;
 
 // MOR-3534: local-mode Core opens one controller session per browser —
 // POST /api/v1/controller answers 201 with a grant (docs/api/web.md;

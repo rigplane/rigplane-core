@@ -20,6 +20,7 @@ export class MockWebSocket {
   readyState = MockWebSocket.CONNECTING;
   binaryType = 'blob';
   url: string;
+  protocol: string;
   sent: string[] = [];
   // Opt-in: answer the client's JSON keepalive ping like a healthy server.
   answersPings = false;
@@ -29,8 +30,9 @@ export class MockWebSocket {
   onclose: ((e: { code: number; reason: string; wasClean: boolean }) => void) | null = null;
   onerror: (() => void) | null = null;
 
-  constructor(url: string) {
+  constructor(url: string, protocols: string | string[] = []) {
     this.url = url;
+    this.protocol = typeof protocols === 'string' ? protocols : protocols[0] ?? '';
     instances.push(this);
   }
 

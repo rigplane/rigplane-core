@@ -10,8 +10,9 @@ export interface LocalExtensionHostDeclaration {
 
 export function parseHostDeclaration(value: unknown): LocalExtensionHostDeclaration {
   const declaration = value as Partial<LocalExtensionHostDeclaration> | null;
-  return { version: 1, report: declaration?.version === 1 && declaration.report === true,
-    language: declaration?.version === 1 && declaration.language === true };
+  const valid = declaration?.version === 1 && typeof declaration.report === 'boolean' && typeof declaration.language === 'boolean';
+  return { version: 1, report: valid && declaration.report === true,
+    language: valid && declaration.language === true };
 }
 
 export function readHostDeclaration(doc: Document | undefined = globalThis.document): LocalExtensionHostDeclaration {

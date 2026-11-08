@@ -12,10 +12,11 @@ import type { ListeningSnapshot } from './host-ui';
 export function readListeningSnapshot(): ListeningSnapshot {
   const state = getRadioState();
   const caps = getCapabilities();
-  const props = toRxAudioProps(state, caps, getAudioState(), isAudioConnected());
+  const audio = { ...getAudioState() };
+  const props = toRxAudioProps(state, caps, audio, isAudioConnected());
   // Match makeRxAudioHandlers' routing even while mute/local teardown is pending.
   const live = runtime.rxEnabled;
-  const level = live ? getAudioState().volume / 100 : props.afLevel;
+  const level = live ? audio.volume / 100 : props.afLevel;
   const receiver = state?.active === 'SUB' ? 'sub' : 'main';
   const observedAf = !!state && (caps?.receivers === 1 || isFieldAvailable(state, 'active'))
     && isFieldAvailable(state, `${receiver}.afLevel`);

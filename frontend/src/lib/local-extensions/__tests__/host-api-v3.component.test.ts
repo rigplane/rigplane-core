@@ -4,26 +4,38 @@ import App from '../../../App.svelte';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 import { disconnectAll } from '$lib/transport/ws-client';
 import { validateCapabilities, type Capabilities } from '$lib/types/capabilities';
-import { mockCapabilities, mockState } from '../../../../tests/e2e/i18n/fixtures';
+import { mockCapabilities, mockState, mockLocalControllerStatus, mockControllerGrant } from '../../../../tests/e2e/i18n/fixtures';
+import type { InfoResponse } from '$lib/types/protocol';
+import { audioManager } from '$lib/audio/audio-manager';
 import { LOCAL_SUPERVISOR_META_NAME } from '../manifest';
 import { parseHostDeclaration, readHostDeclaration, getLayoutOptions, type LocalExtensionHostDeclaration } from '../host-ui';
 import type { ServerState } from '$lib/types/state';
 import type { LocalExtensionHostApiV3, LocalExtensionHostWindow } from '../host-api';
 
-vi.mock('$lib/media/media-session', () => ({ initMediaSession() {}, destroyMediaSession() {} }));
+vi.mock('$lib/media/media-session', () => ({ initMediaSession() {}, destroyMediaSession() {} } satisfies Pick<typeof import('$lib/media/media-session'), 'initMediaSession' | 'destroyMediaSession'>));
+const audioBoundary = vi.hoisted(() => ({ deferStop: false, finishStop: undefined as (() => void) | undefined }));
 vi.mock('$lib/audio/audio-manager', async () => {
-  const { setRxEnabled, getAudioState } = await import('$lib/stores/audio.svelte');
-  return { audioManager: {
-  onChange: () => () => {}, onTxAudioDied: () => () => {}, get rxEnabled() { return getAudioState().rxEnabled; },
-  setOperatorNotifier: vi.fn(), setControllerBinding: vi.fn(), destroy: vi.fn(),
-  startRx: () => setRxEnabled(true), stopRx: () => setRxEnabled(false), stopTx() {},
-  getAppliedAudioConfig: () => null, setRxVolume: vi.fn(),
-} }; });
+  const { setRxEnabled } = await import('$lib/stores/audio.svelte');
+  type BrowserAudio = typeof import('$lib/audio/audio-manager').audioManager;
+  let rxEnabled = false;
+  const setEnabled = (enabled: boolean) => { rxEnabled = enabled; setRxEnabled(enabled); };
+  const audioManager = {
+  onChange: () => () => {}, onTxAudioDied: () => () => {}, get rxEnabled() { return rxEnabled; },
+  setOperatorNotifier: vi.fn<BrowserAudio['setOperatorNotifier']>(), setControllerBinding: vi.fn<BrowserAudio['setControllerBinding']>(), destroy: vi.fn<BrowserAudio['destroy']>(),
+  startRx: () => setEnabled(true), stopRx: () => {
+    if (audioBoundary.deferStop) audioBoundary.finishStop = () => setEnabled(false); else setEnabled(false);
+  }, stopTx() {},
+  getAppliedAudioConfig: () => null, setRxVolume: vi.fn<BrowserAudio['setRxVolume']>(),
+  };
+  return { audioManager: audioManager satisfies Pick<BrowserAudio, keyof typeof audioManager> };
+});
 
 let app: ReturnType<typeof mount> | undefined;
 let caps: Capabilities;
 let powerFails = false;
 const requests: Array<{ url: string; init?: RequestInit }> = [];
+const info: InfoResponse = { version: 'test', revision: 1, updatedAt: '2026-01-01T00:00:00Z', uptime: 0 };
+const viewport = { width: window.innerWidth, height: window.innerHeight };
 const host = () => (window as LocalExtensionHostWindow).rigplaneExtensionHost as LocalExtensionHostApiV3;
 const button = (id: string) => document.querySelector<HTMLButtonElement>(`[data-testid="confirm-dialog-${id}"]`)!;
 const commands = () => instances.flatMap(socket => socket.sent.map(frame => JSON.parse(frame))).filter(frame => frame.type === 'cmd');
@@ -51,6 +63,8 @@ async function start(receivers: 1 | 2) {
 
 beforeEach(() => {
   requests.length = 0; instances.length = 0; powerFails = false;
+  audioBoundary.deferStop = false; audioBoundary.finishStop = undefined;
+  vi.clearAllMocks();
   localStorage.clear(); resize(1400);
   vi.stubGlobal('WebSocket', MockWebSocket);
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
@@ -62,16 +76,20 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     requests.push({ url, init });
     const body = url.endsWith('/capabilities') ? caps : url.endsWith('/controller')
-      ? { protocol_version: 1, mode: 'local' } : { version: 'test' };
-    const status = url.endsWith('/controller') && init?.method === 'POST' ? 403
+      ? init?.method === 'POST' ? mockControllerGrant : mockLocalControllerStatus
+      : url.endsWith('/info') ? info : url.endsWith('/radio/power')
+        ? powerFails ? { error: 'power unavailable' } : { status: 'ok', power: JSON.parse(init!.body as string).state } : {};
+    const status = url.endsWith('/controller') && init?.method === 'POST' ? 201
       : url.endsWith('/radio/power') && powerFails ? 503 : 200;
-    return { status, ok: status === 200, json: async () => body, text: async () => 'power unavailable' };
+    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
   }));
 });
 afterEach(async () => {
   if (app) { await unmount(app); app = undefined; }
   disconnectAll(); document.body.replaceChildren();
   vi.restoreAllMocks(); vi.unstubAllGlobals();
+  resize(viewport.width, viewport.height);
+  document.querySelector(`meta[name="${LOCAL_SUPERVISOR_META_NAME}"]`)?.remove();
 });
 
 describe('installed host API v3 with production UI handlers', () => {
@@ -92,7 +110,10 @@ describe('installed host API v3 with production UI handlers', () => {
     expect(host().getListening()).toEqual(muted);
     expect(host().setListeningMode('live')).toBe(true);
     expect(host().getListening()).toMatchObject({ mode: 'live', target: 'playback' });
+    const radioCommands = commands().length;
     expect(host().setListeningLevel(0.35)).toBe(true);
+    expect(audioManager.setRxVolume).toHaveBeenCalledWith(0.35);
+    expect(commands()).toHaveLength(radioCommands);
     expect(host().getListening().level).toBe(0.35);
     flushSync();
     const mute = Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent?.trim() === 'MUTE');
@@ -104,6 +125,28 @@ describe('installed host API v3 with production UI handlers', () => {
     expect(host().setListeningLevel(-1)).toBe(false);
     expect(host().setListeningLevel(99)).toBe(false);
   }, 30000);
+
+  it('republishes the radio target when deferred RX teardown completes while muted', async () => {
+    await start(1);
+    const listening = vi.fn(); const stop = host().subscribeListening(listening);
+    host().setListeningMode('live'); flushSync();
+    audioBoundary.deferStop = true;
+    host().setListeningMode('mute'); flushSync();
+    await vi.waitFor(() => expect(audioBoundary.finishStop).toBeDefined());
+    expect(listening.mock.lastCall?.[0]).toMatchObject({ mode: 'mute', target: 'playback' });
+    audioBoundary.finishStop!(); flushSync();
+    expect(listening.mock.lastCall?.[0]).toMatchObject({ mode: 'mute', target: 'radio', maxLevel: 1 });
+    stop();
+  });
+
+  it.each([{ version: 1, report: true, language: 'true' }, { version: 1, language: true }])('preserves standalone controls for invalid declaration %j', async declaration => {
+    const meta = document.createElement('meta'); meta.name = LOCAL_SUPERVISOR_META_NAME;
+    meta.content = JSON.stringify(declaration); document.head.append(meta);
+    await start(1);
+    expect(document.querySelector('.report-btn')).not.toBeNull();
+    host().openRadioControls(); flushSync();
+    expect(document.querySelector('.language-selector')).not.toBeNull();
+  });
 
   it('shares confirmations with UI buttons and keeps actions through desktop, mobile and LCD', async () => {
     await start(1);
