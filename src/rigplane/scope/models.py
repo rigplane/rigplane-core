@@ -96,6 +96,10 @@ class SourceCapabilities:
     native_width: int | None
     max_fps: float
     coverage_rule: str
+    receiver_native_widths: tuple[tuple[int | None, int], ...] = ()
+
+    def native_width_for(self, receiver: int | None) -> int | None:
+        return dict(self.receiver_native_widths).get(receiver, self.native_width)
 
     def __post_init__(self) -> None:
         if not isinstance(self.receivers, tuple) or not self.receivers:
@@ -116,6 +120,18 @@ class SourceCapabilities:
                 raise ValueError("span must be positive")
         if self.native_width is not None:
             _integer(self.native_width, "native_width", 65535, 1)
+        if not isinstance(self.receiver_native_widths, tuple):
+            raise ValueError("receiver_native_widths must be a tuple")
+        seen: set[int | None] = set()
+        for entry in self.receiver_native_widths:
+            if not isinstance(entry, tuple) or len(entry) != 2:
+                raise ValueError("invalid receiver native width")
+            receiver, width = entry
+            _receiver(receiver)
+            if receiver not in self.receivers or receiver in seen:
+                raise ValueError("invalid receiver native width")
+            _integer(width, "native_width", 65535, 1)
+            seen.add(receiver)
         _number(self.max_fps, "max_fps")
         if (
             self.max_fps == 0

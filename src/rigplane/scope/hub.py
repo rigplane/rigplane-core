@@ -10,6 +10,7 @@ from .models import (
     Coverage,
     FollowView,
     GrantedSubscription,
+    GrantedView,
     NativeFrame,
     ScopeSourcePlugin,
     ScopeWireFrame,
@@ -157,7 +158,10 @@ class ScopeHub:
             caps = source.plugin.capabilities()
             if request.receiver not in caps.receivers:
                 raise ValueError("receiver is not supported by this source")
-            first = not source.clients
+            positive = request.max_fps > 0
+            first = positive and not any(
+                client.granted.max_fps > 0 for client in source.clients
+            )
             if first and source.stop_pending:
                 await _finish(self._stop(source))
             try:
@@ -170,8 +174,16 @@ class ScopeHub:
                         )
                     )
                     await source.plugin.start()
-                grant = await source.plugin.set_view(request.view, request.receiver)
+                grant = (
+                    await source.plugin.set_view(request.view, request.receiver)
+                    if positive
+                    else GrantedView(
+                        source.plugin.resolve_view(request.view, request.receiver),
+                        source.plugin.coverage_for(request.view, request.receiver),
+                    )
+                )
                 caps = source.plugin.capabilities()
+                native_width = caps.native_width_for(request.receiver)
                 subscription = HubSubscription(
                     self,
                     source,
@@ -184,8 +196,8 @@ class ScopeHub:
                         # No upsampling: a request wider than the source's
                         # native bins is granted at native resolution, and
                         # the granted message reports the actual width.
-                        min(request.width, caps.native_width)
-                        if caps.native_width is not None
+                        min(request.width, native_width)
+                        if native_width is not None
                         else request.width,
                         min(request.max_fps, caps.max_fps),
                     ),
@@ -211,12 +223,17 @@ class ScopeHub:
         source = client._source
         async with source.lock:
             if client._closed:
-                if not source.clients and source.stop_pending:
+                if (
+                    not any(c.granted.max_fps > 0 for c in source.clients)
+                    and source.stop_pending
+                ):
                     await _finish(self._stop(source))
                 return
             client._discard()
             source.clients.remove(client)
-            if not source.clients:
+            if not any(client.granted.max_fps > 0 for client in source.clients) and (
+                source.unsubscribe is not None or source.stop_pending
+            ):
                 try:
                     self._detach(source)
                 finally:
@@ -261,7 +278,7 @@ class ScopeHub:
         native_width = (
             frame.native_width
             if frame.native_width is not None
-            else source.plugin.capabilities().native_width
+            else source.plugin.capabilities().native_width_for(frame.receiver)
         )
         for client in tuple(source.clients):
             if client.granted.receiver != frame.receiver:

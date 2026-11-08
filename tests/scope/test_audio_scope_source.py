@@ -323,10 +323,15 @@ async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(
         await source.stop()
 
 
-@pytest.mark.parametrize("sideband,lo,hi,width", [
-    ("upper", 0, 2400, 103), ("lower", -2400, 0, 103),
-    ("both", -1200, 1200, 103), ("both", -1800, 1800, 153),
-])
+@pytest.mark.parametrize(
+    "sideband,lo,hi,width",
+    [
+        ("upper", 0, 2400, 103),
+        ("lower", -2400, 0, 103),
+        ("both", -1200, 1200, 103),
+        ("both", -1800, 1800, 153),
+    ],
+)
 async def test_real_pcm_hub_grants_only_emitted_crop_bins(sideband, lo, hi, width):
     from rigplane.scope.hub import ScopeHub
     from rigplane.scope.models import Subscription
@@ -341,7 +346,11 @@ async def test_real_pcm_hub_grants_only_emitted_crop_bins(sideband, lo, hi, widt
     view = View(facts.tuned_hz + lo, facts.tuned_hz + hi)
     sub = await hub.subscribe(Subscription("audio", None, view, 1024, 20))
     try:
-        pcm = (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000)).astype("<i2").tobytes()
+        pcm = (
+            (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000))
+            .astype("<i2")
+            .tobytes()
+        )
         tap.callback(pcm)
         assert len(native[-1].pixels) == width
         assert encoded[-1].width == sub.granted.width == width
@@ -351,12 +360,15 @@ async def test_real_pcm_hub_grants_only_emitted_crop_bins(sideband, lo, hi, widt
         await sub.close()
 
 
-async def test_real_pcm_crop_width_changes_update_existing_hub_client(virtual_clock, monkeypatch):
+async def test_real_pcm_crop_width_changes_update_existing_hub_client(
+    virtual_clock, monkeypatch
+):
     import rigplane.audio.fft_scope as fft_module
     from rigplane.scope.hub import ScopeHub
     from rigplane.scope.models import Subscription
 
     from types import SimpleNamespace
+
     monkeypatch.setattr(fft_module, "time", SimpleNamespace(monotonic=virtual_clock))
     await virtual_clock.elapse(1)
     facts = AudioPassband(14_100_000, 0, 2400, "upper")
@@ -365,10 +377,20 @@ async def test_real_pcm_crop_width_changes_update_existing_hub_client(virtual_cl
     encoded = []
     hub = ScopeHub(encoder=lambda frame: encoded.append(frame) or b"frame")
     hub.register("audio", source)
-    sub = await hub.subscribe(Subscription("audio", None, View(14_097_600, 14_102_400), 2800, 20))
+    sub = await hub.subscribe(
+        Subscription("audio", None, View(14_097_600, 14_102_400), 2800, 20)
+    )
     try:
-        pcm = (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000)).astype("<i2").tobytes()
-        for lo, hi, sideband, width in [(0, 2400, "upper", 103), (-1200, 0, "lower", 52), (-1800, 1800, "both", 153)]:
+        pcm = (
+            (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000))
+            .astype("<i2")
+            .tobytes()
+        )
+        for lo, hi, sideband, width in [
+            (0, 2400, "upper", 103),
+            (-1200, 0, "lower", 52),
+            (-1800, 1800, "both", 153),
+        ]:
             facts = AudioPassband(14_100_000, lo, hi, sideband)
             await virtual_clock.elapse(0.1)
             tap.callback(pcm)
@@ -380,7 +402,9 @@ async def test_real_pcm_crop_width_changes_update_existing_hub_client(virtual_cl
 
 
 @pytest.mark.parametrize("model", ["ic7300", "ftx1"])
-@pytest.mark.parametrize("mode", ["AM", "FM", "WFM", "AM-N", "FM-N", "DATA-FM", "DATA-FM-N"])
+@pytest.mark.parametrize(
+    "mode", ["AM", "FM", "WFM", "AM-N", "FM-N", "DATA-FM", "DATA-FM-N"]
+)
 async def test_symmetric_web_mode_real_pcm_reaches_both_rf_halves(model, mode):
     from rigplane.web.server import WebServer, WebConfig
     from rigplane.web.scope_sources import WebScopePcmTap
@@ -396,15 +420,24 @@ async def test_symmetric_web_mode_real_pcm_reaches_both_rf_halves(model, mode):
     encoded = []
     hub = ScopeHub(encoder=lambda frame: encoded.append(frame) or b"frame")
     hub.register("audio", source)
-    sub = await hub.subscribe(Subscription("audio", None, View(14_098_800, 14_101_200), 1024, 20))
+    sub = await hub.subscribe(
+        Subscription("audio", None, View(14_098_800, 14_101_200), 1024, 20)
+    )
     try:
-        pcm = (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000)).astype("<i2").tobytes()
+        pcm = (
+            (16000 * np.sin(2 * np.pi * 700 * np.arange(2048) / 48000))
+            .astype("<i2")
+            .tobytes()
+        )
         tap.callback(pcm)
         frame = encoded[-1]
         assert facts().sideband == "both"
-        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (14_098_800, 14_101_200)
-        assert max(frame.pixels[:len(frame.pixels)//2]) >= 100
-        assert max(frame.pixels[len(frame.pixels)//2:]) >= 100
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+            14_098_800,
+            14_101_200,
+        )
+        assert max(frame.pixels[: len(frame.pixels) // 2]) >= 100
+        assert max(frame.pixels[len(frame.pixels) // 2 :]) >= 100
     finally:
         await sub.close()
 
@@ -446,12 +479,22 @@ async def test_symmetric_mode_wider_than_pcm_nyquist_reports_only_available_rf()
     hub.register("audio", source)
     sub = await hub.subscribe(Subscription("audio", None, view, 4096, 20))
     try:
-        pcm = (16000 * np.sin(2 * np.pi * 1000 * np.arange(2048) / 48000)).astype("<i2").tobytes()
+        pcm = (
+            (16000 * np.sin(2 * np.pi * 1000 * np.arange(2048) / 48000))
+            .astype("<i2")
+            .tobytes()
+        )
         tap.callback(pcm)
         frame = encoded[-1]
         assert frame.width == 2049
-        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (view.start_hz, view.end_hz)
-        for pixels, start in ((frame.pixels[:1024], view.start_hz), (frame.pixels[1024:], facts.tuned_hz)):
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+            view.start_hz,
+            view.end_hz,
+        )
+        for pixels, start in (
+            (frame.pixels[:1024], view.start_hz),
+            (frame.pixels[1024:], facts.tuned_hz),
+        ):
             peak = int(np.argmax(np.frombuffer(pixels, dtype=np.uint8)))
             peak_hz = start + peak * 48000 / 2048
             assert abs(abs(peak_hz - facts.tuned_hz) - 1000) < 50

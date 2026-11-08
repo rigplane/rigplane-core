@@ -13,8 +13,8 @@ from test_audio_scope_dispatch import _seed_audio_facts
     [
         ("USB", 0, 2400, "upper"),
         ("LSB", -2400, 0, "lower"),
-        ("AM", -1200, 1200, "upper"),
-        ("FM", -1200, 1200, "upper"),
+        ("AM", -1200, 1200, "both"),
+        ("FM", -1200, 1200, "both"),
     ],
 )
 def test_audio_passband_reads_observed_provider_geometry(
@@ -140,10 +140,10 @@ def test_explicit_cw_side_still_requires_observed_pitch(code):
     [
         ("8", -2400, 0, "lower"),
         ("C", 0, 2400, "upper"),
-        ("D", -1200, 1200, "upper"),
-        ("B", -1200, 1200, "upper"),
-        ("A", -1200, 1200, "upper"),
-        ("F", -1200, 1200, "upper"),
+        ("D", -1200, 1200, "both"),
+        ("B", -1200, 1200, "both"),
+        ("A", -1200, 1200, "both"),
+        ("F", -1200, 1200, "both"),
     ],
 )
 def test_explicit_audio_alias_from_producer_profile_uses_existing_geometry(

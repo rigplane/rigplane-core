@@ -50,9 +50,12 @@ class RadioScopeSource:
             raise ValueError("radio scope requires profile span presets")
         self._callbacks: list[Callable[[NativeFrame], None]] = []
         self._active = False
+        self._native_widths: dict[int, int] = {}
 
     def capabilities(self) -> SourceCapabilities:
-        return self._caps
+        return replace(
+            self._caps, receiver_native_widths=tuple(self._native_widths.items())
+        )
 
     def _receiver(self, receiver: int | None) -> int:
         selected = 0 if receiver is None else receiver
@@ -115,8 +118,11 @@ class RadioScopeSource:
     def feed_frame(self, frame: ScopeFrame) -> None:
         if not self._active:
             return
-        if frame.pixels and self._caps.native_width != len(frame.pixels):
-            self._caps = replace(self._caps, native_width=len(frame.pixels))
+        receiver = self._receiver(frame.receiver)
+        native_width = self._native_widths.get(receiver)
+        if frame.pixels and not frame.out_of_range:
+            native_width = len(frame.pixels)
+            self._native_widths[receiver] = native_width
         start, end = frame.start_freq_hz, frame.end_freq_hz
         if frame.out_of_range and frame.mode == 0:
             start, end = start - end, start + end
@@ -125,7 +131,7 @@ class RadioScopeSource:
             Coverage(start, end),
             frame.pixels or None,
             frame.out_of_range,
-            native_width=self._caps.native_width,
+            native_width=native_width,
         )
         for callback in tuple(self._callbacks):
             callback(native)

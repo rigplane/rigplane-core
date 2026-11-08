@@ -136,7 +136,7 @@ async def test_demand_paused_and_shared_bytes(virtual_clock):
     assert not pending.done()
     for subscription in (a, b, desktop):
         await subscription.close()
-    assert source.stops == 0
+    assert source.stops == 1
     await paused.close()
     with pytest.raises(StopAsyncIteration):
         await pending
@@ -564,7 +564,7 @@ async def test_queued_radio_frames_keep_their_observed_width_snapshot():
     await await_until(lambda: len(encoder.frames) == 2)
     assert [frame.width for frame in encoder.frames] == [475, 689]
     assert [len(frame.pixels) for frame in encoder.frames] == [475, 689]
-    assert source.capabilities().native_width == 689
+    assert source.capabilities().native_width_for(0) == 689
     await sub.close()
 
 
@@ -607,15 +607,35 @@ async def test_observed_widths_are_receiver_scoped_for_existing_and_new_clients(
     other = await hub.subscribe(Subscription("radio", 1, view, 2800, 20))
     new = []
     try:
-        source.feed_frame(ScopeFrame(0, 1, view.start_hz, view.end_hz, bytes([160])*475, False))
-        source.feed_frame(ScopeFrame(1, 1, view.start_hz, view.end_hz, bytes([160])*689, False))
-        for oor in (False, True):
-            source.feed_frame(ScopeFrame(0, 1, view.start_hz, view.end_hz, b"", oor))
+        source.feed_frame(
+            ScopeFrame(0, 1, view.start_hz, view.end_hz, bytes([160]) * 475, False)
+        )
+        source.feed_frame(
+            ScopeFrame(1, 1, view.start_hz, view.end_hz, bytes([160]) * 689, False)
+        )
+        for oor, pixels in ((False, b""), (True, b""), (True, b"\x01")):
+            source.feed_frame(ScopeFrame(0, 1, view.start_hz, view.end_hz, pixels, oor))
             assert first.granted.width == 475
             assert other.granted.width == 689
         for receiver, width in ((0, 475), (1, 689)):
-            new.append(await hub.subscribe(Subscription("radio", receiver, view, 2800, 20)))
+            new.append(
+                await hub.subscribe(Subscription("radio", receiver, view, 2800, 20))
+            )
             assert new[-1].granted.width == width
     finally:
         for sub in [first, other, *new]:
             await sub.close()
+
+
+async def test_failed_stop_retries_with_retained_paused_subscription():
+    hub, source, _ = setup()
+    active = await hub.subscribe(request())
+    paused = await hub.subscribe(request(fps=0))
+    source.fail_stop = True
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await active.close()
+    source.fail_stop = False
+    await active.close()
+    assert source.stops == 2
+    await paused.close()
+    assert source.stops == 2

@@ -79,3 +79,19 @@ def test_capability_contract():
 
 def test_capabilities_do_not_offer_unused_edge_limits():
     assert "edge_limits_hz" not in {f.name for f in fields(SourceCapabilities)}
+
+
+def test_native_widths_resolve_only_matching_receiver_with_scalar_fallback():
+    caps = SourceCapabilities(
+        (0, 1), ("center",), (), None, 30, "observed", ((0, 475),)
+    )
+    assert caps.native_width_for(0) == 475
+    assert caps.native_width_for(1) is None
+    declared = SourceCapabilities(
+        (0, 1), ("center",), (), 689, 30, "declared", ((0, 475),)
+    )
+    assert declared.native_width_for(0) == 475 and declared.native_width_for(1) == 689
+    with pytest.raises(ValueError, match="receiver native width"):
+        SourceCapabilities(
+            (0, 1), ("center",), (), None, 30, "observed", ((0, 475), (0, 689))
+        )

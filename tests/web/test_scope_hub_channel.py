@@ -260,6 +260,8 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
                 server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(
                     np.ones(8192, dtype=np.int16).tobytes()
                 )
+                updated = await a.receive_json(timeout=5)
+                assert updated["type"] == "granted" and updated["width"] == 103
                 audio = await a.receive(timeout=5)
                 assert decode_scope_frame_v2(audio.data).source == "audio_fft"
                 await a.send_json({"type": "unsubscribe"})
@@ -495,7 +497,7 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind,native_width", [("radio", 2800), ("audio_fft", 2049)])
+@pytest.mark.parametrize("kind,native_width", [("radio", 2800), ("audio_fft", 2800)])
 async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previous(
     kind,
     native_width,
@@ -540,7 +542,7 @@ async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previo
             )
         )
         assert next(iter(handler._streams.values())).subscription is not previous
-        # Radio width is provisional until a frame arrives; FFT width is known.
+        # Both observed-source widths are provisional until their first frame.
         assert (
             next(iter(handler._streams.values())).subscription.granted.width
             == native_width
@@ -840,7 +842,7 @@ async def test_observed_native_width_regrants_before_binary_for_existing_client(
             )
             await virtual_clock.elapse(0.1)
             await await_until(lambda: len(ws.binary) == index + 1)
-            assert source.capabilities().native_width == width
+            assert source.capabilities().native_width_for(0) == width
             assert (
                 next(iter(handler._streams.values())).subscription.granted.width
                 == width

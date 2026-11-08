@@ -126,9 +126,8 @@ class WebScopePcmTap:
             )
         lower = mode == "LSB"
         if mode in ("AM", "FM", "WFM"):
-            low, high = -width / 2, width / 2
-        else:
-            low, high = (-width, 0) if lower else (0, width)
+            return AudioPassband(frequency, -width / 2, width / 2, "both")
+        low, high = (-width, 0) if lower else (0, width)
         return AudioPassband(frequency, low, high, "lower" if lower else "upper")
 
     async def acquire(self, callback: Callable[[bytes], None]) -> None:
