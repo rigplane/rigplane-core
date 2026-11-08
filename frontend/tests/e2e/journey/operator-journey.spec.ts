@@ -1,5 +1,6 @@
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import { startJourneyServer, type JourneyServerHandle } from './server-process';
 
 /**
@@ -611,6 +612,36 @@ async function installPanoramaWitness(page: Page): Promise<void> {
 async function panoramaWitness(page: Page): Promise<PanoramaWitness> {
   return page.evaluate(() => (window as Window & { __PANORAMA__?: PanoramaWitness }).__PANORAMA__!);
 }
+
+test('MOR-4273 panorama witness accepts producer frames and requests both receivers', async ({ page }) => {
+  const golden = await readFile(new URL('../../../../tests/fixtures/scope-wire/radio.bin', import.meta.url));
+  const expected = JSON.parse(await readFile(new URL('../../../../tests/fixtures/scope-wire/radio.json', import.meta.url), 'utf8'));
+  const requests: ScopeSubscription[] = [];
+  await page.routeWebSocket('ws://scope-witness.invalid/api/v1/scope', socket => {
+    socket.onMessage(message => {
+      const request = JSON.parse(String(message)) as ScopeSubscription & { type: string };
+      if (request.type === 'subscribe') {
+        requests.push(request);
+        if (request.receiver === 0) socket.send(golden);
+      }
+    });
+  });
+  await installPanoramaWitness(page);
+  await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+  const request: ScopeSubscription = {
+    sourceId: 'radio', receiver: 0, view: { follow: 'vfo', spanHz: 200_000 }, width: 689, maxFps: 20,
+  };
+  await page.evaluate(request => {
+    const socket = new WebSocket('ws://scope-witness.invalid/api/v1/scope');
+    socket.binaryType = 'arraybuffer';
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'subscribe', ...request })));
+  }, request);
+  await expect.poll(async () => (await panoramaWitness(page)).frames).toEqual([
+    expect.objectContaining({ receiver: expected.receiver, sequence: expected.seq, pixels: expected.width,
+      start: expected.view_start_hz, end: expected.view_end_hz }),
+  ]);
+  await expect.poll(() => requests.map(request => request.receiver)).toEqual([0, 1]);
+});
 
 const panoramaTest = test.extend({
   launchOptions: {
