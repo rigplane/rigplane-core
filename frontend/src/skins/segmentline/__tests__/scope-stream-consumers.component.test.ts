@@ -38,7 +38,11 @@ describe('LCD leaves consume ScopeStream directly', () => {
       expect(publish).toHaveBeenCalledTimes(1);
       stream.handleMessage({ type: 'error', message: 'audio mapping unavailable' }); flushSync();
       expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
-      radio.current = observedState as unknown as ServerState; flushSync();
+      const usable = structuredClone(observedState) as unknown as ServerState;
+      usable.main.filterWidth = 2400;
+      usable.fieldStatus!['main.filterWidth'] = { ...usable.fieldStatus!['main.freqHz']!,
+        storePath: 'receiver.main.active.freq_mode.filter_width' };
+      radio.current = usable; flushSync();
       expect(publish).toHaveBeenCalledTimes(2);
       expect(publish.mock.lastCall?.[0]).toMatchObject({ receiver: null, view: { follow: 'vfo', spanHz: 48000 } });
       stream.handleMessage({ type: 'error', message: 'same facts rejected' }); flushSync();
