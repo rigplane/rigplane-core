@@ -128,7 +128,7 @@ export function createLocalExtensionHostApi(
     },
     setListeningLevel(level) {
       const listening = getListening();
-      if (!listening.enabled || !Number.isFinite(level) || level < 0 || level > listening.maxLevel
+      if (!listening.enabled || listening.mode === 'mute' || !Number.isFinite(level) || level < 0 || level > listening.maxLevel
         || listening.level === null) return false;
       makeRxAudioHandlers().onAfLevelChange(level);
       return true;

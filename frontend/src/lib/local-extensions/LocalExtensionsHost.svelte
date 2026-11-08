@@ -5,8 +5,54 @@
   import { getLayoutMode } from '$lib/stores/layout.svelte';
   import { getTheme } from '../../components-v2/theme/theme-switcher';
   import { runtime } from '$lib/runtime';
-  import { publishHostSnapshot, publishListening } from './host-ui';
+  import { bindHostUi, openHostRadioControls, publishHostSnapshot, publishListening } from './host-ui';
   import { readListeningSnapshot } from './host-listening';
+  import { t } from '$lib/i18n';
+  import ConfirmDialog from '../../components-v2/dialogs/ConfirmDialog.svelte';
+  import BottomSheet from '../../components-v2/controls/BottomSheet.svelte';
+  import AgcPanel from '../../components-v2/panels/AgcPanel.svelte';
+  import RitXitPanel from '../../components-v2/panels/RitXitPanel.svelte';
+  import AntennaPanel from '../../components-v2/panels/AntennaPanel.svelte';
+  import CwPanel from '../../components-v2/panels/CwPanel.svelte';
+
+  type PendingConfirm = { message: string; action: () => void | Promise<void>; formatError?: (err: unknown) => string };
+  let confirmOpen = $state(false), confirmMessage = $state(''), confirmError = $state<string | null>(null);
+  let confirmBusy = $state(false), controlsOpen = $state(false);
+  let pendingConfirm: PendingConfirm | null = null;
+  function requestConfirm(request: PendingConfirm) {
+    pendingConfirm = request; confirmMessage = request.message; confirmError = null; confirmOpen = true;
+  }
+  function handleConfirmCancel() { confirmOpen = false; confirmError = null; pendingConfirm = null; }
+  async function handleConfirmOk() {
+    const request = pendingConfirm;
+    if (!request || confirmBusy) return;
+    confirmBusy = true;
+    try {
+      await request.action();
+      if (pendingConfirm === request) { confirmOpen = false; pendingConfirm = null; }
+    } catch (err) {
+      if (pendingConfirm === request) confirmError = request.formatError ? request.formatError(err) : String(err);
+    } finally { confirmBusy = false; }
+  }
+  function requestConnection(connect: boolean): boolean {
+    if ((getConnectionStatus() === 'connected') === connect) return false;
+    requestConfirm({ message: t(connect ? 'core.statusbar.connection.confirmConnect' : 'core.statusbar.connection.confirmDisconnect'),
+      action: () => connect ? runtime.system.connect() : runtime.system.disconnect() });
+    return true;
+  }
+  function requestPower(on: boolean): boolean {
+    if (!hasCapability('power_control') || runtime.remoteController || getRadioPowerOn() === null || getRadioPowerOn() === on) return false;
+    requestConfirm({ message: t(on ? 'core.statusbar.power.confirmTurnOn' : 'core.statusbar.power.confirmTurnOff'),
+      action: () => getRadioPowerOn() === null ? undefined : on ? runtime.system.powerOn() : runtime.system.powerOff(),
+      formatError: err => t(on ? 'core.statusbar.power.failedTurnOn' : 'core.statusbar.power.failedTurnOff', { detail: String(err) }) });
+    return true;
+  }
+  onMount(() => bindHostUi({ connect: () => requestConnection(true), disconnect: () => requestConnection(false),
+    setRadioPower: requestPower, openRadioControls: () => {
+      if (runtime.remoteController) return false;
+      if (!openHostRadioControls()) controlsOpen = true;
+      return true;
+    } }));
 
   // Reactive reads observe UI-originated changes as well as extension requests.
   $effect(() => {
@@ -199,6 +245,13 @@
     };
   });
 </script>
+
+<ConfirmDialog open={confirmOpen} message={confirmMessage} error={confirmError} busy={confirmBusy}
+  confirmLabel={t('common.action.ok')} cancelLabel={t('common.action.cancel')}
+  onConfirm={handleConfirmOk} onCancel={handleConfirmCancel} />
+<BottomSheet bind:open={controlsOpen} title={t('core.settings.dialogLabel')}>
+  <AgcPanel /><RitXitPanel /><AntennaPanel /><CwPanel />
+</BottomSheet>
 
 {#if renderedExtensions.length > 0}
   <aside class="local-extension-host" aria-label="Local extensions">

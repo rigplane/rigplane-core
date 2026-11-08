@@ -1,4 +1,5 @@
 import type { CanonicalLayoutMode } from '$lib/stores/layout.svelte';
+import { LOCAL_SUPERVISOR_META_NAME } from './manifest';
 
 /** Injected by the embedding host, never by an extension manifest. */
 export interface LocalExtensionHostDeclaration {
@@ -16,7 +17,7 @@ export function parseHostDeclaration(value: unknown): LocalExtensionHostDeclarat
 export function readHostDeclaration(doc: Document | undefined = globalThis.document): LocalExtensionHostDeclaration {
   try {
     return parseHostDeclaration(JSON.parse(doc?.querySelector<HTMLMetaElement>(
-      'meta[name="rigplane-host-controls"]',
+      `meta[name="${LOCAL_SUPERVISOR_META_NAME}"]`,
     )?.content ?? 'null'));
   } catch {
     return parseHostDeclaration(null);
@@ -35,7 +36,7 @@ export interface ListeningSnapshot {
   mode: 'local' | 'live' | 'mute';
   /** Normalized radio AF, or browser gain (which may exceed unity). */
   level: number | null;
-  target: 'radio' | 'browser';
+  target: 'radio' | 'playback';
   enabled: boolean;
   maxLevel: number;
 }
@@ -49,6 +50,16 @@ export interface HostUi {
 }
 
 let ui: HostUi | null = null;
+let radioControls: (() => void) | undefined;
+export function bindHostRadioControls(open: (() => void) | undefined): () => void {
+  radioControls = open;
+  return () => { if (radioControls === open) radioControls = undefined; };
+}
+export function openHostRadioControls(): boolean {
+  if (!radioControls) return false;
+  radioControls();
+  return true;
+}
 export function bindHostUi(binding: HostUi): () => void {
   ui = binding;
   return () => { if (ui === binding) ui = null; };

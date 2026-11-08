@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Capabilities } from '$lib/types/capabilities';
+import { validateCapabilities } from '$lib/types/capabilities';
+import { mockCapabilities } from '../../../../tests/e2e/i18n/fixtures';
 import type { ServerState } from '$lib/types/state';
 import { connect, disconnect } from '$lib/transport/ws-client';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
@@ -31,7 +32,7 @@ describe('createLocalExtensionHostApi', () => {
 
   it('exposes a versioned state and capabilities API', () => {
     const state = { revision: 7 } as ServerState;
-    const capabilities = { model: 'TEST', capabilities: [] } as unknown as Capabilities;
+    const capabilities = validateCapabilities({ ...mockCapabilities, model: 'TEST', capabilities: [] });
     const api = createLocalExtensionHostApi({
       getState: () => state,
       getCapabilities: () => capabilities,

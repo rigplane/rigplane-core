@@ -22,7 +22,7 @@ export function readListeningSnapshot(): ListeningSnapshot {
   return { mode: props.monitorMode,
     level: Number.isFinite(level) && (live || (observedAf && caps?.capabilities.includes('af_level')))
       ? level : null,
-    target: live ? 'browser' : 'radio',
+    target: live ? 'playback' : 'radio',
     enabled: getConnectionStatus() === 'connected' && getRadioPowerOn() !== false
       && (props.hasAfLevel || props.hasLiveAudio),
     maxLevel: live ? RX_AF_LEVEL_MAX : 1 };

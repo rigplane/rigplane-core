@@ -37,7 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  document.querySelector('meta[name="rigplane-host-controls"]')?.remove();
+  document.querySelector('meta[name="rigplane-local-supervisor"]')?.remove();
   document.body.innerHTML = '';
   localStorage.clear();
   // The i18n store is a module singleton and this file runs in the `fast`
@@ -51,7 +51,7 @@ afterEach(() => {
 describe('LanguageSelector', () => {
   it.each([false, true])('honors host language ownership %s', (language) => {
     const meta = document.createElement('meta');
-    meta.name = 'rigplane-host-controls';
+    meta.name = 'rigplane-local-supervisor';
     meta.content = JSON.stringify({ version: 1, report: false, language });
     document.head.append(meta);
     const { target, component } = setup();

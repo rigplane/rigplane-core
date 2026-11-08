@@ -52,6 +52,7 @@ vi.mock('$lib/stores/connection.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: () => null,
   hasAnyScope: vi.fn(() => false),
   hasAudio: vi.fn(() => false),
   hasSpectrum: vi.fn(() => false),
@@ -90,11 +91,13 @@ vi.mock('$lib/runtime', () => ({
 }));
 
 import StatusBar from '../StatusBar.svelte';
+import LocalExtensionsHost from '$lib/local-extensions/LocalExtensionsHost.svelte';
 import { getHostUi, type LocalExtensionHostDeclaration } from '$lib/local-extensions/host-ui';
 
 describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
   let target: HTMLElement | null = null;
   let instance: object | null = null;
+  let hostInstance: object | null = null;
   let confirmSpy: ReturnType<typeof vi.fn>;
   let alertSpy: ReturnType<typeof vi.fn>;
 
@@ -113,9 +116,11 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
   });
 
   afterEach(() => {
-    document.querySelector('meta[name="rigplane-host-controls"]')?.remove();
+    document.querySelector('meta[name="rigplane-local-supervisor"]')?.remove();
     vi.unstubAllGlobals();
     if (instance) unmount(instance);
+    if (hostInstance) unmount(hostInstance);
+    hostInstance = null;
     instance = null;
     target?.remove();
     target = null;
@@ -125,6 +130,7 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     target = document.createElement('div');
     document.body.appendChild(target);
     instance = mount(StatusBar, { target, props: { onSettings } }) as object;
+    hostInstance = mount(LocalExtensionsHost, { target }) as object;
     flushSync();
     return target;
   }
@@ -173,7 +179,7 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
   it.each([false, true])('honors the host report declaration %s', (report) => {
     const declaration: LocalExtensionHostDeclaration = { version: 1, report, language: false };
     const meta = document.createElement('meta');
-    meta.name = 'rigplane-host-controls';
+    meta.name = 'rigplane-local-supervisor';
     meta.content = JSON.stringify(declaration);
     document.head.append(meta);
     const host = render();

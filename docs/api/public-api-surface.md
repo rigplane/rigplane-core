@@ -247,16 +247,18 @@ snapshot and return an unsubscribe function. They observe UI changes too.
 Connection and power requests open the same in-page confirmation as the UI;
 `true` means a UI request was accepted, not confirmed or completed. Power is
 refused when unsupported, unknown, already at the requested state, or remote.
-Radio Controls opens the existing controls dialog. Layout/theme setters use
+Radio Controls opens the layout's controls dialog, or shared radio panels when
+the layout has no dialog. Layout/theme setters use
 the same workspace/theme writers as the UI; invalid IDs return `false`.
 Release layout lists exclude test layouts; development retains `sdr-test`.
 
 Listening snapshots expose `mode` (`local`, `live`, `mute`), `level` (normalized
 radio AF or browser gain, `null` when unobserved), `target` (`radio` or
-`browser`), `enabled`, and `maxLevel`. Setters use the existing RX audio UI
+`playback`), `enabled`, and `maxLevel`. Setters use the existing RX audio UI
 handlers: browser monitoring changes browser playback gain, local listening
 changes the active receiver's radio AF. Offline/powered-off/unsupported or
 unobserved level requests and non-finite/out-of-range levels are refused.
+Level requests in MUTE are refused; mode changes remain available.
 Mode changes retain the UI's mute/unmute and resource-demand behavior;
 these booleans do not acknowledge radio completion.
 
@@ -268,7 +270,7 @@ const controls: LocalExtensionHostDeclaration = {
   version: 1, report: true, language: true,
 };
 const meta = document.createElement('meta');
-meta.name = 'rigplane-host-controls';
+meta.name = 'rigplane-local-supervisor';
 meta.content = JSON.stringify(controls);
 document.head.append(meta); // before mounting the Core frontend
 ```
