@@ -1,7 +1,7 @@
 /**
  * MOR-4298 Python counterpart:
  * tests/test_civ_split_tx_frequency.py::test_ic7300_public_ingress_split_tx_matches_browser_golden.
- * Both consume tests/golden/ic7300-split-tx-wire.json: identical CI-V replies
+ * Both consume frontend/src/lib/transport/__tests__/fixtures/ic7300-split-tx-wire.json: identical CI-V replies
  * produce the public state and managed-transmit API documents delivered here
  * through the real WS client, runtime, HTTP client and mobile layout.
  */
@@ -2131,10 +2131,7 @@ describe('MOR-4298 real mobile split TX wire seam', () => {
     vi.doUnmock('../../meters/LinearSMeter.svelte');
     vi.doUnmock('../../panels/DockMeterPanel.svelte');
     vi.doMock('../../../components/spectrum/SpectrumPanel.svelte', () => ({ default: function S() { return {}; } }));
-    const golden = JSON.parse(readFileSync('../tests/golden/ic7300-split-tx-wire.json', 'utf8')) as {
-      model: string;
-      steps: { name: string; envelope: Record<string, unknown>; managedTransmit: unknown; expectedHeaderHz: number }[];
-    };
+    const { default: golden } = await import('$lib/transport/__tests__/fixtures/ic7300-split-tx-wire.json');
     const { default: stateGoldens } = await import('$lib/transport/__tests__/fixtures/state-wire-goldens.json');
     const goldens: Record<string, {
       capabilities?: Record<string, unknown>;

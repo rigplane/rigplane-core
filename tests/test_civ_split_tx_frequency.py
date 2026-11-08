@@ -31,7 +31,10 @@ from rigplane.web.state_schema import StateUpdateEnvelope
 from rigplane.web.web_startup import attach_managed_tx_composition
 from test_icom7610_serial_radio import _FakeSerialCivLink, _FakeUsbAudioDriver
 
-_GOLDEN = Path(__file__).parent / "golden/ic7300-split-tx-wire.json"
+_GOLDEN = (
+    Path(__file__).resolve().parents[1]
+    / "frontend/src/lib/transport/__tests__/fixtures/ic7300-split-tx-wire.json"
+)
 pytestmark = pytest.mark.realtime(
     reason="real serial RX pump, production poller and command response deadlines on a fake link"
 )
