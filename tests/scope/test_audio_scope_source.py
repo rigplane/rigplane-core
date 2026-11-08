@@ -18,11 +18,14 @@ class Tap(PcmTap):
         self.releases += 1
 
 
-@pytest.mark.parametrize('sideband,lo,hi,carrier,expected', [
-    ('upper', 300, 2700, 0, 14_101_500),
-    ('lower', -2700, -300, 0, 14_098_500),
-    ('upper', -300, 300, -700, 14_100_000),
-])
+@pytest.mark.parametrize(
+    "sideband,lo,hi,carrier,expected",
+    [
+        ("upper", 300, 2700, 0, 14_101_500),
+        ("lower", -2700, -300, 0, 14_098_500),
+        ("upper", -300, 300, -700, 14_100_000),
+    ],
+)
 async def test_real_pcm_passband_mapping(sideband, lo, hi, carrier, expected):
     facts = AudioPassband(14_100_000, lo, hi, sideband, carrier)
     tap = Tap()
@@ -32,14 +35,15 @@ async def test_real_pcm_passband_mapping(sideband, lo, hi, carrier, expected):
     await source.start()
     tone = 700 if carrier else 1500
     samples = np.sin(2 * np.pi * tone * np.arange(4096) / 48000)
-    tap.callback((samples * 16000).astype('<i2').tobytes())
+    tap.callback((samples * 16000).astype("<i2").tobytes())
     frame = frames[-1]
     assert frame.receiver is None
     assert lo <= frame.coverage.start_hz - facts.tuned_hz <= lo + 12
     assert hi - 12 <= frame.coverage.end_hz - facts.tuned_hz <= hi
     peak = int(np.argmax(np.frombuffer(frame.pixels, dtype=np.uint8)))
     peak_hz = frame.coverage.start_hz + peak * (
-        frame.coverage.end_hz - frame.coverage.start_hz) / (len(frame.pixels) - 1)
+        frame.coverage.end_hz - frame.coverage.start_hz
+    ) / (len(frame.pixels) - 1)
     assert abs(peak_hz - expected) < 25
     assert source.coverage_for(View(1, 2)) == Coverage(14_100_000 + lo, 14_100_000 + hi)
     await source.stop()
@@ -47,14 +51,49 @@ async def test_real_pcm_passband_mapping(sideband, lo, hi, carrier, expected):
 
 
 async def test_follow_live_and_release_on_cleanup_failure(monkeypatch):
-    facts = AudioPassband(7_100_000, 0, 2400, 'upper')
+    facts = AudioPassband(7_100_000, 0, 2400, "upper")
     tap = Tap()
     source = AudioFftSource(tap, lambda: facts)
-    assert (await source.set_view(FollowView('vfo', 10000))).view == View(7_095_000, 7_105_000)
+    assert (await source.set_view(FollowView("vfo", 10000))).view == View(
+        7_095_000, 7_105_000
+    )
     await source.start()
+
     def fail(callback):
-        raise RuntimeError('cleanup')
-    monkeypatch.setattr(source.producer, 'on_frame', fail)
-    with pytest.raises(RuntimeError, match='cleanup'):
+        raise RuntimeError("cleanup")
+
+    monkeypatch.setattr(source.producer, "on_frame", fail)
+    with pytest.raises(RuntimeError, match="cleanup"):
         await source.stop()
+    assert tap.releases == 1
+
+
+async def test_pcm_frame_routes_through_real_hub_and_releases_on_last_close():
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import ScopeSourcePlugin, Subscription
+
+    tap = Tap()
+    source = AudioFftSource(tap, lambda: AudioPassband(14_100_000, 300, 2700, "upper"))
+    plugin: ScopeSourcePlugin = source
+    encoded = []
+
+    def encode(frame):
+        encoded.append(frame)
+        return b"frame"
+
+    hub = ScopeHub(encoder=encode)
+    hub.register("audio", plugin)
+    request = Subscription("audio", None, View(14_099_000, 14_104_000), 64, 20)
+    first = await hub.subscribe(request)
+    second = await hub.subscribe(request)
+    samples = np.sin(2 * np.pi * 1500 * np.arange(4096) / 48000)
+    tap.callback((samples * 16000).astype("<i2").tobytes())
+    assert await first.receive() == await second.receive() == b"frame"
+    assert len(encoded) == 1
+    assert encoded[0].receiver is None
+    assert encoded[0].coverage_start_hz > request.view.start_hz
+    assert encoded[0].coverage_end_hz < request.view.end_hz
+    await first.close()
+    assert tap.releases == 0
+    await second.close()
     assert tap.releases == 1
