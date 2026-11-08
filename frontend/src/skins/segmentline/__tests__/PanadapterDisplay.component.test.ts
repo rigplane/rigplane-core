@@ -159,12 +159,15 @@ describe('PanadapterDisplay', () => {
 
   it('passes a source-qualified matching hardware frame through without adding samples', () => {
     const frame = hardwareFrame();
+    const pixels = frame.pixels;
+    expect(pixels).not.toBeNull();
+    if (pixels === null) throw new Error('live hardware fixture requires pixels');
     const target = render(model, undefined, frame);
 
-    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength([...frame.pixels].length);
+    expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(pixels.length);
     expect([...target.querySelectorAll('[data-rf-bin]')]
       .map((node) => Number(node.getAttribute('data-rf-sample'))))
-      .toEqual([...frame.pixels]);
+      .toEqual([...pixels]);
     expect(target.querySelector('.rf-carrier')?.getAttribute('data-carrier-hz'))
       .toBe('14250000');
     expect(target.querySelector('.rf-passband')?.getAttribute('data-passband-mode'))

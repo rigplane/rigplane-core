@@ -540,6 +540,7 @@
       {#if showFft}
         <div class="lcd-scope-strip">
           <AmberAfScope
+              data={null}
               onRegisterPush={(fn) => { fftPush = fn; }}
             filterWidth={safeFilterWidth}
             filterWidthMax={filterProps.filterWidthMax}

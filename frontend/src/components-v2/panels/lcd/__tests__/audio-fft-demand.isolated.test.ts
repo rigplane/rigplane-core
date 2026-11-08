@@ -287,7 +287,7 @@ describe('LCD audio-FFT demand ownership', () => {
       const delivered = stream.latest('audio-scope:0')!.pixels!;
       expect(delivered.buffer).toBe(buffer);
       expect(scopeChildProbe.pushed).toHaveBeenCalledExactlyOnceWith(delivered);
-      expect(scopeChildProbe.props).not.toHaveProperty('data');
+      expect(scopeChildProbe.props?.data).toBeNull();
       expect(scopeChildProbe.props?.bandwidth).toBe(86_420);
 
       scope = mount(AmberScope, { target: targets[1] });

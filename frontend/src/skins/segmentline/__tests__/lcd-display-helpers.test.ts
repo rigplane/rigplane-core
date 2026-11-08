@@ -139,9 +139,10 @@ describe('LCD display helpers', () => {
       notch: { state: 'unknown' },
       anf: { state: 'unknown' },
     });
-    expect(fftInputState(receiver, [0, 0.5, 1])).toBe('live');
-    expect(fftInputState({ ...receiver, activity: 'inactive' }, [0, 0.5, 1])).toBe('live');
-    expect(fftInputState({ ...receiver, spectrum: 'unsupported' }, [0, 0.5, 1]))
+    const pixels = new Uint8Array([0, 128, 255]);
+    expect(fftInputState(receiver, pixels)).toBe('live');
+    expect(fftInputState({ ...receiver, activity: 'inactive' }, pixels)).toBe('live');
+    expect(fftInputState({ ...receiver, spectrum: 'unsupported' }, pixels))
       .toBe('unsupported');
     expect(fftInputState(receiver, undefined)).toBe('missing');
   });

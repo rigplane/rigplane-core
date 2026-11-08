@@ -6,6 +6,7 @@ import { createClassComponent } from 'svelte/legacy';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { ReceiverIndicatorViewModel } from '../../../semantic/radio-view-model';
 import type { ScopeFrame } from '../../../lib/runtime/scope-frame';
+import { parseCurrentScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
 import { findPlaceholderTokens } from '../../../lib/placeholder-token-rule';
 
 const meter = vi.hoisted(() => ({
@@ -36,12 +37,13 @@ import DualSdrFace from '../DualSdrFace.svelte';
 
 /** Builds the typed wire frame the shared stream delivers. */
 function wireFrame(pixels: Uint8Array, startFreq = 1, endFreq = 2, receiver = 0): ScopeFrame {
-  return Object.freeze({
-    source: 'radio' as const, sourceId: 'scope', epoch: 1,
-    receiver, viewStartHz: startFreq, viewEndHz: endFreq,
-    coverageStartHz: startFreq, coverageEndHz: endFreq,
-    width: pixels.length, pixels, outOfRange: false, seq: 1, sentAtMs: null,
-  });
+  const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
+  wire.setUint8(0, 1); wire.setUint8(1, receiver);
+  wire.setUint32(3, startFreq, true); wire.setUint32(7, endFreq, true);
+  wire.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
+  const result = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1 });
+  if (!result.ok) throw new Error(result.reason);
+  return result.frame;
 }
 
 const known = <T>(value: T) => ({ reading: { status: 'known' as const, value }, availability: { structural: true, operational: true } });
@@ -173,21 +175,25 @@ describe('DualSdrFace', () => {
     } finally { await unmount(component); stream.dispose(); }
   });
   it('mounts one cluster per receiver, demuxes one scope subscription, and cleans it up', async () => {
-    let listener: ((frame: ScopeFrame) => void) | undefined;
+    const listeners = new Set<(frame: ScopeFrame, key: string) => void>();
+    const deliver = (frame: ScopeFrame, key: string) => { listeners.forEach(next => next(frame, key)); };
     const unsubscribe = vi.fn();
     const source = {
-      subscribe: vi.fn((next: (frame: ScopeFrame, slotKey: string) => void) => { listener = next; return unsubscribe; }),
+      subscribe: vi.fn((next: (frame: ScopeFrame, slotKey: string) => void) => {
+        listeners.add(next); return () => { listeners.delete(next); unsubscribe(); };
+      }),
       slotKeys: ['scope:0', 'scope:1'] as const,
     };
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
     await tick();
-    expect(source.subscribe).toHaveBeenCalledOnce();
+    expect(source.subscribe).toHaveBeenCalledTimes(2);
     expect(target.querySelectorAll('[data-receiver-cluster]').length).toBe(2);
     expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('unknown');
     const pixels = new Uint8Array([1, 2]);
-    listener?.(wireFrame(pixels), 'scope:0');
-    pixels[0] = 255;
+    const parsed = wireFrame(pixels);
+    deliver(parsed, 'scope:0');
+    parsed.pixels![0] = 255;
     await tick();
     await Promise.resolve();
     expect(target.querySelector('[data-receiver-cluster="0"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
@@ -196,47 +202,47 @@ describe('DualSdrFace', () => {
     // MOR-4270: the typed pixel view rides the wire buffer with no copy —
     // a producer-side mutation after delivery is visible by design.
     expect(canvas.lineTo).toHaveBeenCalledWith(1, 0);
-    listener?.(wireFrame(new Uint8Array([3]), 3, 4), 'scope:1');
+    deliver(wireFrame(new Uint8Array([3]), 3, 4, 1), 'scope:1');
     await tick();
     expect(target.querySelector('[data-receiver-cluster="1"] [data-scope-state]')?.getAttribute('data-scope-state')).toBe('frame');
-    listener?.(wireFrame(new Uint8Array([9]), 9, 9, 9), 'scope:9');
+    deliver(wireFrame(new Uint8Array([9]), 9, 10, 9), 'scope:9');
     await tick();
     // MOR-2692: the axis separator is ' · ' — never a dash.
     expect(target.querySelector('[data-receiver-cluster="1"] .axis')?.textContent).toContain('3 · 4');
     unmount(component);
-    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
   });
 
   it('clears both receiver frames when hardware scope health stops being live', async () => {
-    let frameListener: ((frame: ScopeFrame, slotKey: string) => void) | undefined;
-    let healthListener: ((live: boolean) => void) | undefined;
+    const frameListeners = new Set<(frame: ScopeFrame, slotKey: string) => void>();
+    const healthListeners = new Set<(live: boolean) => void>();
     const unsubscribeFrames = vi.fn();
     const unsubscribeHealth = vi.fn();
     const source = {
       subscribe: vi.fn((next: (frame: ScopeFrame, slotKey: string) => void) => {
-        frameListener = next;
-        return unsubscribeFrames;
+        frameListeners.add(next);
+        return () => { frameListeners.delete(next); unsubscribeFrames(); };
       }),
       subscribeHealth: vi.fn((next: (live: boolean) => void) => {
-        healthListener = next;
-        return unsubscribeHealth;
+        healthListeners.add(next);
+        return () => { healthListeners.delete(next); unsubscribeHealth(); };
       }),
       slotKeys: ['scope:0', 'scope:1'] as const,
     };
     const target = document.createElement('div');
     const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
     await tick();
-    frameListener?.(wireFrame(new Uint8Array([1]), 1, 2, 0), 'scope:0');
-    frameListener?.(wireFrame(new Uint8Array([2]), 3, 4, 1), 'scope:1');
+    frameListeners.forEach(next => next(wireFrame(new Uint8Array([1]), 1, 2, 0), 'scope:0'));
+    frameListeners.forEach(next => next(wireFrame(new Uint8Array([2]), 3, 4, 1), 'scope:1'));
     await tick();
     expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(2);
-    healthListener?.(false);
+    healthListeners.forEach(next => next(false));
     await tick();
     expect(target.querySelectorAll('[data-scope-state="unknown"]')).toHaveLength(2);
     expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(0);
     unmount(component);
-    expect(unsubscribeFrames).toHaveBeenCalledOnce();
-    expect(unsubscribeHealth).toHaveBeenCalledOnce();
+    expect(unsubscribeFrames).toHaveBeenCalledTimes(2);
+    expect(unsubscribeHealth).toHaveBeenCalledTimes(2);
   });
 
   it('keeps receiver-addressed meter and bandwidth facts with their own cluster', async () => {
@@ -510,12 +516,12 @@ describe('DualSdrFace', () => {
     const target = document.createElement('div');
     const component = createClassComponent({ component: DualSdrFace, target, props: { view: view(), scopeSource: sourceA } });
     await tick();
-    expect(sourceA.subscribe).toHaveBeenCalledOnce();
+    expect(sourceA.subscribe).toHaveBeenCalledTimes(2);
     component.$set({ scopeSource: sourceB });
     await tick();
-    expect(cleanupA).toHaveBeenCalledOnce();
-    expect(sourceB.subscribe).toHaveBeenCalledOnce();
+    expect(cleanupA).toHaveBeenCalledTimes(2);
+    expect(sourceB.subscribe).toHaveBeenCalledTimes(2);
     component.$destroy();
-    expect(cleanupB).toHaveBeenCalledOnce();
+    expect(cleanupB).toHaveBeenCalledTimes(2);
   });
 });

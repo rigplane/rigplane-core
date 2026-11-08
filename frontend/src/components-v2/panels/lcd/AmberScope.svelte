@@ -361,6 +361,7 @@
     <div class="lcd-scope" style:grid-area="scope">
       {#if showFft}
         <AmberAfScope
+          data={null}
           onRegisterPush={(fn) => { fftPush = fn; }}
           filterWidth={safeFilterWidth}
           filterWidthMax={filterProps.filterWidthMax}
