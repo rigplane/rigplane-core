@@ -2654,8 +2654,8 @@
         "rigplane.radio:CoreRadio.disable_scope"
       ],
       "test_patterns": [
-        "tests/test_scope.py::scope_data_output_on",
-        "tests/test_scope.py::scope_data_output_off"
+        "tests/test_scope.py::test_scope_output_enabled",
+        "tests/test_scope.py::test_scope_output_disabled"
       ]
     },
     {

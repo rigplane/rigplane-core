@@ -98,24 +98,35 @@ async def test_scope_handler_recv_loop_runs_against_minimal_fake() -> None:
 
 @pytest.mark.asyncio
 async def test_scope_handler_sender_uses_only_send_binary() -> None:
-    """ScopeHandler._sender delivers queued frames via send_binary only.
+    """ScopeHandler forwards hub-owned bytes through only send_binary."""
+    from unittest.mock import AsyncMock
+    from rigplane.scope.hub import HubSubscription
+    from rigplane.scope.models import GrantedSubscription, ScopeWireFrame, View
+    from rigplane.web.protocol import encode_scope_frame_v2
 
-    Drive the sender coroutine directly against the minimal fake: enqueue a
-    pre-encoded frame, let it flush, then cancel. The frame must arrive via
-    ``send_binary`` — proving the send side depends only on the protocol.
-    """
     fake = FakeConnection()
     handler = ScopeHandler(fake, server=None)
-    handler._frame_queue.put_nowait(b"\x00\x01scope-bytes")
-
-    sender = asyncio.create_task(handler._sender())
-    # Yield until the frame has been dequeued and sent.
-    for _ in range(100):
-        await asyncio.sleep(0)
-        if fake.sent_binary:
-            break
-    sender.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await sender
-
-    assert fake.sent_binary == [b"\x00\x01scope-bytes"]
+    data = encode_scope_frame_v2(
+        ScopeWireFrame(
+            "radio",
+            "radio",
+            0,
+            14_000_000,
+            14_100_000,
+            14_000_000,
+            14_100_000,
+            2,
+            b"\x01\x02",
+            False,
+            0,
+            1,
+            None,
+        )
+    )
+    subscription = AsyncMock(spec=HubSubscription)
+    grant = GrantedSubscription(
+        "radio", None, View(14_000_000, 14_100_000), None, 2, 30
+    )
+    subscription.receive_delivery.side_effect = [(grant, data), StopAsyncIteration]
+    await handler._sender(subscription, grant.width)
+    assert fake.sent_binary == [data]

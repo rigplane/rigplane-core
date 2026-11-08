@@ -78,8 +78,8 @@ throttled WARNING naming the path, Origin and Host
 `test_ws_local_hosts_accepted`, `test_http_foreign_or_malformed_host_refused_with_421`,
 `test_http_local_hosts_accepted` and `test_ws_allowed_host_flag_admits_configured_name`.
 
-The four WebSocket upgrades (`/api/v1/ws`, `/api/v1/scope`,
-`/api/v1/audio-scope`, `/api/v1/audio`) and every state-changing HTTP
+The three WebSocket upgrades (`/api/v1/ws`, `/api/v1/scope`,
+`/api/v1/audio`) and every state-changing HTTP
 request — `POST`, `PUT`, `PATCH` or `DELETE` on any path, plus `GET
 /clearcache`, which wipes the browser's storage for this origin via its
 `Clear-Site-Data` response — enforce the same same-origin `Origin` rule
@@ -173,20 +173,28 @@ Stable supervisor routes:
 | Path | Purpose | Availability |
 |------|---------|--------------|
 | `/api/v1/ws` | Control events and commands | always |
-| `/api/v1/scope` | Hardware or audio FFT spectrum stream | when scope or audio FFT is available |
+| `/api/v1/scope` | Explicit radio, audio FFT or IQ FFT subscription | when the requested source is available |
 | `/api/v1/audio` | Audio control and media frames | when radio/audio backend supports audio |
-| `/api/v1/audio-scope` | Audio FFT spectrum stream | when audio FFT is available |
 
 ### Keepalive
 
-The `/api/v1/ws`, `/api/v1/scope`, and `/api/v1/audio-scope` routes answer a JSON `{"type":"ping"}` text frame with `{"type":"pong"}`: the control route in `src/rigplane/web/handlers/control.py: ControlHandler._handle_text`, and both scope routes in `src/rigplane/web/handlers/scope.py: ScopeHandler._handle_control` (`/api/v1/audio-scope` is served by `ScopeHandler` with `audio_mode=True`; see `src/rigplane/web/server.py: WebServer._handle_websocket`). `/api/v1/audio` does not answer ping frames: `src/rigplane/web/handlers/audio.py: AudioHandler._handle_control` handles only `audio_start`, `audio_stop`, `audio_config`, and `audio_stats`. The browser client sends that ping every 15 s on the channels that use `WsChannel` (`frontend/src/lib/transport/ws-client.ts: KEEPALIVE_INTERVAL_MS`) — the control channel and the named `scope` and `audio-scope` channels (`getChannel`, wired in `scope-controller.svelte.ts: ScopeController`) — and closes and reconnects a channel when no frame of any kind arrives for 30 s (`HEARTBEAT_TIMEOUT_MS`).
+The `/api/v1/ws` and `/api/v1/scope` routes answer a JSON
+`{"type":"ping"}` text frame with `{"type":"pong"}`. The handlers are
+`src/rigplane/web/handlers/control.py: ControlHandler._handle_text` and
+`src/rigplane/web/handlers/scope.py: ScopeHandler._handle_control`.
+`/api/v1/audio` handles audio control messages instead.
+
+Scope clients must send an explicit source/view/width/rate subscription
+before receiving binary frames. See [Scope subscriptions](scope.md#websocket-subscriptions)
+for the JSON request, granted response and v2 header. There is no implicit
+default source or separate audio FFT endpoint.
 
 ### Multi-client sessions and TX ownership
 
 Every client may read state, scope and audio, and any client may command the radio. Between clients the server enforces one rule: one transmitter holder at a time. Whoever keys holds TX until it is released; keying from anyone else is refused. The server authenticates no client: a controller session key correlates one client's channels and is not a credential.
 
 - `POST /api/v1/controller` with `{"kind": "browser"}` or `{"kind": "pro"}` opens a session (`201` with `controller_key`, `generation`, `ttl_ms` 6000 and `heartbeat_ms` 2000). Any number of sessions may exist.
-- WebSocket channels join a session with the subprotocol `rigplane-controller-v1.<controller_key>`. The session's first `/api/v1/ws` channel is its primary (`controller_role=primary`, the default) and sends `{"type": "controller_heartbeat"}` every 2 s; further channels are auxiliaries (`controller_role=auxiliary` on `/api/v1/ws`; `/api/v1/audio`, `/api/v1/scope` and `/api/v1/audio-scope` always). An HTTP request acts for the session when it carries `X-RigPlane-Controller: <controller_key>`. An unknown or ended key is refused with `403 {"error": "controller_invalid"}`; `DELETE /api/v1/controller` with the header ends the session.
+- WebSocket channels join a session with the subprotocol `rigplane-controller-v1.<controller_key>`. The session's first `/api/v1/ws` channel is its primary (`controller_role=primary`, the default) and sends `{"type": "controller_heartbeat"}` every 2 s; further channels are auxiliaries (`controller_role=auxiliary` on `/api/v1/ws`; `/api/v1/audio` and `/api/v1/scope` always). An HTTP request acts for the session when it carries `X-RigPlane-Controller: <controller_key>`. An unknown or ended key is refused with `403 {"error": "controller_invalid"}`; `DELETE /api/v1/controller` with the header ends the session.
 - The session owns the TX it keys: `ptt_on` from any of its control channels, and `transmit_on` on `POST /api/v1/managed-transmit/command` sent with its header. While one owner holds TX, `ptt_on` and `transmit_on` from any other owner are rejected (`transmit_on` answers `409`), and `send_cw_text`, `set_vox` with `on` not `false`, and `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0 are refused with `controller_tx_unsupported`, and refused again if another owner keys before they run. `force_off` is accepted from anyone.
 - While no owner holds or owes TX, a TX the radio's PTT readback reports is never keyed over, whoever keyed the radio. `ptt_on` and `transmit_on` from anyone are refused with `radio_tx_unowned` (`transmit_on` answers `409`); so are `send_cw_text`, `set_vox` with `on` not `false`, `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0, when received and again when they run. Over rigctld, `T 1` and `U VOX 1` answer `RPRT -9`. `force_off` is never refused: it unkeys whoever keyed, the operator's own TX included. `stop_cw_text` is not refused. Core's own CW text still being sent while no owner holds TX reads the same way, so further CW text is refused until the radio reports RX. Keying works again once the radio reports RX.
 - A session ends when its primary channel closes or when its primary sends no heartbeat for 6 s (checked every 2 s, so TX on a silent link is released within about 8 s). An ended session's channels are closed and the TX it holds is released; other sessions are not affected. Closing an auxiliary `/api/v1/ws` channel releases the session's TX only when that channel's own last PTT request was a key (`ptt_on`, or `ptt` with `state` true).
@@ -1241,8 +1249,10 @@ Notable fields:
 | `maxPowerW` | `int` (optional) | The profile's flat rated maximum TX power in watts (`[power].max_watts`): the base the per-band `txBands[].maxPowerW` rows are compared with. Absent when the profile declares none. Also in `/api/v1/info` `capabilities` |
 | `txBands[].maxPowerW` | `int` (optional) | Rated maximum TX power of that band in watts (profile band row `max_power_w`), never above `maxPowerW`. The RF power slider follows the band the active receiver is on, by `powerUnit`: `raw_255` keeps the full range and labels the level in watts (level x band maximum); `watts` scales the range to the band maximum over the flat `maxPowerW`. Full range and a percent label when no band declares a maximum, `powerUnit` is absent or the frequency is unknown. It is display data only: a power value that is sent is never clamped or rescaled by it |
 | `powerUnit` | `"raw_255"` \| `"watts"` (optional) | How the radio's `powerLevel` is scaled: the attached radio's `native_power_unit`. `raw_255` (Icom): a percentage of the current band's rated maximum. `watts` (Yaesu CAT): a fraction of the flat `maxPowerW`. Present with `maxPowerW`; absent when the radio does not declare it. Also in `/api/v1/info` `capabilities` |
-| `scopeSource` | `"hardware"` \| `"audio_fft"` \| `null` | Spectrum data source |
-| `scopeConfig.defaultSpan` | `int` | Audio FFT bandwidth in Hz (48000 if unset) when the audio FFT scope exists, otherwise the constant 500000 |
+| `scopeSource` | `null` | Legacy field, currently always null; select the source per scope subscription with `sourceId` |
+| `scopeDefaultSourceId` | `"radio"` \| `"audio_fft"` \| `"iq_fft"` \| `null` | Configured default, separate from discovery in `scopeSources`. CLI/config `hardware` maps to `radio`, `sdr` to `iq_fft`; `audio_fft` is unchanged. `auto` chooses the first discoverable ID in order `iq_fft`, `radio`, `audio_fft`, or null when none exist. See `src/rigplane/web/server.py: WebServer._scope_source_capabilities` |
+| `scopeSources` | `string[]` | Discoverable IDs (`radio`, `audio_fft`, `iq_fft`) from source capability/configuration. Audio FFT still requires observed RF mapping facts; discovery does not grant a view or establish live coverage. See `src/rigplane/web/server.py: WebServer._serve_capabilities` |
+| `scopeConfig.defaultSpan` | `int` | Legacy UI hint, currently 500000 Hz; the subscription's granted `view` defines its negotiated geometry |
 | `audioConfig` | object | Web audio transport defaults |
 | `webrtc.available` | `bool` | Whether the optional `rigplane[webrtc]` backend is importable; this does not indicate that the default-off `WebConfig.webrtc_enabled` transport gate is enabled |
 
@@ -1306,10 +1316,10 @@ The CLI `cw` command runs without the managed TX composition, so no abort
 reaches it. A request whose own connection or server task is cancelled
 (shutdown, client gone) still ends without a response.
 
-When radio has audio but no hardware scope support, backend enables `AudioFftScope`
-and reports `scopeSource: "audio_fft"`. The same FFT frames are also available
-on `/api/v1/audio-scope`; hardware-scope radios keep `/api/v1/scope` sourced
-from the radio's hardware scope.
+Audio FFT is selected explicitly with `sourceId: "audio_fft"` on
+`/api/v1/scope`; it no longer has a separate endpoint. See
+[Scope subscriptions](scope.md#websocket-subscriptions) for negotiation and the
+v2 binary format.
 
 ---
 

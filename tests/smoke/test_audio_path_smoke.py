@@ -61,13 +61,20 @@ from rigplane.audio.bridge import AudioBridge, BridgeState
 from rigplane.audio.session import AudioSession, AudioSessionState
 from rigplane.audio.usb_driver import UsbAudioDriver
 from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.core.state_pipeline_contracts import (
+    FieldPath,
+    Observation,
+    SourceMetadata,
+)
+from rigplane.scope.models import FollowView, Subscription
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
     MSG_TYPE_AUDIO_RX,
     MSG_TYPE_AUDIO_TX,
-    MSG_TYPE_SCOPE,
-    SCOPE_HEADER_SIZE,
+    decode_scope_frame_v2,
+    decode_scope_granted,
+    encode_scope_subscription,
     encode_audio_frame,
 )
 from rigplane.web.server import WebConfig, WebServer
@@ -470,27 +477,42 @@ async def test_web_audio_ws_relays_nonsilent_rx_frames(usb_rig: _UsbSerialRig) -
 async def test_audio_scope_ws_receives_fft_frames(
     usb_rig: _UsbSerialRig, web_server: WebServer
 ) -> None:
-    """A `/api/v1/audio-scope` WS client receives FFT scope frames.
-
-    Chain under test: scope WS connect → ``ensure_audio_scope_enabled`` →
-    broadcaster PCM tap + relay → AudioBus → radio RX; injected white-noise
-    PCM drives AudioFftScope → dispatch → ScopeHandler → binary WS frame.
-    """
+    """An explicit audio FFT subscription receives PCM-derived v2 pixels."""
+    store = web_server.command_state_store
+    for name, value in (
+        ("freq_hz", 14_074_000),
+        ("mode", "USB"),
+        ("filter_width", 2400),
+    ):
+        store.apply_current(
+            Observation(
+                path=FieldPath.active("0", "freq_mode", name),
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="test"),
+                timestamp_monotonic=store.snapshot().generated_at_monotonic,
+            )
+        )
     host, port = _addr(web_server)
-    reader, writer = await _ws_connect(host, port, "/api/v1/audio-scope")
+    reader, writer = await _ws_connect(host, port, "/api/v1/scope")
     try:
+        request = Subscription("audio_fft", None, FollowView("vfo", 5000), 1024, 20)
+        await _ws_send_text(
+            writer,
+            encode_scope_subscription(request),
+        )
+        opcode, payload = await _ws_recv_frame(reader)
+        assert opcode == 0x1
+        grant = decode_scope_granted(payload.decode())
+        assert (grant.source_id, grant.receiver) == (
+            request.source_id,
+            request.receiver,
+        )
+        assert 0 < grant.width <= request.width
+        assert 0 < grant.max_fps <= request.max_fps
         # ensure_relay (first scope client) arms radio RX via the bus.
         assert await await_until(
             lambda: any(s.running for s in usb_rig.backend.rx_streams)
         ), "audio-scope connect never armed the RX relay"
-
-        scope = web_server._audio_fft_scope
-        assert scope is not None, "audio FFT scope not wired for an audio radio"
-        # feed_audio gates on center_freq > 0; no live poller seeds the
-        # StateStore on the fake CI-V link, so set it directly (the
-        # established MOR-241 test pattern) and bypass the 20 fps limiter.
-        scope.set_center_freq(14_074_000)
-        scope._last_frame_time = 0.0
 
         # Several FFT windows (2048 samples each) of white noise, injected
         # as 20 ms radio capture frames.
@@ -498,11 +520,35 @@ async def test_audio_scope_ws_receives_fft_frames(
             usb_rig.inject_rx(_noise_pcm(960, seed=chunk + 1))
             await asyncio.sleep(0)
 
-        opcode, payload = await _ws_recv_frame(reader)
-        assert opcode == 0x2
-        assert payload[0] == MSG_TYPE_SCOPE
-        assert len(payload) > SCOPE_HEADER_SIZE, "scope frame carries no pixels"
-        assert any(payload[SCOPE_HEADER_SIZE:]), "FFT pixels are all zero"
+        # The first observed FFT crop can narrow the provisional grant. Accept
+        # only valid grant updates, within the original frame-receive deadline.
+        async with asyncio.timeout(5.0):
+            while True:
+                opcode, payload = await _ws_recv_frame(reader)
+                if opcode != 0x1:
+                    break
+                grant = decode_scope_granted(payload.decode())
+                assert (grant.source_id, grant.receiver) == (
+                    request.source_id,
+                    request.receiver,
+                )
+                assert 0 < grant.width <= request.width
+                assert 0 < grant.max_fps <= request.max_fps
+            assert opcode == 0x2
+        frame = decode_scope_frame_v2(payload)
+        assert (frame.source_id, frame.receiver) == (grant.source_id, grant.receiver)
+        assert frame.source == "audio_fft"
+        assert frame.width == grant.width
+        assert (frame.view_start_hz, frame.view_end_hz) == (
+            grant.view.start_hz,
+            grant.view.end_hz,
+        )
+        assert grant.coverage is not None
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+            grant.coverage.start_hz,
+            grant.coverage.end_hz,
+        )
+        assert frame.pixels and any(frame.pixels), "FFT pixels are all zero"
     finally:
         await _close_writer(writer)
 

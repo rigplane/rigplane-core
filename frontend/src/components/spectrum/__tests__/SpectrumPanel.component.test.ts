@@ -12,7 +12,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import * as svelteClient from 'svelte/internal/client';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import goldenScopeWire from '../../../lib/runtime/__tests__/fixtures/scope-wire.json';
+import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden } from '../../../lib/runtime/__tests__/scope-wire-fixture';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplay, type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -107,7 +107,8 @@ HTMLCanvasElement.prototype.getContext = vi.fn(function (this: HTMLCanvasElement
 
 // ResizeObserver
 class MockResizeObserver {
-  observe() {}
+  constructor(private callback: ResizeObserverCallback) {}
+  observe(target: Element) { this.callback([{ target, contentRect: { width: 200, height: 100 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
   unobserve() {}
   disconnect() {}
 }
@@ -196,6 +197,22 @@ const runtimeHarness = vi.hoisted(() => {
   return { state, runtime };
 });
 
+const runtimeFacts = new SvelteMap<string, unknown>([
+  ['caps', runtimeHarness.state.currentCaps], ['state', runtimeHarness.state.currentState],
+]);
+Object.defineProperty(runtimeHarness.state, 'currentState', {
+  get: () => runtimeFacts.get('state'), set: value => runtimeFacts.set('state', value),
+});
+Object.defineProperty(runtimeHarness.state, 'currentCaps', {
+  get: () => runtimeFacts.get('caps'),
+  set: value => {
+    runtimeFacts.set('caps', value);
+    const caps = value as { scopeSources?: readonly string[]; scopeSource?: string; scopeDefaultSourceId?: 'radio' | 'iq_fft' | 'audio_fft' | null };
+    scopeControllerHarness.configureSources(caps.scopeSources ??
+      [caps.scopeSource === 'sdr' ? 'iq_fft' : caps.scopeSource === 'audio_fft' ? 'audio_fft' : 'radio'], caps.scopeDefaultSourceId);
+  },
+});
+
 const mockRuntime = runtimeHarness.runtime;
 
 // ── MOR-4270: real ScopeController over fake channels (the transport seam) ──
@@ -204,6 +221,8 @@ type FakeScopeChannel = {
   disconnect: Mock<() => void>;
   state: string;
   sessionEpoch: number;
+  sendRaw(message: unknown): boolean;
+  onMessage(handler: (message: unknown) => void): () => void;
   onBinary(handler: (buffer: ArrayBuffer) => void): () => void;
   onStateChange(handler: (state: string) => void): () => void;
   onSessionTransition(handler: (transition: { state: string; epoch: number }) => void): () => void;
@@ -232,6 +251,7 @@ function makeFakeScopeChannel(): FakeScopeChannel {
       for (const update of states) update('disconnected');
       for (const update of sessions) update({ state: 'disconnected', epoch: channel.sessionEpoch });
     }),
+    sendRaw: vi.fn(() => true), onMessage: () => () => {},
     onBinary(handler) { binary.add(handler); return () => { binary.delete(handler); }; },
     onStateChange(handler) { states.add(handler); return () => { states.delete(handler); }; },
     onSessionTransition(handler) { sessions.add(handler); return () => { sessions.delete(handler); }; },
@@ -280,6 +300,7 @@ const capturedStreamSinks: Array<Parameters<ReturnType<ScopeController['stream']
 const sharedLeaseAcquisitions = vi.fn(() => runtimeHarness.state.driverBridge.startHardware());
 const streamSubscriptions = { hardware: vi.fn(), audio_fft: vi.fn() };
 const streamUnsubscriptions = { hardware: vi.fn(), audio_fft: vi.fn() };
+function instrumentScopeHarness() {
 for (const source of ['hardware', 'audio_fft'] as const) {
   const stream = scopeControllerHarness.stream(source);
   const original = stream.subscribe.bind(stream);
@@ -304,6 +325,9 @@ for (const source of ['hardware', 'audio_fft'] as const) {
     };
   };
 }
+
+}
+instrumentScopeHarness();
 
 const scopeCommandHarness = vi.hoisted(() => ({ dispatch: vi.fn() }));
 vi.mock('$lib/runtime/commands/radio-intents', async (original) => ({
@@ -747,19 +771,13 @@ type EmitOverrides = {
   sequence?: number;
 };
 function encodeScopeWire(overrides: EmitOverrides): Uint8Array<ArrayBuffer> {
-  const pixels = overrides.pixels ?? new Uint8Array(475).fill(64);
-  const bytes = new Uint8Array(16 + pixels.length);
-  const view = new DataView(bytes.buffer);
-  view.setUint8(0, 1);
-  view.setUint8(1, overrides.receiver ?? 0);
-  view.setUint8(2, overrides.mode ?? 0);
-  view.setUint32(3, overrides.startFreq ?? 14_000_000, true);
-  view.setUint32(7, overrides.endFreq ?? 14_100_000, true);
-  view.setUint16(11, (overrides.sequence ?? 1) & 0xffff, true);
-  view.setUint8(13, overrides.outOfRange ? 1 : 0);
-  view.setUint16(14, pixels.length, true);
-  bytes.set(pixels, 16);
-  return bytes;
+  const supplied = overrides.pixels === undefined ? new Uint8Array(475).fill(64) : overrides.pixels;
+  const pixels = supplied?.length ? supplied : null;
+  const iq = (runtimeHarness.state.currentCaps as { scopeSource?: string })?.scopeSource === 'sdr';
+  return new Uint8Array(scopeWire({ source: iq ? 'iq_fft' : 'radio', receiver: iq ? null : overrides.receiver ?? 0,
+    sourceId: iq ? 'iq_fft' : 'radio', viewStartHz: overrides.startFreq ?? 14_000_000,
+    viewEndHz: overrides.endFreq ?? 14_100_000, seq: overrides.sequence ?? 1,
+    outOfRange: overrides.outOfRange ?? false, pixels }));
 }
 function emitFrame(overrides: EmitOverrides = {}): EmitOverrides {
   const frame: EmitOverrides = {
@@ -768,6 +786,7 @@ function emitFrame(overrides: EmitOverrides = {}): EmitOverrides {
   };
   const pixels = (overrides.pixels ?? new Uint8Array(475).fill(64)) as Uint8Array;
   harnessChannels.scope ??= makeFakeScopeChannel();
+  scopeControllerHarness.stream('hardware').setMode(frame.mode ?? 0);
   harnessChannels.scope.fire(encodeScopeWire(frame));
   flushSync();
   return { ...frame, pixels };
@@ -852,6 +871,12 @@ beforeEach(() => {
     channel.disconnect();
   }
   for (const name of Object.keys(harnessChannels)) delete harnessChannels[name];
+  scopeControllerHarness = new ScopeController(name => {
+    harnessChannels[name] ??= makeFakeScopeChannel();
+    return harnessChannels[name] as unknown as WsChannel;
+  });
+  traceReceiptSubscriptions.length = 0;
+  instrumentScopeHarness();
   storageMap.clear();
   txHarness = new ManagedAppTxHarness();
   appTxHostHarness.controller = txHarness.controller;
@@ -880,8 +905,8 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-afterEach(() => {
-  components.forEach((c) => unmount(c));
+afterEach(async () => {
+  await Promise.all(components.map((c) => unmount(c)));
   for (const lease of harnessLeases.splice(0)) mockRuntime.releaseHardwareScope(lease);
   expect(txHarness.trace()).toEqual([]);
   expect(txHarness.listenerCount()).toBe(0);
@@ -1026,15 +1051,80 @@ describe('SpectrumPanel component', () => {
   it('delivers the central audio FFT payload to both renderer sinks without a copy', async () => {
     runtimeHarness.state.currentCaps = { scopeSource: 'audio_fft' };
     mountPanel();
-    const bytes = encodeScopeWire({ startFreq: 0, endFreq: 48_000, pixels: new Uint8Array([1, 2, 40, 160]) });
+    const bytes = new Uint8Array(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, viewStartHz: 0, viewEndHz: 48_000, pixels: new Uint8Array([1, 2, 40, 160]) }));
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    harnessChannels['audio-scope'].fire(bytes); flushSync(); await flushWaterfallPaint();
+    harnessChannels.scope.fire(bytes); flushSync(); await flushWaterfallPaint();
     const pixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
     expect(pixels.buffer).toBe(bytes.buffer);
-    expect(pixels.byteOffset).toBe(16);
+    expect(pixels.byteOffset).toBe(56 + 'audio_fft'.length);
     expect([...pixels]).toEqual([1, 2, 40, 160]);
     expect(push.mock.calls.at(-1)![0]).toBe(pixels);
     expect(spectrumRendererHarness.lastOptions).toMatchObject({ sampleOffset: 2, sampleAmplitudeMax: 160 });
+  });
+
+  it('retains default audio follow intent after granted RF geometry and a QSY', () => {
+    runtimeHarness.state.currentCaps = { scopeSource: 'audio_fft' };
+    const target = mountPanel();
+    const subscription = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
+    harnessChannels.scope.fire(new Uint8Array(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null,
+      viewStartHz: 14_026_000, viewEndHz: 14_074_000, pixels: new Uint8Array([0, 80, 160, 0]) })));
+    flushSync();
+    expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
+    const state = runtimeHarness.state.currentState as ServerState;
+    runtimeHarness.state.currentState = { ...state, main: { ...state.main, freqHz: 14_200_000 } };
+    flushSync();
+    expect(subscription().view).toEqual({ follow: 'vfo', spanHz: 48000 });
+  });
+
+  it.each(['radio', 'iq_fft', 'audio_fft'] as const)('preserves the configured %s default in the mounted panorama among all sources', (scopeDefaultSourceId) => {
+    runtimeHarness.state.currentCaps = { scopeSource: null, scopeDefaultSourceId,
+      scopeSources: ['radio', 'iq_fft', 'audio_fft'], scope: true, audio: true, audioFftAvailable: true };
+    const target = mountPanel();
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.sourceId).toBe(scopeDefaultSourceId);
+    expect(request.receiver).toBe(scopeDefaultSourceId === 'radio' ? 0 : null);
+    expect(target.querySelector('.spectrum-panel')!.classList.contains('audio-fft')).toBe(scopeDefaultSourceId === 'audio_fft');
+  });
+
+  it.each(audioScopeGoldenNames)('keeps real %s pixels and observed AF coordinates through the actual panel', async (name) => {
+    const { buffer, expected } = loadAudioScopeGolden(name);
+    runtimeHarness.state.currentCaps = { scopeSource: null, scopeDefaultSourceId: 'audio_fft',
+      scopeSources: ['radio', 'iq_fft', 'audio_fft'], audio: true, audioFftAvailable: true };
+    const observed = { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 };
+    runtimeHarness.state.currentState = { providerGeneration: 17, main: { freqHz: expected.audioPassband.tunedHz,
+      mode: expected.input.mode }, cwPitch: expected.input.cwPitchHz,
+      fieldStatus: Object.fromEntries(['main.freqHz', 'main.mode', 'cwPitch'].map(path => [path, { ...observed, storePath: path }])) };
+    const target = mountPanel();
+    const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+    harnessChannels.scope.fire(new Uint8Array(buffer)); flushSync(); await flushWaterfallPaint();
+    const span = expected.frame.view_end_hz - expected.frame.view_start_hz;
+    const carrier = expected.audioPassband.tunedHz + expected.audioPassband.carrierOffsetHz;
+    const sign = expected.audioPassband.sideband === 'lower' ? -1 : 1;
+    const afSpan = sign === 1 ? expected.frame.view_end_hz - carrier : carrier - expected.frame.view_start_hz;
+    const pixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
+    expect(pixels.buffer).toBe(buffer); expect(push.mock.lastCall?.[0]).toBe(pixels);
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: afSpan, sampleOffset: 0,
+      sampleWindow: { start: (carrier - expected.frame.view_start_hz) / span,
+        end: (carrier - expected.frame.view_start_hz) / span + sign / span * afSpan } });
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.view).toEqual({ follow: 'vfo', spanHz: 48000 });
+  });
+
+  it.each([1, 3])('keeps IQ View following QSY independently of native radio scope mode %s', async (mode) => {
+    runtimeHarness.state.currentCaps = { scopeSource: null, scopeDefaultSourceId: 'iq_fft',
+      scopeSources: ['radio', 'iq_fft', 'audio_fft'] };
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(mode) });
+    const target = mountPanel();
+    harnessChannels.scope.fire(new Uint8Array(scopeWire({ source: 'iq_fft', sourceId: 'iq_fft', receiver: null })));
+    flushSync();
+    await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions?.scopeMode).toBe(0);
+    authorityHarness.state.current = authority({ frequencyHz: 14_150_000, scopeControls: testScopeControls(mode) });
+    refreshSpectrumAuthority(); flushSync();
+    const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(request.receiver).toBeNull();
+    expect(request.view).toEqual({ startHz: 14_100_000, endHz: 14_200_000 });
   });
 
   it.each([0, 1] as const)('requests the numeric receiver %s from authority', (receiver) => {
@@ -1518,8 +1608,8 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     emitFrame();
     const { waterfall } = prepareGeometry(target);
     const canvas = waterfall.querySelector('canvas')!;
-    pointer(canvas, 'pointerdown', 4, 150);
-    pointer(canvas, 'pointerup', 4, 150);
+    pointer(canvas, 'pointerdown', 4, 100);
+    pointer(canvas, 'pointerup', 4, 100);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
     expect(mockRuntime.send).not.toHaveBeenCalled();
@@ -1710,7 +1800,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     authorityHarness.state.current = authority({ receiver: 1 });
     refreshSpectrumAuthority();
     flushSync();
-    expect(overlay().style.width).toBe('24%');
+    expect(overlay()).toBeNull();
 
     pointer(waterfall, 'pointerup', 43, 130);
     expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
@@ -1924,10 +2014,8 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     const target = mountPanel();
     emitFrame();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
-    // MOR-2464 ruling: the CENTER frame itself proves the ruler's
-    // position — the static reference shows without a strict frequency
-    // Observation, in both areas; the passband stays hidden.
-    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(2);
+    // A mode-less v2 frame does not prove CENTER when control facts are missing.
+    expect(target.querySelectorAll('.spectrum-area .tune-line, .waterfall-content .tune-line')).toHaveLength(0);
     expect(target.querySelector('.passband-overlay')).toBeNull();
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
@@ -2799,6 +2887,25 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
   });
+  it('does not infer CENTER proof from a v2 span while the current scope mode is unknown', () => {
+    const controls = testScopeControls(0);
+    const unknownMode: ScopeControlsViewModel = {
+      ...controls, mode: { ...controls.mode, reading: { status: 'unknown' } },
+    };
+    runtimeHarness.state.currentState = Object.freeze({ providerGeneration: 18, active: 'MAIN' });
+    authorityHarness.state.current = authority({ providerGeneration: 18, scopeControls: unknownMode });
+    refreshSpectrumAuthority();
+    const target = mountPanel();
+    expectCenterReference(target, false);
+    harnessChannels.scope.fire(new Uint8Array(scopeWire({ sourceId: 'radio',
+      viewStartHz: 14_000_000, viewEndHz: 14_100_000 })));
+    flushSync();
+    silenceFrames();
+    expectCenterReference(target, false);
+    authorityHarness.state.current = authority({ providerGeneration: 18, scopeControls: controls });
+    refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, true);
+  });
   it('pins no false CENTER marker when a FIX projection drops to null', () => {
     authorityHarness.state.current = authority({
       scopeControls: testScopeControls(1),
@@ -3203,7 +3310,7 @@ describe('managed scope projection (MOR-2367)', () => {
   it('routes current managed waterfall tap and wheel through canonical handlers', () => {
     const { target } = managed(projection()); const { waterfall } = prepareGeometry(target);
     const canvas = waterfall.querySelector('canvas')!;
-    pointer(canvas, 'pointerdown', 87, 150); pointer(canvas, 'pointerup', 87, 150);
+    pointer(canvas, 'pointerdown', 87, 100); pointer(canvas, 'pointerup', 87, 100);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_050_000, 0);
     target.querySelector('.spectrum-panel')!.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 1 }));
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
@@ -3552,6 +3659,13 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     const vfo = vi.spyOn(adapters, 'getVfoHandlers').mockImplementation(actualAdapters.getVfoHandlers);
     const getCapabilities = vi.spyOn(capabilities, 'getCapabilities')
       .mockImplementation(actualCapabilities.getCapabilities);
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
+    const advancePreview = async () => {
+      await vi.advanceTimersByTimeAsync(1);
+      flushSync();
+      await vi.advanceTimersByTimeAsync(1);
+      flushSync();
+    };
     try {
       const state: ServerState = structuredClone(IC7300_STATE);
       state.main!.freqHz = 14_050_000;
@@ -3564,7 +3678,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(radio.setRadioState(state)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
       authorityHarness.state.current = authority({ frequencyHz: 14_050_000,
-        providerGeneration: state.providerGeneration });
+        providerGeneration: state.providerGeneration, scopeControls: testScopeControls(state.scopeControls!.mode!) });
       const target = mountPanel();
       const readout = document.createElement('div'); document.body.append(readout);
       components.push(mount(VfoSurface, { target: readout, props: {
@@ -3576,14 +3690,14 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
         },
       } }));
       const digits = () => readout.querySelector('[data-vfo-freq]')!.textContent!.replace(/\D/g, '');
-      emitFrame();
+      emitFrame({ mode: state.scopeControls!.mode! });
       const { spectrum } = prepareGeometry(target);
       pointer(spectrum, 'pointerdown', 42, 100);
       for (const x of [120, 133]) {
         pointer(spectrum, 'pointermove', 42, x);
-        await flushPreviewPaint();
-        await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz)
-          .toBe(x === 120 ? -10_000 : -16_000));
+        await advancePreview();
+        expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz)
+          .toBe(x === 120 ? -10_000 : -16_000);
         expect(digits()).toContain(String(x === 120 ? 14_040_000 : 14_034_000));
         expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBe(x === 120 ? 14_040_000 : 14_034_000);
         expect(send).toHaveBeenCalledTimes(1);
@@ -3596,12 +3710,12 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       ownEcho.fieldStatus!['main.freqHz'].lastObservedMonotonic!++;
       expect(radio.setRadioState(ownEcho)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
-      authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration });
+      authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration, scopeControls: testScopeControls(state.scopeControls!.mode!) });
       refreshSpectrumAuthority();
-      emitFrame({ startFreq: 13_990_000, endFreq: 14_090_000 });
-      await flushPreviewPaint();
+      emitFrame({ mode: state.scopeControls!.mode!, startFreq: 13_990_000, endFreq: 14_090_000 });
+      await advancePreview();
       expect(digits()).toContain('14034000');
-      pointer(spectrum, 'pointermove', 42, 133); await flushPreviewPaint();
+      pointer(spectrum, 'pointermove', 42, 133); await advancePreview();
       expect(digits()).toContain('14034000');
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
       pointer(spectrum, 'pointerup', 42, 133);
@@ -3611,8 +3725,10 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       const final = commands.getCommandLifecycles().at(-1)!;
       commands.acknowledgeCommand(final.id, final.originalEpoch, final.originalEpoch);
       expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
-      await vi.waitFor(() => expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBeNull());
-      await flushPreviewPaint();
+      await vi.advanceTimersByTimeAsync(201);
+      flushSync();
+      expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBeNull();
+      await advancePreview();
       expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
       expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(-6_000);
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
@@ -3624,8 +3740,8 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       stale.fieldStatus!['main.freqHz'] = { ...stale.fieldStatus!['main.freqHz'], lastObservedMonotonic: (ownEcho.fieldStatus!['main.freqHz'].lastObservedMonotonic ?? 0) + 1 };
       expect(radio.setRadioState(stale)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
-      authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration });
-      refreshSpectrumAuthority(); await flushPreviewPaint();
+      authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration, scopeControls: testScopeControls(state.scopeControls!.mode!) });
+      refreshSpectrumAuthority(); await advancePreview();
       expect(digits()).toContain('14034000');
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
       const confirmed = structuredClone(stale);
@@ -3634,12 +3750,12 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       confirmed.fieldStatus!['main.freqHz'].lastObservedMonotonic!++;
       expect(radio.setRadioState(confirmed)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
-      authorityHarness.state.current = authority({ frequencyHz: settledHz, providerGeneration: state.providerGeneration });
-      refreshSpectrumAuthority(); await flushPreviewPaint();
+      authorityHarness.state.current = authority({ frequencyHz: settledHz, providerGeneration: state.providerGeneration, scopeControls: testScopeControls(state.scopeControls!.mode!) });
+      refreshSpectrumAuthority(); await advancePreview();
       expect(actualAdapters.getPendingFrequencyHz(0)).toBeNull();
       expect(digits()).toContain(String(settledHz));
       expect(radio.setRadioState(stale)).toBe(false);
-      await flushPreviewPaint(); expect(digits()).toContain(String(settledHz));
+      await advancePreview(); expect(digits()).toContain(String(settledHz));
     } finally {
       send.mockRestore();
       scopeCommandHarness.dispatch.mockReset();
@@ -3650,6 +3766,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       radio.resetRadioState();
       capabilities.clearCapabilities();
       restore();
+      vi.useRealTimers();
     }
   });
 
@@ -4016,8 +4133,8 @@ describe('center panorama motion (MOR-2464)', () => {
     props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
     await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
     const canvas = waterfall.querySelector('canvas')!;
-    pointer(canvas, 'pointerdown', 95, 150);
-    pointer(canvas, 'pointerup', 95, 150);
+    pointer(canvas, 'pointerdown', 95, 100);
+    pointer(canvas, 'pointerup', 95, 100);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_051_000, 0);
   });
@@ -4240,6 +4357,7 @@ describe('center panorama motion (MOR-2464)', () => {
       authorityHarness.state.current = authority({ receiver: 1 });
       refreshSpectrumAuthority();
       flushSync();
+      emitFrame({ receiver: 1 });
       await new Promise((resolve) => setTimeout(resolve, 40));
       expect(recordedShifts().filter((v) => v !== 0)).toHaveLength(0);
       // Sanity: the SUB-scoped pending does drive the SUB-authority viewport.
@@ -4371,6 +4489,7 @@ describe('center panorama motion (MOR-2464)', () => {
       authorityHarness.state.current = authority({ receiver: 1 });
       refreshSpectrumAuthority();
       flushSync();
+      emitFrame({ receiver: 1 });
       await new Promise((resolve) => setTimeout(resolve, 40));
       expect(recordedShifts().filter((v) => v !== 0)).toHaveLength(0);
       // ...while a SUB-scoped burst does drive the SUB-authority viewport.
@@ -4688,19 +4807,17 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
       const audioTarget = document.createElement('div'); document.body.append(audioTarget);
       components.push(mount(AudioSpectrumPanel, { target: audioTarget }));
       flushSync();
-      expect(sockets).toHaveLength(2);
-      const hardwareSocket = sockets.find((socket) => socket.url.includes('/scope') && !socket.url.includes('audio-scope'))!;
-      const audioSocket = sockets.find((socket) => socket.url.includes('audio-scope'))!;
-      hardwareSocket.open(); audioSocket.open(); flushSync();
-      const golden = goldenScopeWire;
-      const radioWire = new Uint8Array(golden.radio).buffer;
-      const audioWire = new Uint8Array(golden.audio).buffer;
-      hardwareSocket.receive(radioWire); audioSocket.receive(audioWire); flushSync();
+      expect(sockets).toHaveLength(1);
+      const hardwareSocket = sockets[0];
+      hardwareSocket.open(); flushSync();
+      const radioWire = scopeWire({ sourceId: 'radio', pixels: new Uint8Array([0, 64, 128, 255]) });
+      const audioWire = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, viewStartHz: 7_100_000, viewEndHz: 7_103_000, pixels: new Uint8Array([1, 127, 254]) });
+      hardwareSocket.receive(radioWire); hardwareSocket.receive(audioWire); flushSync();
       await flushWaterfallPaint(); flushSync(); await flushWaterfallPaint();
       expect(spectrumRendererHarness.render).toHaveBeenCalled();
       const panelPixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
       expect(panelPixels.buffer).toBe(radioWire);
-      expect(panelPixels.byteOffset).toBe(16);
+      expect(panelPixels.byteOffset).toBe(56 + 'radio'.length);
       expect(sinkBuffers).toHaveLength(2);
       expect(sinkBuffers.every((buffer) => buffer === radioWire)).toBe(true);
       expect([...panelPixels]).toEqual([0, 64, 128, 255]);
@@ -4719,10 +4836,10 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
       runtimeHarness.state.currentCaps = { ...runtimeHarness.state.currentCaps as typeof IC7300_CAPABILITIES, scopeSource: 'audio_fft' };
       const centralAudio = mountPanel();
       expect(centralAudio.querySelector('.audio-source-label')).not.toBeNull();
-      audioSocket.receive(audioWire); flushSync(); await flushWaterfallPaint();
+      hardwareSocket.receive(audioWire); flushSync(); await flushWaterfallPaint();
       const centralPixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
       expect(centralPixels.buffer).toBe(audioWire);
-      expect(centralPixels.byteOffset).toBe(16);
+      expect(centralPixels.byteOffset).toBe(56 + 'audio_fft'.length);
       expect([...centralPixels]).toEqual([1, 127, 254]);
       expect(spectrumRendererHarness.lastOptions).toMatchObject({ sampleOffset: 1, sampleAmplitudeMax: 160 });
 

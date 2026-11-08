@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { get } from 'svelte/store';
@@ -15,6 +16,7 @@ function channel() {
     get state() { return state; },
     sessionEpoch,
     connect: vi.fn(), disconnect: vi.fn(),
+    sendRaw: vi.fn(() => true), onMessage: () => () => {},
     onBinary(handler: (buffer: ArrayBuffer) => void) {
       binary.add(handler); return () => { binary.delete(handler); };
     },
@@ -34,15 +36,7 @@ function channel() {
 }
 
 function frame(id: number): ArrayBuffer {
-  const buffer = new ArrayBuffer(20);
-  const view = new DataView(buffer);
-  view.setUint8(0, 1);
-  view.setUint32(3, 14_000_000, true);
-  view.setUint32(7, 14_100_000, true);
-  view.setUint16(11, id, true);
-  view.setUint16(14, 4, true);
-  new Uint8Array(buffer, 16).fill(id);
-  return buffer;
+  return scopeWire({ sourceId: 'radio', seq: id, viewStartHz: 14_000_000, viewEndHz: 14_100_000, pixels: new Uint8Array(4).fill(id) });
 }
 
 afterEach(() => {
@@ -153,7 +147,7 @@ describe('same-session scope delivery across hidden rendering', () => {
     const produced = ids.map(frame);
     const liveIds = [68, 69, 70, 71, 72, 73, 74];
     const deliver = (buffer: ArrayBuffer, paint = true) => {
-      arrivals.push(new DataView(buffer).getUint16(11, true));
+      arrivals.push(new DataView(buffer).getUint32(12, true));
       socket.deliver(buffer);
       flushSync();
       if (paint) flushPaint();

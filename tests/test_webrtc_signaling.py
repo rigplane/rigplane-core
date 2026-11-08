@@ -16,7 +16,7 @@ patched here without installing the ``[webrtc]`` extra.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -99,8 +99,7 @@ class TestInfoHasWebrtc:
     @pytest.mark.asyncio
     async def test_true_when_available_with_audio(self):
         radio = _make_radio()
-        with patch("rigplane.web.server.AudioFftScope", MagicMock()):
-            srv = WebServer(radio=radio)
+        srv = WebServer(radio=radio)
         writer = _FakeWriter()
 
         with patch("rigplane.web.server.webrtc_available", return_value=True):

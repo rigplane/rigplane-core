@@ -6,6 +6,7 @@
  * into the shared module cache used by the `fast` project.
  */
 
+import { scopeWire } from './scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { flushSync } from 'svelte';
@@ -402,14 +403,13 @@ function makeScopeChannel() {
   let state = 'disconnected';
   return {
     get state() { return state; },
+    sessionEpoch: 1, sendRaw: vi.fn(() => true), onMessage: () => () => {},
     connect: vi.fn(), disconnect: vi.fn(),
     onBinary: vi.fn((handler) => { binary.add(handler); return () => binary.delete(handler); }),
     onStateChange: vi.fn((handler) => { states.add(handler); return () => states.delete(handler); }),
     setState(next: any) { state = next; for (const handler of states) handler(next); },
     frame() {
-      const data = new ArrayBuffer(20), view = new DataView(data);
-      view.setUint8(0, 1); view.setUint32(3, 14_100_000, true);
-      view.setUint32(7, 14_200_000, true); view.setUint16(14, 4, true);
+      const data = scopeWire({ sourceId: 'radio', viewStartHz: 14_100_000, viewEndHz: 14_200_000 });
       for (const handler of binary) handler(data);
     },
   };
@@ -1108,7 +1108,7 @@ describe('FrontendRuntime canonical default scope status', () => {
     expect(presentationResources.snapshot('audio-fft')).toMatchObject({
       available: false, selected: false, demand: 0,
     });
-    expect(getChannel).toHaveBeenCalledExactlyOnceWith('audio-scope');
+    expect(getChannel).toHaveBeenCalledExactlyOnceWith('scope');
   });
   it('shares, coalesces, and exactly tears down the reactive bridge', async () => {
     const hardware = makeScopeChannel();
@@ -1241,6 +1241,7 @@ describe('FrontendRuntime RX LIVE intent', () => {
       state: 'disconnected',
       connect: vi.fn(),
       disconnect: vi.fn(),
+      sessionEpoch: 1, sendRaw: vi.fn(() => true), onMessage: () => () => {},
       onBinary: vi.fn(() => vi.fn()),
       onStateChange: vi.fn(() => vi.fn()),
     };

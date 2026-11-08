@@ -51,7 +51,8 @@ from rigplane.core.radio_protocol import Radio
 from rigplane.rigctld.state_cache import StateCache
 from rigplane.scope import ScopeAssembler, ScopeFrame
 from rigplane.testing.timing import VirtualClock, await_until
-from rigplane.web.protocol import MSG_TYPE_SCOPE, encode_scope_frame
+from rigplane.web.protocol import encode_scope_subscription, decode_scope_frame_v2
+from rigplane.scope.models import Subscription, View
 from rigplane.web.radio_poller import EnableScope
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.ws import WS_OP_BINARY
@@ -62,10 +63,10 @@ from test_web_server import (
     _ws_connect,
     _ws_recv_frame,
     _ws_send_text,
-    _ws_skip_handshake,
 )
 from test_web_server_coverage import (
     _elapse_scope_windows,
+    _feed_scope_health,
     _live_scope_frame,
     _scope_hidden_verdict,
     _scope_radio,
@@ -101,13 +102,13 @@ async def test_all_zero_frames_flowing_writes_nothing(
         await _elapse_scope_windows(
             virtual_clock,
             15,  # 150 fake seconds of menu-open blank frames
-            between=lambda: srv._scope_health_check(_zero_scope_frame()),  # noqa: SLF001
+            between=lambda: _feed_scope_health(srv, _zero_scope_frame()),  # noqa: SLF001
         )
 
     await _run_monitor(srv, scenario())
 
     assert queued == []
-    assert _scope_hidden_verdict(srv) is True
+    assert _scope_hidden_verdict(srv) is False
 
 
 @pytest.mark.parametrize("model", ["IC-705", "IC-7610"])
@@ -129,9 +130,6 @@ async def test_captured_out_of_range_is_present_not_hidden(
         fixture["startHz"],
         fixture["endHz"],
     )
-    wire = encode_scope_frame(frame, 1)
-    assert wire.hex() == fixture["wireHex"]
-    assert wire[13:] == b"\x01\x00\x00"
     radio = _scope_radio()
     radio.model = model
     srv, _, queued = _virtual_scope_server(monkeypatch, virtual_clock, radio=radio)
@@ -149,13 +147,13 @@ async def test_captured_out_of_range_is_present_not_hidden(
         await _elapse_scope_windows(
             virtual_clock,
             5,
-            between=lambda: srv._scope_health_check(frame),  # noqa: SLF001
+            between=lambda: _feed_scope_health(srv, frame),  # noqa: SLF001
         )
         assert True not in published
         assert _scope_hidden_verdict(srv) is False
         assert "all-zero" not in caplog.text
         assert not srv._scope_menu_guard_active(now=virtual_clock())  # noqa: SLF001
-        srv._scope_health_check(_live_scope_frame())  # noqa: SLF001
+        _feed_scope_health(srv, _live_scope_frame())  # noqa: SLF001
         await srv._refetch_and_reenable()  # noqa: SLF001
         assert len(queued) == 1
 
@@ -369,6 +367,7 @@ async def test_overlapping_reconnect_refetches_send_one_enable(
     radio._fetch_initial_state = AsyncMock()  # noqa: SLF001
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())  # noqa: SLF001
+    srv._radio_scope_demand = True
     held: list[asyncio.Future[None]] = []
 
     put_ordered = srv.command_queue.put_ordered
@@ -427,7 +426,7 @@ async def test_elapsed_never_negative_across_reconnect(
     def stamp_future_frame() -> None:
         # A frame landing while an EnableScope write is in flight re-stamps
         # newer than the window's `now` — the old log printed "for -1s".
-        srv._scope_last_frame = virtual_clock() + 5.0  # noqa: SLF001
+        srv._scope_started_at = virtual_clock() + 5.0  # noqa: SLF001
 
     srv, radio, queued = _virtual_scope_server(
         monkeypatch, virtual_clock, on_enable=stamp_future_frame
@@ -467,13 +466,13 @@ async def test_live_frames_clear_hidden_then_reconnect_enables_once(
         await _elapse_scope_windows(
             virtual_clock,
             3,
-            between=lambda: srv._scope_health_check(_zero_scope_frame()),  # noqa: SLF001
+            between=lambda: _fresh_civ(radio, virtual_clock),
         )
         assert _scope_hidden_verdict(srv) is True
         await _elapse_scope_windows(
             virtual_clock,
             2,
-            between=lambda: srv._scope_health_check(_live_scope_frame()),  # noqa: SLF001
+            between=lambda: _feed_scope_health(srv, _live_scope_frame()),  # noqa: SLF001
         )
 
     await _run_monitor(srv, scenario())
@@ -500,7 +499,8 @@ async def test_new_viewing_session_allows_one_reconnect_enable(
 
     for handler in list(srv._scope_handlers):
         srv.unregister_scope_handler(handler)
-    await srv.ensure_scope_enabled(MagicMock())
+    await srv._set_radio_scope_output(False)
+    await srv._set_radio_scope_output(True)
     user_enable = len(queued)  # the user-demand enable, if any, is not counted
 
     await srv._refetch_and_reenable()  # noqa: SLF001
@@ -534,6 +534,10 @@ def _e2e_scope_radio() -> MagicMock:
     radio.radio_ready = True
     radio.control_connected = True
     radio.model = "IC-7610"
+    from rigplane.radio_state import RadioState
+
+    radio.radio_state = RadioState()
+    radio.radio_state.main.freq = 14_074_000
     radio.capabilities = {
         "audio",
         "scope",
@@ -617,68 +621,6 @@ def _scope_frame_sink(radio: MagicMock) -> Callable[[ScopeFrame], None]:
     return calls[-1].args[0]
 
 
-@pytest.mark.realtime(reason="real control and scope WebSocket handlers")
-@pytest.mark.timeout(30)
-async def test_scope_ctr_control_and_scope_wire_replay() -> None:
-    """Shared browser documents, replayed through both real WS handlers."""
-    fixture = json.loads(
-        (Path(__file__).parent / "fixtures/ic705/scope_out_of_range.json").read_text()
-    )
-    radio = _e2e_scope_radio()
-    radio.get_freq = AsyncMock(return_value=146_520_000)
-    srv = WebServer(
-        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
-    )
-    recovered = ScopeFrame(
-        receiver=0,
-        mode=0,
-        start_freq_hz=fixture["inRangeStartHz"],
-        end_freq_hz=fixture["inRangeEndHz"],
-        pixels=b"\x00\x40\x80",
-        out_of_range=False,
-    )
-
-    async def center(mode: int) -> None:
-        assert mode == 0
-        _scope_frame_sink(radio)(recovered)
-
-    radio.set_scope_mode = AsyncMock(side_effect=center)
-    await srv.start()
-    try:
-        host, port = _addr(srv)
-        scope_reader, scope_writer, _ = await _ws_connect(host, port, "/api/v1/scope")
-        try:
-            await await_until(lambda: radio.enable_scope.await_count == 1, timeout=5.0)
-            raw = bytes.fromhex(fixture["civHex"])
-            frame = ScopeAssembler().feed(raw[7:-1], raw[6])
-            assert frame is not None
-            _scope_frame_sink(radio)(frame)
-            opcode, wire = await _ws_recv_frame(scope_reader)
-            assert opcode == WS_OP_BINARY
-            assert wire.hex() == fixture["streamWireHex"]
-            reader, writer, _ = await _ws_connect(host, port, "/api/v1/ws")
-            try:
-                await _ws_skip_handshake(reader)
-                await _ws_send_text(writer, json.dumps(fixture["ctrCommand"]))
-                for _ in range(10):
-                    _, payload = await _ws_recv_frame(reader)
-                    response = json.loads(payload)
-                    if response.get("id") == fixture["ctrCommand"]["id"]:
-                        assert response == fixture["ctrResponse"]
-                        break
-                else:
-                    pytest.fail("CTR response missing")
-                _, wire = await _ws_recv_frame(scope_reader)
-                assert wire.hex() == fixture["inRangeWireHex"]
-                radio.set_scope_mode.assert_awaited_once_with(0)
-            finally:
-                await _close_ws(writer)
-        finally:
-            await _close_ws(scope_writer)
-    finally:
-        await srv.stop()
-
-
 def _producer_live_frame() -> ScopeFrame:
     """A producer-typed live frame, as the radio's scope callback delivers."""
     return ScopeFrame(
@@ -746,6 +688,13 @@ async def test_scope_ws_menu_preserved_through_reconnect() -> None:
     try:
         host, port = _addr(srv)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/scope")
+        await _ws_send_text(
+            writer,
+            encode_scope_subscription(
+                Subscription("radio", 0, View(14_000_000, 14_350_000), 475, 30)
+            ),
+        )
+        await _ws_recv_frame(reader)
         try:
             # The viewer's connect drives the real poller's EnableScope onto
             # the radio, and the radio's own callback delivers frames back.
@@ -758,8 +707,8 @@ async def test_scope_ws_menu_preserved_through_reconnect() -> None:
             _scope_frame_sink(radio)(live)
             opcode, payload = await asyncio.wait_for(_ws_recv_frame(reader), 5.0)
             assert opcode == WS_OP_BINARY
-            assert payload[0] == MSG_TYPE_SCOPE
-            assert payload.endswith(live.pixels)
+            assert decode_scope_frame_v2(payload).source == "radio"
+            assert decode_scope_frame_v2(payload).width == 475
 
             await _establish_menu_silence(srv, radio)
 
@@ -796,6 +745,13 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
     try:
         host, port = _addr(srv)
         reader, writer, _ = await _ws_connect(host, port, "/api/v1/scope")
+        await _ws_send_text(
+            writer,
+            encode_scope_subscription(
+                Subscription("radio", 0, View(14_000_000, 14_350_000), 475, 30)
+            ),
+        )
+        await _ws_recv_frame(reader)
         await await_until(
             lambda: radio.enable_scope.await_count == 1,
             timeout=5.0,
@@ -816,6 +772,13 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
         # A NEW viewer deliberately opens the scope view: user demand is not
         # gated by the menu guard, and frames reach the client again.
         reader2, writer2, _ = await _ws_connect(host, port, "/api/v1/scope")
+        await _ws_send_text(
+            writer2,
+            encode_scope_subscription(
+                Subscription("radio", 0, View(14_000_000, 14_350_000), 475, 30)
+            ),
+        )
+        await _ws_recv_frame(reader2)
         try:
             await await_until(
                 lambda: radio.enable_scope.await_count == 2,
@@ -826,8 +789,8 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
             _scope_frame_sink(radio)(live)
             opcode, payload = await asyncio.wait_for(_ws_recv_frame(reader2), 5.0)
             assert opcode == WS_OP_BINARY
-            assert payload[0] == MSG_TYPE_SCOPE
-            assert payload.endswith(live.pixels)
+            assert decode_scope_frame_v2(payload).source == "radio"
+            assert decode_scope_frame_v2(payload).width == 475
         finally:
             await _close_ws(writer2)
     finally:

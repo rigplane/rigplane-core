@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { WsCommand, WsMessage } from '../../types/protocol';
+import type { WsCommand, WsMessage, WsIncoming } from '../../types/protocol';
 import type { ReceiverState, ServerState } from '../../types/state';
 import type { CommandDeliveryEvent, CommandLifecycleDeliveryEvent, CommandReconciliationDeliveryEvent, ControlSessionTransition } from '../ws-client';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
@@ -467,7 +467,7 @@ describe('WsChannel', () => {
   it('routes JSON messages to onMessage handlers', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
-    const received: WsMessage[] = [];
+    const received: WsIncoming[] = [];
     ch.onMessage((m) => received.push(m));
 
     ch.connect('ws://test');
@@ -698,7 +698,7 @@ describe('WsChannel', () => {
     const ch = new WsChannel();
     const lifecycle: CommandLifecycleDeliveryEvent[] = [];
     const ordinary: CommandDeliveryEvent[] = [];
-    const messages: WsMessage[] = [];
+    const messages: WsIncoming[] = [];
     ch.onCommandLifecycleDelivery((event) => lifecycle.push(event));
     ch.onCommandDelivery((event) => ordinary.push(event));
     ch.onMessage((message) => messages.push(message));
@@ -1128,7 +1128,7 @@ describe('WsChannel', () => {
   it('does not crash on malformed JSON frames', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
-    const received: WsMessage[] = [];
+    const received: WsIncoming[] = [];
     ch.onMessage((m) => received.push(m));
 
     ch.connect('ws://test');
@@ -1468,7 +1468,7 @@ describe('WsChannel', () => {
   it('removes message handler via returned cleanup fn', async () => {
     const { WsChannel } = await import('../ws-client');
     const ch = new WsChannel();
-    const received: WsMessage[] = [];
+    const received: WsIncoming[] = [];
     const unsub = ch.onMessage((m) => received.push(m));
 
     ch.connect('ws://test');

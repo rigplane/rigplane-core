@@ -1,17 +1,20 @@
-import type { ScopeFrame } from './adapters/scope-adapter';
+import { scopeFrameTraceIdentity, type ScopeFrame } from './adapters/scope-adapter';
 
 export type TraceSource = 'hardware' | 'audio_fft';
 export type TraceToken = Readonly<{
   runId: string;
   source: TraceSource;
   transportEpoch: number;
+  sourceId: string;
+  receiver: number | null;
+  sourceEpoch: number;
   wireSequence: number;
   acceptedSequence: number;
 }>;
 export type TraceReceipt = Readonly<{
   kind: 'accepted';
   frame: ScopeFrame;
-  token: Omit<TraceToken, 'runId'>;
+  token: Omit<TraceToken, 'runId' | 'sourceId' | 'receiver' | 'sourceEpoch'>;
   callbackAt: number;
   acceptedAt: number;
 }> | Readonly<{
@@ -38,7 +41,7 @@ const LAG_INTERVAL_MS = 100;
 
 type StageCount = { count: number; totalMs: number; maxMs: number; firstSequence?: number; lastSequence?: number };
 type Bucket = { second: number; stages: Partial<Record<TraceStage, StageCount>> };
-type Burst = { atMs: number; stage: TraceStage; durationMs: number; acceptedSequence?: number; wireSequence?: number; transportEpoch?: number; source?: TraceSource };
+type Burst = { atMs: number; stage: TraceStage; durationMs: number; acceptedSequence?: number; wireSequence?: number; transportEpoch?: number; source?: TraceSource; sourceId?: string; receiver?: number | null; sourceEpoch?: number };
 type Geometry = { cssWidth: number; cssHeight: number; backingWidth: number; backingHeight: number; dpr: number };
 type TimelineEvent = (Burst | (Geometry & { atMs: number; stage: 'geometry'; canvas: 'waterfall' | 'spectrum' })) & {
   document?: { hidden: boolean; visibilityState: DocumentVisibilityState; hasFocus: boolean };
@@ -69,8 +72,8 @@ export class ScopeRenderTrace {
   private accepted = 0;
   private rejected = 0;
   private wireGaps = 0;
-  private readonly lastCallbackAt = new Map<TraceSource, number>();
-  private readonly lastWire = new Map<TraceSource, { epoch: number; sequence: number }>();
+  private readonly lastCallbackAt = new Map<string, number>();
+  private readonly lastWire = new Map<string, number>();
   private frames = new WeakMap<ScopeFrame, TraceToken>();
   private readonly acceptedIndex = new Map<number, TraceToken>();
   private readonly geometry: Partial<Record<'waterfall' | 'spectrum', Geometry>> = {};
@@ -131,11 +134,11 @@ export class ScopeRenderTrace {
       return;
     }
     const { frame, callbackAt, acceptedAt } = observation;
-    const token: TraceToken = Object.freeze({ runId: this.runId, ...observation.token });
+    const token: TraceToken = Object.freeze({ runId: this.runId, ...observation.token, ...scopeFrameTraceIdentity(frame) });
     if (!Number.isSafeInteger(token.acceptedSequence) || token.acceptedSequence <= 0
       || !Number.isSafeInteger(token.transportEpoch) || token.transportEpoch <= 0
       || !Number.isSafeInteger(token.wireSequence) || token.wireSequence < 0
-      || token.wireSequence > 0xffff) {
+      || token.wireSequence > 0xffffffff) {
       this.rejected += 1;
       this.record('rejected', null, 0, true, callbackAt);
       return;
@@ -144,15 +147,16 @@ export class ScopeRenderTrace {
     this.acceptedIndex.set(token.acceptedSequence, token);
     if (this.acceptedIndex.size > MAX_INDEX) this.acceptedIndex.delete(this.acceptedIndex.keys().next().value!);
     this.accepted += 1;
-    const previous = this.lastWire.get(token.source);
-    if (previous?.epoch === token.transportEpoch && token.wireSequence !== ((previous.sequence + 1) & 0xffff)) {
+    const wireKey = JSON.stringify([token.sourceId, token.receiver, token.sourceEpoch, token.transportEpoch]);
+    const previous = this.lastWire.get(wireKey);
+    if (previous !== undefined && token.wireSequence !== ((previous + 1) >>> 0)) {
       this.wireGaps += 1;
       this.record('wire_gap', token, 0, true, callbackAt);
     }
-    this.lastWire.set(token.source, { epoch: token.transportEpoch, sequence: token.wireSequence });
-    const previousCallback = this.lastCallbackAt.get(token.source);
+    this.lastWire.set(wireKey, token.wireSequence);
+    const previousCallback = this.lastCallbackAt.get(wireKey);
     const gap = previousCallback === undefined ? null : callbackAt - previousCallback;
-    this.lastCallbackAt.set(token.source, callbackAt);
+    this.lastCallbackAt.set(wireKey, callbackAt);
     this.record('callback', token, gap ?? 0, gap !== null && (gap < 20 || gap > 150), callbackAt);
     this.record('accepted', token, Math.max(0, acceptedAt - callbackAt), false, acceptedAt);
   }
@@ -183,7 +187,7 @@ export class ScopeRenderTrace {
     if (!this.active(at)) return;
     const duration = Number.isFinite(durationMs) ? Math.max(0, Math.min(durationMs, MAX_MS)) : 0;
     if (this.timeline && !this.appendTimeline({ atMs: at - this.startedAt, stage, durationMs: duration,
-      ...(token ? { source: token.source, transportEpoch: token.transportEpoch,
+      ...(token ? { source: token.source, sourceId: token.sourceId, receiver: token.receiver, sourceEpoch: token.sourceEpoch, transportEpoch: token.transportEpoch,
         wireSequence: token.wireSequence, acceptedSequence: token.acceptedSequence } : {}) })) return;
     const second = Math.floor((at - this.startedAt) / 1000);
     if (second < 0 || second >= MAX_BUCKETS) { this.stop('overflow'); return; }
@@ -199,7 +203,7 @@ export class ScopeRenderTrace {
     if (interesting) {
       if (this.burst.length === MAX_BURST) { this.burst.shift(); this.burstDropped += 1; }
       this.burst.push({ atMs: at - this.startedAt, stage, durationMs: duration,
-        ...(token ? { source: token.source, transportEpoch: token.transportEpoch,
+        ...(token ? { source: token.source, sourceId: token.sourceId, receiver: token.receiver, sourceEpoch: token.sourceEpoch, transportEpoch: token.transportEpoch,
           wireSequence: token.wireSequence, acceptedSequence: token.acceptedSequence } : {}) });
     }
   }

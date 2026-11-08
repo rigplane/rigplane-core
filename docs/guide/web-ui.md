@@ -117,9 +117,14 @@ options retain their existing roles.
 | Endpoint | Direction | Payload type | Purpose |
 |---------|-----------|--------------|---------|
 | `/api/v1/ws` | bidirectional | JSON text | Commands, responses, notifications, `state_update` stream |
-| `/api/v1/scope` | server -> client | Binary | Scope/waterfall frames |
-| `/api/v1/audio-scope` | server -> client | Binary | Audio-FFT scope frames (closed when the audio FFT scope is not available) |
+| `/api/v1/scope` | bidirectional | JSON + Binary | Explicit scope subscription, granted geometry and v2 frames |
 | `/api/v1/audio` | bidirectional | JSON + Binary | RX stream + TX uplink |
+
+The scope channel requires a subscription before sending frames. Select
+`sourceId: "radio"`, `"audio_fft"` or `"iq_fft"`, a receiver (`null` for FFT
+sources), a view, pixel width and `maxFps`. The server answers with granted
+geometry and v2 binary frames. `/api/v1/audio-scope` is removed; see
+[Scope subscriptions](../api/scope.md#websocket-subscriptions).
 
 ## Control Channel Workflow (`/api/v1/ws`)
 

@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { get } from 'svelte/store';
@@ -45,6 +46,7 @@ function channel() {
   return {
     state: 'connected', sessionEpoch: 1,
     connect: vi.fn(), disconnect: vi.fn(),
+    sendRaw: vi.fn(() => true), onMessage: () => () => {},
     onBinary: (handler: (data: ArrayBuffer) => void) => {
       binary.add(handler); return () => { binary.delete(handler); };
     },
@@ -55,16 +57,12 @@ function channel() {
 }
 function producerFrame(name = 'uncropped') {
   const fixture = producerFixtures.frames.find(frame => frame.name === name)!;
-  const data = Uint8Array.from(atob(fixture.wireBase64), char => char.charCodeAt(0)).buffer;
-  return { data, pixels: new Uint8Array(data, 16), fixture };
+  const pixels = Uint8Array.from(atob(fixture.wireBase64), char => char.charCodeAt(0)).slice(16);
+  const data = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, viewStartHz: fixture.startHz, viewEndHz: fixture.endHz, pixels });
+  return { data, pixels: new Uint8Array(data, 56 + 'audio_fft'.length), fixture };
 }
-function frame(start = 14176000, end = 14200000, pixels = new Uint8Array([0, 16, 48, 80, 24, 8, 0, 32])) {
-  const data = new ArrayBuffer(16 + pixels.length);
-  const view = new DataView(data);
-  view.setUint8(0, 1);
-  view.setUint32(3, start, true); view.setUint32(7, end, true);
-  view.setUint16(14, pixels.length, true);
-  new Uint8Array(data, 16).set(pixels);
+function frame(start = 14176000, end = 14200000, pixels = new Uint8Array([0, 16, 48, 80, 24, 8, 0, 32]), source: 'radio' | 'audio_fft' = 'audio_fft') {
+  const data = scopeWire({ source, sourceId: source === 'radio' ? 'radio' : 'audio_fft', receiver: source === 'radio' ? 0 : null, viewStartHz: start, viewEndHz: end, pixels });
   return { data, pixels };
 }
 let host: PresentationResourceHost<unknown>;
@@ -88,16 +86,25 @@ const context = new Proxy({
 const paintSpectrum = SpectrumRenderer.prototype.render;
 const paintWaterfall = WaterfallRenderer.prototype.pushRow;
 function expectCentralOutput(input: { pixels: Uint8Array }, options: Parameters<SpectrumRenderer['render']>[4]) {
-  const converted = input.pixels.slice(options.sampleOffset).map(value => Math.round(Math.min(value, 160) / 2));
+  expect(options.sampleOffset).toBe(0);
+  expect(options.sampleWindow).toEqual({ start: 0.5, end: 1 });
+  const offset = Math.floor(input.pixels.length / 2);
+  const converted = input.pixels.slice(offset).map(value => Math.round(Math.min(value, 160) / 2));
   const makeContext = () => new Proxy({
     ...context, canvas: { width: 640, height: 240 }, lineTo: vi.fn(), moveTo: vi.fn(), putImageData: vi.fn(),
   }, { get: (obj, key) => Reflect.get(obj, key) ?? (() => {}) });
   const actual = makeContext(); const expected = makeContext();
-  const expectedOptions = { ...options, sampleOffset: 0, sampleAmplitudeMax: 80 };
+  // An odd RF raster straddles AF zero inside its DC bin. Preserve that
+  // fractional position when comparing with the independently cropped bins.
+  const expectedOptions = { ...options, sampleOffset: 0, sampleAmplitudeMax: 80,
+    sampleWindow: { start: (input.pixels.length / 2 - offset) / converted.length, end: 1 } };
   paintSpectrum.call(new SpectrumRenderer(), actual as unknown as CanvasRenderingContext2D, input.pixels, 640, 240, options);
   paintSpectrum.call(new SpectrumRenderer(), expected as unknown as CanvasRenderingContext2D, converted, 640, 240, expectedOptions);
-  expect(actual.lineTo.mock.calls).toEqual(expected.lineTo.mock.calls);
-  expect(actual.moveTo.mock.calls).toEqual(expected.moveTo.mock.calls);
+  // Inverting the cropped coordinate system can change peak X by ~1e-13.
+  // Keep Y/amplitude exact, and compare X to sub-pixel machine precision.
+  const positions = (calls: number[][]) => calls.map(([x, y]) => [Number(x.toFixed(9)), y]);
+  expect(positions(actual.lineTo.mock.calls)).toEqual(positions(expected.lineTo.mock.calls));
+  expect(positions(actual.moveTo.mock.calls)).toEqual(positions(expected.moveTo.mock.calls));
   const canvas = (ctx: typeof actual) => ({ getContext: () => ctx, width: 640, height: 240 }) as unknown as HTMLCanvasElement;
   paintWaterfall.call(new WaterfallRenderer(canvas(actual), { ...defaultWaterfallOptions, ...options }), input.pixels);
   paintWaterfall.call(new WaterfallRenderer(canvas(expected), { ...defaultWaterfallOptions, ...expectedOptions }), converted);
@@ -143,7 +150,7 @@ beforeEach(() => {
   raf = new Map(); nextRaf = 0;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { raf.set(++nextRaf, callback); return nextRaf; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { raf.delete(id); });
-  audio = channel(); hardware = channel();
+  hardware = channel(); audio = hardware;
   scope = new ScopeController(name => (name === 'scope' ? hardware : audio) as unknown as WsChannel);
   host = new PresentationResourceHost('mor2355'); h.host = host; h.scope = scope;
   target = document.createElement('div'); document.body.append(target);
@@ -253,8 +260,8 @@ describe('MOR-2355 central default scope source', () => {
     mountPanel();
     const panel = target.querySelector('.content-center .spectrum-panel');
     expect(panel).not.toBeNull();
-    await vi.waitFor(() => expect(audio.connect).toHaveBeenCalledWith('/api/v1/audio-scope'));
-    expect(hardware.connect).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(audio.connect).toHaveBeenCalledWith('/api/v1/scope'));
+    expect(host.snapshot('hardware-scope').demand).toBe(0);
     expect(host.snapshot('hardware-scope').demand).toBe(0);
     expect(host.snapshot('audio-fft').demand).toBe(2);
     expect(audio.connect).toHaveBeenCalledTimes(1);
@@ -267,13 +274,18 @@ describe('MOR-2355 central default scope source', () => {
     draw();
     expect(render).toHaveBeenCalledTimes(renderCountAfterFrame);
     expect(get(scope.stream('audio_fft').geometry)?.view.startHz).toBe(14176000);
-    const latest = scope.stream('audio_fft').latest('audio-scope:0');
+    const latest = scope.stream('audio_fft').latest('audio_fft:*');
     expect(latest?.pixels).toHaveLength(2049);
     expect(Math.max(...latest!.pixels!)).toBe(160);
-    expect(render).toHaveBeenCalledWith(expect.anything(), input.pixels, 640, 240,
-      expect.objectContaining({ spanHz: 12000, centerHz: 6000, showRfOverlays: false, tuneHz: 0, passbandHz: 0, sampleOffset: 1024, sampleAmplitudeMax: 160 }));
+    const rendered = render.mock.calls.at(-1)!;
+    expect(rendered[0]).toBe(context);
+    expect(rendered[1]).toBe(latest!.pixels);
+    expect(rendered.slice(2, 4)).toEqual([640, 240]);
+    expect(rendered[4]).toMatchObject({ spanHz: 12000, sampleSpanHz: 12000, centerHz: 6000,
+      showRfOverlays: false, tuneHz: 0, passbandHz: 0, sampleOffset: 0,
+      sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
     expect(render.mock.calls.at(-1)![1].buffer).toBe(input.data);
-    expect(render.mock.calls.at(-1)![1].byteOffset).toBe(16);
+    expect(render.mock.calls.at(-1)![1].byteOffset).toBe(56 + 'audio_fft'.length);
     expect(push.mock.calls.at(-1)![0]).toBe(render.mock.calls.at(-1)![1]);
     expect(expectCentralOutput(input, render.mock.calls.at(-1)![4])).toEqual(expectedPixels);
     expect(options).toHaveBeenLastCalledWith(expect.objectContaining({ centerHz: 6000, spanHz: 12000 }));
@@ -304,14 +316,14 @@ describe('MOR-2355 central default scope source', () => {
   });
 
   it('does not demand or paint the sidebar audio scope while it is outside the viewport', async () => {
-    const callback = { current: null as IntersectionObserverCallback | null };
+    const callbacks = new Map<Element, IntersectionObserverCallback>();
     const observer = {
       observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn(), takeRecords: vi.fn(() => []),
       root: null, rootMargin: '64px', thresholds: [0],
     } as unknown as IntersectionObserver;
     vi.stubGlobal('IntersectionObserver', class {
-      constructor(notify: IntersectionObserverCallback) { callback.current = notify; }
-      observe = observer.observe;
+      constructor(private notify: IntersectionObserverCallback) {}
+      observe = (element: Element) => { callbacks.set(element, this.notify); observer.observe(element); };
       unobserve = observer.unobserve;
       disconnect = observer.disconnect;
       takeRecords = observer.takeRecords;
@@ -323,18 +335,18 @@ describe('MOR-2355 central default scope source', () => {
     mountPanel();
 
     await vi.waitFor(() => expect(host.snapshot('audio-fft').demand).toBe(1));
-    expect(observer.observe).toHaveBeenCalledOnce();
+    expect(observer.observe).toHaveBeenCalled();
     const panel = target.querySelector<HTMLElement>('.audio-spectrum-panel')!;
     expect(panel.dataset.streaming).toBe('false');
 
-    callback.current?.([{
+    callbacks.get(panel)?.([{
       isIntersecting: true, target: panel,
     } as unknown as IntersectionObserverEntry], observer);
     flushSync();
     expect(host.snapshot('audio-fft').demand).toBe(2);
     expect(panel.dataset.streaming).toBe('true');
 
-    callback.current?.([{
+    callbacks.get(panel)?.([{
       isIntersecting: false, target: panel,
     } as unknown as IntersectionObserverEntry], observer);
     flushSync();
@@ -342,7 +354,7 @@ describe('MOR-2355 central default scope source', () => {
     expect(panel.dataset.streaming).toBe('false');
   });
 
-  it('uses frame-local positive-frequency bins for cropped and recentered producer output', async () => {
+  it('uses observed carrier and frame-local geometry for positive-frequency bins in cropped and recentered output', async () => {
     select(true); mountPanel(false);
     const render = vi.spyOn(SpectrumRenderer.prototype, 'render');
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
@@ -357,14 +369,19 @@ describe('MOR-2355 central default scope source', () => {
       // (50 ms), so pace the frames to live spacing before firing.
       await new Promise(resolve => setTimeout(resolve, 50));
       const input = producerFrame(name);
+      // A recentered RF frame accompanies the observed QSY; its carrier is
+      // control-plane evidence, never inferred from the binary frame.
+      radio.current = { ...radio.current!, main: { ...radio.current!.main!, freqHz: input.fixture.centerHz } };
+      flushSync();
       audio.fire(input.data); draw();
       const projected = render.mock.calls.at(-1)![1];
       expect(projected).toHaveLength(count * 2 - 1);
       expect(projected).toEqual(input.pixels);
       expect(projected.buffer).toBe(input.data);
-      expect(projected.byteOffset).toBe(16);
+      expect(projected.byteOffset).toBe(56 + 'audio_fft'.length);
       const renderOptions = render.mock.calls.at(-1)![4];
-      expect(renderOptions).toMatchObject({ spanHz: span, centerHz: center, sampleOffset: count - 1, sampleAmplitudeMax: 160 });
+      expect(renderOptions).toMatchObject({ spanHz: span, sampleSpanHz: span, centerHz: center, sampleOffset: 0,
+        sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
       expect(push).toHaveBeenLastCalledWith(projected);
       expect(target.querySelector('.freq-axis')!.textContent).toContain(`${span / 1000} kHz`);
       const displayed = expectCentralOutput(input, renderOptions);
@@ -385,9 +402,9 @@ describe('MOR-2355 central default scope source', () => {
     const projected = render.mock.calls.at(-1)![1];
     expect(projected).toEqual(new Uint8Array([160, 120, 80, 0, 80, 120, 160]));
     expect(projected.buffer).toBe(input.data);
-    expect(projected.byteOffset).toBe(16);
+    expect(projected.byteOffset).toBe(56 + 'audio_fft'.length);
     const renderOptions = render.mock.calls.at(-1)![4];
-    expect(renderOptions).toMatchObject({ sampleOffset: 3, sampleAmplitudeMax: 160 });
+    expect(renderOptions).toMatchObject({ sampleOffset: 0, sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
     expect(expectCentralOutput(input, renderOptions)).toEqual(new Uint8Array([0, 40, 60, 80]));
     expect(push).toHaveBeenLastCalledWith(projected);
     const row = context.putImageData.mock.calls.at(-1)![0] as ImageData;
@@ -399,13 +416,15 @@ describe('MOR-2355 central default scope source', () => {
     renderer.setPeakHoldEnabled(true);
     context.lineTo.mockClear();
     renderer.render(context as unknown as CanvasRenderingContext2D, projected, 4, 100,
-      { ...defaultSpectrumOptions, showRfOverlays: false, sampleOffset: 3, sampleAmplitudeMax: 160 });
-    const positiveTraceY = context.lineTo.mock.calls.slice(-7, -4).map(call => call[1]);
+      { ...defaultSpectrumOptions, showRfOverlays: false, sampleOffset: 0, sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
+    // The affine AF window contains three positive peak bins; the DC bin
+    // straddles its left edge. These are the three current trace levels.
+    const positiveTraceY = context.lineTo.mock.calls.slice(-6, -3).map(call => call[1]);
     expect(positiveTraceY[0]).toBeGreaterThan(positiveTraceY[1]);
     expect(positiveTraceY[1]).toBeGreaterThan(positiveTraceY[2]);
     context.lineTo.mockClear();
     renderer.render(context as unknown as CanvasRenderingContext2D, new Uint8Array(7), 4, 100,
-      { ...defaultSpectrumOptions, showRfOverlays: false, sampleOffset: 3, sampleAmplitudeMax: 160 });
+      { ...defaultSpectrumOptions, showRfOverlays: false, sampleOffset: 0, sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
     const peakYs = context.lineTo.mock.calls.slice(-4).map(call => call[1]);
     expect(new Set(peakYs).size).toBe(4);
   });
@@ -414,28 +433,28 @@ describe('MOR-2355 central default scope source', () => {
     select(false); mountPanel(false);
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     await vi.waitFor(() => expect(hardware.connect).toHaveBeenCalledWith('/api/v1/scope'));
-    expect(audio.connect).not.toHaveBeenCalled();
-    const input = frame(14100000, 14200000); hardware.fire(input.data); draw();
+    expect(host.snapshot('audio-fft').demand).toBe(0);
+    const input = frame(14100000, 14200000, undefined, 'radio'); hardware.fire(input.data); draw();
     expect(push).toHaveBeenCalledWith(input.pixels);
     expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
     target.querySelector<HTMLButtonElement>('[title="Toggle fullscreen"]')!.click(); flushSync();
     expect(target.querySelector('.spectrum-panel.fullscreen')).not.toBeNull();
     const original = target.querySelector('canvas');
     select(true, 2);
-    await vi.waitFor(() => expect(audio.connect).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(audio.connect).toHaveBeenCalledTimes(2));
     expect(host.snapshot('hardware-scope').demand).toBe(0);
     expect(host.snapshot('audio-fft').demand).toBe(1);
-    expect(hardware.handlerCount()).toBe(0);
+    expect(hardware.handlerCount()).toBe(1);
     expect(target.querySelector('canvas')).not.toBe(original);
     expect(target.querySelector('.spectrum-panel.fullscreen')).toBeNull();
     expect(target.querySelector('.freq-axis')).toBeNull();
     audio.fire(producerFrame().data); draw();
     expect(target.textContent).toContain('12 kHz');
     select(false, 3);
-    await vi.waitFor(() => expect(audio.disconnect).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(audio.disconnect).toHaveBeenCalledTimes(2));
     expect(host.snapshot('audio-fft').demand).toBe(0);
     expect(host.snapshot('hardware-scope').demand).toBe(1);
-    expect(audio.handlerCount()).toBe(0);
+    expect(audio.handlerCount()).toBe(1);
     await unmount(instance!); instance = undefined;
     await vi.waitFor(() => expect(host.snapshot('hardware-scope').demand).toBe(0));
     expect(hardware.handlerCount()).toBe(0);

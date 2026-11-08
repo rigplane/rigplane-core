@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -168,7 +169,7 @@ beforeEach(() => {
   radio.current = liveState();
   expect(setCapabilities(liveCaps())).toBe(true);
   h.events.length = 0;
-channels = { scope: channel(), 'audio-scope': channel() };
+channels = { scope: channel() };
 h.scope = new ScopeController(name => channels[name as keyof typeof channels] as unknown as WsChannel);
 h.resources = new PresentationResourceHost('test');
 h.resources.configure('hardware-scope', { available: true, selected: true, driver: h.scope.hardwareScopeDriver });
@@ -206,21 +207,20 @@ function channel() {
     get state() { return state; }, get sessionEpoch() { return epoch; },
     connect: vi.fn(() => transition('connecting')), disconnect: vi.fn(() => transition('disconnected')),
     connected() { transition('connected'); },
+    sendRaw: vi.fn(() => true), onMessage: () => () => {},
     onBinary(fn: (buffer: ArrayBuffer) => void) { binary.add(fn); return () => { binary.delete(fn); }; },
     onStateChange(fn: (state: string) => void) { states.add(fn); return () => { states.delete(fn); }; },
     onSessionTransition(fn: (next: { state: string; epoch: number }) => void) { sessions.add(fn); return () => { sessions.delete(fn); }; },
     count: () => binary.size,
     callbacks: () => [...binary],
-    frame(receiver = 0, values = [0, 128, 255], callbacks = [...binary]) {
-      const buffer = new ArrayBuffer(16 + values.length), view = new DataView(buffer);
-      view.setUint8(0, 1); view.setUint8(1, receiver);
-      view.setUint32(3, 14_000_000, true); view.setUint32(7, 14_100_000, true);
-      view.setUint16(14, values.length, true); new Uint8Array(buffer, 16).set(values);
+    frame(receiver: number | null = 0, values = [0, 128, 255], callbacks = [...binary], source: 'radio' | 'audio_fft' = 'radio') {
+      const buffer = scopeWire({ source, sourceId: source === 'radio' ? 'radio' : 'audio_fft', receiver, pixels: new Uint8Array(values), viewStartHz: 14_000_000, viewEndHz: 14_100_000 });
       callbacks.forEach(fn => fn(buffer)); flushSync(); return buffer;
     },
+    audioFrame(receiver: number | null = null, values = [0, 128, 255], callbacks = [...binary]) { return this.frame(receiver, values, callbacks, 'audio_fft'); },
   };
 }
-let channels: Record<'scope' | 'audio-scope', ReturnType<typeof channel>>;
+let channels: Record<'scope', ReturnType<typeof channel>>;
 async function settle() { await Promise.resolve(); flushSync(); await Promise.resolve(); }
 const selected = () => h.frameGetter?.() as ScopeStream | null;
 const geometry = (stream: ScopeStream) => {
@@ -240,7 +240,7 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     render(); await settle();
     expect(authority).not.toHaveBeenCalled(); expect(streams).not.toHaveBeenCalled();
     expect(geometry(stream)).toBe(before);
-    expect(stream.latest('scope:0')?.pixels?.buffer).toBe(buffer);
+    expect(stream.latest('radio:0')?.pixels?.buffer).toBe(buffer);
     component!.$destroy(); component = null; flushSync(); await settle();
     expect(authority).not.toHaveBeenCalled(); expect(streams).not.toHaveBeenCalled();
     expect(geometry(stream)).toBe(before); expect(channels.scope.count()).toBe(1);
@@ -253,18 +253,18 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     const authority = vi.spyOn(h.scope, 'setFrameAuthority');
     expect(selected()).toBe(audio);
     expect(h.events).toEqual(['acquire:audio-fft']);
-    expect(channels.scope.connect).not.toHaveBeenCalled();
-    channels['audio-scope'].connected(); channels['audio-scope'].frame();
-    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: 0 });
-    const previous = channels['audio-scope'].callbacks();
+    expect(channels.scope.connect).toHaveBeenCalledTimes(1);
+    channels.scope.connected(); channels.scope.audioFrame();
+    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: null });
+    const previous = channels.scope.callbacks();
     radio.current = liveState(8); expect(setCapabilities(liveCaps(8))).toBe(true);
     publishAuthority(); flushSync(); await settle();
-    expect(authority.mock.lastCall).toEqual([{ source: 'audio_fft', receiver: 0, providerGeneration: 8 }, []]);
-    channels['audio-scope'].frame(0, [9, 9, 9], previous);
+    expect(authority.mock.lastCall).toEqual([{ source: 'audio_fft', receiver: null, providerGeneration: 8 }, []]);
+    channels.scope.audioFrame(null, [9, 9, 9], previous);
     expect(geometry(audio)).toBeNull();
-    expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
-    channels['audio-scope'].connected(); channels['audio-scope'].frame();
-    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: 0, freshness: 'fresh' });
+    expect(channels.scope.connect).toHaveBeenCalledTimes(2);
+    channels.scope.connected(); channels.scope.audioFrame();
+    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: null, freshness: 'fresh' });
     expect(h.events).toEqual(['acquire:audio-fft']);
   });
   it('releases only its own scope lease on unmount while an independent live consumer retains geometry', async () => {
@@ -277,7 +277,7 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     expect(authority).not.toHaveBeenCalled();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
     expect(geometry(stream)).toBe(before);
-    expect(stream.latest('scope:0')?.pixels?.buffer).toBe(buffer);
+    expect(stream.latest('radio:0')?.pixels?.buffer).toBe(buffer);
     expect(channels.scope.count()).toBe(1); expect(channels.scope.disconnect).not.toHaveBeenCalled();
     h.resources.release(independent);
   });
@@ -286,11 +286,11 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     render('audio-fft'); await settle();
     const audio = h.scope.stream('audio_fft');
     expect(selected()).toBe(audio);
-    expect(authority.mock.lastCall).toEqual([{ source: 'audio_fft', receiver: 0, providerGeneration: 7 }, []]);
+    expect(authority.mock.lastCall).toEqual([{ source: 'audio_fft', receiver: null, providerGeneration: 7 }, []]);
     expect(h.events).toEqual(['acquire:audio-fft']); expect(geometry(audio)).toBeNull();
-    channels['audio-scope'].connected(); const bytes = channels['audio-scope'].frame();
-    expect(audio.latest('audio-scope:0')?.pixels?.buffer).toBe(bytes);
-    expect(audio.latest('audio-scope:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
+    channels.scope.connected(); const bytes = channels.scope.audioFrame();
+    expect(audio.latest('audio_fft:*')?.pixels?.buffer).toBe(bytes);
+    expect(audio.latest('audio_fft:*')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
     audio.setFreshness('stale'); flushSync();
     expect(geometry(audio)).toMatchObject({ freshness: 'stale' });
     expect(selected()).toBe(audio); expect(h.events).toEqual(['acquire:audio-fft']);
@@ -301,9 +301,9 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     expect(authority.mock.lastCall).toEqual([{ source: 'hardware', receiver: 0, providerGeneration: 7 }, []]);
     expect(geometry(hardware)).toBeNull();
     channels.scope.connected(); const hardwareBytes = channels.scope.frame();
-    expect(hardware.latest('scope:0')?.pixels?.buffer).toBe(hardwareBytes);
+    expect(hardware.latest('radio:0')?.pixels?.buffer).toBe(hardwareBytes);
     expect(h.acquire.mock.calls.map(([resource]) => resource)).toEqual(['audio-fft', 'hardware-scope']);
-    expect(channels['audio-scope'].count()).toBe(0); expect(channels.scope.count()).toBe(1);
+    expect(channels.scope.count()).toBe(1);
   });
   it('updates canonical authority without reacquiring demand and fails closed on disagreement', async () => {
     const authority = vi.spyOn(h.scope, 'setFrameAuthority');
@@ -319,7 +319,7 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     channels.scope.connected(); channels.scope.frame(0);
     expect(geometry(stream)).toBeNull();
     channels.scope.frame(1); expect(geometry(stream)).toMatchObject({ receiver: 1, freshness: 'fresh' });
-    channels['audio-scope'].frame(1); expect(geometry(stream)).toMatchObject({ source: 'radio', receiver: 1 });
+    channels.scope.audioFrame(1); expect(geometry(stream)).toMatchObject({ source: 'radio', receiver: 1 });
     stream.setFreshness('stale'); flushSync(); expect(geometry(stream)).toMatchObject({ freshness: 'stale' });
     stream.reset(); flushSync(); expect(geometry(stream)).toBeNull();
     expect(h.events).toEqual(['acquire:hardware-scope']);
@@ -330,35 +330,35 @@ describe('MOR-2329 semantic LCD stream binding', () => {
     render(undefined, 'dual'); expect(selected()).toBeNull(); expect(h.events).toEqual([]);
     component!.$set({ displayFrameSource: 'audio-fft' }); flushSync(); await settle();
     expect(selected()).toBe(h.scope.stream('audio_fft')); expect(h.events).toEqual(['acquire:audio-fft']);
-    channels['audio-scope'].connected(); expect(channels['audio-scope'].count()).toBe(1);
+    channels.scope.connected(); expect(channels.scope.count()).toBe(1);
     component!.$destroy(); component = null; flushSync(); await settle();
     expect(h.events).toEqual(['acquire:audio-fft', 'release:audio-fft']);
-    expect(channels['audio-scope'].count()).toBe(0); expect(channels['audio-scope'].disconnect).toHaveBeenCalledOnce();
+    expect(channels.scope.count()).toBe(0); expect(channels.scope.disconnect).toHaveBeenCalledOnce();
   });
   it('owns simultaneous RF and AF demand only when an audio inset is declared', async () => {
     render('hardware'); component!.$set({ displayAudioScope: true }); flushSync(); await settle();
     expect(h.events).toEqual(['acquire:hardware-scope', 'acquire:audio-fft']);
-    channels.scope.connected(); channels['audio-scope'].connected();
-    channels.scope.frame(); channels['audio-scope'].frame(0, [255, 128, 0]);
-    expect(h.scope.stream('hardware').latest('scope:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
-    expect(h.scope.stream('audio_fft').latest('audio-scope:0')?.pixels).toEqual(new Uint8Array([255, 128, 0]));
-    const oldRf = channels.scope.callbacks(), oldAudio = channels['audio-scope'].callbacks();
+    channels.scope.connected();
+    channels.scope.frame(); channels.scope.audioFrame(null, [255, 128, 0]);
+    expect(h.scope.stream('hardware').latest('radio:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
+    expect(h.scope.stream('audio_fft').latest('audio_fft:*')?.pixels).toEqual(new Uint8Array([255, 128, 0]));
+    const oldRf = channels.scope.callbacks(), oldAudio = channels.scope.callbacks();
     radio.current = liveState(8); expect(setCapabilities(liveCaps(8))).toBe(true);
     publishAuthority(); flushSync(); await settle();
     expect(geometry(h.scope.stream('hardware'))).toBeNull();
     expect(geometry(h.scope.stream('audio_fft'))).toBeNull();
-    channels.scope.frame(0, [9, 9, 9], oldRf); channels['audio-scope'].frame(0, [9, 9, 9], oldAudio);
+    channels.scope.frame(0, [9, 9, 9], oldRf); channels.scope.audioFrame(null, [9, 9, 9], oldAudio);
     expect(geometry(h.scope.stream('hardware'))).toBeNull();
     expect(geometry(h.scope.stream('audio_fft'))).toBeNull();
     expect(channels.scope.connect).toHaveBeenCalledTimes(2);
-    expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
-    channels.scope.connected(); channels['audio-scope'].connected();
-    channels.scope.frame(); channels['audio-scope'].frame(0, [255, 128, 0]);
+    expect(channels.scope.connect).toHaveBeenCalledTimes(2);
+    channels.scope.connected();
+    channels.scope.frame(); channels.scope.audioFrame(null, [255, 128, 0]);
     expect(geometry(h.scope.stream('hardware'))).toMatchObject({ source: 'radio', freshness: 'fresh' });
     expect(geometry(h.scope.stream('audio_fft'))).toMatchObject({ source: 'audio_fft', freshness: 'fresh' });
     component!.$set({ displayAudioScope: false }); flushSync(); await settle();
     expect(h.events).toEqual(['acquire:hardware-scope', 'acquire:audio-fft', 'release:audio-fft']);
-    expect(channels['audio-scope'].count()).toBe(0); expect(channels.scope.count()).toBe(1);
+    expect(channels.scope.count()).toBe(1);
   });
   it('contains no raw-frame bypass, pixel store, or replacement frame host', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/components-v2/wiring/SemanticRadioSurfaces.svelte'), 'utf8');

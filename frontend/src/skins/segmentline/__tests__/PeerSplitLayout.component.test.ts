@@ -71,7 +71,10 @@ vi.mock('$lib/runtime', () => ({
       // MOR-4270: the wiring consumes the shared-stream contract; the idle
       // fixture stream publishes null geometry and never delivers frames.
       const idleStream = Object.freeze({
-        sourceId: 'scope',
+        sourceId: 'radio', subscription: null,
+        error: Object.freeze({ subscribe(listener: (value: null) => void) { listener(null); return () => {}; } }),
+        setMode(_mode: number): void {},
+        updateSurfaceSubscription(): void {}, removeSurfaceSubscription(): void {},
         geometry: Object.freeze({ subscribe(listener: (value: null) => void) { listener(null); return () => {}; } }),
         subscribe(_sink: (frame: never, slotKey: string) => void): () => void { return () => {}; },
         latest(_slotKey: string): null { return null; },
@@ -414,3 +417,6 @@ describe('the selected segmentline face owns exactly one LCD source declaration 
     expect(source).not.toMatch(/resolveLcdSpectrumFrame|audioFftDemand|requestAudioFft/);
   });
 });
+
+beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { vi.unstubAllGlobals(); });

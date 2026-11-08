@@ -105,3 +105,27 @@ describe('derivePresentationCapabilities', () => {
     expect(result).not.toHaveProperty('extensionFact');
   });
 });
+
+
+it('discovers radio, IQ and audio defaults when the legacy selected-source hint is null', () => {
+  for (const [scopeSources, expected] of [[['radio', 'audio_fft'], 'hardware'], [['iq_fft', 'audio_fft'], 'hardware'], [['audio_fft'], 'audio_fft']] as const) {
+    const result = derivePresentationCapabilities(caps({ scope: scopeSources.includes('radio' as never), scopeSource: null,
+      capabilities: scopeSources.includes('radio' as never) ? ['audio', 'scope'] : ['audio'], scopeSources }));
+    expect(result.scope.defaultSource).toBe(expected);
+    expect(result.scope.availableSources).toContain(expected);
+  }
+});
+
+it.each(['radio', 'iq_fft', 'audio_fft'] as const)('preserves the explicit %s default among all discoverable sources', (scopeDefaultSourceId) => {
+  const result = derivePresentationCapabilities(caps({ scope: true, audio: true, audioFftAvailable: true,
+    scopeSource: null, capabilities: ['audio', 'scope'], scopeSources: ['radio', 'iq_fft', 'audio_fft'],
+    scopeDefaultSourceId }));
+  expect(result.scope.defaultSource).toBe(scopeDefaultSourceId === 'audio_fft' ? 'audio_fft' : 'hardware');
+});
+
+it('keeps configured IQ demandable when optional construction failed and discovery currently lacks IQ', () => {
+  const result = derivePresentationCapabilities(caps({ scope: false, audio: true, audioFftAvailable: true,
+    scopeSource: null, capabilities: ['audio'], scopeSources: ['audio_fft'], scopeDefaultSourceId: 'iq_fft' }));
+  expect(result.scope.defaultSource).toBe('hardware');
+  expect(result.scope.hardwareScopeAvailable).toBe(true);
+});

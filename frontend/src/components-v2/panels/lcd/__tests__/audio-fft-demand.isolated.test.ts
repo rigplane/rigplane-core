@@ -1,3 +1,4 @@
+import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -21,12 +22,13 @@ type ScopeFrameProbe = import('$lib/runtime/adapters/scope-adapter').ScopeFrame;
 type AmberAfScopePropsProbe = {
   data: Uint8Array | null;
   bandwidth?: number;
-  onRegisterPush?: (push: (pixels: Uint8Array) => void) => void;
+  projection?: import('$lib/runtime/scope-frame').ScopeAudioProjection | null;
+  onRegisterPush?: (push: (pixels: Uint8Array | null) => void) => void;
 };
 
 const scopeChildProbe = vi.hoisted(() => ({
   props: null as AmberAfScopePropsProbe | null,
-  pushed: vi.fn<(pixels: Uint8Array) => void>(),
+  pushed: vi.fn<(pixels: Uint8Array | null) => void>(),
 }));
 
 const mocks = vi.hoisted(() => {
@@ -34,6 +36,7 @@ const mocks = vi.hoisted(() => {
   const stateHandlers = new Set<(state: MockConnectionState) => void>();
   let state: MockConnectionState = 'disconnected';
   let epoch = 0;
+  const messageHandlers = new Set<(message: import('$lib/types/protocol').WsIncoming) => void>();
   const sessionHandlers = new Set<(value: { state: MockConnectionState; epoch: number }) => void>();
   const setState = (next: MockConnectionState) => {
     if (next === 'connected' && state !== 'connected') epoch += 1;
@@ -49,6 +52,11 @@ const mocks = vi.hoisted(() => {
       setState('connected');
     }),
     disconnect: vi.fn(() => { setState('disconnected'); }),
+    sendRaw: vi.fn((_message: Record<string, unknown>) => true),
+    onMessage(handler: (message: import('$lib/types/protocol').WsIncoming) => void) {
+      messageHandlers.add(handler); return () => messageHandlers.delete(handler);
+    },
+    message(message: import('$lib/types/protocol').WsIncoming) { messageHandlers.forEach(handler => handler(message)); },
     onBinary: vi.fn((handler: (data: ArrayBuffer) => void) => {
       binaryHandlers.add(handler);
       return () => { binaryHandlers.delete(handler); };
@@ -278,13 +286,10 @@ describe('LCD audio-FFT demand ownership', () => {
       expect(cockpitUnsubscribe).not.toHaveBeenCalled();
 
       await vi.waitFor(() => expect(mocks.channel.connect).toHaveBeenCalledTimes(1));
-      const buffer = new ArrayBuffer(21), wire = new DataView(buffer);
-      wire.setUint8(0, 1); wire.setUint8(2, 1);
-      wire.setUint32(3, 14_012_345, true); wire.setUint32(7, 14_098_765, true); wire.setUint16(14, 5, true);
-      const distinctivePixels = new Uint8Array(buffer, 16); distinctivePixels.set([3, 17, 91, 205, 254]);
+      const buffer = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, viewStartHz: 14_012_345, viewEndHz: 14_098_765, pixels: new Uint8Array([3, 17, 91, 205, 254]) });
       mocks.channel.fire(buffer);
       flushSync();
-      const delivered = stream.latest('audio-scope:0')!.pixels!;
+      const delivered = stream.latest('audio_fft:*')!.pixels!;
       expect(delivered.buffer).toBe(buffer);
       expect(scopeChildProbe.pushed).toHaveBeenCalledExactlyOnceWith(delivered);
       expect(scopeChildProbe.props?.data).toBeNull();
@@ -294,8 +299,8 @@ describe('LCD audio-FFT demand ownership', () => {
       flushSync();
       await vi.waitFor(() => expect(mocks.channel.connect).toHaveBeenCalledTimes(1));
       expect(presentationResources.snapshot('audio-fft').demand).toBe(2);
-      expect(mocks.getChannel).toHaveBeenCalledExactlyOnceWith('audio-scope');
-      expect(mocks.channel.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/audio-scope');
+      expect(mocks.getChannel).toHaveBeenCalledExactlyOnceWith('scope');
+      expect(mocks.channel.connect).toHaveBeenCalledExactlyOnceWith('/api/v1/scope');
       expect(mocks.channel.onBinary).toHaveBeenCalledTimes(1);
       expect(mocks.channel.onStateChange).toHaveBeenCalledTimes(1);
       expect(mocks.channel.binaryHandlerCount()).toBe(1);
@@ -353,8 +358,6 @@ describe('LCD audio-FFT demand ownership', () => {
       if (cleanup) await cleanup();
       clearCapabilities();
       for (const target of targets) target.remove();
-      vi.doUnmock('$lib/transport/http-client');
-      vi.doUnmock('$lib/transport/ws-client');
       vi.unstubAllGlobals();
       vi.resetModules();
     }
@@ -367,3 +370,111 @@ describe('LCD audio-FFT demand ownership', () => {
     }
   });
 });
+
+
+it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
+  '%s retries a refused audio mapping when observed facts arrive without resize or VFO qualification', async name => {
+    vi.resetModules(); vi.clearAllMocks();
+    vi.doMock('../AmberAfScope.svelte', async importOriginal => {
+      const actual = await importOriginal<typeof import('../AmberAfScope.svelte')>();
+      const Child = actual.default as unknown as (anchor: Node, props: AmberAfScopePropsProbe) => unknown;
+      return { default: (anchor: Node, props: AmberAfScopePropsProbe) => {
+        const register = props.onRegisterPush;
+        props.onRegisterPush = push => register?.(pixels => { scopeChildProbe.pushed(pixels); push(pixels); });
+        scopeChildProbe.props = props;
+        return Child(anchor, props);
+      } };
+    });
+    vi.doMock('../../audio-scope/AudioSpectrumCanvas.svelte', async importOriginal => {
+      const actual = await importOriginal<typeof import('../../audio-scope/AudioSpectrumCanvas.svelte')>();
+      const Child = actual.default as unknown as (anchor: Node, props: AmberAfScopePropsProbe) => unknown;
+      return { default: (anchor: Node, props: AmberAfScopePropsProbe) => {
+        const register = props.onRegisterPush;
+        props.onRegisterPush = push => register?.(pixels => { scopeChildProbe.pushed(pixels); push(pixels); });
+        scopeChildProbe.props = props;
+        return Child(anchor, props);
+      } };
+    });
+    vi.stubGlobal('fetch' , vi.fn(async () => ({ ok: true, status: 200,
+      json: async () => ({ protocol_version: 1, mode: 'local' }) })));
+    let resizes = 0;
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: (entries: { contentRect: { width: number; height: number } }[]) => void) {}
+      observe() { resizes++; this.callback([{ contentRect: { width: 400, height: 100 } }]); }
+      disconnect() {}
+    });
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const { flushSync, mount, unmount } = await import('svelte');
+    const { runtime } = await import('$lib/runtime/frontend-runtime');
+    const { setRadioState } = await import('$lib/stores/radio.svelte');
+    const { setCapabilities, clearCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const { toSpectrumAuthority } = await import('$lib/runtime/adapters/scope-adapter');
+    const Component = name === 'AudioSpectrumPanel'
+      ? (await import('../../audio-scope/AudioSpectrumPanel.svelte')).default
+      : name === 'AmberScope' ? (await import('../AmberScope.svelte')).default
+        : (await import('../AmberCockpit.svelte')).default;
+    const target = document.createElement('div'); document.body.append(target);
+    const cleanup = await runtime.bootstrap();
+    const caps = { ...canonicalCapabilities, vfoScheme: 'ab' as const, vfoReadback: 'none' as const };
+    setCapabilities(caps);
+    const initial = radioState(1); initial.active = null; initial.main!.mode = null; initial.main!.filterWidth = null;
+    setRadioState(initial);
+    const component = mount(Component, { target });
+    const subscriptions = () => mocks.channel.sendRaw.mock.calls.filter(([message]) => message.type === 'subscribe');
+    try {
+      flushSync(); await Promise.resolve(); flushSync();
+      expect(subscriptions()).toHaveLength(1);
+      mocks.channel.message({ type: 'error', sourceId: 'audio_fft', receiver: null, message: 'mode/filter unavailable' });
+      flushSync(); expect(scopeChildProbe.pushed).not.toHaveBeenCalled();
+      const resizeCount = resizes;
+      const known = radioState(2); known.active = null;
+      known.fieldStatus = Object.fromEntries(['main.freqHz', 'main.mode', 'main.filterWidth', 'main.dataMode'].map(path => [path,
+        { storePath: path, observed: true, freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: 2 }]));
+      expect(toSpectrumAuthority(known, caps)).toBeNull();
+      expect(setRadioState(known)).toBe(true);
+      flushSync(); await Promise.resolve(); flushSync();
+      expect(resizes).toBe(resizeCount);
+      expect(subscriptions()).toHaveLength(2);
+      mocks.channel.message({ type: 'granted', sourceId: 'audio_fft', receiver: null,
+        view: { startHz: 14000000, endHz: 14100000 }, coverage: { startHz: 14000000, endHz: 14100000 }, width: 4, fps: 20 });
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenCalledTimes(1);
+      const unrelated = { ...known, revision: 3, stateRevision: 3, observationSeq: 3,
+        main: { ...known.main!, sMeter: 7 } };
+      setRadioState(unrelated); flushSync();
+      expect(subscriptions()).toHaveLength(2);
+      for (const [index, name] of audioScopeGoldenNames.entries()) {
+        const { buffer, expected } = loadAudioScopeGolden(name);
+        const revision = 4 + index;
+        const mapped = { ...known, revision, stateRevision: revision, observationSeq: revision,
+          main: { ...known.main!, freqHz: expected.audioPassband.tunedHz, mode: expected.input.mode },
+          cwPitch: expected.input.cwPitchHz,
+          fieldStatus: { ...known.fieldStatus, cwPitch: { storePath: 'cwPitch', observed: true,
+            freshness: 'fresh' as const, availability: 'available' as const, lastObservedMonotonic: revision } } };
+        expect(setRadioState(mapped)).toBe(true); flushSync();
+        mocks.channel.fire(buffer); flushSync();
+        const span = expected.frame.view_end_hz - expected.frame.view_start_hz;
+        const carrier = expected.audioPassband.tunedHz + expected.audioPassband.carrierOffsetHz;
+        const sign = expected.audioPassband.sideband === 'lower' ? -1 : 1;
+        expect(scopeChildProbe.props?.projection).toEqual({ zero: (carrier - expected.frame.view_start_hz) / span,
+          perHz: sign / span, spanHz: sign === 1 ? expected.frame.view_end_hz - carrier : carrier - expected.frame.view_start_hz });
+        expect(scopeChildProbe.pushed.mock.lastCall?.[0]?.buffer).toBe(buffer);
+      }
+      const pixels = scopeChildProbe.pushed.mock.lastCall?.[0];
+      expect(pixels).toBeInstanceOf(Uint8Array);
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, pixels: null }));
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
+      flushSync(); expect(scopeChildProbe.pushed.mock.lastCall?.[0]).toBeInstanceOf(Uint8Array);
+      mocks.channel.message({ type: 'error', sourceId: 'audio_fft', receiver: null, message: 'source stopped' });
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
+      mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
+      flushSync(); expect(scopeChildProbe.pushed.mock.lastCall?.[0]).toBeInstanceOf(Uint8Array);
+      mocks.channel.disconnect();
+      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
+    } finally {
+      await unmount(component); await cleanup(); clearCapabilities(); target.remove();
+      vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules();
+    }
+  },
+);

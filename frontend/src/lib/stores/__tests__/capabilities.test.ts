@@ -44,6 +44,15 @@ describe('capabilities store', () => {
     vi.resetModules();
   });
 
+  it.each([
+    ['audio_fft', ['radio', 'iq_fft', 'audio_fft'], 'audio_fft'],
+    ['iq_fft', ['radio', 'audio_fft'], 'hardware'],
+  ] as const)('keeps configured %s selection in semantic consumers independently of availability', (scopeDefaultSourceId, scopeSources, expected) => {
+    store.setCapabilities(makeCaps({ scopeSource: null, scopeDefaultSourceId, scopeSources }));
+    expect(store.getScopeSource()).toBe(expected);
+    expect(store.isAudioFftScope()).toBe(expected === 'audio_fft');
+  });
+
   it('starts with null capabilities', () => {
     expect(store.getCapabilities()).toBeNull();
   });

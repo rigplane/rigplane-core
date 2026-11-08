@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
@@ -41,7 +42,7 @@ describe('actual canvas trace callbacks', () => {
       const fixture = producerFrames.frames.find(frame => frame.name === 'uncropped')!;
       const parsedFrames = [0, 1].map(() => {
         const bytes = Uint8Array.from(atob(fixture.wireBase64), char => char.charCodeAt(0));
-        const parsed = parseCurrentScopeFrame(bytes.buffer, { source: 'audio_fft', sourceId: 'audio-scope', epoch: 1 });
+        const parsed = parseCurrentScopeFrame(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null, viewStartHz: fixture.startHz, viewEndHz: fixture.endHz, pixels: bytes.slice(16) }), { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 });
         if (!parsed.ok || parsed.frame.pixels === null) throw new Error('Producer FFT fixture did not decode');
         return { frame: parsed.frame, pixels: parsed.frame.pixels };
       });

@@ -11,18 +11,17 @@ not write scope-enable for them.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
 from rigplane.commands import parse_civ_frame
-from rigplane.scope import ScopeAssembler
+from rigplane.scope import ScopeAssembler, ScopeFrame
+from rigplane.scope.models import Subscription, View
+from rigplane.testing.timing import VirtualClock
 from rigplane.web.radio_poller import EnableScope
-from rigplane.web.server import WebServer
+from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.icom import MockIcomRadio
-from rigplane_testkit.sim.engine.core import ManualClock
 from test_web_server_coverage import _scope_radio
 from testkit.test_simulator_scope_stream import _ACK, _client, _open, _waves
 
@@ -31,7 +30,7 @@ def _set(sim: MockIcomRadio, payload: bytes) -> None:
     assert sim._dispatch_civ(0x27, payload, 0xE0) == _ACK  # noqa: SLF001
 
 
-def _decode(frame: bytes) -> SimpleNamespace:
+def _decode(frame: bytes) -> ScopeFrame:
     """Decode one simulator wave through the production scope path."""
     parsed = parse_civ_frame(frame)
     assert parsed.sub == 0x00
@@ -39,11 +38,11 @@ def _decode(frame: bytes) -> SimpleNamespace:
     assembled = ScopeAssembler().feed(parsed.data[1:], receiver)
     assert assembled is not None
     assert len(assembled.pixels) > 0
-    return SimpleNamespace(pixels=bytes(assembled.pixels))
+    return assembled
 
 
-async def _collect_blank_waves() -> list[SimpleNamespace]:
-    clock = ManualClock()
+async def _collect_blank_waves() -> list[ScopeFrame]:
+    clock = VirtualClock(start=0)
     sim = MockIcomRadio(scope_stream=True, scope_blank_waves=True, clock=clock)
     await sim.start()
     client = await _client()
@@ -76,9 +75,7 @@ async def test_blank_waves_decode_to_all_zero_frames() -> None:
 def _watchdog_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[WebServer, list[EnableScope]]:
-    srv = WebServer(_scope_radio())
-    srv._scope_handlers.add(MagicMock())  # noqa: SLF001
-    srv._scope_enabled = True  # noqa: SLF001
+    srv = WebServer(_scope_radio(), WebConfig(radio_model="IC-7610"))
     srv._scope_health_interval = 0.05  # noqa: SLF001
     queued: list[EnableScope] = []
     put_ordered = srv.command_queue.put_ordered  # noqa: SLF001
@@ -106,14 +103,30 @@ async def test_watchdog_ignores_simulator_blank_stream(
     assert frames, "simulator emitted no waves"
     srv, queued = _watchdog_server(monkeypatch)
 
-    monitor = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
-    try:
-        for i in range(100):
-            srv._scope_health_check(frames[i % len(frames)])  # noqa: SLF001
-            await asyncio.sleep(0.01)
-    finally:
-        monitor.cancel()
-        await asyncio.gather(monitor, return_exceptions=True)
+    async with VirtualClock.on_running_loop() as clock:
+        frame = frames[0]
+        srv._radio_state.main.freq = (frame.start_freq_hz + frame.end_freq_hz) // 2
+        subscription = await srv.scope_hub.subscribe(
+            Subscription(
+                "radio",
+                0,
+                View(frame.start_freq_hz, frame.end_freq_hz),
+                1024,
+                30,
+            )
+        )
+        queued.clear()
+        source = srv._radio_scope_source
+        assert source is not None
+        monitor = asyncio.create_task(srv._scope_health_monitor())
+        try:
+            for index in range(6):
+                source.feed_frame(frames[index % len(frames)])
+                await clock.elapse(srv._scope_health_interval / 2)
+        finally:
+            monitor.cancel()
+            await asyncio.gather(monitor, return_exceptions=True)
+            await subscription.close()
 
     assert queued == []
     hidden_path = FieldPath.parse("health.health.scope_hidden")
@@ -122,4 +135,77 @@ async def test_watchdog_ignores_simulator_blank_stream(
         for field in srv.command_state_store.snapshot().fields
         if field.path == hidden_path
     ]
-    assert values == [True]
+    assert values == [False]
+
+
+def test_blank_scope_wave_preserves_real_assembler_geometry():
+    from dataclasses import replace
+    from rigplane_testkit.icom.simulator import _blank_scope_wave
+
+    sim = MockIcomRadio(scope_stream=True)
+    for wave in sim._scope_templates[0]:
+        original = _decode(wave)
+        blank = _decode(_blank_scope_wave(wave))
+        assert blank == replace(original, pixels=bytes(len(original.pixels)))
+
+
+def test_blank_scope_wave_keeps_multipart_metadata_and_zeros_continuations():
+    from rigplane.commands import build_civ_frame
+    from rigplane_testkit.icom.simulator import _blank_scope_wave
+    from test_scope import _seq1_payload
+
+    metadata = build_civ_frame(
+        0xE0,
+        0x98,
+        0x27,
+        sub=0,
+        data=b"\x00"
+        + _seq1_payload(
+            receiver=0,
+            seq=1,
+            seq_max=3,
+            mode=0,
+            start_hz=14_100_000,
+            end_hz=50_000,
+            oor=False,
+        ),
+    )
+    assert _blank_scope_wave(metadata) == metadata
+    assembler = ScopeAssembler()
+    for sequence, pixels in ((1, metadata), (2, b"\x01\x02"), (3, b"\x03\x04")):
+        wave = (
+            metadata
+            if sequence == 1
+            else build_civ_frame(
+                0xE0, 0x98, 0x27, sub=0, data=bytes((0, sequence, 3)) + pixels
+            )
+        )
+        parsed = parse_civ_frame(_blank_scope_wave(wave))
+        result = assembler.feed(parsed.data[1:], parsed.data[0])
+    assert result == ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(4), False)
+
+
+def test_blank_scope_wave_leaves_out_of_range_and_controls_unchanged():
+    from rigplane.commands import build_civ_frame
+    from rigplane_testkit.icom.simulator import _blank_scope_wave
+    from test_scope import _seq1_payload
+
+    oor = build_civ_frame(
+        0xE0,
+        0x98,
+        0x27,
+        sub=0,
+        data=b"\x00"
+        + _seq1_payload(
+            receiver=0,
+            seq=1,
+            seq_max=1,
+            mode=0,
+            start_hz=14_100_000,
+            end_hz=50_000,
+            oor=True,
+        ),
+    )
+    control = build_civ_frame(0xE0, 0x98, 0x27, sub=0x11, data=b"\x01")
+    assert _blank_scope_wave(oor) == oor
+    assert _blank_scope_wave(control) == control

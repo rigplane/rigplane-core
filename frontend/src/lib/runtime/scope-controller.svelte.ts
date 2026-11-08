@@ -1,9 +1,9 @@
 /**
- * ScopeController — singleton owner of the hardware and audio-scope
- * WebSockets (ADR INV-2, INV-5).
+ * ScopeController — singleton owner of the shared subscribed scope
+ * WebSocket (ADR INV-2, INV-5).
  *
  * MOR-4270: each source exposes ONE shared `ScopeStream` for the whole
- * page. The stream parses frames, keeps the latest frame per slot in a
+ * page. One controller ingress decodes frames; streams keep each slot in a
  * non-reactive map and publishes the qualified `geometry` store; this
  * controller keeps only channel lifetime, demand health, trace receipts
  * and the shared liveness clock (stale transitions; no per-frame timers).
@@ -13,7 +13,7 @@
 
 import { getChannel } from '$lib/transport/ws-client';
 import { markScopeFrame } from '$lib/stores/connection.svelte';
-import { SCOPE_FRAME_SILENCE_MS } from '$lib/runtime/adapters/scope-adapter';
+import { ingressScopeFrame, SCOPE_FRAME_SILENCE_MS } from '$lib/runtime/adapters/scope-adapter';
 import { ScopeStream } from './scope-stream';
 import type { ScopeMessageSource } from './scope-stream';
 import { untrack } from 'svelte';
@@ -23,6 +23,7 @@ import type {
   WsChannel,
 } from '$lib/transport/ws-client';
 import type { PresentationResourceDriver, PresentationResourceHost } from './resource-host';
+import type { ScopeSubscription } from './scope-view';
 import type { TraceReceipt } from './scope-render-trace';
 
 export type ScopeSource = 'hardware' | 'audio_fft';
@@ -74,6 +75,10 @@ export class ScopeController {
   private _nextId = 0;
   private _bindings = new Map<AudioFftHandle | HardwareHandle, ChannelBinding>();
   private _hardwareGeneration = 0;
+  private _channel: WsChannel | null = null;
+  private _channelGeneration = 0;
+  private _sentSubscriptions = new Map<string, string>();
+  private _detachChannel: (() => void) | null = null;
   private _acceptedSequence = 0;
   private _arrivals: Record<ScopeSource, number | null> = { hardware: null, audio_fft: null };
   private _clockHandle: TimerHandle | null = null;
@@ -109,8 +114,16 @@ export class ScopeController {
     return this._streams[source]!;
   }
 
+  configureSources(sourceIds: readonly string[], defaultSourceId?: 'radio' | 'iq_fft' | 'audio_fft' | null): void {
+    const selected = defaultSourceId === 'radio' || defaultSourceId === 'iq_fft' ? defaultSourceId
+      : sourceIds.includes('radio') ? 'radio' : sourceIds.includes('iq_fft') ? 'iq_fft' : null;
+    if (selected) this.stream('hardware').setSource(selected === 'radio' ? 'radio' : 'iq_fft', selected);
+    if (sourceIds.includes('audio_fft')) this.stream('audio_fft').setSource('audio_fft', 'audio_fft');
+  }
+
   /** Control-plane identity qualifies geometry; pixel delivery stays on the shared stream. */
   setFrameAuthority(authority: ScopeFrameAuthority | null, additionalSources: readonly ScopeSource[] = []): void {
+    if (authority && this.stream(authority.source).kind === 'iq_fft') authority = { ...authority, receiver: null };
     const previous = this._authority;
     const additional = new Set(authority ? additionalSources.filter(source => source !== authority.source) : []);
     const sameAuthority = previous?.source === authority?.source && previous?.receiver === authority?.receiver
@@ -120,24 +133,33 @@ export class ScopeController {
     const providerChanged = previous?.providerGeneration !== authority?.providerGeneration;
     if (providerChanged) {
       this._authorityRevision += 1;
-      for (const stream of Object.values(this._streams)) stream?.reset();
+      for (const stream of Object.values(this._streams)) stream?.clearMode();
     }
     const newlyQualified = [...additional].filter(source => !this._additionalSources.has(source));
     this._additionalSources = additional;
     this._authority = authority === null ? null : Object.freeze({ ...authority });
-    if (!sameAuthority && previous) this._streams[previous.source]?.reset();
-    if (!authority) return;
+    if (!sameAuthority && previous) this._streams[previous.source]?.clearMode();
+    if (!authority) {
+      for (const stream of Object.values(this._streams)) stream?.clearMode();
+      return;
+    }
+    if (providerChanged && this._detachChannel) {
+      const detach = this._detachChannel; this._detachChannel = null; this._channelGeneration += 1;
+      try { detach(); } finally { this._channel?.disconnect(); }
+      this._sentSubscriptions.clear();
+      for (const binding of new Set(this._bindings.values())) binding.active = false;
+    }
     const stream = this.stream(authority.source);
     if (!sameAuthority) {
       stream.setSlotFilter(authority.receiver === null ? null
-        : `${authority.source === 'hardware' ? 'scope' : 'audio-scope'}:${authority.receiver}`);
-      stream.reset();
+        : `${stream.sourceId}:${authority.receiver}`);
+      stream.clearMode();
     }
-    for (const source of [authority.source, ...additional]) {
+    for (const source of new Set([authority.source, ...additional, ...[...this._bindings.values()].map(binding => binding.source)])) {
       if (newlyQualified.includes(source)) this._streams[source]?.reset();
       const binding = [...this._bindings.values()].find(item => item.source === source);
-      if (!binding || binding.revision === this._authorityRevision) continue;
-      this._retire(binding);
+      if (!binding || (binding.active && binding.revision === this._authorityRevision)) continue;
+      if (binding.active) this._retire(binding);
       try { this._installBinding(binding); }
       catch (error) {
         this._setHealth(source, { demanded: true, transport: 'disconnected', frameSeen: false });
@@ -146,8 +168,8 @@ export class ScopeController {
     }
   }
 
-  private _channelFor(source: ScopeSource): WsChannel {
-    return this._getChannel(source === 'hardware' ? 'scope' : 'audio-scope');
+  private _channelFor(_source: ScopeSource): WsChannel {
+    return this._channel ??= this._getChannel('scope');
   }
 
   /** Optional diagnostic observation; never acquires a channel or changes frame subscribers. */
@@ -191,30 +213,12 @@ export class ScopeController {
 
   private _createStream(source: ScopeSource): ScopeStream {
     const messageSource: ScopeMessageSource = {
-      subscribe: (sink) => {
-        const binding = [...this._bindings.values()].find(item => item.source === source);
-        if (!binding) return () => {};
-        const revision = binding.revision;
-        return binding.channel.onBinary((buffer) => {
-          if (!binding.active || binding.revision !== revision || !this._sourceDemanded(source)
-            || this._readHealth(source).transport !== 'connected') return;
-          const now = this._timing.now();
-          if (!Number.isFinite(now) || now < 0) {
-            this._streams[source]?.reset();
-            this._arrivals[source] = null; this._slotArrivals[source].clear();
-            this._publishTraceReceipt({ kind: 'rejected', source, transportEpoch: binding.channel.sessionEpoch,
-              callbackAt: now, reason: 'clock' });
-            this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
-            return;
-          }
-          sink(buffer);
-        });
-      },
+      subscribe: () => () => {},
       close: () => {},
     };
     const stream = new ScopeStream(
       messageSource,
-      { source: source === 'hardware' ? 'radio' : 'audio_fft', sourceId: source === 'hardware' ? 'scope' : 'audio-scope', epoch: 0 },
+      { source: source === 'hardware' ? 'radio' : 'audio_fft', sourceId: source === 'hardware' ? 'radio' : 'audio_fft', epoch: 0 },
       'borrowed',
       () => {
         const binding = [...this._bindings.values()].find(item => item.source === source);
@@ -222,6 +226,13 @@ export class ScopeController {
           transportEpoch: binding?.channel.sessionEpoch ?? 0, callbackAt: this._timing.now(), reason: 'parse' });
         this._arrivals[source] = null; this._slotArrivals[source].clear();
         this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
+      },
+      (subscription, previous) => {
+        if (previous && (subscription === null || previous.sourceId !== subscription.sourceId || previous.receiver !== subscription.receiver)) {
+          this._sendUnsubscribe(previous);
+        }
+        if (subscription) this._sendSubscription(source, subscription);
+
       },
     );
     stream.subscribe((frame, slotKey) => {
@@ -233,7 +244,7 @@ export class ScopeController {
       this._setHealth(source, { ...this._readHealth(source), frameSeen: true });
       this._ensureClock();
       if (this._traceObservers) this._publishTraceReceipt({ kind: 'accepted', frame,
-        token: { source, transportEpoch: frame.epoch, wireSequence: frame.seq, acceptedSequence },
+        token: { source, transportEpoch: this._channel?.sessionEpoch ?? 0, wireSequence: frame.seq, acceptedSequence },
         callbackAt: receivedAt, acceptedAt: receivedAt });
     });
     stream.pause();
@@ -259,50 +270,115 @@ export class ScopeController {
     }
   }
 
+  private _sendSubscription(source: ScopeSource, subscription: ScopeSubscription): void {
+    if (!this._sourceDemanded(source) || this._channel?.state !== 'connected') return;
+    const key = `${subscription.sourceId}:${subscription.receiver}`;
+    const identity = JSON.stringify([this._channel.sessionEpoch, subscription]);
+    if (this._sentSubscriptions.get(key) === identity) return;
+    if (this._channel.sendRaw({ type: 'subscribe', ...subscription })) this._sentSubscriptions.set(key, identity);
+  }
+
+  private _sendUnsubscribe(subscription: ScopeSubscription): void {
+    const key = `${subscription.sourceId}:${subscription.receiver}`;
+    if (this._channel?.state !== 'connected' || !this._sentSubscriptions.has(key)) return;
+    this._channel.sendRaw({ type: 'unsubscribe', sourceId: subscription.sourceId, receiver: subscription.receiver });
+    this._sentSubscriptions.delete(key);
+  }
+
   private _installBinding(binding: ChannelBinding): void {
     const { source, channel } = binding;
-    const stream = this.stream(source);
     binding.revision = this._authorityRevision;
     binding.active = true;
-    const revision = binding.revision;
+    const stream = this.stream(source);
+    stream.resume();
     this._setHealth(source, { demanded: true, transport: channel.state, frameSeen: false });
-    try {
-      binding.unsubscribeState = channel.onStateChange((state) => {
-        if (!binding.active || binding.revision !== revision) return;
-        if (state !== 'connected') {
-          stream.reset(); this._arrivals[source] = null; this._slotArrivals[source].clear();
+    if (this._detachChannel === null) {
+      const generation = ++this._channelGeneration;
+      const current = () => this._channelGeneration === generation && this._detachChannel !== null;
+      let unsubscribeState = () => {}, unsubscribeSession = () => {}, unsubscribeBinary = () => {}, unsubscribeMessage = () => {};
+      this._detachChannel = () => {
+        try { unsubscribeState(); } finally {
+          try { unsubscribeSession(); } finally { try { unsubscribeBinary(); } finally { unsubscribeMessage(); } }
         }
-        this._setHealth(source, { demanded: true, transport: state,
-          frameSeen: state === 'connected' && this._arrivalIsLive(source) });
+      };
+      try {
+      unsubscribeState = channel.onStateChange(state => {
+        if (!current()) return;
+        for (const active of new Set(this._bindings.values())) {
+          if (!active.active) continue;
+          const selected = this.stream(active.source);
+          if (state !== 'connected') {
+            this._sentSubscriptions.clear(); selected.setSessionEpoch(0); this._arrivals[active.source] = null; this._slotArrivals[active.source].clear();
+          }
+          if (state === 'connected') {
+            selected.setSessionEpoch(Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0 ? channel.sessionEpoch : 0);
+            for (const request of selected.subscriptions) this._sendSubscription(active.source, request);
+          }
+          this._setHealth(active.source, { demanded: true, transport: state,
+            frameSeen: state === 'connected' && this._arrivalIsLive(active.source) });
+        }
         this._ensureClock();
       });
-      binding.unsubscribeSession = this._subscribeSession(source, channel, (transition) => {
-        if (!binding.active || binding.revision !== revision) return;
-        if (transition.state === 'connected') {
-          const epoch = channel.sessionEpoch;
-          stream.setSessionEpoch(Number.isSafeInteger(epoch) && epoch > 0 ? epoch : 0);
-        } else stream.reset();
+      unsubscribeSession = this._subscribeSession(source, channel, transition => {
+        if (!current()) return;
+        for (const active of new Set(this._bindings.values())) {
+          if (!active.active) continue;
+          const selected = this.stream(active.source);
+          selected.setSessionEpoch(transition.state === 'connected' && Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0 ? channel.sessionEpoch : 0);
+          if (transition.state === 'connected' && selected.subscription) this._sendSubscription(active.source, selected.subscription);
+        }
       });
-      stream.resume();
-      channel.connect(source === 'hardware' ? '/api/v1/scope' : '/api/v1/audio-scope');
-      if (channel.state === 'connected' && Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0) {
-        stream.setSessionEpoch(channel.sessionEpoch);
-      }
-    } catch (error) { this._retire(binding); throw error; }
+      unsubscribeBinary = channel.onBinary(buffer => {
+        if (!current() || channel.state !== 'connected') return;
+        const now = this._timing.now();
+        const ingressed = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: channel.sessionEpoch });
+        if (ingressed.ok) {
+          const target = ingressed.geometry.source === 'audio_fft' ? 'audio_fft' : 'hardware';
+          if (!this._sourceDemanded(target)) return;
+          if (!Number.isFinite(now) || now < 0) {
+            this._streams[target]?.reset(); this._arrivals[target] = null; this._slotArrivals[target].clear();
+            this._publishTraceReceipt({ kind: 'rejected', source: target, transportEpoch: channel.sessionEpoch,
+              callbackAt: now, reason: 'clock' });
+            this._setHealth(target, { ...this._readHealth(target), frameSeen: false });
+          } else this._streams[target]?.ingress(ingressed);
+        } else {
+          for (const active of new Set(this._bindings.values())) if (active.active) this._streams[active.source]?.ingress(ingressed);
+        }
+      });
+      unsubscribeMessage = channel.onMessage(message => {
+        if (!current() || channel.state !== 'connected') return;
+        for (const active of new Set(this._bindings.values())) {
+          if (!active.active) continue;
+          const selected = this.stream(active.source);
+          if ('sourceId' in message && !selected.subscriptions.some(request => message.sourceId === request.sourceId
+            && (!('receiver' in message) || message.receiver === request.receiver))) continue;
+          if (message.type === 'error') for (const request of selected.subscriptions) this._sentSubscriptions.delete(`${request.sourceId}:${request.receiver}`);
+          selected.handleMessage(message);
+        }
+      });
+      channel.connect('/api/v1/scope'); }
+      catch (error) { this._retire(binding); throw error; }
+    }
+    if (channel.state === 'connected') {
+      stream.setSessionEpoch(Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0 ? channel.sessionEpoch : 0);
+      for (const request of stream.subscriptions) this._sendSubscription(source, request);
+    }
   }
 
   private _retire(binding: ChannelBinding): void {
     const { source, channel } = binding;
     binding.active = false;
-    try { this._detachBinding(binding); }
-    finally {
-      try { this._streams[source]?.pause(); }
-      finally {
-        channel.disconnect(); this._arrivals[source] = null; this._slotArrivals[source].clear();
-        this._setHealth(source, { demanded: this._sourceDemanded(source), transport: 'disconnected', frameSeen: false });
-        this._ensureClock();
-      }
+    const stream = this._streams[source];
+    for (const subscription of stream?.subscriptions ?? []) {
+      this._sendUnsubscribe(subscription);
     }
+    stream?.pause(); stream?.clearMode(); this._arrivals[source] = null; this._slotArrivals[source].clear();
+    if (![...this._bindings.values()].some(active => active.active)) {
+      const detach = this._detachChannel; this._detachChannel = null; this._channelGeneration += 1;
+      try { detach?.(); } finally { channel.disconnect(); this._channel = null; }
+    }
+    this._setHealth(source, { demanded: this._sourceDemanded(source), transport: 'disconnected', frameSeen: false });
+    this._ensureClock();
   }
 
   private _disconnect(handle: AudioFftHandle | HardwareHandle): void {

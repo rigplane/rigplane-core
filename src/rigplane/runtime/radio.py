@@ -60,7 +60,6 @@ from rigplane.audio.route import (
     audio_stream_contract_from_request,
     resolve_lan_audio_stream_request,
 )
-from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.civ import is_directed_ptt_reply
 from rigplane.runtime._civ_rx import (
     CivRuntime,
@@ -657,8 +656,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._audio_watchdog_task: asyncio.Task[None] | None = None
         self._civ_request_tracker = CivRequestTracker()
         self._civ_epoch = self._civ_request_tracker.generation
-        self._scope_frame_queue: BoundedQueue[ScopeFrame] | None = None
-        self._scope_stream_consumers = 0
+        self._scope_stream_callbacks: list[Callable[[ScopeFrame], None]] = []
         self._scope_activity_event = asyncio.Event()
         self._civ_ack_sink_grace: float = (
             float(os.environ.get("ICOM_CIV_ACK_SINK_GRACE_MS", "120")) / 1000.0

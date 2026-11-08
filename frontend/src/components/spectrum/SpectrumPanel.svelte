@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resolveScopeSourceId, audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
@@ -39,7 +40,7 @@
   import { projectScopeCoverage, type ScopeCoverageProjection } from '../../lib/runtime/scope-frame';
   import { scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
   import {
-    createScopeView, panView, viewCenterHz, zoomView, scopeSubscription,
+    createScopeView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
     type View,
   } from '../../lib/runtime/scope-view';
   import { scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
@@ -134,7 +135,8 @@
   // lifecycle is busy, then returns to the confirmed radio observation.
   let filterWidthLifecycle = $derived(getFilterWidthCommandLifecycle());
   // --- Component state ---
-  let audioFft = $derived(runtime.caps?.scopeSource === 'audio_fft');
+  let selectedScopeId = $derived(resolveScopeSourceId(runtime.caps));
+  let audioFft = $derived(selectedScopeId === 'audio_fft');
   // MOR-3158: the SDR source rides the same hardware rendering path —
   // RF-center geometry, the existing set-frequency click-to-tune, the
   // hardware scope stream and leases — because the backend feeds the
@@ -142,7 +144,7 @@
   // is additive: the toolbar badge/selector and the TX-frozen waterfall
   // hold. The public `sdr` leaf is the generated `SdrStatusPublic`
   // (MOR-3201); an absent leaf reads as null, never a fabricated default.
-  let sdrSource = $derived(runtime.caps?.scopeSource === 'sdr');
+  let sdrSource = $derived(selectedScopeId === 'iq_fft');
   let sdrState = $derived(sdrSource ? runtime.state?.sdr ?? null : null);
   let sdrTxFrozen = $derived(sdrState?.txFrozen === true);
   // Every source the info payload advertises next to the selected SDR
@@ -223,7 +225,7 @@
     const caps = runtime.caps;
     const state = runtime.state;
     return {
-      selectedSource: typeof caps?.scopeSource === 'string' ? caps.scopeSource : null,
+      selectedSource: selectedScopeId ?? null,
       providerGeneration: typeof state?.providerGeneration === 'number' && Number.isSafeInteger(state.providerGeneration)
         ? state.providerGeneration : null,
       activeReceiver: typeof state?.active === 'string' ? state.active : null,
@@ -296,14 +298,16 @@
   }
 
   onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); });
-  // Frame window and scope mode are geometry facts (rarely changing); the
-  // audio-FFT display halves the delivered window exactly as before.
+  // RF geometry stays wire-owned. AF axes use observed carrier/polarity;
+  // the legacy symmetric fallback is presentation-only.
+  let audioProjection = $derived(audioFft ? audioScopeProjection(displayGeometry, runtime.state) : null);
+  let audioSampleWindow = $derived(audioProjection ? { start: audioProjection.zero,
+    end: audioProjection.zero + audioProjection.perHz * audioProjection.spanHz } : undefined);
   let startFreq = $derived(audioFft ? 0 : displayGeometry?.view.startHz ?? 0);
   let endFreq = $derived(audioFft
-    ? ((displayGeometry?.view.endHz ?? 0) - (displayGeometry?.view.startHz ?? 0)) / 2
+    ? audioProjection?.spanHz ?? ((displayGeometry?.view.endHz ?? 0) - (displayGeometry?.view.startHz ?? 0)) / 2
     : displayGeometry?.view.endHz ?? 0);
-  // Scope mode from the binary frame header (authoritative), qualified by
-  // the ingress owner into geometry.
+  // The runtime qualifies observed control mode into geometry; zero is a presentation fallback.
   let frameScopeMode = $derived(displayGeometry?.mode ?? 0);
   let fullscreen = $state(false);
   let showEiBi = $state(false);
@@ -498,6 +502,11 @@
   );
   let spanHz = $derived(endFreq > startFreq ? endFreq - startFreq : 0);
   let spectrumAuthority = $derived(audioFft ? null : toSpectrumAuthority(runtime.state, runtime.caps));
+  let scopeControlsMode = $derived.by(() => {
+    if (audioFft || sdrSource) return null;
+    const reading = spectrumAuthority?.scopeControls?.mode.reading;
+    return reading?.status === 'known' && typeof reading.value === 'number' ? reading.value : null;
+  });
   // MOR-1497: the grab cursor must not promise a drag the gate will refuse.
   // Mirrors the FULL drag-start gate: frequency authority AND usable sample
   // geometry (before the first scope frame endFreq <= startFreq, so
@@ -633,22 +642,13 @@
   // (browser refocus) the reference stays visible immediately instead of
   // returning >1s later with the frame. FIX keeps its frame-bound
   // proportional line, audio FFT shows none, and viewer OFF hides it.
-  // Positive CENTER evidence: the live frame's own mode while a frame is
-  // present, otherwise the authority's observed scope-control mode — the
-  // post-clear frameScopeMode default (0) alone is NOT proof of CENTER,
-  // so a FIX projection that dropped to null grows no false 50% marker.
-  let scopeControlsMode = $derived.by(() => {
-    const reading = spectrumAuthority?.scopeControls?.mode.reading;
-    return reading?.status === 'known' && typeof reading.value === 'number' ? reading.value : null;
-  });
-  let centerReferenceMode = $derived(
-    spanHz > 0
-      ? !isFixedScope
-      : scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode),
-  );
+  // Only observed scope-control facts establish CENTER. The numeric
+  // presentation fallback on v2 geometry is not mode evidence.
+  let centerReferenceMode = $derived(scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode));
   // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
   let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
   let rememberedCenterReference = $derived.by(() => {
+    if (audioFft || sdrSource) return false;
     const memory = provenCenterMode;
     if (memory === null) return false;
     const state = runtime.state;
@@ -705,8 +705,8 @@
     const geometry = frameGeometry;
     const frequency = displayFrequencyHz;
     const authority = spectrumAuthority;
-    const center = spanHz > 0 ? !isFixedScope
-      : scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
+    const nativeRadio = !audioFft && !sdrSource;
+    const center = scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
     const sessionEpoch = runtime.controlSession.epoch;
     const fixed = isFixedScope;
     const follow = followSpanHz;
@@ -718,7 +718,8 @@
     untrack(() => {
       coordinatingView = true;
       try {
-        if (authority !== null && center !== null) {
+        if (!nativeRadio) provenCenterMode = null;
+        else if (authority !== null && center !== null) {
           provenCenterMode = center ? {
             providerGeneration: authority.providerGeneration,
             receiver: authority.receiver,
@@ -796,7 +797,7 @@
       ? Math.min(100, Math.max(0, ((tuneHz - viewportStartFreq) / viewportSpanHz) * 100))
       : 50
   );
-  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}`);
+  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
@@ -808,19 +809,21 @@
     if (reason === 'no pixels') return t('core.scope.hatch.noPixels');
     return t('core.scope.hatch.widerThanCoverage');
   }
-  // The typed subscription value: computed here and (until R4's server
-  // support) intentionally unsent — surfaced as a debug attribute.
   let scopeAreaWidth = $state(0);
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = followSpanHz !== null
-      ? { follow: 'vfo' as const, spanHz: followSpanHz }
+    const view = audioFft || followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
+      ? { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) }
       : { startHz: effectiveView.startHz, endHz: effectiveView.endHz };
     return scopeSubscription({
       sourceId: stream.sourceId,
-      receiver: spectrumAuthority?.receiver ?? null,
+      receiver: audioFft || sdrSource ? null : spectrumAuthority?.receiver ?? 0,
       view, width: scopeAreaWidth, visible: true, maxFps: 20,
     });
+  });
+  $effect(() => {
+    const mode = spectrumAuthority?.scopeControls?.mode.reading;
+    if (mode?.status === 'known') runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware').setMode(mode.value);
   });
   // Band-plan presets (MOR-4270 item 3) derived from profile data.
   let scopePresetOptions = $derived.by(() => {
@@ -862,7 +865,8 @@
     ...spectrumColorRolesToOptions(resolvedColorRoles),
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
-    sampleOffset: audioFft ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
     showRfOverlays: !audioFft,
     showTuneIndicator: !audioFft && tuneVisible,
@@ -881,7 +885,8 @@
     ...defaultWaterfallOptions,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
-    sampleOffset: audioFft ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
     centerHz: panoramaViewportHz,
     panoramaShiftHz: viewportShiftHz,
@@ -1336,6 +1341,7 @@
       clearSample();
       if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
       const scopeStream = runtime.scope.stream(sourceIsAudio ? 'audio_fft' : 'hardware');
+      const stopError = scopeStream.error.subscribe(error => { if (error) clearSample(); });
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
@@ -1375,6 +1381,7 @@
       return () => {
         acceptScopeFrame = null;
         cachedWhileOff = false;
+        stopError();
         stopGeometry();
         stopFrames();
         unsubDx();
@@ -1477,7 +1484,10 @@
         <div class="tick" style="top: {tick.position}%">{tick.label}</div>
       {/each}
     </div>
-    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} bind:clientWidth={scopeAreaWidth} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
+    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} bind:clientWidth={scopeAreaWidth} use:scopeSubscriptionSurface={{
+      stream: runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware'),
+      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
+    }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
       {:else if scopeTxKnown && !scopeConnected}

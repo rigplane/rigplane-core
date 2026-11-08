@@ -141,7 +141,7 @@ async def test_scope_stress_slow_consumer_queue_bounded(
     num_frames = 400
     slow_delay_s = 0.02
     run_duration_s = 3.0
-    max_queue_size = 64  # radio's _scope_frame_queue maxsize
+    max_queue_size = 64  # deprecated iterator adapter buffer
 
     for pkt in _make_scope_udp_packets(num_frames):
         transport.queue_response(pkt)
@@ -153,7 +153,7 @@ async def test_scope_stress_slow_consumer_queue_bounded(
     async def consume(stream: AsyncGenerator[ScopeFrame, None]) -> None:
         nonlocal max_qsize_seen
         async for frame in stream:
-            qsize = radio._scope_frame_queue.qsize()
+            qsize = radio._scope_stream_callbacks[0].__self__.qsize()
             if qsize > max_qsize_seen:
                 max_qsize_seen = qsize
             received.append(frame)

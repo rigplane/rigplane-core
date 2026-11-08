@@ -18,20 +18,14 @@ from rigplane.commands import (
     parse_civ_frame,
 )
 from rigplane.types import Mode, PacketType, bcd_encode
-from rigplane.scope import ScopeFrame
-from rigplane.web.protocol import MSG_TYPE_SCOPE, SCOPE_HEADER_SIZE
+from rigplane.scope.models import ScopeWireFrame
+from rigplane.web.protocol import decode_scope_frame_v2
 
 CIV_HEADER_SIZE = 0x15
 
 
-def scope_frame_from_wire(data: bytes) -> ScopeFrame:
-    """Decode the web/protocol.encode_scope_frame header for recording fakes."""
-    kind, receiver, mode, start, end, _, flags, count = struct.unpack(
-        "<BBBIIHBH", data[:SCOPE_HEADER_SIZE]
-    )
-    pixels = data[SCOPE_HEADER_SIZE:]
-    assert kind == MSG_TYPE_SCOPE and len(pixels) == count
-    return ScopeFrame(receiver, mode, start, end, pixels, bool(flags & 1))
+def scope_frame_from_wire(data: bytes) -> ScopeWireFrame:
+    return decode_scope_frame_v2(data)
 
 
 def wrap_civ_in_udp(

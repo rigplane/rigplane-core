@@ -432,6 +432,7 @@ class IqFftScope:
         self._queue: deque[IqBlock] = deque()
         self._dropped_blocks = 0
         self._avg_db: Any = None
+        self._input_geometry: tuple[int, int] | None = None
         # (start_freq_hz, end_freq_hz, pixels) of the last live frame,
         # repeated while TX is active.
         self._last_live: tuple[int, int, bytes] | None = None
@@ -610,7 +611,31 @@ class IqFftScope:
             return
 
         newest = blocks[-1]
+        geometry = (newest.center_freq_hz, newest.sample_rate_hz)
+        # A tick can span a provider retune; only the newest capture geometry
+        # belongs to the current stream epoch, including on the zoom path.
+        first = len(blocks) - 1
+        while (
+            first
+            and (
+                blocks[first - 1].center_freq_hz,
+                blocks[first - 1].sample_rate_hz,
+            )
+            == geometry
+        ):
+            first -= 1
+        if geometry != self._input_geometry or first:
+            self._input_geometry = geometry
+            self._avg_db = None
+            self._mapper = AdaptiveLevelMapper()
+            self._last_live = None
+            self._zoom = None
+            self._zoom_key = None
+            self._zoom_buf = []
+            self._zoom_len = 0
+        blocks = blocks[first:]
         chain = self._zoom_chain_for(newest)
+        frame: ScopeFrame | None
         if chain is None:
             if overflow:
                 # A sample discontinuity invalidates the average; the

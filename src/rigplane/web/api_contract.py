@@ -169,12 +169,6 @@ STABLE_WEBSOCKET_ROUTES: Final[tuple[WebSocketRoute, ...]] = (
         "auth": "none",
         "availability": "when radio/audio backend supports audio",
     },
-    {
-        "path": "/api/v1/audio-scope",
-        "purpose": "audio FFT spectrum stream",
-        "auth": "none",
-        "availability": "when audio FFT is available",
-    },
 )
 
 RESPONSE_FIELD_CONTRACTS: Final[dict[str, ResponseFieldContract]] = {

@@ -318,7 +318,7 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert "/api/v1/ws" in ws
     assert "/api/v1/scope" in ws
     assert "/api/v1/audio" in ws
-    assert "/api/v1/audio-scope" in ws
+    assert "/api/v1/audio-scope" not in ws
 
     assert RESPONSE_FIELD_CONTRACTS["/api/v1/info"]["required"] == (
         "server",

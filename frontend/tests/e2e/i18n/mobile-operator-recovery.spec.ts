@@ -91,6 +91,7 @@ async function prepare(
       contentType: 'application/json', body: JSON.stringify(responses[pathname] ?? {}) });
   });
   await page.routeWebSocket(/.*/, (socket) => {
+    const scopeSubscriptions = new Set<string>();
     socket.onMessage((message) => {
       const frame = JSON.parse(String(message));
       // Real Core acks session heartbeats (`controller_authority.py:
@@ -98,6 +99,15 @@ async function prepare(
       if (frame.type === 'controller_heartbeat') {
         socket.send(JSON.stringify(mockControllerHeartbeatAck));
         return;
+      }
+      if (new URL(socket.url()).pathname === '/api/v1/scope') {
+        const key = JSON.stringify([frame.sourceId, frame.receiver]);
+        if (frame.type === 'subscribe') scopeSubscriptions.add(key);
+        if (frame.type === 'unsubscribe') {
+          // Scope demand retirement is transport, like subscribe; unmatched retirement still fails.
+          expect(scopeSubscriptions.delete(key), 'scope unsubscribe requires an active subscription').toBe(true);
+          return;
+        }
       }
       if (frame.type !== 'subscribe') writes.push(String(message));
     });

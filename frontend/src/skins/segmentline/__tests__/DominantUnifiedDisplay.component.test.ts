@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import { lcdStreamFixture } from './scope-stream-fixture';
+import { installObservedAudioState, lcdStreamFixture } from './scope-stream-fixture';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
 import type { LcdSpectrumFrame } from './scope-stream-fixture';
 import DominantUnifiedDisplay from '../DominantUnifiedDisplay.svelte';
@@ -219,3 +219,8 @@ describe('DominantUnifiedDisplay', () => {
     expect(source).not.toMatch(/spectrumFrame|\.pixels/);
   });
 });
+
+
+let restoreAudioState: () => void;
+beforeEach(() => { restoreAudioState = installObservedAudioState(); vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { restoreAudioState(); vi.unstubAllGlobals(); });

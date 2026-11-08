@@ -38,6 +38,7 @@ def _make_handler(
 
     tap_registry = TapRegistry()
     broadcaster = MagicMock()
+    broadcaster.release_relay_if_idle = AsyncMock()
     broadcaster._tap_registry = tap_registry
     broadcaster.ensure_relay = AsyncMock()
 
@@ -78,7 +79,7 @@ def _make_handler(
     server = SimpleNamespace(
         _audio_broadcaster=broadcaster,
         _radio_state=radio_state,
-        _audio_fft_scope=object() if audio_fft_available else None,
+        _audio_scope_source=object() if audio_fft_available else None,
         command_queue=command_queue,
         command_state_store=state_store,
     )

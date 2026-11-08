@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { ScopeStream } from '../../../lib/runtime/scope-stream';
 import * as svelteClient from 'svelte/internal/client';
@@ -6,6 +6,7 @@ import { createClassComponent } from 'svelte/legacy';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import type { ReceiverIndicatorViewModel } from '../../../semantic/radio-view-model';
 import type { ScopeFrame } from '../../../lib/runtime/scope-frame';
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { parseCurrentScopeFrame } from '../../../lib/runtime/adapters/scope-adapter';
 import { findPlaceholderTokens } from '../../../lib/placeholder-token-rule';
 
@@ -37,10 +38,7 @@ import DualSdrFace from '../DualSdrFace.svelte';
 
 /** Builds the typed wire frame the shared stream delivers. */
 function wireFrame(pixels: Uint8Array, startFreq = 1, endFreq = 2, receiver = 0): ScopeFrame {
-  const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
-  wire.setUint8(0, 1); wire.setUint8(1, receiver);
-  wire.setUint32(3, startFreq, true); wire.setUint32(7, endFreq, true);
-  wire.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
+  const buffer = scopeWire({ pixels, viewStartHz: startFreq, viewEndHz: endFreq, receiver });
   const result = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1 });
   if (!result.ok) throw new Error(result.reason);
   return result.frame;
@@ -128,11 +126,9 @@ function realScopeSource() {
     const stream = new ScopeStream(producer, { source: 'radio', sourceId: 'scope', epoch: 1 }, 'borrowed');
     const source = { subscribe: stream.subscribe.bind(stream), slotKeys: ['scope:0', 'scope:1'] as const };
     function fire(receiver: number, pixels: number[], outOfRange = false) {
-      const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
-      wire.setUint8(0, 1); wire.setUint8(1, receiver);
-      wire.setUint32(3, 144_000_000, true); wire.setUint32(7, 144_500_000, true);
-      wire.setUint8(13, outOfRange ? 1 : 0); wire.setUint16(14, pixels.length, true);
-      new Uint8Array(buffer, 16).set(pixels); receive(buffer); flushSync();
+      const buffer = scopeWire({ sourceId: 'scope', receiver, viewStartHz: 144_000_000,
+        viewEndHz: 144_500_000, outOfRange, pixels: pixels.length > 0 ? Uint8Array.from(pixels) : null });
+      receive(buffer); flushSync();
     }
     return { stream, source, fire, producer };
 }
@@ -524,4 +520,36 @@ describe('DualSdrFace', () => {
     component.$destroy();
     expect(cleanupB).toHaveBeenCalledTimes(2);
   });
+});
+
+
+beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { vi.unstubAllGlobals(); });
+
+it.each(['radio', 'iq_fft'] as const)('keeps receiver-neutral IQ demand and paint after an initial %s source', async (initial) => {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe() { this.callback([{ contentRect: { width: 200 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+    disconnect() {}
+  });
+  let receive = (_buffer: ArrayBuffer) => {};
+  const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
+    { source: initial, sourceId: initial, epoch: 1 }, 'borrowed');
+  const source = { subscriptionStream: stream, slotKeys: [`${initial}:0`, `${initial}:1`] as const,
+    subscribe: stream.subscribe.bind(stream) };
+  const target = document.createElement('div'); document.body.append(target);
+  const component = mount(DualSdrFace, { target, props: { view: view(), scopeSource: source } });
+  try {
+    flushSync(); await tick();
+    expect(stream.subscriptions.map(request => request.receiver)).toEqual(initial === 'radio' ? [0, 1] : [null]);
+    receive(scopeWire({ source: initial, sourceId: initial, receiver: initial === 'radio' ? 0 : null }));
+    flushSync(); await tick();
+    stream.setSource('iq_fft', 'iq_fft');
+    flushSync(); await tick();
+    if (initial === 'radio') expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(0);
+    receive(scopeWire({ source: 'iq_fft', sourceId: 'iq_fft', receiver: null }));
+    flushSync(); await tick();
+    expect(stream.subscriptions.map(request => request.receiver)).toEqual([null]);
+    expect(target.querySelectorAll('[data-scope-state="frame"]')).toHaveLength(2);
+  } finally { await unmount(component); stream.dispose(); target.remove(); }
 });

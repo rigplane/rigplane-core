@@ -40,8 +40,7 @@ from rigplane.commands import (
     parse_civ_frame,
     parse_scope_data_output_enabled_response,
     parse_scope_enabled_response,
-    scope_data_output_off,
-    scope_data_output_on,
+    scope_data_output,
     scope_main_sub,
     scope_off,
     scope_on,
@@ -732,14 +731,14 @@ class TestScopeCommandBuilders:
         assert parse_scope_enabled_response(off) is False
         assert parse_scope_enabled_response(on) is True
 
-    def test_scope_data_output_on(self, cmd_map) -> None:
-        frame = scope_data_output_on(cmd_map=cmd_map)
+    def test_scope_output_enabled(self, cmd_map) -> None:
+        frame = scope_data_output(True, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x11
         assert frame[6] == 0x01
 
-    def test_scope_data_output_off(self, cmd_map) -> None:
-        frame = scope_data_output_off(cmd_map=cmd_map)
+    def test_scope_output_disabled(self, cmd_map) -> None:
+        frame = scope_data_output(False, cmd_map=cmd_map)
         assert frame[4] == 0x27
         assert frame[5] == 0x11
         assert frame[6] == 0x00

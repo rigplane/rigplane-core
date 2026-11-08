@@ -278,7 +278,7 @@ class FrontendRuntime {
 
   // ── Scope controller ──
 
-  /** Single owner of the audio-scope WS channel. Subscribe to receive parsed frames. */
+  /** One subscribed scope channel; source streams expose frames and negotiated geometry. */
   get scope(): ScopeController {
     return scopeController;
   }
@@ -323,6 +323,9 @@ class FrontendRuntime {
       return;
     }
 
+    // Discovery may temporarily lack an optional provider; configured selection
+    // remains authoritative and its demand is retried through the scope channel.
+    scopeController.configureSources(caps.scopeSources ?? [], caps.scopeDefaultSourceId);
     const presentationCaps = derivePresentationCapabilities(caps);
     this._defaultScopeSource = presentationCaps.scope.defaultSource;
     presentationResources.configure('hardware-scope', {

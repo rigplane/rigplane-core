@@ -42,6 +42,7 @@ export interface WaterfallOptions {
   centerHz: number;  // displayed viewport center in Hz (MOR-2464: animated)
   sampleSpanHz?: number;
   sampleOffset?: number;
+  sampleWindow?: Readonly<{ start: number; end: number }>;
   sampleAmplitudeMax?: number;
   spanHz: number;    // frequency span in Hz
   // Viewport center minus sample-window center, Hz (MOR-2464). Samples the
@@ -223,7 +224,9 @@ export class WaterfallRenderer {
     const lut = this.lut;
     const shiftPx = this.samplingShiftPx();
     const profile = (column: number): number => {
-      const value = data[offset + Math.min(n - 1, Math.floor((column / w) * n))];
+      const window = this.options.sampleWindow;
+      const coordinate = window ? window.start + (column / w) * (window.end - window.start) : column / w;
+      const value = coordinate < 0 || coordinate > 1 ? 0 : data[offset + Math.min(n - 1, Math.floor(coordinate * n))];
       const amplitudeMax = this.options.sampleAmplitudeMax ?? 80;
       return amplitudeMax === 80 ? value : Math.round(Math.min(value, amplitudeMax) * 80 / amplitudeMax);
     };

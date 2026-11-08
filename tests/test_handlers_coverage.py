@@ -36,7 +36,6 @@ from rigplane.web.handlers import (
     AudioBroadcaster,
     AudioHandler,
     ControlHandler,
-    ScopeHandler,
 )
 from rigplane.web.handlers import audio as audio_module
 from rigplane.web.handlers.audio import browser_tx_audio_facts
@@ -2414,74 +2413,6 @@ async def test_ws_radio_connect_messages_are_unknown_types() -> None:
     ws.send_text.assert_not_awaited()
     assert not hasattr(h, "_handle_radio_connect")
     assert not hasattr(h, "_handle_radio_disconnect")
-
-
-async def test_scope_run_and_control_handling() -> None:
-    ws = SimpleNamespace(
-        recv=AsyncMock(
-            side_effect=[
-                (WS_OP_TEXT, encode_json({"type": "noop"}).encode("utf-8")),
-                (WS_OP_TEXT, b"{"),
-                EOFError(),
-            ]
-        ),
-        send_binary=AsyncMock(),
-    )
-    server = SimpleNamespace(
-        ensure_scope_enabled=AsyncMock(),
-        unregister_scope_handler=MagicMock(),
-    )
-    handler = ScopeHandler(ws, server=server)
-    handler._sender = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    await handler.run()
-    server.ensure_scope_enabled.assert_awaited_once_with(handler)
-    server.unregister_scope_handler.assert_called_once_with(handler)
-    assert handler._running is False
-
-
-async def test_scope_sender_timeout_and_error_branches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    ws = SimpleNamespace(send_binary=AsyncMock())
-    handler = ScopeHandler(ws)
-    calls = {"count": 0}
-
-    async def _fake_wait_for(coro: object, **_kwargs: object) -> bytes:
-        calls["count"] += 1
-        if calls["count"] == 1:
-            if hasattr(coro, "close"):
-                coro.close()
-            raise TimeoutError
-        if hasattr(coro, "close"):
-            coro.close()
-        raise RuntimeError("stop")
-
-    monkeypatch.setattr("rigplane.web.handlers.scope.asyncio.wait_for", _fake_wait_for)
-    await handler._sender()
-    assert ws.send_binary.await_count == 0
-
-
-async def test_scope_sender_sends_and_stops_on_send_error() -> None:
-    ws = SimpleNamespace(
-        send_binary=AsyncMock(side_effect=[None, RuntimeError("boom")])
-    )
-    handler = ScopeHandler(ws)
-    await handler._frame_queue.put(b"one")
-    await handler._frame_queue.put(b"two")
-    await handler._sender()
-    assert ws.send_binary.await_count == 2
-
-
-async def test_scope_enqueue_and_push_paths() -> None:
-    from rigplane.web.protocol import encode_scope_frame
-
-    handler = ScopeHandler(SimpleNamespace(send_binary=AsyncMock()))
-    frame = encode_scope_frame(_scope_frame(), 0)
-    handler.enqueue_frame(frame)
-    assert handler._frame_queue.qsize() == 0
-    handler._running = True
-    handler.push_frame(frame)
-    assert handler._frame_queue.qsize() == 1
 
 
 async def test_audio_broadcaster_subscribe_unsubscribe_lifecycle() -> None:

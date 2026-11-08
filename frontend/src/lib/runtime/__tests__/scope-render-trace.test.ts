@@ -1,12 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { scopeWire } from './scope-wire-fixture';
 import { ScopeRenderTrace } from '../scope-render-trace';
 import { parseCurrentScopeFrame } from '../adapters/scope-adapter';
 
-const audioBuffer = new ArrayBuffer(16 + 2049);
-const audioHeader = new DataView(audioBuffer);
-audioHeader.setUint8(0, 1);
-audioHeader.setUint32(3, 1, true); audioHeader.setUint32(7, 2, true);
-audioHeader.setUint16(14, 2049, true);
+const audioBuffer = scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', viewStartHz: 1, viewEndHz: 2, pixels: new Uint8Array(2049) });
 const parsed = parseCurrentScopeFrame(audioBuffer, { source: 'audio_fft', sourceId: 'audio-scope', epoch: 1 });
 if (!parsed.ok) throw new Error(parsed.reason);
 const frame = parsed.frame;
@@ -22,9 +19,9 @@ describe('ScopeRenderTrace', () => {
   it('stores only scalar stage data and joins an actual odd-length audio frame without retaining its payload in export', () => {
     const trace = new ScopeRenderTrace();
     expect(frame.width).toBe(2049); expect(frame.pixels).toHaveLength(2049);
-    trace.observe(receipt(1, 65535));
+    trace.observe(receipt(1, 4294967295));
     const token = trace.tokenForFrame(frame);
-    expect(token).toMatchObject({ source: 'audio_fft', wireSequence: 65535, acceptedSequence: 1 });
+    expect(token).toMatchObject({ source: 'audio_fft', wireSequence: 4294967295, acceptedSequence: 1 });
     trace.observe(receipt(2, 0));
     expect(trace.tokenForAcceptedSequence(2, 'audio_fft')?.wireSequence).toBe(0);
     trace.record('spectrum_render', token, 4, true);
@@ -36,6 +33,22 @@ describe('ScopeRenderTrace', () => {
     expect(exported).not.toContain('endFreq');
     expect(trace.export()).toBe(exported);
     expect(trace.tokenForFrame(frame)).toBeNull();
+  });
+
+  it('keeps wire continuity separate by source, receiver, source epoch and transport session', () => {
+    const trace = new ScopeRenderTrace();
+    const observe = (accepted: number, receiver: number, seq: number, epoch = 1, transport = 1, sourceId = 'radio') => {
+      const parsed = parseCurrentScopeFrame(scopeWire({ sourceId, receiver, seq, epoch }),
+        { source: 'radio', sourceId, epoch: transport });
+      if (!parsed.ok) throw new Error(parsed.reason);
+      trace.observe({ ...receipt(accepted, seq, transport), frame: parsed.frame,
+        token: { ...receipt(accepted, seq, transport).token, source: 'hardware' } });
+    };
+    observe(1, 0, 0xffffffff); observe(2, 1, 40); observe(3, 0, 0); observe(4, 1, 41);
+    observe(5, 0, 0, 2); observe(6, 0, 0, 2, 2); observe(7, 0, 10, 2, 2, 'replacement');
+    observe(8, 1, 43); // one genuine skipped frame on receiver 1
+    trace.stop();
+    expect(JSON.parse(trace.export()!).counts).toMatchObject({ accepted: 8, wireGaps: 1 });
   });
 
   it('ends at the hard deadline, removes timers, and ignores later observations', () => {
@@ -80,7 +93,7 @@ describe('ScopeRenderTrace', () => {
     ordinary.observe(receipt(1, 1)); ordinary.stop();
     expect(JSON.parse(ordinary.export()!)).not.toHaveProperty('timeline');
     const detailed = new ScopeRenderTrace(undefined, undefined, 'detailed', { captureTimeline: true });
-    for (const [accepted, wire] of [[1, 65535], [2, 0]]) {
+    for (const [accepted, wire] of [[1, 4294967295], [2, 0]]) {
       detailed.observe(receipt(accepted, wire));
       detailed.record('fanout', detailed.tokenForAcceptedSequence(accepted, 'audio_fft'));
     }
@@ -92,7 +105,7 @@ describe('ScopeRenderTrace', () => {
       'callback', 'accepted', 'fanout', 'callback', 'accepted', 'fanout', 'geometry', 'geometry',
     ]);
     expect(output.timeline.filter((e: { stage: string }) => e.stage === 'callback'))
-      .toMatchObject([{ wireSequence: 65535, acceptedSequence: 1, transportEpoch: 1 },
+      .toMatchObject([{ wireSequence: 4294967295, acceptedSequence: 1, transportEpoch: 1 },
         { wireSequence: 0, acceptedSequence: 2, transportEpoch: 1 }]);
     expect(output.timeline.at(-1)).toMatchObject({ canvas: 'spectrum', cssWidth: 1000 });
     expect(output.counts.wireGaps).toBe(0);

@@ -34,7 +34,7 @@ census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
 census	profiles	10
-census	public_builders	248
+census	public_builders	246
 census	sites_compared	0
 cat-only	FTX-1	131
 requires-map	antenna.py:get_antenna_1
@@ -215,8 +215,6 @@ requires-map	scope.py:get_scope_span
 requires-map	scope.py:get_scope_speed
 requires-map	scope.py:get_scope_vbw
 requires-map	scope.py:scope_data_output
-requires-map	scope.py:scope_data_output_off
-requires-map	scope.py:scope_data_output_on
 requires-map	scope.py:scope_main_sub
 requires-map	scope.py:scope_off
 requires-map	scope.py:scope_on

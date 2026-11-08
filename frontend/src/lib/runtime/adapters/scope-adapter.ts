@@ -11,30 +11,29 @@ import type {
   ScopeFreshness,
   ScopeGeometry,
   ScopeParseError,
-  ScopeParseResult,
 } from '$lib/runtime/scope-frame';
+import { parseCurrentScopeFrame } from '$lib/runtime/scope-frame';
+export { parseCurrentScopeFrame, parseScopeGranted } from '$lib/runtime/scope-frame';
 
 export type {
   CurrentScopeContext, ScopeFrame, ScopeFreshness, ScopeGeometry,
   ScopeParseError, ScopeParseResult,
 } from '$lib/runtime/scope-frame';
 
-export function parseCurrentScopeFrame(buffer: ArrayBuffer, context: CurrentScopeContext): ScopeParseResult {
-  if (buffer.byteLength < 16) return { ok: false, reason: 'short header' };
-  const wire = new DataView(buffer);
-  if (wire.getUint8(0) !== 1) return { ok: false, reason: 'message type' };
-  const width = wire.getUint16(14, true);
-  if (buffer.byteLength !== 16 + width) return { ok: false, reason: 'pixel length' };
-  const startHz = wire.getUint32(3, true);
-  const endHz = wire.getUint32(7, true);
-  const outOfRange = (wire.getUint8(13) & 1) !== 0;
-  if (width > 0 && !outOfRange && endHz <= startHz) return { ok: false, reason: 'frequency range' };
-  return { ok: true, frame: Object.freeze({
-    source: context.source, sourceId: context.sourceId, epoch: context.epoch,
-    receiver: wire.getUint8(1), seq: wire.getUint16(11, true), sentAtMs: null,
-    viewStartHz: startHz, viewEndHz: endHz, coverageStartHz: startHz, coverageEndHz: endHz,
-    width, pixels: width === 0 ? null : new Uint8Array(buffer, 16, width), outOfRange,
-  }) };
+import type { ScopeGranted, ScopeSubscription } from '../scope-view';
+
+export function scopeGrantedGeometry(grant: ScopeGranted, context: CurrentScopeContext): ScopeGeometry {
+  return { source: context.source, sourceId: grant.sourceId, receiver: grant.receiver,
+    mode: context.mode ?? 0, width: grant.width, view: grant.view,
+    coverage: grant.coverage ?? { startHz: grant.view.startHz, endHz: grant.view.startHz },
+    outOfRange: false, hasPixels: false, freshness: 'stale' };
+}
+
+/** The stream accepts pixels and grants only from its selected subscription identity. */
+export function scopeMatchesSubscription(
+  facts: { readonly sourceId: string; readonly receiver: number | null }, subscription: ScopeSubscription | null,
+): boolean {
+  return subscription === null || (facts.sourceId === subscription.sourceId && facts.receiver === subscription.receiver);
 }
 
 /** The one LCD/SDR silence boundary. A frame is stale at this exact age. */
@@ -42,6 +41,11 @@ export const SCOPE_FRAME_SILENCE_MS = 500;
 
 export function scopeSlotKey(sourceId: string, receiver: number | null): string {
   return receiver === null ? `${sourceId}:*` : `${sourceId}:${receiver}`;
+}
+
+/** Producer identity used for continuity diagnostics; local session identity is separate. */
+export function scopeFrameTraceIdentity(frame: ScopeFrame) {
+  return { sourceId: frame.sourceId, receiver: frame.receiver, sourceEpoch: frame.epoch };
 }
 
 /** Display metadata derived by the ingress owner; pixel payload stays on the frame sink. */
@@ -67,7 +71,7 @@ export function ingressScopeFrame(buffer: ArrayBuffer, context: CurrentScopeCont
     geometry: {
       source: frame.source, sourceId: frame.sourceId, receiver: frame.receiver,
       ...scopeFrameDisplayFacts(frame),
-      mode: new DataView(buffer).getUint8(2), // scope mode byte — owner-qualified metadata
+      mode: context.mode ?? 0,
       coverage: { startHz: frame.coverageStartHz, endHz: frame.coverageEndHz },
       freshness: 'fresh',
     },
@@ -80,6 +84,15 @@ import type { ServerState } from '$lib/types/state';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import { toRadioViewModel } from './radio-view-model-adapter';
+
+/** Configured selection is distinct from source availability, including failed optional providers. */
+export function resolveScopeSourceId(caps: Pick<Capabilities, 'scopeDefaultSourceId' | 'scopeSources' | 'scopeSource'> | null): ScopeFrame['source'] | null {
+  if (caps?.scopeDefaultSourceId != null) return caps.scopeDefaultSourceId;
+  if (caps?.scopeSources) return caps.scopeSources.includes('radio') ? 'radio'
+    : caps.scopeSources.includes('iq_fft') ? 'iq_fft' : caps.scopeSources.includes('audio_fft') ? 'audio_fft' : null;
+  return caps?.scopeSource === 'sdr' ? 'iq_fft' : caps?.scopeSource === 'hardware' ? 'radio'
+    : caps?.scopeSource === 'audio_fft' ? 'audio_fft' : null;
+}
 
 type DeepReadonly<T> = T extends readonly (infer U)[] ? readonly DeepReadonly<U>[]
   : T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]> } : T;
@@ -126,6 +139,56 @@ const strictlySeen = (state: ServerState, path: string): boolean => {
     && (status.freshness === 'fresh' || status.freshness === 'stale')
     && (status.availability === 'available' || status.availability === 'stale');
 };
+
+/** Map observed audio carrier/polarity into the qualified RF frame without copying bins. */
+export function audioScopeProjection(geometry: ScopeGeometry | null, state: ServerState | null): import('../scope-frame').ScopeAudioProjection | null {
+  if (geometry?.source !== 'audio_fft' || state === null) return null;
+  const read = <T>(path: string, value: T | undefined): T | null => strictlySeen(state, path) ? value ?? null : null;
+  const frequency = read('main.freqHz', state.main?.freqHz);
+  const mode = read('main.mode', state.main?.mode)?.toUpperCase();
+  if (!finiteNumber(frequency) || frequency <= 0 || !mode) return null;
+  const lower = mode === 'LSB' || mode === 'DATA-L' || mode === 'CW-L';
+  let offset = 0;
+  if (mode === 'CW-U' || mode === 'CW-L') {
+    const pitch = read('cwPitch', state.cwPitch);
+    if (!finiteNumber(pitch) || pitch <= 0) return null;
+    offset = lower ? pitch : -pitch;
+  }
+  // CW/CW-R, RTTY/RTTY-R and DV retain the source's symmetric main mapping.
+  // Their correct-side choice remains MOR-4288; no NormalSide is inferred.
+  const carrier = frequency + offset;
+  const span = geometry.view.endHz - geometry.view.startHz;
+  const sign = lower ? -1 : 1;
+  const spanHz = lower ? carrier - geometry.view.startHz : geometry.view.endHz - carrier;
+  return span > 0 && spanHz > 0 ? { zero: (carrier - geometry.view.startHz) / span, perHz: sign / span, spanHz } : null;
+}
+
+/** A retry token for observed primary audio-mapping facts, independent of UI VFO qualification. */
+export function audioScopeFactsRevision(state: ServerState | null, caps: Capabilities | null): string {
+  const seen = <T>(path: string, value: T | undefined): T | null =>
+    state != null && strictlySeen(state, path) ? value ?? null : null;
+  const primary = state?.main;
+  const activeSlot = seen('main.activeSlot', primary?.activeSlot);
+  const slot = activeSlot === 'A' ? primary?.vfoA : activeSlot === 'B' ? primary?.vfoB : undefined;
+  const slotPath = activeSlot === 'A' ? 'main.vfoA' : 'main.vfoB';
+  return JSON.stringify({
+    providerGeneration: state?.providerGeneration ?? null,
+    capsGeneration: caps?.providerGeneration ?? null,
+    sources: caps?.scopeSources ?? null,
+    activeSlot,
+    frequencyHz: seen('main.freqHz', primary?.freqHz),
+    mode: seen('main.mode', primary?.mode),
+    widthHz: seen('main.filterWidth', primary?.filterWidth),
+    dataMode: seen('main.dataMode', primary?.dataMode),
+    pitchHz: seen('cwPitch', state?.cwPitch),
+    active: slot === undefined ? null : {
+      slot: activeSlot,
+      frequencyHz: seen(`${slotPath}.freqHz`, slot.freqHz),
+      mode: seen(`${slotPath}.mode`, slot.mode),
+      dataMode: seen(`${slotPath}.dataMode`, slot.dataMode),
+    },
+  });
+}
 
 function immutableClone<T>(value: T): DeepReadonly<T> {
   if (Array.isArray(value)) return Object.freeze(value.map(immutableClone)) as DeepReadonly<T>;

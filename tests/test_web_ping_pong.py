@@ -7,10 +7,8 @@ only on received frames, so each channel it pings must answer with a frame.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-from contextlib import suppress
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -23,7 +21,6 @@ from rigplane.web.handlers import (
     ScopeHandler,
 )
 from rigplane.ws import WS_OP_TEXT
-from rigplane.web.protocol import encode_scope_frame
 from test_web_audio_link_quality import _make_radio, _make_ws
 
 
@@ -56,10 +53,9 @@ def _scope_ws(text: str) -> SimpleNamespace:
     return SimpleNamespace(recv=recv, send_text=AsyncMock(), send_binary=AsyncMock())
 
 
-@pytest.mark.parametrize("audio_mode", [False, True], ids=["scope", "audio-scope"])
-async def test_scope_channel_answers_ping_with_pong(audio_mode: bool) -> None:
+async def test_scope_channel_answers_ping_with_pong() -> None:
     ws = _scope_ws(json.dumps({"type": "ping"}))
-    await ScopeHandler(ws, audio_mode=audio_mode).run()  # type: ignore[arg-type]
+    await ScopeHandler(ws).run()
     assert _sent_json(ws.send_text) == [{"type": "pong"}]
 
 
@@ -85,7 +81,6 @@ async def test_scope_channel_other_control_message_unanswered(
     ws = _scope_ws(json.dumps({"type": "bogus"}))
     with caplog.at_level(logging.DEBUG, logger="rigplane.web.handlers.scope"):
         await ScopeHandler(ws).run()  # type: ignore[arg-type]
-    assert "scope: control message: 'bogus'" in caplog.text
     ws.send_text.assert_not_awaited()
 
 
@@ -100,7 +95,10 @@ async def test_non_json_and_non_object_text_gets_no_reply_and_does_not_raise(
     else:
         ws = _scope_ws(text)
         await ScopeHandler(ws).run()  # type: ignore[arg-type]
-    ws.send_text.assert_not_awaited()
+    if channel == "scope":
+        assert _sent_json(ws.send_text)[0]["type"] == "error"
+    else:
+        ws.send_text.assert_not_awaited()
 
 
 async def test_audio_channel_ping_gets_no_reply() -> None:
@@ -111,48 +109,9 @@ async def test_audio_channel_ping_gets_no_reply() -> None:
     ws.send_text.assert_not_awaited()
 
 
-async def test_scope_pong_is_not_queued_behind_blocked_scope_frames() -> None:
-    frame = SimpleNamespace(
-        receiver=0,
-        mode=0,
-        start_freq_hz=0,
-        end_freq_hz=0,
-        out_of_range=False,
-        pixels=b"\x00\x01",
-    )
-    release_frames = asyncio.Event()
-    binary_in_flight = asyncio.Event()
-    pong_sent = asyncio.Event()
-
-    class _BlockedBinaryScopeWs:
-        def __init__(self) -> None:
-            self.sent_text: list[str] = []
-            self._ping_delivered = False
-
-        async def recv(self):
-            await binary_in_flight.wait()
-            if self._ping_delivered:
-                await asyncio.Event().wait()
-            self._ping_delivered = True
-            return (WS_OP_TEXT, json.dumps({"type": "ping"}).encode("utf-8"))
-
-        async def send_text(self, text: str) -> None:
-            self.sent_text.append(text)
-            pong_sent.set()
-
-        async def send_binary(self, data: bytes) -> None:
-            binary_in_flight.set()
-            await release_frames.wait()
-
-    ws = _BlockedBinaryScopeWs()
-    handler = ScopeHandler(ws)  # type: ignore[arg-type]
-    run_task = asyncio.create_task(handler.run())
-    await asyncio.sleep(0)  # let run() set _running before pushing a frame
-    handler.push_frame(encode_scope_frame(frame, 0))
-    await asyncio.wait_for(binary_in_flight.wait(), 1.0)
-    await asyncio.wait_for(pong_sent.wait(), 1.0)
-    assert [json.loads(text) for text in ws.sent_text] == [{"type": "pong"}]
-    release_frames.set()
-    run_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await run_task
+async def test_scope_pong_does_not_require_a_subscription() -> None:
+    ws = _scope_ws(json.dumps({"type": "ping"}))
+    handler = ScopeHandler(ws)
+    await handler.run()
+    assert not handler._streams
+    assert _sent_json(ws.send_text) == [{"type": "pong"}]

@@ -105,16 +105,20 @@ vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
   getManagedAppTxController: () => txHarness.controller,
 }));
 
-vi.mock('$lib/runtime/frontend-runtime', () => ({
-  presentationResources: { acquire: vi.fn(() => ({})), release: vi.fn() },
-  runtime: {
-    send: vi.fn(),
-    scope: {
-      registerPresentationDriver: vi.fn(),
-      subscribe: vi.fn(() => vi.fn()),
+vi.mock('$lib/runtime/frontend-runtime', async () => {
+  const { ScopeStream } = await import('$lib/runtime/scope-stream');
+  const scopeStream = new ScopeStream({ subscribe: () => () => {}, close() {} },
+    { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed');
+  return {
+    presentationResources: { acquire: vi.fn(() => ({})), release: vi.fn() },
+    runtime: {
+      send: vi.fn(),
+      scope: { stream: () => scopeStream,
+        registerPresentationDriver: vi.fn(),
+      },
     },
-  },
-}));
+  };
+});
 
 import AmberCockpit from '../AmberCockpit.svelte';
 import AmberScope from '../AmberScope.svelte';
@@ -174,12 +178,14 @@ function mountScope(
 }
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   components = [];
 });
 
-afterEach(() => {
-  components.forEach((c) => unmount(c));
+afterEach(async () => {
+  await Promise.all(components.map((c) => unmount(c)));
   document.body.innerHTML = '';
+  vi.unstubAllGlobals();
 });
 
 // ── Static: the projection swap itself ──────────────────────────────────────

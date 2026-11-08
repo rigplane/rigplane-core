@@ -759,6 +759,54 @@ def test_zoom_span_change_rebuilds_window() -> None:
     assert abs(peak - expected) <= 2
 
 
+@pytest.mark.parametrize("center,rate", [(11_000_000, 48_000), (10_000_000, 96_000)])
+def test_zoom_retune_discards_earlier_geometry_queued_in_same_tick(
+    center: int, rate: int
+) -> None:
+    frames: list[ScopeFrame] = []
+    expected: list[ScopeFrame] = []
+    scope = _make_scope(fft_size=256, pixel_width=64)
+    fresh = _make_scope(fft_size=256, pixel_width=64)
+    scope.on_frame(frames.append)
+    fresh.on_frame(expected.append)
+    scope.set_span(4000)
+    fresh.set_span(4000)
+    old_samples = np.exp(2j * np.pi * 800 * np.arange(8192) / 48_000).astype(
+        np.complex64
+    )
+    new_samples = (0.01 * np.exp(2j * np.pi * 1200 * np.arange(9216) / rate)).astype(
+        np.complex64
+    )
+    old = IqBlock(old_samples, 10_000_000, 48_000, 0.0)
+    first = IqBlock(new_samples[:1024], center, rate, 1.0)
+    rest = IqBlock(new_samples[1024:], center, rate, 2.0)
+    try:
+        scope.feed(old)
+        scope.process_pending()
+        assert len(frames) == 1
+        frames.clear()
+
+        # The new capture alone is too short for a zoom FFT. Samples queued
+        # before the retune must not complete its first window.
+        scope.feed(old)
+        scope.feed(first)
+        fresh.feed(first)
+        scope.process_pending()
+        fresh.process_pending()
+        assert frames == expected == []
+
+        scope.feed(rest)
+        fresh.feed(rest)
+        scope.process_pending()
+        fresh.process_pending()
+        assert len(frames) == len(expected) == 1
+        assert frames[0].pixels
+        assert frames == expected
+    finally:
+        scope.close()
+        fresh.close()
+
+
 def test_zoom_view_center_change_rebuilds_window() -> None:
     frames: list[ScopeFrame] = []
     scope = _make_scope()

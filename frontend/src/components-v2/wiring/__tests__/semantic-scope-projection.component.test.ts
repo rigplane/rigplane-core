@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 /** MOR-4241 wire documents are replayed by Python's
  * test_scope_health_watchdog_mor3690.py::test_scope_ctr_control_and_scope_wire_replay
  * through the real control and scope WebSocket handlers (only hardware faked).
@@ -110,16 +111,13 @@ function channel() {
   }
   return { get state() { return state; }, get sessionEpoch() { return epoch; },
     connect: vi.fn(() => transition('connecting')), disconnect: vi.fn(() => transition('disconnected')),
+    sendRaw: vi.fn(() => true), onMessage: () => () => {},
     onBinary: (fn: (buffer: ArrayBuffer) => void) => { binary.add(fn); return () => binary.delete(fn); },
     onStateChange: (fn: (value: string) => void) => { states.add(fn); return () => states.delete(fn); },
     onSessionTransition: (fn: (next: { state: string; epoch: number }) => void) => { sessions.add(fn); return () => sessions.delete(fn); },
     connected() { transition('connected'); },
     frame(receiver = 0, pixels = [0, 128, 255], captured?: ArrayBuffer) {
-      const buffer = captured ?? new ArrayBuffer(16 + pixels.length), view = new DataView(buffer);
-      if (!captured) {
-        view.setUint8(0, 1); view.setUint8(1, receiver); view.setUint32(3, 14_000_000, true);
-        view.setUint32(7, 14_100_000, true); view.setUint16(14, pixels.length, true); new Uint8Array(buffer, 16).set(pixels);
-      }
+      const buffer = captured ?? scopeWire({ sourceId: 'radio', receiver, pixels: new Uint8Array(pixels), viewStartHz: 14_000_000, viewEndHz: 14_100_000 });
       for (const fn of binary) fn(buffer); flushSync();
     }, count: () => binary.size,
   };
@@ -223,7 +221,7 @@ beforeEach(() => {
   rafCallbacks = new Map(); rafId = 0;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { rafCallbacks.set(++rafId, callback); return rafId; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafCallbacks.delete(id); });
-  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal('ResizeObserver', class { constructor(private callback: ResizeObserverCallback) {} observe(target: Element) { this.callback([{ target, contentRect: { width: 800, height: 200 } } as ResizeObserverEntry], this as unknown as ResizeObserver); } unobserve() {} disconnect() {} });
   const noop = () => {}; const ctx = new Proxy({ measureText: () => ({ width: 1 }),
     createImageData: () => ({ data: new Uint8ClampedArray(4) }), getImageData: () => ({ data: new Uint8ClampedArray(4) }),
     createLinearGradient: () => ({ addColorStop: noop }) }, { get: (obj, key) => key in obj ? obj[key as keyof typeof obj] : noop });
@@ -275,6 +273,7 @@ describe('one managed scope owner through the real region and panel', () => {
   it('sends CTR through the real client and consumes the paired server recovery documents', async () => {
     const documents = scopeOutOfRangeFixture as unknown as {
       streamWireHex: string; inRangeWireHex: string; ctrCommand: WsCommand;
+      startHz: number; endHz: number; inRangeStartHz: number; inRangeEndHz: number;
       ctrResponse: Extract<WsIncoming, { type: 'response' }>;
     };
     deliver(s => {
@@ -290,7 +289,7 @@ describe('one managed scope owner through the real region and panel', () => {
     const socket = instances[0]; socket.simulateOpen();
     try {
       await render();
-      wire.frame(0, [], Uint8Array.from(Buffer.from(documents.streamWireHex, 'hex')).buffer);
+      wire.frame(0, [], scopeWire({ sourceId: 'radio', outOfRange: true, pixels: null, viewStartHz: documents.startHz, viewEndHz: documents.endHz }));
       const overlay = target.querySelector('[data-testid="scope-out-of-range"]')!;
       expect(overlay).not.toBeNull();
       overlay.querySelector<HTMLButtonElement>('button')!.click(); flushSync();
@@ -298,7 +297,7 @@ describe('one managed scope owner through the real region and panel', () => {
         .find(message => message.type === 'cmd' && message.name === 'set_scope_mode');
       expect(command).toEqual({ ...documents.ctrCommand, id: expect.any(String) });
       socket.simulateMessage(JSON.stringify({ ...documents.ctrResponse, id: command!.id }));
-      wire.frame(0, [], Uint8Array.from(Buffer.from(documents.inRangeWireHex, 'hex')).buffer);
+      wire.frame(0, [], scopeWire({ sourceId: 'radio', pixels: Uint8Array.from(Buffer.from(documents.inRangeWireHex, 'hex')).slice(16), viewStartHz: documents.inRangeStartHz, viewEndHz: documents.inRangeEndHz }));
       expect(target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
       expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
     } finally {
@@ -309,7 +308,7 @@ describe('one managed scope owner through the real region and panel', () => {
 
   it('keeps captured OOR content distinct from transport loss through the real host', async () => {
     await render();
-    wire.frame(0, [], Uint8Array.from(Buffer.from('0100010044950820e59c080100010000', 'hex')).buffer);
+    wire.frame(0, [], scopeWire({ sourceId: 'radio', outOfRange: true, pixels: null, viewStartHz: scopeOutOfRangeFixture.startHz, viewEndHz: scopeOutOfRangeFixture.endHz }));
     expect(h.scope.hardwareScopeConnected).toBe(true);
     expect(target.querySelector('[data-testid="scope-out-of-range"]')?.textContent)
       .toContain('144.000–144.500 MHz');
@@ -455,13 +454,13 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
     expect(wire.count()).toBe(0); expect(h.scope.stream('hardware').selectedSlot).toBeNull();
     expect(h.scope.snapshotHealth('hardware')).toEqual({ demanded: false, transport: 'disconnected', frameSeen: false });
-    expect(h.scope.stream('hardware').latest('scope:0')).toBeNull();
+    expect(h.scope.stream('hardware').latest('radio:0')).toBeNull();
     renew(11, true); await render(); expect(overlay()).toBeNull();
     expect(watch).toHaveBeenCalledTimes(4); renew(12); wire.frame(); expect(overlay()).not.toBeNull();
   });
   it('preserves toolbar argument one and exposes a passive nullable region with demand callback', async () => {
     await render(false); expect(target.querySelector('[data-projection-probe]')?.getAttribute('data-toolbar')).toBe('function');
-    expect(h.scope.stream('hardware').latest('scope:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
+    expect(h.scope.stream('hardware').latest('radio:0')?.pixels).toEqual(new Uint8Array([0, 128, 255]));
     expect(region?.()?.passband.state).toBe('current');
     region!()!.setDemand(false); flushSync(); expect(region!()!.passband.state).toBe('unknown'); expect(region!()!.demanded).toBe(false);
     expect(h.frequency).not.toHaveBeenCalled(); expect(h.width).not.toHaveBeenCalled();
@@ -547,10 +546,10 @@ describe('one managed scope owner through the real region and panel', () => {
     h.resources.release(shared);
     legacyComponent.$destroy(); legacyComponent = null; flushSync(); expect(active).toBe(0);
   });
-  it('keeps audio FFT layout on its legacy acquisition path with no hardware host', async () => {
+  it('keeps audio FFT layout on the shared scope channel with no hardware demand', async () => {
     setCapabilities({ ...getCapabilities()!, scope: false, capabilities: [], scopeSource: 'audio_fft', audioFftAvailable: true });
     const acquire = vi.spyOn(h.resources, 'acquire'); await render();
-    expect(h.channelRequests).not.toContain('scope');
+    expect(h.channelRequests).toEqual(['scope']);
     expect(acquire.mock.calls.filter(([resource]) => resource === 'hardware-scope')).toHaveLength(0);
         expect(acquire.mock.calls.filter(([resource, consumer]) => resource === 'audio-fft' && consumer === 'SpectrumPanel')).toHaveLength(1);
     expect(target.querySelector('.audio-source-label')?.textContent).toContain('Audio FFT');

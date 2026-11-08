@@ -91,7 +91,6 @@ from ..core.state_store import StateSnapshot, StateStore
 from ..core.transport import IcomTransport
 from ..core.tx_observation import (
     ObservedPtt,
-    legacy_ptt_bool,
     project_observed_ptt,
 )
 from ..runtime.controller_authority import (
@@ -111,16 +110,20 @@ from ..runtime.tx_interlock import (
     resolve_rf_state,
     send_civ_frame,
 )
-from ..sdr import IqSource, SdrConfig
-from ..sdr.runtime import SdrScopeRuntime
+from ..sdr import IqSource, IqScopeSink, SdrConfig, SdrScopeController
+from ..sdr.runtime import default_source_factory
+from ..sdr.scope_source import FRAME_STALE_S, IqFftSource
+from ..scope.hub import ScopeHub
+from ..scope.models import SourceKind
+from ..runtime.radio_scope_source import RadioScopeSource
+from .scope_sources import WebRadioScopeWriter, WebScopePcmTap  # noqa: TID251
+from ..audio.scope_source import AudioFftSource
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
 from ..exceptions import TimeoutError as RigplaneTimeoutError
-from ..audio.bus import STAGE_RX_POST_DSP
 from ..audio.session import AudioSession, AudioSessionEvent
 from ..audio.usb_driver import bounded_portaudio_pool
 from ..audio_analyzer import AudioAnalyzer
-from ..audio_fft_scope import AudioFftScope
 from ..env_config import (
     get_audio_rx_jitter_ceiling_ms,
     get_audio_rx_jitter_floor_ms,
@@ -159,6 +162,9 @@ from .radio_poller import (  # noqa: TID251
     DisableScope,
     EnableScope,
     RadioPoller,
+    SetScopeMode,
+    SetScopeSpan,
+    SwitchScopeReceiver,
 )
 from .monitor_mute import MonitorMuteState  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
@@ -176,7 +182,7 @@ from .runtime_helpers import (  # noqa: TID251
     store_has_radio_observation,
 )
 from .tx_safety_view import build_tx_safety_payload  # noqa: TID251
-from .protocol import ScopeFrameLike, encode_scope_frame  # noqa: TID251
+from .protocol import ScopeSourceCapabilities, encode_scope_frame_v2  # noqa: TID251
 from ..ws import WS_KEEPALIVE_INTERVAL, WebSocketConnection  # noqa: TID251
 from ..radio_protocol import (
     CivTransactionCapable,
@@ -1040,7 +1046,7 @@ class ConnectionManager:
     """
 
     # Per client scope (session or IP) per channel path, despite the name.
-    MAX_PER_IP_PER_CHANNEL: int = 9  # 3 tabs × 3 WS (control + scope + audio-scope)
+    MAX_PER_IP_PER_CHANNEL: int = 9  # Three tabs across control, scope and audio.
 
     def __init__(self) -> None:
         self._connections: dict[tuple[str, str], list[WebSocketConnection]] = {}
@@ -1276,13 +1282,15 @@ class WebServer:
         self._runtime_last_error: str | None = None
         self._client_tasks: set[asyncio.Task[None]] = set()
         self._scope_handlers: set["ScopeHandler"] = set()
-        self._audio_scope_handlers: set["ScopeHandler"] = set()
+        self._scope_hub: ScopeHub | None = None
+        self._radio_scope_source: RadioScopeSource | None = None
+        self._radio_scope_demand = False
         # Confirmed hardware-session state only.  A queued command is not proof.
         self._scope_enabled = False
         self._scope_enable_failed = False
         self._scope_demand_generation = 0
+        self._scope_command_futures: set[asyncio.Future[None]] = set()
         self._scope_enable_lock: asyncio.Lock = asyncio.Lock()
-        self._scope_disable_grace: float = 2.0
         raw_radio_state = (
             getattr(radio, "radio_state", None) if radio is not None else None
         )
@@ -1306,60 +1314,23 @@ class WebServer:
         # constructed on first use so the import stays out of the no-extra path.
         self._production_managed_tx_port: ManagedTxCompositionPort | None = None
         self._webrtc_sessions: WebRtcSessionManager | None = None
-        # Audio FFT scope: available when radio has audio capability.
-        # For non-hardware-scope radios, also feeds /api/v1/scope (legacy).
-        # For hardware-scope radios, audio FFT is ONLY on /api/v1/audio-scope.
-        # PCM tap is lazy — enabled only when audio-scope clients connect.
-        self._audio_fft_scope: AudioFftScope | None = None
-        _has_audio = (CAP_AUDIO in radio.capabilities) if radio is not None else False
+        self._audio_scope_source: AudioFftSource | None = None
         pcm_tap_source = self._audio_broadcaster.rx_pcm_tap_source
         if pcm_tap_source is not None:
-            self._audio_fft_scope = AudioFftScope(
-                fft_size=2048,
-                fps=20,
-                avg_count=2,
-                sample_rate=pcm_tap_source.sample_rate,
+            tap = WebScopePcmTap(self, sample_rate=pcm_tap_source.sample_rate)
+            self._audio_scope_source = AudioFftSource(
+                tap, tap.facts, fft_size=2048, sample_rate=pcm_tap_source.sample_rate
             )
-            # AudioFftScope.on_frame() is a single-slot setter: register one
-            # dispatch method that fans out to BOTH broadcasters. Registering
-            # twice would clobber the first callback (MOR-241).
-            self._audio_fft_scope.on_frame(self._dispatch_audio_fft_frame)
-            if not self._hardware_scope_available:
-                # No hardware scope — audio FFT also feeds /api/v1/scope.
-                self._audio_broadcaster.set_pcm_tap(self._audio_fft_scope.feed_audio)
-            logger.info(
-                "Audio FFT scope available (has_audio=%s, has_hw_scope=%s)",
-                True,
-                self._hardware_scope_available,
-            )
-        # SDR panadapter scope (MOR-3157): selected when an SDR config
-        # is present (auto) or --scope-source sdr is explicit; feeds
-        # /api/v1/scope while its frames flow, falls back on failure.
-        self._sdr_runtime: SdrScopeRuntime | None = None
-        self._sdr_tick_task: asyncio.Task[None] | None = None
-        self._sdr_last_active: bool | None = None
-        self._sdr_last_status: tuple[object, ...] | None = None
-        self._sdr_start_failure_logged = False
-        if self._config.sdr_config is not None and self._config.scope_source not in (
-            "hardware",
-            "audio_fft",
-        ):
-            self._sdr_runtime = SdrScopeRuntime(
-                self._config.sdr_config,
-                source_factory=self._config.sdr_source_factory,
-            )
-            logger.info(
-                "SDR scope configured (device=%r, requested=%s)",
-                self._config.sdr_config.device_args,
-                self._config.scope_source,
-            )
+        self._iq_scope_source: IqFftSource | None = None
+        self._iq_scope_construction_error: str | None = None
+        self._has_audio = (
+            CAP_AUDIO in radio.capabilities if radio is not None else False
+        )
         # Audio analyzer: lightweight SNR estimator, tapped from PCM stream.
         self._audio_analyzer: AudioAnalyzer | None = None
-        if radio is not None and _has_audio:
+        if radio is not None and self._has_audio:
             self._audio_analyzer = AudioAnalyzer()
-            self._audio_broadcaster.taps(STAGE_RX_POST_DSP).register(
-                "audio-analyzer", self._audio_analyzer.feed_audio
-            )
+            self._audio_broadcaster.set_passive_pcm_tap(self._audio_analyzer.feed_audio)
         self._command_queue: CommandQueue = CommandQueue()
         self._controller = ControllerAuthority(
             ready=self._controller_ready,
@@ -1384,8 +1355,6 @@ class WebServer:
         self._state_store_freshness_task: asyncio.Task[None] | None = None
         # Control handler event queues
         self._control_event_queues: set[BoundedQueue[dict[str, Any]]] = set()
-        self._scope_sequence = 0
-        self._audio_scope_sequence = 0
         # session_id -> that session's event queue, for targeted (non-broadcast)
         # sends — e.g. a post-ack command-failure notification belongs only to
         # the session that issued the command (MOR-1445/MOR-1422 doctrine).
@@ -1451,7 +1420,6 @@ class WebServer:
         # Count of ``reconnecting`` edges seen by ``_on_reconnect_status``
         self._reconnects_total: int = 0
         # Scope health monitor
-        self._scope_last_nonzero: float = 0.0
         self._scope_health_task: asyncio.Task[None] | None = None
         self._scope_health_interval: float = (
             10.0  # seconds of missing/blank frames before the hidden verdict
@@ -1472,7 +1440,7 @@ class WebServer:
         # deliberately shows another screen: a valid state, never a
         # transport fault, and never a reason to write scope-enable (that
         # write kicks the operator out of the menu).
-        self._scope_last_frame: float = 0.0  # last arrival of any scope frame
+        self._scope_started_at: float = 0.0
         self._scope_hidden_published: bool | None = None  # last fact verdict
         self._scope_hidden_at: float | None = None  # when last confirmed
         # The reconnect path is the only automatic scope re-enable left; it
@@ -1780,214 +1748,144 @@ class WebServer:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def ensure_scope_enabled(self, handler: "ScopeHandler") -> None:
-        """Register a scope handler and enable scope on radio if needed.
-
-        Scope enable goes through the RadioPoller command queue to avoid
-        concurrent CI-V access.  For audio FFT scope, no hardware enable
-        is needed — frames are generated from the audio stream.
-        """
-        async with self._scope_enable_lock:
-            was_empty = not self._scope_handlers
-            was_registered = handler in self._scope_handlers
-            self._scope_handlers.add(handler)
-            if was_empty and not was_registered:
-                # A fresh viewing session: the generation bump also re-arms
-                # the once-per-session reconnect re-enable (MOR-3690).
-                self._scope_demand_generation += 1
-            generation = self._scope_demand_generation
-            if not was_registered:
-                self._broadcast_ws_client_state_update()
-            if self._sdr_runtime is not None:
-                self._ensure_sdr_scope_started()
-                if self._sdr_scope_active():
-                    return  # the SDR feeds /api/v1/scope
-                if not self._hardware_scope_available:
-                    return  # audio-FFT fallback gate reopens itself
-                # SDR stale on a hardware-scope radio: hardware fallback.
-            if self._radio is not None:
-                if not self._hardware_scope_available:
-                    logger.info(
-                        "scope: active radio does not expose runtime scope support"
-                    )
-                    return
-                await self._enable_hardware_scope(
-                    reason="handler_connect", generation=generation
+    @property
+    def scope_hub(self) -> ScopeHub:
+        if self._scope_hub is None:
+            hub = ScopeHub(encoder=encode_scope_frame_v2)
+            profile = (
+                self._resolve_profile_if_identified()
+                if self._hardware_scope_available
+                else None
+            )
+            if (
+                self._hardware_scope_available
+                and profile is not None
+                and profile.scope_span_presets_hz
+            ):
+                self._radio_scope_source = RadioScopeSource(
+                    profile, WebRadioScopeWriter(self)
                 )
+                hub.register("radio", self._radio_scope_source)
+            if self._audio_scope_source is not None:
+                hub.register("audio_fft", self._audio_scope_source)
+            self._scope_hub = hub
+            try:
+                self._register_iq_scope_source(hub)
+            except Exception:
+                logger.warning("optional IQ scope construction failed", exc_info=True)
+        return self._scope_hub
+
+    def _register_iq_scope_source(self, hub: ScopeHub) -> None:
+        config = self._config.sdr_config
+        if config is None or self._iq_scope_source is not None:
+            return
+        factory = self._config.sdr_source_factory or default_source_factory
+        try:
+            provider = factory(config)
+        except Exception as exc:
+            self._iq_scope_construction_error = str(exc)
+            raise
+        loop = asyncio.get_running_loop()
+
+        def controller_factory(sink: IqScopeSink) -> SdrScopeController:
+            controller = SdrScopeController(provider, sink, config, clock=loop.time)
+            controller.on_radio_state(*self._primary_vfo_freq_and_tx())
+            return controller
+
+        source = IqFftSource(
+            provider,
+            invert_spectrum=config.invert_spectrum,
+            controller_factory=controller_factory,
+            loop=loop,
+        )
+        hub.register("iq_fft", source)
+        self._iq_scope_source = source
+        self._iq_scope_construction_error = None
+
+    def register_scope_handler(self, handler: "ScopeHandler") -> None:
+        self._scope_handlers.add(handler)
+        self._broadcast_ws_client_state_update()
+
+    def unregister_scope_handler(self, handler: "ScopeHandler") -> None:
+        self._scope_handlers.discard(handler)
+        self._broadcast_ws_client_state_update()
+
+    async def _set_radio_scope_output(self, enabled: bool) -> None:
+        async with self._scope_enable_lock:
+            if enabled and self._stopping:
+                raise RuntimeError("scope server is stopping")
+            self._scope_demand_generation += 1
+            self._radio_scope_demand = enabled
+            if enabled:
+                self._set_scope_data_callback(
+                    self._radio_scope_source.feed_frame
+                    if self._radio_scope_source
+                    else None
+                )
+                await self._enable_hardware_scope(
+                    reason="subscription", generation=self._scope_demand_generation
+                )
+                if self._scope_enable_failed:
+                    raise RuntimeError("radio scope enable failed")
+            else:
+                self._cancel_scope_reenable_task()
+                self._set_scope_data_callback(None)
+                if self._stopping:
+                    # web_startup restores after the final TX drain, with its
+                    # existing bound and the stopped poller's sole executor.
+                    return
+                completed = await self._execute_scope_command(
+                    DisableScope(generation=self._scope_demand_generation)
+                )
+                if self._stopping:
+                    return
+                if not completed:
+                    raise RuntimeError("radio scope disable failed")
+                self._scope_enabled = False
+                self._scope_enable_failed = False
 
     async def _enable_hardware_scope(self, *, reason: str, generation: int) -> None:
-        """Wire the hardware scope data callback and enable the radio's
-        scope through the ordered command queue. Shared by the
-        client-register path (:meth:`ensure_scope_enabled`) and the
-        SDR-stale fallback in :meth:`_sdr_tick_loop` (MOR-3202); callers
-        serialize concurrent invocations with ``_scope_enable_lock``.
-        """
-        # Always ensure callback is wired for new handlers
-        self._set_scope_data_callback(self._on_hardware_scope_frame)
         if self._scope_enabled:
-            logger.debug(
-                "scope: already enabled, skipping re-enable (%d handlers)",
-                len(self._scope_handlers),
-            )
             return
         if self._scope_enable_failed:
-            logger.debug("scope: enable previously rejected; not retrying")
             return
         if self._radio_ready():
             if await self._execute_scope_command(EnableScope(generation=generation)):
                 self._scope_enabled = True
-                logger.info("scope: enable confirmed")
+                self._scope_started_at = asyncio.get_running_loop().time()
         else:
             self._schedule_scope_enable_when_ready(reason=reason, generation=generation)
-            logger.info("scope: defer enable until radio_ready")
 
-    def unregister_scope_handler(self, handler: "ScopeHandler") -> None:
-        """Unregister a scope handler."""
-        was_registered = handler in self._scope_handlers
-        self._scope_handlers.discard(handler)
-        if was_registered:
-            self._broadcast_ws_client_state_update()
-        if was_registered and not self._scope_handlers:
-            self._scope_demand_generation += 1
-            self._cancel_scope_reenable_task()
-            self._stop_sdr_scope()
-        if (
-            not self._scope_handlers
-            and self._radio is not None
-            and self._hardware_scope_available
-        ):
-            self._set_scope_data_callback(None)
-            if self._scope_enabled or self._scope_enable_failed:
-                self._spawn(
-                    self._disable_scope_async(generation=self._scope_demand_generation)
-                )
-
-    async def _execute_scope_command(self, command: EnableScope | DisableScope) -> bool:
+    async def _execute_scope_command(
+        self,
+        command: EnableScope
+        | DisableScope
+        | SwitchScopeReceiver
+        | SetScopeMode
+        | SetScopeSpan,
+    ) -> bool:
         """Execute a scope command through the existing ordered command pipeline."""
+        if self._stopping:
+            return False
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._command_queue.put_ordered(command, future=future)
+        self._scope_command_futures.add(future)
         try:
+            self._command_queue.put_ordered(command, future=future)
             await future
         except asyncio.CancelledError:
+            if self._stopping:
+                return False
             raise
         except Exception as exc:
             if isinstance(command, EnableScope) and not self._scope_enabled:
                 self._scope_enable_failed = True
             logger.warning("scope: %s failed: %s", type(command).__name__, exc)
             return False
+        finally:
+            self._scope_command_futures.discard(future)
         if isinstance(command, EnableScope):
             self._scope_enable_failed = False
         return True
-
-    async def _disable_scope_async(self, *, generation: int) -> None:
-        """Disable scope on the radio when no more handlers are connected."""
-        if self._radio is None or not self._hardware_scope_available:
-            return
-        await asyncio.sleep(self._scope_disable_grace)
-        async with self._scope_enable_lock:
-            if self._scope_handlers:
-                logger.debug("scope: disable task aborted — handler reconnected")
-                if self._radio is not None:
-                    self._set_scope_data_callback(self._on_hardware_scope_frame)
-                return
-            if generation != self._scope_demand_generation:
-                logger.debug("scope: disable task superseded by newer viewer demand")
-                return
-            if await self._execute_scope_command(DisableScope(generation=generation)):
-                self._scope_enabled = False
-                self._scope_enable_failed = False
-                logger.info("scope: pre-session state restored (no active handlers)")
-
-    def _dispatch_audio_fft_frame(self, frame: ScopeFrameLike) -> None:
-        """Fan out an audio FFT frame to the relevant scope channels.
-
-        Single registered callback for :class:`AudioFftScope` (whose
-        ``on_frame`` is a single-slot setter). Always feeds the dedicated
-        ``/api/v1/audio-scope`` channel. For radios WITHOUT a hardware scope
-        the same frame also drives ``/api/v1/scope`` (the main panadapter),
-        since those radios derive their spectrum from RX audio. Hardware-scope
-        radios (e.g. IC-7610) keep ``/api/v1/scope`` sourced exclusively from
-        the real scope, so the audio FFT never touches it (MOR-241).
-        While the SDR scope is selected and its frames flow, the SDR owns
-        ``/api/v1/scope`` (MOR-3157).
-        """
-        if not self._hardware_scope_available and not self._sdr_scope_active():
-            self._broadcast_scope(frame, include_audio=True)
-        else:
-            self._broadcast_audio_scope(frame)
-
-    def _on_hardware_scope_frame(self, frame: ScopeFrameLike) -> None:
-        """Hardware scope data sink for ``/api/v1/scope``: broadcast
-        unless the SDR scope owns the channel (MOR-3202). Wired instead
-        of ``_broadcast_scope`` at every hardware wire point, so a scope
-        left enabled after an SDR outage stops feeding the channel once
-        the SDR runtime is active again — no unwire/CI-V disable
-        round-trip."""
-        if self._sdr_scope_active():
-            return
-        self._broadcast_scope(frame)
-
-    def _broadcast_scope(
-        self, frame: ScopeFrameLike, *, include_audio: bool = False
-    ) -> None:
-        """Broadcast one shared wire frame and track scope health."""
-        handlers = self._scope_handlers
-        if include_audio:
-            handlers = handlers | self._audio_scope_handlers
-            self._scope_sequence = max(self._scope_sequence, self._audio_scope_sequence)
-        self._scope_sequence = self._enqueue_scope_frame(
-            frame, handlers, self._scope_sequence
-        )
-        if include_audio:
-            self._audio_scope_sequence = self._scope_sequence
-        # Scope health: track whether frames carry real data
-        self._scope_health_check(frame)
-
-    def _broadcast_audio_scope(self, frame: ScopeFrameLike) -> None:
-        """Broadcast audio FFT scope frame to /api/v1/audio-scope handlers only."""
-        self._audio_scope_sequence = self._enqueue_scope_frame(
-            frame, self._audio_scope_handlers, self._audio_scope_sequence
-        )
-
-    @staticmethod
-    def _enqueue_scope_frame(
-        frame: ScopeFrameLike, handlers: Collection["ScopeHandler"], sequence: int
-    ) -> int:
-        if handlers:
-            encoded = encode_scope_frame(frame, sequence)
-            for handler in list(handlers):
-                handler.enqueue_frame(encoded)
-        return sequence + 1
-
-    async def ensure_audio_scope_enabled(self, handler: "ScopeHandler") -> None:
-        """Register an audio scope handler. Lazy PCM tap + relay enable."""
-        was_empty = not self._audio_scope_handlers
-        self._audio_scope_handlers.add(handler)
-        if self._audio_fft_scope is not None:
-            self._update_fft_scope_freq()
-            self._update_fft_scope_mode()
-            if was_empty:
-                self._audio_broadcaster.set_pcm_tap(self._audio_fft_scope.feed_audio)
-                # Ensure relay is running so PCM tap fires even without audio WS clients
-                await self._audio_broadcaster.ensure_relay()
-                logger.info("audio-scope: PCM tap + relay enabled (first client)")
-        logger.info(
-            "audio-scope: handler registered (%d total)",
-            len(self._audio_scope_handlers),
-        )
-
-    def unregister_audio_scope_handler(self, handler: "ScopeHandler") -> None:
-        """Unregister an audio scope handler. Disable PCM tap when last client leaves."""
-        self._audio_scope_handlers.discard(handler)
-        if not self._audio_scope_handlers and self._audio_fft_scope is not None:
-            # Only disable tap for hardware-scope radios (non-hw radios keep tap always on)
-            if self._hardware_scope_available:
-                self._audio_broadcaster.set_pcm_tap(None)
-                logger.info("audio-scope: PCM tap disabled (no clients)")
-        logger.info(
-            "audio-scope: handler unregistered (%d remaining)",
-            len(self._audio_scope_handlers),
-        )
 
     @staticmethod
     def _active_primary_freq_mode_value(
@@ -2009,187 +1907,62 @@ class WebServer:
                 continue
         return None
 
-    def _update_fft_scope_freq(self, snapshot: StateSnapshot | None = None) -> None:
-        """Sync AudioFftScope center frequency from a StateStore snapshot."""
-        if self._audio_fft_scope is None:
-            return
-        if snapshot is None:
-            snapshot = self.command_state_store.snapshot()
-        freq = self._active_primary_freq_mode_value(snapshot, "freq_hz")
-        if isinstance(freq, int) and freq > 0:
-            self._audio_fft_scope.set_center_freq(freq)
-
-    def _update_fft_scope_mode(self, snapshot: StateSnapshot | None = None) -> None:
-        """Sync AudioFftScope bandwidth from a StateStore snapshot."""
-        if self._audio_fft_scope is None:
-            return
-        if snapshot is None:
-            snapshot = self.command_state_store.snapshot()
-        mode = self._active_primary_freq_mode_value(snapshot, "mode")
-        if not isinstance(mode, str):
-            return
-        data_mode = self._active_primary_freq_mode_value(snapshot, "data_mode")
-        if not isinstance(data_mode, int):
-            data_mode = 0
-        # A provider-owned backend (external rigctld, MOR-2901) resolves to
-        # no profile and therefore to no filter rule: unknown bandwidth.
-        profile = self._get_profile_unless_provider_owned()
-        rule = (
-            profile.resolve_filter_rule(mode, data_mode=data_mode)
-            if profile is not None
-            else None
-        )
-        if rule is not None and rule.max_hz is not None:
-            self._audio_fft_scope.set_mode_bandwidth(rule.max_hz)
-        else:
-            self._audio_fft_scope.set_mode_bandwidth(None)
-
-    # ------------------------------------------------------------------
-    # SDR scope source (MOR-3157)
-    # ------------------------------------------------------------------
-
     def _sdr_scope_active(self) -> bool:
-        """Whether the SDR scope currently owns ``/api/v1/scope``."""
-        runtime = self._sdr_runtime
-        return runtime is not None and runtime.active
+        return self._iq_scope_source is not None and self._iq_scope_source.active
 
     def _sdr_status_payload(self) -> dict[str, Any]:
-        """The public ``sdr`` status object (MOR-3201), ``disabled`` with
-        zeroed fields when no SDR runtime exists."""
-        runtime = self._sdr_runtime
         config = self._config.sdr_config
-        if runtime is None or config is None:
-            return {
-                "state": "disabled",
-                "device": "",
-                "sampleRateHz": 0,
-                "spanHz": 0,
-                "txFrozen": False,
-                "overflowCount": 0,
-                "lastError": None,
-            }
+        source = self._iq_scope_source
+        last_error = (
+            source.last_error
+            if source is not None
+            else self._iq_scope_construction_error
+        )
+        state = "error" if last_error is not None else "disabled"
+        if source is not None and source.active and source.started_at is not None:
+            last_frame = (
+                self._scope_hub.health("iq_fft").last_frame_at
+                if self._scope_hub is not None
+                else None
+            )
+            current_frame = last_frame is not None and last_frame >= source.started_at
+            last = (
+                max(source.started_at, last_frame)
+                if last_frame is not None
+                else source.started_at
+            )
+            if asyncio.get_running_loop().time() - last > FRAME_STALE_S:
+                state = "reconnecting"
+            else:
+                state = "streaming" if current_frame else "starting"
         return {
-            "state": runtime.state,
-            "device": config.device_args,
-            "sampleRateHz": config.sample_rate_hz,
-            "spanHz": runtime.span_hz,
-            "txFrozen": runtime.tx_frozen,
-            "overflowCount": runtime.overflow_count,
-            "lastError": runtime.last_error,
+            "state": state,
+            "device": config.device_args if config else "",
+            "sampleRateHz": config.sample_rate_hz if config else 0,
+            "spanHz": (config.span_hz or 0) if config else 0,
+            "txFrozen": self._iq_scope_source.tx_frozen
+            if self._iq_scope_source
+            else False,
+            "overflowCount": source.overflow_count if source is not None else 0,
+            "lastError": last_error,
         }
 
     def _sdr_status_key(self) -> tuple[object, ...]:
-        """Delivery-key component for the ``sdr`` object's live fields."""
-        runtime = self._sdr_runtime
-        if runtime is None:
-            return ("disabled",)
-        return (
-            runtime.state,
-            runtime.span_hz,
-            runtime.tx_frozen,
-            runtime.overflow_count,
-            runtime.last_error,
-        )
-
-    def _publish_sdr_status_change(self) -> None:
-        """Broadcast a state update when the ``sdr`` status object
-        changed — it lives outside the StateStore (same rule as
-        ``publish_monitor_mute``), and the delivery key keeps
-        ETag/publicStateSeq moves tied to real changes."""
-        if self._stopping:
-            return
-        key = self._sdr_status_key()
-        if key == self._sdr_last_status:
-            return
-        self._sdr_last_status = key
-        if self._control_event_queues:
-            self._broadcast_state_update(force=True)
-
-    def _ensure_sdr_scope_started(self) -> None:
-        """Start once, seeded so the controller retunes before open. A
-        start failure publishes the ``error`` status once per streak and
-        keeps the fallback path; the next connect retries the start."""
-        runtime = self._sdr_runtime
-        if runtime is None or runtime.started:
-            return
-        freq_hz, tx_active = self._primary_vfo_freq_and_tx()
-        try:
-            runtime.start(self._broadcast_scope, freq_hz=freq_hz, tx_active=tx_active)
-        except Exception as exc:
-            if not self._sdr_start_failure_logged:
-                logger.warning("sdr-scope: start failed, fallback stays: %s", exc)
-                self._sdr_start_failure_logged = True
-            return  # "error"/lastError stay; no tick loop
-        finally:
-            self._sdr_last_active = None
-            self._publish_sdr_status_change()
-        self._sdr_start_failure_logged = False
-        self._sdr_tick_task = self._spawn(self._sdr_tick_loop())
-
-    def _stop_sdr_scope(self) -> None:
-        """Stop the pipeline and its tick loop; idempotent."""
-        task = self._sdr_tick_task
-        self._sdr_tick_task = None
-        if task is not None and not task.done():
-            task.cancel()
-        if self._sdr_runtime is not None and self._sdr_runtime.started:
-            self._sdr_runtime.stop()
-        self._sdr_last_active = None
-        self._sdr_start_failure_logged = False  # a stop ends the streak
-        self._publish_sdr_status_change()
+        return tuple(self._sdr_status_payload().values())
 
     def _primary_vfo_freq_and_tx(self) -> tuple[int | None, bool]:
-        """Primary VFO frequency and TX flag from the store."""
         snapshot = self.command_state_store.snapshot()
-        freq = self._active_primary_freq_mode_value(snapshot, "freq_hz")
-        freq_hz = freq if isinstance(freq, int) and freq > 0 else None
-        tx_active = legacy_ptt_bool(project_observed_ptt(snapshot))
+        frequency = self._active_primary_freq_mode_value(snapshot, "freq_hz")
+        freq_hz = frequency if isinstance(frequency, int) and frequency > 0 else None
+        tx_active = (
+            self.tx_active_hint() or project_observed_ptt(snapshot) is ObservedPtt.ON
+        )
         return freq_hz, tx_active
 
-    async def _sdr_tick_loop(self) -> None:
-        """Feed the SDR controller and manage source fallback."""
-        while True:
-            await asyncio.sleep(_SDR_TICK_INTERVAL_S)
-            runtime = self._sdr_runtime
-            if runtime is None or not runtime.started:
-                return
-            try:
-                freq_hz, tx_active = self._primary_vfo_freq_and_tx()
-                runtime.on_radio_state(freq_hz, tx_active)
-                runtime.tick()
-            except Exception:  # noqa: BLE001 - the tick must survive
-                logger.exception("sdr-scope: tick error")
-                continue
-            if runtime.active != self._sdr_last_active:
-                self._sdr_last_active = runtime.active
-                if runtime.active:
-                    logger.info("sdr-scope: frames flowing — SDR owns /api/v1/scope")
-                else:
-                    logger.warning(
-                        "sdr-scope: no frames — falling back on /api/v1/scope"
-                    )
-                # MOR-3202: a stale SDR hands /api/v1/scope to the
-                # hardware scope through the ordinary enable path when
-                # clients are connected. Recovery needs no action here:
-                # the hardware data callback is gated on SDR activity
-                # (_on_hardware_scope_frame), so hardware frames stop
-                # reaching the channel once the SDR runtime is active
-                # again.
-                if (
-                    not runtime.active
-                    and self._hardware_scope_available
-                    and self._radio is not None
-                    and self._scope_handlers
-                ):
-                    try:
-                        async with self._scope_enable_lock:
-                            await self._enable_hardware_scope(
-                                reason="sdr_stale",
-                                generation=self._scope_demand_generation,
-                            )
-                    except Exception:
-                        logger.exception("sdr-scope: hardware fallback failed")
-            self._publish_sdr_status_change()
+    def _update_iq_radio_state(self) -> None:
+        source = self._iq_scope_source
+        if not self._stopping and source is not None and source.active:
+            source.on_radio_state(*self._primary_vfo_freq_and_tx())
 
     # ------------------------------------------------------------------
     # RadioPoller integration
@@ -2332,12 +2105,14 @@ class WebServer:
         self._managed_tx_keyed = (
             projection.state.intent.kind is not ManagedTxIntentKind.RX
         )
+        self._update_iq_radio_state()
 
     def _on_managed_tx_changed(self) -> None:
         """Queue one coalesced managed-transmit invalidation per control client."""
         self._refresh_managed_tx_keyed()
         if self._stopping:
             return
+        self._update_iq_radio_state()
         event = {"type": "event", "name": "managed_transmit_changed", "data": {}}
         for q in list(self._control_event_queues):
             q.replace_matching_with_front(event, _is_managed_tx_invalidation)
@@ -2366,6 +2141,7 @@ class WebServer:
         Uses delta encoding to reduce payload size for subsequent updates.
         Sends full state on initial connection, then only changed fields.
         """
+        self._update_iq_radio_state()
         import time
 
         now = time.monotonic()
@@ -2393,10 +2169,6 @@ class WebServer:
         except RuntimeError:
             logger.warning("state broadcast skipped: provider generation churned")
             return
-        # Keep audio FFT scope center freq and mode bandwidth in sync
-        # from the same canonical snapshot used for Web delivery.
-        self._update_fft_scope_freq(snapshot)
-        self._update_fft_scope_mode(snapshot)
         # The managed-transmit document carries `txObservation.observedPtt`,
         # projected from the store path `global.tx_state.observed_ptt` — not
         # from the public `ptt` leaf, which can diverge from it (unqualified
@@ -3580,8 +3352,9 @@ class WebServer:
         # radio is genuinely unreachable the command will fail on its
         # own, which is strictly better than a silent 30-second wait
         # every reconnect cycle.
+        generation = self._scope_demand_generation
         if (
-            self._scope_handlers
+            self._radio_scope_demand
             and self._radio is not None
             and self._hardware_scope_available
             and not self._scope_enable_failed
@@ -3591,6 +3364,12 @@ class WebServer:
             # both pass the generation check before either enable lands,
             # so the ordered queue never sees the claimed bound exceeded.
             async with self._scope_enable_lock:
+                if (
+                    not self._radio_scope_demand
+                    or generation != self._scope_demand_generation
+                    or self._scope_enable_failed
+                ):
+                    return
                 if self._scope_menu_guard_active(now=time.monotonic()):
                     logger.info(
                         "scope: reconnect re-enable skipped — radio is in its "
@@ -3605,12 +3384,17 @@ class WebServer:
                         self._scope_demand_generation,
                     )
                 else:
-                    self._set_scope_data_callback(self._on_hardware_scope_frame)
+                    self._set_scope_data_callback(
+                        self._radio_scope_source.feed_frame
+                        if self._radio_scope_source
+                        else None
+                    )
                     if await self._execute_scope_command(
-                        EnableScope(generation=self._scope_demand_generation)
+                        EnableScope(generation=generation)
                     ):
                         self._scope_enabled = True
-                        self._scope_reenable_generation = self._scope_demand_generation
+                        self._scope_started_at = asyncio.get_running_loop().time()
+                        self._scope_reenable_generation = generation
                         self._scope_reenable_provider_generation = (
                             self.command_state_store.provider_generation
                         )
@@ -3666,7 +3450,7 @@ class WebServer:
             while True:
                 if (
                     generation != self._scope_demand_generation
-                    or not self._scope_handlers
+                    or not self._radio_scope_demand
                     or self._radio is None
                 ):
                     return
@@ -3675,11 +3459,16 @@ class WebServer:
                 if self._scope_enable_failed:
                     return
                 if self._radio_ready():
-                    self._set_scope_data_callback(self._on_hardware_scope_frame)
+                    self._set_scope_data_callback(
+                        self._radio_scope_source.feed_frame
+                        if self._radio_scope_source
+                        else None
+                    )
                     if await self._execute_scope_command(
                         EnableScope(generation=generation)
                     ):
                         self._scope_enabled = True
+                        self._scope_started_at = asyncio.get_running_loop().time()
                         logger.info(
                             "scope: enable confirmed after %s (%d handlers)",
                             reason,
@@ -3712,22 +3501,6 @@ class WebServer:
         except Exception:
             logger.debug("scope TX probe: unexpected failure", exc_info=True)
             return False
-
-    def _scope_health_check(self, frame: ScopeFrameLike) -> None:
-        """Track scope frame arrival and whether frames carry real data.
-
-        MOR-3690: every frame arrival refreshes ``_scope_last_frame``
-        (monotonic). Non-zero pixels or an explicit out-of-range view refresh
-        ``_scope_last_nonzero``: both prove the scope is present, not hidden.
-        """
-        try:
-            self._scope_last_frame = time.monotonic()
-            if frame.pixels.strip(b"\0") or frame.out_of_range:
-                self._scope_last_nonzero = self._scope_last_frame
-                if frame.out_of_range:
-                    self._publish_scope_hidden(False, now=self._scope_last_frame)
-        except (AttributeError, TypeError):
-            logger.debug("scope health check: unexpected frame type", exc_info=True)
 
     _SCOPE_HIDDEN_PATH = FieldPath.parse("health.health.scope_hidden")
     #: MOR-3690: the hidden verdict blocks the automatic reconnect re-enable
@@ -3824,85 +3597,41 @@ class WebServer:
         )
 
     async def _scope_health_monitor(self) -> None:
-        """Background task: publish the scope-hidden verdict; never writes.
-
-        MOR-3690 (reopened): absence of scope frames while CI-V traffic
-        keeps flowing is NOT a transport fault — an IC-705 over USB serial
-        sends no scope frames at all while the operator sits in its menu.
-        Writing scope-enable there kicks the operator out of the menu, so
-        this monitor publishes the verdict and leaves every enable to the
-        guarded reconnect path. The states:
-
-        * non-zero frames flowing → ``scope_hidden = False``;
-        * frames arriving but all zero → ``scope_hidden = True`` (menu);
-        * no frames, CI-V healthy → ``scope_hidden = True`` (menu);
-        * no frames and CI-V silent too, or the link down → no verdict: a
-          real link fault the link layer repairs with a reconnect, and the
-          guarded reconnect path re-enables the scope at most once per
-          viewing session.
-
-        All elapsed times use the one monotonic clock, sampled once per
-        window, and clamp at zero: a frame can always land between the
-        sample and the comparison (the beta.13 "no scope frames for -1s").
-        """
+        """Use typed hub arrival evidence; empty or OOR coverage is present."""
         try:
             while True:
                 await asyncio.sleep(self._scope_health_interval)
-                if not self._scope_handlers or self._radio is None:
+                if (
+                    not self._radio_scope_demand
+                    or self._radio is None
+                    or not self._scope_enabled
+                ):
                     continue
-                if not self._hardware_scope_available:
+                now = asyncio.get_running_loop().time()
+                if not self._radio_ready() or self._scope_tx_known():
+                    self._scope_started_at = now
                     continue
-                # Link down: the frame clock means nothing. Keep the last
-                # verdict — the reconnect guard bounds its freshness.
-                if not self._radio_ready():
-                    self._scope_last_frame = time.monotonic()
-                    self._scope_last_nonzero = time.monotonic()
+                if self._scope_hub is None or self._radio_scope_source is None:
                     continue
-                if not self._scope_enabled:
-                    continue
-                if self._scope_tx_known():
-                    # MOR-2859: all-zero frames are expected during transmit
-                    # (an IC-7300 with scope-during-TX off sends blanks), so
-                    # pause the frame clock instead of judging mid-TX.
-                    self._scope_last_frame = time.monotonic()
-                    self._scope_last_nonzero = time.monotonic()
-                    continue
-                now = time.monotonic()
-                if self._scope_last_frame == 0.0:
-                    # Never seen any frame — might be starting up
-                    self._scope_last_frame = now
-                    self._scope_last_nonzero = now
-                    continue
-                interval = self._scope_health_interval
-                frames_idle = max(0.0, now - self._scope_last_frame)
-                data_flowing = (
-                    self._scope_last_nonzero != 0.0
-                    and now - self._scope_last_nonzero <= interval
-                )
-                if data_flowing:
-                    self._publish_scope_hidden(False, now=now)
-                    continue
-                if frames_idle <= interval:
-                    # Frames arrive but carry no data: the radio shows
-                    # another screen. Valid state — never write scope-enable.
-                    self._publish_scope_hidden(
-                        True, now=now, detail="all-zero frames flowing"
+                arrivals = [
+                    self._scope_hub.health("radio", receiver).last_frame_at
+                    for receiver in self._radio_scope_source.capabilities().receivers
+                ]
+                last = max(
+                    (
+                        self._scope_started_at,
+                        *(value for value in arrivals if value is not None),
                     )
-                    continue
-                if self._civ_link_flowing(now):
-                    # No scope frames at all while CI-V is otherwise
-                    # healthy: the radio is in its own menu (an IC-705 over
-                    # USB sends nothing then). Never a transport fault.
+                )
+                idle = max(0.0, now - last)
+                if idle <= self._scope_health_interval:
+                    self._publish_scope_hidden(False, now=now)
+                elif self._civ_link_flowing(now):
                     self._publish_scope_hidden(
                         True,
                         now=now,
-                        detail=(
-                            f"no scope frames for {frames_idle:.0f}s, CI-V link healthy"
-                        ),
+                        detail=f"no scope frames for {idle:.0f}s, CI-V link healthy",
                     )
-                    continue
-                # No frames and CI-V silent: a real link fault. The link
-                # layer reconnects; the guarded reconnect path re-enables.
         except asyncio.CancelledError:
             pass
 
@@ -4045,6 +3774,7 @@ class WebServer:
         from .web_startup import start_web_server  # noqa: TID251
 
         self._stopping = False
+        self.scope_hub
         self._attach_audio_session_listener()
         self._attach_reconnect_status_listener()
         await start_web_server(self)
@@ -4242,6 +3972,12 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
+        if self._scope_command_futures:
+            self._scope_enable_failed = True
+            for future in tuple(self._scope_command_futures):
+                # The ordered consumer skips cancelled futures; stale scope
+                # writes must not run if this server is later restarted.
+                future.cancel()
         self._controller.revoke()
         unsubscribe = self._managed_tx_change_unsubscribe
         self._managed_tx_change_unsubscribe = None
@@ -4251,8 +3987,20 @@ class WebServer:
         self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
-        self._stop_sdr_scope()
+        cancelled = False
+        for handler in tuple(self._scope_handlers):
+            try:
+                await handler._unsubscribe()
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                logger.warning(
+                    "scope shutdown cleanup failed; restoration remains pending",
+                    exc_info=True,
+                )
         await stop_web_server(self)
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def serve_forever(
         self,
@@ -5171,6 +4919,35 @@ class WebServer:
             result["meterRedlines"] = mr
         return result
 
+    def _scope_source_capabilities(
+        self, profile: "RadioProfile | None"
+    ) -> ScopeSourceCapabilities:
+        facts = ScopeSourceCapabilities(scopeSources=[], scopeDefaultSourceId=None)
+        available = facts["scopeSources"]
+        if (
+            self._hardware_scope_available
+            and profile is not None
+            and profile.scope_span_presets_hz
+        ):
+            available.append("radio")
+        if self._audio_scope_source is not None:
+            available.append("audio_fft")
+        if self._config.sdr_config is not None:
+            available.append("iq_fft")
+        if self._config.scope_source == "hardware":
+            facts["scopeDefaultSourceId"] = "radio"
+        elif self._config.scope_source == "audio_fft":
+            facts["scopeDefaultSourceId"] = "audio_fft"
+        elif self._config.scope_source == "sdr":
+            facts["scopeDefaultSourceId"] = "iq_fft"
+        else:
+            priority: tuple[SourceKind, ...] = ("iq_fft", "radio", "audio_fft")
+            for source_id in priority:
+                if source_id in available:
+                    facts["scopeDefaultSourceId"] = source_id
+                    break
+        return facts
+
     async def _serve_capabilities(
         self,
         writer: asyncio.StreamWriter,
@@ -5220,29 +4997,14 @@ class WebServer:
                 if profile is not None
                 else (2 if "dual_rx" in caps else 1)
             ),
-            "scopeSource": (
-                "sdr"
-                if self._sdr_scope_active()
-                else "hardware"
-                if self._hardware_scope_available
-                else "audio_fft"
-                if self._audio_fft_scope is not None
-                else None
-            ),
-            "sdrAvailable": self._sdr_runtime is not None,
-            "audioFftAvailable": self._audio_fft_scope is not None,
+            "scopeSource": None,
+            **self._scope_source_capabilities(profile),
+            "sdrAvailable": self._config.sdr_config is not None,
+            "audioFftAvailable": self._audio_scope_source is not None,
             "scopeConfig": {
                 "centerMode": True,
                 "amplitudeMax": 160,
-                "defaultSpan": (
-                    self._sdr_runtime.span_hz
-                    if self._sdr_scope_active() and self._sdr_runtime is not None
-                    else (
-                        (self._audio_fft_scope.bandwidth_hz or 48000)
-                        if self._audio_fft_scope is not None
-                        else 500000
-                    )
-                ),
+                "defaultSpan": 500000,
             },
             "audioConfig": {
                 "sampleRate": 48000,
@@ -8345,12 +8107,6 @@ class WebServer:
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, server=self)
-        elif path == "/api/v1/audio-scope":
-            if self._audio_fft_scope is None:
-                self._controller.detach(ticket)
-                await ws.close(1008, "audio FFT scope not available")
-                return
-            handler = ScopeHandler(ws, server=self, audio_mode=True)
         elif path == "/api/v1/audio":
             audio_source = object()
             handler = AudioHandler(

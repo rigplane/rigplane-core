@@ -1,191 +1,154 @@
-"""Scope WebSocket handler — binary scope frame channel with backpressure."""
+"""Explicit subscriptions to the shared scope hub over WebSocket."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from collections.abc import Callable
-from typing import Any, Literal, TypedDict
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from ..protocol import decode_json, encode_json  # noqa: TID251
+from rigplane.scope.hub import HubSubscription
+from rigplane.scope.models import ScopeTarget
+from rigplane.ws import WS_OP_TEXT
+
+from ..protocol import (  # noqa: TID251
+    decode_json,
+    decode_scope_subscription,
+    decode_scope_target,
+    decode_scope_unsubscribe,
+    encode_json,
+    encode_scope_granted,
+)
 from ..transport import Connection  # noqa: TID251
-from ...ws import WS_OP_TEXT  # noqa: TID251
 
-__all__ = ["HIGH_WATERMARK", "ScopeHandler"]
+if TYPE_CHECKING:
+    from ..server import WebServer  # noqa: TID251
 
+__all__ = ["ScopeHandler"]
 logger = logging.getLogger(__name__)
 
-HIGH_WATERMARK = 5  # Max queued scope/meter frames before dropping
 
-
-class ScopeTraceEvent(TypedDict):
-    """Scalar, connection-local diagnostics; no payload or source-age claim."""
-
-    stage: str
-    channel: str
-    wire_sequence: int | None
-    queue_depth: int
-    monotonic_ns: int
-
-
-TraceStage = Literal[
-    "enqueue",
-    "drop_oldest",
-    "drop_new",
-    "send_start",
-    "send_complete",
-    "send_cancelled",
-    "send_error",
-]
+@dataclass
+class _Stream:
+    subscription: HubSubscription
+    sender: asyncio.Task[None] | None = None
 
 
 class ScopeHandler:
-    """Handles the /api/v1/scope binary WebSocket channel.
+    """Carry granted control messages followed by hub-owned v2 binary frames."""
 
-    Receives scope frames from the radio and forwards them to the client.
-    Implements backpressure: drops frames when the send queue exceeds
-    HIGH_WATERMARK.
-
-    Args:
-        ws: Established WebSocket connection.
-    """
-
-    def __init__(
-        self,
-        ws: Connection,
-        server: Any = None,
-        audio_mode: bool = False,
-        *,
-        trace_observer: Callable[[ScopeTraceEvent], None] | None = None,
-    ) -> None:
+    def __init__(self, ws: Connection, server: WebServer | None = None) -> None:
         self._ws = ws
         self._server = server
-        self._audio_mode = audio_mode
-        self._frame_queue: asyncio.Queue[bytes] = asyncio.Queue(
-            maxsize=HIGH_WATERMARK * 2
-        )
-        self._running = False
-        # Opt-in observers must be bounded/non-blocking. Disable a failed
-        # observer without changing frame delivery or sender cancellation.
-        self._trace_observer = trace_observer
-
-    def _observe(self, stage: TraceStage, data: bytes) -> None:
-        observer = self._trace_observer
-        if observer is None:
-            return
-        try:
-            observer(
-                ScopeTraceEvent(
-                    stage=stage,
-                    channel="audio-scope" if self._audio_mode else "scope",
-                    wire_sequence=int.from_bytes(data[11:13], "little")
-                    if len(data) >= 13
-                    else None,
-                    queue_depth=self._frame_queue.qsize(),
-                    monotonic_ns=time.monotonic_ns(),
-                )
-            )
-        except Exception:
-            self._trace_observer = None
-            logger.warning("scope: diagnostic observer disabled after failure")
-
-    def enqueue_frame(self, encoded: bytes) -> None:
-        """Enqueue the server's shared wire frame (protocol.encode_scope_frame)."""
-        if not self._running:
-            return
-        if self._frame_queue.full():
-            try:
-                dropped = self._frame_queue.get_nowait()
-                self._observe("drop_oldest", dropped)
-            except asyncio.QueueEmpty:
-                pass
-        try:
-            self._frame_queue.put_nowait(encoded)
-            self._observe("enqueue", encoded)
-        except asyncio.QueueFull:
-            self._observe("drop_new", encoded)
-            logger.debug("ScopeHandler: frame queue full, dropping frame")
+        self._streams: dict[ScopeTarget, _Stream] = {}
 
     async def run(self) -> None:
-        """Run the scope channel lifecycle."""
-        self._running = True
-        # Register with server — server handles enable_scope() once
         if self._server is not None:
-            if self._audio_mode:
-                await self._server.ensure_audio_scope_enabled(self)
-            else:
-                await self._server.ensure_scope_enabled(self)
+            self._server.register_scope_handler(self)
         try:
-            sender_task = asyncio.create_task(self._sender())
-            try:
-                while True:
-                    opcode, payload = await self._ws.recv()
-                    if opcode == WS_OP_TEXT:
-                        try:
-                            text = payload.decode("utf-8")
-                        except UnicodeDecodeError:
-                            continue
-                        await self._handle_control(text)
-            except EOFError:
-                pass
-            finally:
-                sender_task.cancel()
-                try:
-                    await sender_task
-                except asyncio.CancelledError:
-                    pass
+            while True:
+                opcode, payload = await self._ws.recv()
+                if opcode == WS_OP_TEXT:
+                    try:
+                        await self._handle_control(payload.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        continue
+        except EOFError:
+            pass
         finally:
-            self._running = False
-            if self._server is not None:
-                if self._audio_mode:
-                    self._server.unregister_audio_scope_handler(self)
-                else:
+            try:
+                await self._unsubscribe()
+            finally:
+                if self._server is not None:
                     self._server.unregister_scope_handler(self)
 
-    async def _handle_control(self, text: str) -> None:
-        """Handle optional JSON control messages on the scope channel."""
-        try:
-            msg = decode_json(text)
-        except ValueError:
-            return
-        if msg.get("type") == "ping":
-            await self._ws.send_text(encode_json({"type": "pong"}))
-            return
-        logger.debug("scope: control message: %r", msg.get("type"))
-
-    async def _sender(self) -> None:
-        """Continuously dequeues and sends scope frames."""
-        sent = 0
-        while True:
+    async def _unsubscribe(self, target: ScopeTarget | None = None) -> None:
+        streams = (
+            ([self._streams.pop(target)] if target in self._streams else [])
+            if target is not None
+            else list(self._streams.values())
+        )
+        if target is None:
+            self._streams.clear()
+        failure: BaseException | None = None
+        for stream in streams:
             try:
-                data = await asyncio.wait_for(
-                    self._frame_queue.get(),
-                    timeout=1.0,
-                )
-                self._observe("send_start", data)
                 try:
-                    await self._ws.send_binary(data)
-                except asyncio.CancelledError:
-                    self._observe("send_cancelled", data)
-                    raise
-                except Exception:
-                    self._observe("send_error", data)
-                    raise
-                self._observe("send_complete", data)
-                sent += 1
-                if sent <= 3 or sent % 300 == 0:
-                    logger.debug("scope: sent frame #%d (%d bytes)", sent, len(data))
-            except TimeoutError:
-                if sent == 0:
-                    logger.debug(
-                        "scope: sender timeout, no frames yet, qsize=%d",
-                        self._frame_queue.qsize(),
-                    )
-            except Exception as exc:
-                logger.warning("scope: sender error: %s", exc)
-                break
+                    if stream.sender is not None:
+                        stream.sender.cancel()
+                        try:
+                            await stream.sender
+                        except asyncio.CancelledError:
+                            pass
+                finally:
+                    await stream.subscription.close()
+            except BaseException as exc:
+                if failure is None:
+                    failure = exc
+        if failure is not None:
+            raise failure
 
-    def push_frame(self, encoded: bytes) -> None:
-        """Push a wire frame directly for testing/injection."""
-        self.enqueue_frame(encoded)
+    async def _handle_control(self, text: str) -> None:
+        target: ScopeTarget | None = None
+        try:
+            message = decode_json(text)
+            kind = message.get("type")
+            if kind == "ping":
+                await self._ws.send_text(encode_json({"type": "pong"}))
+            elif kind == "unsubscribe":
+                try:
+                    target = decode_scope_target(text)
+                except (KeyError, ValueError):
+                    pass
+                target = decode_scope_unsubscribe(text)
+                await self._unsubscribe(target)
+            elif kind == "subscribe":
+                try:
+                    target = decode_scope_target(text)
+                except (KeyError, ValueError):
+                    pass
+                request = decode_scope_subscription(text)
+                target = ScopeTarget(request.source_id, request.receiver)
+                if self._server is None:
+                    raise ValueError("scope source service is unavailable")
+                if self._server._stopping:
+                    raise RuntimeError("scope server is stopping")
+                hub = self._server.scope_hub
+                if request.source_id == "iq_fft":
+                    self._server._register_iq_scope_source(hub)
+                subscription = await hub.subscribe(request)
+                try:
+                    await self._unsubscribe(target)
+                except BaseException:
+                    await subscription.close()
+                    raise
+                stream = _Stream(subscription)
+                self._streams[target] = stream
+                grant = subscription.granted
+                try:
+                    await self._ws.send_text(encode_scope_granted(grant))
+                except BaseException:
+                    await self._unsubscribe(target)
+                    raise
+                stream.sender = asyncio.create_task(
+                    self._sender(subscription, grant.width)
+                )
+        except Exception as exc:
+            error: dict[str, object] = {"type": "error", "message": str(exc)}
+            if target is not None:
+                error.update(sourceId=target.source_id, receiver=target.receiver)
+            await self._ws.send_text(encode_json(error))
+
+    async def _sender(self, subscription: HubSubscription, sent_width: int) -> None:
+        try:
+            while True:
+                grant, data = await subscription.receive_delivery()
+                if grant.width != sent_width:
+                    await self._ws.send_text(encode_scope_granted(grant))
+                    sent_width = grant.width
+                await self._ws.send_binary(data)
+        except StopAsyncIteration:
+            pass
+        except Exception:
+            logger.debug("scope sender failed", exc_info=True)
+            await self._ws.close()

@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 /** Real binary decoder/controller, panel fanout and canvases; fake app/transport boundary. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -49,12 +50,16 @@ function channel() {
     get state() { return state; },
     connect() { state = 'connected'; for (const update of states) update(state); },
     disconnect() { state = 'disconnected'; },
+    sendRaw: vi.fn(() => true), onMessage: () => () => {},
     onBinary(handler: (buffer: ArrayBuffer) => void) { receivers.add(handler); return () => receivers.delete(handler); },
     onStateChange(handler: (value: string) => void) { states.add(handler); return () => states.delete(handler); },
     onSessionTransition: () => () => {},
-    receive(hex: string) {
-      const bytes = Uint8Array.from(hex.match(/../g)!, value => Number.parseInt(value, 16));
-      for (const handler of receivers) handler(bytes.buffer);
+    receive(seq: number) {
+      const buffer = scopeWire({ source: harness.source === 'audio_fft' ? 'audio_fft' : 'radio',
+        sourceId: harness.source === 'audio_fft' ? 'audio_fft' : 'radio',
+        receiver: harness.source === 'audio_fft' ? null : 0, seq,
+        pixels: new Uint8Array([0, 128, 255]) });
+      for (const handler of receivers) handler(buffer);
     },
   };
 }
@@ -106,14 +111,14 @@ describe('binary → actual controller → actual panel → actual canvases', ()
     try {
       flushSync();
       // Literal Python-encoder golden: seed connection liveness before opt-in.
-      transport.receive('010000809fd5002026d700ff000003000080ff');
+      transport.receive(65534);
       flushSync(); drawPending();
       // MOR-4206: no warm-up — backlog handling is consolidated into the
       // waterfall's rAF pump, so the trace window below starts on a FRESH
       // registration and every delivery reaches the pump unfiltered. The
       // seed delivery is the controller's first acceptance, so the
       // trace-window frames below are accepted 2, 3, 4.
-      expect(channelFactory).toHaveBeenCalledWith(source === 'audio_fft' ? 'audio-scope' : 'scope');
+      expect(channelFactory).toHaveBeenCalledWith('scope');
       if (mode === 'disabled') {
         expect(button('Start trace')).toBeUndefined();
         expect(button('Start transition trace')).toBeUndefined();
@@ -127,7 +132,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       start.click(); flushSync();
       if (transition || mode === 'default-hidden') {
         now += 10;
-        transport.receive('010000809fd5002026d700ffff0003000080ff');
+        transport.receive(0xffffffff);
         flushSync(); drawPending();
         now += 10; focused = false; window.dispatchEvent(new Event('blur'));
         now += 10; hidden = true; document.dispatchEvent(new Event('visibilitychange')); flushSync();
@@ -139,7 +144,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
           expect(report).not.toHaveProperty('transition');
           expect(report).not.toHaveProperty('timeline');
           hidden = false; document.dispatchEvent(new Event('visibilitychange'));
-          transport.receive('010000809fd5002026d70000000103000080ff');
+          transport.receive(0);
           flushSync(); drawPending();
           expect(completed).toHaveBeenCalledTimes(1);
           return;
@@ -147,14 +152,14 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         expect(completed).not.toHaveBeenCalled();
         now += 10;
         if (mode === 'continued-hidden') {
-          transport.receive('010000809fd5002026d70000000103000080ff');
+          transport.receive(0);
           flushSync(); // Canvas visibility suppresses RAF scheduling while hidden.
         }
         now += 500;
         hidden = false;
         // Delivery before visibilitychange must observe the current document state.
-        if (mode === 'deferred-return') transport.receive('010000809fd5002026d70000000103000080ff');
-        transport.receive('010000809fd5002026d70001000003000080ff');
+        if (mode === 'deferred-return') transport.receive(0);
+        transport.receive(1);
         flushSync(); drawPending();
         now += 10; document.dispatchEvent(new Event('visibilitychange')); flushSync(); drawPending();
         focused = true; window.dispatchEvent(new Event('focus'));
@@ -172,7 +177,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         ]);
         for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push']) {
           expect(events(stage)).toMatchObject([
-            { atMs: 10, source, wireSequence: 65535, acceptedSequence: 2, document: { hidden: false } },
+            { atMs: 10, source, wireSequence: 0xffffffff, acceptedSequence: 2, document: { hidden: false } },
             { atMs: mode === 'continued-hidden' ? 40 : 540, source, wireSequence: 0, acceptedSequence: 3,
               document: { hidden: mode === 'continued-hidden' } },
             { atMs: 540, source, wireSequence: 1, acceptedSequence: 4, document: { hidden: false, hasFocus: false } },
@@ -189,7 +194,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
           .toEqual([2, 4]);
         for (const stage of ['raf', 'spectrum_render']) {
           expect(events(stage)).toMatchObject([
-            { atMs: 10, wireSequence: 65535, acceptedSequence: 2 },
+            { atMs: 10, wireSequence: 0xffffffff, acceptedSequence: 2 },
             { atMs: 550, wireSequence: 1, acceptedSequence: 4, document: { hidden: false } },
           ]);
         }
@@ -203,8 +208,8 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         expect(report.timeline.every((e: { document?: unknown }) => e.document !== undefined)).toBe(true);
         return;
       }
-      transport.receive('010000809fd5002026d700ffff0003000080ff');
-      transport.receive('010000809fd5002026d70000000103000080ff');
+      transport.receive(0xffffffff);
+      transport.receive(0);
       flushSync(); drawPending();
       button('Stop trace').click(); flushSync();
       expect(completed).toHaveBeenCalledTimes(1);
@@ -212,7 +217,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       expect(report.counts).toMatchObject({ accepted: 2, rejected: 0, wireGaps: 0 });
       for (const stage of ['callback', 'accepted', 'fanout', 'spectrum_push']) {
         expect(report.timeline.filter((e: { stage: string }) => e.stage === stage)
-          .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([65535, 0]);
+          .map((e: { wireSequence: number }) => e.wireSequence)).toEqual([0xffffffff, 0]);
       }
       // Fresh registration, no spacing gate upstream (MOR-4206): both
       // frames land inside one rAF window and reach the pump unfiltered,
@@ -225,13 +230,13 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'spectrum_render'))
         .toMatchObject([{ wireSequence: 0, acceptedSequence: 3, transportEpoch: 1 }]);
       expect(report.timeline.filter((e: { stage: string }) => e.stage === 'coalesced'))
-        .toMatchObject([{ wireSequence: 65535, acceptedSequence: 2 }, { wireSequence: 65535, acceptedSequence: 2 }]);
+        .toMatchObject([{ wireSequence: 0xffffffff, acceptedSequence: 2 }, { wireSequence: 0xffffffff, acceptedSequence: 2 }]);
       expect(report.reason).toBe('operator');
       expect(report.timelineOverflow).toBe(false);
       if (exportThrows) expect(target.textContent).toContain('Trace export callback failed');
-      transport.receive('010000809fd5002026d70001000003000080ff');
+      transport.receive(1);
       expect(harness.controller.stream(source === 'audio_fft' ? 'audio_fft' : 'hardware')
-        .latest(source === 'audio_fft' ? 'audio-scope:0' : 'scope:0')?.pixels)
+        .latest(source === 'audio_fft' ? 'audio_fft:*' : 'radio:0')?.pixels)
         .toEqual(new Uint8Array([0, 128, 255]));
       expect(completed).toHaveBeenCalledTimes(1);
     } finally {

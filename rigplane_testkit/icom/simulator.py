@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import Literal
 
 from rigplane.core.types import bcd_decode, bcd_encode
+from rigplane.commands import parse_civ_frame
+from rigplane.scope import ScopeAssembler
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
@@ -141,16 +143,29 @@ def _load_scope_templates(
 
 
 def _blank_scope_wave(frame: bytes) -> bytes:
-    """Zero a recorded ``27 00`` wave's pixel payload, keep framing intact.
-
-    Layout is ``FE FE to from 27 00 rx seq seqMax pixels... FD``: bytes
-    before index 9 (framing, receiver, sequence) are preserved so the
-    production assembler still completes the frame — with all-zero
-    pixels, as a radio shows while a front-panel menu is open (MOR-3690).
-    """
-    if len(frame) < 11 or frame[4:6] != b"\x27\x00" or frame[-1:] != b"\xfd":
-        raise ValueError("blank scope wave needs a complete 27 00 frame")
-    return frame[:9] + bytes(len(frame) - 10) + b"\xfd"
+    """Zero wave pixels while preserving metadata parsed by ScopeAssembler."""
+    parsed = parse_civ_frame(frame)
+    if (
+        parsed.command != 0x27
+        or parsed.sub != 0
+        or parsed.receiver is not None
+        or len(parsed.data) < 3
+    ):
+        return frame
+    # Valid BCD sequence bytes preserve ordering; 01 identifies metadata.
+    sequence = parsed.data[1]
+    sequence_max = parsed.data[2]
+    if sequence == 1:
+        assembled = ScopeAssembler().feed(parsed.data[1:], parsed.data[0])
+        if assembled is None or assembled.out_of_range:
+            return frame
+        pixel_count = len(assembled.pixels)
+    elif 1 < sequence <= sequence_max:
+        # Continuations contain receiver + sequence/maximum, then pixels.
+        pixel_count = len(parsed.data) - 3
+    else:
+        return frame
+    return frame[: -pixel_count - 1] + bytes(pixel_count) + frame[-1:]
 
 
 # ---------------------------------------------------------------------------

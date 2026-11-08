@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
+  import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onMount } from 'svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { deriveAudioSpectrumProps } from '$lib/runtime/adapters/panel-adapters';
@@ -10,8 +12,10 @@
 
   // ── Scope WS connection ──
 
+  let fftGeometry = $state.raw<import('$lib/runtime/scope-frame').ScopeGeometry | null>(null);
+  let fftProjection = $derived(audioScopeProjection(fftGeometry, runtime.state));
   let fftBandwidth = $state(48000);
-  let fftPush: ((data: Uint8Array) => void) | null = null;
+  let fftPush: ((data: Uint8Array | null) => void) | null = null;
   let panel: HTMLDivElement;
   let visible = $state(typeof IntersectionObserver === 'undefined');
 
@@ -36,18 +40,24 @@
     // the rarely-changing bandwidth is a geometry fact (F15 double
     // scheduling is gone: no per-frame `$state` pixels).
     const stream = runtime.scope.stream('audio_fft');
+    let hasPixels = false;
+    const clearPixels = () => { if (hasPixels) fftPush?.(null); hasPixels = false; };
     const stopGeometry = stream.geometry.subscribe((geometry) => {
+      fftGeometry = geometry;
+      if (geometry === null) clearPixels();
       if (geometry && geometry.view.endHz > geometry.view.startHz) {
         fftBandwidth = geometry.view.endHz - geometry.view.startHz;
       }
     });
     const unsubscribe = stream.subscribe((frame) => {
-      if (frame.pixels) fftPush?.(frame.pixels);
+      if (!visible || document.hidden) return;
+      hasPixels = frame.pixels !== null; fftPush?.(frame.pixels);
     });
     let released = false;
     return () => {
       if (released) return;
       released = true;
+      clearPixels();
       unsubscribe();
       stopGeometry();
       presentationResources.release(lease);
@@ -55,8 +65,12 @@
   });
 </script>
 
-<div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible}>
+<div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible} use:scopeSubscriptionSurface={{
+  stream: runtime.scope.stream('audio_fft'), receiver: null,
+  view: { follow: 'vfo', spanHz: 48000 }, revision: audioScopeFactsRevision(runtime.state, runtime.caps),
+}}>
   <AudioSpectrumCanvas
+    projection={fftProjection}
     data={null}
     onRegisterPush={(fn) => { fftPush = fn; }}
     bandwidth={fftBandwidth}

@@ -34,12 +34,8 @@ from rigplane.audio.backend import (
     FakeTxStream,
     TxPlayoutPolicy,
 )
-from rigplane.audio.usb_driver import UsbAudioDriver
-from rigplane.backends.ic705.serial import Ic705SerialRadio
-from rigplane.capabilities import CAP_AUDIO, CAP_SCOPE
 from rigplane.exceptions import CommandError
 from rigplane.radio import IcomRadio
-from rigplane.scope import ScopeFrame
 from rigplane.types import AudioCodec
 from rigplane.web.server import WebConfig, WebServer
 
@@ -147,142 +143,141 @@ def _make_hardware_and_pcm_radio() -> IcomRadio:
     )
 
 
-class _FakeScopeHandler:
-    """Records frames enqueued by the server's broadcast methods."""
-
-    def __init__(self) -> None:
-        self.frames: list[ScopeFrame] = []
-
-    def enqueue_frame(self, frame: bytes) -> None:
-        from _helpers import scope_frame_from_wire
-
-        self.frames.append(scope_frame_from_wire(frame))
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-
-def _make_pcm_noise(num_samples: int, amplitude: int = 5000) -> bytes:
-    """Generate PCM16 mono white noise frames (radio RX shape)."""
-    rng = np.random.default_rng(241)
-    samples = (rng.uniform(-1, 1, num_samples) * amplitude).astype(np.int16)
-    return bytes(samples.tobytes())
-
-
-def _feed_pcm_through_tap(server: WebServer, total_samples: int) -> None:
-    """Push synthetic PCM16 through the broadcaster's PCM tap.
-
-    The FFT scope is rate-limited to ``fps``; reset its last-frame clock so
-    the first window emits immediately, then drive enough samples that at
-    least one FFT window is processed.
-    """
-    scope = server._audio_fft_scope
-    assert scope is not None
-    scope._last_frame_time = 0.0  # bypass the fps rate-limit for the first frame
-    # The broadcaster fans PCM out to all registered taps; the FFT scope tap
-    # is the one under test. Feed in chunks to mimic 20 ms RX frames.
-    chunk = 960  # 20 ms @ 48 kHz mono
-    fed = 0
-    while fed < total_samples:
-        pcm = _make_pcm_noise(min(chunk, total_samples - fed))
-        server._audio_broadcaster._tap_registry.feed(pcm)
-        fed += chunk
-
-
-# ── X6200 (no hardware scope) ────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio  # type: ignore[untyped-decorator]
-async def test_x6200_audio_scope_receives_fft_frames() -> None:
-    """Non-hardware-scope X6200 must relay FFT frames to /api/v1/audio-scope.
-
-    THIS IS THE MOR-241 REGRESSION GUARD. On the unfixed code the second
-    ``on_frame`` registration clobbers ``_broadcast_audio_scope`` and this
-    assertion fails (zero audio-scope frames). After the dispatch fix it
-    passes.
-    """
-    backend = _MonoUsbAudioBackend()
-    audio_driver = UsbAudioDriver(serial_port=None, backend=backend)
-    radio = Ic705SerialRadio(
-        device="/dev/tty.usbmodem-X6200",
-        model="X6200",
-        civ_link=_FakeSerialCivLink(),
-        audio_driver=audio_driver,
+def _seed_audio_facts(
+    server, receiver="0", mode="USB", frequency=14_074_000, width=2400
+):
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
     )
-    await radio.connect()
+
+    for name, value in (
+        ("freq_hz", frequency),
+        ("mode", mode),
+        ("filter_width", width),
+    ):
+        server.command_state_store.apply_current(
+            Observation(
+                path=FieldPath.active(receiver, "freq_mode", name),
+                value=value,
+                source=SourceMetadata(source="poll_response", provider="test"),
+                timestamp_monotonic=0,
+            )
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("other_consumer", ["none", "tap", "audio_ws"])
+async def test_audio_fft_is_explicit_and_last_unsubscribe_releases_real_rx(
+    other_consumer,
+):
+    from test_handlers_coverage import _RelayRadio
+    from rigplane.audio.bus import STAGE_RX_POST_DSP
+    from rigplane.scope.models import Subscription, View
+    from rigplane.web.protocol import decode_scope_frame_v2
+
+    radio = _RelayRadio()
+    server = WebServer(radio, WebConfig(radio_model="IC-7610"))
+    broadcaster = server._audio_broadcaster
+    _seed_audio_facts(server)
+    assert broadcaster._subscription is None
+    assert broadcaster._legacy_tap_handle is None
+    # The analyzer observes active audio, but carries no RX demand.
+    assert broadcaster._tap_registry.active
+    assert not broadcaster._tap_registry.demand
+    extra = None
+    if other_consumer == "tap":
+        extra = broadcaster.taps(STAGE_RX_POST_DSP).register(
+            "real-consumer", lambda pcm: None
+        )
+    elif other_consumer == "audio_ws":
+        extra = await broadcaster.subscribe()
+    subscription = await server.scope_hub.subscribe(
+        Subscription("audio_fft", None, View(14_074_000, 14_076_400), 1024, 20)
+    )
+    second = await server.scope_hub.subscribe(
+        Subscription("audio_fft", None, View(14_074_000, 14_076_400), 2800, 20)
+    )
+    assert broadcaster._subscription is not None
+    radio._start_rx.assert_awaited_once()
+    pcm = (
+        np.random.default_rng(241).integers(-5000, 5000, 8192, dtype=np.int16).tobytes()
+    )
+    broadcaster.taps(STAGE_RX_POST_DSP).feed(pcm)
+    wire = await asyncio.wait_for(subscription.receive(), 2)
+    assert decode_scope_frame_v2(wire).source == "audio_fft"
+    await subscription.close()
+    assert broadcaster._tap_registry.active
+    await second.close()
+    assert broadcaster._legacy_tap_handle is None
+    assert broadcaster._tap_registry.active
+    assert broadcaster._tap_registry.demand is (other_consumer == "tap")
+    if other_consumer == "none":
+        assert broadcaster._subscription is None
+        assert broadcaster._relay_task is None
+        radio._stop_rx.assert_awaited_once()
+    else:
+        assert broadcaster._subscription is not None
+        radio._stop_rx.assert_not_awaited()
+        if other_consumer == "tap":
+            broadcaster.taps(STAGE_RX_POST_DSP).unregister(extra)
+            await broadcaster.release_relay_if_idle()
+        else:
+            await broadcaster.unsubscribe(extra)
+        assert broadcaster._subscription is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("release", ["unsubscribe", "reap", "idle"])
+@pytest.mark.parametrize("demanding_tap", [False, True])
+async def test_passive_observer_receives_live_pcm_but_does_not_retain_rx(
+    release, demanding_tap
+):
+    from types import SimpleNamespace
+
+    from test_handlers_coverage import _RelayRadio
+    from rigplane.audio import AudioPacket
+    from rigplane.audio.bus import STAGE_RX_POST_DSP
+    from rigplane.testing.timing import await_until
+    from rigplane.web.handlers.audio import AudioBroadcaster
+
+    radio = _RelayRadio()
+    broadcaster = AudioBroadcaster(radio)
+    received: list[bytes] = []
+    broadcaster.set_passive_pcm_tap(received.append)
+    registry = broadcaster.taps(STAGE_RX_POST_DSP)
+    assert registry.active
+    assert not registry.demand
+    demanding = (
+        registry.register("cw-consumer", lambda pcm: None) if demanding_tap else None
+    )
+    alive = [True]
+    queue = await broadcaster.subscribe(ws=SimpleNamespace(is_alive=lambda: alive[0]))
     try:
-        # Sanity: X6200 has audio FFT but no hardware scope.
-        assert CAP_AUDIO in radio.capabilities
-        assert CAP_SCOPE not in radio.capabilities
-        assert callable(radio.audio_session.subscribe_rx)
-        assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
-        assert radio.audio_sample_rate > 0
-
-        server = WebServer(radio=radio, config=WebConfig())
-        assert server._audio_fft_scope is not None, "audio FFT scope not wired"
-
-        # center_freq > 0 gate inside feed_audio must pass.
-        radio.radio_state.main.freq = 14_074_000
-        server._audio_fft_scope.set_center_freq(14_074_000)
-
-        audio_handler = _FakeScopeHandler()
-        main_handler = _FakeScopeHandler()
-        server._audio_scope_handlers.add(audio_handler)
-        server._scope_handlers.add(main_handler)
-
-        # Feed several FFT windows worth of PCM through the broadcaster tap.
-        _feed_pcm_through_tap(server, total_samples=2048 * 4)
-
-        assert len(audio_handler.frames) >= 1, (
-            "audio-scope handler received zero FFT frames "
-            "(MOR-241: dispatch clobbered the audio-scope callback)"
-        )
-        assert isinstance(audio_handler.frames[0], ScopeFrame)
-        # Non-hardware-scope radios also feed the MAIN spectrum (X6200 relies
-        # on /api/v1/scope for its panadapter) — must NOT be dropped.
-        assert len(main_handler.frames) >= 1, (
-            "non-hw-scope radio stopped feeding /api/v1/scope (regression)"
-        )
+        pcm = b"\x01\x00" * 160
+        callback = radio._start_rx.call_args.args[0]
+        callback(AudioPacket(ident=0x0080, send_seq=1, data=pcm))
+        await asyncio.wait_for(queue.get(), 2)
+        assert received == [pcm]
+        if release == "reap":
+            alive[0] = False
+            assert await broadcaster.reap_dead_clients() == 1
+        else:
+            await broadcaster.unsubscribe(queue)
+            if release == "idle":
+                if demanding is not None:
+                    registry.unregister(demanding)
+                    demanding = None
+                await broadcaster.release_relay_if_idle()
+        assert registry.active
+        assert (broadcaster._subscription is not None) is (demanding is not None)
+        if demanding is not None:
+            radio._stop_rx.assert_not_awaited()
+            registry.unregister(demanding)
+            await broadcaster.release_relay_if_idle()
+        assert broadcaster._subscription is None
+        await await_until(lambda: radio._stop_rx.await_count == 1)
+        radio._stop_rx.assert_awaited_once()
     finally:
-        await radio.disconnect()
-
-
-# ── Hardware-scope radio (IC-7610 class) non-regression ──────────────────────
-
-
-def test_hardware_scope_radio_audio_fft_only_on_audio_scope() -> None:
-    """Hardware-scope radio: audio FFT drives ONLY /api/v1/audio-scope.
-
-    IC-7610 must stay byte-identical: the audio FFT must reach the
-    audio-scope path but must NEVER be pushed to /api/v1/scope (whose
-    frames come from the real hardware scope).
-    """
-    radio = _make_hardware_and_pcm_radio()
-    assert {CAP_AUDIO, CAP_SCOPE} <= radio.capabilities
-    assert callable(radio.audio_session.subscribe_rx)
-    assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
-    assert radio.audio_sample_rate > 0
-
-    server = WebServer(radio=radio, config=WebConfig())
-    assert server._audio_fft_scope is not None
-
-    audio_handler = _FakeScopeHandler()
-    main_handler = _FakeScopeHandler()
-    server._audio_scope_handlers.add(audio_handler)
-    server._scope_handlers.add(main_handler)
-
-    # Drive the dispatch entry point directly with a synthetic frame.
-    frame = ScopeFrame(
-        receiver=0,
-        mode=0,
-        start_freq_hz=14_000_000,
-        end_freq_hz=14_100_000,
-        pixels=bytes(160),
-        out_of_range=False,
-    )
-    server._dispatch_audio_fft_frame(frame)
-
-    assert audio_handler.frames == [frame], "audio-scope must receive the FFT frame"
-    assert main_handler.frames == [], (
-        "hardware-scope radio must NOT route audio FFT to /api/v1/scope"
-    )
+        await broadcaster._stop_relay()

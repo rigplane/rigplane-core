@@ -10,6 +10,7 @@
   import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
   import { spectrumDisplayAmplitude } from '../../lib/renderers/spectrum-renderer';
   import type { PeerSplitReceiverDisplay } from '../../semantic/radio-display-model';
+  import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import type { ScopeStream } from '$lib/runtime/scope-stream';
   import type { ScopeGeometry } from '$lib/runtime/scope-frame';
   import { resolveLcdSpectrumFrame } from './lcd-display-contract';
@@ -108,6 +109,8 @@
 </script>
 
 <svg
+  use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: receiver === 'SUB' ? 1 : 0,
+    view: { follow: 'vfo', spanHz: 100000 } }}
   data-testid="lcd-rf-panadapter"
   data-rf-mode={liveFrame === null ? 'ghost' : 'live'}
   data-frame-reason={frameReason}

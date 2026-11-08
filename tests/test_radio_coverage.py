@@ -2528,10 +2528,8 @@ async def test_scope_stream_calls_task_done(radio: IcomRadio) -> None:
     stream = radio.scope_stream()
     pending = asyncio.create_task(anext(stream))
     await asyncio.sleep(0)
-    queue = radio._scope_frame_queue
-    assert queue is not None
+    assert len(radio._scope_stream_callbacks) == 1
     radio._civ_runtime._publish_scope_frame(frame)
     assert await pending is frame
     await stream.aclose()
-    assert queue.empty()
-    assert radio._scope_frame_queue is None
+    assert not radio._scope_stream_callbacks

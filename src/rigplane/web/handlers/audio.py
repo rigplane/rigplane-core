@@ -435,6 +435,7 @@ class AudioBroadcaster:
         # same AudioPacket|None stream via ``async for``.
         self._subscription: _AudioSubscription | RxSubscription | None = None
         self._relay_task: asyncio.Task[None] | None = None
+        self._passive_tap_handle: TapHandle | None = None
         self._rx_start_attempt = 0
         self._rx_start_failure: (
             tuple[object, object, str, tuple[AudioCandidate, ...], str | None] | None
@@ -618,7 +619,7 @@ class AudioBroadcaster:
             if (
                 not self._clients
                 and self._subscription is not None
-                and not self._tap_registry.active
+                and not self._tap_registry.demand
             ):
                 await self._stop_relay()
         if removed:
@@ -789,6 +790,22 @@ class AudioBroadcaster:
         )
         self._dsp_opus_warned = True
 
+    def set_passive_pcm_tap(self, callback: Callable[[bytes], None] | None) -> None:
+        """Observe active RX without keeping the relay alive."""
+        if self._passive_tap_handle is not None:
+            self._tap_registry.unregister(self._passive_tap_handle)
+            self._passive_tap_handle = None
+        if callback is not None:
+            self._passive_tap_handle = self._tap_registry.register(
+                "passive-analyzer", callback, passive=True
+            )
+
+    async def release_relay_if_idle(self) -> None:
+        """Release scope-only RX demand after its tap is removed."""
+        async with self._lock:
+            if not self._clients and not self._tap_registry.demand:
+                await self._stop_relay()
+
     async def ensure_relay(self) -> None:
         """Ensure the relay loop is running (for PCM tap consumers like FFT scope).
 
@@ -817,7 +834,7 @@ class AudioBroadcaster:
             if (
                 not self._clients
                 and self._subscription is not None
-                and not self._tap_registry.active
+                and not self._tap_registry.demand
             ):
                 await self._stop_relay()
             remaining = len(self._clients)

@@ -1816,7 +1816,7 @@ export interface ScopeDisplaySnapshot {
  * MOR-1272 — avoided here because it is avoidable).
  */
 function hasAnyScopeCap(caps: Capabilities | null): boolean {
-  return caps?.scope === true || caps?.scopeSource === 'audio_fft';
+  return caps?.scope === true || (caps?.scopeSources?.length ?? 0) > 0 || caps?.scopeSource === 'audio_fft';
 }
 
 /**

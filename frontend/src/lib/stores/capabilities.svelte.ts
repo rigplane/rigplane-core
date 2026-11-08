@@ -80,10 +80,15 @@ export function hasSpectrum(): boolean {
 
 export function hasAnyScope(): boolean {
   // True if hardware scope OR audio FFT scope available
-  return (capabilities?.scope ?? false) || getScopeSource() === 'audio_fft';
+  return (capabilities?.scope ?? false) || (capabilities?.scopeSources?.length ?? 0) > 0 || getScopeSource() === 'audio_fft';
 }
 
 export function getScopeSource(): string | null {
+  const selected = capabilities?.scopeDefaultSourceId;
+  if (selected != null) return selected === 'audio_fft' ? 'audio_fft' : 'hardware';
+  const sources = capabilities?.scopeSources;
+  if (sources) return sources.includes('radio') || sources.includes('iq_fft') ? 'hardware'
+    : sources.includes('audio_fft') ? 'audio_fft' : null;
   return capabilities?.scopeSource ?? null;
 }
 

@@ -15,10 +15,12 @@
           listener(health.transport === 'connected' && health.frameSeen);
         }
       }),
-    slotKeys: (() => {
+    get subscriptionStream() { return runtime.scope.stream('hardware'); },
+    get slotKeys() {
       const stream = runtime.scope.stream('hardware');
-      return [scopeSlotKey(stream.sourceId, 0), scopeSlotKey(stream.sourceId, 1)] as const;
-    })(),
+      return [scopeSlotKey(stream.sourceId, stream.kind === 'radio' ? 0 : null),
+        scopeSlotKey(stream.sourceId, stream.kind === 'radio' ? 1 : null)] as const;
+    },
   };
 
   $effect(() => {

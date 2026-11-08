@@ -1,0 +1,1 @@
+{"source":"radio","source_id":"radio:main","receiver":0,"view_start_hz":14000000,"view_end_hz":14100000,"coverage_start_hz":14000000,"coverage_end_hz":14100000,"width":4,"pixels":[0,127,128,255],"out_of_range":false,"epoch":7,"seq":42,"sent_at_ms":1700000000123}

@@ -62,7 +62,7 @@ describe('credential-free production WebSockets', () => {
   });
 
   it.each([
-    ['audioFftDriver', '/api/v1/audio-scope'],
+    ['audioFftDriver', '/api/v1/scope'],
     ['hardwareScopeDriver', '/api/v1/scope'],
   ] as const)('keeps actual ScopeController %s token-free on initial and changed/absent-token reconnect', async (driverName, path) => {
     const { ScopeController } = await import('../../runtime/scope-controller.svelte');

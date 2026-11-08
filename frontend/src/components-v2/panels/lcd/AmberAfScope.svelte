@@ -1,14 +1,16 @@
 <script lang="ts">
+  import type { ScopeAudioProjection } from '$lib/runtime/scope-frame';
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
   import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
   import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
+    projection?: ScopeAudioProjection | null;
     /** FFT pixel data from AudioFftScope (0-160 range) */
     data: Uint8Array | null;
     /** Register a push callback for streaming updates */
-    onRegisterPush?: (fn: (data: Uint8Array) => void) => void;
+    onRegisterPush?: (fn: (data: Uint8Array | null) => void) => void;
     /** Filter width — raw index from radio (e.g. 0-36 for FTX-1 SSB) or Hz */
     filterWidth?: number;
     /** Max filter width value (index or Hz) for normalization */
@@ -41,6 +43,7 @@
 
   let {
     data,
+    projection = null,
     onRegisterPush,
     filterWidth = 13,
     filterWidthMax = 36,
@@ -64,6 +67,7 @@
   let rafId = 0;
   let visible = true;
   let latestPixels: Uint8Array | null = null;
+  let pushed = false;
 
   // LCD ink prefix — alpha is scaled by `--lcd-alpha-*` tokens read off
   // the nearest `.lcd-screen` ancestor each frame (plan §2.4).
@@ -100,7 +104,7 @@
 
   function draw(): void {
     if (!visible) { rafId = 0; return; }
-    const pixels = latestPixels ?? data;
+    const pixels = pushed ? latestPixels : data;
     let w = cssWidth;
     let h = cssHeight;
     if ((w <= 1 || h <= 1) && canvas) {
@@ -319,16 +323,15 @@
     }
 
     // Only show FFT bins within the passband (0 → passbandHz)
-    const halfBandwidth = effectiveBandwidth / 2;
+    const halfBandwidth = projection?.spanHz ?? effectiveBandwidth / 2;
     const passbandFrac = Math.min(1, passbandHz / halfBandwidth);
 
     for (let i = 0; i < numBars; i++) {
       const x = startX + i * step;
       const barCenterX = x + barW / 2;
 
-      // Get raw amplitude — map bar position to passband FFT bins only
-      // pixels[] is symmetric: [-Nyquist ... DC ... +Nyquist]
-      // DC is at center (pixels.length / 2), positive freqs are right half
+      // Legacy symmetric input uses its positive half; qualified RF input
+      // uses observed carrier/polarity coordinates below.
       const dcIdx = Math.floor(pixels.length / 2);
       const positiveLen = pixels.length - dcIdx; // DC → Nyquist
 
@@ -336,8 +339,11 @@
       const barFrac = (barCenterX - startX) / (endX - startX);
       // Map to positive-side FFT bin within passband only
       const pixIdx = dcIdx + Math.floor(barFrac * passbandFrac * positiveLen);
-      const clamped = Math.max(dcIdx, Math.min(pixels.length - 1, pixIdx));
-      const rawAmp = Math.min(pixels[clamped], maxVal) / maxVal;
+      const coordinate = projection ? projection.zero + barFrac * passbandHz * projection.perHz : null;
+      const index = coordinate === null ? pixIdx : Math.floor(coordinate * pixels.length);
+      const clamped = Math.max(coordinate === null ? dcIdx : 0, Math.min(pixels.length - 1, index));
+      const rawAmp = coordinate !== null && (coordinate < 0 || coordinate > 1) ? 0
+        : Math.min(pixels[clamped], maxVal) / maxVal;
 
       // Smooth
       const prev = smoothed[i];
@@ -423,9 +429,16 @@
     if (visible && rafId === 0) rafId = requestAnimationFrame(draw);
   }
 
+  let projectionKey: string | undefined;
+  $effect(() => {
+    const key = JSON.stringify(projection);
+    if (key !== projectionKey) { projectionKey = key; smoothed = null; runningMax = null; }
+  });
+
   onMount(() => {
-    onRegisterPush?.((pixels: Uint8Array) => {
-      latestPixels = pixels;
+    onRegisterPush?.((pixels: Uint8Array | null) => {
+      pushed = true; latestPixels = pixels;
+      if (pixels === null) { smoothed = null; runningMax = null; }
     });
 
     document.addEventListener('visibilitychange', onVisibilityChange);

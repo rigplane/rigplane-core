@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import fixtures from './fixtures/scope-wire.json';
+import { scopeFixtures as fixtures } from './scope-wire-fixture';
 import { ScopeStream } from '../scope-stream';
 import type { ScopeMessageSource } from '../scope-stream';
 import { scopeSlotKey } from '../adapters/scope-adapter';
@@ -20,8 +20,9 @@ const context = { source: 'radio' as const, sourceId: 'scope-1', epoch: 7 };
 const emitBytes = (bytes: number[]) => Uint8Array.from(bytes).buffer;
 const withSeq = (seq: number, pixel: number) => {
   const bytes = [...fixtures.radio];
-  bytes[11] = seq; bytes[12] = 0; bytes[16] = pixel;
-  return bytes;
+  const view = new DataView(Uint8Array.from(bytes).buffer);
+  view.setUint32(12, seq, true); view.setUint8(56 + "scope-1".length, pixel);
+  return Array.from(new Uint8Array(view.buffer));
 };
 
 describe('ScopeStream', () => {
@@ -32,7 +33,7 @@ describe('ScopeStream', () => {
     const [frame, slotKey] = sink.mock.lastCall!;
     expect(frame?.source).toBe(sourceKind);
     expect(frame?.pixels.buffer).toBe(buffer);
-    expect(frame?.pixels.byteOffset).toBe(16);
+    expect(frame?.pixels.byteOffset).toBe(56 + "scope-1".length);
     expect(slotKey).toBe(scopeSlotKey('scope-1', frame.receiver));
     stream.dispose();
   });
@@ -99,7 +100,7 @@ describe('ScopeStream', () => {
     expect(changes.mock.lastCall?.[0]).toBeNull();
     const buffer = input.emit(withSeq(5, 9));
     const frame = stream.latest(scopeSlotKey('scope-1', 0));
-    expect(frame?.epoch).toBe(8);
+    expect(frame?.epoch).toBe(7);
     expect(frame?.pixels?.buffer).toBe(buffer);
     stream.dispose();
   });

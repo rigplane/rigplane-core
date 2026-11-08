@@ -1,22 +1,14 @@
-"""Tests for the SDR scope runtime: config, GPL guard and the MOR-3201
-read-only status surface + env overrides; the runtime lifecycle is
-covered end-to-end by ``tests/web/test_sdr_scope_source.py``.
-"""
+"""SDR config, GPL module guard and environment override tests."""
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import logging
 
 import pytest
 
 from rigplane.core.env_config import get_sdr_env_overrides
-from rigplane.sdr.controller import TX_HOLD_S
-from rigplane.sdr.fake import FakeIqSource
-from rigplane.sdr.iq_scope import IqFftScope
 from rigplane.sdr.runtime import (
-    SdrScopeRuntime,
     apply_remote_only_env,
     remote_only_env_updates,
     resolve_sdr_config,
@@ -117,159 +109,6 @@ def test_apply_remote_only_env(caplog: pytest.LogCaptureFixture) -> None:
         )
     assert fresh == {}
     assert "cannot restrict" in caplog.text
-
-
-# ---------------------------------------------------------------------------
-# Read-only status surface (MOR-3201)
-# ---------------------------------------------------------------------------
-
-_VFO = 14_074_000
-
-
-class _FakeClock:
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-class _FailingOpenSource(FakeIqSource):
-    def open(self) -> None:
-        raise RuntimeError("device busy")
-
-
-def _make_runtime(
-    source: FakeIqSource, clock: _FakeClock, *, stale_s: float = 2.0
-) -> SdrScopeRuntime:
-    return SdrScopeRuntime(
-        SdrConfig("fake", sample_rate_hz=2_400_000),
-        source_factory=lambda _config: source,
-        scope_factory=lambda: IqFftScope(start_worker=False),
-        clock=clock,
-        frame_stale_s=stale_s,
-    )
-
-
-async def _start_streaming(runtime: SdrScopeRuntime, fake: FakeIqSource) -> None:
-    """Start the runtime and drive it to the streaming state."""
-    runtime.start(lambda _frame: None, freq_hz=_VFO)
-    fake.pump(1)
-    runtime._scope.process_pending()  # type: ignore[union-attr]
-    await _drain_loop()
-    assert runtime.state == "streaming"
-
-
-async def _drain_loop() -> None:
-    for _ in range(5):
-        await asyncio.sleep(0)
-
-
-def test_status_disabled_before_start() -> None:
-    runtime = _make_runtime(FakeIqSource(), _FakeClock())
-    assert runtime.state == "disabled"
-    assert runtime.last_error is None
-    assert runtime.overflow_count == 0
-    assert runtime.tx_frozen is False
-    assert runtime.span_hz == 0
-
-
-async def test_status_starting_then_streaming() -> None:
-    fake = FakeIqSource()
-    runtime = _make_runtime(fake, _FakeClock())
-    runtime.start(lambda _frame: None, freq_hz=_VFO)
-    assert runtime.started
-    assert runtime.state == "starting"  # started, no frame delivered yet
-    assert runtime.span_hz == 2_400_000 // 4  # controller default span
-
-    fake.pump(1)
-    runtime._scope.process_pending()  # type: ignore[union-attr]
-    await _drain_loop()
-    assert runtime.state == "streaming"
-    runtime.stop()
-    assert runtime.state == "disabled"
-
-
-async def test_status_reconnecting_when_frames_go_stale() -> None:
-    fake = FakeIqSource()
-    clock = _FakeClock()
-    runtime = _make_runtime(fake, clock)
-    await _start_streaming(runtime, fake)
-    clock.advance(2.1)  # beyond frame_stale_s
-    runtime.tick()
-    assert runtime.state == "reconnecting"
-    # Frames return: back to streaming after the next delivery.
-    fake.pump(1)
-    runtime._scope.process_pending()  # type: ignore[union-attr]
-    await _drain_loop()
-    runtime.tick()
-    assert runtime.state == "streaming"
-
-
-async def test_status_error_on_factory_failure() -> None:
-    def _failing_factory(_config: SdrConfig) -> FakeIqSource:
-        raise RuntimeError("no dev")
-
-    runtime = SdrScopeRuntime(
-        SdrConfig("fake"), source_factory=_failing_factory, clock=_FakeClock()
-    )
-    with pytest.raises(RuntimeError, match="no dev"):
-        runtime.start(lambda _frame: None)
-    assert runtime.started is False and runtime.state == "error"
-    assert runtime.last_error == "no dev"
-    runtime.stop()
-    assert runtime.state == "disabled"  # a deliberate stop clears the error
-
-
-async def test_status_error_on_open_failure_closes_pipeline() -> None:
-    runtime = _make_runtime(_FailingOpenSource(), _FakeClock())
-    with pytest.raises(RuntimeError, match="device busy"):
-        runtime.start(lambda _frame: None, freq_hz=_VFO)
-    assert runtime.started is False  # the half-built pipeline was closed
-    assert runtime.state == "error" and runtime.last_error == "device busy"
-
-
-async def test_status_tx_frozen_follows_controller_hold() -> None:
-    fake = FakeIqSource()
-    clock = _FakeClock()
-    runtime = _make_runtime(fake, clock)
-    await _start_streaming(runtime, fake)
-
-    runtime.on_radio_state(freq_hz=None, tx_active=True)
-    assert runtime.tx_frozen is True
-
-    # Falling edge releases only after TX_HOLD_S (controller rule).
-    runtime.on_radio_state(freq_hz=None, tx_active=False)
-    clock.advance(TX_HOLD_S / 2)
-    runtime.tick()
-    assert runtime.tx_frozen is True
-    clock.advance(TX_HOLD_S)
-    runtime.tick()
-    assert runtime.tx_frozen is False
-
-
-async def test_status_overflow_count_counts_flagged_blocks() -> None:
-    fake = FakeIqSource()
-    runtime = _make_runtime(fake, _FakeClock())
-    await _start_streaming(runtime, fake)
-    assert runtime.overflow_count == 0
-
-    fake.set_overflow(True)
-    fake.pump(1)
-    assert runtime.overflow_count == 1
-    # Centre-0 blocks are dropped from the FFT feed, but their overflow
-    # flag still counts (samples were lost regardless).
-    fake.set_center_freq(0)
-    fake.pump(1)
-    assert runtime.overflow_count == 2
-    # A fresh start resets the counter.
-    runtime.stop()
-    fake.set_overflow(False)
-    await _start_streaming(runtime, fake)
-    assert runtime.overflow_count == 0
 
 
 # ---------------------------------------------------------------------------

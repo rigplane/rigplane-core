@@ -1,6 +1,8 @@
 import { writable } from 'svelte/store';
 import type { Readable } from 'svelte/store';
-import { ingressScopeFrame } from './adapters/scope-adapter';
+import { ingressScopeFrame, parseScopeGranted, scopeGrantedGeometry, scopeMatchesSubscription } from './adapters/scope-adapter';
+import type { ScopeIngressResult } from './adapters/scope-adapter';
+import type { ScopeGranted, ScopeSubscription } from './scope-view';
 import type { CurrentScopeContext, ScopeFrame, ScopeFreshness, ScopeGeometry, ScopeParseError } from './scope-frame';
 
 export interface ScopeMessageSource {
@@ -10,12 +12,23 @@ export interface ScopeMessageSource {
 
 /**
  * One shared stream per source: pixels reach renderers through `subscribe`
- * (non-reactive), while the small `geometry` store is the only reactive
- * surface and changes only when the qualified facts change.
+ * (non-reactive), while `geometry` publishes qualified display facts and
+ * the grant/error stores publish subscription negotiation state.
  */
 export class ScopeStream {
   readonly geometry: Readable<ScopeGeometry | null>;
-  readonly sourceId: string;
+  get kind(): ScopeFrame['source'] { return this.context.source; }
+  get sourceId(): string { return this.subscriptionValue?.sourceId ?? this.context.sourceId; }
+  private readonly grantedStore = writable<ScopeGranted | null>(null);
+  private readonly errorStore = writable<string | null>(null);
+  readonly granted: Readable<ScopeGranted | null> = { subscribe: this.grantedStore.subscribe };
+  readonly error: Readable<string | null> = { subscribe: this.errorStore.subscribe };
+  private subscriptionValue: ScopeSubscription | null = null;
+  private subscriptionKey: string | null = null;
+  private retryNeeded = false;
+  private readonly attemptedFacts = new Map<string, string>();
+  private subscriptionsValue: readonly ScopeSubscription[] = [];
+  private surfaces = new Map<symbol, ScopeSubscription>();
   private readonly geometryStore = writable<ScopeGeometry | null>(null);
   private geometryValue: ScopeGeometry | null = null;
   private readonly frames = new Map<string, ScopeFrame>();
@@ -34,21 +47,151 @@ export class ScopeStream {
     context: CurrentScopeContext,
     private readonly ownership: 'owned' | 'borrowed',
     private readonly malformed?: (reason: ScopeParseError) => void,
+    private readonly publishSubscription?: (subscription: ScopeSubscription | null, previous: ScopeSubscription | null) => void,
   ) {
     this.geometry = { subscribe: this.geometryStore.subscribe };
     this.context = { ...context };
-    this.sourceId = context.sourceId;
     this.resume();
+  }
+
+  get subscription(): ScopeSubscription | null { return this.subscriptionValue; }
+
+  updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription, retry = true, revision?: string): boolean {
+    this.surfaces.set(token, subscription);
+    return this.publishSurfaceDemand(retry, revision);
+  }
+
+  removeSurfaceSubscription(token: symbol): void {
+    this.surfaces.delete(token);
+    this.publishSurfaceDemand(false);
+  }
+
+  get subscriptions(): readonly ScopeSubscription[] { return this.subscriptionsValue; }
+
+  private publishSurfaceDemand(retry = true, revision?: string): boolean {
+    const groups = new Map<string, ScopeSubscription[]>();
+    for (const request of this.surfaces.values()) {
+      const key = `${request.sourceId}:${request.receiver}`;
+      const group = groups.get(key) ?? []; group.push(request); groups.set(key, group);
+    }
+    const next: ScopeSubscription[] = [];
+    for (const requests of groups.values()) {
+      const visible = requests.filter(request => request.maxFps > 0);
+      const candidates = visible.length > 0 ? visible : requests;
+      const selected = candidates.reduce((current, request) => request.width >= current.width ? request : current);
+      next.push({ ...selected, width: Math.max(...candidates.map(request => request.width)),
+        maxFps: Math.max(...candidates.map(request => request.maxFps)) });
+    }
+    return this.applySubscriptions(next, retry, revision);
+  }
+
+  setSubscription(subscription: ScopeSubscription): void {
+    if (this.disposed || subscription.width < 1) return;
+    this.applySubscriptions([subscription]);
+  }
+
+  private applySubscriptions(next: readonly ScopeSubscription[], retry = true, revision?: string): boolean {
+    const key = JSON.stringify(next);
+    if (key === this.subscriptionKey) {
+      const changedFacts = next.filter(request => revision === undefined
+        || this.attemptedFacts.get(`${request.sourceId}:${request.receiver}`) !== revision);
+      if (retry && this.retryNeeded && changedFacts.length > 0) {
+        this.retryNeeded = false;
+        this.errorStore.set(null);
+        for (const request of changedFacts) {
+          if (revision !== undefined) this.attemptedFacts.set(`${request.sourceId}:${request.receiver}`, revision);
+          this.publishSubscription?.(request, request);
+        }
+        return true;
+      }
+      return false;
+    }
+    this.retryNeeded = false;
+    const previous = this.subscriptionsValue;
+    this.subscriptionKey = key;
+    this.subscriptionsValue = next.map(request => ({ ...request, view: { ...request.view } }));
+    this.subscriptionValue = this.subscriptionsValue[0] ?? null;
+    const selected = this.subscriptionValue;
+    const priorSelected = previous[0];
+    if (priorSelected?.sourceId !== selected?.sourceId || priorSelected?.receiver !== selected?.receiver) this.reset();
+    this.errorStore.set(null);
+    for (const old of previous) {
+      if (!next.some(request => request.sourceId === old.sourceId && request.receiver === old.receiver)) {
+        this.attemptedFacts.delete(`${old.sourceId}:${old.receiver}`);
+        this.publishSubscription?.(null, old);
+      }
+    }
+    for (const request of this.subscriptionsValue) {
+      const old = previous.find(prior => prior.sourceId === request.sourceId && prior.receiver === request.receiver) ?? null;
+      if (JSON.stringify(old) !== JSON.stringify(request)) {
+        if (revision !== undefined) this.attemptedFacts.set(`${request.sourceId}:${request.receiver}`, revision);
+        this.publishSubscription?.(request, old);
+      }
+    }
+    return true;
+  }
+
+  private matchingSubscription(facts: { readonly sourceId: string; readonly receiver: number | null }): ScopeSubscription | null {
+    return this.subscriptionsValue.find(request => scopeMatchesSubscription(facts, request)) ?? null;
+  }
+
+  handleMessage(message: unknown): void {
+    if (this.disposed) return;
+    const granted = parseScopeGranted(message);
+    if (granted && (this.subscriptionKey === null || this.matchingSubscription(granted))) {
+      this.grantedStore.set(granted); this.errorStore.set(null);
+      const selected = this.slotFilter === null || this.slotFilter === `${granted.sourceId}:${granted.receiver === null ? '*' : granted.receiver}`;
+      if (selected && this.matchingSubscription(granted)?.maxFps !== 0) this.publishGeometry(scopeGrantedGeometry(granted, this.context));
+    } else if (message && typeof message === 'object' && 'type' in message && message.type === 'error'
+      && 'message' in message && typeof message.message === 'string') {
+      this.reset(); this.retryNeeded = true; this.errorStore.set(message.message);
+    }
+  }
+
+  setSource(source: ScopeFrame['source'], sourceId: string): void {
+    if (this.context.source === source && this.context.sourceId === sourceId) return;
+    const previousSourceId = this.context.sourceId;
+    if (this.slotFilter !== null) this.slotFilter = source === 'radio'
+      ? `${sourceId}${this.slotFilter.slice(previousSourceId.length)}` : `${sourceId}:*`;
+    this.clearMode();
+    this.context = { ...this.context, source, sourceId };
+    if (this.surfaces.size > 0) {
+      for (const [token, request] of this.surfaces) this.surfaces.set(token, { ...request, sourceId,
+        receiver: source === 'radio' ? request.receiver : null });
+      this.publishSurfaceDemand();
+    } else if (this.subscriptionValue) this.setSubscription({ ...this.subscriptionValue, sourceId,
+      receiver: source === 'radio' ? this.subscriptionValue.receiver : null });
+    else this.reset();
+  }
+
+  clearMode(): void {
+    const { source, sourceId, epoch } = this.context;
+    this.context = { source, sourceId, epoch };
+    this.reset();
+  }
+
+  setMode(mode: number): void {
+    // Native radio scope modes do not describe an IQ/audio producer's free View.
+    if (this.disposed || this.context.source !== 'radio' || this.context.mode === mode) return;
+    this.context = { ...this.context, mode };
+    if (this.geometryValue) this.publishGeometry({ ...this.geometryValue, mode });
   }
 
   resume(): void {
     if (this.disposed || this.detach) return;
     this.detach = this.source.subscribe((buffer) => {
       if (this.disposed) return;
-      const ingressed = ingressScopeFrame(buffer, this.context);
-      if (!ingressed.ok) { this.reset(); this.malformed?.(ingressed.reason); return; }
-      this.accept(ingressed);
+      this.ingress(ingressScopeFrame(buffer, this.context));
     });
+  }
+
+  /** The controller's one binary ingress routes already-qualified frames here. */
+  ingress(ingressed: ScopeIngressResult): void {
+    if (this.disposed || this.detach === null) return;
+    if (!ingressed.ok) { this.reset(); this.malformed?.(ingressed.reason); return; }
+    const subscription = this.matchingSubscription(ingressed.geometry);
+    if ((this.subscriptionKey !== null && subscription === null) || subscription?.maxFps === 0) return;
+    this.accept({ ...ingressed, geometry: { ...ingressed.geometry, mode: this.context.mode ?? 0 } });
   }
 
   pause(): void {
@@ -94,9 +237,10 @@ export class ScopeStream {
   /** Last accepted ID for valid selected geometry; preserved across evidence boundaries. */
   get geometryReceipt(): number { return this.geometryAccepted; }
 
-  /** A new transport session: the epoch stamps future frames and stale-session state retires. */
+  /** A transport-session change retires cached receipts; wire epochs remain producer-owned. */
   setSessionEpoch(epoch: number): void {
     if (this.disposed) return;
+    if (this.context.epoch === epoch) return;
     this.context = { ...this.context, epoch };
     this.reset();
   }
@@ -104,6 +248,7 @@ export class ScopeStream {
   reset(): void {
     if (this.disposed) return;
     this.frames.clear();
+    this.grantedStore.set(null);
     this.geometryKey = null;
     this.publishGeometry(null);
   }
@@ -119,6 +264,7 @@ export class ScopeStream {
     if (this.disposed) return;
     this.disposed = true;
     this.sinks.clear();
+    this.attemptedFacts.clear();
     this.frames.clear();
     try { this.detach?.(); this.detach = null; }
     finally {

@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 /**
  * Tests for the tuning indicator (red line) position on spectrum/waterfall.
  *
@@ -61,54 +62,45 @@ import { ingressScopeFrame } from '$lib/runtime/adapters/scope-adapter';
 
 function encodeFrame(
   receiver: number,
-  mode: number,
+  _mode: number,
   startFreq: number,
   endFreq: number,
   pixels: Uint8Array,
 ): ArrayBuffer {
-  const buf = new ArrayBuffer(16 + pixels.length);
-  const view = new DataView(buf);
-  view.setUint8(0, 0x01);
-  view.setUint8(1, receiver);
-  view.setUint8(2, mode);
-  view.setUint32(3, startFreq, true);
-  view.setUint32(7, endFreq, true);
-  view.setUint16(14, pixels.length, true);
-  new Uint8Array(buf, 16).set(pixels);
-  return buf;
+  return scopeWire({ receiver, viewStartHz: startFreq, viewEndHz: endFreq, pixels });
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
 
-describe('scope ingress — mode byte', () => {
+describe('scope ingress — observed mode facts', () => {
   const context = { source: 'radio' as const, sourceId: 'scope', epoch: 1 };
   it('derives mode=0 (CTR) into geometry', () => {
-    const result = ingressScopeFrame(encodeFrame(0, 0, 14_050_000, 14_098_000, new Uint8Array(5)), context);
+    const result = ingressScopeFrame(encodeFrame(0, 0, 14_050_000, 14_098_000, new Uint8Array(5)), { ...context, mode: 0 });
     if (!result.ok) throw new Error(result.reason);
     expect(result.geometry.mode).toBe(0);
   });
 
   it('derives mode=1 (FIX) into geometry', () => {
-    const result = ingressScopeFrame(encodeFrame(0, 1, 14_000_000, 14_350_000, new Uint8Array(5)), context);
+    const result = ingressScopeFrame(encodeFrame(0, 1, 14_000_000, 14_350_000, new Uint8Array(5)), { ...context, mode: 1 });
     if (!result.ok) throw new Error(result.reason);
     expect(result.geometry.mode).toBe(1);
   });
 
   it('derives mode=2 (SCROLL-C) into geometry', () => {
-    const result = ingressScopeFrame(encodeFrame(0, 2, 14_050_000, 14_098_000, new Uint8Array(5)), context);
+    const result = ingressScopeFrame(encodeFrame(0, 2, 14_050_000, 14_098_000, new Uint8Array(5)), { ...context, mode: 2 });
     if (!result.ok) throw new Error(result.reason);
     expect(result.geometry.mode).toBe(2);
   });
 
   it('derives mode=3 (SCROLL-F) into geometry', () => {
-    const result = ingressScopeFrame(encodeFrame(0, 3, 14_000_000, 14_350_000, new Uint8Array(5)), context);
+    const result = ingressScopeFrame(encodeFrame(0, 3, 14_000_000, 14_350_000, new Uint8Array(5)), { ...context, mode: 3 });
     if (!result.ok) throw new Error(result.reason);
     expect(result.geometry.mode).toBe(3);
   });
 
   it('preserves all other fields alongside mode', () => {
     const pixels = new Uint8Array([10, 20, 30]);
-    const result = ingressScopeFrame(encodeFrame(1, 3, 7_000_000, 7_300_000, pixels), context);
+    const result = ingressScopeFrame(encodeFrame(1, 3, 7_000_000, 7_300_000, pixels), { ...context, mode: 3 });
     if (!result.ok) throw new Error(result.reason);
     expect(result.geometry.receiver).toBe(1);
     expect(result.geometry.mode).toBe(3);

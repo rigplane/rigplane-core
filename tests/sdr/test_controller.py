@@ -382,3 +382,24 @@ def test_controller_source_has_no_threads_or_io() -> None:
 
     for banned in ("threading", "Thread(", "asyncio", "socket", "subprocess"):
         assert banned not in source
+
+
+def test_pending_action_delay_and_rf_target_use_controller_clock() -> None:
+    controller, source, sink, clock = make_controller(
+        config=SdrConfig("fake", freq_offset_hz=8_000_000)
+    )
+    assert controller.target_frequency_hz is None
+    assert controller.next_action_delay is None
+    controller.on_radio_state(14_000_000, True)
+    assert controller.target_frequency_hz == 22_000_000
+    assert controller.tx_frozen
+    controller.on_radio_state(30_000_000, False)
+    assert controller.next_action_delay == pytest.approx(RETUNE_DEBOUNCE_S)
+    clock.advance(RETUNE_DEBOUNCE_S)
+    controller.tick()
+    assert source.center_freq_hz == 38_000_000 - QUARTER_SR_HZ
+    assert controller.next_action_delay == pytest.approx(TX_HOLD_S - RETUNE_DEBOUNCE_S)
+    clock.advance(TX_HOLD_S - RETUNE_DEBOUNCE_S)
+    controller.tick()
+    assert not controller.tx_frozen
+    assert controller.next_action_delay is None

@@ -2482,7 +2482,7 @@ class ControlHandler:
             raise RuntimeError("server not available")
         if (
             not {CAP_CW, CAP_AUDIO}.issubset(runtime_capabilities(self._radio))
-            or getattr(self._server, "_audio_fft_scope", None) is None
+            or getattr(self._server, "_audio_scope_source", None) is None
         ):
             raise RuntimeError("CW auto-tune requires RX audio FFT")
 
@@ -2530,6 +2530,7 @@ class ControlHandler:
             return {"detected": None, "applied": False}
         finally:
             broadcaster._tap_registry.unregister(tap_handle)
+            await broadcaster.release_relay_if_idle()
 
         hz = result[0] if result else None
         if hz is None:

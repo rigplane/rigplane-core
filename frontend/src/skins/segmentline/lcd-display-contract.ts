@@ -19,10 +19,13 @@ export function resolveLcdSpectrumFrame(
 ): LcdSpectrumFrameResolution {
   if (expectation.receiver === null) return { state: 'ghost', reason: 'receiver-unknown' };
   if (geometry == null) return { state: 'ghost', reason: 'missing' };
-  if (geometry.source !== (expectation.source === 'hardware' ? 'radio' : 'audio_fft')) {
+  const sourceMatches = expectation.source === 'hardware'
+    ? geometry.source === 'radio' || geometry.source === 'iq_fft' : geometry.source === 'audio_fft';
+  if (!sourceMatches) {
     return { state: 'ghost', reason: 'source-mismatch' };
   }
-  if (geometry.receiver !== (expectation.receiver === 'MAIN' ? 0 : 1)) {
+  if (!(geometry.source !== 'radio' && geometry.receiver === null)
+    && geometry.receiver !== (expectation.receiver === 'MAIN' ? 0 : 1)) {
     return { state: 'ghost', reason: 'receiver-mismatch' };
   }
   if (geometry.freshness !== 'fresh') return { state: 'ghost', reason: 'stale' };

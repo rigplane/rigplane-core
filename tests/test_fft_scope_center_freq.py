@@ -1,199 +1,162 @@
-"""Regression tests for MOR-505 — v2 AUDIO SCOPE blank on FTX-1.
+"""Audio RF geometry follows canonical Icom and Yaesu observations."""
 
-Root cause: ``WebServer._update_fft_scope_freq`` / ``_update_fft_scope_mode``
-read the active receiver's freq/mode from the StateStore snapshot using a
-HARDCODED receiver-id ``"0"`` (``FieldPath.active("0", "freq_mode", ...)``).
-That id is only correct for the legacy Icom state poller. Yaesu CAT and
-rigctld backends key the primary receiver under ``"main"`` (see
-``backends/yaesu_cat/observations.py`` / ``backends/rigctld_client/
-observations.py``), so the snapshot lookup raised ``KeyError`` and the method
-returned early. ``AudioFftScope._center_freq`` stayed 0, and ``feed_audio``'s
-``_center_freq <= 0`` guard then dropped every frame — a blank scope.
+import pytest
 
-The fix resolves the primary receiver scheme-agnostically via
-``runtime_helpers.primary_receiver_snapshot_ids`` (derived from the canonical
-``_SNAPSHOT_RECEIVER_IDS`` map used by the public-state builder), trying
-``"0"`` then ``"main"`` and using the first present id. Icom ("0") behavior is
-unchanged; Yaesu ("main") now works.
+from rigplane.web.scope_sources import WebScopePcmTap
+from rigplane.web.server import WebServer, WebConfig
+from test_audio_scope_dispatch import _seed_audio_facts
 
-These tests are hardware-free: they construct ``StateSnapshot`` objects
-directly and drive ``_update_fft_scope_freq`` / ``_update_fft_scope_mode``,
-asserting the scope's center freq / bandwidth.
-"""
 
-from __future__ import annotations
-
-from rigplane.audio_bus import AudioBus
-from rigplane.capabilities import CAP_AUDIO
-from rigplane.core.state_pipeline_contracts import FieldPath, SourceMetadata
-from rigplane.core.state_store import FieldSnapshot, FreshnessState, StateSnapshot
-from rigplane.profiles import resolve_radio_profile
-from rigplane.radio_state import RadioState
-from rigplane.types import AudioCodec
-from rigplane.web.server import WebConfig, WebServer
-
-_SOURCE = SourceMetadata(
-    source="state_poller",
-    provider="test",
-    transport="backend",
-    native_id="test",
+@pytest.mark.parametrize("receiver", ["0", "main"])
+@pytest.mark.parametrize(
+    "mode,low,high,sideband",
+    [
+        ("USB", 0, 2400, "upper"),
+        ("LSB", -2400, 0, "lower"),
+        ("AM", -1200, 1200, "both"),
+        ("FM", -1200, 1200, "both"),
+    ],
 )
-
-
-class _AudioOnlyRadio:
-    """Concrete wrapped-USB PCM supplier with no hardware scope.
-
-    Carries a real profile so mode-bandwidth resolution works.
-    """
-
-    has_usb_audio = True
-
-    def __init__(self, *, model: str) -> None:
-        self.capabilities = {CAP_AUDIO}
-        self.radio_state = RadioState()
-        self.audio_codec = AudioCodec.PCM_1CH_16BIT
-        self.audio_sample_rate = 48_000
-        self.audio_bus = AudioBus(self)
-        self.model = model
-        self.profile = resolve_radio_profile(model=model)
-
-
-def _snapshot(*fields: FieldSnapshot) -> StateSnapshot:
-    return StateSnapshot(
-        state_revision=1,
-        freshness_revision=1,
-        observation_seq=1,
-        generated_at_monotonic=0.0,
-        fields=tuple(fields),
+def test_audio_passband_reads_observed_provider_geometry(
+    receiver, mode, low, high, sideband
+):
+    server = WebServer(None, WebConfig(radio_model="IC-7610"))
+    _seed_audio_facts(server, receiver, mode)
+    facts = WebScopePcmTap(server).facts()
+    assert facts.tuned_hz == 14_074_000
+    assert (facts.low_offset_hz, facts.high_offset_hz, facts.sideband) == (
+        low,
+        high,
+        sideband,
     )
 
 
-def _freq_field(receiver_id: str, freq_hz: int) -> FieldSnapshot:
-    return FieldSnapshot(
-        path=FieldPath.active(receiver_id, "freq_mode", "freq_hz"),
-        value=freq_hz,
-        freshness=FreshnessState.FRESH,
-        last_observed_monotonic=0.0,
-        max_age=None,
-        source=_SOURCE,
+def test_audio_passband_refuses_missing_facts():
+    server = WebServer(None)
+    with pytest.raises(ValueError, match="observed"):
+        WebScopePcmTap(server).facts()
+
+
+@pytest.mark.parametrize(
+    "model,mode,half",
+    [
+        ("IC-7610", "CW", 1800),
+        ("IC-7610", "CW-R", 1800),
+        ("IC-7610", "RTTY", 1350),
+        ("IC-7610", "RTTY-R", 1350),
+        ("IC-7300", "CW", 1800),
+        ("IC-7300", "RTTY", 1350),
+    ],
+)
+def test_ambiguous_modes_map_main_symmetric_crop(model, mode, half):
+    """CW/CW-R/RTTY/RTTY-R keep main's symmetric VFO-centered RF placement.
+
+    Main's AudioFftScope crops symmetrically to the mode filter rule
+    (set_mode_bandwidth(rule.max_hz)); the new source must grant the same
+    coverage instead of refusing the mapping.
+    """
+    server = WebServer(None, WebConfig(radio_model=model))
+    _seed_audio_facts(server, mode=mode)
+    facts = WebScopePcmTap(server).facts()
+    assert facts.tuned_hz == 14_074_000
+    assert (facts.low_offset_hz, facts.high_offset_hz, facts.sideband) == (
+        -half,
+        half,
+        "both",
     )
 
 
-def _mode_field(receiver_id: str, mode: str) -> FieldSnapshot:
-    return FieldSnapshot(
-        path=FieldPath.active(receiver_id, "freq_mode", "mode"),
-        value=mode,
-        freshness=FreshnessState.FRESH,
-        last_observed_monotonic=0.0,
-        max_age=None,
-        source=_SOURCE,
+@pytest.mark.parametrize(
+    "model,mode",
+    [
+        ("IC-7610", "DV"),
+        ("IC-7300", "DV"),
+        ("FTX-1", "DV"),
+        ("FTX-1", "CW"),
+        ("FTX-1", "CW-R"),
+        ("FTX-1", "RTTY"),
+        ("FTX-1", "RTTY-R"),
+    ],
+)
+def test_unruled_modes_map_full_spectrum(model, mode):
+    """Modes with no profile filter rule keep main's full-spectrum placement."""
+    from rigplane.audio.scope_source import AudioPassband
+
+    server = WebServer(None, WebConfig(radio_model=model))
+    _seed_audio_facts(server, mode=mode)
+    assert WebScopePcmTap(server, sample_rate=48000).facts() == AudioPassband(
+        14_074_000, -24000, 24000, "both"
     )
 
 
-def _make_server(*, model: str) -> WebServer:
-    radio = _AudioOnlyRadio(model=model)
-    assert callable(radio.audio_bus.subscribe)
-    assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
-    assert radio.audio_sample_rate > 0
-    server = WebServer(radio=radio, config=WebConfig())
-    assert server._audio_fft_scope is not None, "audio FFT scope must be wired"
-    return server
+@pytest.mark.parametrize("receiver", ["0", "main"])
+@pytest.mark.parametrize(
+    "code,sideband,offset", [("3", "upper", -650), ("7", "lower", 650)]
+)
+def test_explicit_cw_side_from_producer_profile_maps_observed_pitch(
+    receiver, code, sideband, offset
+):
+    from pathlib import Path
+    from rigplane.audio.scope_source import AudioPassband
+    from rigplane.profiles.rig_loader import load_rig
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
+    )
+
+    config = load_rig(Path(__file__).resolve().parents[1] / "rigs/ftx1.toml")
+    mode = dict(zip(config.mode_codes, config.modes, strict=True))[code]
+    server = WebServer(None)
+    _seed_audio_facts(server, receiver=receiver, mode=mode, width=500)
+    server.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("operator_controls", "cw_pitch"),
+            value=650,
+            source=SourceMetadata(source="poll_response", provider="test"),
+            timestamp_monotonic=0,
+        )
+    )
+    assert WebScopePcmTap(server).facts() == AudioPassband(
+        14_074_000, -250, 250, sideband, offset
+    )
 
 
-# ── center frequency ─────────────────────────────────────────────────────────
+@pytest.mark.parametrize("code", ["3", "7"])
+def test_explicit_cw_side_still_requires_observed_pitch(code):
+    from pathlib import Path
+    from rigplane.profiles.rig_loader import load_rig
+
+    config = load_rig(Path(__file__).resolve().parents[1] / "rigs/ftx1.toml")
+    mode = dict(zip(config.mode_codes, config.modes, strict=True))[code]
+    server = WebServer(None)
+    _seed_audio_facts(server, receiver="main", mode=mode)
+    with pytest.raises(ValueError, match="observed CW pitch"):
+        WebScopePcmTap(server).facts()
 
 
-def test_center_freq_set_for_main_keyed_receiver() -> None:
-    """FTX-1/Yaesu: freq keyed under receiver "main" must set center_freq.
+@pytest.mark.parametrize(
+    "code,low,high,sideband",
+    [
+        ("8", -2400, 0, "lower"),
+        ("C", 0, 2400, "upper"),
+        ("D", -1200, 1200, "both"),
+        ("B", -1200, 1200, "both"),
+        ("A", -1200, 1200, "both"),
+        ("F", -1200, 1200, "both"),
+    ],
+)
+def test_explicit_audio_alias_from_producer_profile_uses_existing_geometry(
+    code, low, high, sideband
+):
+    from pathlib import Path
+    from rigplane.audio.scope_source import AudioPassband
+    from rigplane.profiles.rig_loader import load_rig
 
-    THIS IS THE MOR-505 GUARD. On the unfixed code the hardcoded "0" lookup
-    raises KeyError, the method returns early, and center_freq stays 0 (blank
-    scope). After the fix the "main" id is resolved and center_freq is set.
-    """
-    server = _make_server(model="FTX-1")
-    scope = server._audio_fft_scope
-    assert scope is not None
-    assert scope._center_freq == 0
-
-    server._update_fft_scope_freq(_snapshot(_freq_field("main", 14_074_000)))
-
-    assert scope._center_freq == 14_074_000
-
-
-def test_center_freq_set_for_icom_zero_keyed_receiver() -> None:
-    """Icom: freq keyed under receiver "0" must still set center_freq (no regression)."""
-    server = _make_server(model="IC-7610")
-    scope = server._audio_fft_scope
-    assert scope is not None
-
-    server._update_fft_scope_freq(_snapshot(_freq_field("0", 7_074_000)))
-
-    assert scope._center_freq == 7_074_000
-
-
-def test_center_freq_unchanged_when_freq_missing() -> None:
-    """No freq field in the snapshot: no-op, no exception, center_freq stays 0."""
-    server = _make_server(model="FTX-1")
-    scope = server._audio_fft_scope
-    assert scope is not None
-
-    server._update_fft_scope_freq(_snapshot())  # empty snapshot
-
-    assert scope._center_freq == 0
-
-
-def test_center_freq_unchanged_when_freq_zero() -> None:
-    """freq == 0 must not push a bogus center_freq (would still gate frames)."""
-    server = _make_server(model="FTX-1")
-    scope = server._audio_fft_scope
-    assert scope is not None
-    scope.set_center_freq(14_074_000)
-
-    server._update_fft_scope_freq(_snapshot(_freq_field("main", 0)))
-
-    # 0 is not > 0 — center_freq must be left at its prior value.
-    assert scope._center_freq == 14_074_000
-
-
-# ── mode bandwidth ───────────────────────────────────────────────────────────
-
-
-def test_mode_bandwidth_set_for_main_keyed_receiver() -> None:
-    """Mode keyed under "main" must resolve and set the filter bandwidth.
-
-    Use an IC-7610 profile (whose USB rule has a concrete ``max_hz``) but key
-    the mode under "main" to prove receiver-id resolution is scheme-agnostic
-    for the mode path too.
-    """
-    server = _make_server(model="IC-7610")
-    scope = server._audio_fft_scope
-    assert scope is not None
-    assert scope.bandwidth_hz is None
-
-    server._update_fft_scope_mode(_snapshot(_mode_field("main", "USB")))
-
-    # IC-7610 USB rule has max_hz=3600.
-    assert scope.bandwidth_hz == 3600
-
-
-def test_mode_bandwidth_set_for_icom_zero_keyed_receiver() -> None:
-    """Mode keyed under "0" must still resolve (no regression)."""
-    server = _make_server(model="IC-7610")
-    scope = server._audio_fft_scope
-    assert scope is not None
-
-    server._update_fft_scope_mode(_snapshot(_mode_field("0", "USB")))
-
-    assert scope.bandwidth_hz == 3600
-
-
-def test_mode_bandwidth_unchanged_when_mode_missing() -> None:
-    """No mode field: no-op, no exception, bandwidth stays at prior value."""
-    server = _make_server(model="IC-7610")
-    scope = server._audio_fft_scope
-    assert scope is not None
-    scope.set_mode_bandwidth(2700)
-
-    server._update_fft_scope_mode(_snapshot())  # empty snapshot
-
-    assert scope.bandwidth_hz == 2700
+    config = load_rig(Path(__file__).resolve().parents[1] / "rigs/ftx1.toml")
+    mode = dict(zip(config.mode_codes, config.modes, strict=True))[code]
+    server = WebServer(None)
+    _seed_audio_facts(server, receiver="main", mode=mode, width=2400)
+    assert WebScopePcmTap(server).facts() == AudioPassband(
+        14_074_000, low, high, sideband
+    )

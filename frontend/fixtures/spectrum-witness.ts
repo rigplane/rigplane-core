@@ -10,8 +10,8 @@
  *
  * WHAT IS FROZEN. MOR-4270: the panel consumes the shared `ScopeStream`, so
  * the witness feeds ONE constant frame through the real ingress parse (the
- * same 16-byte wire layout the server encoder emits) into a synthetic
- * stream patched onto the controller singleton, and hands the panel a
+ * production v2 fixture header) into a synthetic
+ * stream patched onto the fixture runtime, and hands the panel a
  * frozen managed region for the passband. No clock and no scope transport
  * reaches the trace, the waterfall or the tune-line/passband overlay.
  * `binByte` is integer-only arithmetic over the bin index — no
@@ -31,7 +31,9 @@ import '../src/components-v2/theme/index';
 import SpectrumPanel from '../src/components/spectrum/SpectrumPanel.svelte';
 import { ScopeStream } from '../src/lib/runtime/scope-stream';
 import type { ScopeMessageSource } from '../src/lib/runtime/scope-stream';
-import { scopeController } from '../src/lib/runtime/scope-controller.svelte';
+import { runtime } from '../src/lib/runtime/frontend-runtime';
+import radioWireUrl from '../../tests/fixtures/scope-wire/radio.bin?url';
+import { parseCurrentScopeFrame } from '../src/lib/runtime/adapters/scope-adapter';
 import {
   getFilterHandlers,
   getVfoHandlers,
@@ -109,35 +111,49 @@ const TUNE_HZ = 14_100_000;
 /** 0 = CTR. In CTR the panel draws the tune line at 50% and never hides it. */
 const FRAME_MODE = 0;
 
-// One real wire frame: the same little-endian 16-byte header + payload the
-// server encoder produces (protocol.py), parsed by the production ingress.
+const template = await (await fetch(radioWireUrl)).arrayBuffer();
+const context = { source: 'radio' as const, sourceId: 'radio:main', epoch: 1 };
+const parsed = parseCurrentScopeFrame(template, context);
+if (!parsed.ok) throw new Error(`Invalid producer fixture: ${parsed.reason}`);
+const pixelOffset = template.byteLength - parsed.frame.width;
+
 function encodeWitnessFrame(): ArrayBuffer {
-  const bytes = new Uint8Array(16 + BIN_COUNT);
+  const bytes = new Uint8Array(pixelOffset + BIN_COUNT);
+  bytes.set(new Uint8Array(template, 0, pixelOffset));
   const view = new DataView(bytes.buffer);
-  view.setUint8(0, 1);                       // message type
-  view.setUint8(1, 0);                       // receiver MAIN
-  view.setUint8(2, FRAME_MODE);
-  view.setUint32(3, START_HZ, true);
-  view.setUint32(7, END_HZ, true);
-  view.setUint16(11, 1, true);               // wire sequence
-  view.setUint8(13, 0);                      // flags
-  view.setUint16(14, BIN_COUNT, true);
-  for (let index = 0; index < BIN_COUNT; index += 1) bytes[16 + index] = binByte(index);
+  view.setUint16(6, BIN_COUNT, true);
+  view.setFloat64(24, START_HZ, true);
+  view.setFloat64(32, END_HZ, true);
+  view.setFloat64(40, START_HZ, true);
+  view.setFloat64(48, END_HZ, true);
+  for (let index = 0; index < BIN_COUNT; index += 1) bytes[pixelOffset + index] = binByte(index);
   return bytes.buffer;
 }
 
 let deliverWitness: ((buffer: ArrayBuffer) => void) | null = null;
+let delivered = false;
+let markReady: () => void;
+const ready = new Promise<void>((resolve) => { markReady = resolve; });
 const witnessSource: ScopeMessageSource = {
   subscribe(sink) { deliverWitness = sink; return () => { deliverWitness = null; }; },
   close: () => {},
 };
 const witnessStream = new ScopeStream(witnessSource,
-  { source: 'radio', sourceId: 'scope', epoch: 1 }, 'borrowed');
-// The witness owns no socket: the synthetic stream replaces the singleton's
+  context, 'borrowed', undefined, (subscription) => {
+    if (!subscription || subscription.maxFps === 0 || subscription.width < 1 || delivered) return;
+    delivered = true;
+    queueMicrotask(() => {
+      deliverWitness?.(encodeWitnessFrame());
+      flushSync();
+      document.body.dataset.harnessReady = 'true';
+      markReady();
+    });
+  });
+// The witness owns no socket: the synthetic stream replaces the runtime's
 // shared stream and the health getters read as an honest connected viewer.
-(scopeController as unknown as { stream(): typeof witnessStream }).stream = () => witnessStream;
-Object.defineProperty(scopeController, 'hardwareScopeConnected', { get: () => true });
-Object.defineProperty(scopeController, 'hardwareScopeFrameLive', { get: () => true });
+(runtime.scope as unknown as { stream(): typeof witnessStream }).stream = () => witnessStream;
+Object.defineProperty(runtime.scope, 'hardwareScopeConnected', { get: () => true });
+Object.defineProperty(runtime.scope, 'hardwareScopeFrameLive', { get: () => true });
 
 const REGION = Object.freeze({
   passband: Object.freeze({
@@ -168,6 +184,4 @@ mount(SpectrumPanel, {
 });
 
 flushSync();
-if (deliverWitness) (deliverWitness as (buffer: ArrayBuffer) => void)(encodeWitnessFrame());
-flushSync();
-document.body.dataset.harnessReady = 'true';
+await ready;

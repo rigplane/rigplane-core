@@ -1,3 +1,5 @@
+import type { ScopeGranted } from '../runtime/scope-view';
+
 // WebSocket protocol types
 
 // Outgoing: client → server (envelope format)
@@ -20,6 +22,7 @@ export interface DxSpot {
 
 // Incoming JSON message union (scope_data is binary — handled via onBinary, not here)
 export type WsIncoming =
+  | ScopeGranted
   | { type: 'dx_spot'; spot: DxSpot }
   | { type: 'dx_spots'; spots: DxSpot[] }
   | {
@@ -34,7 +37,7 @@ export type WsIncoming =
       params?: Record<string, string | number>;
     }
   | { type: 'ack'; id: string }
-  | { type: 'error'; id: string; message: string }
+  | { type: 'error'; id?: string; sourceId?: string; receiver?: number | null; message: string }
   | { type: 'response'; id: string; ok: boolean; result?: Record<string, unknown>; error?: string; message?: string }
   | { type: 'hello'; proto: number; server: string; version: string; radio: string; connected: boolean; capabilities: string[] }
   | { type: 'state'; data: Record<string, unknown> }
@@ -44,7 +47,7 @@ export type WsIncoming =
 
 // Incoming: server → client (base interface for typed sub-interfaces)
 export interface WsMessage {
-  type: 'dx_spot' | 'dx_spots' | 'notification' | 'ack' | 'error' | 'response' | 'hello' | 'state' | 'state_update' | 'companion_state' | 'event';
+  type: 'granted' | 'dx_spot' | 'dx_spots' | 'notification' | 'ack' | 'error' | 'response' | 'hello' | 'state' | 'state_update' | 'companion_state' | 'event';
   [key: string]: unknown;
 }
 

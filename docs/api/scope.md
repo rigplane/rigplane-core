@@ -6,6 +6,100 @@ robots: noindex, follow
 
 Spectrum and waterfall data from the radio's scope display.
 
+## WebSocket subscriptions
+
+`/api/v1/scope` multiplexes radio, audio FFT and IQ FFT subscriptions on one
+physical WebSocket. Each subscription is keyed by `sourceId` and `receiver`;
+a subscribe with the same key replaces only that subscription, while distinct
+keys coexist. The former `/api/v1/audio-scope` endpoint is removed. Opening a socket does not
+start a source: send a subscription first. Source IDs are `radio`, `audio_fft`
+and `iq_fft` when the corresponding producer is available.
+
+Audio FFT requires observed frequency, filter width and mode. The web adapter
+maps `USB`, `LSB`, `AM`, `FM`, `WFM` and the data/narrow aliases declared in
+`src/rigplane/web/scope_sources.py: _AUDIO_MODE_ALIASES`. Explicit `CW-U` and
+`CW-L` additionally require observed CW pitch. The ambiguous `CW`, `CW-R`,
+`RTTY`, `RTTY-R` and `DV` modes keep main's symmetric VFO-centered placement:
+the mode filter rule bandwidth, or the full spectrum when the profile declares
+no rule. See
+`src/rigplane/web/scope_sources.py: WebScopePcmTap.facts`.
+
+```json
+{"type":"subscribe","sourceId":"radio","receiver":0,"view":{"follow":"vfo","spanHz":100000},"width":1024,"maxFps":10}
+```
+
+An absolute view uses `{"startHz":14100000,"endHz":14200000}` instead of
+`follow` and `spanHz`. Audio and IQ sources use `receiver: null`. The reply is
+`type: "granted"` with `sourceId`, `receiver`, `view`, `coverage`, `width` and
+`fps`. `coverage` can be null. Widths above the source's native bin count are
+granted at native resolution instead of being upsampled; the granted message
+reports the actual width. For radio sources, `RadioScopeSource.feed_frame` in
+`src/rigplane/runtime/radio_scope_source.py` observes native width from the
+assembled pixel payload separately for each receiver; null and out-of-range
+frames retain that receiver's prior width. Audio FFT native width is the emitted
+passband crop's bin count, not the full FFT size; see
+`src/rigplane/audio/scope_source.py: AudioFftSource._emit`.
+If native width is unknown for the requested receiver, the initial grant
+provisionally echoes the requested width.
+When the observed width changes, the server sends an updated `granted` before
+the corresponding binary frame; existing subscriptions need no new request.
+Send another subscription with the same key to change its view, width or rate;
+`maxFps: 0` pauses that subscription. To release one stream, send
+`{"type":"unsubscribe","sourceId":"radio","receiver":0}`. Bare
+`{"type":"unsubscribe"}` and socket close release all subscriptions. A rejected
+update preserves the previous subscriptions; errors include `sourceId` and
+`receiver` when a valid target can be parsed. The hub starts the producer when
+the first positive-rate subscription arrives and stops it when none remain,
+including when all retained subscriptions have `maxFps: 0`. An initially paused
+subscription does not start the producer. See
+`src/rigplane/scope/hub.py: ScopeHub.subscribe` and `ScopeHub._unsubscribe`.
+
+Frames use the typed v2 schema in
+`src/rigplane/scope/models.py: ScopeWireFrame`, encoded by
+`src/rigplane/web/protocol.py: encode_scope_frame_v2`. Pixels span the granted
+view; coverage describes the supplied subrange. Consumers must mark uncovered
+columns rather than stretch the covered data. Null pixels and `outOfRange`
+are valid frame states. The hub uses max-hold resampling and latest-wins rate
+limiting, so sequence gaps can be intentional.
+
+### Binary wire v2
+
+All multibyte fields are little-endian. The fixed header is 56 bytes, followed
+by the source ID and optional pixels. The encoder and decoder are
+`src/rigplane/web/protocol.py: encode_scope_frame_v2` and
+`src/rigplane/web/protocol.py: decode_scope_frame_v2`; portable examples and
+the standalone decoder are in `tests/fixtures/scope-wire/`.
+
+| Offset | Bytes | Field |
+| --- | --- | --- |
+| 0 | 1 | Message type `0x02` |
+| 1 | 1 | Source: radio `0`, audio FFT `1`, IQ FFT `2` |
+| 2 | 1 | Flags: bit 0 out of range, bit 1 pixels present |
+| 3 | 1 | Source ID length `L`, 1–255 |
+| 4 | 2 | Receiver uint16; `65535` means null |
+| 6 | 2 | Width uint16, 1–65535 |
+| 8 | 4 | Epoch uint32 |
+| 12 | 4 | Sequence uint32, wrapping modulo 2³² |
+| 16 | 8 | Sent time int64 milliseconds; `-1` means null |
+| 24 | 8 | View start float64 Hz |
+| 32 | 8 | View end float64 Hz |
+| 40 | 8 | Coverage start float64 Hz |
+| 48 | 8 | Coverage end float64 Hz |
+| 56 | `L` | Printable ASCII source ID without spaces |
+| `56+L` | width or 0 | Pixel bytes when flag bit 1 is set |
+
+Equal coverage edges represent no covered range. The total length is
+`56 + L + (width if pixels are present else 0)`.
+
+The headless simulator benchmark is
+`uv run python qa/bench/dogfood/scope_fps.py --radio simulator --transport sim --both`.
+It requests concurrent 1024-pixel/10-fps and 2800-pixel/20-fps streams; each
+grant is capped at the source native width. A normal
+in-range run passes only when usable pixel delivery reaches at least 80% of
+each granted frame rate; native sequence gaps caused by rate limiting are
+allowed. Null and out-of-range states are counted separately and do not count
+towards usable pixel delivery. See `qa/bench/dogfood/scope_fps.py: collect`.
+
 ## Overview
 
 Icom radios with spectrum scope (IC-7610, IC-7300, IC-705, etc.) stream real-time spectrum data over the CI-V protocol as unsolicited `0x27 0x00` packets. The `rigplane` library reassembles these multi-sequence bursts and delivers complete frames via callback.
@@ -86,8 +180,6 @@ Low-level CI-V command builders for scope control. All take a required `to_addr`
 | `scope_on()` | `0x27 0x10 0x01` | Enable scope display |
 | `scope_off()` | `0x27 0x10 0x00` | Disable scope display |
 | `scope_data_output(on)` | `0x27 0x11` | Enable/disable wave data output |
-| `scope_data_output_on()` | `0x27 0x11 0x01` | Shortcut: enable data output |
-| `scope_data_output_off()` | `0x27 0x11 0x00` | Shortcut: disable data output |
 | `scope_main_sub(receiver)` | `0x27 0x12` | Select scope receiver (0=MAIN, 1=SUB) |
 | `scope_single_dual(dual)` | `0x27 0x13` | Single/dual scope mode |
 | `scope_set_mode(mode)` | `0x27 0x14` | Set scope mode (0–3) |
