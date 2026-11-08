@@ -1,11 +1,14 @@
 import { loadScopeWireGolden, scopeWireGoldenNames as names } from './scope-wire-fixture';
 import { describe, expect, it } from 'vitest';
-import { ingressScopeFrame, parseCurrentScopeFrame } from '../adapters/scope-adapter';
+import { ingressScopeFrame, parseCurrentScopeFrame, parseScopeGranted } from '../adapters/scope-adapter';
 
 const load = (name: string) => loadScopeWireGolden(name).buffer;
 const context = { source: 'radio' as const, sourceId: 'ignored-control-hint', epoch: 900, mode: 3 };
 
 describe('shared Python v2 scope wire fixtures', () => {
+  it('exposes the wire decoders from the pure frame contract', async () => {
+    expect(await import('../scope-frame')).toMatchObject({ parseCurrentScopeFrame, parseScopeGranted });
+  });
   it('discovers every binary fixture with its sidecar', () => {
     expect(names).toHaveLength(8);
     for (const name of names) expect(() => loadScopeWireGolden(name)).not.toThrow();
