@@ -1182,8 +1182,7 @@ def test_fit_to_budget_reproduces_the_design_ic7610_lan_receive_figure() -> None
     assert fit.effective_cadence_seconds[AcquisitionClass.SETTING] == (
         pytest.approx(10.0)
     )
-    # MOR-3630: +2 CONTROL dcd polls (main+sub 0x15 0x01 at 2.0 s) = +1.0 q/s.
-    assert fit.demand_hz == pytest.approx(24.7)
+    assert fit.demand_hz == pytest.approx(23.7)
 
 
 # --- MOR-2574 step 2: the loader-era class fallback --------------------------
@@ -1470,8 +1469,6 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.receiver("main", "operator_toggles", "nb"),
         FieldPath.receiver("main", "operator_toggles", "nr"),
         FieldPath.receiver("main", "operator_toggles", "ipplus"),
-        # MOR-3630: squelch-open (RX-busy) for the BUSY lamp.
-        FieldPath.receiver("main", "operator_toggles", "dcd"),
         FieldPath.global_("operator_controls", "power_level"),
         FieldPath.global_("tx_state", "compressor_on"),
         FieldPath.global_("operator_controls", "compressor_level"),
@@ -1542,9 +1539,6 @@ def test_ic7300_profile_enrolls_exact_supported_observation_rows() -> None:
         FieldPath.receiver("main", "operator_controls", "att"),
         FieldPath.receiver("main", "operator_controls", "preamp"),
         FieldPath.receiver("main", "operator_toggles", "ipplus"),
-        # MOR-3630: dcd carries no field_policies entry of its own, so it
-        # takes the CONTROL class policy (2.0 s / 5.0 s) like tuner_status.
-        FieldPath.receiver("main", "operator_toggles", "dcd"),
         FieldPath.global_("meters", "vd"),
     ):
         assert path not in acquisition.field_policies, path
@@ -1807,8 +1801,10 @@ def test_ic7300_activation_does_not_change_ftx1_acquisition_contract() -> None:
     # MOR-2111 tone half: +4 SUB tone fields (repeater_tone/tsql toggles,
     # tone_freq/tsql_freq controls) on top of the previous 69/64.
     # MOR-2969: +2 tone_squelch_type (MAIN, SUB), each with a field policy.
-    assert len(acquisition.capabilities) == 75
-    assert len(acquisition.field_policies) == 70
+    # MOR-3677: +2 filter_width_radio_default (MAIN, SUB), each with a field
+    # policy that mirrors the filter_width one.
+    assert len(acquisition.capabilities) == 77
+    assert len(acquisition.field_policies) == 72
     assert acquisition.default_policy.cadence_seconds == 2.0
     assert acquisition.default_policy.freshness_ttl_seconds == 8.0
 
@@ -2148,9 +2144,16 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "global.meters.power"),
         ("FTX-1", "global.meters.swr"),
         ("FTX-1", "receiver.main.active.freq_mode.filter_width"),
+        # MOR-3677: a probe reading, not a guess: the radio-default flag is
+        # published by the very SH read the width above comes from, so it
+        # carries the width's own narrow clause. Bench frames: `MD0C; SH0000;
+        # NA00;` in DATA-U and `MD03; SH0000;` in CW-U (SH answers code 000
+        # with narrow off). A stale true must not outlive a discarded width.
+        ("FTX-1", "receiver.main.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.main.operator_controls.att"),
         ("FTX-1", "receiver.main.operator_controls.manual_notch_freq"),
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width"),
+        ("FTX-1", "receiver.sub.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
         ("IC-705", "global.meters.alc"),
         ("IC-705", "global.meters.comp"),

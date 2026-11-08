@@ -648,7 +648,7 @@ async def test_soft_reconnect_re_arms_before_it_calls_any_consumer(monkeypatch) 
     rig with no ``_on_reconnect`` at all. The real ``soft_reconnect`` runs here
     because the ordering claim is about that method's body and nothing else.
     """
-    monkeypatch.setattr(transport_module, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(transport_module, "IcomCivTransport", _FakeCivTransport)
     order: list[str] = []
     host = _SoftReconnectHost()
     host._on_reconnect = lambda: order.append("on_reconnect")
@@ -667,7 +667,7 @@ async def test_a_re_arm_that_raises_does_not_fail_the_reconnect(
     monkeypatch, caplog
 ) -> None:
     """Fail-soft: arming already fails closed, so nothing here may fail hard."""
-    monkeypatch.setattr(transport_module, "IcomTransport", _FakeCivTransport)
+    monkeypatch.setattr(transport_module, "IcomCivTransport", _FakeCivTransport)
     order: list[str] = []
     host = _SoftReconnectHost()
     host._on_reconnect = lambda: order.append("on_reconnect")

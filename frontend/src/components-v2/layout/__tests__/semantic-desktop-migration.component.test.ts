@@ -482,7 +482,8 @@ describe('desktop-v2 resolves through the v3 path (MOR-1313)', () => {
     expect(t.querySelector('.content-right .right-sidebar')).not.toBeNull();
     expect(t.querySelector('.center-column .spectrum-slot')).not.toBeNull();
     expect(t.querySelector('[data-panel-id="memory"]')).toBeNull();
-    expect(t.querySelectorAll('[data-testid="memory-surface"]')).toHaveLength(1);
+    // MOR-4220: the zone holds the Memory button; the list opens in a dialog.
+    expect(t.querySelectorAll('[data-testid="memory-open"]')).toHaveLength(1);
   });
 
   // The manifest declares all four canonical classes (MOR-1266) — desktop-v2

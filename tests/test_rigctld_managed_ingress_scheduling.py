@@ -455,8 +455,17 @@ async def test_disconnect_revokes_pending_on(managed, ending):
     await asyncio.wait_for(managed.radio.entered.wait(), _WAIT)
     connections = tuple(managed.server._client_tasks)
     if ending == "eof":
+        unregister, closed = managed.queue.unregister_session, asyncio.Event()
+        def observed_unregister(session_id):
+            unregister(session_id)
+            closed.set()
+        managed.queue.unregister_session = observed_unregister
         managed.writer.close()
         await managed.writer.wait_closed()
+        # The case is a disconnect the server has seen: the FIN reaches its
+        # reader only once delivered (later on WSL2 mirrored loopback), so
+        # release the radio only after the server retired the connection.
+        await asyncio.wait_for(closed.wait(), _WAIT)
     else:
         await managed.server.stop()
     managed.radio.release.set()

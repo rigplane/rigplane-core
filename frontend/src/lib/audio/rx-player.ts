@@ -1,16 +1,17 @@
 /**
  * RX Audio Player — decodes Opus/PCM16 frames and plays via AudioContext.
  *
- * Graph (per #753):
- *   source → preGain(volume) → ChannelSplitter(2)
- *                                 ├─ [0] → mainGain → mainPanner → destination
- *                                 └─ [1] → subGain  → subPanner  → destination
+ * Graph (per #753, output stage MOR-4210):
+ *   source → preGain(afLevelToRxGain(volume)) → ChannelSplitter(2)
+ *                                 ├─ [0] → mainGain → mainPanner ─┐
+ *                                 └─ [1] → subGain  → subPanner  ─┴→ limiterIn → limiter → destination
  *
  * - MAIN/SUB focus and stereo split are controlled via setFocus /
  *   setSplitStereo / setChannelGainDb (wired from AudioManager.setAudioConfig).
  * - For mono input (no dual-watch) the splitter's channel [1] is silent per
  *   the WebAudio spec — SUB audio simply doesn't contribute, which is correct.
- * - ``volume`` preserves its old semantics as the pre-routing level.
+ * - ``volume`` is the AF level 0..RX_AF_LEVEL_MAX; 0..1 is the old linear
+ *   pre-routing level, above 1 it is makeup gain up to +20 dB (MOR-4210).
  */
 
 import {
@@ -47,6 +48,41 @@ function emptyPlayback(): RxPlaybackDiagnostics {
 const MAX_COUNTER = 0xffffffff;
 const MAX_DIAGNOSTIC_FRAMES = 5760;
 const DIAGNOSTIC_MAX_AGE_MS = 2000;
+
+// Wider jitter bounds while the page is hidden (MOR-3965). Mobile browsers
+// throttle a background tab's WS delivery into bursts; with the foreground
+// ceiling most of each burst would start beyond now+ceiling and be dropped
+// (heard as heavy stutter). Background latency does not matter, so absorb
+// bursts up to BACKGROUND_CEILING_SEC instead. The setJitterBounds values
+// stay authoritative whenever they are already wider than these constants.
+const BACKGROUND_FLOOR_SEC = 0.4;
+const BACKGROUND_CEILING_SEC = 4.0;
+
+// Delivery stalls (MOR-4221). Playback is scheduled on the audio clock, so it
+// keeps running while the page's main thread is starved (macOS App Nap, an
+// unfocused WKWebView, a throttled background tab); what breaks is the frames
+// arriving late and then all at once. A burst longer than the ceiling used to
+// be dropped down to the ceiling, and a stall longer than the buffered lead
+// ran the buffer dry, so every stall was heard as a gap. A gap between two
+// scheduled frames of at least STALL_MIN_SEC (measured on the audio clock,
+// which does not stall) is a delivery stall; the player then keeps the late
+// burst: the ceiling widens to floor + the longest stall seen + margin, and
+// the kept burst deepens the buffer by the stall, so the next stall of that
+// size no longer runs it dry. Without a stall the configured bounds apply as
+// before; the stall resets on flush(), stop() and when the page is back in
+// the foreground (the existing trim).
+const STALL_MIN_SEC = 0.25;
+const STALL_MAX_SEC = 2.0;
+const STALL_CEILING_MARGIN_SEC = 0.25;
+
+// A scheduled buffer source and its slot on the context clock — the pending
+// backlog _trimToForegroundBounds() walks on the hidden→visible transition.
+type ScheduledSource = {
+  src: AudioBufferSourceNode;
+  start: number;
+  duration: number;
+};
+
 type DecodedObservation = {
   channelCount: number;
   frameCount: number;
@@ -65,6 +101,65 @@ function dbToLinear(db: number): number {
   return Math.pow(10, db / 20);
 }
 
+/** Top of the browser RX AF level (LIVE monitor): 1 is unity gain, the range
+ *  above it is makeup gain up to `RX_MAKEUP_GAIN_MAX` (MOR-4210). */
+export const RX_AF_LEVEL_MAX = 2;
+
+/** Makeup gain at AF level RX_AF_LEVEL_MAX: +20 dB (MOR-4210). */
+const RX_MAKEUP_GAIN_MAX_DB = 20;
+export const RX_MAKEUP_GAIN_MAX = dbToLinear(RX_MAKEUP_GAIN_MAX_DB);
+
+/** AF level → preGain. 0..1 stays linear (the pre-MOR-4210 mapping, so 1 is
+ *  exact unity); 1..RX_AF_LEVEL_MAX rises evenly in dB up to
+ *  RX_MAKEUP_GAIN_MAX. */
+export function afLevelToRxGain(level: number): number {
+  if (!Number.isFinite(level) || level <= 0) return 0;
+  if (level <= 1) return level;
+  const above = Math.min(level, RX_AF_LEVEL_MAX) - 1;
+  return dbToLinear((above / (RX_AF_LEVEL_MAX - 1)) * RX_MAKEUP_GAIN_MAX_DB);
+}
+
+/** A StereoPannerNode at pan 0 sends mono input to each ear at cos(pi/4)
+ *  (Web Audio equal-power law, about -3 dB); the channel gain multiplies by
+ *  this to play the centred channel at its own level (MOR-4210). */
+const CENTRE_PAN_COMPENSATION = Math.SQRT2;
+
+// Output soft limiter (MOR-4210). A WaveShaperNode reads its curve over
+// input [-1, 1] and holds the end values beyond it, so limiterIn scales the
+// mix by 1/LIMITER_HEADROOM and the curve maps u to softLimit(u * headroom).
+// softLimit is the identity up to LIMITER_KNEE and then bends smoothly
+// (matching slope at the knee) towards LIMITER_CEILING, which it never
+// reaches: no output sample exceeds 0 dBFS at any gain.
+const LIMITER_KNEE = 0.5;      // -6 dBFS
+const LIMITER_CEILING = 0.99;  // -0.09 dBFS
+const LIMITER_HEADROOM = 4;
+const LIMITER_CURVE_POINTS = 4097;
+
+function softLimit(x: number): number {
+  const magnitude = Math.abs(x);
+  if (magnitude <= LIMITER_KNEE) return x;
+  const span = LIMITER_CEILING - LIMITER_KNEE;
+  return Math.sign(x) * (LIMITER_KNEE + span * Math.tanh((magnitude - LIMITER_KNEE) / span));
+}
+
+export function softLimitCurve(): Float32Array<ArrayBuffer> {
+  const curve = new Float32Array(LIMITER_CURVE_POINTS);
+  const mid = (LIMITER_CURVE_POINTS - 1) / 2;
+  for (let k = 0; k < LIMITER_CURVE_POINTS; k++) {
+    curve[k] = softLimit(((k - mid) / mid) * LIMITER_HEADROOM);
+  }
+  return curve;
+}
+
+// Quiet-source detection (MOR-4210). The source counts as low once decoded
+// frames carrying sound (a frame peak above LOW_SOURCE_SILENCE) add up to
+// LOW_SOURCE_WINDOW_MS of audio with no frame peak at or above
+// LOW_SOURCE_PEAK; silent frames add nothing, and the first louder frame
+// clears it. Peaks are the decoded source, before gain.
+const LOW_SOURCE_PEAK = dbToLinear(-12);
+const LOW_SOURCE_SILENCE = dbToLinear(-60);
+const LOW_SOURCE_WINDOW_MS = 20_000;
+
 export class RxPlayer {
   private ctx: AudioContext | null = null;
   private preGain: GainNode | null = null;
@@ -73,6 +168,8 @@ export class RxPlayer {
   private mainPanner: StereoPannerNode | null = null;
   private subPanner: StereoPannerNode | null = null;
   private splitter: ChannelSplitterNode | null = null;
+  private limiterIn: GainNode | null = null;
+  private limiter: WaveShaperNode | null = null;
   private decoder: AudioDecoder | null = null;
   private nextPlayTime = 0;
   private opusTs = 0;
@@ -105,10 +202,19 @@ export class RxPlayer {
   // Cumulative since start(); reset on stop().
   private _underruns = 0;
   private _droppedFrames = 0;
+  // Delivery-stall tracking (see STALL_MIN_SEC): the audio-clock time of the
+  // previous schedule() call and the longest stall since it was last reset.
+  private _lastScheduleAt: number | null = null;
+  private _stallSec = 0;
+  // Scheduled-but-not-yet-ended buffer sources (MOR-3965). Entries remove
+  // themselves on 'ended'; stop() clears the list with the context.
+  private _scheduledSrcs: ScheduledSource[] = [];
   private _playback = emptyPlayback();
   private _resumeAttempt = 0;
   private _decodedObservation: DecodedObservation | null = null;
   private _decodedObservedAt: number | null = null;
+  private _lowAudibleMs = 0;
+  private _sourceLevelLow = false;
 
   constructor(private readonly diagnosticEnabled = false) {}
 
@@ -141,8 +247,13 @@ export class RxPlayer {
   }
 
   set volume(v: number) {
-    this._volume = Math.max(0, Math.min(1, v));
-    if (this.preGain) this.preGain.gain.value = this._volume;
+    this._volume = Math.max(0, Math.min(RX_AF_LEVEL_MAX, v));
+    if (this.preGain) this.preGain.gain.value = afLevelToRxGain(this._volume);
+  }
+
+  /** True while the decoded source has stayed quiet (see LOW_SOURCE_*). */
+  get sourceLevelLow(): boolean {
+    return this._sourceLevelLow;
   }
 
   get focus(): RxAudioFocus {
@@ -200,6 +311,8 @@ export class RxPlayer {
    */
   start(): void {
     if (this.ctx) {
+      // A restart (audio_start, reconnect) is not a stall: the stream paused.
+      this._lastScheduleAt = null;
       this._resume();
       return;
     }
@@ -207,20 +320,26 @@ export class RxPlayer {
     if (!Ctx) return;
     this.ctx = new Ctx({ sampleRate: SAMPLE_RATE });
     this.preGain = this.ctx.createGain();
-    this.preGain.gain.value = this._volume;
+    this.preGain.gain.value = afLevelToRxGain(this._volume);
     this.mainGain = this.ctx.createGain();
     this.subGain = this.ctx.createGain();
     this.mainPanner = this.ctx.createStereoPanner();
     this.subPanner = this.ctx.createStereoPanner();
     this.splitter = this.ctx.createChannelSplitter(2);
+    this.limiterIn = this.ctx.createGain();
+    this.limiterIn.gain.value = 1 / LIMITER_HEADROOM;
+    this.limiter = this.ctx.createWaveShaper();
+    this.limiter.curve = softLimitCurve();
     // Wire up the graph.
     this.preGain.connect(this.splitter);
     this.splitter.connect(this.mainGain, 0);
     this.splitter.connect(this.subGain, 1);
     this.mainGain.connect(this.mainPanner);
     this.subGain.connect(this.subPanner);
-    this.mainPanner.connect(this.ctx.destination);
-    this.subPanner.connect(this.ctx.destination);
+    this.mainPanner.connect(this.limiterIn);
+    this.subPanner.connect(this.limiterIn);
+    this.limiterIn.connect(this.limiter);
+    this.limiter.connect(this.ctx.destination);
     this._applyGraphState();
     this.nextPlayTime = 0;
     this._attachResumeListeners();
@@ -232,6 +351,7 @@ export class RxPlayer {
     this._playback = emptyPlayback();
     this._decodedObservation = null;
     this._decodedObservedAt = null;
+    this._resetSourceLevel();
     this.resetDecoder();
     this.lastCodec = null;
     this._detachResumeListeners();
@@ -244,12 +364,16 @@ export class RxPlayer {
       this.mainPanner = null;
       this.subPanner = null;
       this.splitter = null;
+      this.limiterIn = null;
+      this.limiter = null;
     }
     this.nextPlayTime = 0;
     this.opusTs = 0;
     this._droppedSuspendedFrames = 0;
     this._underruns = 0;
     this._droppedFrames = 0;
+    this._scheduledSrcs = [];
+    this._resetStall();
   }
 
   /** Link-quality snapshot for the periodic audio_stats uplink (MOR-585).
@@ -299,9 +423,20 @@ export class RxPlayer {
   }
 
   /** Resume-on-regain-focus handler: WKWebView re-suspends an AudioContext
-   *  when the webview is backgrounded; resume it when we come back. Bound as
-   *  an arrow property so add/removeEventListener see a stable reference. */
+   *  when the webview is backgrounded; resume it when we come back. On the
+   *  hidden→visible transition also trim a background-built backlog back to
+   *  the foreground bounds so the operator does not listen seconds behind
+   *  (MOR-3965). Bound as an arrow property so add/removeEventListener see
+   *  a stable reference. */
   private _onResumeEvent = (): void => {
+    if (typeof document !== 'undefined' && !document.hidden) {
+      // Back in the foreground the delivery stalls are over: forget them and
+      // return to the configured latency.
+      // The previous frame's time goes too: a burst that arrives after this
+      // point must not re-record the stall that just ended.
+      this._resetStall();
+      this._trimToForegroundBounds();
+    }
     this._resume();
   };
 
@@ -392,9 +527,42 @@ export class RxPlayer {
     this.opusTs = 0;
   }
 
-  /** Flush pipeline (e.g. on reconnect) */
+  /** Flush pipeline (e.g. on reconnect): stop every still-tracked pending
+   *  source so the previous session cannot keep playing under the fresh
+   *  schedule, drop the backlog WITHOUT counting it as dropped frames (the
+   *  session is gone — nothing audible was skipped), then re-prime. */
   flush(): void {
+    for (const entry of this._scheduledSrcs) {
+      try { entry.src.stop(); } catch { /* already ended */ }
+    }
+    this._scheduledSrcs = [];
+    this._resetStall();
+    // A decoder that still holds pending background work would otherwise
+    // deliver old audio into the freshly flushed timeline; the next Opus
+    // frame lazily configures a fresh one.
+    this.resetDecoder();
+    this._resetSourceLevel();
     this.nextPlayTime = 0;
+  }
+
+  private _resetStall(): void {
+    this._lastScheduleAt = null;
+    this._stallSec = 0;
+  }
+
+  private _resetSourceLevel(): void {
+    this._lowAudibleMs = 0;
+    this._sourceLevelLow = false;
+  }
+
+  private _observeSourcePeak(peak: number, durationMs: number): void {
+    if (peak >= LOW_SOURCE_PEAK) {
+      this._resetSourceLevel();
+      return;
+    }
+    if (peak <= LOW_SOURCE_SILENCE) return;
+    this._lowAudibleMs += durationMs;
+    if (this._lowAudibleMs >= LOW_SOURCE_WINDOW_MS) this._sourceLevelLow = true;
   }
 
   // ── PCM16 playback ──
@@ -430,8 +598,11 @@ export class RxPlayer {
     if (!this.decoder) {
       const ctx = this.ctx;
       this.opusTs = 0;
-      this.decoder = new AudioDecoder({
+      const decoder: AudioDecoder = new AudioDecoder({
         output: (audioData: AudioData) => {
+          // Output of a decoder that was reset or replaced (flush, codec
+          // switch) must not reach the playback timeline.
+          if (this.decoder !== decoder) { audioData.close(); return; }
           const frames = audioData.numberOfFrames;
           const numCh = audioData.numberOfChannels;
           const buf = ctx.createBuffer(numCh, frames, audioData.sampleRate);
@@ -445,9 +616,10 @@ export class RxPlayer {
         },
         error: (err: DOMException) => {
           console.warn('RxPlayer: AudioDecoder error', err);
-          this.decoder = null;
+          if (this.decoder === decoder) this.decoder = null;
         },
       });
+      this.decoder = decoder;
       this.decoder.configure({
         codec: 'opus',
         sampleRate: sr > 0 ? sr : SAMPLE_RATE,
@@ -491,6 +663,7 @@ export class RxPlayer {
     }
     this._playback.decodedFrames = Math.min(MAX_COUNTER, this._playback.decodedFrames + 1);
     this._playback.pcmPeak = Math.round(Math.min(1, peak) * 100);
+    this._observeSourcePeak(peak, buffer.duration * 1000);
   }
 
   private _recordDecodedObservation(buffer: AudioBuffer): void {
@@ -517,6 +690,33 @@ export class RxPlayer {
     this._decodedObservedAt = performance.now();
   }
 
+  /** Effective jitter bounds for the current schedule() call: the configured
+   *  pair while visible, widened to the background constants while the page
+   *  is hidden (MOR-3965). Read at schedule time — no cached visibility
+   *  state — so a player created while already hidden behaves identically. */
+  private _jitterBounds(): { floorSec: number; ceilingSec: number } {
+    let floorSec = this._floorSec;
+    let ceilingSec = this._ceilingSec;
+    if (typeof document !== 'undefined' && document.hidden) {
+      floorSec = Math.max(floorSec, BACKGROUND_FLOOR_SEC);
+      ceilingSec = Math.max(ceilingSec, BACKGROUND_CEILING_SEC);
+    }
+    if (this._stallSec > 0) {
+      ceilingSec = Math.max(ceilingSec, floorSec + this._stallSec + STALL_CEILING_MARGIN_SEC);
+    }
+    return { floorSec, ceilingSec };
+  }
+
+  /** Record a delivery stall: a gap on the audio clock since the previous
+   *  frame of at least STALL_MIN_SEC (see the constant's comment). */
+  private _observeDeliveryGap(now: number): void {
+    const previous = this._lastScheduleAt;
+    this._lastScheduleAt = now;
+    if (previous === null) return;
+    const gap = now - previous;
+    if (gap >= STALL_MIN_SEC) this._stallSec = Math.max(this._stallSec, Math.min(gap, STALL_MAX_SEC));
+  }
+
   private schedule(buf: AudioBuffer): void {
     if (!this.ctx || !this.preGain) return;
     const src = this.ctx.createBufferSource();
@@ -524,22 +724,61 @@ export class RxPlayer {
     src.connect(this.preGain);
 
     const now = this.ctx.currentTime;
+    this._observeDeliveryGap(now);
+    const { floorSec, ceilingSec } = this._jitterBounds();
     if (this.nextPlayTime === 0 || this.nextPlayTime < now) {
       // Preserve a still-future schedule even when its remaining lead is
       // below the jitter floor: rebasing it would insert a silent gap.
       // Only an exhausted schedule is an underrun; start()/flush() prime
       // a new schedule with the configured floor.
       if (this.nextPlayTime > 0) this._underruns++;
-      this.nextPlayTime = now + this._floorSec;
+      this.nextPlayTime = now + floorSec;
     }
-    if (this.nextPlayTime > now + this._ceilingSec) {
+    if (this.nextPlayTime > now + ceilingSec) {
       this._droppedFrames++;
       return;
     }
 
     src.start(this.nextPlayTime);
+    const entry: ScheduledSource = { src, start: this.nextPlayTime, duration: buf.duration };
+    src.addEventListener('ended', () => {
+      const idx = this._scheduledSrcs.indexOf(entry);
+      if (idx >= 0) this._scheduledSrcs.splice(idx, 1);
+    });
+    this._scheduledSrcs.push(entry);
     this._playback.scheduledFrames = Math.min(MAX_COUNTER, this._playback.scheduledFrames + 1);
     this.nextPlayTime += buf.duration;
+  }
+
+  /** Stop not-yet-started sources beyond the foreground jitter ceiling and
+   *  pull nextPlayTime back to the kept tail (MOR-3965): returning to the
+   *  foreground must not leave seconds of delayed audio queued. Whole
+   *  buffers only — a source that already started keeps playing, so there
+   *  is no click. Trimmed frames count as dropped: they were scheduled and
+   *  are audibly skipped, so the audio_stats uplink must see them. */
+  private _trimToForegroundBounds(): void {
+    if (!this.ctx || this._scheduledSrcs.length === 0) return;
+    const now = this.ctx.currentTime;
+    const limit = now + this._ceilingSec;
+    let stopped = 0;
+    let tailEnd = 0;
+    const kept: ScheduledSource[] = [];
+    for (const entry of this._scheduledSrcs) {
+      if (entry.start <= now || entry.start + entry.duration <= limit) {
+        kept.push(entry);
+        tailEnd = entry.start + entry.duration;
+      } else {
+        try { entry.src.stop(); } catch { /* already ended */ }
+        stopped++;
+      }
+    }
+    this._scheduledSrcs = kept;
+    if (stopped === 0) return;
+    this._droppedFrames += stopped;
+    // Re-anchor at the kept tail (or the floor when nothing playable
+    // remains) so the next frame continues the timeline without a
+    // spurious underrun and within the foreground ceiling.
+    this.nextPlayTime = Math.max(tailEnd, now + this._floorSec);
   }
 
   private _applyGraphState(): void {
@@ -548,8 +787,9 @@ export class RxPlayer {
     }
     const mainOn = this._focus === 'main' || this._focus === 'both';
     const subOn = this._focus === 'sub' || this._focus === 'both';
-    this.mainGain.gain.value = mainOn ? dbToLinear(this._mainGainDb) : 0;
-    this.subGain.gain.value = subOn ? dbToLinear(this._subGainDb) : 0;
+    const centre = this._splitStereo ? 1 : CENTRE_PAN_COMPENSATION;
+    this.mainGain.gain.value = mainOn ? dbToLinear(this._mainGainDb) * centre : 0;
+    this.subGain.gain.value = subOn ? dbToLinear(this._subGainDb) * centre : 0;
     this.mainPanner.pan.value = this._splitStereo ? -1 : 0;
     this.subPanner.pan.value = this._splitStereo ? +1 : 0;
   }

@@ -34,7 +34,11 @@ _IC705_GOLDEN = bytes.fromhex(
 )
 # fmt: on
 
-_IC705 = MemoryProfile("group_channel", 0, 99, 0, 99)
+# The read-side GHz ceiling comes from profile data (MOR-3983): the shipped
+# IC-705 rig file declares no frequency_ranges and a write-layout frequency
+# max_hz of 999_999_999, so the ceiling resolves to 0. Load the real profile
+# so this synthetic address matches the real radio exactly.
+_IC705 = get_radio_profile("IC-705").memory
 _IC9700 = MemoryProfile(
     "band_channel", 1, 3, 1, 99, dd_groups=(3,), offset_10mhz_groups=(3,)
 )

@@ -24,10 +24,34 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_WINDOWS_OPEN_CODES = {
+    5: "serial_busy",
+    32: "serial_busy",
+    2: "serial_not_found",
+    3: "serial_not_found",
+}
+_WINDOWS_OPEN_REPR = re.compile(
+    r".*: [A-Za-z_]\w*\(-?\d+, (?:'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"), None, (\d+)\)\Z",
+    re.DOTALL,
+)
+
+
+def _windows_open_code(error: BaseException) -> str | None:
+    if not isinstance(error, OSError):
+        return None
+    number = getattr(error, "winerror", None)
+    # pyserial serialwin32.open embeds the OS error repr without chaining it.
+    if number is None and error.errno is None:
+        match = _WINDOWS_OPEN_REPR.fullmatch(str(error))
+        if match is not None:
+            number = int(match[1])
+    return _WINDOWS_OPEN_CODES.get(number)
 
 
 def serial_open_diagnostic(error: BaseException) -> str:
@@ -39,6 +63,9 @@ def serial_open_diagnostic(error: BaseException) -> str:
         if id(current) in seen:
             continue
         seen.add(id(current))
+        windows_code = _windows_open_code(current)
+        if windows_code is not None:
+            return windows_code
         number = current.errno if isinstance(current, OSError) else None
         if isinstance(current, PermissionError) or number in {
             errno.EACCES,

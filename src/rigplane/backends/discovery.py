@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
+import struct
+import threading
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any, Literal, cast
+from dataclasses import asdict, dataclass, field
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from rigplane.core.serial_open import open_serial_port, serial_open_diagnostic
 from rigplane.core.usb_identity import UsbAudioIdentity
-from rigplane.profiles import get_radio_profile
+from rigplane.profiles import get_radio_profile, preferred_serial_bauds
 from rigplane.usb_audio_resolve import AudioDeviceMapping, resolve_audio_for_serial_port
 
 from .hamlib_probe import (
@@ -37,12 +40,17 @@ __all__ = [
     "ProbeOptions",
     "ProbeResult",
     "RadioDiscoveryResult",
+    "RadioDiscoveryResultDict",
+    "GroupedRadio",
     "SerialPortCandidate",
+    "SetupLanConnection",
+    "SetupSerialConnection",
     "dedupe_radios",
     "discover_lan_radios",
     "discover_serial_radios",
     "enumerate_serial_ports",
     "probe_hamlib_rigctld_targets",
+    "probe_lan_radio",
     "probe_serial_civ",
     "probe_serial_kenwood_cat",
     "probe_serial_yaesu_cat",
@@ -55,6 +63,37 @@ __all__ = [
 #: port. A radio found by :func:`discover_lan_radios` answered on it, so
 #: ``discover`` pins it in the commands it prints (MOR-3859).
 LAN_DISCOVERY_PORT = 50001
+
+#: Re-send the LAN "Are You There" probe periodically across the listen
+#: window so a single dropped UDP packet (or brief control-port contention)
+#: does not hide a radio for the entire window; shared by the broadcast scan
+#: (:func:`discover_lan_radios`) and the unicast probe
+#: (:func:`probe_lan_radio`).
+_LAN_RESEND_INTERVAL = 0.6
+#: Per-socket receive poll. Polling N sockets costs up to N × 50 ms per
+#: loop iteration, so a scan may overshoot its deadline by that much.
+_LAN_RECV_POLL_INTERVAL = 0.05
+
+#: OS errno values that mean "the probed host or network cannot be reached
+#: at all": no route, host/link down, or the ICMP port unreachable. Windows
+#: reports the same situations as WSA* errnos and as
+#: ``ConnectionRefusedError`` / ``ConnectionResetError``, which
+#: ``_is_unreachable_error`` matches by type.
+_PROBE_UNREACHABLE_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in (
+        "EHOSTDOWN",
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "ECONNREFUSED",
+        "WSAEHOSTDOWN",
+        "WSAEHOSTUNREACH",
+        "WSAENETUNREACH",
+        "WSAECONNREFUSED",
+        "WSAECONNRESET",
+    )
+    if hasattr(errno, name)
+)
 
 _CIV_PROBE_CMD = bytes([0xFE, 0xFE, 0x00, 0xE0, 0x19, 0x00, 0xFD])
 # Minimum valid response: FE FE E0 <addr> 19 00 <model_id_byte> FD = 8 bytes
@@ -127,6 +166,13 @@ class RadioDiscoveryResult:
         usb_audio: Optional USB audio resolution metadata. Keys match
             :class:`rigplane.usb_audio_resolve.AudioDeviceMapping` field names
             when topology resolution is available.
+        preferred_baudrate: The identified profile's ``default_baud``
+            (``None`` without a known profile), MOR-4207.
+        low_baud_hint: For a CI-V radio below its profile baud, what to set
+            on the radio — the serial backend's own scope guidance.
+        low_baud: Derived: the radio answered only below
+            ``preferred_baudrate``. For an Icom CI-V radio the scope is then
+            off; setup can show ``low_baud_hint``.
     """
 
     port: str
@@ -143,6 +189,54 @@ class RadioDiscoveryResult:
     manufacturer: str | None = None
     product: str | None = None
     serial_number: str | None = None
+    preferred_baudrate: int | None = None
+    low_baud_hint: str | None = None
+    low_baud: bool = field(init=False, default=False)
+
+    def __post_init__(self) -> None:
+        self.low_baud = (
+            self.preferred_baudrate is not None
+            and self.baudrate < self.preferred_baudrate
+        )
+
+    def to_dict(self) -> RadioDiscoveryResultDict:
+        """The result's fields by name: the form discovery output is grouped in."""
+        return cast(RadioDiscoveryResultDict, asdict(self))
+
+
+class RadioDiscoveryResultDict(TypedDict, total=False):
+    """:meth:`RadioDiscoveryResult.to_dict` — one key per result field (MOR-4207).
+
+    The serialized serial result :func:`dedupe_radios` groups and
+    :func:`build_setup_discovery_payload` reads. Keys never drift from the
+    dataclass (``tests/test_discovery_probe_baud_order.py`` pins them).
+    """
+
+    port: str
+    protocol: str
+    model: str
+    profile_id: str
+    baudrate: int
+    address: int | str
+    description: str | None
+    hwid: str | None
+    usb_audio: dict[str, Any] | None
+    vid: int | None
+    pid: int | None
+    manufacturer: str | None
+    product: str | None
+    serial_number: str | None
+    preferred_baudrate: int | None
+    low_baud_hint: str | None
+    low_baud: bool
+
+
+class GroupedRadio(TypedDict):
+    """One radio of :func:`dedupe_radios`: its LAN and serial results."""
+
+    model: object
+    lan: list[dict[str, Any]]
+    serial: list[RadioDiscoveryResultDict]
 
 
 @dataclass
@@ -192,9 +286,89 @@ class CivProbeDiagnostic:
     open_failure_codes: tuple[_ProbeCode, ...] = ()
 
 
-# Documented CI-V baud rates, in the order a port is swept (MOR-3620: also the
-# retry order of a serial connect that gets silence at the configured baud).
-SERIAL_PROBE_BAUD_RATES: tuple[int, ...] = (19200, 9600, 115200, 4800)
+# Documented serial baud rates per protocol: the fallbacks a port is swept at
+# after the profile bauds, in this order (MOR-4207, see serial_probe_baud_rates).
+_DOCUMENTED_PROBE_BAUDS: dict[str, tuple[int, ...]] = {
+    "civ": (19200, 9600, 115200, 4800),
+    "yaesu_cat": (38400, 9600, 115200),
+}
+
+
+def serial_probe_baud_rates(
+    protocol_type: Literal["civ", "yaesu_cat"],
+) -> tuple[int, ...]:
+    """The order a serial port is probed at for *protocol_type* (MOR-4207).
+
+    An Icom radio on ``CI-V USB Baud Rate = Auto`` keeps the baud of the first
+    access to its port until it is restarted, so the first probe decides the
+    speed the radio then runs at. The loaded profiles' ``default_baud`` values
+    come first, highest first (115200 for the Icom CI-V profiles: the serial
+    scope minimum), then the protocol's other documented rates in their
+    documented order. A serial connect tries its own profile baud and the
+    configured baud ahead of it (:func:`serial_connect_baud_rates`).
+    """
+    preferred = preferred_serial_bauds(protocol_type)
+    return tuple(dict.fromkeys((*preferred, *_DOCUMENTED_PROBE_BAUDS[protocol_type])))
+
+
+def serial_connect_baud_rates(
+    protocol_type: Literal["civ", "yaesu_cat"], profile_baud: int, hint: int
+) -> tuple[int, ...]:
+    """The order a serial connect contacts its radio at (MOR-4207).
+
+    The discovery rule for one known radio: its profile ``default_baud``
+    first, so an Icom on ``CI-V USB Baud Rate = Auto`` locks there; then
+    *hint*, the baud the caller passed (``--serial-baud``, a saved route),
+    so a radio fixed at it answers after one miss; then the rest of
+    :func:`serial_probe_baud_rates`.
+    """
+    return tuple(
+        dict.fromkeys((profile_baud, hint, *serial_probe_baud_rates(protocol_type)))
+    )
+
+
+async def sweep_serial_bauds(
+    bauds: tuple[int, ...],
+    *,
+    start: int,
+    retune: Callable[[int], bool],
+    heard_at: Callable[[int], Awaitable[bool]],
+    usable: Callable[[], bool],
+) -> int | None:
+    """Ask the radio on an open link at each of *bauds* but *start* (MOR-3620).
+
+    The one connect-time baud search of the serial backends (CI-V and Yaesu
+    CAT). The link is retuned in place, never reopened. Stops as soon as
+    *usable* is false (the attempt was retired or the link died); skips a
+    baud the port refuses (*retune* false); returns the first baud
+    *heard_at* reports heard, or ``None``. Putting *start* back after a miss
+    is the caller's: only it knows whether the attempt is still current.
+    """
+    for baud in bauds:
+        if baud == start:
+            continue
+        if not usable():
+            return None
+        if not retune(baud):
+            continue
+        if await heard_at(baud):
+            return baud
+    return None
+
+
+def _profile_baud(profile_id: str) -> int | None:
+    """The ``default_baud`` of *profile_id*, or ``None`` without a usable profile.
+
+    Result metadata, like the USB audio lookup: a profile lookup failure
+    never fails discovery.
+    """
+    if not profile_id:
+        return None
+    try:
+        return get_radio_profile(profile_id).default_baud
+    except Exception as exc:
+        logger.debug("discover_serial_radios: profile baud lookup failed: %s", exc)
+        return None
 
 
 async def probe_serial_civ(
@@ -213,7 +387,7 @@ async def probe_serial_civ(
     Args:
         port: Serial device path (e.g. ``/dev/ttyUSB0``).
         baud_rates: Baud rates to try, in order. Defaults to
-            :data:`SERIAL_PROBE_BAUD_RATES`.
+            :func:`serial_probe_baud_rates` for ``"civ"``.
         timeout: Per-baud timeout in seconds.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
             post-open control-line deassert still applies (used in tests).
@@ -223,7 +397,7 @@ async def probe_serial_civ(
         :class:`CivProbeResult` on success, or ``None`` if no radio responded.
     """
     if baud_rates is None:
-        baud_rates = list(SERIAL_PROBE_BAUD_RATES)
+        baud_rates = list(serial_probe_baud_rates("civ"))
 
     if diagnostics is not None:
         diagnostics.status = "not_attempted"
@@ -578,8 +752,6 @@ _YAESU_CAT_MODEL_MAP: dict[str, tuple[str, str]] = {
     "0840": ("FTX-1", "yaesu_ftx1"),
 }
 
-_YAESU_CAT_PROBE_BAUDS = [38400, 9600, 115200]
-
 _YaesuTransportFactory = Callable[..., Any]
 
 
@@ -604,7 +776,7 @@ async def probe_serial_yaesu_cat(
     Args:
         port: Serial device path (e.g. ``/dev/ttyUSB0``).
         baud_rates: Baud rates to try, in order. Defaults to
-            ``[38400, 9600, 115200]``.
+            :func:`serial_probe_baud_rates` for ``"yaesu_cat"``.
         timeout: Per-baud timeout in seconds.
         _transport_factory: Override for ``YaesuCatTransport`` constructor
             (used in tests).
@@ -613,7 +785,7 @@ async def probe_serial_yaesu_cat(
         :class:`RadioDiscoveryResult` on success, or ``None`` if no Yaesu radio responded.
     """
     if baud_rates is None:
-        baud_rates = _YAESU_CAT_PROBE_BAUDS
+        baud_rates = list(serial_probe_baud_rates("yaesu_cat"))
 
     try:
         factory = _transport_factory or _default_yaesu_transport_factory()
@@ -703,6 +875,7 @@ def _parse_yaesu_id_response(
         profile_id=profile_id,
         baudrate=baud,
         address=model_id_str,
+        preferred_baudrate=_profile_baud(profile_id),
     )
 
 
@@ -809,6 +982,36 @@ def _local_ipv4_addresses() -> list[str]:
     return unique
 
 
+def _are_you_there_packet(sender_id: int) -> bytes:
+    """Build the 16-byte Icom LAN "Are You There" (ptype 0x03) packet.
+
+    Shared by the :func:`discover_lan_radios` broadcast scan and the
+    :func:`probe_lan_radio` unicast probe. *sender_id* must be non-zero:
+    the IC-7610 ignores packets with sender_id=0.
+    """
+    pkt = bytearray(0x10)
+    struct.pack_into("<I", pkt, 0, 0x10)  # size
+    struct.pack_into("<H", pkt, 4, 0x03)  # ARE_YOU_THERE
+    struct.pack_into("<H", pkt, 6, 0)  # seq=0
+    struct.pack_into("<I", pkt, 8, sender_id)  # sender_id (non-zero!)
+    struct.pack_into("<I", pkt, 0x0C, 0)  # remote_id=0 (unknown)
+    return bytes(pkt)
+
+
+def _is_unreachable_error(exc: BaseException) -> bool:
+    """True when *exc* reports the probed host or network unreachable.
+
+    Covers the no-route / host-down errnos, the ICMP port unreachable
+    (as ``ConnectionRefusedError`` / ``ConnectionResetError``) and the
+    unresolvable-name ``socket.gaierror``.
+    """
+    import socket
+
+    if isinstance(exc, (ConnectionRefusedError, ConnectionResetError, socket.gaierror)):
+        return True
+    return isinstance(exc, OSError) and exc.errno in _PROBE_UNREACHABLE_ERRNOS
+
+
 async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
     """Discover Icom radios on LAN via UDP broadcast ("Are You There").
 
@@ -828,30 +1031,15 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
         List of dicts with keys ``host`` and ``remote_id``.
     """
     import socket
-    import struct
     import time
-
-    # Re-send the "Are You There" probe periodically across the listen window
-    # so a single dropped UDP packet (or brief control-port contention) does
-    # not hide a radio for the entire scan. A radio that only answers a later
-    # probe is still discovered; responses are deduplicated by host.
-    RESEND_INTERVAL = 0.6
-    # Per-socket receive poll. Polling N sockets costs up to N × 50 ms per
-    # loop iteration, so the scan may overshoot its deadline by that much.
-    RECV_POLL_INTERVAL = 0.05
 
     def _scan() -> list[dict[str, object]]:
         import random
 
         # Build "Are You There" packet with random sender_id
         # IC-7610 ignores packets with sender_id=0
-        pkt = bytearray(0x10)
-        struct.pack_into("<I", pkt, 0, 0x10)  # size
-        struct.pack_into("<H", pkt, 4, 0x03)  # ARE_YOU_THERE
-        struct.pack_into("<H", pkt, 6, 0)  # seq=0
         my_id = random.randint(1, 0xFFFFFFFF)
-        struct.pack_into("<I", pkt, 8, my_id)  # sender_id (non-zero!)
-        struct.pack_into("<I", pkt, 0x0C, 0)  # remote_id=0 (unknown)
+        pkt = _are_you_there_packet(my_id)
 
         # Enumeration is best-effort: any exception (a chroot without routing,
         # exotic resolver errors) falls back to the unbound socket alone.
@@ -866,7 +1054,7 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
                 if address is not None:
                     sock.bind((address, 0))
-                sock.settimeout(RECV_POLL_INTERVAL)
+                sock.settimeout(_LAN_RECV_POLL_INTERVAL)
             except BaseException:
                 sock.close()
                 raise
@@ -935,13 +1123,13 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
 
             start = time.monotonic()
             deadline = start + timeout
-            next_resend = start + RESEND_INTERVAL
+            next_resend = start + _LAN_RESEND_INTERVAL
             while time.monotonic() < deadline:
                 # Spread retransmits across the window; keep within `timeout`.
                 now = time.monotonic()
                 if now >= next_resend:
                     _broadcast(first=False)
-                    next_resend = now + RESEND_INTERVAL
+                    next_resend = now + _LAN_RESEND_INTERVAL
                 for sock in sockets:
                     try:
                         data, addr = sock.recvfrom(256)
@@ -976,6 +1164,132 @@ async def discover_lan_radios(timeout: float = 3.0) -> list[dict[str, object]]:
         return list(found.values())
 
     return await asyncio.get_running_loop().run_in_executor(None, _scan)
+
+
+async def probe_lan_radio(
+    host: str,
+    port: int = LAN_DISCOVERY_PORT,
+    *,
+    timeout: float = 3.0,
+) -> bool:
+    """Unicast "Are You There" liveness probe for one Icom LAN radio.
+
+    Asks a known (remembered) radio's control port whether it is
+    answering, with the radio's own discovery handshake — the same
+    packet :func:`discover_lan_radios` broadcasts — retransmitted every
+    0.6 s inside the window. Prefer this over connecting to the control
+    port with TCP: the port is UDP, and a real radio may silently drop a
+    TCP SYN, making a reachable radio look unreachable.
+
+    Args:
+        host: Hostname or IPv4 address of the radio.
+        port: UDP control port of the radio.
+        timeout: How long to keep probing, in seconds.
+
+    Returns:
+        ``True`` on the first "I Am Here" from *host*; ``False`` when the
+        window ends with no answer or the OS reports the host unreachable
+        (no route, host down, ICMP port unreachable, unresolvable name).
+        Never raises for an unreachable host; programming errors raise.
+    """
+    import random
+    import socket
+    import time
+
+    # Set from the cancelled/finished awaiting coroutine so the worker
+    # thread closes its socket promptly instead of holding it until the
+    # window ends.
+    stop = threading.Event()
+
+    def _probe() -> bool:
+        # Resolve in the worker thread: a slow resolver must not block the
+        # event loop, and an unresolvable name is a plain False.
+        try:
+            infos = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_DGRAM)
+        except OSError:  # includes socket.gaierror (unresolvable name)
+            return False
+        target = infos[0][4]
+
+        pkt = _are_you_there_packet(random.randint(1, 0xFFFFFFFF))
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            sock.settimeout(_LAN_RECV_POLL_INTERVAL)
+
+            def _send() -> bool:
+                """Send one probe; False when the host is unreachable."""
+                try:
+                    sock.sendto(pkt, target)
+                except OSError as exc:
+                    if _is_unreachable_error(exc):
+                        logger.info(
+                            "probe_lan_radio: %s reported unreachable: %s",
+                            host,
+                            exc,
+                        )
+                        return False
+                    logger.debug("probe_lan_radio: send failed: %s", exc)
+                return True
+
+            if not _send():
+                return False
+
+            start = time.monotonic()
+            deadline = start + timeout
+            next_resend = start + _LAN_RESEND_INTERVAL
+            # The `now < deadline` loop form (like the scan) also ends a
+            # non-positive or NaN window immediately instead of spinning.
+            while time.monotonic() < deadline:
+                if stop.is_set():
+                    return False
+                # Spread retransmits across the window; keep within
+                # `timeout`.
+                now = time.monotonic()
+                if now >= next_resend:
+                    if not _send():
+                        return False
+                    next_resend = now + _LAN_RESEND_INTERVAL
+                try:
+                    data, addr = sock.recvfrom(256)
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    if _is_unreachable_error(exc):
+                        logger.info(
+                            "probe_lan_radio: %s reported unreachable: %s",
+                            host,
+                            exc,
+                        )
+                        return False
+                    # Any other per-socket error just skips this poll; the
+                    # socket stays usable, so pace the loop (same tolerance
+                    # as the broadcast scan).
+                    logger.debug("probe_lan_radio: recvfrom failed: %s", exc)
+                    time.sleep(0.01)
+                    continue
+                if (
+                    addr[0] == target[0]
+                    and len(data) >= 0x10
+                    and struct.unpack_from("<H", data, 4)[0] == 0x04  # I_AM_HERE
+                ):
+                    logger.info(
+                        "probe_lan_radio: %s answered (remote_id=0x%08X)",
+                        host,
+                        struct.unpack_from("<I", data, 8)[0],
+                    )
+                    return True
+            return False
+        finally:
+            sock.close()
+
+    # Same executor approach as discover_lan_radios: this module's LAN
+    # probing already runs its blocking-socket loop in the default
+    # executor, so the event loop stays free; the stop event above adds
+    # the prompt socket close on cancellation the one-shot probe needs.
+    future = asyncio.get_running_loop().run_in_executor(None, _probe)
+    try:
+        return await future
+    finally:
+        stop.set()
 
 
 def _resolve_xiegu_x6200_override(
@@ -1081,7 +1395,7 @@ async def _discover_one_port(
         model, profile_id = await resolve_civ_radio_identity(
             civ, port, _open_serial=_open_serial
         )
-        return RadioDiscoveryResult(
+        result = RadioDiscoveryResult(
             port=civ.port,
             protocol="civ",
             model=model,
@@ -1096,7 +1410,15 @@ async def _discover_one_port(
             product=port.product,
             serial_number=port.serial_number,
             usb_audio=await _resolve_profile_usb_audio_metadata(civ.port, profile_id),
+            preferred_baudrate=_profile_baud(profile_id),
         )
+        if result.low_baud:
+            # Below the profile baud a CI-V radio has no scope: hand setup the
+            # serial backend's own advice (MOR-4207).
+            from ._icom_serial_base import low_baud_scope_guidance
+
+            result.low_baud_hint = low_baud_scope_guidance()
+        return result
 
     # --- Yaesu CAT probe ---
     yaesu = await probe_serial_yaesu_cat(
@@ -1212,8 +1534,8 @@ def _resolve_usb_audio_metadata(
 
 
 def dedupe_radios(
-    lan_radios: list[dict[str, Any]], serial_radios: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
+    lan_radios: list[dict[str, Any]], serial_radios: list[RadioDiscoveryResultDict]
+) -> list[GroupedRadio]:
     """Group LAN and serial discovery results by radio identity.
 
     Two entries are considered the same radio when their ``model`` **and**
@@ -1222,13 +1544,14 @@ def dedupe_radios(
 
     Args:
         lan_radios: Dicts from :func:`discover_lan_radios`.
-        serial_radios: Dicts from :func:`discover_serial_radios`.
+        serial_radios: :meth:`RadioDiscoveryResult.to_dict` of the
+            :func:`discover_serial_radios` results.
 
     Returns:
         List of dicts, each with keys ``model``, ``lan`` (list), ``serial``
         (list).  ``model`` is the display name of the radio.
     """
-    radios: dict[tuple[object, ...], dict[str, Any]] = {}
+    radios: dict[tuple[object, ...], GroupedRadio] = {}
     _counter = 0
 
     for lan in lan_radios:
@@ -1245,9 +1568,7 @@ def dedupe_radios(
                 "lan": [],
                 "serial": [],
             }
-        cast_list = radios[key]["lan"]
-        assert isinstance(cast_list, list)
-        cast_list.append(lan)
+        radios[key]["lan"].append(lan)
 
     for serial in serial_radios:
         model = serial.get("model")
@@ -1259,24 +1580,68 @@ def dedupe_radios(
             key = (f"__unid_serial_{_counter}",)
         if key not in radios:
             radios[key] = {"model": model or "Unknown", "lan": [], "serial": []}
-        cast_list = radios[key]["serial"]
-        assert isinstance(cast_list, list)
-        cast_list.append(serial)
+        radios[key]["serial"].append(serial)
 
     return list(radios.values())
 
 
+class SetupLanConnection(TypedDict):
+    """A LAN connection in the ``rigplane.discovery.v1`` setup JSON."""
+
+    type: Literal["lan"]
+    backend: Literal["lan"]
+    label: str
+    host: str
+    remoteId: object
+    requiresCredentials: bool
+
+
+class SetupSerialConnection(TypedDict):
+    """A USB serial connection in the ``rigplane.discovery.v1`` setup JSON.
+
+    ``baudrate`` is the rate the radio answered at. ``preferredBaudrate``,
+    ``lowBaud`` and ``lowBaudHint`` carry :class:`RadioDiscoveryResult`'s
+    ``preferred_baudrate`` / ``low_baud`` / ``low_baud_hint`` (MOR-4207), so
+    setup can show the scope-baud guidance.
+    """
+
+    type: Literal["serial"]
+    backend: Literal["serial", "yaesu-cat"]
+    label: str
+    port: str
+    protocol: object
+    profileId: object
+    baudrate: object
+    preferredBaudrate: int | None
+    lowBaud: bool
+    lowBaudHint: str | None
+    address: object
+    description: object
+    hwid: object
+    vid: object
+    pid: object
+    manufacturer: object
+    product: object
+    serialNumber: object
+    requiresCredentials: bool
+    usbAudio: NotRequired[dict[str, object]]
+
+
 def build_setup_discovery_payload(
-    grouped_radios: list[dict[str, Any]],
+    grouped_radios: list[GroupedRadio],
 ) -> dict[str, Any]:
-    """Build stable discovery JSON for setup wizards and managed supervisors."""
+    """Build stable discovery JSON for setup wizards and managed supervisors.
+
+    Serial entries are :class:`RadioDiscoveryResultDict`; each connection is a
+    :class:`SetupLanConnection` or :class:`SetupSerialConnection`.
+    """
     radios: list[dict[str, Any]] = []
     for index, radio in enumerate(grouped_radios, start=1):
-        connections: list[dict[str, Any]] = []
+        connections: list[SetupLanConnection | SetupSerialConnection] = []
         for lan in radio.get("lan", []):
             host = str(lan.get("host", ""))
             remote_id = lan.get("remote_id")
-            connection: dict[str, Any] = {
+            lan_connection: SetupLanConnection = {
                 "type": "lan",
                 "backend": "lan",
                 "label": f"LAN {host}" if host else "LAN",
@@ -1284,14 +1649,16 @@ def build_setup_discovery_payload(
                 "remoteId": remote_id,
                 "requiresCredentials": True,
             }
-            connections.append(connection)
+            connections.append(lan_connection)
 
         for serial in radio.get("serial", []):
             port = str(serial.get("port", ""))
-            baudrate = serial.get("baudrate", serial.get("baud"))
+            baudrate = serial.get("baudrate")
             protocol = serial.get("protocol", "civ")
-            backend = "yaesu-cat" if protocol == "yaesu_cat" else "serial"
-            connection = {
+            backend: Literal["serial", "yaesu-cat"] = (
+                "yaesu-cat" if protocol == "yaesu_cat" else "serial"
+            )
+            connection: SetupSerialConnection = {
                 "type": "serial",
                 "backend": backend,
                 "label": f"USB serial {port}" if port else "USB serial",
@@ -1299,6 +1666,9 @@ def build_setup_discovery_payload(
                 "protocol": protocol,
                 "profileId": serial.get("profile_id"),
                 "baudrate": baudrate,
+                "preferredBaudrate": serial.get("preferred_baudrate"),
+                "lowBaud": serial.get("low_baud") is True,
+                "lowBaudHint": serial.get("low_baud_hint"),
                 "address": serial.get("address"),
                 "description": serial.get("description"),
                 "hwid": serial.get("hwid"),

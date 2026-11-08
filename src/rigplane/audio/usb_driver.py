@@ -25,14 +25,17 @@ from typing import Any, Callable, Coroutine, Iterator, Literal
 
 from rigplane.core.usb_identity import UsbAudioIdentity
 
-from ._usb_pairing import AudioCandidate, candidate_stable_id
+from ._portaudio_enum import WASAPI_HOST_API
+from ._usb_pairing import AudioCandidate, candidate_stable_id, same_endpoint_records
 from ._usb_raw_linux import RawLinux
 from ._usb_raw_macos import RawMacos
+from .loop_handoff import CoalescedLoopHandoff
 from ._usb_raw_windows import RawWindows
 from ._usb_snapshot import Flow, UsbSnapshot
 
 from .backend import (
     AudioBackend,
+    AudioDeviceBusyError,
     AudioDeviceConfig,
     AudioDeviceId,
     AudioDeviceInfo,
@@ -48,6 +51,15 @@ _PORTAUDIO_OPERATION_IDS = count(1)
 
 _SILENCE_WARN_SECONDS = 10
 """Consecutive bit-exact-zero RX seconds before the silence watchdog warns."""
+
+_WINDOWS_ENHANCEMENTS_NOTICE = (
+    "Windows is giving this app only silence from the radio's USB input. "
+    'Turn off "Audio enhancements" for this input in Windows Sound settings.'
+)
+"""The one plain-words notice raised when a shared-mode Windows capture stays
+digitally silent (MOR-4030). Windows' default AI noise suppression gates
+non-speech audio such as a radio's receive audio. The frontend carries the same
+sentence in ``core.overlay.rxSilence``."""
 
 _DEPENDENCY_HINT = (
     "USB audio backend requires optional dependencies sounddevice and numpy. "
@@ -87,6 +99,12 @@ class AudioDeviceAmbiguousError(AudioDeviceSelectionError):
 
 class AudioTopologyUnavailableError(AudioDeviceSelectionError):
     """The USB topology was not read, so the radio's audio pair is unknown."""
+
+    def __init__(
+        self, message: str, *, candidates: tuple[AudioCandidate, ...] = ()
+    ) -> None:
+        super().__init__(message)
+        self.candidates = candidates
 
 
 class AudioDriverLifecycleError(RuntimeError):
@@ -143,9 +161,36 @@ AudioStartFailureReason = Literal[
     "usb_topology_unavailable",
     "usb_ambiguous",
     "open_timeout",
+    "device_in_use",
     "format",
     "other",
 ]
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return chain
+
+
+def audio_start_failure_holder(exc: BaseException) -> str | None:
+    """The holding program's executable name for a ``device_in_use`` failure.
+
+    ``None`` for every other category and when no name was found. The name is a
+    bare file name (see ``_usb_holder``): the one deliberate detail a start
+    failure publishes besides its category.
+    """
+    if audio_start_failure_reason(exc) != "device_in_use":
+        return None
+    for error in _exception_chain(exc):
+        if isinstance(error, AudioDeviceBusyError):
+            return error.holder
+    return None
 
 
 def audio_start_failure_reason(exc: BaseException) -> AudioStartFailureReason:
@@ -161,17 +206,12 @@ def audio_start_failure_details(
 ) -> tuple[AudioStartFailureReason, tuple[AudioCandidate, ...]]:
     from ._usb_pairing import WindowsAudioTopologyError
 
-    chain: list[BaseException] = []
-    current: BaseException | None = exc
-    while current is not None and current not in chain:
-        chain.append(current)
-        current = current.__cause__ or (
-            None if current.__suppress_context__ else current.__context__
-        )
+    chain = _exception_chain(exc)
     reasons: tuple[
         tuple[tuple[type[BaseException], ...], AudioStartFailureReason], ...
     ] = (
         ((AudioCaptureOpenTimeoutError,), "open_timeout"),
+        ((AudioDeviceBusyError,), "device_in_use"),
         ((AudioFormatUnsupportedError,), "format"),
         ((AudioDeviceAmbiguousError,), "usb_ambiguous"),
         ((AudioTopologyUnavailableError,), "usb_topology_unavailable"),
@@ -180,6 +220,8 @@ def audio_start_failure_details(
     for error in chain:
         if isinstance(error, WindowsAudioTopologyError):
             return error.refusal.wire_reason, error.candidates
+        if isinstance(error, AudioTopologyUnavailableError):
+            return "usb_topology_unavailable", error.candidates
         for types, reason in reasons:
             if isinstance(error, types):
                 return reason, ()
@@ -807,10 +849,12 @@ class UsbAudioStreamContract:
 
     ``None`` means the stream opens at ``channels`` (open == deliver). It is set
     only when the device is opened at MORE channels than downstream consumes —
-    i.e. a mono (deliver=1) request on a stereo-native device (open=2): the
-    stream opens at the native count and software-downmixes back to ``channels``
-    (MOR-504). ``channels`` always stays the DELIVERED count (downstream DSP is
-    48 kHz mono), so diagnostics and the fixed-frame contract see the mono path.
+    i.e. a 1- or 2-channel deliver request on an N-channel device (PipeWire
+    ``pulse`` = 32 ch, BlackHole = 16 ch, any 4/6/8-channel interface,
+    MOR-4029): the stream opens at the native count and software-downmixes back
+    to ``channels`` (MOR-504 generalized beyond open=2). ``channels`` always
+    stays the DELIVERED count (downstream DSP is 48 kHz), so diagnostics and
+    the fixed-frame contract see the delivered layout.
     """
 
     @property
@@ -899,6 +943,7 @@ def _find_by_override(
     override: str,
     direction: str,
     snapshot: UsbSnapshot | None = None,
+    prefer_hostapi: str | None = None,
 ) -> UsbAudioDevice:
     selector = override.strip()
     if not selector:
@@ -942,11 +987,29 @@ def _find_by_override(
                 if record is None or record.name != dev.name:
                     continue
                 api = apis.get(record.hostapi)
-                if (
-                    api is not None
-                    and candidate_stable_id(snapshot, record, api, flow) == selector
+                if api is not None and (
+                    (
+                        identity.casefold().startswith("name:")
+                        and api.name == api_name
+                        and record.name == identity[len("name:") :]
+                    )
+                    or candidate_stable_id(snapshot, record, api, flow) == selector
                 ):
                     stable_matches.append(dev)
+            # MOR-4030: with a preferred host API the saved host-API prefix is
+            # advisory: the same endpoint on the preferred host API wins, so a
+            # selector saved as ``MME|...`` keeps working when WASAPI is
+            # preferred. No unique twin there keeps the saved choice.
+            if prefer_hostapi is not None:
+                twins = [
+                    dev
+                    for record, api in same_endpoint_records(snapshot, selector, flow)
+                    if api.name == prefer_hostapi
+                    for dev in devices
+                    if dev.index == record.index and dev.name == record.name
+                ]
+                if len(twins) == 1:
+                    return twins[0]
         match = _unique_override_match(
             stable_matches, override=selector, direction=direction
         )
@@ -1038,8 +1101,13 @@ def select_usb_audio_devices(
     rx_device: str | None = None,
     tx_device: str | None = None,
     snapshot: UsbSnapshot | None = None,
+    prefer_hostapi: str | None = None,
 ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
-    """Select RX/TX devices deterministically with override precedence."""
+    """Select RX/TX devices deterministically with override precedence.
+
+    *prefer_hostapi* (MOR-4030) names the host API a stable ``<host API>|...``
+    selector moves to when the same endpoint is listed there.
+    """
     rx_candidates = [dev for dev in devices if dev.supports_rx]
     tx_candidates = [dev for dev in devices if dev.supports_tx]
     duplex_candidates = [dev for dev in devices if dev.duplex]
@@ -1050,7 +1118,11 @@ def select_usb_audio_devices(
     ):
         if not candidates and override is not None and "|" in override:
             _find_by_override(
-                candidates, override=override, direction=direction, snapshot=snapshot
+                candidates,
+                override=override,
+                direction=direction,
+                snapshot=snapshot,
+                prefer_hostapi=prefer_hostapi,
             )
 
     if not rx_candidates:
@@ -1067,11 +1139,19 @@ def select_usb_audio_devices(
 
     if rx_device is not None:
         selected_rx = _find_by_override(
-            rx_candidates, override=rx_device, direction="rx", snapshot=snapshot
+            rx_candidates,
+            override=rx_device,
+            direction="rx",
+            snapshot=snapshot,
+            prefer_hostapi=prefer_hostapi,
         )
     elif tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
+            tx_candidates,
+            override=tx_device,
+            direction="tx",
+            snapshot=snapshot,
+            prefer_hostapi=prefer_hostapi,
         )
         selected_rx = (
             selected_tx
@@ -1083,7 +1163,11 @@ def select_usb_audio_devices(
 
     if tx_device is not None:
         selected_tx = _find_by_override(
-            tx_candidates, override=tx_device, direction="tx", snapshot=snapshot
+            tx_candidates,
+            override=tx_device,
+            direction="tx",
+            snapshot=snapshot,
+            prefer_hostapi=prefer_hostapi,
         )
     elif rx_device is not None and selected_rx.supports_tx:
         selected_tx = selected_rx
@@ -1256,6 +1340,7 @@ class UsbAudioDriver:
         backend: AudioBackend | None = None,
         rx_audio_channel: str = "mix",
         capture_open_timeout: float = _CAPTURE_OPEN_TIMEOUT_S,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         # ONE per-device config carrier (MOR-578). Callers either hand a
         # ready-made :class:`AudioDeviceConfig` or use the historical keyword
@@ -1285,12 +1370,19 @@ class UsbAudioDriver:
         )
         self._serial_port = serial_port
         self._usb_identity = usb_identity
-        self._backend: AudioBackend = backend or PortAudioBackend()
+        # MOR-4030: the default backend learns a non-default capture mode; the
+        # shared default builds it exactly as before.
+        self._backend: AudioBackend = backend or (
+            PortAudioBackend()
+            if self._config.capture_mode == "shared"
+            else PortAudioBackend(capture_mode=self._config.capture_mode)
+        )
         # MOR-1438: bound on how long an RX/TX stream open may block before
         # it is treated as stuck (see ``_open_stream``). Overridable so
         # tests can shrink it well below ``_CAPTURE_OPEN_TIMEOUT_S`` without
         # a real multi-second wait.
         self._capture_open_timeout = capture_open_timeout
+        self._monotonic = monotonic
         # MOR-2892: every bounded off-loop PortAudio operation submits to
         # the module-wide ``bounded_portaudio_pool`` (ONE executor, ONE
         # saturation counter — shared with ``AudioBridge``; see the pool
@@ -1449,12 +1541,12 @@ class UsbAudioDriver:
 
         config = self._config
         generation = self._selection_generation
-        deadline = time.monotonic() + self._capture_open_timeout
+        deadline = self._monotonic() + self._capture_open_timeout
         self._selected_rx = None
         self._selected_tx = None
 
         def remaining() -> float:
-            timeout = deadline - time.monotonic()
+            timeout = deadline - self._monotonic()
             if timeout <= 0:
                 raise AudioCaptureOpenTimeoutError(
                     f"{direction.upper()} device enumeration exceeded "
@@ -1572,14 +1664,23 @@ class UsbAudioDriver:
                 if enumeration is not None:
                     session["raw"]["portaudio"] = enumeration.to_json_dict()
                 snapshot = adapt_windows(session)
+            # MOR-4030: exclusive-preferred pairs and resolves saved selectors on
+            # WASAPI for both directions; shared keeps the first host API.
+            prefer = (
+                {"prefer_hostapi": WASAPI_HOST_API}
+                if self._config.capture_mode == "exclusive-preferred"
+                and snapshot.os == "windows"
+                else {}
+            )
             if self._config.rx_device is not None or self._config.tx_device is not None:
                 return select_usb_audio_devices(
                     devices,
                     rx_device=self._config.rx_device,
                     tx_device=self._config.tx_device,
                     snapshot=snapshot,
+                    **prefer,
                 )
-            mapping = pair(snapshot, serial_port, self._usb_identity)
+            mapping = pair(snapshot, serial_port, self._usb_identity, **prefer)
             if isinstance(mapping, PairRefused):
                 raise pairing_refusal_error(mapping)
             rx = next((d for d in devices if d.index == mapping.rx_index), None)
@@ -1597,9 +1698,23 @@ class UsbAudioDriver:
                 if (d.supports_rx if direction == "rx" else d.supports_tx)
             }
             if len(identities) != 1:
+                from ._usb_pairing import _candidates
+
+                enumeration = (
+                    read_portaudio_enumeration(sd_module)
+                    if sd_module is not None
+                    else None
+                )
+                session = {
+                    "raw": {"windows": records.to_json_dict(), "serial_ports": []}
+                }
+                if enumeration is not None:
+                    session["raw"]["portaudio"] = enumeration.to_json_dict()
+                snapshot = adapt_windows(session)
                 raise AudioTopologyUnavailableError(
                     "Windows USB audio selection is ambiguous or unavailable; "
-                    "select explicit RX/TX devices for the serial radio."
+                    "select explicit RX/TX devices for the serial radio.",
+                    candidates=_candidates(snapshot, None, {}, include_unmatched=True),
                 )
         return select_usb_audio_devices(candidates)
 
@@ -1634,12 +1749,15 @@ class UsbAudioDriver:
           than the device exposes (stereo request on a mono capture endpoint).
           Both open and deliver clamp DOWN to ``device_max``; downstream is mono,
           so a 1-channel capture feeds the broadcaster cleanly.
-        - **Under-request (MOR-504)** — a mono (deliver=1) request on a
-          stereo-NATIVE device. macOS AUHAL refuses to open a 2-channel device at
-          1 channel (err -10863), so the stream opens at the device-native count
-          and the RX stream software-downmixes back to mono before delivery. RX
-          path only (TX never up-opens — there is no mix-up direction for
-          playback).
+        - **Under-request (MOR-504, generalized by MOR-4029)** — a 1- or 2-channel
+          deliver request on an N-channel device (a mono request on a
+          stereo-native device, or any deliver count on PipeWire ``pulse`` = 32 ch,
+          BlackHole = 16 ch, a 4/6/8-channel interface). macOS AUHAL refuses to
+          open a 2-channel device at 1 channel (err -10863), so the stream opens
+          at the device-native count and the RX stream software-downmixes back to
+          the delivered layout before delivery (the first two device channels are
+          L/R). RX path only (TX never up-opens — there is no mix-up direction
+          for playback).
         """
 
         device_max = (
@@ -1756,6 +1874,11 @@ class UsbAudioDriver:
             f"{device.name}; tried {list(self._sample_rate_candidates(requested_sample_rate))}."
         )
 
+    def _rx_exclusive(self) -> bool:
+        """Whether the RX capture opened in WASAPI exclusive mode (MOR-4030)."""
+        stream = self._duplex_stream or self._rx_stream
+        return bool(getattr(stream, "exclusive", False))
+
     def _silence_watchdog(
         self, callback: Callable[[bytes], None], frame_ms: int
     ) -> Callable[[bytes], None]:
@@ -1779,14 +1902,19 @@ class UsbAudioDriver:
                 if state["silent_frames"] == threshold and not state["warned"]:
                     state["warned"] = True
                     self._rx_silent = True
-                    logger.warning(
-                        "usb-audio: RX capture has delivered only digital "
-                        "silence for ~%ds — the input may lack OS capture "
-                        "permission (macOS: grant Microphone to the "
-                        "launching app/context) or the radio's USB audio "
-                        "output may be off",
-                        _SILENCE_WARN_SECONDS,
-                    )
+                    if platform.system() == "Windows" and not self._rx_exclusive():
+                        # MOR-4030: a shared-mode capture runs through the
+                        # Windows audio engine, whose input effects gate it.
+                        logger.warning("usb-audio: %s", _WINDOWS_ENHANCEMENTS_NOTICE)
+                    else:
+                        logger.warning(
+                            "usb-audio: RX capture has delivered only digital "
+                            "silence for ~%ds — the input may lack OS capture "
+                            "permission (macOS: grant Microphone to the "
+                            "launching app/context) or the radio's USB audio "
+                            "output may be off",
+                            _SILENCE_WARN_SECONDS,
+                        )
             else:
                 if state["warned"]:
                     logger.info("RX audio signal detected")
@@ -1939,6 +2067,11 @@ class UsbAudioDriver:
             if generation == self._rx_generation:
                 watchdog(frame)
 
+        # MOR-4227: a plain per-frame call_soon_threadsafe wakes the loop
+        # once per frame; the coalesced handoff keeps the idle-case latency
+        # but collapses bursts into one drain.
+        handoff = CoalescedLoopHandoff(loop, deliver)
+
         def receive(frame: bytes) -> None:
             try:
                 on_owner_loop = asyncio.get_running_loop() is loop
@@ -1948,7 +2081,7 @@ class UsbAudioDriver:
                 deliver(frame)
                 return
             try:
-                loop.call_soon_threadsafe(deliver, frame)
+                handoff.submit(frame)
             except RuntimeError:
                 if not loop.is_closed():
                     raise
@@ -2195,6 +2328,9 @@ class UsbAudioDriver:
                 sample_rate=contract.sample_rate_hz,
                 channels=contract.channels,
                 frame_ms=fm,
+                # MOR-4013: host-to-radio TX keeps the free-running ring so
+                # a freshly written frame plays on the very next callback.
+                playout="immediate",
             )
             self._tx_stream = stream
             try:
@@ -2390,6 +2526,9 @@ class UsbAudioDriver:
             deliver_channels=rx_contract.channels,
             rx_audio_channel=self._config.rx_audio_channel,
             tx_channels=tx_contract.channels,
+            # MOR-4013: the TX leg is host-to-radio audio — the
+            # free-running ring, never the RX fill target.
+            tx_playout="immediate",
         )
         self._duplex_stream = stream
         try:

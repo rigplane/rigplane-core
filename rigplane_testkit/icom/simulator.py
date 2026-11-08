@@ -32,11 +32,16 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
 
+from rigplane.core.types import bcd_decode, bcd_encode
 from rigplane_testkit.icom.faults import Direction, FaultPlan, Port
 from rigplane_testkit.icom.fixtures import scope_wave_templates
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.icom.rx_source import RxSource
-from rigplane_testkit.icom.simulator_audio import AudioPortMixin, TxAudioFormat
+from rigplane_testkit.icom.simulator_audio import (
+    AudioPortMixin,
+    RxAudioFormat,
+    TxAudioFormat,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +97,28 @@ _SCOPE_GAP_S = {0x00: 0.0344, 0x01: 0.120}
 _SCOPE_TICK_S = 0.005
 
 
-def _load_scope_templates(radio_addr: int) -> dict[int, list[bytes]]:
-    """Select recorded scope rows, then validate waves with the shared helper."""
+# The scope-wave recording is the IC-7610's: its rows carry the source
+# address 0x98. A LAN personality at another CI-V address (MOR-3907/3910)
+# replays the same waves with the source byte retargeted — a declared
+# tier-C gap, see docs/internals/sim-serve-contract.md.
+_SCOPE_RECORDING_RADIO_ADDR = 0x98
+
+
+def _retarget_scope_wave(frame: bytes, radio_addr: int) -> bytes:
+    """Rewrite a recorded wave's source address byte (index 3) only."""
+    return frame[:3] + bytes([radio_addr]) + frame[4:]
+
+
+def _load_scope_templates(
+    radio_addr: int, *, dual_receiver: bool = False
+) -> dict[int, list[bytes]]:
+    """Select recorded scope rows, then validate waves with the shared helper.
+
+    The rows load with the recording's own source address (0x98) and are
+    then retargeted to ``radio_addr`` so a client of a personality at
+    another address accepts the frames. A single-receiver personality
+    keeps MAIN waves only; a dual-receiver one needs MAIN and SUB.
+    """
     fixture = (
         Path(__file__).resolve().parents[2] / "tests/fixtures/ic7610/civ_pairs.jsonl"
     )
@@ -102,10 +127,30 @@ def _load_scope_templates(radio_addr: int) -> dict[int, list[bytes]]:
         for line in fixture.read_text(encoding="utf-8").splitlines()
         if (row := json.loads(line)).get("window") == "scope"
     ]
-    templates = scope_wave_templates(rows, radio_addr=radio_addr)
-    if not {0x00, 0x01} <= templates.keys():
-        raise ValueError("recorded scope window needs MAIN and SUB waves")
+    loaded = scope_wave_templates(rows, radio_addr=_SCOPE_RECORDING_RADIO_ADDR)
+    templates = {
+        receiver: [_retarget_scope_wave(frame, radio_addr) for frame in waves]
+        for receiver, waves in loaded.items()
+        if dual_receiver or receiver == 0x00
+    }
+    required = {0x00, 0x01} if dual_receiver else {0x00}
+    needed = "MAIN and SUB waves" if dual_receiver else "MAIN waves"
+    if not required <= templates.keys():
+        raise ValueError(f"recorded scope window needs {needed}")
     return templates
+
+
+def _blank_scope_wave(frame: bytes) -> bytes:
+    """Zero a recorded ``27 00`` wave's pixel payload, keep framing intact.
+
+    Layout is ``FE FE to from 27 00 rx seq seqMax pixels... FD``: bytes
+    before index 9 (framing, receiver, sequence) are preserved so the
+    production assembler still completes the frame — with all-zero
+    pixels, as a radio shows while a front-panel menu is open (MOR-3690).
+    """
+    if len(frame) < 11 or frame[4:6] != b"\x27\x00" or frame[-1:] != b"\xfd":
+        raise ValueError("blank scope wave needs a complete 27 00 frame")
+    return frame[:9] + bytes(len(frame) - 10) + b"\xfd"
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +181,7 @@ _CMD_FREQ_GET = 0x03
 _CMD_FREQ_SET = 0x05
 _CMD_MODE_GET = 0x04
 _CMD_MODE_SET = 0x06
+_CMD_SPLIT = 0x0F  # split on/off; 0x10-0x12 repeater shift stays unmodelled
 _CMD_LEVEL = 0x14
 _CMD_METER = 0x15
 _CMD_ATT = 0x11
@@ -149,7 +195,7 @@ _CMD_VFO_SELECT = 0x07  # MAIN/SUB receiver select (D0/D1) and read (D2)
 _CMD_ACK = 0xFB
 _CMD_NAK = 0xFA
 _SUB_RF_POWER = 0x0A
-_SUB_SQL_STATUS = 0x01
+_SUB_SQUELCH = 0x03
 _SUB_S_METER = 0x02
 _SUB_SWR_METER = 0x12
 _SUB_ALC_METER = 0x13
@@ -197,17 +243,6 @@ def _level_bcd_encode(value: int) -> bytes:
     return bytes([(int(d[0]) << 4) | int(d[1]), (int(d[2]) << 4) | int(d[3])])
 
 
-def _bcd_encode_freq(freq_hz: int) -> bytes:
-    """Encode frequency in Hz to Icom 5-byte BCD (little-endian)."""
-    digits = f"{freq_hz:010d}"
-    result = bytearray(5)
-    for i in range(5):
-        low = int(digits[9 - 2 * i])
-        high = int(digits[9 - 2 * i - 1])
-        result[i] = (high << 4) | low
-    return bytes(result)
-
-
 def _bcd_decode_value(data: bytes) -> int:
     """Decode packed BCD digits, most significant pair first (120 → b'\\x01\\x20').
 
@@ -218,16 +253,6 @@ def _bcd_decode_value(data: bytes) -> int:
     for byte in data:
         value = value * 100 + (byte >> 4) * 10 + (byte & 0x0F)
     return value
-
-
-def _bcd_decode_freq(data: bytes) -> int:
-    """Decode Icom 5-byte BCD frequency to Hz."""
-    freq = 0
-    for i in range(len(data)):
-        high = (data[i] >> 4) & 0x0F
-        low = data[i] & 0x0F
-        freq += low * (10 ** (2 * i)) + high * (10 ** (2 * i + 1))
-    return freq
 
 
 def _status_accepted(reply: bytes) -> bool:
@@ -439,16 +464,33 @@ class MockIcomRadio(AudioPortMixin):
             reads MAIN). When True, ``07 D0``/``D1`` swap the selected and
             unselected receiver fields (frequency, mode, DATA-mode flag,
             filter) and ``07 D2`` reads the selection (recorded IC-7610
-            ``vfo_select`` window).
+            ``vfo_select`` window). It also selects the scope-wave
+            receivers loaded for ``scope_stream``: True loads MAIN and SUB
+            (the recorded dual window), False keeps MAIN only and never
+            streams SUB, whatever the scope dual-mode byte says.
         scope_stream: opt-in replay of recorded ``27 00`` scope waves at
             the measured MAIN/SUB cadence. Off by default. Only complete
             frames from the committed ``scope`` window are emitted.
+        scope_blank_waves: emit the recorded ``27 00`` waves with the pixel
+            payload zeroed (framing, receiver and sequence bytes intact).
+            Models a radio that keeps streaming while it shows another
+            screen (front-panel menu, MOR-3690). Requires ``scope_stream``.
         rx_source: optional RX audio source (``rx_source.WavSource``)
             played in place of the byte ramp; None (default) keeps the
             ramp. Restarts from its head on each stream start.
         require_control_discovery: reject login from sender IDs that have
             not sent control discovery, or have since sent DISCONNECT.
+        data_capable_modes: set of CI-V mode bytes that can carry the DATA
+            flag (None = every mode, the unchanged default). When set, a
+            0x26 SET with a non-zero data byte for a mode outside the set
+            is NAKed with no state change, and so is a 0x1A 06 DATA-on SET
+            while the current mode is outside the set (MOR-4036).
     """
+
+    #: Release reasons that mean the client ended the session itself: the
+    #: stream owner's OpenClose(close) (a logout sends it first), the
+    #: token-remove, or the control DISCONNECT. A hold expiry is not one.
+    CLIENT_END_REASONS = frozenset({"openclose_close", "token_remove", "disconnect"})
 
     def __init__(
         self,
@@ -479,8 +521,10 @@ class MockIcomRadio(AudioPortMixin):
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
         scope_stream: bool = False,
+        scope_blank_waves: bool = False,
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
+        data_capable_modes: frozenset[int] | None = None,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -515,16 +559,23 @@ class MockIcomRadio(AudioPortMixin):
         # Radio state (for CI-V responses)
         # MOR-3064: test-data model-id answered to ``19 00`` (identity read),
         # matching the recorded IC-7610 (answers 19 00 with 98 on LAN and
-        # USB) — suites override it per case.
+        # USB) — suites override it per case. ``identity_source`` says where
+        # the token comes from: ``"recorded"`` (the IC-7610 default here, or a
+        # token from the capability profile) or ``"unverified"`` (a declared
+        # personality whose profile has no recorded/documented token; the
+        # builder in rigplane_testkit/sim/serve.py sets it, MOR-3907).
         self.model_id: bytes = b"\x98"
+        self.identity_source: str = "recorded"
         self._frequency: int = 14_074_000
         self._mode: int = 0x01  # USB
         self._filter: int = 1
+        # Split state (0x0F). A simulator choice; the reply shape is the
+        # recorded IC-7610's (rx_write_restore window: bare GET answers
+        # "0F <state>", SET 00/01 ACKs).
+        self._split_on: bool = False
         self._power: int = 100  # 0-255 level
+        self._squelch: int = 0  # 0-255 squelch level, 0 = fully open
         self._s_meter: int = 120  # 0-255
-        # MOR-3630: squelch-open (RX-busy) readback for the 0x15 0x01 poll.
-        # Idle means closed: no signal, squelch shut.
-        self._squelch_open: bool = False
         self._swr: int = 10  # 0-255
         self._alc: int = 0
         self._attenuator: int = 0  # dB (0, 3, 6, ... 45)
@@ -546,6 +597,13 @@ class MockIcomRadio(AudioPortMixin):
         # the selected receiver, 1 = SUB is (recorded vfo_select window).
         self._dual_receiver: bool = dual_receiver
         self._selected_receiver: int = 0
+        # MOR-4036: the set of CI-V mode bytes that can carry the DATA flag
+        # (None = every mode, today's behaviour — unchanged for all existing
+        # tests). When set, a 0x26 SET whose data byte is non-zero for a mode
+        # outside the set is NAKed with no state change, and so is a 0x1A 06
+        # DATA-on SET while the current mode is outside the set — the bench
+        # IC-705 behaviour (26 00 03 01 01 = CW+DATA is NAKed).
+        self._data_capable_modes: frozenset[int] | None = data_capable_modes
         # Modelling of the 0x1A 05 menu items the startup reader reads;
         # current values (defaults and byte widths live in the table above).
         self._ctl_mem_menu: dict[bytes, int] = {
@@ -559,9 +617,12 @@ class MockIcomRadio(AudioPortMixin):
         self._scope_12: int = 0x00
         self._scope_13: int = 0x01
         self._scope_stream = scope_stream
+        self._scope_blank_waves = scope_blank_waves and scope_stream
         self._scope_speed = {0x00: 0x01, 0x01: 0x00}  # MAIN mid, SUB fast in w55
         self._scope_templates = (
-            _load_scope_templates(radio_addr) if scope_stream else {}
+            _load_scope_templates(radio_addr, dual_receiver=dual_receiver)
+            if scope_stream
+            else {}
         )
         self._scope_template_index = {0x00: 0, 0x01: 0}
         self._scope_due: dict[int, float] = {}
@@ -759,6 +820,8 @@ class MockIcomRadio(AudioPortMixin):
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
         self.last_release_reason: str | None = None
+        # Callers of ``wait_session_released``, woken by ``_release_session``.
+        self._release_waiters: list[asyncio.Future[str]] = []
         self._login_count: int = 0  # accepted logins
         self._openclose_open_count: int = 0  # CI-V OpenClose(open) received
         self._audio_init()  # audio-port state (RX streamer, TX sink)
@@ -871,6 +934,29 @@ class MockIcomRadio(AudioPortMixin):
     def session_held(self) -> bool:
         """True when a session is currently owned (single-owner mode)."""
         return self._owner is not None
+
+    async def wait_session_released(self) -> str | None:
+        """Wait for the held session to end; return why (``last_release_reason``).
+
+        If no session is held, returns at once with the reason the last one
+        ended (``None`` if none ever did), so a release that landed before
+        this call keeps its reason. A client's token-remove, DISCONNECT or
+        OpenClose(close) is a UDP datagram the simulator handles only when it
+        is delivered, which is not always the next loop iteration (WSL2
+        mirrored loopback adds about 0.1 ms). Wait here instead of reading
+        :attr:`session_held` right after the client's send returns, and check
+        the reason against :attr:`CLIENT_END_REASONS`: a hold expiry
+        (``keepalive_timeout``) also ends the session.
+        """
+        if self._owner is None:
+            return self.last_release_reason
+        waiter: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        self._release_waiters.append(waiter)
+        try:
+            return await waiter
+        finally:
+            if waiter in self._release_waiters:
+                self._release_waiters.remove(waiter)
 
     @property
     def owner(self) -> tuple[tuple[str, int], int] | None:
@@ -1166,6 +1252,10 @@ class MockIcomRadio(AudioPortMixin):
             self._owner = None
             self.released_count += 1
             self.last_release_reason = reason
+            waiters, self._release_waiters = self._release_waiters, []
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.set_result(reason)
             # ptt_on_session_loss (opt-in, stateful PTT only): "release"
             # unkeys the simulated radio at the moment the session ends.
             # The real IC-7610 behaviour is UNRECORDED — TX is never
@@ -1351,13 +1441,13 @@ class MockIcomRadio(AudioPortMixin):
         """Set S-meter readback value (0-255)."""
         self._s_meter = value
 
-    def set_squelch_open(self, on: bool) -> None:
-        """Set squelch-open (RX-busy) readback for the 0x15 0x01 poll."""
-        self._squelch_open = on
-
     def set_swr(self, value: int) -> None:
         """Set SWR meter readback value (0-255)."""
         self._swr = value
+
+    def set_squelch(self, level: int) -> None:
+        """Set the squelch level read back by CI-V 0x14 0x03 (0-255)."""
+        self._squelch = level
 
     def set_attenuator(self, db: int) -> None:
         """Set attenuator dB value (0, 3, 6, …, 45)."""
@@ -1716,6 +1806,12 @@ class MockIcomRadio(AudioPortMixin):
                 # the capture exports can label what they record. A bare
                 # conninfo (zero rate, never sent by a real client)
                 # teaches nothing.
+                rx_sample_rate = struct.unpack_from(">I", data, 0x74)[0]
+                if rx_sample_rate > 0:
+                    # The RX stream is sized from the declared RX format.
+                    self._audio_rx_format = RxAudioFormat(
+                        codec=data[0x72], sample_rate=rx_sample_rate
+                    )
                 tx_sample_rate = struct.unpack_from(">I", data, 0x78)[0]
                 if tx_sample_rate > 0:
                     self._audio_tx_format = TxAudioFormat(
@@ -1967,9 +2063,11 @@ class MockIcomRadio(AudioPortMixin):
             # Recorded IC-7610 LAN behaviour: the request CI-V frame comes
             # back byte-identical immediately before the reply — including
             # requests answered with NAK (``civ_pairs.jsonl`` records CI-V
-            # frames only). Through the same outbound funnel as the reply,
-            # so a fault plan sees both packets.
-            self._send(proto, data, addr, "civ")
+            # frames only), numbered in the radio's own sequence like the
+            # reply after it (``retransmit_gaps.jsonl``: echo r2c 351, reply
+            # 352). Through the same outbound funnel as the reply, so a
+            # fault plan sees both packets.
+            self._send(proto, self._wrap_civ(bytes(civ), sender_id), addr, "civ")
 
         if (
             self._scope_stream
@@ -2268,7 +2366,7 @@ class MockIcomRadio(AudioPortMixin):
                     to=0x00,
                     frm=self._radio_addr,
                     cmd=_CMD_FREQ_GET,
-                    data=_bcd_encode_freq(self._frequency),
+                    data=bcd_encode(self._frequency),
                 )
                 pkt = self._wrap_civ(civ, self._civ_owner_id)
                 if self.drop_rate > 0.0 and self._rng.random() < self.drop_rate:
@@ -2337,12 +2435,12 @@ class MockIcomRadio(AudioPortMixin):
         # --- Frequency ---
         if cmd == _CMD_FREQ_GET:  # 0x03 get
             return self._civ_frame(
-                to, frm, _CMD_FREQ_GET, data=_bcd_encode_freq(self._frequency)
+                to, frm, _CMD_FREQ_GET, data=bcd_encode(self._frequency)
             )
 
         if cmd == _CMD_FREQ_SET:  # 0x05 set
             if len(payload) == 5:
-                self._frequency = _bcd_decode_freq(payload)
+                self._frequency = bcd_decode(payload)
             return self._civ_ack(to, frm)
 
         # --- Mode ---
@@ -2376,6 +2474,17 @@ class MockIcomRadio(AudioPortMixin):
                         sub=_SUB_RF_POWER,
                         data=_level_bcd_encode(self._power),
                     )
+            if sub == _SUB_SQUELCH:  # 0x03 squelch level (single receiver)
+                if rest:  # set
+                    self._squelch = _bcd_decode_value(rest)
+                    return self._civ_ack(to, frm)
+                return self._civ_frame(
+                    to,
+                    frm,
+                    _CMD_LEVEL,
+                    sub=_SUB_SQUELCH,
+                    data=_level_bcd_encode(self._squelch),
+                )
             return self._civ_nak(to, frm)
 
         # --- Meter (0x15) ---
@@ -2383,8 +2492,6 @@ class MockIcomRadio(AudioPortMixin):
             if not payload:
                 return self._civ_nak(to, frm)
             sub = payload[0]
-            if sub == _SUB_SQL_STATUS:  # 0x01
-                return self._squelch_status_reply(to, frm)
             if sub == _SUB_S_METER:  # 0x02
                 return self._civ_frame(
                     to,
@@ -2411,6 +2518,20 @@ class MockIcomRadio(AudioPortMixin):
                 )
             return self._civ_nak(to, frm)
 
+        # --- Split (0x0F) — recorded rx_write_restore window: a bare GET
+        # answers "0F <state>"; SET 00/01 ACKs and flips the state. The
+        # repeater-shift codes 0x10-0x12 share this command byte (MOR-2930)
+        # but have no recorded row: they keep today's NAK rather than an
+        # invented answer. Every Icom profile declares get/set_split.
+        if cmd == _CMD_SPLIT:
+            if not payload:  # GET
+                state = 0x01 if self._split_on else 0x00
+                return self._civ_frame(to, frm, _CMD_SPLIT, data=bytes([state]))
+            if payload in (b"\x00", b"\x01"):  # SET
+                self._split_on = payload[0] == 0x01
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
         # --- Transceiver ID (0x19 0x00) — the connect-time identity read ---
         if cmd == 0x19 and payload == b"\x00":
             return self._civ_frame(to, frm, 0x19, sub=0x00, data=self.model_id)
@@ -2430,10 +2551,10 @@ class MockIcomRadio(AudioPortMixin):
                     to,
                     frm,
                     _CMD_SELECTED_FREQ,
-                    data=bytes([selector]) + _bcd_encode_freq(freq),
+                    data=bytes([selector]) + bcd_encode(freq),
                 )
             if len(payload) == 6 and payload[0] in (0x00, 0x01):  # SET
-                freq = _bcd_decode_freq(payload[1:6])
+                freq = bcd_decode(payload[1:6])
                 if payload[0] == 0x00:
                     self._frequency = freq  # shared with 0x03/0x05
                 else:
@@ -2464,6 +2585,14 @@ class MockIcomRadio(AudioPortMixin):
                 )
             if len(payload) == 4 and payload[0] in (0x00, 0x01):  # SET
                 mode, data_mode, filt = payload[1], payload[2], payload[3]
+                # MOR-4036: DATA cannot be carried into a mode outside the
+                # declared data-capable set — refuse before any mutation.
+                if (
+                    self._data_capable_modes is not None
+                    and data_mode
+                    and mode not in self._data_capable_modes
+                ):
+                    return self._civ_nak(to, frm)
                 if payload[0] == 0x00:
                     self._mode = mode  # shared with 0x04/0x06
                     self._data_mode = data_mode
@@ -2550,6 +2679,9 @@ class MockIcomRadio(AudioPortMixin):
         # receiver, and the DATA flag is the byte 0x26 selector 00 reports,
         # so 07 D0/D1 selection keeps MAIN/SUB isolated (the swap in the
         # 0x07 handler owns the mapping).
+        # MOR-4036: with ``data_capable_modes`` set, a DATA-on write while
+        # the current mode cannot carry DATA is NAKed before any mutation
+        # (the bench IC-705 refuses CW+DATA).
         if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x06":
             rest = payload[1:]
             if not rest:  # GET: DATA plus filter (00 00 while DATA is OFF)
@@ -2561,6 +2693,12 @@ class MockIcomRadio(AudioPortMixin):
                     sub=0x06,
                     data=bytes([self._data_mode, filt]),
                 )
+            if (
+                self._data_capable_modes is not None
+                and rest[0]
+                and self._mode not in self._data_capable_modes
+            ):
+                return self._civ_nak(to, frm)
             if len(rest) == 1 and rest[0] <= 0x03:  # short SET: DATA 0-3
                 self._data_mode = rest[0]
                 return self._civ_ack(to, frm)
@@ -2712,7 +2850,13 @@ class MockIcomRadio(AudioPortMixin):
         ):
             return []
         wanted = (0x00, 0x01) if self._scope_13 == 0x01 else (self._scope_12,)
-        return [r for r in wanted if self._scope_speed[r] in _SCOPE_GAP_S]
+        # A receiver with no loaded waves (a single-receiver personality)
+        # never streams, whatever the dual-mode byte says.
+        return [
+            r
+            for r in wanted
+            if r in self._scope_templates and self._scope_speed[r] in _SCOPE_GAP_S
+        ]
 
     def _scope_retime(self, reset: int | None = None) -> None:
         """Keep unchanged receivers on phase; start or reset only affected ones."""
@@ -2754,6 +2898,8 @@ class MockIcomRadio(AudioPortMixin):
                 frames = self._scope_templates[receiver]
                 index = self._scope_template_index[receiver]
                 frame = frames[index % len(frames)]
+                if self._scope_blank_waves:
+                    frame = _blank_scope_wave(frame)
                 self._scope_template_index[receiver] = index + 1
                 self._send(
                     self._civ_proto,
@@ -2800,11 +2946,6 @@ class MockIcomRadio(AudioPortMixin):
                 to, frm, _CMD_CMD29, data=bytes([receiver, _CMD_ATT, bcd])
             )
 
-        # S-meter squelch status (0x15 0x01): dual-receiver Icoms route the
-        # read through Command29, the reply comes back wrapped (MOR-3630).
-        if real_cmd == _CMD_METER and inner[:1] == bytes([_SUB_SQL_STATUS]):
-            return self._squelch_status_reply(to, frm, receiver=receiver)
-
         # PREAMP / DIGI-SEL (0x16)
         if real_cmd == _CMD_PREAMP:
             if not inner:
@@ -2847,25 +2988,6 @@ class MockIcomRadio(AudioPortMixin):
     # ------------------------------------------------------------------
     # CI-V frame builders
     # ------------------------------------------------------------------
-
-    def _squelch_status_reply(
-        self, to: int, frm: int, *, receiver: int | None = None
-    ) -> bytes:
-        """The single-byte squelch-open readback to a 0x15 0x01 poll (MOR-3630).
-
-        The polled counterpart of the spontaneous 0x15 frames real Icoms
-        emit. ``receiver`` is None for the plain frame and the Command29
-        receiver byte when the radio routes the read through Command29.
-        """
-        state = bytes([0x01 if self._squelch_open else 0x00])
-        if receiver is None:
-            return self._civ_frame(to, frm, _CMD_METER, sub=_SUB_SQL_STATUS, data=state)
-        return self._civ_frame(
-            to,
-            frm,
-            _CMD_CMD29,
-            data=bytes([receiver, _CMD_METER, _SUB_SQL_STATUS]) + state,
-        )
 
     def _civ_refused(self, cmd: int, payload: bytes) -> bool:
         """True when the refusal hook matches this (cmd, payload).

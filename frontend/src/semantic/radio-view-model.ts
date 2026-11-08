@@ -189,6 +189,28 @@ export type DisplayObservation<T> =
   | { readonly state: 'unknown'; readonly reason: 'not-observed' | 'invalid-value' | 'invalid-evidence' | 'identity-unresolved' }
   | { readonly state: 'unsupported' };
 
+/**
+ * MOR-3677 — the filter-width DISPLAY state: what the width row and the
+ * spectrum chip render for the active receiver's width. A composed verdict
+ * over the `filterWidth`, `narrow` and `filterWidthRadioDefault` leaves
+ * (derived by `lib/runtime/adapters/filter-width-display.ts`'s
+ * `deriveFilterWidthDisplay`, the ONE definition) rather than a per-leaf
+ * `DisplayObservation`: the FTX-1 reports widths the leaf vocabulary cannot
+ * name — its own mode default (CAT code 000, no Hz exists) and the NARROW
+ * takeover (SH does not follow NARROW, so no Hz may be shown while it is
+ * on). `not-reported` is the honest "the radio answered but carries no Hz
+ * for this mode" (C4FM, an out-of-table code, or the flag leaf still
+ * unpublished by a pre-PR1 backend); `not-observed` is everything else,
+ * fail-closed.
+ */
+export type FilterWidthDisplay = Readonly<
+  | { readonly state: 'known'; readonly hz: number; readonly stale: boolean }
+  | { readonly state: 'radio-default' }
+  | { readonly state: 'narrow' }
+  | { readonly state: 'unknown'; readonly reason: 'not-reported' | 'not-observed' }
+  | { readonly state: 'unsupported' }
+>;
+
 export interface DisplayObservedField<T> extends TxAuxField<T> {
   readonly display?: DisplayObservation<T>;
 }
@@ -354,6 +376,10 @@ export interface RxAudioViewModel {
   /** MOR-2792: the server's RX capture is delivering only digital silence
    *  (bit-exact zeros). Cleared as soon as a non-zero frame arrives. */
   rxSilent: boolean;
+  /** MOR-4210: present while LIVE browser audio runs from a quiet source.
+   *  `menu` is the radio menu item that raises its output level, `null`
+   *  when the profile names none. */
+  readonly sourceLow?: { readonly menu: string | null };
 }
 
 /**
@@ -392,7 +418,14 @@ export interface ModeFilterViewModel {
   modeChoices: readonly string[];
   currentFilter: ModeFilterField<number>;
   filterChoices: readonly string[];
+  /**
+   * MOR-3677: the composed width display state (see `FilterWidthDisplay`).
+   * `filterWidth` keeps its own meaning — the Hz reading or unknown — so
+   * command gating (`usable`) and the feedback lifecycle stay untouched;
+   * this field owns the RENDERING vocabulary only.
+   */
   filterWidth: ModeFilterField<number>;
+  filterWidthDisplay: FilterWidthDisplay;
   filterWidthMin: ModeFilterField<number>;
   filterWidthMax: ModeFilterField<number>;
 }
@@ -1122,10 +1155,17 @@ export interface ScopeControlsViewModel {
   /** Sweep-speed ordinal 0=FST/1=MID/2=SLO. */
   speed: ScopeControlsField<number>;
   hold: ScopeControlsField<boolean>;
-  /** Reference level in dB, clamped [-30, 10] by the toolbar's `clampRef`
-   *  (that clamp is a UI editing convenience, not a fact constraint — the
-   *  raw value here is whatever the radio reports). */
+  /** Reference level in dB. The raw value here is whatever the radio
+   *  reports — including half-dB values — never a clamped or stepped
+   *  copy; `refRange` below carries the declared range the UI steps and
+   *  clamps against (`stepRef` in `spectrum-toolbar-logic.ts`). */
   refDb: ScopeControlsField<number>;
+  /** The radio's declared REF adjustable range, derived from
+   *  capabilities (`ref_min_db`/`ref_max_db`, MOR-3694). `null` when the
+   *  active radio declares none — the REF steppers fail closed then, with
+   *  no fallback range. A capability echo fixed when caps load, not a
+   *  reading. */
+  refRange: { readonly min: number; readonly max: number } | null;
   dual: ScopeControlsField<boolean>;
   /** 0=MAIN, 1=SUB. */
   receiver: ScopeControlsField<number>;
@@ -1258,12 +1298,12 @@ export interface ReceiverIndicatorViewModel {
   rfGain: DisplayObservedField<number>;
   digiSel: ReceiverIndicatorField<boolean>;
   ipPlus: ReceiverIndicatorField<boolean>;
-  /** MOR-3630: squelch-open (BUSY) lamp state from the receiver's own `dcd`
-   *  leaf. Absent exactly when the radio declares no `squelch` capability
-   *  (the `bandwidthMaxHz` precedent: capability-derived indicator facts
-   *  are optional keys, never structural-false placeholders); a
-   *  never-observed leaf reads `unknown`, never `false`. */
-  squelchOpen?: ReceiverIndicatorField<boolean>;
+  /** The receiver's own squelch LEVEL (the value the squelch slider shows),
+   *  behind the SQL tag: the tag shows while the level is above 0. Absent
+   *  exactly when the radio declares no `squelch` capability (the
+   *  `bandwidthMaxHz` precedent); a never-observed leaf reads `unknown`,
+   *  never 0. */
+  squelch?: ReceiverIndicatorField<number>;
 }
 
 /**
@@ -1814,7 +1854,7 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     'receiver', 'availability', 'rfState', 'sMeter', 'bandwidthHz',
     'bandwidthMaxHz', 'agcMode',
     'nbActive', 'nrActive', 'notchMode', 'attenuator', 'preamp', 'rfGain',
-    'digiSel', 'ipPlus', 'squelchOpen',
+    'digiSel', 'ipPlus', 'squelch',
   ], path);
   const receiver = oneOf(v.receiver, RECEIVER_IDS, `${path}.receiver`);
   return {
@@ -1842,8 +1882,8 @@ function validateReceiverIndicator(value: unknown, path: string): ReceiverIndica
     rfGain: validateDisplayObservedField(v.rfGain, `${path}.rfGain`, num),
     digiSel: validateTxAuxField(v.digiSel, `${path}.digiSel`, bool),
     ipPlus: validateTxAuxField(v.ipPlus, `${path}.ipPlus`, bool),
-    ...(v.squelchOpen !== undefined
-      ? { squelchOpen: validateTxAuxField(v.squelchOpen, `${path}.squelchOpen`, bool) }
+    ...(v.squelch !== undefined
+      ? { squelch: validateTxAuxField(v.squelch, `${path}.squelch`, num) }
       : {}),
   };
 }
@@ -1913,7 +1953,7 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'monitorMode', 'liveAudio', 'afLevel', 'receiverAfLevels', 'routingFocus', 'routingSplit',
-    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent',
+    'modInputSource', 'modInputChoices', 'modInputReadiness', 'rxSilent', 'sourceLow',
   ], path);
   const afLevels = v.receiverAfLevels === undefined
     ? undefined : record(v.receiverAfLevels, `${path}.receiverAfLevels`);
@@ -1938,7 +1978,16 @@ function validateRxAudio(value: unknown, path: string): RxAudioViewModel {
     }),
     modInputReadiness: validateModInputReadiness(v.modInputReadiness, `${path}.modInputReadiness`),
     rxSilent: v.rxSilent === true,
+    ...(v.sourceLow === undefined ? {} : {
+      sourceLow: validateRxSourceLow(v.sourceLow, `${path}.sourceLow`),
+    }),
   };
+}
+
+function validateRxSourceLow(value: unknown, path: string): { readonly menu: string | null } {
+  const v = record(value, path);
+  exactKeys(v, ['menu'], path);
+  return { menu: nullableString(v.menu, `${path}.menu`) };
 }
 
 /** A capability-derived choice set: plain strings, no field-shape wrapper —
@@ -2026,11 +2075,35 @@ function validateModInputChoices(value: unknown, path: string): NonNullable<Filt
   });
 }
 
+function validateFilterWidthDisplay(value: unknown, path: string): FilterWidthDisplay {
+  const v = record(value, path);
+  const state = str(v.state, `${path}.state`);
+  if (state === 'known') {
+    exactKeys(v, ['state', 'hz', 'stale'], path);
+    const hz = num(v.hz, `${path}.hz`);
+    if (!Number.isSafeInteger(hz) || hz <= 0) invalid(`${path}.hz`, 'a positive safe integer');
+    return { state, hz, stale: bool(v.stale, `${path}.stale`) };
+  }
+  if (state === 'radio-default' || state === 'narrow' || state === 'unsupported') {
+    exactKeys(v, ['state'], path);
+    return { state };
+  }
+  if (state === 'unknown') {
+    exactKeys(v, ['state', 'reason'], path);
+    const reason = str(v.reason, `${path}.reason`);
+    if (reason !== 'not-reported' && reason !== 'not-observed') {
+      invalid(`${path}.reason`, "'not-reported' or 'not-observed'");
+    }
+    return { state, reason };
+  }
+  invalid(`${path}.state`, "a FilterWidthDisplay state ('known' | 'radio-default' | 'narrow' | 'unknown' | 'unsupported')");
+}
+
 function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
   const v = record(value, path);
   exactKeys(v, [
     'currentMode', 'modeChoices', 'currentFilter', 'filterChoices',
-    'filterWidth', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
+    'filterWidth', 'filterWidthDisplay', 'filterWidthMin', 'filterWidthMax', 'activeFilterConfiguration',
   ], path);
   return {
     activeFilterConfiguration: validateFilterConfiguration(v.activeFilterConfiguration, `${path}.activeFilterConfiguration`),
@@ -2039,6 +2112,7 @@ function validateModeFilter(value: unknown, path: string): ModeFilterViewModel {
     currentFilter: validateTxAuxField(v.currentFilter, `${path}.currentFilter`, num),
     filterChoices: strArray(v.filterChoices, `${path}.filterChoices`),
     filterWidth: validateTxAuxField(v.filterWidth, `${path}.filterWidth`, num),
+    filterWidthDisplay: validateFilterWidthDisplay(v.filterWidthDisplay, `${path}.filterWidthDisplay`),
     filterWidthMin: validateTxAuxField(v.filterWidthMin, `${path}.filterWidthMin`, num),
     filterWidthMax: validateTxAuxField(v.filterWidthMax, `${path}.filterWidthMax`, num),
   };
@@ -2362,7 +2436,7 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
   const v = record(value, path);
   exactKeys(
     v,
-    ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'dual', 'receiver',
+    ['mode', 'edge', 'span', 'speed', 'hold', 'refDb', 'refRange', 'dual', 'receiver',
       'duringTx', 'centerType', 'vbwNarrow', 'rbw'],
     path,
   );
@@ -2373,6 +2447,7 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
     speed: validateTxAuxField(v.speed, `${path}.speed`, num),
     hold: validateTxAuxField(v.hold, `${path}.hold`, bool),
     refDb: validateTxAuxField(v.refDb, `${path}.refDb`, num),
+    refRange: validateRefRange(v.refRange, `${path}.refRange`),
     dual: validateTxAuxField(v.dual, `${path}.dual`, bool),
     receiver: validateTxAuxField(v.receiver, `${path}.receiver`, num),
     duringTx: validateTxAuxField(v.duringTx, `${path}.duringTx`, bool),
@@ -2380,6 +2455,19 @@ function validateScopeControls(value: unknown, path: string): ScopeControlsViewM
     vbwNarrow: validateTxAuxField(v.vbwNarrow, `${path}.vbwNarrow`, bool),
     rbw: validateTxAuxField(v.rbw, `${path}.rbw`, num),
   };
+}
+
+/** MOR-3694: `null` or exactly `{min, max}` with min <= max. */
+function validateRefRange(
+  value: unknown,
+  path: string,
+): { readonly min: number; readonly max: number } | null {
+  if (value === null) return null;
+  const v = record(value, path);
+  exactKeys(v, ['min', 'max'], path);
+  const range = { min: num(v.min, `${path}.min`), max: num(v.max, `${path}.max`) };
+  if (range.min > range.max) invalid(`${path}.min`, 'min <= max');
+  return range;
 }
 
 const SCOPE_SOURCES: readonly ScopeSourceKind[] = ['hardware', 'audio_fft'];

@@ -25,6 +25,7 @@ const mockProps = {
   filterWidth: 2400 as number,
   filterWidthMin: FTX1_CAPABILITIES.filterWidthMin ?? 50,
   filterWidthMax: FTX1_CAPABILITIES.filterWidthMax ?? 4000,
+  filterWidthState: null as 'radio-default' | 'narrow' | null,
   filterConfig: (ftx1FilterConfig.SSB ?? null) as FilterModeConfig | null,
   ifShift: 0,
   hasIfShift: true,
@@ -116,6 +117,7 @@ beforeEach(() => {
     currentMode: 'USB',
     currentFilter: 1,
     filterWidth: 2400,
+    filterWidthState: null,
   filterConfig: (ftx1FilterConfig.SSB ?? null) as FilterModeConfig | null,
     hasIfShift: true,
   });
@@ -275,5 +277,30 @@ describe('MOR-1679 FTX-1 null width (C4FM, SH code 00)', () => {
     row.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -120 }));
     vi.advanceTimersByTime(60);
     expect(mockHandlers.onFilterWidthChange).not.toHaveBeenCalled();
+  });
+});
+
+// MOR-3677: the width area is never silently blank for the Hz-less states —
+// the radio's own mode default (code 000) and NARROW both NAME themselves in
+// the reserved slot, with the reason on the title channel. The state rides
+// `toFilterProps`'s `filterWidthState` (panel-props.ts).
+describe('MOR-3677 FTX-1 width area names radio-default and narrow instead of going blank', () => {
+  it.each([
+    ['radio-default', 'Radio default', 'The radio is using its own default width for this mode and does not report it in Hz.'],
+    ['narrow', 'Narrow (radio)', 'NARROW is on, so the radio uses its own narrow width, which is not reported in Hz.'],
+  ] as const)('%s shows its value text and reason, never a blank width area', (stateText, valueText, reason) => {
+    setProps({ filterWidth: Number.NaN, filterWidthState: stateText });
+    const t = mountPanel();
+    const state = t.querySelector<HTMLElement>(`[data-width-state="${stateText}"]`);
+    if (!state) throw new Error(`width state chip ${stateText} did not mount`);
+    expect(state.textContent).toBe(valueText);
+    expect(state.getAttribute('title')).toBe(reason);
+  });
+
+  it('a plain unobserved width (no state) keeps the empty unlit box — no state chip, no placeholder', () => {
+    setProps({ currentMode: 'C4FM-DN', filterWidth: Number.NaN, filterConfig: null, filterWidthState: null });
+    const t = mountPanel();
+    expect(t.querySelector('[data-width-state]')).toBeNull();
+    expect(t.querySelector('.bw-value')?.textContent).toBe('');
   });
 });

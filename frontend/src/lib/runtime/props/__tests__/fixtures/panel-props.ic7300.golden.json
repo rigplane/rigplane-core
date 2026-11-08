@@ -94,6 +94,7 @@
       "FIL3"
     ],
     "filterWidth": "NaN",
+    "filterWidthState": null,
     "filterWidthMin": 50,
     "filterWidthMax": 3600,
     "filterConfig": {

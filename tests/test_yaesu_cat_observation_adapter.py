@@ -30,7 +30,11 @@ from rigplane.radio_state import RadioState
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
-from rigplane.backends.yaesu_cat.radio import RadioConnectionError, YaesuCatRadio
+from rigplane.backends.yaesu_cat.radio import (
+    FilterWidthReading,
+    RadioConnectionError,
+    YaesuCatRadio,
+)
 from rigplane.backends.yaesu_cat.transport import (
     CatCommandRejected,
     CatGarbledFrameError,
@@ -129,7 +133,9 @@ def _make_radio() -> MagicMock:
     # IF-shift/narrow have SUB forms (bench 2026-09-18, MOR-2511 comment
     # 01:22Z); the SUB answers differ from MAIN's so a MAIN echo fails.
     radio.get_filter_width = AsyncMock(return_value=500)
-    radio.read_filter_width = AsyncMock(return_value=500)
+    radio.read_filter_width_reading = AsyncMock(
+        return_value=FilterWidthReading(500, False)
+    )
     radio.get_if_shift = AsyncMock(return_value=200)
     radio.read_if_shift = AsyncMock(
         side_effect=lambda receiver=0: 200 if receiver == 0 else 210
@@ -649,9 +655,11 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
         ("global.tx_state.ptt", False),
         ("global.tx_state.observed_ptt", ObservedPtt.OFF),
         ("receiver.main.active.freq_mode.filter_width", 500),
+        ("receiver.main.active.freq_mode.filter_width_radio_default", False),
         ("receiver.sub.active.freq_mode.filter_width", 500),
+        ("receiver.sub.active.freq_mode.filter_width_radio_default", False),
     ]
-    assert radio.read_filter_width.await_args_list == [
+    assert radio.read_filter_width_reading.await_args_list == [
         call(0, mode="USB"),
         call(1, mode="LSB"),
     ]
@@ -672,7 +680,47 @@ async def test_medium_poll_emits_frequency_mode_and_ptt_observations() -> None:
     assert by_path["receiver.main.active.freq_mode.freq_hz"].max_age == 2.0
     assert by_path["receiver.main.active.freq_mode.filter_width"].max_age == 2.0
     assert by_path["receiver.sub.active.freq_mode.filter_width"].max_age == 2.0
+    assert (
+        by_path["receiver.main.active.freq_mode.filter_width_radio_default"].max_age
+        == 2.0
+    )
+    assert (
+        by_path["receiver.sub.active.freq_mode.filter_width_radio_default"].max_age
+        == 2.0
+    )
     assert all(item.source.capability_id == str(item.path) for item in observations)
+
+
+@pytest.mark.asyncio
+async def test_medium_poll_without_flag_capability_uses_legacy_width_read() -> None:
+    """MOR-3677: a profile that does not declare the flag keeps the old
+    read — one width observation per receiver, no flag, no new-read call."""
+
+    radio = _make_radio()
+    radio.read_filter_width = AsyncMock(return_value=500)
+    profile = _profile_state_acquisition()
+    stripped = replace(
+        profile,
+        capabilities=tuple(
+            capability
+            for capability in profile.capabilities
+            if capability.path.name != "filter_width_radio_default"
+        ),
+    )
+    adapter = YaesuObservationAdapter(radio, profile=stripped, clock=_clock)
+
+    observations = await adapter.poll_medium()
+
+    by_path = {str(item.path): item.value for item in observations}
+    assert by_path["receiver.main.active.freq_mode.filter_width"] == 500
+    assert by_path["receiver.sub.active.freq_mode.filter_width"] == 500
+    assert "receiver.main.active.freq_mode.filter_width_radio_default" not in by_path
+    assert "receiver.sub.active.freq_mode.filter_width_radio_default" not in by_path
+    radio.read_filter_width_reading.assert_not_awaited()
+    assert radio.read_filter_width.await_args_list == [
+        call(0, mode="USB"),
+        call(1, mode="LSB"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -719,7 +767,7 @@ async def test_medium_ptt_error_publication_is_local_and_preserves_exception(
     assert sink.call_count == int(stage != "frequency")
     if stage != "frequency":
         assert sink.call_args.args[0].value is ObservedPtt.UNKNOWN
-    radio.read_filter_width.assert_not_awaited()
+    radio.read_filter_width_reading.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -2310,8 +2358,9 @@ async def test_read_filter_width_does_not_mutate_state() -> None:
     WRITE ``self._state``.
 
     ``get_filter_width`` (the public path) and ``read_filter_width`` return the
-    same Hz value, but only ``read_filter_width`` is wired into the observation
-    adapter so that legacy state is never mutated by polling.
+    same Hz value; the observation adapter calls ``read_filter_width_reading``
+    (which ``read_filter_width`` delegates to) so that legacy state is never
+    mutated by polling.
     """
     radio = YaesuCatRadio("/dev/null", audio_driver=MagicMock())
     # Current mode read fresh via CAT (MOR-507); the legacy mirror is ignored.
@@ -2710,10 +2759,13 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
     ("ptt", "read_transmit_state", None, "poll_medium", ("global.tx_state.ptt",)),
     (
         "main.filter_width",
-        "read_filter_width",
+        "read_filter_width_reading",
         0,
         "poll_medium",
-        ("receiver.main.active.freq_mode.filter_width",),
+        (
+            "receiver.main.active.freq_mode.filter_width",
+            "receiver.main.active.freq_mode.filter_width_radio_default",
+        ),
     ),
     (
         "main.s_meter",

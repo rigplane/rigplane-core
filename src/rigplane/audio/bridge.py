@@ -55,6 +55,7 @@ from .backend import (
     RxStreamHealth,
     TxStream,
 )
+from .loop_handoff import CoalescedLoopHandoff
 from .session import AudioSession, AudioSessionState, RxSubscription, TxLease
 from .usb_driver import bounded_portaudio_pool
 
@@ -130,11 +131,22 @@ def _std_dev(values: list[float]) -> float:
 
 
 def _rms_dbfs(pcm: bytes) -> float:
-    """Compute RMS level of PCM s16le data in dBFS."""
+    """Compute RMS level of PCM s16le data in dBFS.
+
+    Vectorized with numpy (MOR-4227): the per-sample generator loop ran on
+    the event loop for every RX/TX frame. s16 squares and their sums stay
+    exact integers in float64, so the dot-product sum equals the previous
+    left-to-right sum bit for bit (equality pins in
+    ``tests/test_audio_cpu_hotspots_mor4227.py``).
+    """
+    import numpy as np
+
     samples = _pcm16le_samples(pcm)
     if not samples:
         return -96.0
-    rms = math.sqrt(sum(float(s) * float(s) for s in samples) / len(samples))
+    values = np.frombuffer(samples, dtype=np.int16)
+    as_float = values.astype(np.float64)
+    rms = math.sqrt(float(as_float @ as_float) / len(samples))
     if rms < 1.0:
         return -96.0
     return 20.0 * math.log10(rms / _INT16_MAX)
@@ -397,6 +409,9 @@ class AudioBridge:
         self._rx_task: asyncio.Task[None] | None = None
         self._tx_task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Coalesced TX-capture handoff for this loop (MOR-4227); rebuilt if
+        # the bridge restarts on a different loop.
+        self._tx_capture_handoff: CoalescedLoopHandoff | None = None
         self._decoder: Any = None
         # Radio-side demand handles (MOR-577): the bridge declares RX demand
         # + a TX lease on the AudioSession (which wraps the radio's shared
@@ -1107,12 +1122,18 @@ class AudioBridge:
     def _on_tx_capture(self, frame: bytes) -> None:
         """Callback from RxStream — enqueue captured audio for TX processing.
 
-        May be called from a worker thread (PortAudioBackend), so we
-        schedule the enqueue on the event loop to avoid data races.
+        May be called from a worker thread (PortAudioBackend), so we hop to
+        the event loop to avoid data races. The hop is coalesced (MOR-4227):
+        while a drain is already scheduled, further frames only buffer, so
+        one loop wake-up carries every frame that arrived meanwhile.
         """
         loop = self._loop
         if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(self._enqueue_tx, frame)
+            handoff = self._tx_capture_handoff
+            if handoff is None or handoff.loop is not loop:
+                handoff = CoalescedLoopHandoff(loop, self._enqueue_tx)
+                self._tx_capture_handoff = handoff
+            handoff.submit(frame)
 
     async def _tx_gate_is_closed(self) -> bool:
         """Fail-closed (MOR-2863): only an explicit ``True`` opens the gate."""

@@ -15,10 +15,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from rigplane.core.types import bcd_decode, bcd_encode
 from rigplane_testkit.icom import (
     MockIcomRadio,
-    _bcd_decode_freq,
-    _bcd_encode_freq,
 )
 
 from testkit.ic7610_fakes import ic7610_lan_fake
@@ -73,14 +72,14 @@ def _recorded_receiver_frequencies(
     """
     gets = [(request, reply) for request, reply in pairs if request[4] == 0x03]
     assert len(gets) >= 2, "the window reads both receivers"
-    main_hz = _bcd_decode_freq(gets[0][1][5:-1])
+    main_hz = bcd_decode(gets[0][1][5:-1])
     sub_hz = next(
-        _bcd_decode_freq(reply[5:-1])
+        bcd_decode(reply[5:-1])
         for _, reply in gets[1:]
-        if _bcd_decode_freq(reply[5:-1]) != main_hz
+        if bcd_decode(reply[5:-1]) != main_hz
     )
     for _, reply in gets:
-        assert _bcd_decode_freq(reply[5:-1]) in (main_hz, sub_hz)
+        assert bcd_decode(reply[5:-1]) in (main_hz, sub_hz)
     return main_hz, sub_hz
 
 
@@ -112,14 +111,14 @@ def test_frequency_write_while_sub_selected_lands_on_sub() -> None:
     assert sim._dispatch_civ(0x07, b"\xd1", _FROM_CONTROLLER) == _ACK  # noqa: SLF001
     new_f = 7_200_000
     assert new_f not in (main_before, sim._unselected_frequency)  # noqa: SLF001
-    assert sim._dispatch_civ(0x05, _bcd_encode_freq(new_f), _FROM_CONTROLLER) == _ACK  # noqa: SLF001
+    assert sim._dispatch_civ(0x05, bcd_encode(new_f), _FROM_CONTROLLER) == _ACK  # noqa: SLF001
     assert sim._dispatch_civ(0x07, b"\xd0", _FROM_CONTROLLER) == _ACK  # noqa: SLF001
     assert sim._selected_receiver == 0  # noqa: SLF001
     assert sim._dispatch_civ(0x03, b"", _FROM_CONTROLLER) == (  # noqa: SLF001
-        b"\xfe\xfe\xe0\x98\x03" + _bcd_encode_freq(main_before) + b"\xfd"
+        b"\xfe\xfe\xe0\x98\x03" + bcd_encode(main_before) + b"\xfd"
     )
     assert sim._dispatch_civ(0x25, b"\x01", _FROM_CONTROLLER) == (  # noqa: SLF001
-        b"\xfe\xfe\xe0\x98\x25\x01" + _bcd_encode_freq(new_f) + b"\xfd"
+        b"\xfe\xfe\xe0\x98\x25\x01" + bcd_encode(new_f) + b"\xfd"
     )
 
 

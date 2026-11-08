@@ -151,9 +151,6 @@ polling_only = [
     "receiver.main.operator_controls.agc",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_toggles.nr",
-    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp — the 0x15 0x01
-    # single-byte SQL-status read, same cadence class as the sibling toggles.
-    "receiver.main.operator_toggles.dcd",
     "receiver.main.operator_toggles.ipplus",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
@@ -535,6 +532,7 @@ first_group = 0
 last_group = 0
 first_channel = 1
 last_channel = 99
+recall = true  # 08 00cc "Selects the Memory channel.", the bare 08 "Switches to the Memory mode." (MK2 CI-V guide); not yet bench-verified (MOR-4219)
 
 # The verified 1A 00 write record (MOR-3644), field by field from the
 # IC-7300MK2 CI-V Reference Guide p.17 "Memory channel content". The

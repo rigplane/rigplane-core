@@ -32,7 +32,7 @@ from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.exceptions import CommandError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
-from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat.radio import FilterWidthReading, YaesuCatRadio
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.transport import (
     CatCommandRejected,
@@ -902,9 +902,12 @@ def make_radio(
     radio.get_manual_notch = AsyncMock(return_value=manual_notch)
     radio.get_narrow = AsyncMock(return_value=narrow)
     radio.read_narrow = AsyncMock(return_value=narrow)
-    # Filter / IF-shift DSP control reads (MOR-445).
+    # Filter / IF-shift DSP control reads (MOR-445). The width read reports
+    # the radio-default flag together with the Hz (MOR-3677).
     radio.get_filter_width = AsyncMock(return_value=2400)
-    radio.read_filter_width = AsyncMock(return_value=2400)
+    radio.read_filter_width_reading = AsyncMock(
+        return_value=FilterWidthReading(2400, False)
+    )
     radio.get_if_shift = AsyncMock(return_value=0)
     radio.read_if_shift = AsyncMock(return_value=0)
     radio.get_vfo_select = AsyncMock(return_value=vfo_select)
@@ -2360,7 +2363,9 @@ async def test_medium_poll_emits_observations_without_legacy_state_callback() ->
         *_declared_tx_target(14_074_000),
         ("global.tx_state.ptt", True),
         ("receiver.main.active.freq_mode.filter_width", 2400),
+        ("receiver.main.active.freq_mode.filter_width_radio_default", False),
         ("receiver.sub.active.freq_mode.filter_width", 2400),
+        ("receiver.sub.active.freq_mode.filter_width_radio_default", False),
     ]
     assert {item.source.source for item in observations} == {"yaesu_poll_response"}
 
@@ -4022,7 +4027,14 @@ async def test_reset_filter_width_uses_yaesu_post_write_readback_without_pending
         return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
     )
     radio.read_filter_width = AsyncMock(
-        side_effect=lambda receiver, *, mode: 2400 if receiver == 0 else 1800
+        side_effect=AssertionError("legacy width read must not be used")
+    )
+    radio.read_filter_width_reading = AsyncMock(
+        side_effect=lambda receiver, *, mode: (
+            FilterWidthReading(2400, False)
+            if receiver == 0
+            else FilterWidthReading(1800, False)
+        )
     )
 
     await handler._enqueue_command(  # noqa: SLF001
@@ -4047,8 +4059,56 @@ async def test_reset_filter_width_uses_yaesu_post_write_readback_without_pending
 
     await poller._emit_medium_observations()  # noqa: SLF001
 
-    assert radio.read_filter_width.await_args_list.count(mock_call(0, mode="USB")) == 1
+    assert (
+        radio.read_filter_width_reading.await_args_list.count(mock_call(0, mode="USB"))
+        == 1
+    )
     assert store.snapshot().field(width_path).value == 2400
+    assert (
+        service.readback_expectations(
+            source="websocket", session_id="ws-ftx1", command_id=command_id
+        )
+        == ()
+    )
+    assert service.lifecycle_events()[-1].state == "reconciled"
+
+
+@pytest.mark.asyncio
+async def test_reset_filter_width_confirms_when_readback_is_code_00() -> None:
+    """MOR-3677: the value-less reset confirms even when the post-write
+    readback answers code 00 — a null width with a true radio-default flag.
+    The ``matches_any_value`` expectation accepts the null; the flag leaf
+    carries the confirmation payload."""
+    radio, handler, poller, store, _accept = _real_ftx1_control_path()
+    service = handler._command_service  # noqa: SLF001
+    command_id = "reset-width-main-00"
+    width_path = FieldPath.active("main", "freq_mode", "filter_width")
+    flag_path = FieldPath.active("main", "freq_mode", "filter_width_radio_default")
+
+    radio.read_freq = AsyncMock(side_effect=lambda receiver: 14_074_000)
+    radio.read_mode = AsyncMock(side_effect=lambda receiver: ("DATA-U", None))
+    radio.get_tx_func = AsyncMock(return_value=0)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
+    )
+    radio.read_filter_width_reading = AsyncMock(
+        side_effect=lambda receiver, *, mode: (
+            FilterWidthReading(None, True)
+            if receiver == 0
+            else FilterWidthReading(500, False)
+        )
+    )
+
+    await handler._enqueue_command(  # noqa: SLF001
+        "reset_filter_width",
+        {"receiver": 0},
+        command_id=command_id,
+    )
+    await poller._drain_commands()  # noqa: SLF001
+    await poller._emit_medium_observations()  # noqa: SLF001
+
+    assert store.snapshot().field(width_path).value is None
+    assert store.snapshot().field(flag_path).value is True
     assert (
         service.readback_expectations(
             source="websocket", session_id="ws-ftx1", command_id=command_id

@@ -33,7 +33,8 @@ a matching assertion added here, or they would drift the same way this one
 did.
 
 Also pins that the `Run tests` job in each of those three workflows checks
-out with `fetch-depth` of at least 2.
+out with `fetch-depth` of at least 2 (`0`, a full-history checkout, counts:
+publish.yml needs it for the rc receipt gate).
 
 Also pins the `-m` marker selection. `pyproject.toml` `addopts` deselects the
 `slow` and `benchmark` tests, and a `-m` on the command line replaces that
@@ -245,7 +246,10 @@ def test_run_tests_job_checks_out_at_least_two_commits() -> None:
         for checkout in checkouts:
             depth_match = _FETCH_DEPTH_RE.search(checkout)
             depth = int(depth_match.group(1)) if depth_match else None
-            assert depth is not None and depth >= 2, (
+            # fetch-depth 0 is a full-history checkout (actions/checkout),
+            # a superset of the depth >= 2 the monotonic comparison needs;
+            # publish.yml needs it for the rc receipt gate (MOR-3998).
+            assert depth is not None and (depth == 0 or depth >= 2), (
                 f"{workflow_name}'s `Run tests` job checkout has fetch-depth "
                 f"{depth!r} (None is the checkout default of 1) — the suite "
                 "includes a monotonic comparison against the parent commit, "

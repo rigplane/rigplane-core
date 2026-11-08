@@ -19,6 +19,7 @@ import struct
 
 import pytest
 
+from rigplane.core.types import bcd_decode, bcd_encode
 from rigplane_testkit.icom import MockIcomRadio
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 
@@ -91,24 +92,6 @@ def _civ_packet(frame: bytes, seq: int = 1) -> bytes:
     return bytes(pkt)
 
 
-def _encode_bcd_freq(freq_hz: int) -> bytes:
-    """Icom 5-byte BCD, least-significant byte first."""
-    digits = f"{freq_hz:010d}"
-    out = bytearray(5)
-    for i in range(5):
-        low = int(digits[9 - 2 * i])
-        high = int(digits[9 - 2 * i - 1])
-        out[i] = (high << 4) | low
-    return bytes(out)
-
-
-def _decode_bcd_freq(data: bytes) -> int:
-    freq = 0
-    for i, byte in enumerate(data):
-        freq += (byte & 0x0F) * (10 ** (2 * i)) + (byte >> 4) * (10 ** (2 * i + 1))
-    return freq
-
-
 def _decode_bcd_value(data: bytes) -> int:
     """Decode packed BCD menu/level values, most significant pair first."""
     value = 0
@@ -163,39 +146,37 @@ async def test_selected_freq_read_returns_current_frequency_as_bcd(server, clien
     assert reply[4] == 0x25
     assert reply[5] == 0x00  # receiver byte echoes the selected subcommand
     assert reply[-1] == 0xFD
-    assert _decode_bcd_freq(reply[6:11]) == 7_100_123
+    assert bcd_decode(reply[6:11]) == 7_100_123
 
 
 async def test_0x05_write_and_selected_freq_read_agree_both_ways(server, client):
     # 0x05 write → visible through 0x25 00.
-    ack = await _send_civ(
-        client, server.civ_port, _frame(0x05, _encode_bcd_freq(7_200_000))
-    )
+    ack = await _send_civ(client, server.civ_port, _frame(0x05, bcd_encode(7_200_000)))
     assert ack[4] == 0xFB  # ACK
     selected = await _send_civ(client, server.civ_port, _frame(0x25, b"\x00"))
-    assert _decode_bcd_freq(selected[6:11]) == 7_200_000
+    assert bcd_decode(selected[6:11]) == 7_200_000
 
     # 0x25 00 write → visible through 0x03.
     ack = await _send_civ(
-        client, server.civ_port, _frame(0x25, b"\x00" + _encode_bcd_freq(7_300_000))
+        client, server.civ_port, _frame(0x25, b"\x00" + bcd_encode(7_300_000))
     )
     assert ack[4] == 0xFB
     plain = await _send_civ(client, server.civ_port, _frame(0x03, b""))
-    assert _decode_bcd_freq(plain[5:10]) == 7_300_000
+    assert bcd_decode(plain[5:10]) == 7_300_000
 
 
 async def test_unselected_freq_write_then_read_round_trip(server, client):
     ack = await _send_civ(
-        client, server.civ_port, _frame(0x25, b"\x01" + _encode_bcd_freq(3_500_000))
+        client, server.civ_port, _frame(0x25, b"\x01" + bcd_encode(3_500_000))
     )
     assert ack[4] == 0xFB
     unselected = await _send_civ(client, server.civ_port, _frame(0x25, b"\x01"))
     assert unselected[5] == 0x01  # receiver byte echoes the unselected subcommand
-    assert _decode_bcd_freq(unselected[6:11]) == 3_500_000
+    assert bcd_decode(unselected[6:11]) == 3_500_000
 
     # The unselected VFO has its own state: the selected frequency is untouched.
     selected = await _send_civ(client, server.civ_port, _frame(0x25, b"\x00"))
-    assert _decode_bcd_freq(selected[6:11]) == 14_074_000
+    assert bcd_decode(selected[6:11]) == 14_074_000
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +338,7 @@ async def test_1a06_full_form_updates_data_and_filter(server, client):
     plain = await _send_civ(client, server.civ_port, _frame(0x04, b""))
     assert plain[5:7] == b"\x01\x03"
     freq = await _send_civ(client, server.civ_port, _frame(0x03, b""))
-    assert _decode_bcd_freq(freq[5:10]) == 14_074_000
+    assert bcd_decode(freq[5:10]) == 14_074_000
     unselected = await _send_civ(client, server.civ_port, _frame(0x26, b"\x01"))
     assert unselected[5:9] == b"\x01\x01\x00\x01"
 
@@ -399,7 +380,7 @@ async def test_1a06_data_only_write_preserves_filter_mode_and_freq(server, clien
     assert data_reply[6:8] == b"\x01\x03"
     # Frequency is untouched too.
     plain = await _send_civ(client, server.civ_port, _frame(0x03, b""))
-    assert _decode_bcd_freq(plain[5:10]) == 14_074_000
+    assert bcd_decode(plain[5:10]) == 14_074_000
 
 
 async def test_1a06_and_0x26_data_flag_readback_agree(server, client):

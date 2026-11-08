@@ -7,9 +7,11 @@ from collections.abc import Callable
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from typing import ClassVar
 
 import pytest
 
+from rigplane.core.transport import IcomCivTransport
 from rigplane import IC_7610_ADDR
 from rigplane.backends.icom7610.drivers import serial_session as serial
 from rigplane.commands import (
@@ -58,7 +60,7 @@ from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import observe_selected_receiver
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
-from _timing import VirtualClock, await_until
+from rigplane.testing.timing import VirtualClock, await_until
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -262,6 +264,9 @@ def _scope_response(sub: int, payload: bytes) -> bytes:
 
 class MockTransport:
     """Mock transport that queues responses for receive_packet."""
+
+    #: The LAN transport's ingress-order contract (MOR-4209).
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
 
     def __init__(self) -> None:
         self.connected = False
@@ -563,12 +568,74 @@ class TestSetModeSelected0x26:
         # data_mode 1 (from MAIN state), filter 2 (from _filter_width cache).
         # Frame tail: 26 <receiver=00> <mode=USB=01> <data_mode=01>
         #             <filter=02> FD.
+        # MOR-4036: USB is in the X6200's declared [data_mode].modes
+        # (["USB", "LSB"]), so the DATA flag is preserved here.
         radio = self._make_radio("X6200", mock_transport)
         try:
             radio._radio_state.main.data_mode = 1
             radio._filter_width = 2
             await radio.set_mode(Mode.USB)
             assert mock_transport.sent_packets[-1].endswith(b"\x26\x00\x01\x01\x02\xfd")
+        finally:
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("model", "mode", "expected_tail"),
+        [
+            # IC-705 declares [data_mode].modes = ["USB", "LSB", "AM", "FM"]
+            # (IC-705 instruction manual: DATA exists in SSB, AM, FM; bench
+            # 2026-11-02: 26 00 03 01 01 (CW+DATA) is NAKed, 26 00 03 00 01
+            # is ACKed). CW/CW-R/RTTY cannot carry DATA -> data byte 0.
+            ("IC-705", Mode.CW, b"\x26\x00\x03\x00\x01\xfd"),
+            ("IC-705", Mode.CW_R, b"\x26\x00\x07\x00\x01\xfd"),
+            ("IC-705", Mode.RTTY, b"\x26\x00\x04\x00\x01\xfd"),
+            ("IC-705", Mode.USB, b"\x26\x00\x01\x01\x01\xfd"),
+            ("IC-705", Mode.LSB, b"\x26\x00\x00\x01\x01\xfd"),
+            ("IC-705", Mode.AM, b"\x26\x00\x02\x01\x01\xfd"),
+            ("IC-705", Mode.FM, b"\x26\x00\x05\x01\x01\xfd"),
+            # X6200 declares [data_mode].modes = ["USB", "LSB"] (PDF page 10
+            # Table 3: LSB-D and USB-D only) -> AM drops the flag too.
+            ("X6200", Mode.CW, b"\x26\x00\x03\x00\x01\xfd"),
+            ("X6200", Mode.AM, b"\x26\x00\x02\x00\x01\xfd"),
+            ("X6200", Mode.USB, b"\x26\x00\x01\x01\x01\xfd"),
+        ],
+    )
+    async def test_data_flag_dropped_for_modes_without_data(
+        self,
+        mock_transport: MockTransport,
+        model: str,
+        mode: Mode,
+        expected_tail: bytes,
+    ) -> None:
+        # MOR-4036: a mode-only change to a mode that cannot carry DATA must
+        # send data_mode 0, not copy the receiver's current DATA flag.
+        radio = self._make_radio(model, mock_transport)
+        try:
+            radio._radio_state.main.data_mode = 1
+            await radio.set_mode(mode)
+            assert mock_transport.sent_packets[-1].endswith(expected_tail), (
+                model,
+                mode,
+            )
+        finally:
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_x6100_undeclared_keeps_data_flag(
+        self, mock_transport: MockTransport
+    ) -> None:
+        # MOR-4036: X6100 declares no [data_mode].modes (no sourced fact for
+        # which of its modes carry DATA). None means undeclared -> the
+        # runtime keeps the current DATA flag (unchanged old behaviour).
+        # This pins the undeclared fallback deliberately.
+        radio = self._make_radio("X6100", mock_transport)
+        try:
+            assert radio._profile.set_mode_via_selected is True
+            assert radio._profile.data_mode_modes is None
+            radio._radio_state.main.data_mode = 1
+            await radio.set_mode(Mode.CW)
+            assert mock_transport.sent_packets[-1].endswith(b"\x26\x00\x03\x01\x01\xfd")
         finally:
             radio._connected = False
 

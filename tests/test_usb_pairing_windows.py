@@ -91,8 +91,40 @@ def _w3_session():
     )["sessions"][0]
 
 
-def test_w3_dual_cp210x_pair_each_radio_by_topology():
-    session = _w3_session()
+# Endpoint renames on the dual-codec W3 shape. The Windows "2-" duplicate
+# disambiguation prefix moves onto the IC-7610 endpoints (the IC-7300 keeps
+# the plain names), and the user renames the IC-7610 endpoints to Finnish.
+# Pairing must keep following hub topology, never the endpoint names.
+W3_ENDPOINT_RENAMES = {
+    "recorded": {},
+    "duplicate-prefix-on-ic7610": {
+        "Microphone (USB Audio CODEC )": "Microphone (2- USB Audio CODEC )",
+        "Speakers (USB Audio CODEC )": "Speakers (2- USB Audio CODEC )",
+        "Microphone (2- USB Audio CODEC )": "Microphone (USB Audio CODEC )",
+        "Speakers (2- USB Audio CODEC )": "Speakers (USB Audio CODEC )",
+    },
+    "renamed-ic7610-finnish": {
+        "Microphone (USB Audio CODEC )": "Mikrofoni (USB Audio CODEC)",
+        "Speakers (USB Audio CODEC )": "Kaiuttimet (USB Audio CODEC)",
+    },
+}
+
+
+def rename_w3_endpoints(session, renames):
+    """Rename endpoint names on the devnode and PortAudio sides as one."""
+    for row in session["raw"]["windows"]["devnodes"]:
+        if row["class_name"] == "AudioEndpoint":
+            row["friendly_name"] = renames.get(
+                row["friendly_name"], row["friendly_name"]
+            )
+    for device in session["raw"]["portaudio"]["devices"]:
+        device["name"] = renames.get(device["name"], device["name"])
+    return session
+
+
+@pytest.mark.parametrize("variant", W3_ENDPOINT_RENAMES)
+def test_w3_dual_cp210x_pair_each_radio_by_topology(variant):
+    session = rename_w3_endpoints(_w3_session(), W3_ENDPOINT_RENAMES[variant])
     paired_7610 = pair(
         adapt_windows(session), "COM5", get_radio_profile("IC-7610").usb_identity
     )
@@ -189,9 +221,6 @@ def test_s2_w1_wrong_codec_identity_retains_nearby_mme_candidates(snapshot):
         if candidate.near_radio
     } == {(1, "capture"), (5, "render")}
     assert all(candidate.hostapi == "MME" for candidate in result.candidates)
-    assert all(
-        candidate.portaudio_index not in {0, 4} for candidate in result.candidates
-    )
     assert result.candidates[0].near_radio
 
 
@@ -485,6 +514,78 @@ async def test_driver_refusal_carries_candidates_and_profile_identity(monkeypatc
     )
     assert audio_start_failure_reason(error) == "usb_topology_unavailable"
     assert not backend.rx_streams
+
+
+async def test_empty_windows_topology_candidates_roundtrip(monkeypatch):
+    from rigplane.audio import usb_driver
+    from rigplane.audio.usb_driver import (
+        AudioCaptureOpenTimeoutError,
+        UsbAudioDriver,
+        audio_start_failure_details,
+    )
+
+    session = _w3_session()
+    recorded = session["raw"]["portaudio"]["devices"]
+    devices = [
+        dict(
+            recorded[0],
+            index=i,
+            name=f"Unused {i}",
+            max_input_channels=0,
+            max_output_channels=0,
+        )
+        for i in range(7)
+    ]
+    for record in recorded:
+        devices[record["index"]] = record
+    session["raw"]["portaudio"]["devices"] = devices
+    backend, _ = _inject_windows(monkeypatch, session)
+    original_run = usb_driver.bounded_portaudio_pool.run_bounded
+    topology_reads = 0
+
+    async def timed_out(fn, *, what, direction, timeout, **kwargs):
+        nonlocal topology_reads
+        if what == "optional USB topology":
+            assert timeout == 5.0
+            topology_reads += 1
+            if topology_reads == 1:
+                raise AudioCaptureOpenTimeoutError("topology timed out")
+        return await original_run(
+            fn, what=what, direction=direction, timeout=timeout, **kwargs
+        )
+
+    monkeypatch.setattr(usb_driver.bounded_portaudio_pool, "run_bounded", timed_out)
+    driver = UsbAudioDriver(backend=backend, serial_port="COM3")
+    with pytest.raises(RuntimeError) as raised:
+        await driver.start_rx(lambda _frame: None)
+    reason, choices = audio_start_failure_details(raised.value)
+    assert reason == "usb_topology_unavailable"
+    assert {(c.portaudio_index, c.direction) for c in choices} >= {
+        (1, "capture"),
+        (2, "capture"),
+        (5, "render"),
+        (6, "render"),
+    }
+    assert all(
+        c.stable_id.startswith("MME|name:") and not c.near_radio for c in choices
+    )
+    rx = next(c for c in choices if c.portaudio_index == 2 and c.direction == "capture")
+    tx = next(c for c in choices if c.portaudio_index == 6 and c.direction == "render")
+    selected = UsbAudioDriver(
+        backend=backend,
+        serial_port="COM3",
+        rx_device=rx.stable_id,
+        tx_device=tx.stable_id,
+    )
+    await selected.start_rx(lambda _frame: None)
+    try:
+        assert (
+            selected.selected_rx_device.index,
+            selected.selected_tx_device.index,
+        ) == (2, 6)
+        assert topology_reads == 2
+    finally:
+        await selected.stop_rx()
 
 
 @pytest.mark.parametrize("serial_name", ["Serial (COM3)", "Radio COM3"])

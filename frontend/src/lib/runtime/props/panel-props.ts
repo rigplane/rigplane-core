@@ -412,6 +412,12 @@ export interface FilterProps {
   hasFilterShape: boolean;
   filterLabels: string[];
   filterWidth: number;
+  /** MOR-3677: the Hz-less width display states the legacy sidebar names
+   *  instead of going blank — `'radio-default'` (the radio's own mode
+   *  default, CAT code 000), `'narrow'` (NARROW owns the passband), or
+   *  `null` (a normal Hz reading or an unobserved width). NARROW wins over
+   *  the flag, mirroring the semantic derivation's precedence. */
+  filterWidthState: 'radio-default' | 'narrow' | null;
   filterWidthMin: number;
   filterWidthMax: number;
   filterConfig: FilterModeConfig | null;
@@ -499,6 +505,18 @@ export function toFilterProps(
     hasFilterShape: hasCap(caps, 'filter_shape'),
     filterLabels: caps?.filters ?? [],
     filterWidth: rx?.filterWidth ?? Number.NaN,
+    // MOR-3677: both leaves are gated on their own field availability, the
+    // same `isFieldAvailable` signal `filterShape` above uses. The
+    // `filterWidthRadioDefault` leaf arrives with PR1's backend; until then
+    // the defensive optional read finds nothing and only `narrow` can name
+    // itself — this panel degrades honestly when PR2 merges alone.
+    filterWidthState: activeFieldAvailable(state, 'narrow') && rx?.narrow === true
+      ? 'narrow'
+      : activeFieldAvailable(state, 'filterWidthRadioDefault')
+        && (rx as { filterWidthRadioDefault?: boolean | null } | null | undefined)
+          ?.filterWidthRadioDefault === true
+        ? 'radio-default'
+        : null,
     filterWidthMin:
       filterConfig?.minHz ??
       filterConfig?.table?.[0] ??

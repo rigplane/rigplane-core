@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
-  import { WaterfallFreshnessGate } from '../../lib/runtime/waterfall-freshness';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
   import WaterfallCanvas from './WaterfallCanvas.svelte';
   import DxOverlay from './DxOverlay.svelte';
@@ -174,9 +173,6 @@
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
   let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
-  // Freshness gate behind waterfallPush (MOR-3471); the TX-frozen fan-out
-  // paths classify their deliveries through it while withholding the paint.
-  let waterfallFreshnessGate: WaterfallFreshnessGate | null = null;
   const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
   let trace: ScopeRenderTrace | null = $state(null);
   let traceStatus: 'idle' | TraceStatus = $state('idle');
@@ -521,6 +517,33 @@
       : confirmedPassband ? (activeResizePassbandHz ?? lifecyclePassbandHz ?? spectrumAuthority!.filterWidthHz!) : 0,
   );
   let passbandShiftHz = $derived(managed ? displayTuple?.shiftHz ?? 0 : confirmedPassband ? spectrumAuthority!.ifShiftHz! : 0);
+  // MOR-3677: the Hz-less width states say WHY on the scope itself — a text
+  // chip, never geometry. Known/unobserved/unsupported draw nothing (a known
+  // width draws the real overlay; an unobserved one has nothing honest to
+  // say that the disabled control does not). Not gated on `tuneVisible`:
+  // the chip explains the passband's absence even when the carrier marker
+  // itself is out of the sample plane. This works on the managed and
+  // unmanaged paths alike — `spectrumAuthority` is computed for both.
+  let passbandMarker = $derived.by(() => {
+    const display = spectrumAuthority?.filterWidthDisplay ?? null;
+    if (display === null) return null;
+    if (display.state === 'radio-default') return 'radio-default';
+    if (display.state === 'narrow') return 'narrow';
+    if (display.state === 'unknown' && display.reason === 'not-reported') return 'not-reported';
+    return null;
+  });
+  let passbandMarkerText = $derived(
+    passbandMarker === 'radio-default' ? t('core.filter.width.value.radioDefault')
+      : passbandMarker === 'narrow' ? t('core.filter.width.value.narrow')
+      : passbandMarker === 'not-reported' ? t('core.filter.width.reason.notReported')
+      : '',
+  );
+  let passbandMarkerTitle = $derived(
+    passbandMarker === 'radio-default' ? t('core.filter.width.reason.radioDefault')
+      : passbandMarker === 'narrow' ? t('core.filter.width.reason.narrow')
+      : passbandMarker === 'not-reported' ? t('core.filter.width.reason.notReported')
+      : undefined,
+  );
   let canResizePassband = $derived(
     confirmedPassband && !displayStale
       && spectrumAuthority !== null
@@ -1082,15 +1105,10 @@
         scopePixels = Uint8Array.from(projection.frame.normalizedBins, sample => Math.round(sample * 255));
         spectrumPush?.(scopePixels, token);
         // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
-        // panorama holds its last pre-transmit image under the TX marker.
-        // MOR-3471: the delivery still classifies through the gate so the
-        // spacing baseline tracks the transport across the freeze; only
-        // the paint is withheld.
+        // panorama holds its last pre-transmit image under the TX marker;
+        // only the paint is withheld.
         if (!sdrTxFrozen) waterfallPush?.(scopePixels, waterfallOptions, token);
-        else {
-          waterfallFreshnessGate?.admit();
-          trace?.record('waterfall_suppressed', token, 0, true);
-        }
+        else trace?.record('waterfall_suppressed', token, 0, true);
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       }
       if (projection.passband.state !== 'current') {
@@ -1124,14 +1142,10 @@
         endFreq = sourceIsAudio ? (frame.endFreq - frame.startFreq) / 2 : frame.endFreq;
         scopePixels = pixels;
         spectrumPush?.(pixels, token);
-        // MOR-3158: same TX-frozen hold as the managed path above, and
-        // same MOR-3471 classification: the delivery updates the gate's
-        // baseline, the paint is withheld.
+        // MOR-3158: same TX-frozen hold as the managed path above — only
+        // the paint is withheld.
         if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
-        else {
-          waterfallFreshnessGate?.admit();
-          trace?.record('waterfall_suppressed', token, 0, true);
-        }
+        else trace?.record('waterfall_suppressed', token, 0, true);
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
       const unsubscribe = sourceIsManaged ? () => {} : sourceIsAudio
@@ -1303,33 +1317,19 @@
           trace={traceStatus === 'recording' ? trace : null}
           onFreqClick={audioFft || managedUnavailable ? undefined : handleTune}
           onRegisterPush={(fn) => {
-            // MOR-3471: collapse a post-gap delivery burst instead of painting
-            // one history row per frame. Every delivery that reaches this
-            // registration classifies through the gate (hidden or not), and
-            // the TX-frozen fan-out paths above classify through it while
-            // withholding the paint, so the spacing baseline tracks the
-            // transport. The gate is wall-time bounded: skip mode suppresses
-            // only burst-spaced frames inside WATERFALL_SKIP_BUDGET_MS of a
-            // discontinuity, the first frame after a gap paints, and the
-            // first live-spaced frame latches steady painting — so neither a
-            // normal silence (demand off/on, source gap, TX freeze with a
-            // silent source) nor a live stream whose render deliveries batch
-            // tighter than burst spacing can lose live rows indefinitely.
-            // Suppressed deliveries record on the waterfall_suppressed trace
-            // stage. The delayed case of
-            // scope-hidden-delivery.characterization.test.ts mirrors this
-            // registration with its own gate wrapper and does not execute
-            // this code; this wiring itself is pinned by the 'wires the
-            // waterfall freshness gate into the waterfallPush registration'
-            // case in SpectrumPanel.component.test.ts. The registration
-            // replay below is a canvas repaint of the current sample, not a
-            // delivery, so it bypasses the gate.
-            const freshness = new WaterfallFreshnessGate();
-            waterfallFreshnessGate = freshness;
-            waterfallPush = (data, frameOptions, token) => {
-              if (freshness.admit()) fn(data, frameOptions, token);
-              else trace?.record('waterfall_suppressed', token ?? null, 0, true);
-            };
+            // MOR-4206: backlog handling is consolidated into the canvas's
+            // latest-wins rAF pump — every delivery reaches the pump
+            // unfiltered and replaces the pending frame, so one animation
+            // frame paints only the latest delivery. No spacing-based
+            // suppression sits upstream of the pump (review round 2: the
+            // MOR-3471 freshness gate painted the FIRST frame of a fresh
+            // registration or post-gap burst, defeating latest-wins). This
+            // wiring is pinned by the 'consolidates backlog handling into
+            // the rAF pump' case in SpectrumPanel.component.test.ts; the
+            // delayed case of scope-hidden-delivery.characterization.test.ts
+            // mirrors this registration. The registration replay below is a
+            // canvas repaint of the current sample, not a delivery.
+            waterfallPush = fn;
             if (managed && scopePixels && !sdrTxFrozen) fn(scopePixels, waterfallOptions);
           }}
         />
@@ -1360,6 +1360,18 @@
       {/if}
       {#if tuneLineVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
+      {/if}
+      <!-- MOR-3677: the Hz-less width chip — the spectrum's honest "why
+           there is no passband marker", next to the overlay block and
+           independent of it: no geometry, no shaded region, no full-width
+           fill is ever drawn for these states. -->
+      {#if passbandMarker !== null}
+        <div
+          class="passband-unknown"
+          data-testid="passband-unknown"
+          data-state={passbandMarker}
+          title={passbandMarkerTitle}
+        >{passbandMarkerText}</div>
       {/if}
     </div>
   </div>
@@ -1568,6 +1580,23 @@
     border-right: 1px dashed var(--scope-passband-edge, rgba(59, 130, 246, 0.4));
     pointer-events: none;
     z-index: 4;
+  }
+
+  /* MOR-3677: the Hz-less width chip — a text label in the scope overlay
+     area, structurally reserved and inert; it never draws passband
+     geometry. */
+  .passband-unknown {
+    position: absolute;
+    top: 4px;
+    right: 8px;
+    z-index: 5;
+    padding: 1px 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    pointer-events: none;
   }
 
   .passband-resize-zone {

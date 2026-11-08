@@ -71,7 +71,7 @@ from rigplane.web.protocol import (
     encode_audio_frame,
 )
 from rigplane.web.server import WebConfig, WebServer
-from _timing import await_until
+from rigplane.testing.timing import await_until
 
 # ── Devices ──────────────────────────────────────────────────────────────────
 

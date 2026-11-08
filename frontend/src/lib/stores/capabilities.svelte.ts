@@ -1,7 +1,10 @@
 import type { Capabilities, ControlRange } from '../types/capabilities';
 
 // Capabilities accepted from the generation-gated WebSocket full snapshot.
-let capabilities = $state<Capabilities | null>(null);
+// MOR-4213: raw, like `radio.current`: a snapshot is only ever replaced as a
+// whole, and a deep proxy made every capability read in the view-model
+// derivations pay a proxy trap (the top self-time frame in the UI profile).
+let capabilities = $state.raw<Capabilities | null>(null);
 type CapabilitiesSubscriber = (caps: Capabilities | null) => void;
 const subscribers = new Set<CapabilitiesSubscriber>();
 

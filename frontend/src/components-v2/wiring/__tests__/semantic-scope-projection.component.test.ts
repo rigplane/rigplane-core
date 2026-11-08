@@ -62,6 +62,7 @@ vi.mock('$lib/runtime/adapters/panel-adapters', async (original) => ({
 }));
 
 import { radio, resetRadioState } from '$lib/stores/radio.svelte';
+import { editState } from '$lib/transport/__tests__/support/state-edit';
 import { clearCapabilities, setCapabilities, getCapabilities } from '$lib/stores/capabilities.svelte';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import RadioLayout from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
@@ -115,6 +116,13 @@ function fixture(scheme: 'single' | 'ab' = 'single') {
   } as unknown as Capabilities)).toBe(true);
   publishAuthority();
 }
+/**
+ * MOR-4213: a change arrives as a NEW snapshot built by the client's delta
+ * applier, as in production; the store is never edited in place.
+ */
+function deliver(change: (state: ServerState) => void): void {
+  radio.current = editState(radio.current!, change);
+}
 function renew(marker: number, stale = false) {
   const next = JSON.parse(JSON.stringify(radio.current!)) as ServerState;
   for (const status of Object.values(next.fieldStatus!)) status.lastObservedMonotonic = marker;
@@ -129,7 +137,7 @@ function renew(marker: number, stale = false) {
 function noReadback() {
   setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
     capabilities: [...getCapabilities()!.capabilities, 'dual_rx'], vfoReadback: 'none' });
-  radio.current!.active = null;
+  deliver((s) => { s.active = null; });
   publishAuthority();
 }
 let wire: ReturnType<typeof channel>, target: HTMLDivElement;
@@ -171,8 +179,22 @@ function clear() {
   if (history) expect(history.style.visibility).toBe('hidden');
 }
 
+// MOR-4206: the waterfall paints through the latest-frame pump on rAF, and
+// the stubbed rAF never fires on its own — flush the paint queue at the
+// points where a test expects a paint (same helper as the spectrum tests).
+let rafCallbacks: Map<number, FrameRequestCallback>;
+let rafId: number;
+function flushPaint(): void {
+  const pending = [...rafCallbacks.values()];
+  rafCallbacks.clear();
+  for (const callback of pending) callback(performance.now());
+}
+
 beforeEach(() => {
-  vi.useFakeTimers(); vi.stubGlobal('requestAnimationFrame', () => 1); vi.stubGlobal('cancelAnimationFrame', () => {});
+  vi.useFakeTimers();
+  rafCallbacks = new Map(); rafId = 0;
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { rafCallbacks.set(++rafId, callback); return rafId; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafCallbacks.delete(id); });
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   const noop = () => {}; const ctx = new Proxy({ measureText: () => ({ width: 1 }),
     createImageData: () => ({ data: new Uint8ClampedArray(4) }), getImageData: () => ({ data: new Uint8ClampedArray(4) }),
@@ -195,7 +217,7 @@ describe('one managed scope owner through the real region and panel', () => {
   it.each([50, 100, 200])('keeps the selected panorama drawn across interleaved receivers every %s ms', async interval => {
     setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
       capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
-    radio.current!.sub = structuredClone(radio.current!.main);
+    deliver((s) => { s.sub = structuredClone(radio.current!.main); });
     publishAuthority();
     const callbacks = new Map<number, FrameRequestCallback>();
     let nextRaf = 0;
@@ -232,7 +254,7 @@ describe('one managed scope owner through the real region and panel', () => {
     expect(radio.current!.main.freqHz).toBe(initialFrequency);
     for (let tick = 1; tick <= 3; tick++) {
       vi.advanceTimersByTime(interval);
-      radio.current!.main.freqHz = initialFrequency + tick * 100;
+      deliver((s) => { s.main.freqHz = initialFrequency + tick * 100; });
       renew(10 + tick);
       const before = rows.mock.calls.length;
       wire.frame(1, [255, 0, 0]); draw();
@@ -249,22 +271,22 @@ describe('one managed scope owner through the real region and panel', () => {
 
   it('appends only accepted receipts, including identical bins, and seeds recovery once', async () => {
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render(); expect(push).toHaveBeenCalledTimes(1);
+    await render(); flushPaint(); expect(push).toHaveBeenCalledTimes(1);
     renew(10, true); expect(push).toHaveBeenCalledTimes(1);
     expect(target.querySelector('.passband-freshness')).toBeNull();
     renew(10); expect(push).toHaveBeenCalledTimes(1);
-    radio.current!.ptt = true; publishAuthority(); flushSync(); expect(push).toHaveBeenCalledTimes(1);
+    deliver((s) => { s.ptt = true; }); publishAuthority(); flushSync(); expect(push).toHaveBeenCalledTimes(1);
     // MOR-3471: the gate collapses sub-40ms-spaced deliveries as a replay
     // burst; advance to the live fps=20 cadence (50 ms) so this consecutive
     // frame classifies as live, not burst drain.
     vi.advanceTimersByTime(50); flushSync();
-    wire.frame(); expect(push).toHaveBeenCalledTimes(2);
+    wire.frame(); flushPaint(); expect(push).toHaveBeenCalledTimes(2);
     const shared = h.resources.acquire('hardware-scope', 'independent');
     toggle(); clear(); wire.frame(); expect(push).toHaveBeenCalledTimes(2);
-    toggle(); expect(push).toHaveBeenCalledTimes(3);
+    toggle(); flushPaint(); expect(push).toHaveBeenCalledTimes(3);
     renew(11); expect(push).toHaveBeenCalledTimes(3);
     vi.advanceTimersByTime(500); flushSync(); clear();
-    wire.frame(); expect(push).toHaveBeenCalledTimes(4);
+    wire.frame(); flushPaint(); expect(push).toHaveBeenCalledTimes(4);
     h.resources.release(shared);
   });
   // MOR-2425/R41: the panel paints no per-field freshness — the `◷` chip and
@@ -344,21 +366,21 @@ describe('one managed scope owner through the real region and panel', () => {
     fixture(scheme); const project = vi.spyOn(passband, 'projectScopePassbandDisplay'); await render(false);
     expect(project.mock.lastCall?.[1].selection).toEqual({ receiver: 'MAIN', slot: scheme === 'single' ? 'single' : 'A' });
     if (scheme === 'ab') {
-      radio.current!.fieldStatus!['main.activeSlot'].observed = false; publishAuthority(); flushSync(); wire.frame();
+      deliver((s) => { s.fieldStatus!['main.activeSlot'].observed = false; }); publishAuthority(); flushSync(); wire.frame();
       expect(project.mock.lastCall?.[1].selection).toBeNull();
       expect(region!()!.projection?.passband.state).toBe('unknown');
     }
   });
   it('preserves explicit relative-slot unknown instead of selecting MAIN/A', async () => {
     fixture('ab'); setCapabilities({ ...getCapabilities()!, vfoReadback: 'selected_unselected' });
-    radio.current!.fieldStatus!['main.activeSlot'].observed = false;
+    deliver((s) => { s.fieldStatus!['main.activeSlot'].observed = false; });
     const project = vi.spyOn(passband, 'projectScopePassbandDisplay'); await render(false);
     expect(project.mock.lastCall?.[1].selection).toBeNull(); expect(region!()!.projection?.passband.state).toBe('unknown');
   });
   it.each(['unknown receiver', 'generation mismatch'])('clears a live projection for %s', async boundary => {
     setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'ab_shared', capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
     await render(); expect(overlay()).not.toBeNull();
-    if (boundary === 'unknown receiver') radio.current!.fieldStatus!.active.observed = false;
+    if (boundary === 'unknown receiver') deliver((s) => { s.fieldStatus!.active.observed = false; });
     else setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
     publishAuthority(); flushSync(); clear();
   });
@@ -438,15 +460,17 @@ describe('one managed scope owner through the real region and panel', () => {
     fixture('ab');
     if (identity === 'receiver') setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'ab_shared', capabilities: [...getCapabilities()!.capabilities, 'dual_rx'] });
     const path = identity === 'receiver' ? 'active' : 'main.activeSlot';
-    radio.current!.fieldStatus![path].observed = false; await render(); expect(overlay()).toBeNull();
-    radio.current!.fieldStatus![path].observed = true; publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
+    deliver((s) => { s.fieldStatus![path].observed = false; }); await render(); expect(overlay()).toBeNull();
+    deliver((s) => { s.fieldStatus![path].observed = true; }); publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
     expect(overlay()).not.toBeNull(); expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
   it('reacquires only its own resource binding when provider generation changes', async () => {
     const watch = vi.spyOn(h.scope, 'subscribeFrameEvidence'); await render(); expect(overlay()).not.toBeNull();
     const acquired = vi.spyOn(h.resources, 'acquire'), released = vi.spyOn(h.resources, 'release');
-    radio.current!.providerGeneration = 2;
-    for (const status of Object.values(radio.current!.fieldStatus!)) status.lastObservedMonotonic = 1;
+    deliver((s) => {
+      s.providerGeneration = 2;
+      for (const status of Object.values(s.fieldStatus!)) status.lastObservedMonotonic = 1;
+    });
     setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
     publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
     expect(overlay()).toBeNull(); renew(2); wire.frame(); expect(overlay()).not.toBeNull();
@@ -460,7 +484,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
   it('paints raw canvas/waterfall with one socket and lease and no receiver-dependent command', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
     expect(push).toHaveBeenCalledTimes(1);
     expect(wire.connect).toHaveBeenCalledTimes(1);
@@ -482,7 +506,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     expect(h.width).not.toHaveBeenCalled();
     expect(h.raw).toHaveBeenCalledOnce();
     // The fallback ends the moment actual receiver authority arrives.
-    radio.current!.active = 'MAIN';
+    deliver((s) => { s.active = 'MAIN'; });
     publishAuthority(); flushSync(); await Promise.resolve(); wire.connected(); wire.frame();
     expect(overlay()).not.toBeNull();
   });
@@ -494,7 +518,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
       setCapabilities({ ...getCapabilities()!, receivers: 2, vfoScheme: 'main_sub',
         capabilities: [...getCapabilities()!.capabilities, 'dual_rx'],
         ...(readback === undefined ? {} : { vfoReadback: readback }) });
-      radio.current!.active = null;
+      deliver((s) => { s.active = null; });
       publishAuthority();
       const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
       await render();
@@ -511,7 +535,7 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
   it('drops the lease and socket on unmount and never retains prior-session raw display', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(push).toHaveBeenCalledTimes(1);
     const painted = push.mock.calls.length;
     await unmount(component!); component = null; flushSync(); await Promise.resolve();
@@ -519,23 +543,26 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
     expect(wire.count()).toBe(0);
     expect(h.resources.snapshot('hardware-scope').demand).toBe(0);
     renew(11, true);
-    // Remount without emitting a frame: a prior-session frame must not paint.
-    await mountHost();
+    // Remount without emitting a frame: a prior-session frame must not paint,
+    // even when the paint queue flushes.
+    await mountHost(); flushPaint();
     expect(push.mock.calls.length).toBe(painted);
-    wire.connected(); wire.frame();
+    wire.connected(); wire.frame(); flushPaint();
     expect(push.mock.calls.length).toBe(painted + 1);
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
   });
   it('keeps one lease across provider generation change with declared no-readback', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(push).toHaveBeenCalledTimes(1);
     const acquired = vi.spyOn(h.resources, 'acquire'), released = vi.spyOn(h.resources, 'release');
-    radio.current!.providerGeneration = 2;
-    for (const status of Object.values(radio.current!.fieldStatus!)) status.lastObservedMonotonic = 1;
+    deliver((s) => {
+      s.providerGeneration = 2;
+      for (const status of Object.values(s.fieldStatus!)) status.lastObservedMonotonic = 1;
+    });
     setCapabilities({ ...getCapabilities()!, providerGeneration: 2 });
-    publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame();
+    publishAuthority(); flushSync(); await Promise.resolve(); await Promise.resolve(); wire.connected(); renew(1); wire.frame(); flushPaint();
     expect(push).toHaveBeenCalledTimes(2);
     expect(acquired).not.toHaveBeenCalled(); expect(released).not.toHaveBeenCalled();
     expect(h.resources.snapshot('hardware-scope').demand).toBe(1);
@@ -543,18 +570,19 @@ describe('MOR-3094 declared no-readback raw hardware scope', () => {
   it('ignores frames from the old epoch across a real disconnect and reconnect', async () => {
     noReadback();
     const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
-    await render();
+    await render(); flushPaint();
     expect(push).toHaveBeenCalledTimes(1);
     wire.disconnect(); flushSync();
     const painted = push.mock.calls.length;
-    wire.frame();
+    // A frame from the old epoch must not paint, even when the queue flushes.
+    wire.frame(); flushPaint();
     expect(push.mock.calls.length).toBe(painted);
     wire.connected(); flushSync();
     // MOR-3471: the gate collapses sub-40ms-spaced deliveries as a replay
     // burst; advance to the live fps=20 cadence (50 ms) so the first frame
     // of the new epoch classifies as live.
     vi.advanceTimersByTime(50); flushSync();
-    wire.frame();
+    wire.frame(); flushPaint();
     expect(push.mock.calls.length).toBe(painted + 1);
   });
   it('clears the raw display and drops the lease when the hardware boundary ends', async () => {

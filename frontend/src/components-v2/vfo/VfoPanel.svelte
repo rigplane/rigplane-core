@@ -27,10 +27,6 @@
   export interface VfoPanelAnnunciator extends VfoPanelSlot {
     family: 'amber' | 'red' | 'brown';
     group: 'agc' | 'front' | 'rfg';
-    /** Accessible state sentence for a lamp whose lit state carries meaning
-     *  the text does not (BUSY: "Squelch open"/"Squelch closed"); absent
-     *  while the state is unread, so the lamp stays a bare dimmed label. */
-    label?: string;
     /** Optional legacy-path colour token name; overrides the family tone. */
     color?: string;
   }
@@ -244,7 +240,6 @@
         {#if i > 0 && ann.group !== sections.annunciators[i - 1].group}<i class="ann-sep"></i>{/if}
         <span class="lamp" data-family={ann.family} data-chip={ann.key} data-lit={ann.lit}
           aria-hidden={ann.text ? undefined : 'true'}
-          role={ann.label ? 'img' : undefined} aria-label={ann.label}
           style={ann.color ? `--vfo-lamp-color: ${legacyLampColor(ann.color)}` : undefined}
           {...(ann.key === 'rfg' ? { 'data-indicator-fact': 'rfg' } : {})}>{ann.text}</span>
       {/each}
@@ -652,6 +647,7 @@
   .lamp[data-chip='ip-plus'] { width: 44px; --vfo-lamp-color: var(--vfo-front-red); }
   .lamp[data-chip='digi-sel'] { width: 82px; --vfo-lamp-color: var(--vfo-front-red); }
   .lamp[data-chip='rfg'] { width: 78px; --vfo-lamp-color: var(--vfo-brown-text); }
+  .lamp[data-chip='sql'] { width: 44px; --vfo-lamp-color: var(--vfo-amber-text); }
 
   .lamp[data-lit='false'] {
     color: var(--vfo-unlit-text);
@@ -661,6 +657,7 @@
   .lamp[data-lit='true'] { text-shadow: var(--vfo-red-glow); }
   .lamp[data-chip='agc'][data-lit='true'] { text-shadow: var(--vfo-amber-glow); }
   .lamp[data-chip='rfg'][data-lit='true'] { text-shadow: var(--vfo-brown-glow); }
+  .lamp[data-chip='sql'][data-lit='true'] { text-shadow: var(--vfo-amber-glow); }
 
   .ann-sep {
     flex: none;
@@ -855,6 +852,7 @@
     .lamp[data-chip='ip-plus'] { width: 40px; }
     .lamp[data-chip='digi-sel'] { width: 62px; }
     .lamp[data-chip='rfg'] { width: 64px; }
+    .lamp[data-chip='sql'] { width: 40px; }
     .chip-lg { font-size: 13px; }
     .chip-tx { width: 42px; }
   }

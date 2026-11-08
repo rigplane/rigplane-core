@@ -32,6 +32,12 @@ browser_rx_transcode_to_opus = true
 
 [scope]
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+# 27 19: adjustable range -20.0 ~ +20.0 dB in 0.5 dB steps (MOR-3694;
+# the IC-9700 CI-V Reference's 27 19 row — the same 3-byte BCD format and
+# family range as the IC-7300/IC-7300MK2, see ic7300mk2.toml's citation).
+ref_min_db = -20.0
+ref_max_db = 20.0
+ref_step_db = 0.5
 
 # ── Capabilities ─────────────────────────────────────────────────
 # Feature tags determine which UI panels and controls are rendered.
@@ -150,9 +156,6 @@ polling_only = [
     "receiver.main.operator_toggles.repeater_tone",
     "receiver.main.operator_toggles.repeater_tsql",
     "receiver.main.operator_controls.tone_squelch_type",
-    # MOR-3630: squelch-open (RX-busy) for the BUSY lamp — the 0x15 0x01
-    # single-byte SQL-status read, same cadence class as the sibling toggles.
-    "receiver.main.operator_toggles.dcd",
     "global.operator_controls.power_level",
     "global.tx_state.compressor_on",
     "global.operator_controls.compressor_level",

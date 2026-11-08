@@ -294,7 +294,7 @@ async def test_soft_reconnect_full_connect_when_ctrl_never_logged_in() -> None:
 
     try:
         with (
-            patch("rigplane.transport.IcomTransport", _RefusedTransport),
+            patch("rigplane.transport.IcomCivTransport", _RefusedTransport),
             patch.object(radio._control_phase, "_connect_once", connect),
             patch.object(
                 radio,

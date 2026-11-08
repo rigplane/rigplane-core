@@ -767,12 +767,62 @@ describe('steppers compute the next value with the shipped clamp functions', () 
     r.dispose();
   });
 
-  it('REF steps by 5 through clampRef', () => {
+  it('REF steps by 5 through stepRef', () => {
     const onRefChange = vi.fn();
     const r = render(withSc({ refDb: known(0) }), { onRefChange });
     r.el('scope-ref')!.querySelectorAll('button')[1]!.click();
     flushSync();
     expect(onRefChange).toHaveBeenCalledExactlyOnceWith(5);
+    r.dispose();
+  });
+
+  it('REF snaps onto the 5 dB grid from an off-grid readback (MOR-3694)', () => {
+    const onRefChange = vi.fn();
+    const r = render(withSc({ refDb: known(-4) }), { onRefChange });
+    const keys = r.el('scope-ref')!.querySelectorAll('button');
+    keys[0]!.click();
+    flushSync();
+    expect(onRefChange).toHaveBeenCalledExactlyOnceWith(-5);
+    onRefChange.mockClear();
+    keys[1]!.click();
+    flushSync();
+    expect(onRefChange).toHaveBeenCalledExactlyOnceWith(0);
+    r.dispose();
+  });
+
+  it('REF steps from a half-dB readback instead of refusing it (MOR-3694)', () => {
+    const onRefChange = vi.fn();
+    const r = render(withSc({ refDb: known(-4.5) }), { onRefChange });
+    const keys = r.el('scope-ref')!.querySelectorAll('button');
+    keys[0]!.click();
+    flushSync();
+    expect(onRefChange).toHaveBeenCalledExactlyOnceWith(-5);
+    r.dispose();
+  });
+
+  it('REF clamps to a different declared range (IC-705 ±20, not the fixture default)', () => {
+    const onRefChange = vi.fn();
+    const r = render(withSc({
+      refDb: known(15),
+      refRange: Object.freeze({ min: -20, max: 20 }),
+    }), { onRefChange });
+    r.el('scope-ref')!.querySelectorAll('button')[1]!.click();
+    flushSync();
+    expect(onRefChange).toHaveBeenCalledExactlyOnceWith(20);
+    r.dispose();
+  });
+
+  it('fails closed: no declared refRange disables the REF keys with no dispatch (MOR-3694)', () => {
+    const onRefChange = vi.fn();
+    const r = render(withSc({ refDb: known(0), refRange: null }), { onRefChange });
+    const keys = r.el('scope-ref')!.querySelectorAll('button');
+    expect(keys[0]!.disabled).toBe(true);
+    expect(keys[1]!.disabled).toBe(true);
+    // A bypassed click on the disabled key must still dispatch nothing.
+    bypassClick(keys[0]!);
+    bypassClick(keys[1]!);
+    flushSync();
+    expect(onRefChange).not.toHaveBeenCalled();
     r.dispose();
   });
 
@@ -786,7 +836,7 @@ describe('steppers compute the next value with the shipped clamp functions', () 
     r.dispose();
   });
 
-  // F1 — REF at the ceiling stays 10 (domain -30..10)
+  // F1 — REF at the ceiling stays at the declared max (fixture range -30..10)
   it('REF at the ceiling clamped to 10, never exceeds domain', () => {
     const onRefChange = vi.fn();
     const r = render(withSc({ refDb: known(10) }), { onRefChange });

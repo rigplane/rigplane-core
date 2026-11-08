@@ -55,8 +55,6 @@ from rigplane_testkit.icom.simulator import (
     MockIcomRadio,
     _MockProtocol,
     _bcd_byte,
-    _bcd_decode_freq,
-    _bcd_encode_freq,
     _level_bcd_encode,
 )
 
@@ -71,8 +69,6 @@ __all__ = [
     "ReplayResponder",
     "_MockProtocol",
     "_bcd_byte",
-    "_bcd_decode_freq",
-    "_bcd_encode_freq",
     "_level_bcd_encode",
     "_ERR_OK",
     "_ERR_AUTH_FAIL",

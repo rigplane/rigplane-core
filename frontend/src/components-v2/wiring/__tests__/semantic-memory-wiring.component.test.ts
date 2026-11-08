@@ -23,6 +23,9 @@
  *       controller, HTTP client and memory intent handlers. The shared reply
  *       is checked by tests/test_memory_list_api.py::
  *       test_memories_endpoint_serves_a_page_with_the_profile_bounds.
+ *   (f) MOR-4220: the zone shows a Memory button, not the list; the list
+ *       opens in the shared dialog (keyboard, Escape, backdrop), and a
+ *       recall from the dialog reaches the real command path.
  *
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.
  */
@@ -236,6 +239,17 @@ async function settleList(): Promise<void> {
   for (let turn = 0; turn < 50; turn++) { await Promise.resolve(); flushSync(); }
 }
 
+/** MOR-4220: the list lives in a dialog the zone's Memory button opens. */
+function openMemory(): HTMLElement {
+  const button = q<HTMLButtonElement>('[data-testid="memory-open"]');
+  expect(button, 'the Memory button').not.toBeNull();
+  press(button!);
+  flushSync();
+  const dialog = q<HTMLElement>('[role="dialog"]');
+  expect(dialog, 'the memory dialog').not.toBeNull();
+  return dialog!;
+}
+
 beforeEach(() => {
   txHarness = new ManagedAppTxHarness();
   h.txController = txHarness.controller;
@@ -258,12 +272,16 @@ afterEach(() => {
 /* ── (a) MOUNTING — desktop-v2 zone, zero legacy twins ─────────── */
 
 describe('the memory surface mounts on the declared desktop-v2 zone', () => {
-  it('renders exactly one semantic Memory surface inside the memory zone, and zero legacy panels', () => {
+  it('renders exactly one Memory button inside the memory zone, the list in its dialog, and zero legacy panels', () => {
     useState(liveState(), liveCaps());
     renderHosted();
     const host = q('[data-zone-id="memory"]');
     expect(host).not.toBeNull();
-    expect(host!.querySelector('[data-testid="memory-surface"]')).not.toBeNull();
+    expect(host!.querySelectorAll('[data-testid="memory-open"]')).toHaveLength(1);
+    // MOR-4220: the list is not on the page until the button opens it.
+    expect(qAll('[data-testid="memory-surface"]')).toHaveLength(0);
+    openMemory();
+    expect(host!.querySelector('[role="dialog"] [data-testid="memory-surface"]')).not.toBeNull();
     expect(qAll('[data-testid="memory-surface"]')).toHaveLength(1);
     expect(qAll('[data-panel-id="memory"]')).toHaveLength(0);
   });
@@ -276,6 +294,7 @@ describe('recall dispatches the real memory-to-vfo intent, per channel', () => {
     useState(liveState(), liveCaps());
     persistMemoryChannels(new Map([[ch, { freq: 14_074_000, mode: 'USB', name: '' }]]));
     renderHosted();
+    openMemory();
     const recall = q<HTMLElement>(`[data-testid="memory-channel-${ch}-recall"]`);
     expect(recall).not.toBeNull();
     press(recall!);
@@ -326,6 +345,7 @@ it('cancels in-flight memories requests when the hosted memory surface unmounts 
   props.skinId = 'desktop-v2';
   flushSync();
   expect(fetchMock).toHaveBeenCalledTimes(2);
+  openMemory();
   expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('loading');
   expect(signals[1]?.aborted).toBe(false);
 
@@ -366,6 +386,7 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
   renderHosted();
   await settleList();
   expect(fetchMock).not.toHaveBeenCalled();
+  openMemory();
   expect(q('[data-testid="radio-memories"]')).toBeNull();
   await unmount(component!);
   component = null;
@@ -379,6 +400,9 @@ it('acquires IC-705 radio memories only with memory_read, renders them, selects 
   expect(requests.map((url) => Object.fromEntries(url.searchParams))).toEqual([
     { count: '25' },
   ]);
+  // MOR-4220: the list loads with the page, as before; the dialog shows it.
+  expect(q('[data-testid="radio-memories"]')).toBeNull();
+  openMemory();
   expect(q('[data-testid="radio-memories-status"]')?.dataset.status).toBe('ready');
   const row = q('[data-testid="radio-memory-4"]');
   expect(row).not.toBeNull();
@@ -462,6 +486,7 @@ describe('store is refused end to end when vfoIdentityKnown is false', () => {
     useState(liveState(), liveCaps());
     useFacts(relativeIdentityUnknownState(), relativeIdentityUnknownCaps());
     renderHosted();
+    openMemory();
     const toggle = q<HTMLElement>('[data-testid="memory-store-toggle"]');
     expect(toggle).not.toBeNull();
     expect(toggle!.hasAttribute('disabled')).toBe(true);
@@ -491,17 +516,80 @@ describe('the surface unmounts on a layout that declares no memory zone, and rem
   it('desktop-v2 -> sdr-test -> desktop-v2', () => {
     useState(liveState(), liveCaps());
     const props = renderHosted();
-    expect(qAll('[data-testid="memory-surface"]')).toHaveLength(1);
+    expect(qAll('[data-testid="memory-open"]')).toHaveLength(1);
     expect(qAll('[data-panel-id="memory"]')).toHaveLength(0);
 
     props.skinId = 'sdr-test';
     flushSync();
-    expect(qAll('[data-testid="memory-surface"]')).toHaveLength(0);
+    expect(qAll('[data-testid="memory-open"]')).toHaveLength(0);
     expect(qAll('[data-panel-id="memory"]')).toHaveLength(1);
 
     props.skinId = 'desktop-v2';
     flushSync();
-    expect(qAll('[data-testid="memory-surface"]')).toHaveLength(1);
+    expect(qAll('[data-testid="memory-open"]')).toHaveLength(1);
     expect(qAll('[data-panel-id="memory"]')).toHaveLength(0);
+  });
+});
+
+/* ── (f) MOR-4220: the memory list opens in a dialog ────────────── */
+
+describe('the Memory button opens the memory list in the shared dialog', () => {
+  it('opens on click, moves focus inside, and Escape closes it and returns focus to the button', async () => {
+    useState(liveState(), liveCaps());
+    renderHosted();
+    const button = q<HTMLButtonElement>('[data-testid="memory-open"]')!;
+    expect(button.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(button.textContent?.trim()).toBe('Memory');
+    button.focus();
+    const dialog = openMemory();
+    await Promise.resolve();
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(dialog.getAttribute('aria-modal')).toBe('true');
+    expect(dialog.querySelector('h2')?.textContent).toBe('Memory');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    (document.activeElement as HTMLElement).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }),
+    );
+    flushSync();
+    await Promise.resolve();
+    expect(q('[role="dialog"]')).toBeNull();
+    expect(qAll('[data-testid="memory-surface"]')).toHaveLength(0);
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(button);
+  });
+
+  it('closes on a backdrop click and on its close button, never on a click inside', () => {
+    useState(liveState(), liveCaps());
+    renderHosted();
+    const dialog = openMemory();
+    press(dialog.querySelector<HTMLElement>('[data-testid="memory-surface"]')!);
+    flushSync();
+    expect(q('[role="dialog"]')).not.toBeNull();
+    press(q<HTMLElement>('[data-testid="frequency-entry-dialog-backdrop"]')!);
+    flushSync();
+    expect(q('[role="dialog"]')).toBeNull();
+
+    openMemory();
+    press(q<HTMLElement>('[role="dialog"] button[aria-label="Close"]')!);
+    flushSync();
+    expect(q('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps Tab inside the dialog', () => {
+    useState(liveState(), liveCaps());
+    persistMemoryChannels(new Map([[3, { freq: 7_074_000, mode: 'LSB', name: '' }]]));
+    renderHosted();
+    const dialog = openMemory();
+    const focusables = [...dialog.querySelectorAll<HTMLElement>(
+      'input:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )];
+    expect(focusables.length).toBeGreaterThan(1);
+    focusables[focusables.length - 1].focus();
+    focusables[focusables.length - 1].dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }),
+    );
+    expect(document.activeElement).toBe(focusables[0]);
   });
 });

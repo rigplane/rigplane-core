@@ -88,6 +88,7 @@ from ..core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from ..core.state_store import StateSnapshot, StateStore
+from ..core.transport import IcomTransport
 from ..core.tx_observation import (
     ObservedPtt,
     legacy_ptt_bool,
@@ -124,8 +125,13 @@ from ..env_config import (
     get_audio_rx_jitter_ceiling_ms,
     get_audio_rx_jitter_floor_ms,
 )
-from ._delta_encoder import DeltaEncoder  # noqa: TID251
-from .api_contract import WEB_API_CONTRACT_VERSION  # noqa: TID251
+from ._delta_encoder import (  # noqa: TID251
+    DeltaEncoder,
+    StateUpdateFrame,
+    copy_state_tree,
+    top_level_delta,
+)
+from .api_contract import WEB_API_CONTRACT_VERSION, CivIngressPayload  # noqa: TID251
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
 from .handlers import (  # noqa: TID251
@@ -176,7 +182,7 @@ from ..radio_protocol import (
     ProviderOwnedStateCapable,
     RadioIdentity,
     StateStoreCapable,
-    serial_identity_hold,
+    radio_audio_ready,
 )
 
 if TYPE_CHECKING:
@@ -192,8 +198,9 @@ __all__ = ["WebConfig", "WebServer", "run_web_server"]
 logger = logging.getLogger(__name__)
 
 # MOR-3078: how often the deferred audio-bridge auto-start re-checks the
-# identity hold. A coarse poll — not a hot loop; the wait ends at the
-# radio's answer or the server's stop, whichever comes first.
+# radio's readiness (connected, no identity hold — MOR-2922). A coarse
+# poll — not a hot loop; the wait ends at the radio's answer or the
+# server's stop, whichever comes first.
 _BRIDGE_DEFER_POLL_S: float = 0.25
 
 # MOR-2880: minimum spacing between refusal WARNINGs, so a page
@@ -290,6 +297,7 @@ _LEGACY_RECEIVER_FREQ_MODE_FIELDS: tuple[tuple[str, str], ...] = (
     ("filter", "filter"),
     ("data_mode", "data_mode"),
     ("filter_width", "filter_width"),
+    ("filter_width_radio_default", "filter_width_radio_default"),
 )
 _LEGACY_VFO_SLOT_FIELDS: tuple[tuple[str, str], ...] = (
     ("freq_hz", "freq_hz"),
@@ -789,6 +797,25 @@ def _serialize_agc_readback(profile: "RadioProfile") -> dict[str, object] | None
         "autoMode": profile.agc_auto_mode,
         "autoSpeedLabels": profile.agc_auto_speed_labels,
     }
+
+
+def _serialize_scope_ref_range(profile: "RadioProfile") -> dict[str, object]:
+    """MOR-3694: publish the profile's declared scope REF adjustable range.
+
+    Field names are the profile's own (``[scope]`` ``ref_min_db``/
+    ``ref_max_db``/``ref_step_db``, see ``rigs/_schema.md``). ``{}`` when
+    the profile declares no range — clients must fail closed (disable the
+    REF steppers), never fall back to a hard-coded range.
+    """
+    if profile.scope_ref_min_db is None or profile.scope_ref_max_db is None:
+        return {}
+    payload: dict[str, object] = {
+        "ref_min_db": profile.scope_ref_min_db,
+        "ref_max_db": profile.scope_ref_max_db,
+    }
+    if profile.scope_ref_step_db is not None:
+        payload["ref_step_db"] = profile.scope_ref_step_db
+    return payload
 
 
 def _serialize_choices(
@@ -1365,6 +1392,9 @@ class WebServer:
         self._pending_state_broadcast_task: asyncio.Task[None] | None = None
         # Delta encoder for efficient state broadcasting
         self._delta_encoder: DeltaEncoder = DeltaEncoder(full_state_interval=100)
+        # Control queues whose client asked for leaf deltas (MOR-4206); every
+        # other queue gets the same diff rendered as a top-level delta.
+        self._leaf_delta_queues: set[BoundedQueue[dict[str, Any]]] = set()
         # This is an encoder baseline only, derived from Store snapshots.  Web
         # never owns or advances the provider generation itself.
         self._last_delta_encoder_generation: int | None = None
@@ -1421,7 +1451,7 @@ class WebServer:
         self._scope_last_nonzero: float = 0.0
         self._scope_health_task: asyncio.Task[None] | None = None
         self._scope_health_interval: float = (
-            10.0  # seconds of zero frames before re-enable
+            10.0  # seconds of missing/blank frames before the hidden verdict
         )
         self._scope_reenable_task: asyncio.Task[None] | None = None
         self._scope_reenable_poll_interval: float = 0.5
@@ -1432,7 +1462,22 @@ class WebServer:
         self._managed_tx_rebind_lock: asyncio.Lock = asyncio.Lock()
         # Unsubscribes the managed TX authority invalidation listener on stop.
         self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
-        self._scope_health_max_retries: int = 3  # give up after N failed re-enables
+        # MOR-3690 (reopened): the monitor tells "frames arrive" apart from
+        # "frames carry data". All-zero frames that keep arriving — or NO
+        # frames at all while CI-V traffic keeps flowing (an IC-705 over USB
+        # serial sends nothing while in its own menu) — mean the radio
+        # deliberately shows another screen: a valid state, never a
+        # transport fault, and never a reason to write scope-enable (that
+        # write kicks the operator out of the menu).
+        self._scope_last_frame: float = 0.0  # last arrival of any scope frame
+        self._scope_hidden_published: bool | None = None  # last fact verdict
+        self._scope_hidden_at: float | None = None  # when last confirmed
+        # The reconnect path is the only automatic scope re-enable left; it
+        # fires at most once per viewing session (demand generation) AND
+        # connection epoch (provider generation), and never while the menu
+        # guard is active. None = never sent.
+        self._scope_reenable_generation: int | None = None
+        self._scope_reenable_provider_generation: int | None = None
         # Band plan registry
         from .band_plan import DEFAULT_BAND_PLANS_DIR, BandPlanRegistry  # noqa: TID251
 
@@ -1744,6 +1789,8 @@ class WebServer:
             was_registered = handler in self._scope_handlers
             self._scope_handlers.add(handler)
             if was_empty and not was_registered:
+                # A fresh viewing session: the generation bump also re-arms
+                # the once-per-session reconnect re-enable (MOR-3690).
                 self._scope_demand_generation += 1
             generation = self._scope_demand_generation
             if not was_registered:
@@ -2179,10 +2226,13 @@ class WebServer:
         q: BoundedQueue[dict[str, Any]],
         *,
         session_id: str | None = None,
-    ) -> dict[str, Any]:
+        leaf_deltas: bool = False,
+    ) -> StateUpdateFrame:
         """Register a client and return its shared-encoder full baseline."""
         existing_queues = set(self._control_event_queues)
         self._control_event_queues.add(q)
+        if leaf_deltas:
+            self._leaf_delta_queues.add(q)
         if session_id is not None:
             self._session_queues[session_id] = q
         try:
@@ -2191,6 +2241,7 @@ class WebServer:
             # Registration is transactional: an unbased queue must never
             # survive a failed/cancelled baseline encode.
             self._control_event_queues.discard(q)
+            self._leaf_delta_queues.discard(q)
             if session_id is not None:
                 self._session_queues.pop(session_id, None)
             raise
@@ -2204,6 +2255,7 @@ class WebServer:
         """Unregister a ControlHandler event queue."""
         was_registered = q in self._control_event_queues
         self._control_event_queues.discard(q)
+        self._leaf_delta_queues.discard(q)
         if session_id is not None and self._session_queues.get(session_id) is q:
             self._session_queues.pop(session_id, None)
         if was_registered:
@@ -2354,7 +2406,6 @@ class WebServer:
 
         delta = self._encode_state_update(snapshot, body)
         self._last_broadcast_state_key = state_key
-        event = {"type": "state_update", "data": delta}
         self._state_diagnostics.record(
             "web_delivery_trigger",
             "web.ws_state",
@@ -2368,7 +2419,7 @@ class WebServer:
         )
 
         target_queues = self._control_event_queues if queues is None else queues
-        self._fanout_state_update(target_queues, event, body)
+        self._fanout_state_update(target_queues, delta, body)
 
     def enqueue_control_state_baseline(self, q: BoundedQueue[dict[str, Any]]) -> None:
         """Queue a full baseline for one already-running control client."""
@@ -2382,7 +2433,7 @@ class WebServer:
         *,
         peers: Collection[BoundedQueue[dict[str, Any]]],
         queue_baseline: bool = False,
-    ) -> dict[str, Any]:
+    ) -> StateUpdateFrame:
         """Encode once, fan out normally, and derive one client's full base."""
         snapshot, body = self._build_public_state_for_delivery()
         if self.command_state_store.provider_generation != snapshot.provider_generation:
@@ -2391,8 +2442,7 @@ class WebServer:
         self._last_broadcast_state_key = self._public_state_delivery_key(
             snapshot, health_revision=int(body.get("healthRevision", 0))
         )
-        event = {"type": "state_update", "data": encoded}
-        self._fanout_state_update(peers, event, body)
+        self._fanout_state_update(peers, encoded, body)
         baseline = self._derive_full_state_update(encoded, body)
         if queue_baseline:
             q.replace_matching_with_front(
@@ -2404,31 +2454,47 @@ class WebServer:
     def _fanout_state_update(
         self,
         queues: Collection[BoundedQueue[dict[str, Any]]],
-        event: dict[str, Any],
+        encoded: StateUpdateFrame,
         body: dict[str, Any],
     ) -> None:
-        """Deliver one shared state encode, recovering only overflowed queues."""
+        """Deliver one shared state encode, recovering only overflowed queues.
+
+        A queue outside ``_leaf_delta_queues`` gets a delta rendered top-level.
+        """
+        event: dict[str, Any] = {"type": "state_update", "data": encoded}
+        top_level_event: dict[str, Any] | None = None
         for q in list(queues):
+            queued = event
+            if q not in self._leaf_delta_queues:
+                if top_level_event is None:
+                    top_level_event = {
+                        "type": "state_update",
+                        "data": top_level_delta(encoded, body),
+                    }
+                queued = top_level_event
             try:
-                q.put_nowait(event)
+                q.put_nowait(queued)
             except asyncio.QueueFull:
                 q.replace_matching_with_front(
                     {
                         "type": "state_update",
-                        "data": self._derive_full_state_update(event["data"], body),
+                        "data": self._derive_full_state_update(encoded, body),
                     },
                     lambda queued: queued.get("type") == "state_update",
                 )
 
     @staticmethod
     def _derive_full_state_update(
-        encoded: dict[str, Any], body: dict[str, Any]
-    ) -> dict[str, Any]:
+        encoded: StateUpdateFrame, body: dict[str, Any]
+    ) -> StateUpdateFrame:
         """Convert one shared encode into a same-sequence full envelope."""
         full = copy.deepcopy(encoded)
         full["type"] = "full"
         full.pop("changed", None)
         full.pop("removed", None)
+        full.pop("deltaVersion", None)
+        full.pop("set", None)
+        full.pop("unset", None)
         full["data"] = body
         return full
 
@@ -2551,7 +2617,7 @@ class WebServer:
             and cache_key == self._cached_public_state_key
             and self._cached_public_state_payload is not None
         ):
-            payload = copy.deepcopy(self._cached_public_state_payload)
+            payload = copy_state_tree(self._cached_public_state_payload)
             # MOR-3845: the liveness frame age is wall-clock dependent — a
             # cache hit must still serve the age at response time, not the
             # value frozen when the payload was built.
@@ -2597,17 +2663,22 @@ class WebServer:
         payload["sdr"] = self._sdr_status_payload()
         if updated_at is None:
             self._cached_public_state_key = cache_key
-            self._cached_public_state_payload = copy.deepcopy(payload)
+            self._cached_public_state_payload = copy_state_tree(payload)
         return payload
 
     def build_state_update_envelope(
         self, *, force_full: bool = False
-    ) -> dict[str, Any]:
-        """Return a WS state-update envelope from the canonical StateStore view."""
+    ) -> StateUpdateFrame:
+        """Return a WS state-update envelope from the canonical StateStore view.
+
+        A delta comes in the top-level rendering a default client receives.
+        """
         snapshot, body = self._build_public_state_for_delivery()
         if self.command_state_store.provider_generation != snapshot.provider_generation:
             raise RuntimeError("provider generation changed before state encoding")
-        return self._encode_state_update(snapshot, body, force_full=force_full)
+        return top_level_delta(
+            self._encode_state_update(snapshot, body, force_full=force_full), body
+        )
 
     def _build_public_state_for_delivery(
         self,
@@ -2633,12 +2704,12 @@ class WebServer:
         body: dict[str, Any],
         *,
         force_full: bool = False,
-    ) -> dict[str, Any]:
+    ) -> StateUpdateFrame:
         """Encode one Store snapshot with its non-optional wire epoch."""
         generation_changed = (
             self._last_delta_encoder_generation != snapshot.provider_generation
         )
-        result: dict[str, Any] = self._delta_encoder.encode(
+        result = self._delta_encoder.encode(
             body,
             force_full=force_full or generation_changed,
             state_revision=snapshot.state_revision,
@@ -3474,14 +3545,18 @@ class WebServer:
                         "reconnect: scan facts seed failed",
                         exc_info=True,
                     )
-        # Re-enable scope after refetch completes.
+        # Re-enable scope after refetch completes — at most once per
+        # viewing session, and never while the menu guard says the radio
+        # shows its own menu (MOR-3690 reopened: an IC-705 over USB sends
+        # no scope frames in its menu, and an unguarded write here kicked
+        # the operator out of it on every reconnect cycle).
         # Do NOT gate on self._radio_ready(): that property waits for
         # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
         # state broadcast may only resume once a scope-enable command
         # is sent — creating a deadlock where scope re-enable waits
         # for the very signal it would itself trigger.  The session
         # is already up at this point (soft_reconnect completed auth +
-        # discovery), so queue EnableScope unconditionally; if the
+        # discovery), so queue EnableScope without waiting; if the
         # radio is genuinely unreachable the command will fail on its
         # own, which is strictly better than a silent 30-second wait
         # every reconnect cycle.
@@ -3491,15 +3566,55 @@ class WebServer:
             and self._hardware_scope_available
             and not self._scope_enable_failed
         ):
-            self._set_scope_data_callback(self._on_hardware_scope_frame)
-            if await self._execute_scope_command(
-                EnableScope(generation=self._scope_demand_generation)
-            ):
-                self._scope_enabled = True
-                logger.info(
-                    "scope: re-enable confirmed after reconnect (%d handlers)",
-                    len(self._scope_handlers),
-                )
+            # The existing scope-enable lock serialises the attempt check
+            # and the awaited command: overlapping refetch tasks cannot
+            # both pass the generation check before either enable lands,
+            # so the ordered queue never sees the claimed bound exceeded.
+            async with self._scope_enable_lock:
+                if self._scope_menu_guard_active(now=time.monotonic()):
+                    logger.info(
+                        "scope: reconnect re-enable skipped — radio is in its "
+                        "own menu (scope hidden on the radio)"
+                    )
+                elif self._scope_reenable_recorded_for(
+                    self.command_state_store.provider_generation
+                ):
+                    logger.info(
+                        "scope: reconnect re-enable already sent for this "
+                        "viewing session (generation %d), skipping",
+                        self._scope_demand_generation,
+                    )
+                else:
+                    self._set_scope_data_callback(self._on_hardware_scope_frame)
+                    if await self._execute_scope_command(
+                        EnableScope(generation=self._scope_demand_generation)
+                    ):
+                        self._scope_enabled = True
+                        self._scope_reenable_generation = self._scope_demand_generation
+                        self._scope_reenable_provider_generation = (
+                            self.command_state_store.provider_generation
+                        )
+                        logger.info(
+                            "scope: re-enable confirmed after reconnect (%d handlers)",
+                            len(self._scope_handlers),
+                        )
+
+    def _scope_reenable_recorded_for(self, provider_generation: int) -> bool:
+        """Whether the once-per-session reconnect enable already fired for
+        THIS connection epoch.
+
+        The bound is per viewing session AND per provider epoch: a genuinely
+        new connection (the backend's generation advance reached the shared
+        store's provider generation — the invalidation edge
+        ``_on_provider_generation`` already subscribes to) re-arms it, so a
+        second real outage while the same viewer stays connected still gets
+        its scope output restored; repeated refetches inside one epoch do
+        not.
+        """
+        return (
+            self._scope_reenable_generation == self._scope_demand_generation
+            and self._scope_reenable_provider_generation == provider_generation
+        )
 
     def _cancel_scope_reenable_task(self) -> None:
         """Cancel readiness work invalidated by a last-viewer transition."""
@@ -3525,8 +3640,6 @@ class WebServer:
 
     async def _wait_and_enable_scope(self, *, reason: str, generation: int) -> None:
         """Wait until radio_ready before queuing EnableScope."""
-        import time
-
         current_task = asyncio.current_task()
         deadline = time.monotonic() + self._scope_reenable_timeout
         try:
@@ -3581,29 +3694,136 @@ class WebServer:
             return False
 
     def _scope_health_check(self, frame: Any) -> None:
-        """Track whether scope frames contain real data (non-zero pixels)."""
-        import time
+        """Track scope frame arrival and whether frames carry real data.
 
+        MOR-3690: every frame arrival refreshes ``_scope_last_frame``
+        (monotonic), non-zero pixels also refresh ``_scope_last_nonzero``.
+        """
         try:
             # ScopeFrame has .pixels (bytes-like)
             pixels = getattr(frame, "pixels", None) or b""
+            self._scope_last_frame = time.monotonic()
             if any(b != 0 for b in pixels):
-                self._scope_last_nonzero = time.monotonic()
+                self._scope_last_nonzero = self._scope_last_frame
         except (AttributeError, TypeError):
             logger.debug("scope health check: unexpected frame type", exc_info=True)
 
-    async def _scope_health_monitor(self) -> None:
-        """Background task: re-enable scope if frames are all-zero for too long.
+    _SCOPE_HIDDEN_PATH = FieldPath.parse("health.health.scope_hidden")
+    #: MOR-3690: the hidden verdict blocks the automatic reconnect re-enable
+    #: only while fresh. A verdict older than this may predate a radio
+    #: power-cycle (which also closes the menu) and no longer counts as
+    #: "known to be in the menu".
+    _SCOPE_HIDDEN_RECONNECT_GRACE = 300.0
 
-        For serial-only radios (has_lan=False), scope data delivery differs
-        significantly — the radio may need CI-V output enabled, higher baud
-        rates, etc.  Limit re-enable attempts to avoid flooding the serial
-        link and logs.
+    def _scope_health_source(self) -> SourceMetadata:
+        """Source qualifier for the scope-health state facts (MOR-3690)."""
+        return SourceMetadata(
+            source="local_reconcile",
+            provider="scope_health",
+            transport="web",
+        )
+
+    def _civ_link_flowing(self, now: float) -> bool:
+        """Whether the radio answered within one monitor window.
+
+        Reads the Radio contract's public decode-point liveness stamp
+        (:attr:`rigplane.core.radio_protocol.Radio.last_valid_frame_monotonic`)
+        — the same evidence ``connection.liveness`` serves
+        (``runtime_helpers.connection_liveness_payload``), so this stays
+        radio-agnostic with no per-model branch. A missing or non-numeric
+        stamp (a producer that never answered on this connection
+        generation) means "cannot tell" and counts as not flowing.
         """
-        import time
+        radio = self._radio
+        last = (
+            getattr(radio, "last_valid_frame_monotonic", None)
+            if radio is not None
+            else None
+        )
+        if not isinstance(last, (int, float)) or isinstance(last, bool):
+            return False
+        return now - float(last) <= self._scope_health_interval
 
-        max_retries = self._scope_health_max_retries
-        retries = 0
+    def _scope_menu_guard_active(self, *, now: float) -> bool:
+        """Whether the radio is known to show its own menu (scope hidden).
+
+        MOR-3690 (reopened): the ONE guard every automatic scope-enable
+        write must pass — no automatic path may kick the operator out of
+        the radio's menu. The explicit user-demand enable (a web client
+        opening the scope view) is deliberately not gated: it is the
+        operator's own request and the escape hatch for a stale verdict.
+        """
+        if self._scope_hidden_published is not True:
+            return False
+        published_at = self._scope_hidden_at
+        if published_at is None:
+            return False
+        return now - published_at <= self._SCOPE_HIDDEN_RECONNECT_GRACE
+
+    def _publish_scope_hidden(
+        self, hidden: bool, *, now: float, detail: str = ""
+    ) -> None:
+        """Publish the scope-hidden verdict as a state fact, on change only.
+
+        MOR-3690: ``True`` means the radio deliberately shows another
+        screen (front-panel menu): all-zero frames keep arriving, or — an
+        IC-705 over USB serial — no frames arrive at all while CI-V traffic
+        keeps flowing. ``False`` means non-zero frames flow again. No
+        verdict is published while the monitor cannot tell (CI-V silent
+        too, TX, link down, no viewers), so the last verdict never flaps.
+        """
+        if self._scope_hidden_published is hidden:
+            # A repeated definite observation of the SAME verdict refreshes
+            # its evidence clock BEFORE the duplicate publication is
+            # suppressed: a menu held open past the reconnect grace window
+            # keeps re-confirming itself every monitor window, and the
+            # reconnect guard must keep reading that as fresh evidence —
+            # otherwise the still-open menu goes stale and the next
+            # reconnect ejects the operator from it.
+            self._scope_hidden_at = now
+            return
+        self._scope_hidden_published = hidden
+        self._scope_hidden_at = now
+        self.command_state_store.apply_current(
+            Observation(
+                path=self._SCOPE_HIDDEN_PATH,
+                value=hidden,
+                source=self._scope_health_source(),
+                timestamp_monotonic=now,
+            )
+        )
+        logger.info(
+            "scope-health: scope %s%s",
+            (
+                "hidden on the radio (menu), not re-enabling"
+                if hidden
+                else "visible again (non-zero frames flowing)"
+            ),
+            f" ({detail})" if detail else "",
+        )
+
+    async def _scope_health_monitor(self) -> None:
+        """Background task: publish the scope-hidden verdict; never writes.
+
+        MOR-3690 (reopened): absence of scope frames while CI-V traffic
+        keeps flowing is NOT a transport fault — an IC-705 over USB serial
+        sends no scope frames at all while the operator sits in its menu.
+        Writing scope-enable there kicks the operator out of the menu, so
+        this monitor publishes the verdict and leaves every enable to the
+        guarded reconnect path. The states:
+
+        * non-zero frames flowing → ``scope_hidden = False``;
+        * frames arriving but all zero → ``scope_hidden = True`` (menu);
+        * no frames, CI-V healthy → ``scope_hidden = True`` (menu);
+        * no frames and CI-V silent too, or the link down → no verdict: a
+          real link fault the link layer repairs with a reconnect, and the
+          guarded reconnect path re-enables the scope at most once per
+          viewing session.
+
+        All elapsed times use the one monotonic clock, sampled once per
+        window, and clamp at zero: a frame can always land between the
+        sample and the comparison (the beta.13 "no scope frames for -1s").
+        """
         try:
             while True:
                 await asyncio.sleep(self._scope_health_interval)
@@ -3611,51 +3831,57 @@ class WebServer:
                     continue
                 if not self._hardware_scope_available:
                     continue
-                # Don't re-enable scope while radio is disconnected
+                # Link down: the frame clock means nothing. Keep the last
+                # verdict — the reconnect guard bounds its freshness.
                 if not self._radio_ready():
-                    self._scope_last_nonzero = time.monotonic()  # reset timer
-                    retries = 0
+                    self._scope_last_frame = time.monotonic()
+                    self._scope_last_nonzero = time.monotonic()
                     continue
                 if not self._scope_enabled:
                     continue
                 if self._scope_tx_known():
                     # MOR-2859: all-zero frames are expected during transmit
                     # (an IC-7300 with scope-during-TX off sends blanks), so
-                    # pause the stall timer instead of re-enabling mid-TX.
+                    # pause the frame clock instead of judging mid-TX.
+                    self._scope_last_frame = time.monotonic()
                     self._scope_last_nonzero = time.monotonic()
-                    retries = 0
                     continue
                 now = time.monotonic()
-                if self._scope_last_nonzero == 0.0:
-                    # Never seen non-zero — might be starting up
+                if self._scope_last_frame == 0.0:
+                    # Never seen any frame — might be starting up
+                    self._scope_last_frame = now
                     self._scope_last_nonzero = now
                     continue
-                elapsed = now - self._scope_last_nonzero
-                if elapsed > self._scope_health_interval:
-                    if retries >= max_retries:
-                        if retries == max_retries:
-                            logger.warning(
-                                "scope-health: giving up after %d retries "
-                                "(scope may not be available on this backend)",
-                                max_retries,
-                            )
-                            retries += 1  # log once
-                        continue
-                    await self._execute_scope_command(
-                        EnableScope(generation=self._scope_demand_generation)
+                interval = self._scope_health_interval
+                frames_idle = max(0.0, now - self._scope_last_frame)
+                data_flowing = (
+                    self._scope_last_nonzero != 0.0
+                    and now - self._scope_last_nonzero <= interval
+                )
+                if data_flowing:
+                    self._publish_scope_hidden(False, now=now)
+                    continue
+                if frames_idle <= interval:
+                    # Frames arrive but carry no data: the radio shows
+                    # another screen. Valid state — never write scope-enable.
+                    self._publish_scope_hidden(
+                        True, now=now, detail="all-zero frames flowing"
                     )
-                    self._scope_last_nonzero = now  # reset to avoid spam
-                    retries += 1
-                    logger.warning(
-                        "scope-health: all-zero frames for %.0fs, re-enabling scope "
-                        "(attempt %d/%d)",
-                        elapsed,
-                        retries,
-                        max_retries,
+                    continue
+                if self._civ_link_flowing(now):
+                    # No scope frames at all while CI-V is otherwise
+                    # healthy: the radio is in its own menu (an IC-705 over
+                    # USB sends nothing then). Never a transport fault.
+                    self._publish_scope_hidden(
+                        True,
+                        now=now,
+                        detail=(
+                            f"no scope frames for {frames_idle:.0f}s, CI-V link healthy"
+                        ),
                     )
-                else:
-                    # Scope is healthy — reset retry counter
-                    retries = 0
+                    continue
+                # No frames and CI-V silent: a real link fault. The link
+                # layer reconnects; the guarded reconnect path re-enables.
         except asyncio.CancelledError:
             pass
 
@@ -3804,9 +4030,11 @@ class WebServer:
         deferred_bridge = self._deferred_bridge_start
         if deferred_bridge is not None:
             # MOR-3078: the CLI armed a deferred auto-start while the
-            # identity gate held the connect; the running application —
-            # not the CLI — now owns the one attempt. If startup never
-            # reaches this point, nothing was ever spawned.
+            # radio could not serve audio yet — not connected (MOR-2922)
+            # or the identity gate held the connect (MOR-3081); the
+            # running application — not the CLI — now owns the one
+            # attempt. If startup never reaches this point, nothing was
+            # ever spawned.
             self._deferred_bridge_start = None
             self._spawn(self._run_deferred_audio_bridge_start(**deferred_bridge))
 
@@ -3916,7 +4144,8 @@ class WebServer:
     ) -> None:
         """Arm ONE deferred auto-start of the audio bridge (MOR-3078).
 
-        The CLI's default ``--bridge=auto`` defers while the serial
+        The CLI's default ``--bridge=auto`` defers while the radio cannot
+        serve audio yet — the serial port never opened (MOR-2922) or the
         identity gate holds the connect (MOR-3081); this arms the
         follow-up. The attempt is spawned by :meth:`start` — so a server
         that never starts never spawns it — as a ``_spawn`` task that
@@ -3948,14 +4177,15 @@ class WebServer:
         max_retries: int,
         retry_base_delay: float,
     ) -> None:
-        """Wait out the identity hold, then start the bridge exactly once."""
+        """Wait until the radio can serve audio, then start the bridge.
+
+        The wait condition is the same shared predicate the CLI's arming
+        used (``core.radio_protocol: radio_audio_ready``, MOR-2922): a
+        disconnected radio and one whose identity read is pending both
+        refuse the bridge's radio-RX start.
+        """
         while not self._stopping:
-            radio = self._radio
-            if (
-                radio is not None
-                and radio.connected
-                and serial_identity_hold(radio) is None
-            ):
+            if radio_audio_ready(self._radio):
                 break
             await asyncio.sleep(_BRIDGE_DEFER_POLL_S)
         if self._stopping:
@@ -4009,6 +4239,7 @@ class WebServer:
         on_started: Callable[[], None] | None = None,
         on_shutdown_signal: Callable[[], None] | None = None,
         on_tx_release: _TxReleaseHook | None = None,
+        before_cancel_all: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Start and block until cancelled.  Handles SIGTERM/SIGINT gracefully.
 
@@ -4019,7 +4250,8 @@ class WebServer:
         ``test_web_ui_banner_prints_only_after_the_server_reports_started``).
         ``on_shutdown_signal`` runs once, on the first SIGTERM/SIGINT.
         ``on_tx_release`` receives the shutdown's PTT drain task, its name and
-        its bound in seconds.
+        its bound in seconds. ``before_cancel_all`` lets protected releases
+        finish within their bounds before the second signal cancels tasks.
         """
         self._on_tx_release = on_tx_release
         await self.start()
@@ -4033,6 +4265,16 @@ class WebServer:
         stop_event = asyncio.Event()
         _signal_count = 0
 
+        async def _deferred_cancel_all() -> None:
+            try:
+                assert before_cancel_all is not None
+                await before_cancel_all()
+            finally:
+                me = asyncio.current_task()
+                for task in asyncio.all_tasks(loop):
+                    if task is not me:
+                        task.cancel()
+
         def _on_signal() -> None:
             nonlocal _signal_count
             _signal_count += 1
@@ -4043,8 +4285,11 @@ class WebServer:
                     on_shutdown_signal()
             elif _signal_count == 2:
                 logger.info("second signal — cancelling all tasks")
-                for task in asyncio.all_tasks(loop):
-                    task.cancel()
+                if before_cancel_all is None:
+                    for task in asyncio.all_tasks(loop):
+                        task.cancel()
+                else:
+                    loop.create_task(_deferred_cancel_all(), name="shutdown-cancel-all")
             else:
                 logger.info("forced exit")
                 import os
@@ -4342,6 +4587,7 @@ class WebServer:
                         for value, label in (profile.data_mode_inputs or ())
                     ],
                     "keyboard": _serialize_keyboard_config(profile),
+                    **_serialize_scope_ref_range(profile),
                     **({"controls": profile.controls} if profile.controls else {}),
                     "txBands": _serialize_tx_bands(profile),
                     **_serialize_max_power(profile, self._radio),
@@ -4695,6 +4941,24 @@ class WebServer:
             return broadcaster.capture_diagnostics()
         return {"schemaVersion": 1, "lastFailureCategory": None}
 
+    def _runtime_civ_ingress_payload(self) -> CivIngressPayload | None:
+        """Inbound CI-V sequence-order counters of a LAN radio (MOR-4205).
+
+        ``None`` when the radio has no LAN CI-V transport (serial radios, no
+        radio, or not connected yet).
+        """
+        transport = getattr(self._radio, "_civ_transport", None)
+        if not isinstance(transport, IcomTransport):
+            return None
+        stats = transport.rx_order_stats
+        return CivIngressPayload(
+            ordered=transport.ordered_ingress,
+            reordered=stats.reordered,
+            duplicate=stats.duplicate,
+            lost=stats.lost,
+            late=stats.late,
+        )
+
     def _runtime_process_payload(self) -> dict[str, Any]:
         """Process metrics; a value this platform cannot report is ``None``."""
         rss_bytes: int | None = None
@@ -4778,6 +5042,7 @@ class WebServer:
                 "audioPlayback": self._runtime_audio_playback_payload(),
                 "audioCapture": self._runtime_audio_capture_payload(),
                 "connection": self._runtime_connection_payload(),
+                "civIngress": self._runtime_civ_ingress_payload(),
                 "stateAcquisition": self._state_acquisition_diagnostics_payload(),
                 # Additive TX safety evidence (MOR-1015): owner, phase, lease,
                 # watchdog, durable OFF obligation and uncertain shutdown, read
@@ -4999,6 +5264,7 @@ class WebServer:
                     # leaving ``power_on`` undeclared (a level-only profile, see
                     # ``RadioProfile.infers_power_on_from_liveness``).
                     "powerOnCommand": profile.supports_command("power_on"),
+                    "rxAudioLevelMenu": profile.rx_audio_level_menu,
                     "cwText": _serialize_cw_text(profile, self._radio),
                     "vfoScheme": profile.vfo_scheme,
                     "vfoReadback": profile.vfo_readback,
@@ -5058,6 +5324,7 @@ class WebServer:
                     "hasRxAntenna": profile.antenna_has_rx_ant,
                 }
             )
+            payload.update(_serialize_scope_ref_range(profile))
             if profile.controls:
                 payload["controls"] = profile.controls
             payload["txBands"] = _serialize_tx_bands(profile)
@@ -8054,6 +8321,7 @@ class WebServer:
                 managed_tx_authority=self._managed_tx_authority(),
                 session_id=ticket.session_id,
                 tx_owner=ticket.tx_owner,
+                leaf_state_deltas=(query or {}).get("state_delta") == ["2"],
             )
         elif path == "/api/v1/scope":
             handler = ScopeHandler(ws, self._radio, server=self)

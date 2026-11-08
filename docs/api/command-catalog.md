@@ -85,7 +85,7 @@ Maximum batch size: 128 steps. Per-step timeout: 10 seconds.
 | `set_mode` | `mode: str`, `receiver?: int=0` | — | Yes | Mode strings from profile `modes[]`, e.g. `"USB"`, `"FM"`, `"CW"`. |
 | `set_filter` | `filter?: str="FIL1"`, `receiver?: int=0` | — | Yes | Accepted: `"FIL1"`, `"FIL2"`, `"FIL3"`. |
 | `set_filter_width` | `width: int` (Hz), `receiver?: int=0` | — | Yes | Passband width; radio-specific valid range. |
-| `reset_filter_width` | `receiver?: int=0` (0=MAIN, 1=SUB) | `filter_width_radio_default` | Yes | Returns the FTX-1 width to the radio's own default via its profile-declared code; no `admitted_width`. |
+| `reset_filter_width` | `receiver?: int=0` (0=MAIN, 1=SUB) | `filter_width_radio_default` | Yes | Returns the FTX-1 width to the radio's own default via its profile-declared code; the radio's own default can be narrow in CW and data modes. No `admitted_width`. |
 | `set_filter_shape` | `shape: int`, `receiver?: int=0` | `filter_shape` | Yes | |
 | `set_if_shift` | `offset: int`, `receiver?: int=0` | `if_shift` | Yes | Offset relative to center in Hz. |
 | `set_rit_status` | `on?: bool=false` | `rit` | Yes | |
@@ -261,7 +261,7 @@ the memory protocol reject these commands.
 
 | Command | Params | Capability | Batch | Notes |
 |---------|--------|------------|-------|-------|
-| `set_memory_mode` | `channel: int` (1–101), optional `group: int` | MemoryCapable | Yes | Switch to memory channel mode. Without `group`: the channel-only form (1–101). With `group`: select a listed channel on a profile whose `[memory]` section has `recall = true` (IC-705: group 0–99, channel 0–99; IC-9700 and IC-7610 refuse it); bounds come from the profile. |
+| `set_memory_mode` | `channel: int` (1–101), optional `group: int` | MemoryCapable | Yes | Without `group`: select the channel only (`08` + channel); the radio stays in the VFO mode, which the Store flow (`memory_write`) relies on. With `group`: recall the channel on a profile whose `[memory]` section has `recall = true` — select the group (`08 A0`, IC-705 only), the channel (`08` + channel), then switch to the Memory mode (bare `08`), each ACK-checked; a NAK fails the command (MOR-4219). IC-705: group 0–99, channel 0–99; IC-7300/IC-7300MK2/IC-7610: group 0 only; IC-9700 refuses it. Bounds come from the profile. |
 | `memory_write` | — | MemoryCapable | Yes | Write current VFO state to the active memory channel. |
 | `memory_to_vfo` | `channel: int` (1–101) | MemoryCapable | Yes | Recall channel to VFO. |
 | `memory_clear` | `channel: int`, `group: int` (required on the group/band-addressed radios IC-705/IC-9700; 0 on the channel-only radios) | MemoryCapable | Yes | Clear a memory channel in the profile's declared form (`1A 00` + address + `FF` on IC-705/IC-9700/IC-7300/IC-7300MK2; the legacy `0x0B` + channel on IC-7610). Refused with the stable error `memory_write_unverified` (HTTP 409 / WebSocket `error` field) unless the profile's `[memory]` section declares a verified `write_layout` (MOR-3644; IC-705, IC-9700, IC-7300, IC-7300MK2 and IC-7610 today). |

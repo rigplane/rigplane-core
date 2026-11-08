@@ -8,10 +8,27 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
 
 ## Contents
 
+- `rigplane.testing.timing` — the one virtual clock for tests (MOR-3920, MOR-4075),
+  shipped in the `rigplane` wheel (not in this directory) so rigplane-pro and any
+  downstream suite import it through the ordinary `rigplane` dependency: `VirtualClock`
+  (a `ManualClock`, the simulator engine's clock, that also drives an event loop's timers
+  and a module's own `time`/`asyncio` names), the `@virtual_clock` decorator, and
+  `wait_until` / `await_until` for real events. Do not write another per-file clock class.
+- `rigplane_testkit.realtime_guard` — a collection-time plugin (loaded from
+  `tests/conftest.py`) that refuses a test using a real sleep, the real clock or a real
+  timeout of 1 s or less unless it runs on the virtual clock or carries
+  `@pytest.mark.realtime(reason="...")`. Tests not yet converted are listed in
+  `tests/realtime_baseline.txt`, which may only shrink (`--realtime-write-baseline`
+  regenerates it from a full collection; `python -m rigplane_testkit.realtime_guard
+  tests/realtime_baseline.txt origin/main` fails if it grew).
 - `rigplane_testkit.icom` — `MockIcomRadio`, an asyncio UDP simulator of an
   Icom IC-7610 LAN interface: control-port discovery/login/token/ping, a CI-V
   command port, single-owner session holding with keepalive renewal, and
-  fault injection (drop, reorder, stall, delay). The CI-V dispatcher answers
+  fault injection (drop, reorder, stall, delay). Since MOR-3907/3910 the same
+  simulator serves declared Icom LAN personalities (IC-9700, IC-7300MK2)
+  driven by the capability profile (`radio_addr`, `dual_receiver`, `model_id`/`identity_source`;
+  `sim serve --radio ic9700|ic7300mk2`, fidelity C — see
+  `docs/internals/sim-serve-contract.md`). The CI-V dispatcher answers
   0x03/0x04/0x05/0x06 plus the selected/unselected receiver vocabulary
   0x25/0x26 (both subcommands; the selected VFO shares the 0x03-0x06 state,
   the unselected VFO has its own fields) and the 0x1A 05 MOD-input and NB

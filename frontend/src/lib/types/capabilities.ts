@@ -226,6 +226,10 @@ export interface Capabilities {
    *  the capability for the RF-power level only. Absent on older servers
    *  (treated as unknown, not false). */
   powerOnCommand?: boolean;
+  /** The profile's `[audio].rx_audio_level_menu` (MOR-4210): the radio menu
+   *  item that sets its RX audio output level. `null` when undeclared;
+   *  absent on older servers and profile-less backends. */
+  rxAudioLevelMenu?: string | null;
   /** Absent on older servers. */
   cwText?: CwTextCapability;
   receivers: number;
@@ -275,6 +279,15 @@ export interface Capabilities {
   scopeSource?: string | null;  // "hardware", "audio_fft", or null
   audioFftAvailable?: boolean;  // true when audio FFT scope is available (even with hardware scope)
   scopeConfig?: ScopeConfig;
+  /** Scope REF adjustable range (MOR-3694), from the profile's `[scope]`
+   *  section, published under the profile fields' own names. Present only
+   *  when the profile declares all three; absent means the REF steppers
+   *  fail closed — never a client-side fallback range. `ref_step_db` is
+   *  the radio's resolution (0.5 dB on the Icom rigs), NOT the button
+   *  grid (a UI constant). */
+  ref_min_db?: number;
+  ref_max_db?: number;
+  ref_step_db?: number;
   audioConfig: AudioConfig;
   webrtc: WebRtcCapabilities;
   controls?: Readonly<Record<string, ControlRange | ControlDomain>>;
@@ -596,6 +609,27 @@ export function validateCapabilities(value: unknown): Capabilities {
   normalizeNotchWidthChoices(raw);
   normalizeBreakInChoices(raw);
 
+  // MOR-3694: the scope REF range group is all-or-none, with min < max and
+  // a positive step; an absent group is the fail-closed signal.
+  const REF_RANGE_FIELDS = ['ref_min_db', 'ref_max_db', 'ref_step_db'] as const;
+  const presentRefRangeFields = REF_RANGE_FIELDS.filter((field) =>
+    Object.prototype.hasOwnProperty.call(raw, field));
+  if (presentRefRangeFields.length !== 0
+    && presentRefRangeFields.length !== REF_RANGE_FIELDS.length) {
+    invalid('$', 'a complete or absent scope REF range group');
+  }
+  if (presentRefRangeFields.length === REF_RANGE_FIELDS.length) {
+    for (const field of REF_RANGE_FIELDS) {
+      requireFiniteNumber(raw[field], `$.${field}`);
+    }
+    if ((raw.ref_min_db as number) >= (raw.ref_max_db as number)) {
+      invalid('$.ref_min_db', 'min < max');
+    }
+    if ((raw.ref_step_db as number) <= 0) {
+      invalid('$.ref_step_db', '> 0');
+    }
+  }
+
   const txAudioFields = [
     'audioTx',
     'audioTxRoute',
@@ -659,6 +693,10 @@ export function validateCapabilities(value: unknown): Capabilities {
   const expectedReceivers = raw.vfoScheme === 'single' || raw.vfoScheme === 'ab' ? 1 : 2;
   if (raw.receivers !== expectedReceivers) {
     invalid('$.vfoScheme', `${String(raw.vfoScheme)} with receivers=${expectedReceivers}`);
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, 'rxAudioLevelMenu')
+    && raw.rxAudioLevelMenu !== null && typeof raw.rxAudioLevelMenu !== 'string') {
+    invalid('$.rxAudioLevelMenu', 'a string or null');
   }
   if (Object.prototype.hasOwnProperty.call(raw, 'vfoReadback')) {
     const readbacks: readonly VfoReadback[] = ['absolute', 'selected_unselected', 'none'];

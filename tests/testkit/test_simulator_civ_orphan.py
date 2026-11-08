@@ -30,6 +30,7 @@ from testkit.test_simulator_faults import (
     _conninfo,
     _freq_get,
     _header,
+    _is_echo_of,
     _is_freq_reply,
     _login,
     _openclose,
@@ -110,7 +111,7 @@ async def _die_with_gap(
         for seq in range(open_seq + 1, last_in_order + 1):
             req = _freq_get(seq=seq)
             client.send(req, sim.civ_port)
-            assert await client.recv() == req
+            assert _is_echo_of(await client.recv(), req)
             assert _is_freq_reply(await client.recv())
         client.send(_idle(jump), sim.civ_port)
         pair = [await client.recv() for _ in range(2)]
@@ -164,7 +165,7 @@ async def _recv_data_reply(
     got_echo = got_reply = False
     while not (got_echo and got_reply):
         pkt = await client.recv(timeout=max(0.1, deadline - time.monotonic()))
-        if pkt == request:
+        if _is_echo_of(pkt, request):
             got_echo = True
         elif _is_freq_reply(pkt):
             got_reply = True

@@ -38,6 +38,7 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
     acquisition_class_for_path,
     demoted_acquisition_class,
+    startup_critical_path,
 )
 from rigplane.core.state_store import (
     FieldSnapshot,
@@ -69,6 +70,7 @@ __all__ = [
     "adaptive_cadence_limit",
     "availability_clause_holds",
     "civ_acquisition_executor_for_provider",
+    "civ_route_for_query",
     "civ_transport_budget_hz",
     "derive_active_receiver_value",
     "derive_tx_active",
@@ -122,6 +124,26 @@ AcquisitionMethod = Literal["poll", "command_response", "wait_for_unsolicited"]
 #: ``availability`` keyword: no field's declared conditions were resolved,
 #: so every path keeps the membership it had before ``available_when``.
 _NO_RESOLVED_AVAILABILITY: Mapping[FieldPath, bool | None] = MappingProxyType({})
+
+
+def _availability_counters(snapshot: StateSnapshot) -> tuple[int, int, int, int]:
+    """The store counters a snapshot's content and path presence depend on.
+
+    Every value write, observation, discard, freshness transition or
+    provider epoch bump moves at least one of these four counters, so
+    within one store's lineage an unchanged tuple means the stored
+    content is unchanged (MOR-4227). The tuple is NOT unique across
+    stores: two fresh stores with the same write pattern collide, which
+    is why only a consumer pinned to one store (the freshness service's
+    discard scan) may skip work off it.
+    """
+
+    return (
+        snapshot.state_revision,
+        snapshot.freshness_revision,
+        snapshot.observation_seq,
+        snapshot.provider_generation,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +340,30 @@ class _PendingMeterSample:
 _CIV_ACQUISITION_PROVIDERS = frozenset(("icom_civ", "xiegu_civ"))
 
 
+def civ_route_for_query(
+    query: AcquisitionQuery,
+    supports_cmd29: CivCmd29Support | None,
+) -> AcquisitionQuery | None:
+    """The query as it goes out on the wire, or ``None`` if it cannot.
+
+    A receiver-routed query keeps its cmd29 route where the profile has one
+    for the command. Without one, MAIN's read goes out plain (the radio
+    answers it for the selected receiver) and SUB's cannot be sent. One
+    decision for the acquisition executor and for naming the declared path
+    a refused read belongs to (MOR-4058).
+    """
+
+    if (
+        query.receiver is None
+        or supports_cmd29 is None
+        or supports_cmd29(query.command, query.sub)
+    ):
+        return query
+    if query.receiver != 0:
+        return None
+    return replace(query, receiver=None)
+
+
 class IcomCivAcquisitionExecutor:
     """CI-V path-to-query executor for compatible CI-V acquisition profiles."""
 
@@ -352,16 +398,12 @@ class IcomCivAcquisitionExecutor:
                 failed.append(path)
                 failure_reason = failure_reason or "no_civ_query_mapping"
                 continue
-            if (
-                query.receiver is not None
-                and self._supports_cmd29 is not None
-                and not self._supports_cmd29(query.command, query.sub)
-            ):
-                if query.receiver != 0:
-                    failed.append(path)
-                    failure_reason = failure_reason or "no_civ_receiver_route"
-                    continue
-                query = replace(query, receiver=None)
+            routed = civ_route_for_query(query, self._supports_cmd29)
+            if routed is None:
+                failed.append(path)
+                failure_reason = failure_reason or "no_civ_receiver_route"
+                continue
+            query = routed
             if query in sent_queries:
                 sent.append(path)
                 continue
@@ -425,6 +467,8 @@ _CLASS_RANK: dict[AcquisitionClass, int] = {
     klass: rank for rank, klass in enumerate(AcquisitionClass)
 }
 _MIN_RECONCILIATION_MAX_AGE = 1e-9
+#: MOR-4058: the failure reason of a read the radio refused (CI-V ``FA``).
+_REFUSED: Final[str] = "acquisition_request_refused"
 #: MOR-1898: liveness budget for a request whose ``max_age`` is the
 #: freshness epsilon (``_MIN_RECONCILIATION_MAX_AGE`` or below) and that
 #: carries no explicit ``timeout``. Such a
@@ -499,6 +543,14 @@ def civ_transport_budget_hz(radio: object) -> float | None:
     return 1.0 / max(interval, rtt)
 
 
+@dataclass(slots=True)
+class _ReadRefusal:
+    """A path whose read the radio refused, and when to ask again (MOR-4058)."""
+
+    count: int
+    retry_at: float
+
+
 class AcquisitionScheduler:
     """Minimal priority/dedupe queue for backend-neutral acquisition reads."""
 
@@ -526,6 +578,7 @@ class AcquisitionScheduler:
         "_pending_cadence_by_key",
         "_prime_cursor",
         "_profile",
+        "_refused_paths",
         "_requests_by_key",
         "_startup_defect",
         "_tx_active",
@@ -550,6 +603,9 @@ class AcquisitionScheduler:
         # timeout re-arm ``next_due`` one cadence out, so a deterministically
         # failing query can never be re-dispatched on every drain pass.
         self._consecutive_timeout_by_key: dict[_AcquisitionRequestKey, int] = {}
+        # MOR-4058: paths whose read the radio refused (NAK); any answer for
+        # the path drops it.
+        self._refused_paths: dict[FieldPath, _ReadRefusal] = {}
         self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
         # request id -> per-path timestamp of the drain pass that sent it,
         # dropped where the request is removed from ``_requests_by_key``.
@@ -936,6 +992,25 @@ class AcquisitionScheduler:
         if availability is not None:
             return availability
 
+        if normalized_priority in _AUTOMATIC_PRIORITIES:
+            # MOR-4058: automatic work (priming, cadence, reconciliation)
+            # waits out a refusal's retry delay; a read asked for by name
+            # goes out regardless.
+            askable = tuple(
+                path
+                for path in normalized_paths
+                if not self._refusal_withheld(path, now)
+            )
+            if not askable:
+                return EnsureFreshResult(
+                    status=AcquisitionStatus.UNAVAILABLE,
+                    message=(
+                        f"{', '.join(str(path) for path in normalized_paths)}: "
+                        "refused by the radio; asked again after its retry delay"
+                    ),
+                )
+            normalized_paths = askable
+
         if self._external_cat_paused:
             queued: list[AcquisitionRequest] = []
             deferred = False
@@ -1126,7 +1201,9 @@ class AcquisitionScheduler:
 
         self._tx_active = tx_active
 
-    def note_availability(self, snapshot: StateSnapshot) -> None:
+    def note_availability(
+        self, snapshot: StateSnapshot
+    ) -> Mapping[FieldPath, bool | None]:
         """Update the cached conditional availability from ``snapshot``.
 
         The dispatching seats' drains call this every pass, with the same
@@ -1135,15 +1212,33 @@ class AcquisitionScheduler:
         rather than as of the last tick -- the availability twin of
         :meth:`note_tx_active`. :meth:`due_requests` records what its
         caller resolved the same way; the later writer wins.
+
+        Returns the resolution it just recorded (MOR-4227): the freshness
+        tick resolves once per tick through this one method and shares
+        that map between its discard scan and ``due_requests`` --
+        extending the existing mechanism instead of the service keeping
+        a second map of its own (round-1 finding 2). The method itself
+        re-resolves on every call: a store-counter skip would be sound
+        only within one store's lineage, and hand-built snapshots (new
+        stores, tests) collide on counters while differing in content.
         """
 
         self._availability = resolve_available_when(self._profile, snapshot)
+        return self._availability
 
     def _contradicted_automatic_request(self, request: AcquisitionRequest) -> bool:
-        """Whether ``request`` is automatic and every path is contradicted."""
+        """Whether ``request`` is automatic and no path may be asked now.
 
+        A path may not be asked while its declared availability is
+        contradicted (MOR-3630) or while a refusal's retry delay runs
+        (MOR-4058, :meth:`record_read_refusal`).
+        """
+
+        now = self._clock.now()
         return request.priority in _AUTOMATIC_PRIORITIES and all(
-            self._availability.get(path, True) is False for path in request.paths
+            self._availability.get(path, True) is False
+            or self._refusal_withheld(path, now)
+            for path in request.paths
         )
 
     def due_requests(
@@ -1544,6 +1639,12 @@ class AcquisitionScheduler:
         whose resolved policy carries ``tx_only``, and paths
         ``availability`` maps to ``False``.
 
+        MOR-4058: a path the radio refused (:meth:`record_read_refusal`) is
+        answered — unavailable on this radio as it is set up now — and leaves
+        the set, unless it is safety-critical (``startup_critical_path``);
+        the gate counts a critical path's refusals as failed reads instead
+        (:meth:`consecutive_refusals`).
+
         ``availability`` carries what :func:`resolve_available_when` made of
         each conditional field's declared clauses. A path it omits is
         unconditional and keeps its membership. MOR-2803: ``None`` (a clause
@@ -1569,6 +1670,7 @@ class AcquisitionScheduler:
                     and profile.capability_for(path).startup_required
                     and not profile.policy_for(path).tx_only
                     and availability.get(path, True) is not False
+                    and (path not in self._refused_paths or startup_critical_path(path))
                 ),
                 key=str,
             )
@@ -1648,7 +1750,10 @@ class AcquisitionScheduler:
         # answer must not postpone unread siblings. Full-group replies settle
         # individually, so include successful paths from earlier replies.
         poll_paths = self._poll_cadence_groups().get(key, ())
-        if not completed_paths.issuperset(poll_paths):
+        # MOR-4058: a refused sibling is answered for the group's clock.
+        if not completed_paths.issuperset(
+            path for path in poll_paths if path not in self._refused_paths
+        ):
             return
 
         previous = self._cadence_state_for(
@@ -1676,6 +1781,111 @@ class AcquisitionScheduler:
             current_cadence_seconds=current_cadence,
             next_due_monotonic=change_set.timestamp_monotonic + current_cadence,
         )
+
+    def declared_paths(self) -> frozenset[FieldPath]:
+        """Every path this profile acquires: pollable ones and policy fields."""
+
+        return frozenset(self._profile.pollable_paths()) | frozenset(
+            self._profile.field_policies
+        )
+
+    def refused_paths(self) -> frozenset[FieldPath]:
+        """Return the paths whose last read the radio refused (MOR-4058)."""
+
+        return frozenset(self._refused_paths)
+
+    def end_refusals(self, paths: Iterable[FieldPath]) -> None:
+        """The radio answered *paths*: their refusal and its delay are over.
+
+        Called for every accepted observation, whether or not a request was
+        waiting for it (a direct getter's answer counts too).
+        """
+
+        answered = sorted(
+            (path for path in paths if path in self._refused_paths), key=str
+        )
+        for path in answered:
+            del self._refused_paths[path]
+        if answered:
+            logger.info(
+                "acquisition: %s answered again after a refusal",
+                ", ".join(str(path) for path in answered),
+            )
+
+    def consecutive_refusals(self, path: FieldPath) -> int:
+        """Return how many reads of *path* the radio refused in a row."""
+
+        refusal = self._refused_paths.get(path)
+        return 0 if refusal is None else refusal.count
+
+    def record_read_refusal(
+        self,
+        paths: Iterable[FieldPath],
+        *,
+        now: float,
+    ) -> None:
+        """The radio answered a read of *paths* with a refusal (MOR-4058).
+
+        A refusal (CI-V ``FA``) is a terminal answer: whether a radio refuses
+        a read can depend on its setup (no tuner attached), so it is recorded
+        at runtime, not declared. The paths stop holding the startup gate
+        (:meth:`unobserved_startup_paths`), a request in flight for them
+        completes as ``acquisition_request_refused`` — never as an
+        ``acquisition_request_timeout`` — and the cadence poll asks for them
+        again only once per :meth:`_refusal_retry_seconds` (their policy's
+        idle ceiling), whatever the cadence of the siblings in their poll
+        group. An answer ends the refusal (:meth:`end_refusals`).
+        """
+
+        refused = frozenset(paths)
+        if not refused:
+            return
+        newly = sorted(
+            (path for path in refused if path not in self._refused_paths), key=str
+        )
+        for path in refused:
+            self._refused_paths[path] = _ReadRefusal(
+                count=self.consecutive_refusals(path) + 1,
+                retry_at=now + self._refusal_retry_seconds(path),
+            )
+        if newly:
+            logger.info(
+                "acquisition: the radio refused the read of %s; "
+                "treating it as answered (unavailable) until it answers",
+                ", ".join(str(path) for path in newly),
+            )
+        for request in self.pending_requests():
+            matched = tuple(path for path in request.paths if path in refused)
+            if not matched:
+                continue
+            subset = replace(request, paths=matched)
+            if self.may_credit(subset, observation_timestamp=now):
+                self.record_acquisition_failure(
+                    subset,
+                    reason=_REFUSED,
+                    failed_paths=matched,
+                    now=now,
+                    link_healthy=False,
+                )
+
+    def _refusal_retry_seconds(self, path: FieldPath) -> float:
+        """How long a refused path waits before its next read (MOR-4058).
+
+        The policy's idle ceiling (:func:`adaptive_cadence_limit`): the
+        slowest cadence the policy allows a field that never changes, which
+        is what a refused field looks like. Its own cadence when it declares
+        no ceiling.
+        """
+
+        policy = self._profile.policy_for(path)
+        ceiling = adaptive_cadence_limit(policy)
+        if ceiling is not None:
+            return ceiling
+        return policy.cadence_seconds or 0.0
+
+    def _refusal_withheld(self, path: FieldPath, now: float) -> bool:
+        refusal = self._refused_paths.get(path)
+        return refusal is not None and refusal.retry_at > now
 
     def record_acquisition_failure(
         self,
@@ -2000,9 +2210,14 @@ class AcquisitionScheduler:
                 # first computation whose resolution holds again. A ``None``
                 # resolution or a path absent from the map never skips.
                 continue
+            # MOR-4058: a refused path joins its group's poll once per retry
+            # interval, not on every cadence of the siblings that answer.
+            asked = tuple(p for p in paths if not self._refusal_withheld(p, now))
+            if not asked:
+                continue
             state = self._cadence_state_for(key, policy, now=now)
             if state.next_due_monotonic <= now:
-                due.extend((key, path) for path in paths)
+                due.extend((key, path) for path in asked)
 
         grouped: dict[_AcquisitionRequestKey, list[FieldPath]] = {}
         for key, path in due:
@@ -2477,7 +2692,7 @@ def derive_active_receiver_value(store: StateStore) -> str | None:
     """
 
     try:
-        field = store.snapshot().field(SLOW_RECEIVER_DEMOTION_PATH)
+        field = store.field(SLOW_RECEIVER_DEMOTION_PATH)
     except KeyError:
         return None
     if field.freshness is not FreshnessState.FRESH or not isinstance(field.value, str):
@@ -2494,7 +2709,7 @@ def derive_tx_active(store: StateStore) -> bool:
     """
 
     try:
-        ptt_field = store.snapshot().field(FieldPath.global_("tx_state", "ptt"))
+        ptt_field = store.field(FieldPath.global_("tx_state", "ptt"))
     except KeyError:
         return False
     return ptt_field.freshness is FreshnessState.FRESH and bool(ptt_field.value)
@@ -2636,6 +2851,7 @@ class StateFreshnessService:
         "_next_prime_monotonic",
         "_on_delta",
         "_radio",
+        "_scan_counters",
         "_scheduler",
         "_store",
         "_tx_active_hint",
@@ -2662,6 +2878,13 @@ class StateFreshnessService:
         # what monotonic clock value the caller starts at.
         self._next_prime_monotonic = float("-inf")
         self._driver_lock: asyncio.Lock = asyncio.Lock()
+        # MOR-4227: the store counters this service's own discard scan
+        # last ran against (None = never). The resolved map itself always
+        # comes from ``AcquisitionScheduler.note_availability`` — the one
+        # existing mechanism, extended (round-1 finding 2); this service
+        # keeps only this scan marker over its own store's lineage, not a
+        # second map cache.
+        self._scan_counters: tuple[int, int, int, int] | None = None
 
     def tick(self, *, now: float | None = None) -> SnapshotDelta:
         """Advance freshness once and drive the profile's acquisition cadence.
@@ -2686,7 +2909,7 @@ class StateFreshnessService:
         timestamp = time.monotonic() if now is None else now
         self.flush_due_meter_samples(now=timestamp)
         self._reprime_unobserved_if_due(now=timestamp)
-        self._discard_declared_absent()
+        availability = self._availability_for_tick()
         delta = self._store.mark_stale_due(now=now)
         for request in delta.reconciliation_requests:
             self._queue_reconciliation(request)
@@ -2696,18 +2919,69 @@ class StateFreshnessService:
                 now=timestamp,
                 tx_active=tx_active(self._store, self._tx_active_hint),
                 observed_active=derive_active_receiver_value(self._store),
-                # MOR-2748: recomputed against the current snapshot every
-                # pass; a group whose paths all resolve False is skipped,
-                # and fires again the first pass the declaration holds.
-                availability=resolve_available_when(
-                    scheduler._profile, self._store.snapshot()
-                ),
+                # MOR-4227: resolved once per tick through
+                # note_availability (shared with the discard scan, whose
+                # own O(N) snapshot scan is skipped while the store
+                # counters stand still); a group whose paths all resolve
+                # False is skipped, and fires again the first pass the
+                # declaration holds.
+                availability=availability,
             )
         if (delta.freshness or delta.reconciliation_requests) and self._on_delta:
             self._on_delta(delta)
         return delta
 
-    def _discard_declared_absent(self) -> None:
+    def _availability_for_tick(self) -> Mapping[FieldPath, bool | None]:
+        """Resolve conditional availability once per tick, through the
+        scheduler's own mechanism.
+
+        Before MOR-4227 every tick paid TWO independent resolutions: one
+        inside :meth:`_discard_declared_absent` (plus a set build over
+        every stored path) and one for
+        :meth:`AcquisitionScheduler.due_requests`. The tick now resolves
+        ONCE per tick through :meth:`AcquisitionScheduler.note_availability`
+        and shares that map between the discard scan and ``due_requests``
+        — the one existing map, no service-level second cache (round-1
+        finding 2).
+
+        The discard scan itself is skipped while the store counters this
+        service's own scan last recorded stand still: the scan reads
+        only stored values and path presence, every one of which a store
+        write, observation, discard, freshness transition or provider
+        epoch bump moves a counter for, so an unchanged 4-tuple over the
+        same store means re-running it would remove nothing (its own
+        discards move counters). This marker is sound only over one
+        store's lineage, which is why it lives here and not on the
+        scheduler (hand-built snapshots collide on counters).
+
+        Availability resolution itself ignores freshness state, so
+        resolving before :meth:`StateStore.mark_stale_due` runs (which
+        only flips freshness) yields the same map the previous
+        post-ageing recompute produced.
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return _NO_RESOLVED_AVAILABILITY
+        snapshot = self._store.snapshot()
+        counters = _availability_counters(snapshot)
+        if self._scan_counters == counters:
+            return scheduler.note_availability(snapshot)
+        availability = scheduler.note_availability(snapshot)
+        self._discard_declared_absent(snapshot, availability)
+        refreshed = self._store.snapshot()
+        self._scan_counters = _availability_counters(refreshed)
+        if self._scan_counters != counters:
+            # The scan itself changed the store (a discard): re-resolve so
+            # due_requests sees the post-discard presence, exactly like the
+            # previous per-tick recompute did.
+            availability = scheduler.note_availability(refreshed)
+        return availability
+
+    def _discard_declared_absent(
+        self,
+        snapshot: StateSnapshot,
+        availability: Mapping[FieldPath, bool | None],
+    ) -> None:
         """Remove stored fields the profile declares absent in this state.
 
         :func:`resolve_available_when` reports ``False`` only where an
@@ -2718,20 +2992,18 @@ class StateFreshnessService:
         published as unobserved again — ``unavailable`` where the web
         projection is given the profile (``tests/test_web_runtime_helpers.py::
         test_field_status_reports_unavailable_after_the_freshness_tick_discards``).
+
+        The caller supplies the snapshot and its availability resolution
+        (computed once per changed-store tick through
+        :meth:`AcquisitionScheduler.note_availability`, MOR-4227).
         """
 
-        scheduler = self._scheduler
-        if scheduler is None:
-            return
-        snapshot = self._store.snapshot()
         stored = {field.path for field in snapshot.fields}
         # The profile spells a receiver ``main``/``sub``, CI-V ingress stores
         # it ``0``/``1``: discard whichever spelling holds the value.
         absent = tuple(
             candidate
-            for path, available in resolve_available_when(
-                scheduler._profile, snapshot
-            ).items()
+            for path, available in availability.items()
             if available is False
             for candidate in (path, path.receiver_alias())
             if candidate is not None and candidate in stored

@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedTxController } from '../../runtime/tx-controller/managed-controller';
+import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
 const rxFlush = vi.fn();
 const rxSetJitterBounds = vi.fn();
 const rxConstruct = vi.fn();
-const rxDiagnosticSnapshot = vi.fn(() => ({
+const rxDiagnosticSnapshot = vi.fn((): ReturnType<RxPlayer['diagnosticSnapshot']> => ({
   preRouting: { channelCount: 1, frameCount: 480, channels: [{ rms: 0.1, peak: 0.2 }] } as {
     channelCount: number; frameCount: number; channels: { rms: number; peak: number }[];
   } | null,
@@ -14,15 +15,17 @@ const rxDiagnosticSnapshot = vi.fn(() => ({
   volume: 1, focus: 'both', splitStereo: false, preGain: 1, mainGain: 1, subGain: 1,
   sinkSelection: 'unsupported',
   ...{ underruns: 3, bufferDepthMs: 140, droppedFrames: 2 },
-  playback: { contextState: 'running', sampleRate: 48000, receivedFrames: 2, validFrames: 2,
-    decodedFrames: 2, scheduledFrames: 2, suspendedDrops: 0 },
+  playback: { schemaVersion: 1, contextState: 'running', sampleRate: 48000, receivedFrames: 2,
+    validFrames: 2, decodedFrames: 2, pcmPeak: 20, scheduledFrames: 2, suspendedDrops: 0,
+    resumeOutcome: 'resolved', lastResumeError: null },
 }));
-const playback = {
+const playback: RxPlaybackDiagnostics = {
   schemaVersion: 1, contextState: 'suspended', sampleRate: 48000,
   receivedFrames: 2, validFrames: 2, decodedFrames: 0, pcmPeak: null,
   scheduledFrames: 0, suspendedDrops: 2, resumeOutcome: 'rejected', lastResumeError: 'NotAllowedError',
 };
-const rxStats = vi.fn(() => ({ underruns: 3, bufferDepthMs: 140, droppedFrames: 2, playback }));
+const rxStats = vi.fn((): ReturnType<RxPlayer['stats']> => ({ underruns: 3, bufferDepthMs: 140, droppedFrames: 2, playback }));
+let rxSourceLevelLow = false;
 const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
@@ -31,8 +34,15 @@ let txCaptureEpoch = 0;
 let txCaptureDied: ((reason: string) => void) | null = null;
 let txSend: ((data: ArrayBuffer) => void) | null = null;
 
+// The members AudioManager consumes, taken from the producer's own class so a
+// changed RxPlayer member fails type checking here (review round 1).
+type ConsumedRxPlayer = Pick<RxPlayer,
+  'start' | 'stop' | 'flush' | 'setJitterBounds' | 'stats' | 'diagnosticSnapshot'
+  | 'setFocus' | 'setSplitStereo' | 'setChannelGainDb'
+  | 'focus' | 'splitStereo' | 'mainGainDb' | 'subGainDb' | 'volume' | 'sourceLevelLow'>;
+
 vi.mock('../rx-player', () => ({
-  RxPlayer: class {
+  RxPlayer: class implements ConsumedRxPlayer {
     constructor(enabled: boolean) { rxConstruct(enabled); }
     start = rxStart;
     stop = rxStop;
@@ -43,11 +53,13 @@ vi.mock('../rx-player', () => ({
     setFocus = vi.fn();
     setSplitStereo = vi.fn();
     setChannelGainDb = vi.fn();
-    get focus() { return 'main'; }
+    get focus(): RxAudioFocus { return 'main'; }
     get splitStereo() { return true; }
     get mainGainDb() { return 0; }
     get subGainDb() { return 0; }
+    get volume() { return 1; }
     set volume(_value: number) {}
+    get sourceLevelLow() { return rxSourceLevelLow; }
   },
 }));
 
@@ -169,7 +181,7 @@ describe('candidate-only RX numeric overlay', () => {
     vi.advanceTimersByTime(1);
     expect(rxDiagnosticSnapshot).toHaveBeenCalledTimes(2);
     rxDiagnosticSnapshot.mockReturnValueOnce({
-      ...rxDiagnosticSnapshot(), preRouting: null, decodedStatus: 'expired', decodedAgeMs: 2001,
+      ...rxDiagnosticSnapshot()!, preRouting: null, decodedStatus: 'expired', decodedAgeMs: 2001,
     });
     vi.advanceTimersByTime(1000);
     expect(overlay.textContent).toContain('expired');
@@ -830,6 +842,61 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
     vi.advanceTimersByTime(10000);
     expect(statsMessages(ws)).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('publishes a quiet RX source on the stats tick, only while RX runs (MOR-4210)', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const changed = vi.fn();
+    const unsubscribe = audioManager.onChange(changed);
+    try {
+      audioManager.startRx();
+      FakeWebSocket.instances[0].open();
+      changed.mockClear();
+      rxSourceLevelLow = true;
+      expect(changed).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1500);
+      expect(audioManager.rxSourceLevelLow).toBe(true);
+      expect(changed).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1500);
+      expect(changed).toHaveBeenCalledTimes(1);  // unchanged: no repeat notify
+      audioManager.stopRx();
+      expect(audioManager.rxSourceLevelLow).toBe(false);
+    } finally {
+      rxSourceLevelLow = false;
+      unsubscribe();
+      audioManager.stopRx();
+    }
+  });
+
+  // Review round 1: a quiet-source result says nothing once the audio link
+  // is down, and the stats tick that publishes it stops with the socket.
+  it('drops a quiet RX source while the audio link is down, without another timer (MOR-4210)', async () => {
+    const { audioManager } = await import('../audio-manager');
+    const changed = vi.fn();
+    const unsubscribe = audioManager.onChange(changed);
+    try {
+      audioManager.startRx();
+      FakeWebSocket.instances[0].open();
+      rxSourceLevelLow = true;
+      vi.advanceTimersByTime(1500);
+      expect(audioManager.rxSourceLevelLow).toBe(true);
+      changed.mockClear();
+
+      FakeWebSocket.instances[0].serverClose();
+      expect(audioManager.rxSourceLevelLow).toBe(false);
+      expect(changed).toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(1);  // the reconnect backoff only
+
+      vi.advanceTimersByTime(500);
+      expect(FakeWebSocket.instances).toHaveLength(2);
+      expect(audioManager.rxSourceLevelLow).toBe(false);
+      FakeWebSocket.instances[1].open();
+      expect(audioManager.rxSourceLevelLow).toBe(true);
+    } finally {
+      rxSourceLevelLow = false;
+      unsubscribe();
+      audioManager.stopRx();
+    }
   });
 });
 

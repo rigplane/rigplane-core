@@ -114,7 +114,11 @@ function bindRunPullRequest(run, liveBaseSha) { const liveMain = assertSha(liveB
   if (!Array.isArray(run.pull_requests) || run.pull_requests.length !== 1) { throw new ObservationError('ambiguous_pull', 'run does not record exactly one pull request association', {publish: false, targetSha: headSha}); }
   const associated = run.pull_requests[0]; const pullNumber = associated?.number;
   const associatedHead = assertSha(associated?.head?.sha, 'workflow run associated head'); const associatedBase = assertSha(associated?.base?.sha, 'workflow run associated base');
-  if ( !Number.isSafeInteger(pullNumber) || pullNumber <= 0 || associatedHead !== headSha || associated?.base?.ref !== 'main' || !canonicalRunRepository(associated?.head?.repo) || !canonicalRunRepository(associated?.base?.repo) ) { throw new ObservationError('invalid_binding', 'workflow run pull request association is not canonical', {publish: false, targetSha: headSha}); }
+  if ( !Number.isSafeInteger(pullNumber) || pullNumber <= 0 || associated?.base?.ref !== 'main' || !canonicalRunRepository(associated?.head?.repo) || !canonicalRunRepository(associated?.base?.repo) ) { throw new ObservationError('invalid_binding', 'workflow run pull request association is not canonical', {publish: false, targetSha: headSha}); }
+  // GitHub reports the PR's current head in a run's association, so a run whose PR has since moved to a new head
+  // (superseded, usually cancelled by quick's concurrency) is stale, not a binding failure (MOR-3875 follow-up).
+  // Checked only after the PR number, base ref and both repository identities are canonical.
+  if (associatedHead !== headSha) { throw new ObservationError('stale_head', 'workflow run belongs to a superseded pull request head', {publish: false, targetSha: headSha}); }
   if (associatedBase !== liveMain) { throw new ObservationError('stale_base', 'workflow run recorded base is not live main', {publish: false, targetSha: headSha}); }
   return {pullNumber, headSha, baseSha: associatedBase};
 }
@@ -243,7 +247,7 @@ async function assessWorkflowRun({github, context, liveBaseSha}) { const payload
     const jobs = await listAttemptJobs( github, REPOSITORY.owner, REPOSITORY.repo, run.id, run.run_attempt, );
     const result = evaluateJobTopology(run, jobs, routes, pull.draft);
     return assessment({ kind: 'workflow_run', code: result.code, state: result.ok ? 'success' : 'failure', publish: true, targetSha: headSha, pullNumber: runBinding.pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, routes, jobTopology: jobTopologySnapshot(jobs), metrics: { route_job_concordance: result.routeConcordance, terminal_binding_coverage: true, false_success_publications: result.ok ? 0 : 0, stale_head_publications: 0, }, });
-  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base') { return assessment({ kind: 'workflow_run', code: 'stale_base', state: 'success', publish: false, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
+  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base' || (error.code === 'stale_head' && !error.publish)) { return assessment({ kind: 'workflow_run', code: error.code, state: 'success', publish: false, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
       return assessment({ kind: 'workflow_run', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
     throw error;
   }

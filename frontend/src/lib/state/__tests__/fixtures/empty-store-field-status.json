@@ -257,6 +257,12 @@
     "observed": false,
     "storePath": "receiver.main.active.freq_mode.filter_width"
   },
+  "main.filterWidthRadioDefault": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.main.active.freq_mode.filter_width_radio_default"
+  },
   "main.freqHz": {
     "availability": "missing",
     "freshness": "unknown",
@@ -868,6 +874,12 @@
     "freshness": "unknown",
     "observed": false,
     "storePath": "receiver.sub.active.freq_mode.filter_width"
+  },
+  "sub.filterWidthRadioDefault": {
+    "availability": "missing",
+    "freshness": "unknown",
+    "observed": false,
+    "storePath": "receiver.sub.active.freq_mode.filter_width_radio_default"
   },
   "sub.freqHz": {
     "availability": "missing",

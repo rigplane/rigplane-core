@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
-from rigplane_testkit.icom import _bcd_encode_freq
+from rigplane.core.types import bcd_encode
 from rigplane_testkit.serial import CivSerialFake
 
 from testkit.ic705_fakes import RADIO_ADDR as IC705_ADDR, ic705_usb_fake
@@ -42,16 +42,14 @@ ACK = _answer(0xFB)
 NAK = _answer(0xFA)
 PTT_OFF = _answer(0x1C, sub=0x00, data=b"\x00")
 PTT_ON = _answer(0x1C, sub=0x00, data=b"\x01")
-FREQ_ANSWER = _answer(0x03, data=_bcd_encode_freq(INITIAL_FREQ))
+FREQ_ANSWER = _answer(0x03, data=bcd_encode(INITIAL_FREQ))
 ID_READ = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x19, sub=0x00)
 # rigs/ic7300.toml [identity].expected_ids: 19 00 answers with the id 94.
 ID_ANSWER = _answer(0x19, sub=0x00, data=bytes.fromhex("94"))
 
 PTT_READ = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00)
 FREQ_READ = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x03)
-FREQ_SET = build_civ_frame(
-    ADDR, CONTROLLER_ADDR, 0x05, data=_bcd_encode_freq(14_074_000)
-)
+FREQ_SET = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x05, data=bcd_encode(14_074_000))
 BARE_MEMORY_WRITE = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x09)
 BARE_TX_BAND_EDGE = build_civ_frame(ADDR, CONTROLLER_ADDR, 0x1E, sub=0x01)
 

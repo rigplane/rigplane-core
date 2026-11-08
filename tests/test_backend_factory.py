@@ -117,6 +117,32 @@ class TestCreateRadioFactory:
         assert audio_config.rx_device == "IC-7610 USB Audio"
         assert audio_config.tx_device == "BlackHole 2ch"
 
+    def test_capture_mode_defaults_to_shared_and_rejects_unknown_values(self) -> None:
+        assert SerialBackendConfig(device="COM3").capture_mode == "shared"
+        assert YaesuCatBackendConfig(device="COM3").capture_mode == "shared"
+        with pytest.raises(ValueError, match="capture_mode"):
+            SerialBackendConfig(device="COM3", capture_mode="exclusive")
+        with pytest.raises(ValueError, match="capture_mode"):
+            YaesuCatBackendConfig(device="COM3", capture_mode="")
+
+    @pytest.mark.parametrize("mode", ["shared", "exclusive-preferred"])
+    def test_create_radio_passes_serial_capture_mode(self, mode: str) -> None:
+        radio = create_radio(
+            SerialBackendConfig(device="COM3", model="IC-7300", capture_mode=mode)
+        )
+        driver = radio._serial_audio_driver
+        assert driver._config.capture_mode == mode
+        assert driver._backend._capture_policy.mode == mode
+
+    @pytest.mark.parametrize("mode", ["shared", "exclusive-preferred"])
+    def test_create_radio_passes_yaesu_capture_mode(self, mode: str) -> None:
+        radio = create_radio(
+            YaesuCatBackendConfig(device="COM3", model="FTX-1", capture_mode=mode)
+        )
+        driver = radio._audio_driver
+        assert driver._config.capture_mode == mode
+        assert driver._backend._capture_policy.mode == mode
+
     def test_create_radio_passes_serial_scope_low_baud_override(self) -> None:
         radio = create_radio(
             SerialBackendConfig(

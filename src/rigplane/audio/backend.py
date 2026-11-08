@@ -18,11 +18,52 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, NewType, Protocol, runtime_checkable
+from typing import (
+    Any,
+    Callable,
+    Literal,
+    NamedTuple,
+    NewType,
+    Protocol,
+    runtime_checkable,
+)
+
+from ._portaudio_enum import WASAPI_HOST_API
+from ._usb_holder import (
+    HOLDER_LOOKUP_TIMEOUT_S,
+    HolderLookup,
+    find_holder_name,
+    holder_exe_name,
+)
 
 logger = logging.getLogger(__name__)
 
 _TX_BUFFER_MS = 1_000
+# Playback policy per writable stream (MOR-4013), selected via ``playout=``.
+# ``"adaptive"`` (the default) is the fill-target policy every RX playback
+# sink uses — the bridges' radio → speaker/virtual-cable leg, including
+# callers outside this repository that open a playback stream without a
+# policy: a ring held at a small fill target tolerates bursty delivery
+# without pinning at the 1 s capacity. ``"immediate"`` is passed explicitly
+# by every host-to-radio TX caller (usb_driver): the free-running ring so a
+# freshly written frame plays on the very next callback (PTT-release
+# promptness), byte-identical to the pre-MOR-4013 behaviour.
+# Adaptive playback stays silent until ``_TX_FILL_TARGET_MS`` is buffered
+# (at least two ``frame_ms`` blocks), then holds that fill. A slow filtered
+# proportional controller skews the read rate (clamped to ±3%, field drift
+# is 1-2%) so a producer at 50 Hz feeding a 49.25 Hz device clock neither
+# pins the ring at capacity nor drains it. Headroom on top of the target
+# forms the hard enqueue cap: one burst above it trims once back to the
+# target with a short fade at the splice instead of dropping a frame per
+# write.
+_TX_FILL_TARGET_MS = 150
+_TX_OVERRUN_HEADROOM_MS = 100
+_TX_DRIFT_MAX_RATIO = 0.03
+_TX_DRIFT_KP = 1.0e-5
+_TX_DRIFT_FILTER_S = 2.0
+_TX_DRIFT_SLEW_PER_S = 0.01
+_TX_DRIFT_DEADBAND_MS = 20
+_TX_TRIM_FADE_MS = 5
 _LINUX_ALSA_INPUT_LATENCY_S = 0.050
 
 # ---------------------------------------------------------------------------
@@ -31,6 +72,32 @@ _LINUX_ALSA_INPUT_LATENCY_S = 0.050
 
 AudioDeviceId = NewType("AudioDeviceId", int)
 """Opaque device identifier (maps to a host-API device index)."""
+
+TxPlayoutPolicy = Literal["adaptive", "immediate"]
+"""Playback policy of a writable stream (MOR-4013).
+
+``"adaptive"`` (the default) holds a small fill target with drift
+compensation — the RX playback sinks (radio → speakers / virtual cable).
+``"immediate"`` keeps the free-running ring so a freshly written frame
+plays on the very next callback — the host-to-radio TX paths.
+"""
+
+CaptureMode = Literal["shared", "exclusive-preferred"]
+"""How a USB radio codec is captured and played on Windows (MOR-4030).
+
+``"shared"`` (the default) uses the host API pairing picks first (MME) and the
+Windows shared audio engine, so other programs, WSJT-X pointed at the codec
+included, can use the codec at the same time. The Windows engine applies the
+input's effects there, and its default AI noise suppression gates non-speech
+audio such as a radio's receive audio into digital silence.
+
+``"exclusive-preferred"`` prefers the WASAPI host API for both directions and
+opens the codec in WASAPI exclusive mode, which bypasses the engine and its
+effects, and falls back to shared WASAPI when the exclusive open is refused.
+Other platforms ignore it.
+"""
+
+CAPTURE_MODES: tuple[CaptureMode, ...] = ("shared", "exclusive-preferred")
 
 _ALSA_HW_RE = re.compile(r"(?:plug)?(hw:\d+,\d+)")
 
@@ -60,7 +127,9 @@ class AudioDeviceConfig:
     ``deliver_channels`` value, as before — it is a derived downmix
     instruction, not device config). ``rx_device``/``tx_device`` are the
     driver-level selection overrides; they are not consulted below the
-    driver, exactly like the old keywords.
+    driver, exactly like the old keywords. ``capture_mode`` (MOR-4030) is the
+    Windows capture mode of a USB radio codec, see :data:`CaptureMode`; the
+    driver reads it for pairing and builds its backend from it.
     """
 
     rx_device: str | None = None
@@ -69,6 +138,7 @@ class AudioDeviceConfig:
     channels: int = 1
     frame_ms: int = 20
     rx_audio_channel: str = "mix"
+    capture_mode: CaptureMode = "shared"
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +200,10 @@ class TxStreamHealth:
     callback_calls_per_sec_ewma: float | None = None
     discard_events: int = 0
     discarded_audio_ms: float = 0.0
+    # MOR-4013 fill-target playback state.
+    refill_events: int = 0
+    playback_read_ratio: float = 1.0
+    fill_target_ms: float = 0.0
 
     def __post_init__(self) -> None:
         self._sync_alias_pair("enqueued_audio_ms", "queued_audio_ms", 0.0)
@@ -199,6 +273,9 @@ class TxStreamHealth:
             "last_error": self.last_error,
             "discard_events": self.discard_events,
             "discarded_audio_ms": self.discarded_audio_ms,
+            "refill_events": self.refill_events,
+            "playback_read_ratio": self.playback_read_ratio,
+            "fill_target_ms": self.fill_target_ms,
         }
 
 
@@ -368,6 +445,7 @@ class AudioBackend(Protocol):
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        playout: TxPlayoutPolicy = "adaptive",
     ) -> TxStream: ...
 
     def open_duplex(
@@ -380,6 +458,7 @@ class AudioBackend(Protocol):
         deliver_channels: int | None = None,
         rx_audio_channel: str = "mix",
         tx_channels: int | None = None,
+        tx_playout: TxPlayoutPolicy = "adaptive",
     ) -> DuplexStream:
         """Open a single full-duplex RX+TX stream on one *device* (MOR-531).
 
@@ -416,57 +495,74 @@ def _ensure_portaudio_deps() -> tuple[Any, Any]:
     return sd, np
 
 
-def _downmix_stereo_to_mono_s16le(pcm: bytes, *, channel: str = "mix") -> bytes:
-    """Collapse L+R interleaved s16le → mono s16le via the selected ``channel``.
+def _downmix_stereo_to_mono_s16le(
+    pcm: bytes,
+    *,
+    channel: str = "mix",
+    open_channels: int = 2,
+    deliver_channels: int = 1,
+) -> bytes:
+    """Collapse the first two channels of N-channel interleaved s16le PCM.
 
-    Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` but is dependency-
-    free (stdlib ``array``) so it can run on the PortAudio audio thread without
-    importing numpy. Used by :class:`_PortAudioRxStream` when a stereo-native
-    device is opened at 2 channels but the consumer wants mono (MOR-504):
-    passing interleaved stereo straight through would halve the effective
-    sample-rate and compress the spectrum 2x — the same bug the bridge downmix
-    guards (issue #1381). Trailing bytes that do not form a whole L/R sample
-    pair are dropped (an incomplete frame cannot satisfy the fixed contract).
+    Generalizes the MOR-504/508 stereo-to-mono downmix to a capture device
+    opened at MORE channels than the consumer receives (MOR-4029: PipeWire's
+    ``pulse`` = 32 ch, BlackHole = 16 ch, any 4/6/8-channel interface). The
+    device's FIRST TWO channels are L/R — the extra virtual-cable/interface
+    channels carry no radio audio, so averaging all N open channels would only
+    attenuate the signal; channels 2..N-1 are dropped. ``open_channels`` is the
+    OS-open count (N >= 2); ``deliver_channels`` is the delivered count:
 
-    ``channel`` picks how each L/R pair collapses to one mono sample (MOR-508):
+    - ``1`` — mono via ``channel`` (MOR-508): ``"mix"`` (default) = per-frame
+      average ``(L + R) // 2`` of channels 0 and 1 (correct for a dual-mono
+      source, the historical behavior preserved verbatim); ``"left"`` = ch0 at
+      FULL level (the FTX-1 presents its USB RX audio on the LEFT channel only;
+      ``mix`` averaging the live L with a silent R halves the level);
+      ``"right"`` = ch1 at FULL level (the mirror case). ``open_channels == 2``
+      is byte-identical to the historical stereo-to-mono behavior, so
+      IC-7610/X6200 etc. are unchanged.
+    - ``2`` — keep channels 0 and 1 interleaved, drop the rest.
 
-    - ``"mix"`` (default) — the per-pair average ``(L + R) // 2``. Correct for a
-      dual-mono source (``L == R``); the historical behavior preserved verbatim
-      for every rig that does not opt out, so IC-7610/X6200 etc. are unchanged.
-    - ``"left"`` — take L at FULL level. The FTX-1 presents its USB RX audio on
-      the LEFT channel only (R is the silent noise floor); ``mix`` averaging the
-      live L with a silent R halves the level (−6 dB → quiet audio + low FFT
-      scope). Selecting L delivers it undivided.
-    - ``"right"`` — take R at FULL level (the mirror case).
+    Mirrors ``rigplane.audio.bridge._downmix_stereo_to_mono`` and is
+    vectorized with numpy (a core dependency since #1090; the PortAudio
+    backend already imports it at open time via ``_ensure_portaudio_deps``).
+    The mix path is an int32 widening plus a numpy floor division, which
+    rounds toward negative infinity exactly like the historical Python
+    ``//`` loop — the output is byte-identical (MOR-4227 equality pins in
+    ``tests/test_audio_cpu_hotspots_mor4227.py``). Used by
+    :class:`_RxFramer` whenever a device opens at more channels than it
+    delivers: passing the interleaved PCM straight through would misread the
+    delivered layout (wrong effective sample-rate, garbage audio — the same
+    class of bug the bridge downmix guards, issue #1381). Trailing bytes
+    that do not form a whole N-channel frame are dropped (an incomplete
+    frame cannot satisfy the fixed contract).
 
     Single-channel selection cannot clip: it copies one existing s16 sample
-    per pair, so the output stays in range with no widening/averaging.
+    per frame, so the output stays in range with no widening/averaging.
     """
-    from array import array
+    import numpy as np
 
-    usable = len(pcm) - (len(pcm) % 4)  # whole L/R pairs (2 ch × 2 bytes)
+    frame_bytes = 2 * open_channels  # one N-channel frame of s16 samples
+    usable = len(pcm) - (len(pcm) % frame_bytes)
     if usable <= 0:
         return b""
-    samples = array("h")
-    samples.frombytes(pcm[:usable])
-    import sys
-
-    if sys.byteorder != "little":
-        samples.byteswap()
-    mono = array("h", bytes(len(samples)))  # len(samples)//2 mono samples
+    # '<i2' fixes little-endian on any host, replacing the stdlib byteswap
+    # dance; this runs on the audio thread with up to 32 open channels.
+    frames = np.frombuffer(pcm, dtype="<i2", count=usable // 2).reshape(
+        -1, open_channels
+    )
+    if deliver_channels == 2:
+        stereo = frames[:, :2]
+        return np.ascontiguousarray(stereo).tobytes()
     if channel == "left":
-        for i in range(0, len(samples), 2):
-            mono[i // 2] = samples[i]
+        mono: np.ndarray = frames[:, 0]
     elif channel == "right":
-        for i in range(0, len(samples), 2):
-            mono[i // 2] = samples[i + 1]
-    else:  # "mix" — per-pair average (default; legacy behavior)
-        for i in range(0, len(samples), 2):
-            # Average in a wider int to avoid s16 overflow before truncation.
-            mono[i // 2] = (samples[i] + samples[i + 1]) // 2
-    if sys.byteorder != "little":
-        mono.byteswap()
-    return mono.tobytes()
+        mono = frames[:, 1]
+    else:  # "mix" — per-frame average (default; legacy behavior)
+        # Average in int32 so (L + R) cannot overflow s16 before the floor
+        # division truncates toward -inf like Python's ``//``.
+        total = frames[:, 0].astype(np.int32) + frames[:, 1].astype(np.int32)
+        mono = total // 2
+    return mono.astype("<i2").tobytes()
 
 
 def _callback_status_flag_names(status: Any) -> tuple[str, ...]:
@@ -565,11 +661,12 @@ class _RxFramer:
 
     Factored out of :class:`_PortAudioRxStream` so the duplex stream
     (:class:`_PortAudioDuplexStream`) can reuse the *exact* same capture
-    semantics — the stereo→mono ``rx_audio_channel`` downmix (MOR-504/508) plus
-    the lossless re-chunking of engine-native variable-size blocks into fixed
-    ``frame_ms`` frames (the downstream PCM-TX validator rejects any other size).
-    The owning stream is the single audio-thread writer, so no lock is needed;
-    the consumer ``callback`` is contractually cheap and thread-safe.
+    semantics — the N-channel ``rx_audio_channel`` downmix (MOR-504/508/4029)
+    plus the lossless re-chunking of engine-native variable-size blocks into
+    fixed ``frame_ms`` frames (the downstream PCM-TX validator rejects any
+    other size). The owning stream is the single audio-thread writer, so no
+    lock is needed; the consumer ``callback`` is contractually cheap and
+    thread-safe.
     """
 
     def __init__(
@@ -579,11 +676,16 @@ class _RxFramer:
         deliver_channels: int,
     ) -> None:
         self._rx_audio_channel = config.rx_audio_channel
-        # Software downmix only fires for the stereo-native → mono case. Any
-        # other deliver/open relationship passes interleaved PCM through
-        # unchanged (over-request already clamps open == deliver upstream).
         # ``config.channels`` is the OS-open count in this per-stream scope.
-        self._downmix_stereo_to_mono = config.channels == 2 and deliver_channels == 1
+        # Software downmix fires whenever the device opens at MORE channels
+        # than the consumer receives (N >= 2 open -> 1 or 2 delivered,
+        # MOR-4029); N == 2 -> 1 is the historical stereo-to-mono case
+        # (MOR-504/508). Any other deliver/open relationship passes
+        # interleaved PCM through unchanged (over-request already clamps
+        # open == deliver upstream).
+        self._open_channels = config.channels
+        self._deliver_channels = deliver_channels
+        self._downmix = config.channels > deliver_channels
         frame_samples = (config.sample_rate * config.frame_ms) // 1000
         self._frame_bytes = max(1, frame_samples * deliver_channels * 2)
         self._accumulator = bytearray()
@@ -600,9 +702,9 @@ class _RxFramer:
 
         Runs on PortAudio's audio thread: keep it non-blocking. Copies the PCM
         out of the (reused, variable-size) input buffer, optionally downmixes
-        stereo→mono, accumulates, then slices whole fixed-size frames out and
-        hands each to the consumer. Re-chunking a continuous callback stream is
-        lossless and adds no scheduling seam.
+        N open channels to the delivered layout, accumulates, then slices whole
+        fixed-size frames out and hands each to the consumer. Re-chunking a
+        continuous callback stream is lossless and adds no scheduling seam.
         """
         result = _RxFeedResult()
         try:
@@ -615,17 +717,22 @@ class _RxFramer:
             return result
         if not pcm:
             return result
-        if self._downmix_stereo_to_mono:
-            # Device opened at 2 ch (native) but consumer wants mono (MOR-504):
-            # collapse interleaved L/R → mono BEFORE chunking, so the
-            # accumulator/fixed-frame slicing operates on mono bytes and the
-            # FFT scope + broadcaster receive the mono contract they expect.
+        if self._downmix:
+            # Device opened at N >= 2 ch (native) but the consumer receives
+            # fewer (MOR-4029; N == 2 -> mono is the MOR-504 case): collapse
+            # the first two device channels to the delivered layout BEFORE
+            # chunking, so the accumulator/fixed-frame slicing operates on
+            # delivered-layout bytes and the FFT scope + broadcaster receive
+            # the layout they expect.
             try:
-                pcm = _downmix_stereo_to_mono_s16le(pcm, channel=self._rx_audio_channel)
-            except Exception:
-                logger.warning(
-                    "portaudio-rx: stereo→mono downmix failed", exc_info=True
+                pcm = _downmix_stereo_to_mono_s16le(
+                    pcm,
+                    channel=self._rx_audio_channel,
+                    open_channels=self._open_channels,
+                    deliver_channels=self._deliver_channels,
                 )
+            except Exception:
+                logger.warning("portaudio-rx: channel downmix failed", exc_info=True)
                 result.callback_errors += 1
                 return result
             if not pcm:
@@ -687,6 +794,215 @@ class _WindowsMtaLease:
         self._cookie, self._ole32 = None, None
 
 
+class AudioDeviceBusyError(RuntimeError):
+    """Another program holds the codec: the exclusive open was refused as busy
+    and the shared fallback failed too (MOR-4030).
+
+    Windows refuses a shared open while an exclusive holder exists, so RX
+    cannot start until the holder lets go. ``holder`` is the holding
+    program's executable name when it could be found, never a path.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        device_index: int | None = None,
+        holder: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.device_index = device_index
+        self.holder = holder
+
+
+# How PortAudio reports a codec another program holds exclusively. The real
+# Windows run (MOR-4030) saw paInvalidDevice (-9996) from BOTH the exclusive open
+# and the shared fallback; paDeviceUnavailable (-9985) and the WASAPI host error
+# AUDCLNT_E_DEVICE_IN_USE (0x8889000A, signed and unsigned) are the same fact.
+_IN_USE_CODES = frozenset({-9985, -9996, -2004287478, 0x8889000A})
+_IN_USE_TEXT = (
+    "device unavailable",
+    "invalid device",
+    "device is in use",
+    "device_in_use",
+    "0x8889000a",
+)
+# E_ACCESSDENIED: a privacy or permission refusal, never "in use".
+_ACCESS_DENIED_CODES = frozenset({-2147024891, 0x80070005})
+_ACCESS_DENIED_TEXT = ("0x80070005", "access is denied", "e_accessdenied")
+
+
+def _error_values(error: BaseException) -> tuple[list[int], list[str]]:
+    """The integer codes and lower-cased texts in a PortAudio error's args."""
+    codes: list[int] = []
+    texts: list[str] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, bool):
+            return
+        if isinstance(value, int):
+            codes.append(value)
+        elif isinstance(value, str):
+            texts.append(value.lower())
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                walk(item)
+
+    walk(error.args)
+    return codes, texts
+
+
+def _is_in_use_refusal(error: BaseException) -> bool:
+    """Whether an open error says the device is held, not denied or malformed."""
+    codes, texts = _error_values(error)
+    if any(code in _ACCESS_DENIED_CODES for code in codes) or any(
+        marker in text for text in texts for marker in _ACCESS_DENIED_TEXT
+    ):
+        return False
+    return any(code in _IN_USE_CODES for code in codes) or any(
+        marker in text for text in texts for marker in _IN_USE_TEXT
+    )
+
+
+class _OpenAttempt(NamedTuple):
+    """One way to open a stream: its PortAudio ``extra_settings`` and whether it
+    is a WASAPI exclusive open."""
+
+    extra_settings: Any
+    exclusive: bool
+
+
+class _CapturePolicy:
+    """WASAPI capture-mode policy shared by the streams one backend opens (MOR-4030).
+
+    In ``"exclusive-preferred"`` mode a stream on a WASAPI device is opened in
+    exclusive mode first and, when PortAudio refuses that, once more in shared
+    mode with sample-rate auto-convert (shared WASAPI otherwise accepts only
+    the engine's mix format, which MME converted for free). Every other device
+    and the ``"shared"`` mode open exactly as before, with no host-API lookup.
+    The fallback is logged once per device, not once per open.
+    """
+
+    def __init__(self, mode: str = "shared") -> None:
+        if mode not in CAPTURE_MODES:
+            raise ValueError(
+                f"capture_mode must be one of {', '.join(CAPTURE_MODES)}; got {mode!r}."
+            )
+        self.mode: CaptureMode = mode  # type: ignore[assignment]
+        self._logged: set[int] = set()
+        self._logged_lock = threading.Lock()
+        self.holder_lookup: HolderLookup = find_holder_name
+        self.holder_timeout_s = HOLDER_LOOKUP_TIMEOUT_S
+
+    def _is_wasapi(self, sd: Any, device_index: int) -> bool:
+        if self.mode != "exclusive-preferred":
+            return False
+        try:
+            host_api = sd.query_devices(device_index)["hostapi"]
+            return bool(
+                type(host_api) is int
+                and host_api >= 0
+                and sd.query_hostapis(host_api)["name"] == WASAPI_HOST_API
+            )
+        except Exception:
+            logger.debug(
+                "portaudio: host API metadata unavailable; opening in shared mode",
+                exc_info=True,
+            )
+            return False
+
+    def attempts(self, sd: Any, device_index: int) -> tuple[_OpenAttempt, ...]:
+        """The opens to try, in order: exclusive then shared WASAPI, or one plain."""
+        if self._is_wasapi(sd, device_index):
+            try:
+                return (
+                    _OpenAttempt(sd.WasapiSettings(exclusive=True), True),
+                    _OpenAttempt(sd.WasapiSettings(auto_convert=True), False),
+                )
+            except Exception:
+                logger.debug(
+                    "portaudio: WASAPI settings unavailable; opening in shared mode",
+                    exc_info=True,
+                )
+        return (_OpenAttempt(None, False),)
+
+    def probe_settings(self, sd: Any, device_index: int) -> Any:
+        """``extra_settings`` for a format probe: shared WASAPI may convert the rate."""
+        if self._is_wasapi(sd, device_index):
+            try:
+                return sd.WasapiSettings(auto_convert=True)
+            except Exception:
+                logger.debug("portaudio: WASAPI settings unavailable", exc_info=True)
+        return None
+
+    def note_fallback(self, device_index: int, error: BaseException) -> None:
+        """Log that the exclusive open was refused, once for this device."""
+        with self._logged_lock:
+            if device_index in self._logged:
+                return
+            self._logged.add(device_index)
+        logger.warning(
+            "portaudio: WASAPI exclusive open of device [%d] was refused (%s); "
+            "using shared mode, where Windows audio effects can apply",
+            device_index,
+            error,
+        )
+
+    def busy_error(
+        self,
+        sd: Any,
+        device_index: int,
+        exclusive_error: BaseException | None,
+        shared_error: BaseException,
+        *,
+        direction: str,
+    ) -> AudioDeviceBusyError | None:
+        """The in-use refusal when another program holds the device, else None.
+
+        Called only after the shared fallback failed too. It is the case when
+        the exclusive open was refused, the shared failure says the device is
+        held (see ``_is_in_use_refusal``), and the device still enumerates with
+        channels for this direction (so it is not unplugged or missing). Looks
+        up the holder's name (bounded, never raising) and logs its executable
+        name only.
+        """
+        if exclusive_error is None or not _is_in_use_refusal(shared_error):
+            return None
+        try:
+            info = sd.query_devices(device_index)
+            channels = info[
+                "max_input_channels" if direction == "rx" else "max_output_channels"
+            ]
+            if not channels > 0:
+                return None
+            device_name = str(info["name"])
+        except Exception:
+            return None
+        # The holder is only looked up for capture: its sessions are those of the
+        # capture endpoint, and the message that names it is about the audio input.
+        holder = (
+            holder_exe_name(self.holder_lookup, device_name, self.holder_timeout_s)
+            if direction == "rx"
+            else None
+        )
+        logger.warning(
+            "portaudio: device [%d] is in use by %s; audio cannot start until it lets go",
+            device_index,
+            holder or "another program",
+        )
+        return AudioDeviceBusyError(
+            f"Audio device [{device_index}] is in use by another program.",
+            device_index=device_index,
+            holder=holder,
+        )
+
+
+def _stream_kwargs(attempt: _OpenAttempt, kwargs: dict[str, Any]) -> dict[str, Any]:
+    if attempt.extra_settings is None:
+        return kwargs
+    return {**kwargs, "extra_settings": attempt.extra_settings}
+
+
 class _PortAudioRxStream:
     """RxStream backed by a callback-driven sounddevice InputStream.
 
@@ -722,14 +1038,19 @@ class _PortAudioRxStream:
         config: AudioDeviceConfig,
         blocksize: int,
         deliver_channels: int | None = None,
+        capture_policy: _CapturePolicy | None = None,
     ) -> None:
         self._sd = sd
         self._device_index = device_index
+        self._capture_policy = capture_policy or _CapturePolicy()
+        # True once the stream opened in WASAPI exclusive mode (MOR-4030).
+        self.exclusive = False
         self._sample_rate = config.sample_rate
         # ``config.channels`` is the OS open count; ``_deliver_channels`` is
-        # what the consumer receives. When deliver < open (mono request on a
-        # stereo-native device, MOR-504) the framer downmixes interleaved
-        # s16le to the deliver count before chunking. Default: deliver == open.
+        # what the consumer receives. When deliver < open (1- or 2-channel
+        # request on an N-channel device, MOR-504/4029) the framer downmixes
+        # interleaved s16le to the deliver count before chunking. Default:
+        # deliver == open.
         self._channels = config.channels
         self._deliver_channels = (
             config.channels if deliver_channels is None else deliver_channels
@@ -776,17 +1097,45 @@ class _PortAudioRxStream:
                         "portaudio-rx: host API metadata unavailable; using low latency",
                         exc_info=True,
                     )
-            self._stream = self._sd.InputStream(
-                samplerate=self._sample_rate,
-                channels=self._channels,
-                dtype="int16",
-                device=self._device_index,
-                blocksize=self._blocksize,
-                latency=latency,
-                callback=self._input_callback,
-            )
-            stage = "start"
-            self._stream.start()
+            attempts = self._capture_policy.attempts(self._sd, self._device_index)
+            exclusive_error: Exception | None = None
+            for number, attempt in enumerate(attempts, start=1):
+                stage = "open"
+                try:
+                    self._stream = self._sd.InputStream(
+                        **_stream_kwargs(
+                            attempt,
+                            {
+                                "samplerate": self._sample_rate,
+                                "channels": self._channels,
+                                "dtype": "int16",
+                                "device": self._device_index,
+                                "blocksize": self._blocksize,
+                                "latency": latency,
+                                "callback": self._input_callback,
+                            },
+                        )
+                    )
+                    stage = "start"
+                    self._stream.start()
+                except Exception as exc:
+                    if not attempt.exclusive or number == len(attempts):
+                        busy = self._capture_policy.busy_error(
+                            self._sd,
+                            self._device_index,
+                            exclusive_error,
+                            exc,
+                            direction="rx",
+                        )
+                        if busy is not None:
+                            raise busy from exc
+                        raise
+                    exclusive_error = exc
+                    self._capture_policy.note_fallback(self._device_index, exc)
+                    self._close_failed_attempt()
+                    continue
+                self.exclusive = attempt.exclusive
+                break
         except BaseException:
             logger.warning(
                 "portaudio-rx: %s failed (device=%d, sample_rate=%d, "
@@ -809,6 +1158,15 @@ class _PortAudioRxStream:
                 )
             raise
         self._running = True
+
+    def _close_failed_attempt(self) -> None:
+        """Close the stream a refused exclusive open left behind, if any."""
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                logger.debug("portaudio-rx: failed-attempt close failed", exc_info=True)
 
     async def stop(self) -> None:
         stream = self._stream
@@ -836,7 +1194,7 @@ class _PortAudioRxStream:
     ) -> None:
         # Runs on PortAudio's audio thread: keep it non-blocking. The shared
         # framer copies the captured PCM out of the (reused, variable-size) input
-        # buffer, optionally downmixes stereo→mono, accumulates, and delivers
+        # buffer, optionally downmixes N open channels, accumulates, and delivers
         # whole fixed-size frames to the consumer. Re-chunking a continuous
         # callback stream is lossless and adds no scheduling seam, so it keeps
         # the fixed-frame contract without re-introducing the comb. The consumer
@@ -856,6 +1214,24 @@ class _PortAudioTxStream:
     The bounded callback ring decouples async producers from PortAudio's
     hardware-clocked consumer: ``write()`` enqueues interleaved PCM and returns
     quickly, and the callback drains the ring at the playback cadence.
+
+    Two playback policies share this one ring, selected per stream via
+    ``playout`` (MOR-4013):
+
+    - ``"adaptive"`` (the default; every RX playback sink): the ring is
+      held at a small fill target — playback starts only once the target is
+      buffered, a drift-compensated read ratio absorbs producer/device clock
+      mismatch (±3% clamp), a dry ring drops to unprimed for ONE refill
+      event instead of per-block zero-fill underruns, and an enqueue above
+      the target-plus-headroom cap trims once back to the target with a
+      short fade at the splice.
+    - ``"immediate"`` (passed explicitly by every host-to-radio TX caller,
+      usb_driver): the free-running 1 s ring, byte-identical to the
+      pre-MOR-4013 behaviour — the callback consumes in real time (partial
+      copy + silence on a dry ring, one underrun per starved block) and an
+      overflowing enqueue drops the oldest queued frames one at a time. A
+      freshly written frame plays on the next callback, which TX paths
+      (PTT release promptness) require.
     """
 
     def __init__(
@@ -866,14 +1242,41 @@ class _PortAudioTxStream:
         sample_rate: int,
         channels: int,
         blocksize: int,
+        *,
+        playout: TxPlayoutPolicy = "adaptive",
+        capture_policy: _CapturePolicy | None = None,
     ) -> None:
         self._sd = sd
+        self._capture_policy = capture_policy or _CapturePolicy()
+        # True once the stream opened in WASAPI exclusive mode (MOR-4030).
+        self.exclusive = False
+        # numpy handle for the adaptive drift-compensated read (MOR-4013);
+        # the immediate TX policy never touches it.
+        self._np = _np
         self._device_index = device_index
         self._sample_rate = sample_rate
         self._channels = channels
         self._blocksize = blocksize
         self._bytes_per_audio_frame = max(1, channels * 2)
         self._capacity_bytes = self._buffer_capacity_bytes()
+        self._playout = playout
+        if playout == "adaptive":
+            self._fill_target_ms = float(_TX_FILL_TARGET_MS)
+            self._fill_target_frames = self._audio_frames_for_ms(_TX_FILL_TARGET_MS)
+            self._fill_target_bytes = (
+                self._fill_target_frames * self._bytes_per_audio_frame
+            )
+            self._tx_cap_bytes = (
+                self._fill_target_frames
+                + self._audio_frames_for_ms(_TX_OVERRUN_HEADROOM_MS)
+            ) * self._bytes_per_audio_frame
+        else:
+            self._fill_target_ms = 0.0
+            self._fill_target_frames = 0
+            self._fill_target_bytes = 0
+            self._tx_cap_bytes = self._capacity_bytes
+        self._drift_deadband_frames = self._audio_frames_for_ms(_TX_DRIFT_DEADBAND_MS)
+        self._trim_fade_frames = self._audio_frames_for_ms(_TX_TRIM_FADE_MS)
         self._stream: Any = None
         self._mta = _WindowsMtaLease()
         self._running = False
@@ -904,6 +1307,14 @@ class _PortAudioTxStream:
         self._last_error: str | None = None
         self._discard_events: int = 0
         self._discarded_audio_ms: float = 0.0
+        # Fill-target playback state (MOR-4013). An immediate (TX-to-radio)
+        # stream starts primed: the priming gate only ever gates adaptive RX
+        # playback.
+        self._primed = playout == "immediate"
+        self._refill_events: int = 0
+        self._drift_ratio: float = 1.0
+        self._drift_phase: float = 0.0
+        self._drift_filtered_error: float = 0.0
 
     @property
     def running(self) -> bool:
@@ -939,6 +1350,9 @@ class _PortAudioTxStream:
                 last_error=self._last_error,
                 discard_events=self._discard_events,
                 discarded_audio_ms=round(self._discarded_audio_ms, 3),
+                refill_events=self._refill_events,
+                playback_read_ratio=round(self._drift_ratio, 5),
+                fill_target_ms=self._fill_target_ms,
             )
 
     async def start(self) -> None:
@@ -946,16 +1360,49 @@ class _PortAudioTxStream:
             raise RuntimeError("TX stream already running.")
         try:
             self._mta.acquire()
-            self._stream = self._sd.OutputStream(
-                samplerate=self._sample_rate,
-                channels=self._channels,
-                dtype="int16",
-                device=self._device_index,
-                blocksize=self._blocksize,
-                latency="low",
-                callback=self._output_callback,
-            )
-            self._stream.start()
+            attempts = self._capture_policy.attempts(self._sd, self._device_index)
+            exclusive_error: Exception | None = None
+            for number, attempt in enumerate(attempts, start=1):
+                try:
+                    self._stream = self._sd.OutputStream(
+                        **_stream_kwargs(
+                            attempt,
+                            {
+                                "samplerate": self._sample_rate,
+                                "channels": self._channels,
+                                "dtype": "int16",
+                                "device": self._device_index,
+                                "blocksize": self._blocksize,
+                                "latency": "low",
+                                "callback": self._output_callback,
+                            },
+                        )
+                    )
+                    self._stream.start()
+                except Exception as exc:
+                    if not attempt.exclusive or number == len(attempts):
+                        busy = self._capture_policy.busy_error(
+                            self._sd,
+                            self._device_index,
+                            exclusive_error,
+                            exc,
+                            direction="tx",
+                        )
+                        if busy is not None:
+                            raise busy from exc
+                        raise
+                    exclusive_error = exc
+                    self._capture_policy.note_fallback(self._device_index, exc)
+                    failed, self._stream = self._stream, None
+                    try:
+                        self._close_stream(failed)
+                    except Exception:
+                        logger.debug(
+                            "portaudio-tx: failed-attempt close failed", exc_info=True
+                        )
+                    continue
+                self.exclusive = attempt.exclusive
+                break
         except BaseException:
             try:
                 await self.stop()
@@ -992,8 +1439,13 @@ class _PortAudioTxStream:
             return
 
         # Keep producer writes cheap: enqueue bytes into the bounded ring and
-        # let the callback clock playback. On overflow, discard oldest queued
-        # audio first so latency cannot grow without bound.
+        # let the callback clock playback. Overflow handling follows the
+        # stream's policy: an adaptive stream trims the stalest audio ONCE
+        # back to the target (with a short fade at the splice, MOR-4013) so
+        # catch-up bursts stop dropping a frame per write; an immediate
+        # TX-to-radio stream keeps the historical behaviour — drop oldest
+        # queued frames one at a time until the write fits, so latency
+        # cannot grow without bound.
         incoming_drop_bytes = 0
         if len(data) > self._capacity_bytes:
             incoming_drop_bytes = self._align_byte_count(
@@ -1004,19 +1456,34 @@ class _PortAudioTxStream:
 
         dropped_bytes = incoming_drop_bytes
         with self._lock:
-            overflowed = self._buffered_bytes + len(data) > self._capacity_bytes
-            while (
-                self._buffered_bytes + len(data) > self._capacity_bytes
-                and self._frame_lengths
-            ):
-                dropped_bytes += self._drop_oldest_locked(self._frame_lengths[0])
-            remaining_overflow = max(
-                0,
-                self._buffered_bytes + len(data) - self._capacity_bytes,
-            )
-            if remaining_overflow:
-                drop_bytes = self._align_byte_count(remaining_overflow, round_up=True)
-                dropped_bytes += self._drop_oldest_locked(drop_bytes)
+            if self._playout == "adaptive":
+                overflowed = self._buffered_bytes + len(data) > self._tx_cap_bytes
+                if overflowed:
+                    excess_bytes = (
+                        self._buffered_bytes + len(data) - self._fill_target_bytes
+                    )
+                    trim_bytes = min(
+                        self._align_byte_count(excess_bytes, round_up=True),
+                        self._buffered_bytes,
+                    )
+                    dropped_bytes += self._drop_oldest_locked(trim_bytes)
+                    self._apply_trim_fade_locked()
+            else:
+                overflowed = self._buffered_bytes + len(data) > self._capacity_bytes
+                while (
+                    self._buffered_bytes + len(data) > self._capacity_bytes
+                    and self._frame_lengths
+                ):
+                    dropped_bytes += self._drop_oldest_locked(self._frame_lengths[0])
+                remaining_overflow = max(
+                    0,
+                    self._buffered_bytes + len(data) - self._capacity_bytes,
+                )
+                if remaining_overflow:
+                    drop_bytes = self._align_byte_count(
+                        remaining_overflow, round_up=True
+                    )
+                    dropped_bytes += self._drop_oldest_locked(drop_bytes)
             if incoming_drop_bytes or overflowed:
                 self._overrun_events += 1
             if dropped_bytes:
@@ -1070,19 +1537,18 @@ class _PortAudioTxStream:
         byte_count = frames * self._bytes_per_audio_frame
         self._record_callback_attempt(status)
         try:
-            # Callback hot path: no logging or I/O. Copy from the ring; if the
-            # producer falls behind, fill the remainder with silence and record
-            # an underrun.
+            # Callback hot path: no logging or I/O. Fill the block from the
+            # ring at the drift-compensated read rate; a dry or unprimed ring
+            # outputs silence and counts a single refill event (MOR-4013).
             dest = memoryview(outdata).cast("B")
             if len(dest) != byte_count:
                 raise ValueError(
                     f"output buffer is {len(dest)} bytes, expected {byte_count}"
                 )
-            consumed_bytes = self._read_ring_into_locked(dest)
-            if consumed_bytes < byte_count:
-                underrun_bytes = byte_count - consumed_bytes
-                dest[consumed_bytes:] = b"\x00" * underrun_bytes
-                self._record_underrun(underrun_bytes)
+            with self._lock:
+                consumed_bytes = self._playback_block_locked(dest, frames)
+                if consumed_bytes < byte_count:
+                    dest[consumed_bytes:] = b"\x00" * (byte_count - consumed_bytes)
             self._record_callback_complete(
                 consumed_bytes=consumed_bytes,
                 output_bytes=byte_count,
@@ -1118,27 +1584,190 @@ class _PortAudioTxStream:
             self._write_failures += 1
             self._last_error = f"{type(exc).__name__}: {exc}"
 
-    def _record_underrun(self, byte_count: int) -> None:
-        with self._lock:
-            self._underrun_audio_ms += self._audio_ms_for_bytes(byte_count)
-            self._underrun_events += 1
+    def _playback_block_locked(self, dest: memoryview, frames: int) -> int:
+        """Fill one playback block from the ring; caller holds ``self._lock``.
 
-    def _read_ring_into_locked(self, dest: memoryview) -> int:
+        Returns the input bytes consumed (0 for a silent block). An
+        immediate stream takes the legacy path: copy what is buffered,
+        zero-fill the remainder, count one underrun per starved block. On
+        an adaptive stream: while unprimed the callback outputs silence
+        until the fill target is buffered again, and a primed ring that
+        cannot supply the block goes dry ONCE: one underrun plus one
+        refill event, then back to unprimed — a stall no longer produces a
+        partial-block zero-fill underrun per callback (MOR-4013).
+        """
+        if self._playout == "immediate":
+            return self._read_ring_partial_locked(dest)
+        if not self._primed:
+            if self._buffered_bytes < self._fill_target_bytes:
+                return 0
+            self._primed = True
+        ratio = self._drift_ratio_for_block_locked(frames)
+        if ratio == 1.0:
+            # Exact copy path: bit-identical passthrough whenever the fill
+            # error sits inside the deadband (matched clocks).
+            self._drift_phase = 0.0
+            need_frames = frames
+        else:
+            need_frames = int(math.floor(self._drift_phase + (frames - 1) * ratio)) + 2
+        available_frames = self._buffered_bytes // self._bytes_per_audio_frame
+        if available_frames < need_frames:
+            shortfall_bytes = (need_frames - available_frames) * (
+                self._bytes_per_audio_frame
+            )
+            self._primed = False
+            self._refill_events += 1
+            self._underrun_events += 1
+            self._underrun_audio_ms += self._audio_ms_for_bytes(shortfall_bytes)
+            self._reset_drift_locked()
+            return 0
+        if ratio == 1.0:
+            return self._copy_head_into_locked(
+                dest, frames * self._bytes_per_audio_frame
+            )
+        return self._read_interpolated_locked(dest, frames, ratio)
+
+    def _read_ring_partial_locked(self, dest: memoryview) -> int:
+        """Immediate-playout consume (no fill target); caller holds the lock.
+
+        Pre-MOR-4013 TX behaviour, unchanged: copy what is buffered, leave
+        the remainder to be zero-filled by the caller, and count one
+        underrun per starved block.
+        """
         requested = len(dest)
-        with self._lock:
-            copied = min(requested, self._buffered_bytes)
-            first = min(copied, self._capacity_bytes - self._read_pos)
-            if first:
-                dest[:first] = self._buffer[self._read_pos : self._read_pos + first]
-            second = copied - first
-            if second:
-                dest[first : first + second] = self._buffer[:second]
-            self._read_pos = (self._read_pos + copied) % self._capacity_bytes
-            self._buffered_bytes -= copied
-            self._consume_frame_lengths_locked(copied, count_dropped=False)
-            if self._buffered_bytes == 0:
-                self._read_pos = self._write_pos
+        copied = min(requested, self._buffered_bytes)
+        first = min(copied, self._capacity_bytes - self._read_pos)
+        if first:
+            dest[:first] = self._buffer[self._read_pos : self._read_pos + first]
+        second = copied - first
+        if second:
+            dest[first : first + second] = self._buffer[:second]
+        self._read_pos = (self._read_pos + copied) % self._capacity_bytes
+        self._buffered_bytes -= copied
+        self._consume_frame_lengths_locked(copied, count_dropped=False)
+        if self._buffered_bytes == 0:
+            self._read_pos = self._write_pos
+        if copied < requested:
+            self._underrun_events += 1
+            self._underrun_audio_ms += self._audio_ms_for_bytes(requested - copied)
         return copied
+
+    def _drift_ratio_for_block_locked(self, frames: int) -> float:
+        """Read ratio for this block from the fill error; caller holds the lock.
+
+        Slow filtered proportional controller: inside the deadband the exact
+        copy path runs (ratio 1.0); outside it the ratio is slew-limited and
+        clamped to ±3% so a 1-2% producer/device clock mismatch is absorbed
+        without letting the ring pin at the cap or drain (MOR-4013).
+        """
+        dt = frames / self._sample_rate
+        error_frames = (
+            self._buffered_bytes // self._bytes_per_audio_frame
+        ) - self._fill_target_frames
+        alpha = 1.0 - math.exp(-dt / _TX_DRIFT_FILTER_S)
+        self._drift_filtered_error += alpha * (
+            error_frames - self._drift_filtered_error
+        )
+        if abs(error_frames) <= self._drift_deadband_frames:
+            self._drift_ratio = 1.0
+            return 1.0
+        target_ratio = 1.0 + _TX_DRIFT_KP * self._drift_filtered_error
+        target_ratio = min(
+            1.0 + _TX_DRIFT_MAX_RATIO,
+            max(1.0 - _TX_DRIFT_MAX_RATIO, target_ratio),
+        )
+        max_step = _TX_DRIFT_SLEW_PER_S * dt
+        if target_ratio > self._drift_ratio + max_step:
+            target_ratio = self._drift_ratio + max_step
+        elif target_ratio < self._drift_ratio - max_step:
+            target_ratio = self._drift_ratio - max_step
+        self._drift_ratio = target_ratio
+        return target_ratio
+
+    def _read_interpolated_locked(
+        self,
+        dest: memoryview,
+        frames: int,
+        ratio: float,
+    ) -> int:
+        """Consume ``frames * ratio`` input frames as one output block via
+        linear interpolation, keeping the fractional read position between
+        blocks; caller holds ``self._lock``.
+
+        Interpolation runs per audio frame over ALL channels: position ``i``
+        of the output blends input frames ``floor(pos)`` and ``floor(pos)+1``
+        channel by channel, so interleaved stereo (and any channel count)
+        stays interleaved (MOR-4013).
+        """
+        advance_exact = self._drift_phase + frames * ratio
+        advance_frames = int(math.floor(advance_exact))
+        need_frames = int(math.floor(self._drift_phase + (frames - 1) * ratio)) + 2
+        span = self._peek_head_bytes_locked(need_frames * self._bytes_per_audio_frame)
+        np = self._np
+        block = np.frombuffer(span, dtype=np.int16).reshape(-1, self._channels)
+        positions = self._drift_phase + np.arange(frames, dtype=np.float64) * ratio
+        base = positions.astype(np.int64)
+        frac = (positions - base).reshape(-1, 1)
+        values = np.rint(block[base] * (1.0 - frac) + block[base + 1] * frac)
+        payload = values.astype(np.int16).tobytes()
+        dest[: len(payload)] = payload
+        self._consume_head_locked(advance_frames * self._bytes_per_audio_frame)
+        self._drift_phase = advance_exact - advance_frames
+        return advance_frames * self._bytes_per_audio_frame
+
+    def _copy_head_into_locked(self, dest: memoryview, byte_count: int) -> int:
+        """Bit-exact copy of ``byte_count`` bytes out of the ring head;
+        caller holds ``self._lock`` and guarantees they are buffered."""
+        first = min(byte_count, self._capacity_bytes - self._read_pos)
+        if first:
+            dest[:first] = self._buffer[self._read_pos : self._read_pos + first]
+        second = byte_count - first
+        if second:
+            dest[first : first + second] = self._buffer[:second]
+        self._read_pos = (self._read_pos + byte_count) % self._capacity_bytes
+        self._buffered_bytes -= byte_count
+        self._consume_frame_lengths_locked(byte_count, count_dropped=False)
+        if self._buffered_bytes == 0:
+            self._read_pos = self._write_pos
+        return byte_count
+
+    def _peek_head_bytes_locked(self, byte_count: int) -> bytes:
+        """Copy ``byte_count`` bytes from the ring head without consuming."""
+        first = min(byte_count, self._capacity_bytes - self._read_pos)
+        segment = bytes(self._buffer[self._read_pos : self._read_pos + first])
+        second = byte_count - first
+        if second:
+            segment += bytes(self._buffer[:second])
+        return segment
+
+    def _consume_head_locked(self, byte_count: int) -> None:
+        self._drop_oldest_locked(byte_count, count_dropped=False)
+
+    def _reset_drift_locked(self) -> None:
+        self._drift_ratio = 1.0
+        self._drift_phase = 0.0
+        self._drift_filtered_error = 0.0
+
+    def _apply_trim_fade_locked(self) -> None:
+        """Short fade-in over the ring head after a trim so the splice where
+        stale audio was dropped does not click; caller holds the lock."""
+        buffered_frames = self._buffered_bytes // self._bytes_per_audio_frame
+        fade_frames = min(self._trim_fade_frames, buffered_frames // 2)
+        if fade_frames < 2:
+            return
+        byte_count = fade_frames * self._bytes_per_audio_frame
+        segment = bytearray(self._peek_head_bytes_locked(byte_count))
+        channels = self._channels
+        for i in range(len(segment) // 2):
+            scale = ((i // channels) + 1) / fade_frames
+            value = int.from_bytes(segment[2 * i : 2 * i + 2], "little", signed=True)
+            segment[2 * i : 2 * i + 2] = int(value * scale).to_bytes(
+                2, "little", signed=True
+            )
+        first = min(byte_count, self._capacity_bytes - self._read_pos)
+        self._buffer[self._read_pos : self._read_pos + first] = segment[:first]
+        if first < byte_count:
+            self._buffer[: byte_count - first] = segment[first:]
 
     def _write_ring_locked(self, data: bytes) -> None:
         first = min(len(data), self._capacity_bytes - self._write_pos)
@@ -1150,13 +1779,18 @@ class _PortAudioTxStream:
         self._write_pos = (self._write_pos + len(data)) % self._capacity_bytes
         self._buffered_bytes += len(data)
 
-    def _drop_oldest_locked(self, byte_count: int) -> int:
+    def _drop_oldest_locked(
+        self,
+        byte_count: int,
+        *,
+        count_dropped: bool = True,
+    ) -> int:
         dropped = min(byte_count, self._buffered_bytes)
         if dropped <= 0:
             return 0
         self._read_pos = (self._read_pos + dropped) % self._capacity_bytes
         self._buffered_bytes -= dropped
-        self._consume_frame_lengths_locked(dropped, count_dropped=True)
+        self._consume_frame_lengths_locked(dropped, count_dropped=count_dropped)
         if self._buffered_bytes == 0:
             self._read_pos = self._write_pos
         return dropped
@@ -1183,6 +1817,9 @@ class _PortAudioTxStream:
         frames = (self._sample_rate * _TX_BUFFER_MS) // 1000
         return max(1, frames) * self._bytes_per_audio_frame
 
+    def _audio_frames_for_ms(self, ms: int) -> int:
+        return max(1, (self._sample_rate * ms) // 1000)
+
     def _clear_buffer(self) -> None:
         with self._lock:
             self._discard_locked()
@@ -1194,6 +1831,10 @@ class _PortAudioTxStream:
         self._write_pos = 0
         self._buffered_bytes = 0
         self._frame_lengths.clear()
+        # An adaptive stream re-primes after its ring is dropped; an
+        # immediate TX-to-radio stream never gates on priming.
+        self._primed = self._playout == "immediate"
+        self._reset_drift_locked()
 
     def _audio_ms_for_bytes(self, byte_count: int) -> float:
         frames = byte_count // self._bytes_per_audio_frame
@@ -1264,7 +1905,7 @@ class _PortAudioDuplexStream:
     Reuses the existing data paths rather than duplicating them:
 
     - **RX leg** delegates to the shared :class:`_RxFramer` — the *same*
-      ``rx_audio_channel`` downmix (MOR-504/508) and lossless re-chunking into
+      ``rx_audio_channel`` downmix (MOR-504/508/4029) and lossless re-chunking into
       fixed ``frame_ms`` frames that :class:`_PortAudioRxStream` uses. Delivered
       frames are marshalled to the consumer exactly as the RX stream is (the
       consumer is contractually cheap/thread-safe; the bridge marshals onto its
@@ -1286,12 +1927,13 @@ class _PortAudioDuplexStream:
         blocksize: int,
         deliver_channels: int | None = None,
         tx_channels: int | None = None,
+        tx_playout: TxPlayoutPolicy = "adaptive",
     ) -> None:
         self._sd = sd
         self._device_index = device_index
         self._sample_rate = config.sample_rate
         # RX leg opens at the native ``config.channels`` count and delivers
-        # ``deliver_channels`` (downmix when fewer, MOR-504). The TX leg opens at
+        # ``deliver_channels`` (downmix when fewer, MOR-504/4029). The TX leg opens at
         # its own ``tx_channels`` count (the mono playback the radio's USB MOD
         # consumes); ``sd.Stream`` accepts a ``(in, out)`` channel pair so the
         # two legs need not match.
@@ -1309,6 +1951,10 @@ class _PortAudioDuplexStream:
         # own ``sd`` stream is never opened (we drive its ``_output_callback``
         # from the duplex callback). It opens at ``tx_channels`` so the ring's
         # frame accounting and ``outdata`` interleaving match the TX leg.
+        # ``tx_playout`` carries the same playback policy as
+        # ``open_tx(playout=...)``: the bridge opens the duplex stream for RX
+        # playback (adaptive default), usb_driver's TX duplex passes
+        # ``"immediate"`` (MOR-4013).
         self._tx = _PortAudioTxStream(
             sd,
             np,
@@ -1316,6 +1962,7 @@ class _PortAudioDuplexStream:
             sample_rate=config.sample_rate,
             channels=self._tx_channels,
             blocksize=blocksize,
+            playout=tx_playout,
         )
         self._stream: Any = None
         self._mta = _WindowsMtaLease()
@@ -1434,10 +2081,15 @@ class PortAudioBackend:
         self,
         *,
         dependency_loader: Callable[[], tuple[Any, Any]] | None = None,
+        capture_mode: CaptureMode = "shared",
     ) -> None:
         self._sd: Any = None
         self._np: Any = None
         self._dependency_loader = dependency_loader
+        # MOR-4030: ``"exclusive-preferred"`` opens WASAPI devices in
+        # exclusive mode (shared fallback); see :data:`CaptureMode`. It
+        # applies to the RX and TX streams opened here, never to duplex.
+        self._capture_policy = _CapturePolicy(capture_mode)
 
     @property
     def sounddevice_module(self) -> Any | None:
@@ -1500,11 +2152,15 @@ class PortAudioBackend:
     ) -> bool:
         sd, _ = self._ensure_deps()
         idx = int(device)
+        extra = self._capture_policy.probe_settings(sd, idx)
+        kwargs: dict[str, Any] = {"device": idx, "samplerate": sample_rate}
+        if extra is not None:
+            kwargs["extra_settings"] = extra
         try:
             if direction == "rx":
-                sd.check_input_settings(device=idx, samplerate=sample_rate)
+                sd.check_input_settings(**kwargs)
             else:
-                sd.check_output_settings(device=idx, samplerate=sample_rate)
+                sd.check_output_settings(**kwargs)
             return True
         except Exception:
             return False
@@ -1521,10 +2177,10 @@ class PortAudioBackend:
     ) -> RxStream:
         sd, _ = self._ensure_deps()
         # ``channels`` is the OS open count; ``deliver_channels`` is what the
-        # consumer receives. When ``deliver_channels`` < ``channels`` (mono
-        # request on a stereo-native device, MOR-504) the stream software-
-        # downmixes before chunking, so the consumer still sees the mono
-        # fixed-frame contract while CoreAudio/AUHAL opens the device natively.
+        # consumer receives. When ``deliver_channels`` < ``channels`` (1- or
+        # 2-channel request on an N-channel device, MOR-504/4029) the stream
+        # software-downmixes before chunking, so the consumer still sees the
+        # delivered fixed-frame contract while the OS opens the device natively.
         if sys.platform == "darwin":
             blocksize = (sample_rate * frame_ms) // 1000
         else:
@@ -1540,6 +2196,7 @@ class PortAudioBackend:
             ),
             blocksize=blocksize,
             deliver_channels=deliver_channels,
+            capture_policy=self._capture_policy,
         )
 
     def open_tx(
@@ -1549,6 +2206,7 @@ class PortAudioBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        playout: TxPlayoutPolicy = "adaptive",
     ) -> TxStream:
         sd, np = self._ensure_deps()
         blocksize = (sample_rate * frame_ms) // 1000
@@ -1559,6 +2217,8 @@ class PortAudioBackend:
             sample_rate=sample_rate,
             channels=channels,
             blocksize=blocksize,
+            playout=playout,
+            capture_policy=self._capture_policy,
         )
 
     def open_duplex(
@@ -1571,6 +2231,7 @@ class PortAudioBackend:
         deliver_channels: int | None = None,
         rx_audio_channel: str = "mix",
         tx_channels: int | None = None,
+        tx_playout: TxPlayoutPolicy = "adaptive",
     ) -> DuplexStream:
         sd, np = self._ensure_deps()
         # TX uses a fixed blocksize (frame_ms) so the duplex callback's
@@ -1589,6 +2250,7 @@ class PortAudioBackend:
             blocksize=blocksize,
             deliver_channels=deliver_channels,
             tx_channels=tx_channels,
+            tx_playout=tx_playout,
         )
 
 
@@ -1763,6 +2425,7 @@ class FakeTxStream:
         device: int | None = None,
         exclusive: dict[int, object] | None = None,
         block_open: Callable[[], None] | None = None,
+        playout: TxPlayoutPolicy = "adaptive",
     ) -> None:
         self._running = False
         self._device = device
@@ -1776,6 +2439,9 @@ class FakeTxStream:
         self.fail_on_write: OSError | None = None
         self.write_failures = 0
         self.last_error: str | None = None
+        # MOR-4013: the playback policy this stream was opened with,
+        # recorded for open-call assertions.
+        self.playout = playout
         # MOR-1438: see FakeRxStream.block_open.
         self.block_open = block_open
         # MOR-1438 (F2 coverage): see FakeRxStream.stop_thread_ident.
@@ -1870,6 +2536,7 @@ class FakeDuplexStream:
         device: int | None = None,
         exclusive: dict[int, object] | None = None,
         block_open: Callable[[], None] | None = None,
+        tx_playout: TxPlayoutPolicy = "adaptive",
     ) -> None:
         self._running = False
         self._callback: Callable[[bytes], None] | None = None
@@ -1882,6 +2549,9 @@ class FakeDuplexStream:
         self.played_frames: list[bytes] = []
         self.discard_events = 0
         self._capture_health = _CaptureHealthTracker()
+        # MOR-4013: the TX-leg playback policy this stream was opened
+        # with, recorded for open-call assertions.
+        self.tx_playout = tx_playout
         # MOR-1573: see FakeRxStream.block_open — lets tests model a
         # genuinely blocking duplex open so UsbAudioDriver.start_duplex's
         # off-loop timeout handling can be exercised deterministically.
@@ -2102,11 +2772,14 @@ class FakeAudioBackend:
         sample_rate: int = 48_000,
         channels: int = 1,
         frame_ms: int = 20,
+        playout: TxPlayoutPolicy = "adaptive",
     ) -> FakeTxStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
         stream = FakeTxStream(
-            block_open=self.block_tx_open, **self._strict_stream_kwargs(device)
+            block_open=self.block_tx_open,
+            playout=playout,
+            **self._strict_stream_kwargs(device),
         )
         self.tx_streams.append(stream)
         return stream
@@ -2121,11 +2794,14 @@ class FakeAudioBackend:
         deliver_channels: int | None = None,
         rx_audio_channel: str = "mix",
         tx_channels: int | None = None,
+        tx_playout: TxPlayoutPolicy = "adaptive",
     ) -> FakeDuplexStream:
         if not any(d.id == device for d in self._devices):
             raise ValueError(f"Unknown device id {device}")
         stream = FakeDuplexStream(
-            block_open=self.block_duplex_open, **self._strict_stream_kwargs(device)
+            block_open=self.block_duplex_open,
+            tx_playout=tx_playout,
+            **self._strict_stream_kwargs(device),
         )
         self.duplex_streams.append(stream)
         return stream
@@ -2133,9 +2809,12 @@ class FakeAudioBackend:
 
 __all__ = [
     "AudioBackend",
+    "AudioDeviceBusyError",
     "AudioDeviceConfig",
     "AudioDeviceId",
     "AudioDeviceInfo",
+    "CAPTURE_MODES",
+    "CaptureMode",
     "DuplexStream",
     "FakeAudioBackend",
     "FakeDuplexStream",
@@ -2144,6 +2823,7 @@ __all__ = [
     "PortAudioBackend",
     "RxStreamHealth",
     "RxStream",
+    "TxPlayoutPolicy",
     "TxStream",
     "TxStreamHealth",
 ]

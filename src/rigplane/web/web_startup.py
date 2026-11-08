@@ -599,8 +599,12 @@ async def _await_initial_state_acquisition(
         if not blocking:
             break
         for path in blocking:
+            # MOR-4058: a refused read is a failed read too; the refusals
+            # include the initial fetch's own read, the timeouts do not.
             if startup_critical_path(path) and (
                 1 + scheduler.consecutive_request_timeouts(path)
+                >= _STARTUP_GATE_CRITICAL_ATTEMPTS
+                or scheduler.consecutive_refusals(path)
                 >= _STARTUP_GATE_CRITICAL_ATTEMPTS
             ):
                 # MOR-2841 (owner decision, 2026-09-28 09:00 EDT, option

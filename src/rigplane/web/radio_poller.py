@@ -2214,7 +2214,12 @@ class RadioPoller:
                 self._refuse_unsupported_receiver(rx, operation="set_mode")
                 if CAP_FILTER_WIDTH in self._caps:
                     self._state_store.discard(
-                        (FieldPath.active(str(rx), "freq_mode", "filter_width"),)
+                        (
+                            FieldPath.active(str(rx), "freq_mode", "filter_width"),
+                            FieldPath.active(
+                                str(rx), "freq_mode", "filter_width_radio_default"
+                            ),
+                        )
                     )
                 # Receiver addressing as for SetFreq above (MOR-3591).
                 if rx != 0:
@@ -3911,7 +3916,7 @@ class RadioPoller:
         max_age = self._tx_target_max_age()
         now = self._clock()
         try:
-            current = self._state_store.snapshot().field(path)
+            current = self._state_store.field(path)
         except KeyError:
             current = None
         if (

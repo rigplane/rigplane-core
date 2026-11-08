@@ -1707,7 +1707,7 @@ async def test_soft_reconnect_reconnects_civ_when_ctrl_alive(
     fake_civ_transport._udp_error_count = 0
 
     with (
-        patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
+        patch("rigplane.transport.IcomCivTransport", return_value=fake_civ_transport),
         patch.object(radio, "_send_open_close", new=AsyncMock()),
         patch.object(radio._civ_runtime, "stop_pump", new=AsyncMock()),
         patch.object(radio._civ_runtime, "start_pump"),
@@ -1743,7 +1743,7 @@ async def test_soft_reconnect_calls_on_reconnect_callback(
     radio._on_reconnect = mock_on_reconnect
 
     with (
-        patch("rigplane.transport.IcomTransport", return_value=fake_civ_transport),
+        patch("rigplane.transport.IcomCivTransport", return_value=fake_civ_transport),
         patch.object(radio, "_send_open_close", new=AsyncMock()),
         patch.object(radio._civ_runtime, "stop_pump", new=AsyncMock()),
         patch.object(radio._civ_runtime, "start_pump"),
@@ -1774,7 +1774,7 @@ async def test_soft_reconnect_handles_connect_failure(radio: IcomRadio) -> None:
     radio._ctrl_transport._udp_transport = MagicMock()  # type: ignore[attr-defined]
 
     # Patch IcomTransport constructor to return a mock that fails on connect.
-    # The patch target must be "rigplane.transport.IcomTransport" because
+    # The patch target must be "rigplane.transport.IcomCivTransport" because
     # _control_phase.soft_reconnect() does a local `from .transport import IcomTransport`
     # inside the function body, which resolves via rigplane.transport, not the
     # _control_phase module namespace.
@@ -1787,7 +1787,7 @@ async def test_soft_reconnect_handles_connect_failure(radio: IcomRadio) -> None:
     lifecycle = radio._session_lifecycle
     attempts = lifecycle._max_recovery_attempts
 
-    with patch("rigplane.transport.IcomTransport", return_value=fake_transport):
+    with patch("rigplane.transport.IcomCivTransport", return_value=fake_transport):
         with pytest.raises(
             ConnectionError, match="Soft reconnect exhausted"
         ) as exc_info:
@@ -1823,7 +1823,7 @@ async def test_soft_reconnect_retries_saved_local_port_when_busy(
 
     with (
         patch(
-            "rigplane.transport.IcomTransport",
+            "rigplane.transport.IcomCivTransport",
             side_effect=[busy_transport, retry_transport],
         ),
         patch.object(radio, "_send_open_close", new=AsyncMock()),

@@ -46,6 +46,12 @@ const SERVER_RX_DEVICE_REASONS = new Set([
   'usb_topology_names',
   'usb_topology_unavailable',
 ]);
+// MOR-4030 case C: another program holds the radio's codec exclusively, so
+// neither the exclusive open nor the shared fallback could start RX.
+const SERVER_RX_DEVICE_IN_USE = 'device_in_use';
+// The server names the holding program by its executable FILE name only. Show
+// it only when it still looks like one (no path, no control characters, short).
+const HOLDER_PROGRAM_NAME = /^[^\\/\u0000-\u001f\u007f]{1,64}$/;
 const TX_START_SILENT_REASONS = new Set([
   'TX MIC: capture start cancelled',
   'TX MIC: capture stopped before start completed',
@@ -58,7 +64,12 @@ const TX_START_REASON_CODES: Readonly<Record<string, string>> = {
 };
 
 /** Sink for an operator-facing error banner: (level, message, code). */
-type OperatorNotifier = (level: 'error', message: string, code: string) => void;
+type OperatorNotifier = (
+  level: 'error',
+  message: string,
+  code: string,
+  params?: Record<string, string>,
+) => void;
 
 export interface AudioControllerBinding {
   remote(): boolean;
@@ -123,6 +134,7 @@ class AudioManager {
   private backoff = BACKOFF_MIN;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
+  private _publishedRxSourceLevelLow = false;
   private _listeners: Set<() => void> = new Set();
   // Stable identity for reconnect coalescing (MOR-924); see makeClientId.
   private readonly clientId = makeClientId();
@@ -309,6 +321,14 @@ class AudioManager {
 
   setRxVolume(v: number): void {
     this.rxPlayer.volume = v;
+  }
+
+  /** MOR-4210: RX is running over an open audio link and its decoded source
+   *  has stayed quiet (RxPlayer.sourceLevelLow). Published to onChange on the
+   *  stats tick; the link's close notifies on its own. */
+  get rxSourceLevelLow(): boolean {
+    return this._rxEnabled && this.ws?.readyState === WebSocket.OPEN
+      && this.rxPlayer.sourceLevelLow === true;
   }
 
   // ── TX ──
@@ -582,6 +602,22 @@ class AudioManager {
             'The radio\'s audio devices could not be paired automatically. The station\'s audio device has to be chosen on the station computer — whoever runs the station can do it in its audio device settings.',
             'rxAudioStationDeviceNeeded',
           );
+        } else if (msg.reason === SERVER_RX_DEVICE_IN_USE) {
+          const holder = (msg as { holder?: unknown }).holder;
+          if (typeof holder === 'string' && HOLDER_PROGRAM_NAME.test(holder)) {
+            this._operatorNotifier?.(
+              'error',
+              `The radio's audio input is in use by ${holder}. Close it, then turn the audio on again.`,
+              'rxAudioDeviceInUseBy',
+              { program: holder },
+            );
+          } else {
+            this._operatorNotifier?.(
+              'error',
+              'The radio\'s audio input is in use by another program. Close it, then turn the audio on again.',
+              'rxAudioDeviceInUse',
+            );
+          }
         } else {
           this._operatorNotifier?.('error', 'Radio audio capture could not start.', 'rxAudioStartFailed');
         }
@@ -748,6 +784,11 @@ class AudioManager {
   }
 
   private _sendAudioStats(): void {
+    const sourceLow = this.rxSourceLevelLow;
+    if (sourceLow !== this._publishedRxSourceLevelLow) {
+      this._publishedRxSourceLevelLow = sourceLow;
+      this.notify();
+    }
     if (!this._rxEnabled || this.ws?.readyState !== WebSocket.OPEN) return;
     const stats = this.rxPlayer.stats();
     const error = stats.playback?.contextState === 'suspended' && stats.playback.resumeOutcome === 'rejected'

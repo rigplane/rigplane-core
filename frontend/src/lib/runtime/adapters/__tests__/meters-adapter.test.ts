@@ -17,6 +17,7 @@ import type { FieldStatus, ServerState } from '$lib/types/state';
 import { validateRadioViewModel, type RadioViewModel } from '../../../../semantic/radio-view-model';
 import { projectBarMeters, projectSwrMeter } from '../../../../semantic/bar-meter-projector';
 import { toRadioViewModel, type MetersTxAuthority } from '../radio-view-model-adapter';
+import { editState } from '../../../transport/__tests__/support/state-edit';
 
 function caps(overrides: Partial<Capabilities> = {}): Capabilities {
   return {
@@ -568,17 +569,20 @@ describe('served meter presence (MOR-2425 / T201)', () => {
 
 
 it('preserves IC-7300-shaped RX, unobserved TX, observed zero, held stale and served discard', () => {
-  const state = meterState({ compressorOn: true, powerMeter: 0, swrMeter: 0, alcMeter: 0, compMeter: 0 });
-  state.fieldStatus!.compressorOn = fresh;
+  // MOR-4213: each pass is a new delivery (a new snapshot), as the client builds it.
+  let state = meterState({ compressorOn: true, powerMeter: 0, swrMeter: 0, alcMeter: 0, compMeter: 0 });
+  state = editState(state, (s) => { s.fieldStatus!.compressorOn = fresh; });
   const capabilities = caps({ model: 'IC-7300', capabilities: ['scope', 'audio', 'tx', 'compressor'] });
   for (const [availability, observed, tx] of [
     ['unavailable', false, RX], ['missing', false, TX], ['available', true, TX],
     ['stale', true, RX], ['unavailable', false, RX],
   ] as const) {
-    for (const path of ['powerMeter', 'swrMeter', 'alcMeter', 'compMeter']) {
-      state.fieldStatus![path] = { ...fresh, availability, observed, quality: ['calibrated'],
-        freshness: availability === 'stale' ? 'stale' : 'fresh' };
-    }
+    state = editState(state, (s) => {
+      for (const path of ['powerMeter', 'swrMeter', 'alcMeter', 'compMeter']) {
+        s.fieldStatus![path] = { ...fresh, availability, observed, quality: ['calibrated'],
+          freshness: availability === 'stale' ? 'stale' : 'fresh' };
+      }
+    });
     const view = model(state, capabilities, tx);
     const projected = [...projectBarMeters(view), projectSwrMeter(view)!];
     expect(projected).toHaveLength(6);

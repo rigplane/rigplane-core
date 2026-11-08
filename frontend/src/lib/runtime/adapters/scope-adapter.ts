@@ -129,7 +129,7 @@ export function toScopeDisplayFrame(
 
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
-import type { ScopeControlsViewModel } from '../../../semantic/radio-view-model';
+import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
 import { toRadioViewModel } from './radio-view-model-adapter';
 
@@ -151,6 +151,11 @@ export interface SpectrumAuthority {
   readonly mode: string | null;
   readonly filter: string | null;
   readonly filterWidthHz: number | null;
+  /** MOR-3677: the modeFilter group's composed width display (the spectrum
+   *  chip's source), or null when the model carries no modeFilter group.
+   *  Deliberately NOT part of `digest` beyond its state kind — a held-stale
+   *  known reading must not churn the digest every freshness tick. */
+  readonly filterWidthDisplay: FilterWidthDisplay | null;
   readonly filterShape: number | null;
   readonly ifShiftHz: number | null;
   readonly pbtInnerHz: number | null;
@@ -283,6 +288,9 @@ export function toSpectrumAuthority(
   const widthFact = knownReading(state, `${key}.filterWidth`, modeFilter?.filterWidth);
   const dataFact = knownReading(state, `${key}.dataMode`, passband?.dataMode);
   const filterWidthHz = positiveInteger(widthFact) ? widthFact : null;
+  // MOR-3677: the composed display verdict rides beside the Hz — the
+  // spectrum chip reads it, geometry still gates on `filterWidthHz`.
+  const filterWidthDisplay = modeFilter?.filterWidthDisplay ?? null;
   const dataMode = nonnegativeInteger(dataFact) ? dataFact : null;
   // Native IF shift remains an independently observed raw fact. PBT-only
   // radios instead expose a semantic shift derived from their two
@@ -305,6 +313,9 @@ export function toSpectrumAuthority(
     mode,
     filter,
     filterWidthHz,
+    // Only the display's state KIND belongs to the digest identity: the
+    // stale flag flips on every freshness tick (MOR-3677).
+    filterWidthState: filterWidthDisplay === null ? null : filterWidthDisplay.state,
     filterShape: finiteNumber(knownReading(state, `${key}.filterShape`, passband?.filterShape))
       ? knownReading(state, `${key}.filterShape`, passband?.filterShape) as number : null,
     ifShiftHz: finiteNumber(ifShiftFact) ? ifShiftFact : null,
@@ -316,7 +327,7 @@ export function toSpectrumAuthority(
     rule,
     scopeControls: model.scopeControls ? immutableClone(model.scopeControls) : null,
   };
-  return immutableClone({ ...core, digest: JSON.stringify(core) });
+  return immutableClone({ ...core, filterWidthDisplay, digest: JSON.stringify(core) });
 }
 
 // Tie prefers the LOWER grid point. MOR-1518: tie-break must stay aligned

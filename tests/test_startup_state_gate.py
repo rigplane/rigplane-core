@@ -71,7 +71,7 @@ from rigplane.web.web_startup import (
     _await_initial_state_acquisition,
     _observed_paths,
 )
-from _timing import await_until
+from rigplane.testing.timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 
 FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
@@ -513,6 +513,9 @@ class _RecordingScheduler:
         return ()
 
     def consecutive_request_timeouts(self, _path: FieldPath) -> int:
+        return 0
+
+    def consecutive_refusals(self, _path: FieldPath) -> int:
         return 0
 
 
@@ -2737,6 +2740,7 @@ async def _served_through_cli(
         on_started: object = None,
         on_shutdown_signal: object = None,
         on_tx_release: object = None,
+        before_cancel_all: object = None,
     ) -> None:
         await self.start()
         served.append(self)
@@ -3773,3 +3777,122 @@ async def test_explicit_bridge_device_fails_hard_while_identity_held(
             assert server is None  # the harness asserts the non-zero exit
     captured = capsys.readouterr()
     assert "audio bridge failed" in captured.err
+
+
+@pytest.mark.asyncio
+async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-2922: a missing-port start defers the auto bridge, then runs it.
+
+    The ticket's sequence through the real entry points: ``rigplane web``
+    with ``--bridge=auto`` on a serial port that cannot be opened serves
+    the UI with the bridge deferred; when the port appears, the backend's
+    own watchdog reopens it, the identity read answers, and the deferred
+    runner starts the REAL ``AudioBridge`` — exactly once, never while
+    disconnected. CLI dispatch (``cli._run``), session recovery and bridge
+    startup all stay real; only the OS boundary is faked (the serial link
+    and the two PortAudio backends: the bridge's device backend and the
+    serial radio's USB-audio driver backend).
+
+    With the old arming condition (the identity-hold check only) this
+    test is red: the not-connected radio carries no identity hold, so the
+    CLI attempts the eager auto-start, fails it against the unconnected
+    radio, and never arms the deferred attempt — no bridge ever runs.
+    """
+
+    import rigplane.audio.bridge as bridge_module
+    from rigplane.audio.backend import (
+        AudioDeviceId,
+        AudioDeviceInfo,
+        FakeAudioBackend,
+    )
+    from rigplane.audio.usb_driver import UsbAudioDriver
+    from rigplane.backends.icom7610 import Icom7610SerialRadio
+    from rigplane.web import server as server_module
+    from test_audio_bridge import _bridge_backend
+
+    device = str(tmp_path / "cu.usbserial-1420")
+    link = _FakeSerialCivLink(fail_connect=_port_missing_error(device))
+    bridge_backend = _bridge_backend()
+    driver_backend = FakeAudioBackend(
+        devices=[
+            AudioDeviceInfo(
+                id=AudioDeviceId(0),
+                name="USB Audio CODEC",
+                input_channels=2,
+                output_channels=2,
+            )
+        ]
+    )
+    driver = UsbAudioDriver(
+        rx_device="USB Audio CODEC",
+        tx_device="USB Audio CODEC",
+        backend=driver_backend,
+    )
+    radio = Icom7610SerialRadio(
+        device=device,
+        civ_link=link,
+        audio_driver=driver,
+        # Hermetic on any host: no OS enumeration, so no real port is probed.
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    # Short retry spacing, so a port that appears is reopened within the
+    # test's bounded waits instead of after the production backoff cap.
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 0.005
+    radio._SERIAL_WATCHDOG_RETRY_S = 0.005
+    radio._SERIAL_WATCHDOG_RETRY_MAX_S = 0.01
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (0.05, 0.1, 0.2, 0.4)
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 0.5
+    # The fake link answers no poll: once the port opens, the watchdog would
+    # declare link-down on that silence, parking transmit and reopening the
+    # port under the assertions at a moment that depends on runner load.
+    radio._serial_civ_timeout_evidence_crossed_threshold = lambda: False
+
+    monkeypatch.setattr(bridge_module, "PortAudioBackend", lambda: bridge_backend)
+    monkeypatch.setattr(server_module, "_BRIDGE_DEFER_POLL_S", 0.01)
+    monkeypatch.setattr("rigplane.cli._detect_loopback_hint", lambda: None)
+
+    with caplog.at_level(logging.WARNING):
+        async with _served_through_cli(radio, bridge="auto") as server:
+            assert server is not None
+            # Several deferred-runner poll cycles pass while the port is
+            # missing: the missing-port retry loop stays live, but no
+            # bridge may exist and no audio stream may open.
+            assert await await_until(lambda: link.connect_calls >= 2, timeout=5.0)
+            await asyncio.sleep(0.1)
+            assert server._audio_bridge is None  # noqa: SLF001
+            assert bridge_backend.rx_streams == []
+            assert bridge_backend.tx_streams == []
+            assert bridge_backend.duplex_streams == []
+            assert driver_backend.rx_streams == []
+            assert driver_backend.tx_streams == []
+            assert driver_backend.duplex_streams == []
+            assert any(
+                record.name == "rigplane.cli"
+                and "audio bridge auto-start deferred" in record.getMessage()
+                for record in caplog.records
+            )
+
+            # The port appears; the backend's own watchdog reopens it, the
+            # identity read answers, and the deferred runner starts the
+            # real bridge exactly once.
+            link._fail_connect = None
+            assert await await_until(lambda: radio.connected, timeout=5.0)
+            assert await await_until(
+                lambda: (
+                    server._audio_bridge is not None  # noqa: SLF001
+                    and server._audio_bridge.running
+                ),
+                timeout=5.0,
+            )
+            await asyncio.sleep(0.5)  # a duplicate start would land here
+            bridge = server._audio_bridge  # noqa: SLF001
+            assert bridge is not None and bridge.running
+            assert len(bridge_backend.tx_streams) == 1
+            assert bridge_backend.tx_streams[0].running
+            assert len(bridge_backend.rx_streams) == 1
+            assert bridge_backend.rx_streams[0].running
+            assert driver.rx_running

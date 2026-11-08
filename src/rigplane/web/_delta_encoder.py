@@ -1,40 +1,156 @@
 """Delta encoding for web state updates — reduce payload for frequent broadcasts.
 
-This module provides efficient differential state encoding for WebSocket clients:
-- Compute deltas between consecutive state snapshots
-- Send only changed fields instead of full state
-- Clients apply deltas to reconstruct full state
-- Periodic full state refresh prevents drift
+One diff, two wire renderings (MOR-4206):
+
+- ``DeltaEncoder.encode`` diffs consecutive snapshots down to the leaves and
+  returns a leaf delta (``deltaVersion: 2``): ``set`` lists ``[path, value]``
+  pairs and ``unset`` lists paths, each path being the list of object keys
+  from the state root. The diff descends wherever both the previous and the
+  current value are objects; anything else (a scalar, a list, an object that
+  replaced a non-object) is one ``set`` of the whole value.
+- ``top_level_delta`` renders the same diff as the original top-level delta
+  (``changed`` carries each touched top-level value whole, ``removed`` the
+  dropped top-level keys) for clients that did not ask for leaf deltas.
 
 Usage::
 
     encoder = DeltaEncoder()
-
-    # First update: send full state
-    delta = encoder.encode({"freq": 14200000, "mode": "USB"})
-    # delta = {"type": "full", "data": {"freq": 14200000, "mode": "USB"}}
-
-    # Subsequent updates: send only changes
-    delta = encoder.encode({"freq": 14200100, "mode": "USB"})
-    # delta = {"type": "delta", "changed": {"freq": 14200100}, "revision": 1}
-
-    # Periodic full refresh
-    delta = encoder.encode({"freq": 14200200, "mode": "CW"}, force_full=True)
-    # delta = {"type": "full", "data": {...}, "revision": 2}
+    encoder.encode({"freq": 14200000, "mode": "USB"})
+    # {"type": "full", "data": {"freq": 14200000, "mode": "USB"}, ...}
+    encoder.encode({"freq": 14200100, "mode": "USB"})
+    # {"type": "delta", "deltaVersion": 2, "set": [(["freq"], 14200100)], ...}
 """
 
 from __future__ import annotations
 
-import copy
-from typing import Any
+from collections.abc import Mapping
+from typing import Any, Final, Literal, Required, TypedDict, TypeVar, cast
 
-__all__ = ["DeltaEncoder", "apply_delta"]
+__all__ = [
+    "DeltaEncoder",
+    "LeafSetOp",
+    "StatePath",
+    "StateUpdateFrame",
+    "apply_delta",
+    "copy_state_tree",
+    "top_level_delta",
+]
+
+LEAF_DELTA_VERSION: Final = 2
+_T = TypeVar("_T")
+
+#: Object keys from the state root to one value.
+StatePath = list[str]
+#: One leaf ``set`` operation; a JSON array ``[path, value]`` on the wire.
+LeafSetOp = tuple[StatePath, Any]
+
+
+# The ``state_update`` envelope the encoder and its renderings exchange. Its
+# keys are the fields of ``state_schema.StateUpdateEnvelope``
+# (``tests/test_delta_encoder.py::test_frame_contract_has_the_wire_schema_keys``).
+StateUpdateFrame = TypedDict(
+    "StateUpdateFrame",
+    {
+        "type": Required[Literal["full", "delta"]],
+        "revision": Required[int],
+        "transportSeq": Required[int],
+        "stateContractVersion": Literal[1],
+        "providerGeneration": int,
+        "data": dict[str, Any],
+        "changed": dict[str, Any],
+        "removed": list[str],
+        "deltaVersion": Literal[2],
+        "set": list[LeafSetOp],
+        "unset": list[StatePath],
+        "stateRevision": int,
+        "freshnessRevision": int,
+        "observationSeq": int,
+    },
+    total=False,
+)
+
+
+def copy_state_tree(value: _T) -> _T:
+    """Copy a JSON state tree: every dict, list and tuple is rebuilt.
+
+    Any other value is shared, not copied; for a JSON tree those are the
+    immutable scalars. A cheaper stand-in for ``copy.deepcopy`` (MOR-4211).
+    """
+    if isinstance(value, dict):
+        return cast(_T, {key: copy_state_tree(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return cast(_T, [copy_state_tree(item) for item in value])
+    if isinstance(value, tuple):
+        return cast(_T, tuple(copy_state_tree(item) for item in value))
+    return value
+
+
+_MISSING: Final = object()
+
+
+def _copy_on_write_tree(prev: Any, cur: Any) -> Any:
+    """Snapshot ``cur`` for the encoder, copying only what changed.
+
+    ``prev`` is the encoder's private previous snapshot (nothing outside
+    the encoder can mutate it). Subtrees where ``prev`` already equals
+    ``cur`` are reused as-is — the caller may freely mutate or reuse its
+    own ``cur`` containers afterwards; a changed or caller-identical
+    container is copied with :func:`copy_state_tree`. Immutable scalars are
+    shared, exactly like :func:`copy_state_tree` shares them. Wire output
+    is identical to a full copy (MOR-4227 equality pins in
+    ``tests/test_delta_encoder_cow_mor4227.py``); only the unchanged
+    branches stop being rebuilt on every broadcast.
+    """
+    if not isinstance(cur, (dict, list, tuple)):
+        return cur
+    if isinstance(prev, dict) and isinstance(cur, dict) and prev is not cur:
+        if prev == cur:
+            return prev
+        merged: dict[Any, Any] = {}
+        for key, value in cur.items():
+            old = prev.get(key, _MISSING)
+            if old is _MISSING:
+                merged[key] = copy_state_tree(value)
+            else:
+                merged[key] = _copy_on_write_tree(old, value)
+        return merged
+    if prev is not cur and prev == cur:
+        # Equal but distinct container (a list leaf, a tuple): reuse the
+        # encoder's own old copy rather than rebuilding the caller's.
+        return prev
+    # Changed container, or the very object the caller may keep mutating.
+    return copy_state_tree(cur)
+
+
+def _diff(
+    prev: Mapping[str, Any],
+    cur: Mapping[str, Any],
+    prefix: StatePath,
+    set_ops: list[LeafSetOp],
+    unset_ops: list[StatePath],
+) -> None:
+    """Append the leaf operations that turn ``prev`` into ``cur``."""
+    for key, value in cur.items():
+        path = [*prefix, key]
+        if key not in prev:
+            set_ops.append((path, value))
+            continue
+        old = prev[key]
+        if old == value:
+            continue
+        if isinstance(old, dict) and isinstance(value, dict):
+            _diff(old, value, path, set_ops, unset_ops)
+        else:
+            set_ops.append((path, value))
+    for key in prev:
+        if key not in cur:
+            unset_ops.append([*prefix, key])
 
 
 class DeltaEncoder:
-    """Encode state changes as deltas for efficient WebSocket transmission.
+    """Encode state changes as leaf deltas for efficient WebSocket transmission.
 
-    Tracks previous state and emits only changed fields.
+    Tracks previous state and emits only changed leaves.
     Automatically sends full state every N updates to prevent drift.
     """
 
@@ -58,98 +174,62 @@ class DeltaEncoder:
         state_revision: int | None = None,
         freshness_revision: int | None = None,
         observation_seq: int | None = None,
-    ) -> dict[str, Any]:
-        """Encode a state snapshot as a delta or full state.
+    ) -> StateUpdateFrame:
+        """Encode a state snapshot as a leaf delta or a full state.
 
-        Args:
-            current_state: Current state snapshot (typically the public state payload).
-            force_full: If True, always send full state (for initial handshake or recovery).
-
-        Returns:
-            Delta message in one of these formats:
-
-            Full state (first message or periodic refresh)::
-
-                {
-                    "type": "full",
-                    "data": {...current_state...},
-                    "revision": 0
-                }
-
-            Delta message (most updates)::
-
-                {
-                    "type": "delta",
-                    "changed": {...changed_fields...},
-                    "removed": [...deleted_keys...],
-                    "revision": 1
-                }
+        Returns a ``full`` envelope (``data`` is the whole state) on the first
+        call, on ``force_full`` and every ``full_state_interval`` deltas;
+        otherwise a ``delta`` envelope with ``deltaVersion``, ``set`` and,
+        when a key disappeared, ``unset``.
         """
-        # Check if full state refresh is needed
         self._transport_seq += 1
         revision_value = (
             self._transport_seq if state_revision is None else int(state_revision)
         )
-        freshness_value = 0 if freshness_revision is None else int(freshness_revision)
-        observation_value = 0 if observation_seq is None else int(observation_seq)
 
+        result: StateUpdateFrame
         if (
             force_full
             or self._previous_state is None
             or self._delta_count >= self._full_state_interval
         ):
-            # Send full state
-            self._previous_state = copy.deepcopy(current_state)
             self._delta_count = 0
-            full_result = {
+            result = {
                 "type": "full",
-                "data": dict(current_state),
                 "revision": revision_value,
                 "transportSeq": self._transport_seq,
+                "data": dict(current_state),
             }
-            if state_revision is not None:
-                full_result["stateRevision"] = revision_value
-            if freshness_revision is not None:
-                full_result["freshnessRevision"] = freshness_value
-            if observation_seq is not None:
-                full_result["observationSeq"] = observation_value
-            return full_result
+        else:
+            set_ops: list[LeafSetOp] = []
+            unset_ops: list[StatePath] = []
+            _diff(self._previous_state, current_state, [], set_ops, unset_ops)
+            self._delta_count += 1
+            result = {
+                "type": "delta",
+                "revision": revision_value,
+                "transportSeq": self._transport_seq,
+                "deltaVersion": LEAF_DELTA_VERSION,
+                "set": set_ops,
+            }
+            if unset_ops:
+                result["unset"] = unset_ops
+        if self._previous_state is None:
+            self._previous_state = copy_state_tree(current_state)
+        else:
+            # Copy only the changed branches (MOR-4227): the previous
+            # snapshot is encoder-private, so its unchanged subtrees can be
+            # reused instead of rebuilding the whole tree per broadcast.
+            self._previous_state = _copy_on_write_tree(
+                self._previous_state, current_state
+            )
 
-        # Compute delta
-        changed: dict[str, Any] = {}
-        removed: list[str] = []
-
-        # Find changed and new fields
-        for key, value in current_state.items():
-            prev_value = self._previous_state.get(key, _MISSING)
-            if prev_value is _MISSING or value != prev_value:
-                changed[key] = value
-
-        # Find removed fields
-        for key in self._previous_state:
-            if key not in current_state:
-                removed.append(key)
-
-        # Update previous state for next comparison
-        self._previous_state = copy.deepcopy(current_state)
-        self._delta_count += 1
-
-        # Build delta message
-        result: dict[str, Any] = {
-            "type": "delta",
-            "changed": changed,
-            "revision": revision_value,
-            "transportSeq": self._transport_seq,
-        }
         if state_revision is not None:
             result["stateRevision"] = revision_value
         if freshness_revision is not None:
-            result["freshnessRevision"] = freshness_value
+            result["freshnessRevision"] = int(freshness_revision)
         if observation_seq is not None:
-            result["observationSeq"] = observation_value
-        if removed:
-            result["removed"] = removed
-
+            result["observationSeq"] = int(observation_seq)
         return result
 
     @property
@@ -164,52 +244,85 @@ class DeltaEncoder:
         self._delta_count = 0
 
 
-class _Missing:
-    """Sentinel for missing dictionary values."""
+def top_level_delta(
+    envelope: StateUpdateFrame, current_state: Mapping[str, Any]
+) -> StateUpdateFrame:
+    """Render a leaf delta as the top-level delta older clients read.
 
-    __slots__ = ()
+    ``current_state`` is the snapshot the leaf delta was encoded from. A full
+    envelope is returned unchanged.
+    """
+    if envelope["type"] != "delta":
+        return envelope
+    changed: dict[str, Any] = {}
+    removed: list[str] = []
+    for path, _value in envelope.get("set", []):
+        changed[path[0]] = current_state[path[0]]
+    for path in envelope.get("unset", []):
+        if len(path) == 1:
+            removed.append(path[0])
+        else:
+            changed[path[0]] = current_state[path[0]]
+    result = envelope.copy()
+    result.pop("deltaVersion", None)
+    result.pop("set", None)
+    result.pop("unset", None)
+    result["changed"] = changed
+    if removed:
+        result["removed"] = removed
+    return result
 
-    def __repr__(self) -> str:
-        return "<MISSING>"
+
+def _parent_for_write(
+    root: dict[str, Any], path: list[str], fresh: set[int]
+) -> dict[str, Any]:
+    """Walk ``path[:-1]`` copying each object once, so the input stays intact."""
+    if not path:
+        raise ValueError("Invalid delta path: empty")
+    node = root
+    for key in path[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            raise ValueError(f"Invalid delta path: {path!r}")
+        if id(child) not in fresh:
+            child = dict(child)
+            node[key] = child
+            fresh.add(id(child))
+        node = child
+    return node
 
 
-_MISSING = _Missing()
+def apply_delta(
+    full_state: Mapping[str, Any], delta: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Apply a ``state_update`` envelope (either delta rendering) to a snapshot.
 
-
-def apply_delta(full_state: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
-    """Apply a delta message to a full state snapshot.
-
-    Used by web clients to reconstruct state from deltas.
-
-    Args:
-        full_state: Previous full state snapshot.
-        delta: Delta message from DeltaEncoder.
-
-    Returns:
-        Updated state snapshot with delta applied.
+    Returns a new snapshot; ``full_state`` is not modified.
 
     Raises:
         ValueError: If delta format is invalid.
     """
-    if not isinstance(delta, dict):
+    if not isinstance(delta, Mapping):
         raise ValueError(f"Invalid delta format: {type(delta)}")
 
     delta_type = delta.get("type")
 
     if delta_type == "full":
-        # Replace entire state
         return dict(delta.get("data", {}))
 
-    if delta_type == "delta":
-        # Apply incremental changes
-        result = dict(full_state)
-        changed = delta.get("changed", {})
-        removed = delta.get("removed", [])
+    if delta_type != "delta":
+        raise ValueError(f"Unknown delta type: {delta_type}")
 
-        result.update(changed)
-        for key in removed:
+    result = dict(full_state)
+    if delta.get("deltaVersion") != LEAF_DELTA_VERSION:
+        result.update(delta.get("changed", {}))
+        for key in delta.get("removed", []):
             result.pop(key, None)
-
         return result
 
-    raise ValueError(f"Unknown delta type: {delta_type}")
+    fresh = {id(result)}
+    for path, value in delta.get("set", []):
+        _parent_for_write(result, path, fresh)[path[-1]] = value
+    for path in delta.get("unset", []):
+        _parent_for_write(result, path, fresh).pop(path[-1], None)
+    return result

@@ -450,6 +450,37 @@ async def test_rigctld_smoke_with_serial_mock_backend() -> None:
 
 
 @pytest.mark.asyncio
+async def test_serial_audio_rx_delivers_inline_when_already_on_owner_loop() -> None:
+    """MOR-4227: the PortAudio→loop handoff must not schedule a second
+    wake-up from the loop itself.
+
+    A frame pushed on the owner loop (fake drivers, the UsbAudioDriver's
+    coalesced drain) reaches the RX callback synchronously, before
+    ``emit_rx_pcm`` returns — the pre-MOR-4227 unconditional
+    ``call_soon_threadsafe`` deferred it to the next loop turn and paid a
+    self-pipe write per frame for nothing.
+    """
+    serial_audio = _FakeUsbAudioDriver()
+    radio = Icom7610SerialRadio(
+        device="/dev/tty.usbmodem-IC7610",
+        civ_link=_FakeSerialCivLink(),
+        audio_driver=serial_audio,
+    )
+    await radio.connect()
+    packets: list[object] = []
+    await radio.start_rx(packets.append)
+    try:
+        assert packets == []
+        serial_audio.emit_rx_pcm(b"\x01\x02" * 960)
+        assert len(packets) == 1, (
+            "an on-loop PCM frame must be delivered inline, not deferred"
+        )
+    finally:
+        await radio.stop_rx()
+        await radio.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_web_audio_broadcaster_smoke_with_serial_backend_audio_driver() -> None:
     serial_audio = _FakeUsbAudioDriver()
     radio = Icom7610SerialRadio(

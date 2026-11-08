@@ -9,6 +9,9 @@ Covers:
 
 from __future__ import annotations
 
+import string
+from pathlib import Path
+
 import pytest
 
 from rigplane.backends.yaesu_cat.parser import (
@@ -16,7 +19,10 @@ from rigplane.backends.yaesu_cat.parser import (
     CatFormatError,
     CatParseError,
     format_command,
+    literal_head,
 )
+from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.rig_loader import load_rig
 
 
 # ---------------------------------------------------------------------------
@@ -323,3 +329,158 @@ class TestCompileOnce:
             result = parser.parse(cmd)
             assert result["state"] == state
             assert result["raw"] == raw
+
+
+# ---------------------------------------------------------------------------
+# Reply-head derivation for transport pairing (MOR-3677)
+# ---------------------------------------------------------------------------
+
+_RIGS_DIR = Path(__file__).parents[1] / "rigs"
+
+# Sample values for the placeholders read templates carry, one dict per
+# selector value that changes the issued request. A future read template
+# with a new placeholder name has no sample here and the walk fails
+# loudly (format_command raises) instead of the profile silently timing
+# out on the wire.
+_READ_SAMPLE_PARAMS: tuple[dict[str, str], ...] = (
+    {"receiver": "0"},
+    {"receiver": "1"},
+    {"type": "8"},
+    {"chan": "001"},
+)
+
+
+class TestLiteralHead:
+    def test_literal_head_stops_at_the_first_placeholder(self):
+        # The get_s_meter_sub template: the head is the whole reply prefix
+        # the radio guarantees — the side digit is NOT part of it.
+        assert literal_head("SM{receiver}{raw:03d};") == "SM"
+
+    def test_literal_head_of_a_strict_template_restates_the_request(self):
+        # The get_narrow_sub template: the head pins the SUB selector.
+        assert literal_head("NA1{state};") == "NA1"
+
+    def test_literal_head_before_a_mid_template_placeholder(self):
+        # A literal tail after the placeholder never reaches the head.
+        assert literal_head("CN{receiver}0{code:03d};") == "CN"
+
+
+def _formatted_read_bodies(read: str) -> list[str]:
+    """Every sample wire body the read template issues (without ``;``)."""
+    names = [name for _, name, _, _ in string.Formatter().parse(read) if name]
+    if not names:
+        return [read.rstrip(";")]
+    bodies = [
+        format_command(read, **sample).rstrip(";")
+        for sample in _READ_SAMPLE_PARAMS
+        if set(names) <= set(sample)
+    ]
+    assert bodies, f"read template {read!r} has no sample parameters for {names}"
+    return bodies
+
+
+def _profile_reply_heads(config) -> frozenset[str]:
+    """The profile's declared reply-head vocabulary, derived exactly the
+    way ``YaesuCatRadio`` derives the transport's ``reply_heads``
+    (radio.py): the literal head of every command's parse template —
+    read or not — with empty heads discarded."""
+    heads = {
+        literal_head(spec.parse).rstrip(";")
+        for spec in config.commands.values()
+        if isinstance(spec, CatCommandSpec) and spec.parse
+    }
+    heads.discard("")
+    return frozenset(heads)
+
+
+def _accepted_reply_prefixes(body: str, reply_heads: frozenset[str]) -> set[str]:
+    """The prefixes ``YaesuCatTransport.query`` accepts for a request
+    *body*: the whole body, widened by every declared head that is a
+    prefix of it (transport.py, MOR-3677)."""
+    expected = {body}
+    expected.update(head for head in reply_heads if head and body.startswith(head))
+    return expected
+
+
+def _yaesu_read_commands() -> list[tuple[str, str, str, str, frozenset[str]]]:
+    """(profile, command, request body, parse-template head, profile
+    reply heads) per read, for every Yaesu profile shipped in ``rigs/`` —
+    discovered the same way the other profile-iteration walks discover
+    profiles (glob ``rigs/*.toml`` skipping ``_``-prefixed files,
+    ``load_rig`` each, keep the ones whose loaded ``protocol_type`` is
+    the Yaesu CAT one)."""
+    entries: list[tuple[str, str, str, str, frozenset[str]]] = []
+    for path in sorted(_RIGS_DIR.glob("*.toml")):
+        if path.name.startswith("_"):
+            continue
+        config = load_rig(path)
+        if config.protocol_type != "yaesu_cat":
+            continue
+        reply_heads = _profile_reply_heads(config)
+        for name, spec in config.commands.items():
+            if not isinstance(spec, CatCommandSpec) or not spec.parse:
+                continue
+            if spec.read is None:
+                continue
+            head = literal_head(spec.parse).rstrip(";")
+            for body in _formatted_read_bodies(spec.read):
+                entries.append((config.id, name, body, head, reply_heads))
+    return entries
+
+
+class TestReplyHeadCoversEveryYaesuRead:
+    def test_shipped_yaesu_profiles_exist(self) -> None:
+        """The walk covers at least one shipped Yaesu profile — the family
+        is present in the shipped data, so the walk below cannot pass
+        vacuously over an empty set of profiles."""
+        assert any(profile == "yaesu_ftx1" for profile, *_ in _yaesu_read_commands())
+
+    def test_every_read_body_is_prefix_compatible_with_its_parse_template_head(
+        self,
+    ) -> None:
+        """No Yaesu profile read silently times out under whole-request
+        pairing: the request body and its parse template's literal head
+        are prefix-compatible — the head restates the request, extends it
+        (IS0; is answered IS00+000;-style, the reply restating the
+        selector the request only implied), or is the verb-level head a
+        selector-parameterised request builds on (SM1; is answered
+        SM0...-style) — so a prefix the transport accepts is also a
+        prefix of every template-conforming reply (MOR-3677). The walk
+        covers every Yaesu profile in ``rigs/`` — today FTX-1; any future
+        Yaesu profile joins it through the same ``rigs/`` glob."""
+        heads_shorter_than_body: list[tuple[str, str, str, str]] = []
+        heads_longer_than_body: list[tuple[str, str, str, str]] = []
+        for profile, name, body, head, reply_heads in _yaesu_read_commands():
+            assert head, f"{profile}/{name}: empty reply head for {body!r}"
+            assert head.startswith(body) or body.startswith(head), (
+                f"{profile}/{name}: request {body!r} and its parse-template "
+                f"head {head!r} are not prefix-compatible — every "
+                f"template-conforming reply would be skipped as stale"
+            )
+            # The transport's own derivation (transport.py query): the
+            # whole request body plus every declared head that is a
+            # prefix of it. A template-conforming reply starts with the
+            # head, so the head standing in for any such reply must be
+            # accepted — a command whose real reply would be skipped as
+            # stale (and time out) fails here.
+            accepted = _accepted_reply_prefixes(body, reply_heads)
+            assert any(head.startswith(prefix) for prefix in accepted), (
+                f"{profile}/{name}: reply built from template head {head!r} "
+                f"matches none of the accepted prefixes {sorted(accepted)} "
+                f"for request {body!r}"
+            )
+            if body.startswith(head) and head != body:
+                heads_shorter_than_body.append((profile, name, body, head))
+            elif head.startswith(body) and head != body:
+                heads_longer_than_body.append((profile, name, body, head))
+        # The two documented divergent shapes the mechanism must keep
+        # pairing (every other shipped head restates its request exactly):
+        # the SUB S-meter's head is shorter than its request — the radio
+        # echoes the side digit as 0, so strict whole-request matching
+        # alone would time it out — and the IF-shift head is longer than
+        # its request — the reply carries the selector digit the request
+        # only implied.
+        assert ("yaesu_ftx1", "get_s_meter_sub", "SM1", "SM") in (
+            heads_shorter_than_body
+        )
+        assert ("yaesu_ftx1", "get_if_shift", "IS0", "IS00") in (heads_longer_than_body)

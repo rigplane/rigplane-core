@@ -35,7 +35,7 @@ from math import isfinite
 import os
 import signal
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 import time
 import uuid
@@ -124,6 +124,7 @@ from rigplane.core.radio_protocol import (  # noqa: E402
     PrivilegedTxApi,
     Radio,
     RadioIdentityStatus,
+    radio_audio_ready,
     serial_identity_hold,
 )
 from rigplane.core.tx_safety import TxOutcome, TxOwner, TxSource  # noqa: E402
@@ -863,6 +864,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=_get_env("ICOM_USB_TX_DEVICE") or None,
         metavar="NAME",
         help="USB audio TX device name, index or stable id HOSTAPI|endpoint-id / HOSTAPI|name:device-name for --backend serial (default: $ICOM_USB_TX_DEVICE or auto)",
+    )
+    p.add_argument(
+        "--usb-capture-mode",
+        dest="usb_capture_mode",
+        choices=["shared", "exclusive-preferred"],
+        default=_get_env("ICOM_USB_CAPTURE_MODE", "shared"),
+        metavar="MODE",
+        help="Windows capture mode of the radio's USB audio codec for --backend serial/yaesu-cat: shared (default; other programs can use the codec too, but Windows audio enhancements can silence radio audio) or exclusive-preferred (WASAPI exclusive, bypasses the enhancements, falls back to shared; other programs lose the codec while it runs) (default: $ICOM_USB_CAPTURE_MODE or shared)",
     )
     p.add_argument(
         "--list-audio-devices",
@@ -2190,6 +2199,7 @@ async def _build_backend_config(
             model=model_name,
             rx_device=getattr(args, "rx_device", None) or None,
             tx_device=getattr(args, "tx_device", None) or None,
+            capture_mode=getattr(args, "usb_capture_mode", "shared"),
         )
     if backend == "rigctld":
         if serial_port:
@@ -2229,6 +2239,7 @@ async def _build_backend_config(
             model=model_name,
             rx_device=getattr(args, "rx_device", None) or None,
             tx_device=getattr(args, "tx_device", None) or None,
+            capture_mode=getattr(args, "usb_capture_mode", "shared"),
             ptt_mode=getattr(args, "serial_ptt_mode", "civ"),
         )
     # LAN backend — auto-discover if host not set.
@@ -2359,9 +2370,20 @@ class _ShutdownBackstop:
         self._bound_s = bound_s
         self._releases: list[tuple[asyncio.Future[Any], str, float]] = []
         self._clock: asyncio.Task[None] | None = None
+        self._on_first_signal: Callable[[], asyncio.Task[None]] | None = None
+
+    def set_first_signal_release(
+        self, release: Callable[[], asyncio.Task[None]]
+    ) -> None:
+        self._on_first_signal = release
 
     def arm(self) -> None:
         if self._clock is None:
+            try:
+                if self._on_first_signal is not None:
+                    self._on_first_signal()
+            except Exception:
+                logger.exception("could not start managed TX shutdown on first signal")
             self._clock = asyncio.get_running_loop().create_task(
                 self._enforce(), name="shutdown-backstop"
             )
@@ -2374,7 +2396,7 @@ class _ShutdownBackstop:
         deadline = asyncio.get_running_loop().time() + bound_s
         self._releases.append((release, what, deadline))
 
-    async def _let_releases_finish(self) -> None:
+    async def wait_for_releases(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
             now = loop.time()
@@ -2391,7 +2413,7 @@ class _ShutdownBackstop:
 
     async def _enforce(self) -> None:
         await asyncio.sleep(self._bound_s)
-        await self._let_releases_finish()
+        await self.wait_for_releases()
         if self._shutdown_task.done():
             return
         me = asyncio.current_task()
@@ -2407,7 +2429,7 @@ class _ShutdownBackstop:
         )
         self._shutdown_task.cancel()
         await asyncio.sleep(_SHUTDOWN_FORCED_EXIT_GRACE_S)
-        await self._let_releases_finish()
+        await self.wait_for_releases()
         if self._shutdown_task.done():
             return
         logger.error(
@@ -2488,6 +2510,8 @@ class _ManagedTxRadioSession:
         self._composition = composition
         self._backstop = backstop
         self._shutdown_task: asyncio.Task[None] | None = None
+        if backstop is not None:
+            backstop.set_first_signal_release(self.begin_shutdown)
 
     async def __aenter__(self) -> Any:
         try:
@@ -2507,9 +2531,10 @@ class _ManagedTxRadioSession:
             await self._composition.transport_ready(entered)
         return entered
 
-    async def shutdown(self) -> None:
+    def begin_shutdown(self) -> asyncio.Task[None]:
         task = self._shutdown_task
         if task is None:
+            self._composition.authority.close_ingress_for_shutdown()
             task = asyncio.create_task(
                 _shutdown_managed_tx_composition(self._composition)
             )
@@ -2518,7 +2543,10 @@ class _ManagedTxRadioSession:
                 self._backstop.protect(
                     task, "managed TX shutdown", _MANAGED_TX_SHUTDOWN_S
                 )
-        await asyncio.shield(task)
+        return task
+
+    async def shutdown(self) -> None:
+        await asyncio.shield(self.begin_shutdown())
 
     async def __aexit__(self, *exc: object) -> bool:
         result = False
@@ -4741,19 +4769,6 @@ def _print_serial_baud_notice(radio: Radio) -> None:
         print(notice)
 
 
-def _serial_identity_holds(radio: Radio) -> bool:
-    """Whether the serial identity gate holds the connect (MOR-3081).
-
-    MOR-3078: delegates to the one shared predicate
-    (``core.radio_protocol: serial_identity_hold``) — checking/
-    no_response on a radio that is NOT connected. The connect-time read
-    is in flight or unanswered, so a radio-RX start — the audio
-    bridge's first demand — would be refused.
-    """
-
-    return serial_identity_hold(radio) is not None
-
-
 async def _cmd_web(
     radio: Radio,
     args: argparse.Namespace,
@@ -4911,18 +4926,21 @@ async def _cmd_web(
     # previous fail-hard behaviour.
     bridge_device = getattr(args, "web_bridge", None)
     bridge_info: str | None = None
-    if bridge_device == "auto" and _serial_identity_holds(radio):
-        # MOR-3081: the identity gate holds the open link, so the bridge's
-        # radio-RX start would be refused with an ERROR traceback. Skip
-        # the auto-start now; MOR-3078 arms ONE deferred attempt on the
-        # web application's lifetime that starts the bridge once the
-        # connect latches and the hold clears. An explicit
-        # --bridge=<DEVICE> keeps its fail-hard behaviour below.
+    if bridge_device == "auto" and not radio_audio_ready(radio):
+        # MOR-2922: the radio cannot serve the bridge's first demand yet
+        # — its port never opened (the MOR-2876 no-port start) or the
+        # identity gate holds the open link (MOR-3081) — so a radio-RX
+        # start now would be refused. Skip the auto-start; MOR-3078 arms
+        # ONE deferred attempt on the web application's lifetime that
+        # starts the bridge once the radio is connected and the hold
+        # clears. An explicit --bridge=<DEVICE> keeps its fail-hard
+        # behaviour below.
         logger.warning(
-            "audio bridge auto-start deferred: the radio has not answered "
-            "its identity read — the bridge starts once the radio answers"
+            "audio bridge auto-start deferred: the radio is not connected "
+            "or has not answered its identity read — the bridge starts "
+            "once the radio is ready"
         )
-        bridge_info = "deferred: radio not answering"
+        bridge_info = "deferred: radio not ready"
         server.defer_audio_bridge_start(
             device_name=None,
             tx_device_name=getattr(args, "web_bridge_tx_device", None),
@@ -5189,6 +5207,7 @@ async def _cmd_web(
                 on_started=_banner,
                 on_shutdown_signal=shutdown_backstop.arm,
                 on_tx_release=shutdown_backstop.protect,
+                before_cancel_all=shutdown_backstop.wait_for_releases,
             )
 
     try:
@@ -5234,6 +5253,8 @@ async def _cmd_web(
 async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     """Discover radios on LAN and/or serial ports."""
     from rigplane.discovery import (
+        RadioDiscoveryResult,
+        RadioDiscoveryResultDict,
         build_setup_discovery_payload,
         dedupe_radios,
         discover_lan_radios,
@@ -5284,17 +5305,12 @@ async def _cmd_discover(_radio: Radio | None, args: argparse.Namespace) -> int:
     else:
         lan_result, serial_result = results[0], []
 
-    import dataclasses
-
     lan_radios: list[dict[str, Any]] = (
         lan_result if not isinstance(lan_result, BaseException) else []
     )
     _serial_raw = serial_result if not isinstance(serial_result, BaseException) else []
-    serial_radios: list[dict[str, Any]] = [
-        dataclasses.asdict(r)
-        if dataclasses.is_dataclass(r) and not isinstance(r, type)
-        else r
-        for r in _serial_raw
+    serial_radios: list[RadioDiscoveryResultDict] = [
+        r.to_dict() if isinstance(r, RadioDiscoveryResult) else r for r in _serial_raw
     ]
 
     scan_failed = False

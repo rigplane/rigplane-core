@@ -266,6 +266,13 @@ logger = logging.getLogger(__name__)
 _AUDIO_CAPABILITIES = get_audio_capabilities()
 _DEFAULT_AUDIO_CODEC = _AUDIO_CAPABILITIES.default_codec
 _DEFAULT_AUDIO_SAMPLE_RATE = _AUDIO_CAPABILITIES.default_sample_rate_hz
+
+#: MOR-3888: answer window of a client's live read (``get_split(strict=True)``).
+#: Recorded serial answers arrive in tens of milliseconds
+#: (``rigplane_testkit/sim/profiles/ic7300.toml``: 30 ms), so half a second is
+#: far outside a healthy answer and short enough that a lost answer does not
+#: park another client's write behind it for the full 2 s window.
+_LIVE_READ_ANSWER_WINDOW_S = 0.5
 # Default TTLs (seconds) for the GET-command cache fallback paths.
 _DEFAULT_CACHE_TTL: dict[str, float] = {"freq": 10.0, "mode": 10.0, "rf_power": 30.0}
 
@@ -5029,9 +5036,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._check_connected()
         civ = self._commands.get_split(to_addr=self._radio_addr)
         try:
-            resp = await self._send_civ_expect(civ, label="get_split")
-        except (CommandError, TimeoutError):
+            resp = await self._send_civ_expect(
+                civ,
+                label="get_split",
+                # MOR-3888: a strict read is a client's live poll (rigctld
+                # ``s``). It shares the commander's single in-flight slot
+                # with other clients' writes, so a lost answer must not hold
+                # that slot for the whole 2 s window. The caller's timeout
+                # abandons just this read (commander #1188) after a window
+                # that recorded USB answers (30 ms) beat by a wide margin.
+                timeout=_LIVE_READ_ANSWER_WINDOW_S if strict else None,
+            )
+        except (CommandError, TimeoutError, asyncio.TimeoutError) as exc:
             if strict:
+                if isinstance(exc, asyncio.TimeoutError):
+                    # The caller's answer window (MOR-3888) expired: report it
+                    # as this library's timeout, like the 2 s CI-V window does.
+                    raise TimeoutError("No response for get_split") from exc
                 raise
             if self._last_split is not None:
                 logger.debug(
@@ -6367,12 +6388,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def set_memory_mode(self, channel: int, group: int | None = None) -> None:
         """Select a memory channel (1-101 on the IC-7610).
 
-        With ``group`` this selects a listed channel (MOR-3627) on a profile
-        whose ``[memory]`` section has ``recall = true`` and group+channel
-        addressing (IC-705): the memory group (``08 A0``), then the channel
-        (``08``), each answered with an ACK. It writes no memory contents and
-        sends no transmit-start command; the operating frequency and mode
-        become the stored channel's.
+        With ``group`` this recalls a channel (MOR-3627, MOR-4219) on a
+        profile whose ``[memory]`` section has ``recall = true``: the memory
+        group (``08 A0``, group+channel addressing only, IC-705), the channel
+        (``08`` + channel), then the Memory mode (bare ``08``). Selecting the
+        channel alone leaves the radio in the VFO mode; the bare ``08`` is
+        what puts it on the channel, and it comes last so the radio goes
+        straight to the requested channel and a refused select leaves it
+        untouched. Each frame must be answered with an ACK: a NAK raises
+        :class:`CommandRejectedError`, any other answer :class:`CommandError`.
+        A channel-addressed profile has the single group ``first_group``. It
+        writes no memory contents and sends no transmit-start command; the
+        operating frequency and mode become the stored channel's.
         """
         if group is None:
             if not 1 <= channel <= 101:
@@ -6385,24 +6412,34 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
             return
         memory = self._profile.memory
-        if memory is None or not memory.recall or memory.addressing != "group_channel":
+        if memory is None or not memory.recall:
             raise CommandError(f"{self._profile.model} does not support memory recall")
         self._check_connected()
-        frames = [
-            self._commands.build_memory_group_set(
-                memory, group, to_addr=self._radio_addr
-            ),
+        frames: list[bytes] = []
+        if memory.addressing == "group_channel":
+            frames.append(
+                self._commands.build_memory_group_set(
+                    memory, group, to_addr=self._radio_addr
+                )
+            )
+        elif group != memory.first_group:
+            raise ValueError(f"memory group must be {memory.first_group}, got {group}")
+        frames.append(
             self._commands.build_memory_mode_set(
                 channel, to_addr=self._radio_addr, memory=memory
-            ),
-        ]
+            )
+        )
+        frames.append(self._commands.build_memory_mode_select(to_addr=self._radio_addr))
         async with memory_slot_operation(self):
             for civ in frames:
                 resp = await self._send_civ_expect(civ, label="recall_memory_channel")
-                if parse_ack_nak(resp) is False:
-                    raise CommandError(
+                answer = parse_ack_nak(resp)
+                if answer is False:
+                    raise CommandRejectedError(
                         f"Radio rejected memory recall {group}/{channel}"
                     )
+                if answer is not True:
+                    raise CommandError("Expected ACK for memory recall")
 
     async def memory_write(self) -> None:
         """Write current VFO state to selected memory channel."""

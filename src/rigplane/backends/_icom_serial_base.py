@@ -34,6 +34,7 @@ from ..radio import CoreRadio
 from ..types import AudioCodec, ScopeCompletionPolicy, get_audio_capabilities
 
 if TYPE_CHECKING:
+    from ..audio.backend import CaptureMode
     from .discovery import SerialPortCandidate
     from .icom7610.drivers.serial_civ_link import SerialCivLink
     from .icom7610.drivers.serial_session import SerialSessionDriver
@@ -55,6 +56,20 @@ _TWO_CHANNEL_CODECS = {
 _ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 25.0
 _NON_ICOM_SERIAL_CIV_MIN_INTERVAL_MS = 50.0
 _SERIAL_SCOPE_MIN_BAUD = 115200
+
+
+def low_baud_scope_guidance() -> str:
+    """What to do when a CI-V serial radio runs below the scope baud.
+
+    One text for the backend's scope refusal and for serial discovery's
+    low-baud result (MOR-4207), so setup shows the same advice.
+    """
+    return (
+        f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud and is off at a "
+        f"lower speed: set CI-V USB Baud Rate to {_SERIAL_SCOPE_MIN_BAUD} "
+        "in the radio's CI-V menu (or restart the radio and connect "
+        "rigplane to it first), then connect again."
+    )
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -163,6 +178,7 @@ class _IcomSerialRadioBase(CoreRadio):
         audio_sample_rate: int = _DEFAULT_AUDIO_SAMPLE_RATE,
         rx_device: str | None = None,
         tx_device: str | None = None,
+        capture_mode: CaptureMode = "shared",
         ptt_mode: str = "civ",
         profile: "RadioProfile | str | None" = None,
         model: str | None = None,
@@ -195,7 +211,8 @@ class _IcomSerialRadioBase(CoreRadio):
         )
         self._serial_device = device
         self._serial_baudrate = baudrate
-        # MOR-3620: the baud the caller asked for, the bauds the connect-time
+        # MOR-3620: the baud the caller asked for (MOR-4207: a hint, tried
+        # right after the profile baud the connect opens at), the bauds the connect-time
         # sweep tried in vain, and the plain-words note when the radio
         # answered at another rate than configured.
         self._serial_configured_baudrate = baudrate
@@ -250,6 +267,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 sample_rate=audio_sample_rate,
                 channels=self._serial_audio_channels_for_codec(),
                 frame_ms=20,
+                capture_mode=capture_mode,
             ),
             serial_port=device,
             usb_identity=self._profile.usb_identity,
@@ -487,11 +505,14 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
         self._serial_deferred_audio = None
-        # MOR-3620: an owner connect starts at the configured baud again, so
-        # a restarted Auto radio relocks to it rather than to a past fallback.
+        # MOR-4207: an owner connect opens at the head of the connect order —
+        # the profile baud, not the configured one (a hint, tried next) — so
+        # a restarted Auto radio locks there rather than to a past fallback
+        # or a stale saved rate (MOR-3620).
         self.serial_baud_notice = None
-        if self._retune_serial_link(self._serial_configured_baudrate):
-            self._serial_baudrate = self._serial_configured_baudrate
+        first_baud = self._serial_connect_bauds()[0]
+        if self._retune_serial_link(first_baud):
+            self._serial_baudrate = first_baud
         self._conn_state = RadioConnectionState.CONNECTING
         self._civ_stream_ready = False
         self._civ_recovering = False
@@ -1013,6 +1034,14 @@ class _IcomSerialRadioBase(CoreRadio):
             self.last_error = None
         return status in (RadioIdentityStatus.VERIFIED, RadioIdentityStatus.UNVERIFIED)
 
+    def _serial_connect_bauds(self) -> tuple[int, ...]:
+        """This radio's connect order: profile baud, configured baud, the rest."""
+        from .discovery import serial_connect_baud_rates
+
+        return serial_connect_baud_rates(
+            "civ", self._profile.default_baud, self._serial_configured_baudrate
+        )
+
     def _retune_serial_link(self, baud: int) -> bool:
         """Retune the open link; False for links that cannot (bespoke doubles)."""
         retune = getattr(self._serial_civ_link, "set_baudrate", None)
@@ -1051,29 +1080,26 @@ class _IcomSerialRadioBase(CoreRadio):
                 "override is on, so it is attempted at this speed but may "
                 "time out."
             )
-        return (
-            f"The scope needs {_SERIAL_SCOPE_MIN_BAUD} baud and is off at a "
-            f"lower speed: set CI-V USB Baud Rate to {_SERIAL_SCOPE_MIN_BAUD} "
-            "in the radio's CI-V menu (or restart the radio and connect "
-            "rigplane to it first), then connect again."
-        )
+        return low_baud_scope_guidance()
 
     async def _sweep_serial_baud(
         self, epoch: int, owner_stop_epoch: int
     ) -> bytes | None:
-        """Retry the identity read at the other documented bauds, once each.
+        """Retry the identity read at the rest of the connect order, once each.
 
         MOR-3620: an Icom radio on ``CI-V USB Baud Rate = Auto`` keeps the
         speed of the first host that talks to it, so silence at the current
         baud is often the radio answering at another one. Runs on the open
         link (the port is retuned in place, never reopened), reads only
-        ``19 00`` and stops at the first answer, keeping that baud. Without
+        ``19 00`` and stops at the first answer, keeping that baud. The order
+        is :meth:`_serial_connect_bauds` (MOR-4207): the configured baud
+        right after the profile baud the link opened at. Without
         an answer — also on cancellation or an error — the starting baud is
         put back unless the port refuses the return (then it stays where it
         is and warns), unless the attempt was retired meanwhile (its link then
         belongs to the successor). Returns the answered payload, or ``None``.
         """
-        from .discovery import SERIAL_PROBE_BAUD_RATES
+        from .discovery import sweep_serial_bauds
 
         def retired() -> bool:
             return (
@@ -1089,24 +1115,27 @@ class _IcomSerialRadioBase(CoreRadio):
             return None
         start = self._serial_baudrate
         payload: bytes | None = None
+
+        async def heard_at(baud: int) -> bool:
+            nonlocal payload
+            self._serial_baudrate = baud
+            self._serial_bauds_tried += (baud,)
+            payload = await self._read_serial_identity_payload()
+            # A retired attempt stops here too; a NAK keeps this baud for the
+            # hold (heard, not silent).
+            return (
+                retired() or payload is not None or self._serial_identity_read_refused
+            )
+
         try:
-            for baud in SERIAL_PROBE_BAUD_RATES:
-                if baud == start:
-                    continue
-                if retired() or not link.connected or not link.healthy:
-                    return None
-                if not self._retune_serial_link(baud):
-                    if retired() or not link.connected or not link.healthy:
-                        return None
-                    continue
-                self._serial_baudrate = baud
-                self._serial_bauds_tried += (baud,)
-                payload = await self._read_serial_identity_payload()
-                if retired():
-                    return None
-                if payload is not None or self._serial_identity_read_refused:
-                    return payload  # heard: a NAK keeps this baud for the hold too
-            return None
+            await sweep_serial_bauds(
+                self._serial_connect_bauds(),
+                start=start,
+                retune=self._retune_serial_link,
+                heard_at=heard_at,
+                usable=lambda: not retired() and link.connected and link.healthy,
+            )
+            return None if retired() else payload
         finally:
             if (
                 payload is None
@@ -1670,7 +1699,18 @@ class _IcomSerialRadioBase(CoreRadio):
 
         def _on_pcm_frame(pcm_frame: bytes) -> None:
             # PortAudio thread: schedule delivery; packet work runs on the
-            # owner loop (MOR-2465).
+            # owner loop (MOR-2465). Already on the owner loop (fake
+            # backends, the UsbAudioDriver's coalesced drain): deliver
+            # inline — call_soon_threadsafe from the loop itself still pays
+            # the self-pipe write, which is the per-frame wake-up MOR-4227
+            # removes.
+            try:
+                on_owner_loop = asyncio.get_running_loop() is owner_loop
+            except RuntimeError:
+                on_owner_loop = False
+            if on_owner_loop:
+                _deliver_rx_frame(pcm_frame)
+                return
             owner_loop.call_soon_threadsafe(_deliver_rx_frame, pcm_frame)
 
         # Arm delivery identity and the user callback before the await:

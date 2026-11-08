@@ -24,6 +24,7 @@ from rigplane.profiles import get_radio_profile
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
+from rigplane.backends.yaesu_cat.radio import FilterWidthReading
 
 # (store path, public fieldStatus key, expected value) for the five TX controls.
 _TX_CONTROL_CASES = (
@@ -62,9 +63,15 @@ _DSP_CONTROL_CASES = (
 
 # (store path, public fieldStatus key, expected value) for filter_width
 # (MOR-445). It is a ``freq_mode`` ACTIVE-slot field, emitted in the freq/mode
-# (medium) lane rather than the slow-control lane.
+# (medium) lane rather than the slow-control lane. MOR-3677 adds the
+# radio-default flag twin, published by the same SH read.
 _FILTER_WIDTH_CASES = (
     ("receiver.main.active.freq_mode.filter_width", "main.filterWidth", 500),
+    (
+        "receiver.main.active.freq_mode.filter_width_radio_default",
+        "main.filterWidthRadioDefault",
+        False,
+    ),
 )
 
 # (store path, public fieldStatus key, expected value) for the MAIN-only NB/NR
@@ -226,7 +233,9 @@ def _make_radio() -> MagicMock:
     radio.read_transmit_state = AsyncMock(
         return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
     )
-    radio.read_filter_width = AsyncMock(return_value=500)
+    radio.read_filter_width_reading = AsyncMock(
+        return_value=FilterWidthReading(500, False)
+    )
     radio.read_if_shift = AsyncMock(return_value=200)
     radio.read_narrow = AsyncMock(return_value=True)
     # NB/NR levels + derived toggles, auto/manual notch + manual notch freq

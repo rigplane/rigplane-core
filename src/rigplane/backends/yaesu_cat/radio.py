@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
 
@@ -49,7 +50,13 @@ from ...runtime.managed_tx_state import (
 )
 from ...types import AudioCodec, BreakInMode, Mode, RepeaterShiftDirection
 from .memory import memory_entry_from_cat
-from .parser import CatCommandParser, CatParseError, format_command, is_data_mode
+from .parser import (
+    CatCommandParser,
+    CatParseError,
+    format_command,
+    is_data_mode,
+    literal_head,
+)
 from .transport import (
     CatCommandRejected,
     CatTimeoutError,
@@ -59,6 +66,7 @@ from .transport import (
 
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
+    from ...audio.backend import CaptureMode
     from ...audio.session import AudioSession
     from ...audio.usb_driver import UsbAudioDriver
     from ...audio_bus import AudioBus
@@ -68,7 +76,7 @@ if TYPE_CHECKING:
     from ...types import BandStackRegister, MemoryChannel
     from .poller import YaesuCatPoller
 
-__all__ = ["YaesuCatRadio"]
+__all__ = ["FilterWidthReading", "YaesuCatRadio"]
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +161,28 @@ def _load_config(profile: Any) -> "RigConfig":
 from ...meter_cal import MeterType, interpolate_swr as _interpolate_swr  # noqa: E402
 
 
+@dataclass(frozen=True, slots=True)
+class FilterWidthReading:
+    """One decoded SH width answer (MOR-3677).
+
+    ``hz`` is the decoded passband, or ``None`` when the answer carries no
+    Hz value. ``radio_default`` is true exactly when the answer IS the
+    profile-declared ``filter_width_radio_default_code`` (FTX-1 Table 5 code
+    00, the mode-dependent "(Default)") — so a null ``hz`` splits honestly
+    into "the radio uses its own default" (true) versus "no Hz for another
+    reason: no table row, out-of-table code" (false).
+
+    This observation value shares its snake_case name with the
+    ``filter_width_radio_default`` CAPABILITY tag, which is a different
+    namespace: the tag means "the reset command is writeable"
+    (``core/capabilities.py``), this flag means "the last read WAS the
+    radio default".
+    """
+
+    hz: int | None
+    radio_default: bool
+
+
 class YaesuCatRadio:
     """Radio backend for Yaesu FTX-1 (and compatible) transceivers.
 
@@ -202,6 +232,7 @@ class YaesuCatRadio:
         tx_device: str | None = None,
         audio_sample_rate: int = 48000,
         audio_driver: UsbAudioDriver | None = None,
+        capture_mode: CaptureMode = "shared",
         tx_abort_fence: TxAbortFence | None = None,
     ) -> None:
         """Create a YaesuCatRadio instance.
@@ -212,6 +243,8 @@ class YaesuCatRadio:
             profile: Rig profile name (``"ftx1"``) or a loaded ``RigConfig``.
             rx_device: USB audio input device name for RX audio capture.
             tx_device: USB audio output device name for TX audio playback.
+            capture_mode: Windows capture mode of the USB codec, ``"shared"``
+                (default) or ``"exclusive-preferred"`` (MOR-4030).
             audio_sample_rate: Audio sample rate in Hz (default 48000).
             audio_driver: Optional pre-constructed UsbAudioDriver (for testing).
             tx_abort_fence: Runtime-owned fence for local CW/tuner work. Calls
@@ -229,7 +262,28 @@ class YaesuCatRadio:
         self._cw_text_generation = 0
         self._tuner_provider_generation: Callable[[], int] | None = None
         self._device = device
-        self._transport = YaesuCatTransport(device=device, baudrate=baudrate)
+        # MOR-4207: the baud the caller passed (``--serial-baud``, a saved
+        # route) is a hint, tried right after the profile baud the connect
+        # opens at (``discovery.serial_connect_baud_rates``).
+        self._serial_configured_baudrate = baudrate
+        # MOR-3677: the reply-line vocabulary this profile declares — the
+        # literal head of every parse template. The transport pairs a data
+        # reply with the whole request body, widened by any declared head
+        # that is a prefix of it. Only get_s_meter_sub needs the widening
+        # ("SM{receiver}…" is the data that says "SM1;" is answered
+        # "SM0…" — the radio echoes the side digit as 0); the selector-
+        # parameterised reads (RM/CT/CN/OS/MR/MT) keep their verb-level
+        # heads, which preserves exactly today's acceptance for them, and
+        # every other head restates its request and adds nothing.
+        reply_heads = {
+            literal_head(spec.parse).rstrip(";")
+            for spec in self._config.commands.values()
+            if isinstance(spec, CatCommandSpec) and spec.parse
+        }
+        reply_heads.discard("")
+        self._transport = YaesuCatTransport(
+            device=device, baudrate=baudrate, reply_heads=frozenset(reply_heads)
+        )
         self._state = RadioState()
         self._audio_bus: AudioBus | None = None
         self._audio_session: AudioSession | None = None
@@ -252,6 +306,7 @@ class YaesuCatRadio:
                     tx_device=tx_device,
                     sample_rate=audio_sample_rate,
                     channels=1,
+                    capture_mode=capture_mode,
                     # The FTX-1 presents USB RX audio on the LEFT channel only;
                     # the profile's [audio].rx_audio_channel selects which
                     # channel the stereo→mono downmix keeps at full level
@@ -358,6 +413,10 @@ class YaesuCatRadio:
         self._cancel_identity_reread()
         self._identity_generation += 1
         generation = self._identity_generation
+        # MOR-4207: the first open and the first byte at the head of the
+        # connect order (the profile baud); the rest is asked on silence.
+        connect_bauds = self._serial_connect_bauds()
+        self._transport.set_baudrate(connect_bauds[0])
         await self._transport.connect()
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING,
@@ -366,6 +425,8 @@ class YaesuCatRadio:
         self._identity_gate_running = True
         try:
             answered = await self._read_identity_answer()
+            if answered is None:
+                answered = await self._sweep_identity_bauds(connect_bauds, generation)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -513,6 +574,61 @@ class YaesuCatRadio:
             and self._transport.connected
             and self._identity_hold_has_owner()
         )
+
+    def _serial_connect_bauds(self) -> tuple[int, ...]:
+        """This radio's connect order: profile baud, configured baud, the rest."""
+        from ..discovery import serial_connect_baud_rates
+
+        return serial_connect_baud_rates(
+            "yaesu_cat", self.profile.default_baud, self._serial_configured_baudrate
+        )
+
+    async def _sweep_identity_bauds(
+        self, bauds: tuple[int, ...], generation: int
+    ) -> str | None:
+        """Ask ``ID;`` at the rest of the connect order on the open port (MOR-4207).
+
+        Yaesu CAT has no auto-baud: the profile-baud attempt before the
+        configured one is one read timeout on a radio set to another rate.
+        The port is retuned in place (``discovery.sweep_serial_bauds``, the
+        Icom connect's search too) and keeps the baud that answers. Without
+        an answer the starting baud is put back for the hold's re-reads,
+        unless the attempt was retired meanwhile.
+        """
+        from ..discovery import sweep_serial_bauds
+
+        transport = self._transport
+        start = transport.baudrate
+        answered: str | None = None
+
+        def retired() -> bool:
+            return generation != self._identity_generation
+
+        async def heard_at(_baud: int) -> bool:
+            nonlocal answered
+            answered = await self._read_identity_answer()
+            return retired() or answered is not None
+
+        try:
+            found = await sweep_serial_bauds(
+                bauds,
+                start=start,
+                retune=transport.set_baudrate,
+                heard_at=heard_at,
+                usable=lambda: not retired() and transport.connected,
+            )
+            if found is not None and answered is not None:
+                logger.info(
+                    "rigplane (%s): %s answered at %d baud (configured %d)",
+                    self.model,
+                    self._device,
+                    found,
+                    self._serial_configured_baudrate,
+                )
+            return answered
+        finally:
+            if answered is None and not retired() and transport.baudrate != start:
+                transport.set_baudrate(start)
 
     async def _read_identity_answer(self) -> str | None:
         """Send the profile's ``get_id`` read; ``None`` means no usable answer.
@@ -742,6 +858,11 @@ class YaesuCatRadio:
         if self._profile_cache is None:
             self._profile_cache = self._config.to_profile()
         return self._profile_cache
+
+    @property
+    def serial_baudrate(self) -> int:
+        """The baud the port runs at: the profile baud, or the one that answered."""
+        return self._transport.baudrate
 
     @property
     def radio_state(self) -> RadioState:
@@ -2502,10 +2623,10 @@ class YaesuCatRadio:
             return rule.table
         return None
 
-    async def read_filter_width(
+    async def read_filter_width_reading(
         self, receiver: int = 0, mode: str | None = None
-    ) -> int | None:
-        """Read filter width in Hz (SH0/SH1) without mutating legacy state.
+    ) -> FilterWidthReading:
+        """Read the SH width answer as Hz plus the radio-default flag (MOR-3677).
 
         Translates the radio's table-index code to Hz using the active
         profile's filter rule for the radio's CURRENT mode. The width table is
@@ -2515,6 +2636,11 @@ class YaesuCatRadio:
         stale and would select the wrong table, leaking the raw SH code as the
         "Hz" value (MOR-507).
 
+        A code-00 "(Default)" answer carries no Hz value (bench: ``MD0C;
+        SH0000;`` in DATA-U, ``MD03; SH0000;`` in CW-U) and reads back as
+        ``(None, True)``; any other answer without a Hz value (no Table 5
+        row, out-of-table code) reads back as ``(None, False)``.
+
         Args:
             receiver: 0=MAIN, 1=SUB.
             mode: The radio's current mode name. When provided (the poll path
@@ -2523,9 +2649,7 @@ class YaesuCatRadio:
                 (other call sites), the mode is read fresh via ``read_mode``.
 
         Returns:
-            Filter width in Hz, or ``None`` when the answer carries no Hz
-            value: a mode with no Table 5 width row (C4FM), the code-00
-            "(Default)" answer, or a code outside the table.
+            The decoded reading; never mutates legacy state.
         """
         if mode is None and self.profile.filter_width_encoding == "table_index":
             mode, _ = await self.read_mode(receiver)
@@ -2538,20 +2662,47 @@ class YaesuCatRadio:
             else None
         )
         if rule and rule.fixed and rule.defaults:
-            return int(rule.defaults[0])
+            return FilterWidthReading(hz=int(rule.defaults[0]), radio_default=False)
+        default_code = self.profile.filter_width_radio_default_code
+        if default_code is not None and code == default_code:
+            return FilterWidthReading(hz=None, radio_default=True)
         table = self._filter_width_table(mode)
         if table is None:
-            return None
+            return FilterWidthReading(hz=None, radio_default=False)
         try:
             # Table 5 codes count from ``first_code``; codes below it (the
             # code-00 "(Default)") are outside the 0-based codec table.
-            return int(
-                table_index_to_hz(
-                    code - self.profile.filter_width_first_code, table=table
-                )
+            return FilterWidthReading(
+                hz=int(
+                    table_index_to_hz(
+                        code - self.profile.filter_width_first_code, table=table
+                    )
+                ),
+                radio_default=False,
             )
         except ValueError:
-            return None
+            return FilterWidthReading(hz=None, radio_default=False)
+
+    async def read_filter_width(
+        self, receiver: int = 0, mode: str | None = None
+    ) -> int | None:
+        """Read filter width in Hz (SH0/SH1) without mutating legacy state.
+
+        The Hz projection of :meth:`read_filter_width_reading` — kept so
+        ``get_filter_width`` and profiles without the radio-default flag
+        keep their single-value read.
+
+        Args:
+            receiver: 0=MAIN, 1=SUB.
+            mode: The radio's current mode name (see
+                :meth:`read_filter_width_reading`).
+
+        Returns:
+            Filter width in Hz, or ``None`` when the answer carries no Hz
+            value: a mode with no Table 5 width row (C4FM), the code-00
+            "(Default)" answer, or a code outside the table.
+        """
+        return (await self.read_filter_width_reading(receiver, mode=mode)).hz
 
     async def get_filter_width(self, receiver: int = 0) -> int | None:
         """Get filter width in Hz (SH0/SH1).
@@ -2605,11 +2756,12 @@ class YaesuCatRadio:
         (FTX-1 2508-C Table 5 code 00, the mode-dependent "(Default)")
         through the same ``set_filter_width``/``set_filter_width_sub`` CAT
         command a Hz write uses — no mode query, no Hz translation: the
-        radio itself resolves the code to the current mode's default width,
-        and the next ``read_filter_width`` answers the RESOLVED code's Hz
-        value (a post-write read never answers 00; bench probe 2026-09-22).
-        Profiles without the field refuse with the same ``CommandError``
-        style as ``set_filter_width``'s unsupported paths.
+        radio itself resolves the code to the current mode's default width.
+        The next read answers either the RESOLVED code's Hz value (MAIN USB,
+        bench probe 2026-09-22) or 00 itself (DATA-U/CW-U, MOR-3677 bench);
+        :meth:`read_filter_width_reading` reports the latter as
+        ``(None, True)``. Profiles without the field refuse with the same
+        ``CommandError`` style as ``set_filter_width``'s unsupported paths.
         """
         code = self.profile.filter_width_radio_default_code
         if code is None:

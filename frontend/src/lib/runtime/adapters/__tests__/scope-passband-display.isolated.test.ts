@@ -7,6 +7,7 @@ import { resolveLcdSpectrumFrame } from '../../../../skins/segmentline/lcd-displ
 import { qualifyScopeFrameEnvelope, toScopeDisplayFrame, toSpectrumAuthority } from '../scope-adapter';
 import { toRadioViewModel } from '../radio-view-model-adapter';
 import { IC7300_CAPABILITIES } from './fixtures/ic7300-profile';
+import { editCaps, editState } from '../../../transport/__tests__/support/state-edit';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplayInput, type ScopePassbandDisplayState } from '../scope-passband-display';
 
@@ -72,15 +73,28 @@ function receipt(input: ScopePassbandDisplayInput, sequence = 1, overrides: Reco
   input.frame = Object.freeze({ envelope, authority, resolution: resolveLcdSpectrumFrame(
     toScopeDisplayFrame(envelope, authority), { source: 'hardware', receiver: input.selection!.receiver }) });
 }
+/**
+ * MOR-4213: a change reaches the projector the way production delivers it —
+ * a NEW state snapshot built by the client's delta applier, a NEW capabilities
+ * body — never an in-place edit of the snapshot it already saw.
+ */
+function edit(input: ScopePassbandDisplayInput, change: (state: ServerState) => void): void {
+  input.state = editState(input.state!, change);
+}
+function editCapabilities(input: ScopePassbandDisplayInput, change: (caps: Capabilities) => void): void {
+  input.caps = editCaps(input.caps!, change);
+}
 function status(input: ScopePassbandDisplayInput, path: string, patch: Partial<FieldStatus>): void {
-  Object.assign(input.state!.fieldStatus![path], patch);
+  edit(input, (s) => { Object.assign(s.fieldStatus![path], patch); });
 }
 function stale(input: ScopePassbandDisplayInput, path: string): void {
   status(input, path, { freshness: 'stale', availability: 'stale' });
 }
 function renew(input: ScopePassbandDisplayInput, marker = 11, sequence = 2): void {
-  for (const leaf of Object.values(input.state!.fieldStatus!)) Object.assign(leaf,
-    { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: marker });
+  edit(input, (s) => {
+    for (const leaf of Object.values(s.fieldStatus!)) Object.assign(leaf,
+      { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: marker });
+  });
   const f = input.frame?.envelope?.frame;
   receipt(input, sequence, f ? { mode: f.mode, startFreq: f.startFreq, endFreq: f.endFreq } : {});
 }
@@ -91,54 +105,64 @@ function tuple(result: ScopePassbandDisplayState) {
   return result.display.tuple;
 }
 function pbt(input: ScopePassbandDisplayInput): void {
-  input.caps!.capabilities = input.caps!.capabilities.filter((tag) => tag !== 'if_shift').concat('pbt');
+  editCapabilities(input, (c) => {
+    c.capabilities = c.capabilities.filter((tag) => tag !== 'if_shift').concat('pbt');
+  });
 }
 /** MOR-2513: wire leaves are nullable; the transition fixtures carry an
  * observed frequency — throw (never fabricate) if that ever changes. */
 function nudgeFrequency(input: ScopePassbandDisplayInput, delta = 100): void {
-  const rx = input.state?.main;
-  if (typeof rx?.freqHz !== 'number') throw new Error('fixture main.freqHz observed');
-  rx.freqHz += delta;
+  edit(input, (s) => {
+    const rx = s.main;
+    if (typeof rx?.freqHz !== 'number') throw new Error('fixture main.freqHz observed');
+    rx.freqHz += delta;
+  });
 }
 function slotted(input: ScopePassbandDisplayInput): void {
-  input.caps!.vfoScheme = 'ab'; input.selection = { receiver: 'MAIN', slot: 'A' };
+  editCapabilities(input, (c) => { c.vfoScheme = 'ab'; }); input.selection = { receiver: 'MAIN', slot: 'A' };
+}
+
+function dual(input: ScopePassbandDisplayInput): void {
+  editCapabilities(input, (c) => {
+    c.vfoScheme = 'ab_shared'; c.receivers = 2; c.capabilities = [...c.capabilities, 'dual_rx'];
+  });
 }
 
 function banded(): ScopePassbandDisplayInput {
   const input = fixture(); slotted(input); pbt(input);
-  input.caps!.freqRanges = structuredClone(IC7300_CAPABILITIES.freqRanges);
+  editCapabilities(input, (c) => { c.freqRanges = structuredClone(IC7300_CAPABILITIES.freqRanges); });
   receipt(input, 1, { startFreq: 14_024_000, endFreq: 14_124_000 });
   return input;
 }
 function tune(input: ScopePassbandDisplayInput, frequency: number, marker: number, mirror = true): void {
-  input.state!.main!.vfoA!.freqHz = frequency;
+  edit(input, (s) => { s.main!.vfoA!.freqHz = frequency; });
   status(input, 'main.vfoA.freqHz', { lastObservedMonotonic: marker });
   if (mirror) {
-    input.state!.main!.freqHz = frequency;
+    edit(input, (s) => { s.main!.freqHz = frequency; });
     status(input, 'main.freqHz', { lastObservedMonotonic: marker });
   }
 }
 
 describe('confirmed VFO selection recovery (MOR-2441)', () => {
   function select(input: ScopePassbandDisplayInput, slot: 'A' | 'B', marker: number): void {
-    input.selection!.slot = slot; input.state!.main!.activeSlot = slot;
+    input.selection!.slot = slot; edit(input, (s) => { s.main!.activeSlot = slot; });
     status(input, 'main.activeSlot', { lastObservedMonotonic: marker });
   }
   it.each(['batched', 'width-first', 'tuple-first'])(
     'captures the first complete post-selection geometry: %s', (order) => {
       const input = banded(); let result = project(input);
       select(input, 'B', 20);
-      const rx = input.state!.main!;
-      rx.vfoB!.freqHz = 14_090_000;
+      edit(input, (s) => { s.main!.vfoB!.freqHz = 14_090_000; });
       status(input, 'main.vfoB.freqHz', { observed: false });
       if (order !== 'tuple-first') {
-        rx.filterWidth = 1800; status(input, 'main.filterWidth', { lastObservedMonotonic: 20.1 });
+        edit(input, (s) => { s.main!.filterWidth = 1800; });
+        status(input, 'main.filterWidth', { lastObservedMonotonic: 20.1 });
       }
       if (order !== 'batched') {
         receipt(input, 2); result = project(input, result);
         expect(result.display.state).toBe('unknown');
       }
-      rx.freqHz = rx.vfoB!.freqHz;
+      edit(input, (s) => { s.main!.freqHz = s.main!.vfoB!.freqHz; });
       status(input, 'main.vfoB.freqHz', { observed: true, lastObservedMonotonic: 20.2 });
       status(input, 'main.freqHz', { lastObservedMonotonic: 20.2 });
       if (order === 'batched') {
@@ -149,7 +173,7 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
       if (order !== 'batched') {
         expect(result.display.state).toBe('unknown');
         status(input, 'main.activeSlot', { lastObservedMonotonic: 21 });
-        rx.filterWidth = 1800;
+        edit(input, (s) => { s.main!.filterWidth = 1800; });
         if (order === 'tuple-first') status(input, 'main.filterWidth', { lastObservedMonotonic: 20.4 });
         for (const [index, leaf] of ['pbtInner', 'pbtOuter'].entries()) {
           status(input, `main.${leaf}`, { lastObservedMonotonic: 20.5 + index / 10 });
@@ -167,12 +191,14 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
       select(input, 'B', 20); receipt(input, 2); result = project(input, result);
       status(input, 'main.filterWidth', { lastObservedMonotonic: 20.1 });
       receipt(input, 3); result = project(input, result);
-      const rx = input.state!.main!;
-      if (change === 'mode') { rx.mode = rx.vfoB!.mode = 'LSB'; status(input, 'main.mode', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.mode', { lastObservedMonotonic: 21 }); }
-      if (change === 'filter') { rx.filter = rx.vfoB!.filterNum = 2; status(input, 'main.filter', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.filterNum', { lastObservedMonotonic: 21 }); }
-      if (change === 'DATA') { rx.dataMode = 1; status(input, 'main.dataMode', { lastObservedMonotonic: 21 }); }
+      if (change === 'mode') { edit(input, (s) => { s.main!.mode = s.main!.vfoB!.mode = 'LSB'; }); status(input, 'main.mode', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.mode', { lastObservedMonotonic: 21 }); }
+      if (change === 'filter') { edit(input, (s) => { s.main!.filter = s.main!.vfoB!.filterNum = 2; }); status(input, 'main.filter', { lastObservedMonotonic: 21 }); status(input, 'main.vfoB.filterNum', { lastObservedMonotonic: 21 }); }
+      if (change === 'DATA') { edit(input, (s) => { s.main!.dataMode = 1; }); status(input, 'main.dataMode', { lastObservedMonotonic: 21 }); }
       if (change === 'session') input.session!.epoch = 2;
-      if (change === 'provider') { input.state!.providerGeneration = 2; input.caps!.providerGeneration = 2; }
+      if (change === 'provider') {
+        edit(input, (s) => { s.providerGeneration = 2; });
+        editCapabilities(input, (c) => { c.providerGeneration = 2; });
+      }
       if (change === 'regression') status(input, 'main.activeSlot', { lastObservedMonotonic: 19 });
       receipt(input, 4, change === 'frame' ? { mode: 1 } : {});
       result = project(input, result); expect(result.display.state).toBe('unknown');
@@ -187,8 +213,7 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
     status(input, 'main.filterWidth', { lastObservedMonotonic: 20.1 });
     receipt(input, 3); result = project(input, result);
     expect(result.selectionRecovery).not.toBeNull();
-    const rx = input.state!.main!;
-    rx.freqHz = rx.vfoB!.freqHz = 14_367_000;
+    edit(input, (s) => { s.main!.freqHz = s.main!.vfoB!.freqHz = 14_367_000; });
     status(input, 'main.freqHz', { lastObservedMonotonic: 21 });
     status(input, 'main.vfoB.freqHz', { lastObservedMonotonic: 21 });
     receipt(input, 4, { startFreq: 14_317_000, endFreq: 14_417_000 });
@@ -204,7 +229,7 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
   it('requires the selected axis and retires invalid frames during recovery', () => {
     const input = banded(); let result = project(input);
     select(input, 'B', 20);
-    input.state!.main!.freqHz = input.state!.main!.vfoB!.freqHz = 14_090_000;
+    edit(input, (s) => { s.main!.freqHz = s.main!.vfoB!.freqHz = 14_090_000; });
     for (const path of ['main.freqHz', 'main.vfoB.freqHz', 'main.filterWidth', 'main.pbtInner', 'main.pbtOuter']) {
       status(input, path, { lastObservedMonotonic: 20.1 });
     }
@@ -313,7 +338,7 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
   it.each(['slot-first', 'active-first'])('survives %s frequency acknowledgments and lagging CENTER frames', (order) => {
     const input = banded(); let result = project(input);
     if (order === 'slot-first') tune(input, 14_075_000, 11, false);
-    else { input.state!.main!.freqHz = 14_075_000; status(input, 'main.freqHz', { lastObservedMonotonic: 11 }); }
+    else { edit(input, (s) => { s.main!.freqHz = 14_075_000; }); status(input, 'main.freqHz', { lastObservedMonotonic: 11 }); }
     result = project(input, result);
     expect(result.display.state).toBe('stale'); expect(tuple(result).frequencyHz).toBe(14_075_000);
     tune(input, 14_075_000, 12); result = project(input, result);
@@ -324,7 +349,7 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
   });
   it('ignores pending targets and holds rather than follows a stale frequency observation', () => {
     const input = banded(); const current = project(input);
-    Object.assign(input.state!, { pending: { frequencyHz: 14_090_000 } });
+    edit(input, (s) => { Object.assign(s, { pending: { frequencyHz: 14_090_000 } }); });
     expect(tuple(project(input, current)).frequencyHz).toBe(14_074_000);
     tune(input, 14_075_000, 11); stale(input, 'main.vfoA.freqHz');
     const held = project(input, current);
@@ -332,18 +357,21 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     expect(tuple(held).frequencyHz).toBe(14_074_000);
   });
   const hard: [string, (i: ScopePassbandDisplayInput) => void][] = [
-    ['provider', (i) => { i.state!.providerGeneration = 2; i.caps!.providerGeneration = 2; receipt(i, 3); }],
-    ['caps', (i) => { i.caps!.filterWidthMax = 9000; }],
+    ['provider', (i) => {
+      edit(i, (s) => { s.providerGeneration = 2; });
+      editCapabilities(i, (c) => { c.providerGeneration = 2; }); receipt(i, 3);
+    }],
+    ['caps', (i) => { editCapabilities(i, (c) => { c.filterWidthMax = 9000; }); }],
     ['control epoch', (i) => { i.session!.epoch = 2; }],
     ['scope epoch', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, transportEpoch: 2 } }; }],
-    ['receiver', (i) => { i.state!.active = 'SUB'; }],
-    ['slot', (i) => { i.selection!.slot = 'B'; i.state!.main!.activeSlot = 'B'; status(i, 'main.activeSlot', { lastObservedMonotonic: 12 }); }],
-    ['mode', (i) => { i.state!.main!.mode = 'LSB'; i.state!.main!.vfoA!.mode = 'LSB'; status(i, 'main.mode', { lastObservedMonotonic: 12 }); status(i, 'main.vfoA.mode', { lastObservedMonotonic: 12 }); }],
-    ['filter', (i) => { i.state!.main!.filter = 2; i.state!.main!.vfoA!.filterNum = 2; status(i, 'main.filter', { lastObservedMonotonic: 12 }); status(i, 'main.vfoA.filterNum', { lastObservedMonotonic: 12 }); }],
-    ['DATA', (i) => { i.state!.main!.dataMode = 1; status(i, 'main.dataMode', { lastObservedMonotonic: 12 }); }],
+    ['receiver', (i) => { edit(i, (s) => { s.active = 'SUB'; }); }],
+    ['slot', (i) => { i.selection!.slot = 'B'; edit(i, (s) => { s.main!.activeSlot = 'B'; }); status(i, 'main.activeSlot', { lastObservedMonotonic: 12 }); }],
+    ['mode', (i) => { edit(i, (s) => { s.main!.mode = 'LSB'; s.main!.vfoA!.mode = 'LSB'; }); status(i, 'main.mode', { lastObservedMonotonic: 12 }); status(i, 'main.vfoA.mode', { lastObservedMonotonic: 12 }); }],
+    ['filter', (i) => { edit(i, (s) => { s.main!.filter = 2; s.main!.vfoA!.filterNum = 2; }); status(i, 'main.filter', { lastObservedMonotonic: 12 }); status(i, 'main.vfoA.filterNum', { lastObservedMonotonic: 12 }); }],
+    ['DATA', (i) => { edit(i, (s) => { s.main!.dataMode = 1; }); status(i, 'main.dataMode', { lastObservedMonotonic: 12 }); }],
     ['frame mode', (i) => receipt(i, 3, { mode: 1 })],
     ['span', (i) => receipt(i, 3, { endFreq: 14_200_000 })],
-    ['band definitions', (i) => { i.caps!.freqRanges[0].bands![5].end += 100; }],
+    ['band definitions', (i) => { editCapabilities(i, (c) => { c.freqRanges[0].bands![5].end += 100; }); }],
     ['null frame', (i) => { i.frame = null; }],
     ['500ms frame silence', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, nowMonotonic: 500 } }; }],
     ['off', (i) => { i.frame = { ...i.frame!, authority: { ...i.frame!.authority, demanded: false } }; }],
@@ -370,7 +398,7 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     // lattice can be formed from. The subject here is continuity across a
     // partial change, not the width domain; the width domain is pinned by
     // 'refuses a PBT reading at a width off the 50 Hz lattice' below.
-    input.state!.main![leaf]! += leaf === 'filterWidth' ? 50 : 10;
+    edit(input, (s) => { s.main![leaf]! += leaf === 'filterWidth' ? 50 : 10; });
     status(input, `main.${leaf}`, { lastObservedMonotonic: 15 });
     result = project(input, result); expect(result.display.state).toBe('unknown');
     receipt(input, 3); result = project(input, result); expect(result.display.state).toBe('unknown');
@@ -484,14 +512,13 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
     let result = project(input);
     expect(result.display.state).toBe('current');
 
-    const rx = input.state!.main!;
-    rx.mode = rx.vfoA!.mode = 'LSB';
+    edit(input, (s) => { s.main!.mode = s.main!.vfoA!.mode = 'LSB'; });
     status(input, 'main.mode', { lastObservedMonotonic: 11 });
     status(input, 'main.vfoA.mode', { lastObservedMonotonic: 11 });
     result = project(input, result);
     expect(result.display).toEqual({ state: 'unknown', reason: 'retired' });
 
-    rx.mode = rx.vfoA!.mode = 'USB';
+    edit(input, (s) => { s.main!.mode = s.main!.vfoA!.mode = 'USB'; });
     status(input, 'main.mode', { lastObservedMonotonic: 12 });
     status(input, 'main.vfoA.mode', { lastObservedMonotonic: 12 });
     receipt(input, 2, { startFreq: 14_024_000, endFreq: 14_124_000 });
@@ -531,13 +558,12 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
     const input = banded();
     let result = project(input);
     tune(input, 14_367_000, 11);
-    const rx = input.state!.main!;
     if (change === 'mode') {
-      rx.mode = rx.vfoA!.mode = 'LSB';
+      edit(input, (s) => { s.main!.mode = s.main!.vfoA!.mode = 'LSB'; });
       status(input, 'main.mode', { lastObservedMonotonic: 11 });
       status(input, 'main.vfoA.mode', { lastObservedMonotonic: 11 });
     } else {
-      rx.filter = 2; rx.vfoA!.filterNum = 2;
+      edit(input, (s) => { s.main!.filter = 2; s.main!.vfoA!.filterNum = 2; });
       status(input, 'main.filter', { lastObservedMonotonic: 11 });
       status(input, 'main.vfoA.filterNum', { lastObservedMonotonic: 11 });
     }
@@ -549,7 +575,7 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
 
 describe('coherent RF passband display', () => {
   it.each(['USB', 'LSB', 'AM'])('retains complete %s edges through leaf/ancestor stale and equal current', (mode) => {
-    const input = fixture(); input.state!.main!.mode = mode;
+    const input = fixture(); edit(input, (s) => { s.main!.mode = mode; });
     let result = project(input); const captured = tuple(result);
     const edges = getPassbandEdgesHz(captured.mode, captured.widthHz, captured.shiftHz);
     let sequence = 1;
@@ -578,12 +604,12 @@ describe('coherent RF passband display', () => {
     });
   });
   const invalid: [string, (i: ScopePassbandDisplayInput) => void][] = [
-    ['zero width', (i) => { i.state!.main!.filterWidth = 0; }],
-    ['zero frequency', (i) => { i.state!.main!.freqHz = 0; }],
-    ['NaN shift', (i) => { i.state!.main!.ifShift = NaN; }],
-    ['empty mode', (i) => { i.state!.main!.mode = ' '; }],
-    ['empty filter', (i) => { i.state!.main!.filter = null; }],
-    ['missing leaf', (i) => { delete i.state!.fieldStatus!['main.ifShift']; }],
+    ['zero width', (i) => { edit(i, (s) => { s.main!.filterWidth = 0; }); }],
+    ['zero frequency', (i) => { edit(i, (s) => { s.main!.freqHz = 0; }); }],
+    ['NaN shift', (i) => { edit(i, (s) => { s.main!.ifShift = NaN; }); }],
+    ['empty mode', (i) => { edit(i, (s) => { s.main!.mode = ' '; }); }],
+    ['empty filter', (i) => { edit(i, (s) => { s.main!.filter = null; }); }],
+    ['missing leaf', (i) => { edit(i, (s) => { delete s.fieldStatus!['main.ifShift']; }); }],
     ['unobserved', (i) => status(i, 'main.ifShift', { observed: false })],
     ['ancestor veto', (i) => status(i, 'main', { observed: false })],
     ['NaN marker', (i) => status(i, 'main.ifShift', { lastObservedMonotonic: NaN })],
@@ -591,10 +617,10 @@ describe('coherent RF passband display', () => {
     ['missing marker', (i) => status(i, 'main.ifShift', { lastObservedMonotonic: undefined })],
     ['invalid freshness', (i) => status(i, 'main.ifShift', { freshness: 'unknown' })],
     ['missing selection', (i) => { i.selection = null; }],
-    ['unknown slot', (i) => { slotted(i); i.state!.main!.activeSlot = '?'; }],
-    ['topology mismatch', (i) => { i.caps!.receivers = 2; }],
-    ['missing generation', (i) => { delete i.state!.providerGeneration; }],
-    ['caps mismatch', (i) => { i.caps!.providerGeneration = 2; }],
+    ['unknown slot', (i) => { slotted(i); edit(i, (s) => { s.main!.activeSlot = '?'; }); }],
+    ['topology mismatch', (i) => { editCapabilities(i, (c) => { c.receivers = 2; }); }],
+    ['missing generation', (i) => { edit(i, (s) => { delete s.providerGeneration; }); }],
+    ['caps mismatch', (i) => { editCapabilities(i, (c) => { c.providerGeneration = 2; }); }],
     ['missing session', (i) => { i.session = null; }],
     ['null frame', (i) => { i.frame = null; }],
   ];
@@ -604,7 +630,7 @@ describe('coherent RF passband display', () => {
   });
   it.each(['filter_width', 'if_shift'])('reports absent %s as unsupported', (tag) => {
     const input = fixture(); const current = project(input);
-    input.caps!.capabilities = input.caps!.capabilities.filter((value) => value !== tag);
+    editCapabilities(input, (c) => { c.capabilities = c.capabilities.filter((value) => value !== tag); });
     expect(project(input, current).display.state).toBe('unsupported');
   });
   // MOR-2497 step 2: the shift is read off the MEASURED lattice, not off the
@@ -616,10 +642,10 @@ describe('coherent RF passband display', () => {
   // it (+100 Hz). Under the retired conversion raw 140 read 113 Hz, a value the
   // radio cannot produce -- it lies between two reachable positions.
   it.each([[128, 0], [140, 100]])('reads raw %s off the measured PBT lattice as %s Hz', (raw, expected) => {
-    const input = fixture(); pbt(input); input.state!.main!.pbtInner = raw; input.state!.main!.pbtOuter = raw;
+    const input = fixture(); pbt(input); edit(input, (s) => { s.main!.pbtInner = raw; s.main!.pbtOuter = raw; });
     const current = project(input); expect(tuple(current).shiftHz).toBe(expected);
     stale(input, 'main.pbtOuter'); expect(tuple(project(input, current))).toEqual(tuple(current));
-    input.state!.main!.pbtInner = raw + 1; status(input, 'main.pbtInner', { lastObservedMonotonic: 11 });
+    edit(input, (s) => { s.main!.pbtInner = raw + 1; }); status(input, 'main.pbtInner', { lastObservedMonotonic: 11 });
     const retired = project(input, current); expect(retired.display.state).toBe('unknown');
     renew(input, 12, 2); expect(project(input, retired).display.state).toBe('current');
   });
@@ -631,7 +657,7 @@ describe('coherent RF passband display', () => {
   it('refuses a PBT reading at a width off the 50 Hz lattice', () => {
     const legal = fixture(); pbt(legal);
     expect(project(legal).display.state).toBe('current');
-    const input = fixture(); pbt(input); input.state!.main!.filterWidth = 2410;
+    const input = fixture(); pbt(input); edit(input, (s) => { s.main!.filterWidth = 2410; });
     expect(project(input).display.state).not.toBe('current');
   });
   // MOR-2497 (post-#3519): the lattice step is per MODE, read from
@@ -641,9 +667,10 @@ describe('coherent RF passband display', () => {
   // sites resolved the same step.
   it('reads AM off its declared 200 Hz step, not the 50 Hz SSB step, in lockstep with the view-model authority', () => {
     const input = fixture(); pbt(input);
-    input.caps!.filterConfig = { ...input.caps!.filterConfig, AM: { defaults: [2400], fixed: true, pbtStepHz: 200 } };
-    input.state!.main!.mode = 'AM';
-    input.state!.main!.pbtInner = 200; input.state!.main!.pbtOuter = 200;
+    editCapabilities(input, (c) => {
+      c.filterConfig = { ...c.filterConfig, AM: { defaults: [2400], fixed: true, pbtStepHz: 200 } };
+    });
+    edit(input, (s) => { s.main!.mode = 'AM'; s.main!.pbtInner = 200; s.main!.pbtOuter = 200; });
     const current = project(input);
     // Width 2400, raw 200: +800 Hz at the 200 Hz AM step (+700 at 50 Hz).
     expect(current.display.state).toBe('current');
@@ -651,10 +678,11 @@ describe('coherent RF passband display', () => {
   });
   it('FM (mode without twin PBT): no PBT reading, but the passband display stays current with shift 0', () => {
     const input = fixture(); pbt(input);
-    input.caps!.modes = [...input.caps!.modes!, 'FM'];
-    input.caps!.filterConfig = { ...input.caps!.filterConfig, FM: { defaults: [15000], fixed: true } };
-    input.state!.main!.mode = 'FM';
-    input.state!.main!.pbtInner = 200; input.state!.main!.pbtOuter = 200;
+    editCapabilities(input, (c) => {
+      c.modes = [...c.modes!, 'FM'];
+      c.filterConfig = { ...c.filterConfig, FM: { defaults: [15000], fixed: true } };
+    });
+    edit(input, (s) => { s.main!.mode = 'FM'; s.main!.pbtInner = 200; s.main!.pbtOuter = 200; });
     // filterWidth stays 2400 — a width that WOULD form a lattice at 50 Hz, so
     // the outcome is attributable only to the absent step, not to the width.
     // Owner ruling 2026-09-17: with no twin PBT there is no PBT to engage, so
@@ -671,33 +699,34 @@ describe('coherent RF passband display', () => {
   });
   it('refuses a PBT reading when no mode declares a step (legacy pre-pbtStepHz payload)', () => {
     const input = fixture(); pbt(input);
-    for (const config of Object.values(input.caps!.filterConfig!)) delete config.pbtStepHz;
-    input.state!.main!.pbtInner = 200; input.state!.main!.pbtOuter = 200;
+    editCapabilities(input, (c) => { for (const config of Object.values(c.filterConfig!)) delete config.pbtStepHz; });
+    edit(input, (s) => { s.main!.pbtInner = 200; s.main!.pbtOuter = 200; });
     expect(project(input).display).toEqual({ state: 'unknown', reason: 'invalid-observation' });
   });
   it.each([undefined, { raw_min: 0, raw_max: 255, raw_center: 0, display_min: -1200, display_max: 1200 }])('rejects missing/invalid PBT scale', (scale) => {
-    const input = fixture(); pbt(input); input.caps!.controls = scale ? { pbt_inner: scale } : {};
+    const input = fixture(); pbt(input); editCapabilities(input, (c) => { c.controls = scale ? { pbt_inner: scale } : {}; });
     expect(project(input).display.state).toBe('unsupported');
   });
   const transitions: [string, (i: ScopePassbandDisplayInput) => void][] = [
-    ['generation', (i) => { i.state!.providerGeneration = 2; i.caps!.providerGeneration = 2; receipt(i, 2); }],
-    ['capability shape', (i) => { i.caps!.filterConfig!.USB.defaults = [1800]; }],
+    ['generation', (i) => {
+      edit(i, (s) => { s.providerGeneration = 2; });
+      editCapabilities(i, (c) => { c.providerGeneration = 2; }); receipt(i, 2);
+    }],
+    ['capability shape', (i) => { editCapabilities(i, (c) => { c.filterConfig!.USB.defaults = [1800]; }); }],
     ['control epoch', (i) => { i.session = { state: 'connected', epoch: 2 }; }],
-    ['receiver', (i) => { i.caps!.receivers = 2; i.caps!.vfoScheme = 'ab_shared'; i.caps!.capabilities.push('dual_rx'); i.state!.active = 'SUB'; i.selection = { receiver: 'SUB', slot: 'single' }; receipt(i, 2); }],
-    ['slot', (i) => { i.state!.main!.activeSlot = 'B'; i.selection = { receiver: 'MAIN', slot: 'B' }; }],
+    ['receiver', (i) => { dual(i); edit(i, (s) => { s.active = 'SUB'; }); i.selection = { receiver: 'SUB', slot: 'single' }; receipt(i, 2); }],
+    ['slot', (i) => { edit(i, (s) => { s.main!.activeSlot = 'B'; }); i.selection = { receiver: 'MAIN', slot: 'B' }; }],
     ['frequency', (i) => { nudgeFrequency(i); }],
-    ['mode', (i) => { i.state!.main!.mode = 'LSB'; }],
-    ['DATA', (i) => { i.state!.main!.dataMode = 1; }],
-    ['filter', (i) => { i.state!.main!.filter = 2; }],
+    ['mode', (i) => { edit(i, (s) => { s.main!.mode = 'LSB'; }); }],
+    ['DATA', (i) => { edit(i, (s) => { s.main!.dataMode = 1; }); }],
+    ['filter', (i) => { edit(i, (s) => { s.main!.filter = 2; }); }],
     ['frame mode', (i) => receipt(i, 2, { mode: 1 })],
     ['frame start', (i) => receipt(i, 2, { startFreq: 14_010_000 })],
     ['frame end', (i) => receipt(i, 2, { endFreq: 14_110_000 })],
   ];
   it.each(transitions)('retires %s until newer geometry AND post-boundary receipt', (name, change) => {
     const input = fixture(); if (name === 'slot') slotted(input);
-    if (name === 'receiver') {
-      input.caps!.receivers = 2; input.caps!.vfoScheme = 'ab_shared'; input.caps!.capabilities.push('dual_rx');
-    }
+    if (name === 'receiver') dual(input);
     const current = project(input); expect(current.display.state).toBe('current'); change(input);
     const retired = project(input, current); expect(retired.display.state).toBe('unknown');
     expect(project(input, retired).display.state).toBe('unknown');
@@ -712,9 +741,9 @@ describe('coherent RF passband display', () => {
   });
   it('rejects A→B→A replay even with renewed receipt and old geometry markers', () => {
     const input = fixture(); slotted(input); const a = project(input);
-    input.state!.main!.activeSlot = 'B'; input.selection = { receiver: 'MAIN', slot: 'B' };
+    edit(input, (s) => { s.main!.activeSlot = 'B'; }); input.selection = { receiver: 'MAIN', slot: 'B' };
     const b = project(input, a);
-    input.state!.main!.activeSlot = 'A'; input.selection = { receiver: 'MAIN', slot: 'A' };
+    edit(input, (s) => { s.main!.activeSlot = 'A'; }); input.selection = { receiver: 'MAIN', slot: 'A' };
     const back = project(input, b); receipt(input, 3);
     expect(project(input, back).display.state).toBe('unknown');
     renew(input, 11, 4); expect(project(input, back).display.state).toBe('current');
@@ -723,8 +752,8 @@ describe('coherent RF passband display', () => {
     ['command_response', 'unknown'],
     ['poll_response', 'current'],
   ] as const)('treats a same-slot %s refresh as %s', (source, expected) => {
-    const input = banded(); const current = project(input); const rx = input.state!.main!;
-    rx.filterWidth = 1800;
+    const input = banded(); const current = project(input);
+    edit(input, (s) => { s.main!.filterWidth = 1800; });
     for (const leaf of ['filterWidth', 'pbtInner', 'pbtOuter']) {
       status(input, `main.${leaf}`, { lastObservedMonotonic: 20.1 });
     }
@@ -751,18 +780,19 @@ describe('coherent RF passband display', () => {
       expect(project(input, current).display.state).toBe('unknown');
     }
     const input = fixture(); const current = project(input); stale(input, 'main.ifShift');
-    input.state!.main!.filterWidth = 1800; status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
+    edit(input, (s) => { s.main!.filterWidth = 1800; }); status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
     const retired = project(input, current); expect(retired.display.state).toBe('unknown');
     renew(input, 12, 2); expect(tuple(project(input, retired)).widthHz).toBe(1800);
   });
   it('distinguishes unsupported DATA from observed zero and ignores unrelated metadata', () => {
-    const input = fixture(); input.caps!.capabilities = input.caps!.capabilities.filter((tag) => tag !== 'data_mode');
-    delete input.state!.fieldStatus!['main.dataMode']; const current = project(input);
+    const input = fixture();
+    editCapabilities(input, (c) => { c.capabilities = c.capabilities.filter((tag) => tag !== 'data_mode'); });
+    edit(input, (s) => { delete s.fieldStatus!['main.dataMode']; }); const current = project(input);
     expect(current.display.state).toBe('current');
     input.caps = { ...input.caps!, model: 'renamed', capabilities: [...input.caps!.capabilities].reverse() };
     expect(project(input, current).display.state).toBe('current');
-    input.caps!.capabilities.push('data_mode');
-    input.state!.fieldStatus!['main.dataMode'] = { ...input.state!.fieldStatus!['main.mode'] };
+    editCapabilities(input, (c) => { c.capabilities.push('data_mode'); });
+    edit(input, (s) => { s.fieldStatus!['main.dataMode'] = { ...s.fieldStatus!['main.mode'] }; });
     expect(project(input, current).display.state).toBe('unknown');
   });
   it.each([499, 500, -1, NaN])('honors frame age %s without another timer', (age) => {
@@ -797,7 +827,7 @@ describe('coherent RF passband display', () => {
 
   it('requires each geometry marker and a newer accepted receipt after retirement', () => {
     const input = fixture(); const current = project(input);
-    input.state!.main!.mode = 'LSB';
+    edit(input, (s) => { s.main!.mode = 'LSB'; });
     status(input, 'main.mode', { lastObservedMonotonic: 11 });
     const retired = project(input, current);
     receipt(input, 2);
@@ -811,18 +841,18 @@ describe('coherent RF passband display', () => {
 
   it('starts a new provider marker domain without comparing its markers to the old provider', () => {
     const input = fixture(); renew(input, 1000, 1); const old = project(input);
-    input.state!.providerGeneration = 2; input.caps!.providerGeneration = 2;
+    edit(input, (s) => { s.providerGeneration = 2; });
+    editCapabilities(input, (c) => { c.providerGeneration = 2; });
     renew(input, 1, 2); const retired = project(input, old);
     expect(retired.display.state).toBe('unknown');
     renew(input, 2, 3); expect(project(input, retired).display.state).toBe('current');
   });
 
   it('baselines incoming receiver markers across MAIN→SUB→MAIN without keeping receiver tuples', () => {
-    const input = fixture(); input.caps!.vfoScheme = 'ab_shared'; input.caps!.receivers = 2;
-    input.caps!.capabilities.push('dual_rx');
+    const input = fixture(); dual(input);
     let previous = project(input);
     for (const [receiver, marker, sequence] of [['SUB', 11, 3], ['MAIN', 12, 5]] as const) {
-      input.state!.active = receiver; input.selection = { receiver, slot: 'single' }; receipt(input, sequence - 1);
+      edit(input, (s) => { s.active = receiver; }); input.selection = { receiver, slot: 'single' }; receipt(input, sequence - 1);
       previous = project(input, previous); expect(previous.display.state).toBe('unknown');
       renew(input, marker, sequence); previous = project(input, previous);
       expect(previous.display.state).toBe('current');
@@ -842,15 +872,14 @@ describe('coherent RF passband display', () => {
   });
 
   it.each(['MAIN', 'SUB'] as const)('requires observed active receiver in two-receiver %s context', (receiver) => {
-    const input = fixture(); input.caps!.vfoScheme = 'ab_shared'; input.caps!.receivers = 2;
-    input.caps!.capabilities.push('dual_rx'); input.state!.active = receiver;
+    const input = fixture(); dual(input); edit(input, (s) => { s.active = receiver; });
     input.selection = { receiver, slot: 'single' }; receipt(input);
     expect(project(input).display.state).toBe('current');
     status(input, 'active', { observed: false }); expect(project(input).display.state).toBe('unknown');
   });
 
   it('does not fabricate an absolute slot from relative selected/unselected readback', () => {
-    const input = fixture(); slotted(input); input.caps!.vfoReadback = 'selected_unselected';
+    const input = fixture(); slotted(input); editCapabilities(input, (c) => { c.vfoReadback = 'selected_unselected'; });
     status(input, 'main.activeSlot', { observed: false });
     expect(project(input).display.state).toBe('unknown');
   });
@@ -858,8 +887,8 @@ describe('coherent RF passband display', () => {
   it.each(['freqHz', 'mode', 'filter'])('denies strict alias disagreement for %s', (field) => {
     const input = fixture(); slotted(input);
     if (field === 'freqHz') nudgeFrequency(input);
-    if (field === 'mode') input.state!.main!.mode = 'LSB';
-    if (field === 'filter') input.state!.main!.filter = 2;
+    if (field === 'mode') edit(input, (s) => { s.main!.mode = 'LSB'; });
+    if (field === 'filter') edit(input, (s) => { s.main!.filter = 2; });
     expect(project(input).display.state).toBe('unknown');
   });
 
@@ -874,7 +903,7 @@ describe('coherent RF passband display', () => {
 
   it('updates complete current width, but rejects changed values under equal observation markers', () => {
     const input = fixture(); const current = project(input);
-    input.state!.main!.filterWidth = 1800;
+    edit(input, (s) => { s.main!.filterWidth = 1800; });
     expect(project(input, current).display.state).toBe('unknown');
     status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
     expect(tuple(project(input, current)).widthHz).toBe(1800);
@@ -902,11 +931,12 @@ describe('coherent RF passband display', () => {
 
   it('uses native shift without PBT evidence and retires scale changes only for derived shift', () => {
     const native = fixture(); const current = project(native);
-    native.state!.main!.pbtInner = NaN; native.caps!.controls = {};
+    edit(native, (s) => { s.main!.pbtInner = NaN; }); editCapabilities(native, (c) => { c.controls = {}; });
     expect(tuple(project(native, current)).shiftHz).toBe(0);
     const derived = fixture(); pbt(derived); const previous = project(derived);
-    derived.caps!.controls = { pbt_inner: { raw_min: 0, raw_max: 255,
-      raw_center: 128, display_min: -1000, display_max: 1000 } };
+    editCapabilities(derived, (c) => {
+      c.controls = { pbt_inner: { raw_min: 0, raw_max: 255, raw_center: 128, display_min: -1000, display_max: 1000 } };
+    });
     expect(project(derived, previous).display.state).toBe('unknown');
   });
 
@@ -919,9 +949,7 @@ describe('coherent RF passband display', () => {
   function historyFixture(topology: string) {
     const input = fixture();
     if (topology === 'slotted') slotted(input);
-    if (topology === 'dual') {
-      input.caps!.vfoScheme = 'ab_shared'; input.caps!.receivers = 2; input.caps!.capabilities.push('dual_rx');
-    }
+    if (topology === 'dual') dual(input);
     return input;
   }
   const historyGaps = ['state', 'caps', 'selection', 'leaf', 'unobserved', 'malformed'] as const;
@@ -932,13 +960,13 @@ describe('coherent RF passband display', () => {
       const savedStatus = { ...input.state!.fieldStatus![path] };
       const savedInput = { state: input.state, caps: input.caps, selection: input.selection };
       if (gap === 'state' || gap === 'caps' || gap === 'selection') input[gap] = null;
-      if (gap === 'leaf') delete input.state!.fieldStatus![path];
+      if (gap === 'leaf') edit(input, (s) => { delete s.fieldStatus![path]; });
       if (gap === 'unobserved') status(input, path, { observed: false });
       if (gap === 'malformed') status(input, path, { lastObservedMonotonic: NaN });
       const missing = project(input, current);
       const optionalAncestor = gap === 'leaf' && (path === 'main' || path === 'main.vfoA');
       expect(missing.display.state).toBe(optionalAncestor ? 'current' : 'unknown');
-      Object.assign(input, savedInput); input.state!.fieldStatus![path] = savedStatus;
+      Object.assign(input, savedInput); edit(input, (s) => { s.fieldStatus![path] = savedStatus; });
       renew(input, 11, 2); status(input, path, { lastObservedMonotonic: 9 });
       const regressed = project(input, missing);
       expect(regressed.display.state).toBe('unknown');
@@ -959,14 +987,17 @@ describe('coherent RF passband display', () => {
   it.each(['frequency', 'mode', 'filter', 'DATA', 'slot'])('rejects changed %s at an equal marker after missing state', (field) => {
     const input = fixture(); slotted(input); const current = project(input); const saved = input.state;
     input.state = null; const missing = project(input, current); input.state = saved;
-    const rx = input.state!.main!;
     const path = field === 'frequency' ? 'main.vfoA.freqHz' : field === 'mode' ? 'main.vfoA.mode'
       : field === 'filter' ? 'main.vfoA.filterNum' : field === 'DATA' ? 'main.dataMode' : 'main.activeSlot';
-    if (field === 'frequency') rx.freqHz = rx.vfoA!.freqHz = 14_075_000;
-    if (field === 'mode') rx.mode = rx.vfoA!.mode = 'LSB';
-    if (field === 'filter') rx.filter = rx.vfoA!.filterNum = 2;
-    if (field === 'DATA') rx.dataMode = 1;
-    if (field === 'slot') { rx.activeSlot = 'B'; input.selection = { receiver: 'MAIN', slot: 'B' }; }
+    edit(input, (s) => {
+      const rx = s.main!;
+      if (field === 'frequency') rx.freqHz = rx.vfoA!.freqHz = 14_075_000;
+      if (field === 'mode') rx.mode = rx.vfoA!.mode = 'LSB';
+      if (field === 'filter') rx.filter = rx.vfoA!.filterNum = 2;
+      if (field === 'DATA') rx.dataMode = 1;
+      if (field === 'slot') rx.activeSlot = 'B';
+    });
+    if (field === 'slot') input.selection = { receiver: 'MAIN', slot: 'B' };
     renew(input, 11, 2); status(input, path, { lastObservedMonotonic: 10 });
     let previous = project(input, missing);
     expect(previous.display.state).toBe('unknown');
@@ -981,15 +1012,16 @@ describe('coherent RF passband display', () => {
 
   it('keeps independently advancing high-water markers while other evidence is missing or regressing', () => {
     const input = fixture(); let previous = project(input);
-    input.state!.main!.mode = 'LSB'; status(input, 'main.mode', { lastObservedMonotonic: 11 });
+    edit(input, (s) => { s.main!.mode = 'LSB'; }); status(input, 'main.mode', { lastObservedMonotonic: 11 });
     previous = project(input, previous);
-    const shift = input.state!.fieldStatus!['main.ifShift']; delete input.state!.fieldStatus!['main.ifShift'];
+    const shift = input.state!.fieldStatus!['main.ifShift'];
+    edit(input, (s) => { delete s.fieldStatus!['main.ifShift']; });
     status(input, 'main.mode', { lastObservedMonotonic: 30 });
     status(input, 'main.freqHz', { lastObservedMonotonic: 9 });
     previous = project(input, previous);
     expect(previous.observations['main.mode'].marker).toBe(30);
     expect(previous.observations['main.freqHz'].marker).toBe(10);
-    input.state!.fieldStatus!['main.ifShift'] = shift;
+    edit(input, (s) => { s.fieldStatus!['main.ifShift'] = shift; });
     renew(input, 21, 3); previous = project(input, previous);
     expect(previous.display.state).toBe('unknown');
     renew(input, 31, 4); expect(project(input, previous).display.state).toBe('current');
@@ -997,11 +1029,11 @@ describe('coherent RF passband display', () => {
 
   it('does not treat an unobserved receiver switch as a positively established new domain', () => {
     const input = historyFixture('dual'); let previous = project(input);
-    input.state!.active = 'SUB'; input.selection = { receiver: 'SUB', slot: 'single' };
+    edit(input, (s) => { s.active = 'SUB'; }); input.selection = { receiver: 'SUB', slot: 'single' };
     status(input, 'active', { observed: false }); receipt(input, 2);
     previous = project(input, previous);
     expect(previous.display.state).toBe('unknown'); expect(previous.domain).toBe('[1,"MAIN"]');
-    input.state!.active = 'MAIN'; input.selection = { receiver: 'MAIN', slot: 'single' };
+    edit(input, (s) => { s.active = 'MAIN'; }); input.selection = { receiver: 'MAIN', slot: 'single' };
     renew(input, 11, 3); status(input, 'main.freqHz', { lastObservedMonotonic: 9 });
     previous = project(input, previous);
     renew(input, 12, 4); status(input, 'main.freqHz', { lastObservedMonotonic: 9 });
@@ -1010,7 +1042,7 @@ describe('coherent RF passband display', () => {
 
   it('drops foreign receiver marker comparisons only after positive receiver qualification', () => {
     const input = historyFixture('dual'); renew(input, 1000, 1); const current = project(input);
-    input.state!.active = 'SUB'; input.selection = { receiver: 'SUB', slot: 'single' };
+    edit(input, (s) => { s.active = 'SUB'; }); input.selection = { receiver: 'SUB', slot: 'single' };
     renew(input, 1, 2); const retired = project(input, current);
     expect(retired.domain).toBe('[1,"SUB"]');
     expect(retired.observations).not.toHaveProperty('main.freqHz');

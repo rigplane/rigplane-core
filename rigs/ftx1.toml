@@ -158,6 +158,10 @@ polling_only = [
     "receiver.main.operator_toggles.narrow",
     "receiver.main.active.freq_mode.filter_width",
     "receiver.sub.active.freq_mode.filter_width",
+    # MOR-3677: the radio-default flag twin, published by the same SH read
+    # as the width (no extra CAT traffic).
+    "receiver.main.active.freq_mode.filter_width_radio_default",
+    "receiver.sub.active.freq_mode.filter_width_radio_default",
     "receiver.main.operator_controls.nb_level",
     "receiver.main.operator_toggles.nb",
     "receiver.main.operator_controls.nr_level",
@@ -418,6 +422,16 @@ available_when = [
     { field = "receiver.sub.operator_toggles.narrow", equals = false },
 ]
 
+# MOR-3677: the SUB radio-default flag rides the same SH1 read as the width
+# above, so it carries the same cadence, TTL and narrow clause — a stale
+# true must never survive while the width is discarded.
+[state_acquisition.field_policies."receiver.sub.active.freq_mode.filter_width_radio_default"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+available_when = [
+    { field = "receiver.sub.operator_toggles.narrow", equals = false },
+]
+
 # SUB operator controls (CAT ``AG1``/``RG1``/``SQ1``/``OS1``), ungated since
 # the bench probe of 2026-09-18 (MOR-2511 comment, 01:22Z) showed each read
 # answering SUB's own value in single receive; acquisition in single receive
@@ -483,6 +497,16 @@ freshness_ttl_seconds = 2.0
 # `NAR WIDTH` menu owns the passband then. Declared absent while MAIN's
 # `narrow` reads true.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+available_when = [
+    { field = "receiver.main.operator_toggles.narrow", equals = false },
+]
+
+# MOR-3677: the MAIN radio-default flag rides the same SH0 read as the width
+# above, so it carries the same cadence, TTL and narrow clause — a stale
+# true must never survive while the width is discarded.
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width_radio_default"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 available_when = [
@@ -774,11 +798,13 @@ encoding = "table_index"
 # tests/test_dsp_filter_family.py::TestFtx1Table5LoaderPins.
 first_code = 1
 # Code 00 is also the WRITE-side reset target (MOR-2535): ``SH P1 00``
-# returns the width to the radio's own mode-dependent default, and the
-# post-write ``SH P1;`` read answers the RESOLVED code, never 00 (bench
-# probe 2026-09-22: SH0000; on MAIN USB from 2400 Hz → SH0020; = 3000 Hz).
-# The loader validates it sits below first_code and derives the
-# ``filter_width_radio_default`` capability from its presence.
+# returns the width to the radio's own mode-dependent default. A read CAN
+# answer 00 (MOR-3677 bench: ``MD0C; SH0000;`` in DATA-U, ``MD03; SH0000;``
+# in CW-U) — the 2026-09-22 "never 00" probe only covered MAIN USB. The
+# width read reports such an answer with no Hz plus the
+# ``filter_width_radio_default`` observation flag. The loader validates the
+# code sits below first_code and derives the ``filter_width_radio_default``
+# capability from its presence.
 radio_default_code = 0
 width_min_hz = 50
 width_max_hz = 4000

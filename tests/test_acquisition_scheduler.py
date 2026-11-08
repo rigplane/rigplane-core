@@ -20,6 +20,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionQuery,
     AcquisitionRequest,
     AcquisitionScheduler,
+    adaptive_cadence_limit,
     AcquisitionStatus,
     DeclaredCommandDefect,
     MeterObservationCoalescer,
@@ -212,6 +213,207 @@ def _changeset(
         timestamp_monotonic=at,
         sources=(_source(),),
     )
+
+
+# MOR-4058: a read the radio refuses (CI-V FA) is a terminal answer.
+
+_TUNER = FieldPath.global_("operator_controls", "tuner_status")
+_POWER = FieldPath.global_("operator_controls", "power_level")
+_REFUSAL_POLICY = AcquisitionPolicy(
+    cadence_seconds=2.0,
+    freshness_ttl_seconds=120.0,
+    adaptive_decay=AdaptiveDecayPolicy(
+        enabled=True, idle_multiplier=2.0, max_cadence_seconds=30.0
+    ),
+)
+
+
+def _refusal_scheduler(
+    clock: FreshnessClock, *paths: FieldPath
+) -> AcquisitionScheduler:
+    return AcquisitionScheduler(
+        profile=_profile(paths, field_policies=dict.fromkeys(paths, _REFUSAL_POLICY)),
+        clock=clock,
+    )
+
+
+def _dispatch(scheduler: AcquisitionScheduler, now: float) -> AcquisitionRequest:
+    request = scheduler.due_requests(now=now)[0]
+    scheduler.record_dispatch(request.id, paths=request.paths, now=now)
+    return request
+
+
+def test_refusal_completes_the_request_without_a_timeout() -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    _dispatch(scheduler, clock.now())
+
+    scheduler.record_read_refusal((_TUNER,), now=clock.now() + 0.01)
+
+    diagnostics = scheduler.diagnostics()
+    assert scheduler.pending_requests() == ()
+    assert diagnostics["failureCountByReason"] == {"acquisition_request_refused": 1}
+    assert scheduler.consecutive_request_timeouts(_TUNER) == 0
+    assert scheduler.consecutive_refusals(_TUNER) == 1
+
+
+def test_refusal_before_the_send_does_not_complete_the_request() -> None:
+    """A refusal older than the request's own send answers an earlier read."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    request = scheduler.due_requests(now=clock.now())[0]
+
+    scheduler.record_read_refusal((_TUNER,), now=clock.now())
+
+    assert scheduler.pending_requests()[0].id == request.id
+    assert scheduler.consecutive_refusals(_TUNER) == 1
+
+
+def test_refused_path_leaves_the_startup_set_unless_safety_critical() -> None:
+    split = FieldPath.global_("tx_state", "split")
+    scheduler = _refusal_scheduler(FreshnessClock(start=0.0), _TUNER, split)
+    assert set(scheduler.unobserved_startup_paths(())) == {_TUNER, split}
+
+    scheduler.record_read_refusal((_TUNER, split), now=1.0)
+
+    assert scheduler.unobserved_startup_paths(()) == (split,)
+
+
+def test_refused_lone_group_is_asked_again_at_its_idle_ceiling() -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    _dispatch(scheduler, clock.now())
+
+    scheduler.record_read_refusal((_TUNER,), now=clock.now())
+
+    clock.advance(29.9)
+    assert scheduler.due_requests(now=clock.now()) == ()
+    clock.advance(0.1)
+    assert scheduler.due_requests(now=clock.now())[0].paths == (_TUNER,)
+
+
+def test_refused_path_is_not_asked_on_every_cadence_of_its_siblings() -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER, _POWER)
+    request = _dispatch(scheduler, clock.now())
+    assert set(request.paths) == {_TUNER, _POWER}
+
+    scheduler.record_acquisition_result(
+        replace(request, paths=(_POWER,)), _changeset(at=clock.now())
+    )
+    scheduler.record_read_refusal((_TUNER,), now=clock.now())
+
+    for level in range(14):  # the siblings' 2 s cadence, up to the 30 s retry
+        clock.advance(2.0)
+        sibling = _dispatch(scheduler, clock.now())
+        assert sibling.paths == (_POWER,)
+        moved = FieldChange(path=_POWER, previous=level, current=level + 1)
+        scheduler.record_acquisition_result(
+            sibling, _changeset(changes=(moved,), at=clock.now())
+        )
+    clock.advance(2.0)
+    assert set(scheduler.due_requests(now=clock.now())[0].paths) == {_TUNER, _POWER}
+
+
+def test_an_answer_ends_the_refusal(caplog: pytest.LogCaptureFixture) -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    _dispatch(scheduler, clock.now())
+    with caplog.at_level(logging.INFO, logger="rigplane.core.acquisition_scheduler"):
+        scheduler.record_read_refusal((_TUNER,), now=clock.now())
+        scheduler.record_read_refusal((_TUNER,), now=clock.now())
+        clock.advance(30.0)
+        retry = _dispatch(scheduler, clock.now())
+        scheduler.end_refusals((_TUNER,))
+        scheduler.record_acquisition_result(
+            retry,
+            _changeset(
+                changes=(FieldChange(path=_TUNER, previous=None, current=1),),
+                at=clock.now(),
+            ),
+        )
+
+    assert scheduler.consecutive_refusals(_TUNER) == 0
+    assert scheduler.unobserved_startup_paths(()) == (_TUNER,)
+    clock.advance(2.0)
+    assert scheduler.due_requests(now=clock.now())[0].paths == (_TUNER,)
+    messages = [r.getMessage() for r in caplog.records]
+    refused = [m for m in messages if "refused the read of" in m]
+    assert refused == [
+        "acquisition: the radio refused the read of "
+        "global.operator_controls.tuner_status; treating it as answered "
+        "(unavailable) until it answers"
+    ]
+    assert any("answered again after a refusal" in m for m in messages)
+
+
+_VOX = FieldPath.global_("tx_state", "vox_on")
+_VOX_POLICY = AcquisitionPolicy(cadence_seconds=None, freshness_ttl_seconds=25.0)
+
+
+def _non_polling_scheduler(clock: FreshnessClock) -> AcquisitionScheduler:
+    """IC-705's ``vox_on`` shape: a primed, non-polling menu read."""
+    return AcquisitionScheduler(
+        profile=RadioAcquisitionProfile(
+            provider="test_provider",
+            capabilities=(
+                FieldCapability(path=_VOX, command_response_observable=True),
+            ),
+            field_policies={_VOX: _VOX_POLICY},
+        ),
+        clock=clock,
+    )
+
+
+def test_refused_non_polling_field_is_not_primed_again_before_its_retry() -> None:
+    """Pre-review finding 2: priming honours the refusal's retry delay."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _non_polling_scheduler(clock)
+    primed = scheduler.prime_unobserved(observed_paths=())[0]
+    scheduler.record_dispatch(primed.id, paths=primed.paths, now=clock.now())
+    scheduler.record_read_refusal((_VOX,), now=clock.now())
+    retry = adaptive_cadence_limit(_VOX_POLICY)
+    assert retry is not None and retry > 5.0
+
+    clock.advance(5.0)  # the freshness service's adaptive re-prime interval
+    assert scheduler.prime_unobserved(observed_paths=()) == ()
+    assert scheduler.pending_requests() == ()
+
+    clock.advance(retry - 5.0)
+    assert scheduler.prime_unobserved(observed_paths=())[0].paths == (_VOX,)
+
+
+def test_automatic_refresh_of_a_refused_path_waits_for_its_retry() -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _non_polling_scheduler(clock)
+    scheduler.record_read_refusal((_VOX,), now=clock.now())
+
+    background = scheduler.ensure_fresh(
+        _VOX, max_age=1.0, priority=AcquisitionPriority.RECONCILIATION, reason="stale"
+    )
+    assert background.request is None
+    assert scheduler.pending_requests() == ()
+
+    asked = scheduler.ensure_fresh(
+        _VOX, max_age=1.0, priority=AcquisitionPriority.USER, reason="rigctld-get"
+    )
+    assert asked.request is not None, "a read asked for by name still goes out"
+
+
+def test_queued_unsent_automatic_request_is_withheld_after_a_refusal() -> None:
+    """A request queued before the refusal arrived stays pending but unsent
+    until the retry."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    queued = scheduler.due_requests(now=clock.now())[0]
+    sent_earlier = replace(queued, paths=(_TUNER,))
+    scheduler.record_read_refusal(sent_earlier.paths, now=clock.now() - 1.0)
+    assert scheduler.pending_requests()[0].id == queued.id
+
+    assert scheduler.dispatchable_requests() == ()
+
+    clock.advance(adaptive_cadence_limit(_REFUSAL_POLICY) or 0.0)
+    assert scheduler.dispatchable_requests()[0].id == queued.id
 
 
 def _profile(
