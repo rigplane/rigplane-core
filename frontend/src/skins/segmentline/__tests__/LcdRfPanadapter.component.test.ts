@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { lcdStreamFixture } from './scope-stream-fixture';
 import { spectrumDisplayAmplitude } from '../../../lib/renderers/spectrum-renderer';
@@ -173,7 +173,7 @@ describe('LcdRfPanadapter', () => {
       'button,input,select,a[href],[tabindex],[role="button"],[role="switch"]',
     )).toHaveLength(0);
     expect(target.innerHTML).not.toMatch(/onclick|onpointer|onwheel/i);
-    expect(source.replace(/^\s*import type .*;$/gm, '')).not.toMatch(/(?:lib\/runtime|stores?\/|controller|transport|socket|demand)/i);
+    expect(source.replace(/^\s*import type .*;$/gm, '').replace(/^\s*import \{ scopeSubscriptionSurface \} from '\$lib\/runtime\/scope-view';$/gm, '')).not.toMatch(/(?:lib\/runtime|stores?\/|controller|transport|socket|demand)/i);
   });
 });
 
@@ -202,3 +202,7 @@ describe('LcdRfPanadapter hardware amplitude parity', () => {
     expect(target.querySelectorAll('[data-rf-bin]')).toHaveLength(0);
   });
 });
+
+
+beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { vi.unstubAllGlobals(); });

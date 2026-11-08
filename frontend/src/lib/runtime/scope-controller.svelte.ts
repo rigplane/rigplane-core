@@ -3,7 +3,7 @@
  * WebSocket (ADR INV-2, INV-5).
  *
  * MOR-4270: each source exposes ONE shared `ScopeStream` for the whole
- * page. The stream parses frames, keeps the latest frame per slot in a
+ * page. One controller ingress decodes frames; streams keep each slot in a
  * non-reactive map and publishes the qualified `geometry` store; this
  * controller keeps only channel lifetime, demand health, trace receipts
  * and the shared liveness clock (stale transitions; no per-frame timers).
@@ -132,13 +132,16 @@ export class ScopeController {
     const providerChanged = previous?.providerGeneration !== authority?.providerGeneration;
     if (providerChanged) {
       this._authorityRevision += 1;
-      for (const stream of Object.values(this._streams)) stream?.reset();
+      for (const stream of Object.values(this._streams)) stream?.clearMode();
     }
     const newlyQualified = [...additional].filter(source => !this._additionalSources.has(source));
     this._additionalSources = additional;
     this._authority = authority === null ? null : Object.freeze({ ...authority });
-    if (!sameAuthority && previous) this._streams[previous.source]?.reset();
-    if (!authority) return;
+    if (!sameAuthority && previous) this._streams[previous.source]?.clearMode();
+    if (!authority) {
+      for (const stream of Object.values(this._streams)) stream?.clearMode();
+      return;
+    }
     if (providerChanged && this._detachChannel) {
       const detach = this._detachChannel; this._detachChannel = null; this._channelGeneration += 1;
       try { detach(); } finally { this._channel?.disconnect(); }
@@ -149,7 +152,7 @@ export class ScopeController {
     if (!sameAuthority) {
       stream.setSlotFilter(authority.receiver === null ? null
         : `${stream.sourceId}:${authority.receiver}`);
-      stream.reset();
+      stream.clearMode();
     }
     for (const source of new Set([authority.source, ...additional, ...[...this._bindings.values()].map(binding => binding.source)])) {
       if (newlyQualified.includes(source)) this._streams[source]?.reset();
@@ -363,7 +366,7 @@ export class ScopeController {
       channel.sendRaw({ type: 'unsubscribe', sourceId: subscription.sourceId, receiver: subscription.receiver });
       this._sentSubscriptions.delete(`${subscription.sourceId}:${subscription.receiver}`);
     }
-    stream?.pause(); this._arrivals[source] = null; this._slotArrivals[source].clear();
+    stream?.pause(); stream?.clearMode(); this._arrivals[source] = null; this._slotArrivals[source].clear();
     if (![...this._bindings.values()].some(active => active.active)) {
       const detach = this._detachChannel; this._detachChannel = null; this._channelGeneration += 1;
       try { detach?.(); } finally { channel.disconnect(); this._channel = null; }

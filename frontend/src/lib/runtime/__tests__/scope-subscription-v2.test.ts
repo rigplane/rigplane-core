@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { ScopeStream } from '../scope-stream';
 import { scopeSubscription, scopeSubscriptionSurface } from '../scope-view';
@@ -114,3 +114,5 @@ it('observes native backing width, intersection and document visibility for dema
     action.destroy(); node.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks();
   }
 });
+
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });

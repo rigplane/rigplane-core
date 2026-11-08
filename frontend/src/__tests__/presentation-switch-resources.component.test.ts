@@ -32,6 +32,7 @@
  *   4. a rapid A → B → A whose middle leg never commits touches nothing;
  *   5. final App teardown stops each live resource exactly once.
  */
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
@@ -275,7 +276,7 @@ function makeChannel(name: string) {
   const states = new Set<(state: string) => void>();
   let state = 'disconnected';
   return {
-    name,
+    name, sessionEpoch: 1, sendRaw: vi.fn(() => true), onMessage: () => () => {},
     connect: vi.fn(() => { state = 'connected'; for (const s of states) s('connected'); }),
     disconnect: vi.fn(() => { state = 'disconnected'; for (const s of states) s('disconnected'); }),
     get state() { return state; },
@@ -288,9 +289,7 @@ function makeChannel(name: string) {
       return () => states.delete(handler);
     }),
     frame() {
-      const data = new ArrayBuffer(20), view = new DataView(data);
-      view.setUint8(0, 1); view.setUint32(3, 14_100_000, true);
-      view.setUint32(7, 14_200_000, true); view.setUint16(14, 4, true);
+      const data = scopeWire({ sourceId: 'radio', viewStartHz: 14_100_000, viewEndHz: 14_200_000 });
       for (const handler of binary) handler(data);
     },
   };
@@ -510,7 +509,7 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     await mountApp();
     await settle();
     expect(opens('scope')).toBe(1);
-    expect(opens('audio-scope')).toBe(1);
+    expect(opens('audio-scope')).toBe(0);
     const scopeHandle = presentationResources.snapshot('hardware-scope').activeHandle;
     const fftHandle = presentationResources.snapshot('audio-fft').activeHandle;
     expect(scopeHandle).toBeDefined();
@@ -523,7 +522,7 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     expect(closes('scope')).toBe(0);
     expect(closes('audio-scope')).toBe(0);
     expect(opens('scope')).toBe(1);
-    expect(opens('audio-scope')).toBe(1);
+    expect(opens('audio-scope')).toBe(0);
     // The exact same driver handles — not merely "a stream is running".
     expect(presentationResources.snapshot('hardware-scope').activeHandle).toBe(scopeHandle);
     expect(presentationResources.snapshot('audio-fft').activeHandle).toBe(fftHandle);
@@ -546,20 +545,19 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     // LCD has an audio-FFT surface but no hardware scope.
     await switchTo('lcd-cockpit');
 
-    expect(closes('scope')).toBe(1);
+    expect(closes('scope')).toBe(0);
     expect(presentationResources.snapshot('hardware-scope')).toMatchObject({
       demand: 0, health: 'inactive',
     });
     // ...while the audio FFT, demanded by both, never bounced.
     expect(closes('audio-scope')).toBe(0);
-    expect(opens('audio-scope')).toBe(1);
+    expect(opens('audio-scope')).toBe(0);
     expect(presentationResources.snapshot('audio-fft').activeHandle).toBe(fftHandle);
 
-    // Returning opens exactly one new hardware-scope session — one open per
-    // genuine viewer change, never a close/open pair per swap.
+    // Returning restores hardware demand on the same physical socket.
     await switchTo('desktop-v2');
-    expect(opens('scope')).toBe(2);
-    expect(closes('scope')).toBe(1);
+    expect(opens('scope')).toBe(1);
+    expect(closes('scope')).toBe(0);
     expect(closes('audio-scope')).toBe(0);
     expect(presentationResources.snapshot('audio-fft').activeHandle).toBe(fftHandle);
   });
@@ -588,7 +586,7 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     expect(mountedCount()).toBe(1);
     expect(opens('scope')).toBe(1);
     expect(closes('scope')).toBe(0);
-    expect(opens('audio-scope')).toBe(1);
+    expect(opens('audio-scope')).toBe(0);
     expect(closes('audio-scope')).toBe(0);
     expect(presentationResources.snapshot('hardware-scope').activeHandle).toBe(scopeHandle);
     expect(presentationResources.snapshot('audio-fft').activeHandle).toBe(fftHandle);
@@ -617,7 +615,7 @@ describe('MOR-1086 — resource identity across a presentation switch', () => {
     await settle();
 
     expect(closes('scope')).toBe(1);
-    expect(closes('audio-scope')).toBe(1);
+    expect(closes('audio-scope')).toBe(0);
     expect(audioManager.stopRx).toHaveBeenCalledTimes(1);
     expect(h.unsubscribeCapabilities).toHaveBeenCalledTimes(1);
     expect(presentationResources.snapshot('hardware-scope')).toMatchObject({

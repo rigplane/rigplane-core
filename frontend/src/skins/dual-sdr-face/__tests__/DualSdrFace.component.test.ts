@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { ScopeStream } from '../../../lib/runtime/scope-stream';
 import * as svelteClient from 'svelte/internal/client';
@@ -126,11 +126,9 @@ function realScopeSource() {
     const stream = new ScopeStream(producer, { source: 'radio', sourceId: 'scope', epoch: 1 }, 'borrowed');
     const source = { subscribe: stream.subscribe.bind(stream), slotKeys: ['scope:0', 'scope:1'] as const };
     function fire(receiver: number, pixels: number[], outOfRange = false) {
-      const buffer = new ArrayBuffer(16 + pixels.length), wire = new DataView(buffer);
-      wire.setUint8(0, 1); wire.setUint8(1, receiver);
-      wire.setUint32(3, 144_000_000, true); wire.setUint32(7, 144_500_000, true);
-      wire.setUint8(13, outOfRange ? 1 : 0); wire.setUint16(14, pixels.length, true);
-      new Uint8Array(buffer, 16).set(pixels); receive(buffer); flushSync();
+      const buffer = scopeWire({ sourceId: 'scope', receiver, viewStartHz: 144_000_000,
+        viewEndHz: 144_500_000, outOfRange, pixels: pixels.length > 0 ? Uint8Array.from(pixels) : null });
+      receive(buffer); flushSync();
     }
     return { stream, source, fire, producer };
 }
@@ -523,3 +521,7 @@ describe('DualSdrFace', () => {
     expect(cleanupB).toHaveBeenCalledTimes(2);
   });
 });
+
+
+beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { vi.unstubAllGlobals(); });

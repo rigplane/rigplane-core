@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { lcdStreamFixture } from './scope-stream-fixture';
 import { projectPeerSplitDisplay } from '../../../semantic/radio-display-model';
@@ -79,3 +79,7 @@ for (const [index, name] of names.entries()) {
     });
   });
 }
+
+
+beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { vi.unstubAllGlobals(); });

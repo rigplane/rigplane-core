@@ -1,23 +1,17 @@
-import { readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { loadScopeWireGolden, scopeWireGoldenNames as names } from './scope-wire-fixture';
 import { describe, expect, it } from 'vitest';
 import { ingressScopeFrame, parseCurrentScopeFrame } from '../adapters/scope-adapter';
 
-const fixtureRoot = resolve(process.cwd(), '../tests/fixtures/scope-wire');
-const names = readdirSync(fixtureRoot).filter(name => name.endsWith('.bin')).sort();
-const load = (name: string): ArrayBuffer => {
-  const bytes = readFileSync(resolve(fixtureRoot, name));
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-};
+const load = (name: string) => loadScopeWireGolden(name).buffer;
 const context = { source: 'radio' as const, sourceId: 'ignored-control-hint', epoch: 900, mode: 3 };
 
 describe('shared Python v2 scope wire fixtures', () => {
   it('discovers every binary fixture with its sidecar', () => {
     expect(names).toHaveLength(8);
-    for (const name of names) expect(() => readFileSync(resolve(fixtureRoot, name.replace('.bin', '.json')))).not.toThrow();
+    for (const name of names) expect(() => loadScopeWireGolden(name)).not.toThrow();
   });
   it.each(names)('decodes %s with wire identity and zero pixel copies', name => {
-    const expected = JSON.parse(readFileSync(resolve(fixtureRoot, name.replace('.bin', '.json')), 'utf8'));
+    const expected = loadScopeWireGolden(name).expected;
     const buffer = load(name);
     const result = ingressScopeFrame(buffer, context);
     expect(result.ok).toBe(true);

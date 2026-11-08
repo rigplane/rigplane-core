@@ -1517,6 +1517,13 @@
       && runtime.state?.providerGeneration === runtime.caps?.providerGeneration
   ));
 
+  let scopeLeaseQualified = $derived(scopeAuthority !== null || (
+    runtime.caps?.vfoReadback === 'none'
+      && Number.isSafeInteger(runtime.state?.providerGeneration)
+      && (runtime.state?.providerGeneration ?? -1) >= 0
+      && runtime.state?.providerGeneration === runtime.caps?.providerGeneration
+  ));
+
   $effect(() => {
     const source = scopeFrameSource;
     if (source === undefined) return;
@@ -1527,12 +1534,12 @@
     const secondaryAudio = audioScopeStream !== null && source !== 'audio-fft';
     const observedMode = canonicalView?.scopeControls?.mode.reading;
     untrack(() => {
-      if (observedMode?.status === 'known') runtime.scope.stream(source === 'audio-fft' ? 'audio_fft' : 'hardware').setMode(observedMode.value);
       runtime.scope.setFrameAuthority((authority || noReadback)
         && typeof generation === 'number' && matchingGeneration
         ? { source: source === 'audio-fft' ? 'audio_fft' : 'hardware',
           receiver: source === 'audio-fft' ? null : authority?.receiver === 'MAIN' ? 0 : authority?.receiver === 'SUB' ? 1 : null,
           providerGeneration: generation } : null, secondaryAudio ? ['audio_fft'] : []);
+      if (observedMode?.status === 'known') runtime.scope.stream(source === 'audio-fft' ? 'audio_fft' : 'hardware').setMode(observedMode.value);
     });
   });
 

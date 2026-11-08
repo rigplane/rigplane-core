@@ -47,7 +47,7 @@ export type WsIncoming =
 
 // Incoming: server → client (base interface for typed sub-interfaces)
 export interface WsMessage {
-  type: 'dx_spot' | 'dx_spots' | 'notification' | 'ack' | 'error' | 'response' | 'hello' | 'state' | 'state_update' | 'companion_state' | 'event';
+  type: 'granted' | 'dx_spot' | 'dx_spots' | 'notification' | 'ack' | 'error' | 'response' | 'hello' | 'state' | 'state_update' | 'companion_state' | 'event';
   [key: string]: unknown;
 }
 

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { ScopeFrame } from '../scope-frame';
 
@@ -39,3 +39,17 @@ export const scopeFixtures = {
   outOfRange: Array.from(new Uint8Array(scopeWire({ sourceId: 'scope-1', epoch: 7, receiver: 1,
     viewStartHz: 144_000_000, viewEndHz: 148_000_000, outOfRange: true, pixels: null }))),
 };
+
+
+const goldenRoot = resolve(process.cwd(), '../tests/fixtures/scope-wire');
+export const scopeWireGoldenNames = readdirSync(goldenRoot).filter(name => name.endsWith('.bin')).sort();
+type ScopeWireGolden = {
+  source: ScopeFrame['source']; source_id: string; receiver: number | null;
+  view_start_hz: number; view_end_hz: number; coverage_start_hz: number; coverage_end_hz: number;
+  width: number; pixels: number[] | null; out_of_range: boolean; epoch: number; seq: number; sent_at_ms: number | null;
+};
+export function loadScopeWireGolden(name: string): { buffer: ArrayBuffer; expected: ScopeWireGolden } {
+  const bytes = readFileSync(resolve(goldenRoot, name));
+  return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    expected: JSON.parse(readFileSync(resolve(goldenRoot, name.replace('.bin', '.json')), 'utf8')) };
+}

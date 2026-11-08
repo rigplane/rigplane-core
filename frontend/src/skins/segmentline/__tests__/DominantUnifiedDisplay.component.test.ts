@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { lcdStreamFixture } from './scope-stream-fixture';
 import type { PeerSplitDisplayModel } from '../../../semantic/radio-display-model';
@@ -219,3 +219,7 @@ describe('DominantUnifiedDisplay', () => {
     expect(source).not.toMatch(/spectrumFrame|\.pixels/);
   });
 });
+
+
+beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { vi.unstubAllGlobals(); });

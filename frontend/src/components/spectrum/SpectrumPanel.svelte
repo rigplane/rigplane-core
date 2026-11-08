@@ -305,8 +305,7 @@
   let endFreq = $derived(audioFft
     ? ((displayGeometry?.view.endHz ?? 0) - (displayGeometry?.view.startHz ?? 0)) / 2
     : displayGeometry?.view.endHz ?? 0);
-  // Scope mode from the binary frame header (authoritative), qualified by
-  // the ingress owner into geometry.
+  // The runtime qualifies observed control mode into geometry; zero is a presentation fallback.
   let frameScopeMode = $derived(displayGeometry?.mode ?? 0);
   let fullscreen = $state(false);
   let showEiBi = $state(false);
@@ -501,6 +500,10 @@
   );
   let spanHz = $derived(endFreq > startFreq ? endFreq - startFreq : 0);
   let spectrumAuthority = $derived(audioFft ? null : toSpectrumAuthority(runtime.state, runtime.caps));
+  let scopeControlsMode = $derived.by(() => {
+    const reading = spectrumAuthority?.scopeControls?.mode.reading;
+    return reading?.status === 'known' && typeof reading.value === 'number' ? reading.value : null;
+  });
   // MOR-1497: the grab cursor must not promise a drag the gate will refuse.
   // Mirrors the FULL drag-start gate: frequency authority AND usable sample
   // geometry (before the first scope frame endFreq <= startFreq, so
@@ -636,19 +639,9 @@
   // (browser refocus) the reference stays visible immediately instead of
   // returning >1s later with the frame. FIX keeps its frame-bound
   // proportional line, audio FFT shows none, and viewer OFF hides it.
-  // Positive CENTER evidence: the live frame's own mode while a frame is
-  // present, otherwise the authority's observed scope-control mode — the
-  // post-clear frameScopeMode default (0) alone is NOT proof of CENTER,
-  // so a FIX projection that dropped to null grows no false 50% marker.
-  let scopeControlsMode = $derived.by(() => {
-    const reading = spectrumAuthority?.scopeControls?.mode.reading;
-    return reading?.status === 'known' && typeof reading.value === 'number' ? reading.value : null;
-  });
-  let centerReferenceMode = $derived(
-    spanHz > 0
-      ? !isFixedScope
-      : scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode),
-  );
+  // Only observed scope-control facts establish CENTER. The numeric
+  // presentation fallback on v2 geometry is not mode evidence.
+  let centerReferenceMode = $derived(scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode));
   // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
   let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
   let rememberedCenterReference = $derived.by(() => {
@@ -708,8 +701,7 @@
     const geometry = frameGeometry;
     const frequency = displayFrequencyHz;
     const authority = spectrumAuthority;
-    const center = spanHz > 0 ? !isFixedScope
-      : scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
+    const center = scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
     const sessionEpoch = runtime.controlSession.epoch;
     const fixed = isFixedScope;
     const follow = followSpanHz;

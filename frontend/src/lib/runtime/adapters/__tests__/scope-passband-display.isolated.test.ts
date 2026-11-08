@@ -1,3 +1,4 @@
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { describe, expect, it, vi } from 'vitest';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { FieldStatus, ServerState } from '$lib/types/state';
@@ -63,14 +64,12 @@ function receipt(input: ScopePassbandDisplayInput, sequence = 1, overrides: Reco
   const generation = input.caps!.providerGeneration;
   if (typeof generation !== 'number') throw new Error('fixture generation required');
   const pixels = overrides.pixels instanceof Uint8Array ? overrides.pixels : new Uint8Array([10, 128, 200]);
-  const buffer = new ArrayBuffer(16 + pixels.length); const wire = new DataView(buffer);
-  wire.setUint8(0, 1); wire.setUint8(1, typeof overrides.receiver === 'number' ? overrides.receiver : receiver);
-  wire.setUint8(2, typeof overrides.mode === 'number' ? overrides.mode : 0);
-  wire.setUint32(3, typeof overrides.startFreq === 'number' ? overrides.startFreq : 14_000_000, true);
-  wire.setUint32(7, typeof overrides.endFreq === 'number' ? overrides.endFreq : 14_100_000, true);
-  wire.setUint8(13, overrides.outOfRange === true ? 1 : 0); wire.setUint16(14, pixels.length, true);
-  new Uint8Array(buffer, 16).set(pixels);
-  const ingress = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1 });
+  const buffer = scopeWire({ sourceId: 'scope', receiver: typeof overrides.receiver === 'number' ? overrides.receiver : receiver,
+    viewStartHz: typeof overrides.startFreq === 'number' ? overrides.startFreq : 14_000_000,
+    viewEndHz: typeof overrides.endFreq === 'number' ? overrides.endFreq : 14_100_000,
+    outOfRange: overrides.outOfRange === true, pixels: pixels.length > 0 ? pixels : null });
+  const ingress = ingressScopeFrame(buffer, { source: 'radio', sourceId: 'scope', epoch: 1,
+    mode: typeof overrides.mode === 'number' ? overrides.mode : 0 });
   if (!ingress.ok) throw new Error(`invalid fixture: ${ingress.reason}`);
   input.frame = Object.freeze({ source: 'hardware', receiver, providerGeneration: generation,
     transportEpoch: 1, demanded: true, transport: 'connected', geometry: ingress.geometry, receipt: sequence });

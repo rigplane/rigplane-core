@@ -32,7 +32,7 @@ export interface ScopeGeometry {
   readonly source: ScopeFrame['source'];
   readonly sourceId: string;
   readonly receiver: ScopeFrame['receiver'];
-  /** Observed control-plane scope mode, qualified by the ingress owner. */
+  /** Control-plane scope mode, or presentation fallback zero while unobserved. */
   readonly mode: number;
   readonly width: number;
   readonly view: View;

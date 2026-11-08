@@ -12,8 +12,8 @@ export interface ScopeMessageSource {
 
 /**
  * One shared stream per source: pixels reach renderers through `subscribe`
- * (non-reactive), while the small `geometry` store is the only reactive
- * surface and changes only when the qualified facts change.
+ * (non-reactive), while `geometry` publishes qualified display facts and
+ * the grant/error stores publish subscription negotiation state.
  */
 export class ScopeStream {
   readonly geometry: Readable<ScopeGeometry | null>;
@@ -134,6 +134,10 @@ export class ScopeStream {
 
   setSource(source: ScopeFrame['source'], sourceId: string): void {
     if (this.context.source === source && this.context.sourceId === sourceId) return;
+    const previousSourceId = this.context.sourceId;
+    if (this.slotFilter !== null) this.slotFilter = source === 'radio'
+      ? `${sourceId}${this.slotFilter.slice(previousSourceId.length)}` : `${sourceId}:*`;
+    this.clearMode();
     this.context = { ...this.context, source, sourceId };
     if (this.surfaces.size > 0) {
       for (const [token, request] of this.surfaces) this.surfaces.set(token, { ...request, sourceId,
@@ -142,6 +146,12 @@ export class ScopeStream {
     } else if (this.subscriptionValue) this.setSubscription({ ...this.subscriptionValue, sourceId,
       receiver: source === 'radio' ? this.subscriptionValue.receiver : null });
     else this.reset();
+  }
+
+  clearMode(): void {
+    const { source, sourceId, epoch } = this.context;
+    this.context = { source, sourceId, epoch };
+    this.reset();
   }
 
   setMode(mode: number): void {
@@ -210,7 +220,7 @@ export class ScopeStream {
   /** Last accepted ID for valid selected geometry; preserved across evidence boundaries. */
   get geometryReceipt(): number { return this.geometryAccepted; }
 
-  /** A new transport session: the epoch stamps future frames and stale-session state retires. */
+  /** A transport-session change retires cached receipts; wire epochs remain producer-owned. */
   setSessionEpoch(epoch: number): void {
     if (this.disposed) return;
     if (this.context.epoch === epoch) return;
