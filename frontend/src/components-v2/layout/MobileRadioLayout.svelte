@@ -70,6 +70,8 @@
     getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
   } from '$lib/stores/connection.svelte';
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
+  import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
+  import { projectHeaderFrequency } from '$lib/runtime/adapters/tx-capabilities';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { createManagedTxGesture, createPttHold } from '../wiring/managed-tx-gesture';
   import { vibrate } from '$lib/utils/haptics';
@@ -399,6 +401,12 @@
   const txCtl = getManagedAppTxController();
   let txState = $state.raw(txCtl.snapshot());
   const stopWatchingTx = txCtl.subscribe((next) => { txState = next; });
+  let headerFrequency = $derived(projectHeaderFrequency(
+    toRadioViewModel(radioState, caps, txState), activeVfo.freq,
+  ));
+  let headerPendingFrequencyHz = $derived(
+    headerFrequency.showingTxFrequency ? null : activePendingFrequencyHz,
+  );
   // Registered BEFORE the PTT teardown below on purpose: Svelte tears
   // effects down in creation order, so the subscription is dropped first and
   // the teardown release runs to completion inside the controller instead of
@@ -553,7 +561,7 @@
   <div class="m-ls-overlay">
     <div class="m-ls-vfo">
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}"></span>
-      <FrequencyDisplay freq={activeVfo.freq} pendingDisplayHz={activePendingFrequencyHz} compact active />
+      <FrequencyDisplay freq={headerFrequency.frequencyHz} pendingDisplayHz={headerPendingFrequencyHz} compact active />
     </div>
     <div class="m-ls-quick-modes">
       {#each QUICK_MODES as m}
@@ -663,7 +671,7 @@
            their catalog titles. -->
       <span class="m-tx-indicator" data-rf={managedTxRf} style="background: {txIndicatorColor}" title={managedTxRf === 'unknown' ? undefined : txPermit === 'allowed' ? t('core.mobile.tx.allowed') : t('core.mobile.tx.notAllowedBand')}></span>
       <div class="m-vfo-freq" bind:this={vfoFreqElement}>
-        <FrequencyDisplay freq={activeVfo.freq} pendingDisplayHz={activePendingFrequencyHz} compact active />
+        <FrequencyDisplay freq={headerFrequency.frequencyHz} pendingDisplayHz={headerPendingFrequencyHz} compact active />
       </div>
       <button class="m-settings-btn" onclick={() => (setupOpen = true)} aria-label={t('core.mobile.setupButton')}>
         <Settings size={16} />
