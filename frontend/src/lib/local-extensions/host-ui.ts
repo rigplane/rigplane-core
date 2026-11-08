@@ -1,5 +1,20 @@
 import type { CanonicalLayoutMode } from '$lib/stores/layout.svelte';
 import { LOCAL_SUPERVISOR_META_NAME } from './manifest';
+import { runtime } from '$lib/runtime';
+import { getRadioPowerOn } from '$lib/stores/connection.svelte';
+import { hasCapability } from '$lib/stores/capabilities.svelte';
+
+export function powerRequestAllowed(on: boolean, origin?: 'powered-off-overlay'): boolean {
+  if (runtime.remoteController) return false;
+  const power = getRadioPowerOn();
+  if (origin === 'powered-off-overlay') {
+    return on && runtime.caps?.powerOnCommand === true
+      && runtime.radioHealth?.likelyCause !== 'radio_not_connected'
+      && (power === false || (power !== true
+        && runtime.radioHealth?.likelyCause === 'radio_powered_off_likely'));
+  }
+  return hasCapability('power_control') && power !== null && power !== on;
+}
 
 /** Injected by the embedding host, never by an extension manifest. */
 export interface LocalExtensionHostDeclaration {
@@ -46,7 +61,7 @@ export interface HostUi {
   /** true means the UI accepted the request, not that an action completed. */
   connect(): boolean;
   disconnect(): boolean;
-  setRadioPower(on: boolean): boolean;
+  setRadioPower(on: boolean, origin?: 'powered-off-overlay'): boolean;
   openRadioControls(): boolean;
 }
 

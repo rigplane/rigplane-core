@@ -5,7 +5,7 @@
   import { getLayoutMode } from '$lib/stores/layout.svelte';
   import { getTheme } from '../../components-v2/theme/theme-switcher';
   import { runtime } from '$lib/runtime';
-  import { bindHostUi, openHostRadioControls, publishHostSnapshot, publishListening } from './host-ui';
+  import { bindHostUi, openHostRadioControls, powerRequestAllowed, publishHostSnapshot, publishListening } from './host-ui';
   import { readListeningSnapshot } from './host-listening';
   import { t } from '$lib/i18n';
   import ConfirmDialog from '../../components-v2/dialogs/ConfirmDialog.svelte';
@@ -40,10 +40,10 @@
       action: () => connect ? runtime.system.connect() : runtime.system.disconnect() });
     return true;
   }
-  function requestPower(on: boolean): boolean {
-    if (!hasCapability('power_control') || runtime.remoteController || getRadioPowerOn() === null || getRadioPowerOn() === on) return false;
+  function requestPower(on: boolean, origin?: 'powered-off-overlay'): boolean {
+    if (confirmOpen || !powerRequestAllowed(on, origin)) return false;
     requestConfirm({ message: t(on ? 'core.statusbar.power.confirmTurnOn' : 'core.statusbar.power.confirmTurnOff'),
-      action: () => getRadioPowerOn() === null ? undefined : on ? runtime.system.powerOn() : runtime.system.powerOff(),
+      action: () => !powerRequestAllowed(on, origin) ? undefined : on ? runtime.system.powerOn() : runtime.system.powerOff(),
       formatError: err => t(on ? 'core.statusbar.power.failedTurnOn' : 'core.statusbar.power.failedTurnOff', { detail: String(err) }) });
     return true;
   }
