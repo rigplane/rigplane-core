@@ -24,7 +24,6 @@ import AudioSpectrumPanel from '../../../components-v2/panels/audio-scope/AudioS
 import {
   type ScopeFrame, type SpectrumAuthority, type SpectrumFilterRule } from '$lib/runtime/adapters/scope-adapter';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
-import { resolveLcdSpectrumFrame } from '../../../skins/segmentline/lcd-display-contract';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { ScopeRenderTrace, type TraceReceipt } from '$lib/runtime/scope-render-trace';
 import { radio } from '$lib/stores/radio.svelte';
@@ -983,6 +982,42 @@ describe('SpectrumPanel component', () => {
     expect(Math.max(...changed), JSON.stringify([...panelEffects.origins])).toBeLessThanOrEqual(1);
     expect(changed.some((runs) => runs === 1)).toBe(true);
     console.info('MOR-4270 SpectrumPanel effects', { registered: baseline.size, pixelOnly: 0, geometryMaximum: Math.max(...changed), geometryTotal: changed.reduce((sum, runs) => sum + runs, 0) });
+  });
+
+  it('retires averaging and peak history when only the scope payload width changes', async () => {
+    const { SpectrumRenderer: RealRenderer } = await vi.importActual<typeof import('$lib/renderers/spectrum-renderer')>('$lib/renderers/spectrum-renderer');
+    const actual = new RealRenderer();
+    const expected = new RealRenderer();
+    const context = () => ({ ...noopCanvas, setLineDash: noop, lineTo: vi.fn(), moveTo: vi.fn() });
+    const painted = context(); const fresh = context();
+    const previousObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: Element) { this.callback([{ target, contentRect: { width: 200, height: 100 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+      unobserve() {}
+      disconnect() {}
+    } as typeof ResizeObserver;
+    const original = spectrumRendererHarness.render.getMockImplementation()!;
+    spectrumRendererHarness.render.mockImplementation((_ctx, pixels, width, height, options) => {
+      spectrumRendererHarness.lastOptions = options;
+      actual.render(painted as unknown as CanvasRenderingContext2D, pixels, width, height, options);
+    });
+    try {
+      mountPanel();
+      emitFrame({ pixels: new Uint8Array([80, 80]), sequence: 1 });
+      await flushWaterfallPaint();
+      expect(painted.lineTo.mock.calls.some(([x, y]) => x > 5 && x < 190 && y === 0)).toBe(true);
+      painted.lineTo.mockClear(); painted.moveTo.mockClear();
+      emitFrame({ pixels: new Uint8Array([0, 0, 0, 0]), sequence: 2 });
+      await flushWaterfallPaint();
+      const last = spectrumRendererHarness.render.mock.calls.at(-1)!;
+      expected.render(fresh as unknown as CanvasRenderingContext2D, last[1], last[2], last[3], last[4]);
+      expect(painted.lineTo.mock.calls).toEqual(fresh.lineTo.mock.calls);
+      expect(painted.moveTo.mock.calls).toEqual(fresh.moveTo.mock.calls);
+    } finally {
+      spectrumRendererHarness.render.mockImplementation(original);
+      globalThis.ResizeObserver = previousObserver;
+    }
   });
 
   it('delivers the central audio FFT payload to both renderer sinks without a copy', async () => {
@@ -4550,6 +4585,16 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
       expect(audioState.bandwidth).toBe(3_000);
       expect(audioState.filterWidth).toBe(2_400);
       expect(noopCanvas.fillText).toHaveBeenCalledWith('0', 400, 197);
+      runtimeHarness.state.currentCaps = { ...runtimeHarness.state.currentCaps as typeof IC7300_CAPABILITIES, scopeSource: 'audio_fft' };
+      const centralAudio = mountPanel();
+      expect(centralAudio.querySelector('.audio-source-label')).not.toBeNull();
+      audioSocket.receive(audioWire); flushSync(); await flushWaterfallPaint();
+      const centralPixels = spectrumRendererHarness.render.mock.calls.at(-1)![1];
+      expect(centralPixels.buffer).toBe(audioWire);
+      expect(centralPixels.byteOffset).toBe(16);
+      expect([...centralPixels]).toEqual([1, 127, 254]);
+      expect(spectrumRendererHarness.lastOptions).toMatchObject({ sampleOffset: 1, sampleAmplitudeMax: 160 });
+
     } finally {
       for (const component of components.splice(0)) unmount(component);
       for (const channel of channels.values()) channel.disconnect();
