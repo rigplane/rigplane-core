@@ -1,11 +1,11 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-11-08T13:03:01.796Z",
-  "commit": "339c9c681dc30ca2d4843ca00fc8705a02011a0e",
-  "commitShort": "339c9c68",
-  "branch": "HEAD",
+  "generatedAt": "2026-11-08T15:16:02.018Z",
+  "commit": "86795aeb50e856ff11e906adb386180a363d289c",
+  "commitShort": "86795aeb",
+  "branch": "codex/mor-4270-r1-scope-stream",
   "platform": "linux-arm64",
-  "node": "v24.13.0",
+  "node": "v20.20.2",
   "playwright": "1.58.2",
   "comparator": {
     "engine": "playwright-bundled-pixelmatch",
