@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { audioScopeFactsRevision } from '$lib/runtime/adapters/scope-adapter';
+  import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import type { ScopeStream } from '$lib/runtime/scope-stream';
@@ -23,7 +23,20 @@
   const EMPTY_BINS = new Uint8Array(64);
   function paint() {
     if (!svg || !trace) return;
-    const live = inputState === 'live' && receiverActivity === 'active'
+    const state = runtime.state;
+    const projection = audioScopeProjection(geometry, state);
+    const viewSpan = geometry ? geometry.view.endHz - geometry.view.startHz : 0;
+    const coverageEnd = projection && geometry && viewSpan > 0
+      ? Math.max((geometry.coverage.startHz - geometry.view.startHz) / viewSpan - projection.zero,
+        (geometry.coverage.endHz - geometry.view.startHz) / viewSpan - projection.zero)
+      : 0;
+    const coverageStart = projection && geometry && viewSpan > 0
+      ? Math.min((geometry.coverage.startHz - geometry.view.startHz) / viewSpan - projection.zero,
+        (geometry.coverage.endHz - geometry.view.startHz) / viewSpan - projection.zero)
+      : 0;
+    const span = projection ? Math.min(projection.spanHz,
+      Math.max(coverageStart / projection.perHz, coverageEnd / projection.perHz)) : 0;
+    const live = projection !== null && span > 0 && inputState === 'live' && receiverActivity === 'active'
       && geometry?.source === 'audio_fft' && geometry.freshness === 'fresh'
       && !geometry.outOfRange && geometry.hasPixels
       && (geometry.receiver === null || geometry.receiver === (receiver === 'MAIN' ? 0 : receiver === 'SUB' ? 1 : -1))
@@ -31,10 +44,15 @@
     const bins = live ? pixels! : EMPTY_BINS;
     svg.dataset.fftMode = live ? 'live' : 'safe-empty';
     svg.classList.toggle('ghosted', !live);
-    trace.setAttribute('d', Array.from(bins, (sample, index) => {
-    const x = (index / (bins.length - 1)) * 500;
-    const y = 92 - Math.max(0, Math.min(255, sample)) / 255 * 82;
-    return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
+    trace.setAttribute('d', Array.from(bins, (_, index) => {
+      const fraction = index / (bins.length - 1);
+      const sampleIndex = live
+        ? Math.round((projection!.zero + projection!.perHz * span * fraction) * (bins.length - 1))
+        : index;
+      const sample = bins[sampleIndex] ?? 0;
+      const x = fraction * 500;
+      const y = 92 - sample / 255 * 82;
+      return `${index === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
     }).join(' '));
   }
   $effect(() => {
@@ -51,7 +69,7 @@
     return () => { stopFrames(); stopGeometry(); pixels = null; };
   });
   $effect(() => {
-    void geometry; void receiver; void inputState; void receiverActivity;
+    void geometry; void receiver; void inputState; void receiverActivity; void runtime.state;
     const slot = scopeStream?.selectedSlot;
     pixels = slot ? scopeStream?.latest(slot)?.pixels ?? null : null;
     paint();

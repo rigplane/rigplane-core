@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import { lcdStreamFixture } from './scope-stream-fixture';
+import { installObservedAudioState, lcdStreamFixture } from './scope-stream-fixture';
 import { projectPeerSplitDisplay } from '../../../semantic/radio-display-model';
 import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import { topologyFixtures, withAudioOnlyScope } from '../../../semantic/fixtures/topologies';
@@ -81,5 +81,6 @@ for (const [index, name] of names.entries()) {
 }
 
 
-beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
-afterEach(() => { vi.unstubAllGlobals(); });
+let restoreAudioState: () => void;
+beforeEach(() => { restoreAudioState = installObservedAudioState(); vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { restoreAudioState(); vi.unstubAllGlobals(); });

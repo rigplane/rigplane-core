@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, beforeEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import { lcdStreamFixture } from './scope-stream-fixture';
+import { installObservedAudioState, lcdStreamFixture } from './scope-stream-fixture';
 import type {
   PeerSplitDisplayModel,
   PeerSplitReceiverDisplay,
@@ -215,5 +215,6 @@ describe('CenterstageDisplay', () => {
 });
 
 
-beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
-afterEach(() => { vi.unstubAllGlobals(); });
+let restoreAudioState: () => void;
+beforeEach(() => { restoreAudioState = installObservedAudioState(); vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+afterEach(() => { restoreAudioState(); vi.unstubAllGlobals(); });
