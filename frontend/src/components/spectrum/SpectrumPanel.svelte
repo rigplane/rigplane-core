@@ -653,20 +653,6 @@
   );
   // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
   let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
-  $effect(() => {
-    const authority = spectrumAuthority;
-    if (authority === null) return;
-    const center = spanHz > 0 ? !isFixedScope
-      : scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
-    if (center === null) return;
-    provenCenterMode = center
-      ? {
-          providerGeneration: authority.providerGeneration,
-          receiver: authority.receiver,
-          sessionEpoch: runtime.controlSession.epoch,
-        }
-      : null;
-  });
   let rememberedCenterReference = $derived.by(() => {
     const memory = provenCenterMode;
     if (memory === null) return false;
@@ -711,36 +697,54 @@
   // presets edit the View directly (display-only until R4 grants views).
   let followSpanHz = $state<number | null>(null);
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
+  let coordinatingView = false;
   let effectiveView = $state.raw<View>({ startHz: 0, endHz: 0 });
   $effect(() => {
-    const stop = scopeView.subscribe((view) => { effectiveView = view; });
+    const stop = scopeView.subscribe((view) => {
+      effectiveView = view;
+      if (!coordinatingView) untrack(() => syncPanoramaMotion(panoramaResetKey, panoramaTargetHz));
+    });
     return stop;
   });
   $effect(() => {
-    // The confirmed leg is the confirmed frequency carried by the current
-    // span — the same anchor the old target chain's final leg used; the
-    // frame window itself is the renderer's sample plane, not the viewport.
     const geometry = frameGeometry;
     const frequency = displayFrequencyHz;
-    if (!geometry || frequency === null || frequency === undefined
-      || geometry.view.endHz <= geometry.view.startHz) return;
-    const span = followSpanHz ?? geometry.view.endHz - geometry.view.startHz;
-    scopeView.set('confirmed', isFixedScope && followSpanHz === null ? geometry.view
-      : { startHz: frequency - span / 2, endHz: frequency + span / 2 });
-  });
-  $effect(() => {
-    const active = panoramaActive;
     const authority = spectrumAuthority;
-    if (!active || authority === null) {
-      scopeView.set('tuningBurst', null);
-      scopeView.set('pending', null);
-      return;
-    }
-    const confirmed = untrack(() => scopeView.confirmed);
-    const panFrom = (hz: number | null) => (hz === null || confirmed.endHz <= confirmed.startHz
-      ? null : panView(confirmed, hz - viewCenterHz(confirmed)));
-    scopeView.set('tuningBurst', panFrom(getTuningBurstFrequencyHz(authority.receiver)));
-    scopeView.set('pending', panFrom(getPendingFrequencyHz(authority.receiver)));
+    const center = spanHz > 0 ? !isFixedScope
+      : scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
+    const sessionEpoch = runtime.controlSession.epoch;
+    const fixed = isFixedScope;
+    const follow = followSpanHz;
+    const active = panoramaActive;
+    const burst = active && authority !== null ? getTuningBurstFrequencyHz(authority.receiver) : null;
+    const pending = active && authority !== null ? getPendingFrequencyHz(authority.receiver) : null;
+    const key = panoramaResetKey;
+    untrack(() => {
+      coordinatingView = true;
+      try {
+        if (authority !== null && center !== null) {
+          provenCenterMode = center ? {
+            providerGeneration: authority.providerGeneration,
+            receiver: authority.receiver,
+            sessionEpoch,
+          } : null;
+        }
+        if (geometry && frequency !== null && frequency !== undefined
+          && geometry.view.endHz > geometry.view.startHz) {
+          const span = follow ?? geometry.view.endHz - geometry.view.startHz;
+          scopeView.set('confirmed', fixed && follow === null ? geometry.view
+            : { startHz: frequency - span / 2, endHz: frequency + span / 2 });
+        }
+        const confirmed = scopeView.confirmed;
+        const panFrom = (hz: number | null) => hz === null || confirmed.endHz <= confirmed.startHz
+          ? null : panView(confirmed, hz - viewCenterHz(confirmed));
+        scopeView.set('tuningBurst', panFrom(burst));
+        scopeView.set('pending', panFrom(pending));
+      } finally {
+        coordinatingView = false;
+      }
+      syncPanoramaMotion(key, panoramaTargetHz);
+    });
   });
   // MOR-4256/MOR-4270: the View's effective center leads while the pointer
   // is down — the viewport follows the gesture from the cached last frame,
@@ -777,13 +781,6 @@
     else panoramaRafId = 0;
   }
 
-  $effect(() => {
-    const key = panoramaResetKey;
-    const target = panoramaTargetHz;
-    untrack(() => {
-      syncPanoramaMotion(key, target);
-    });
-  });
 
   // Effective viewport: until the motion state synchronizes to the context
   // key (first frame or a context change), the frame's own center is the
