@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedTxController } from '../../runtime/tx-controller/managed-controller';
 import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
+import { validateCapabilities } from '$lib/types/capabilities';
+import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -92,10 +94,6 @@ vi.mock('../../stores/audio.svelte', () => ({
   setTxError: vi.fn(),
 }));
 
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => null),
-}));
-
 class FakeWebSocket {
   static OPEN = 1;
   static CONNECTING = 0;
@@ -146,6 +144,18 @@ describe('candidate-only RX numeric overlay', () => {
     const { audioManager } = await import('../audio-manager');
     audioManager.destroy();
     vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers();
+  });
+
+  it('subscribes to capabilities only on first active use', async () => {
+    const capabilities = await import('$lib/stores/capabilities.svelte');
+    const subscribe = vi.spyOn(capabilities, 'subscribeCapabilities');
+    const { audioManager } = await import('../audio-manager');
+    expect(subscribe).not.toHaveBeenCalled();
+    audioManager.setAudioConfig({ main_gain_db: 0 });
+    audioManager.setAudioConfig({ main_gain_db: 0 });
+    expect(subscribe).toHaveBeenCalledOnce();
+    audioManager.destroy();
+    subscribe.mockRestore();
   });
 
   it.each([undefined, '0'])('does not observe or display in an ordinary build (%s)', async (flag) => {
@@ -652,10 +662,16 @@ describe('AudioManager websocket subscriptions', () => {
 
   it('sends rx audio_start when startRx is called after config already opened the websocket', async () => {
     const { audioManager } = await import('../audio-manager');
+    const { setCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const wire = structuredClone(stateWireGoldens['IC-7610'].capabilities);
+    expect(setCapabilities(validateCapabilities({
+      ...wire, capabilities: [...wire.capabilities, 'lan_dual_rx_audio_routing'],
+    }))).toBe(true);
 
     audioManager.setAudioConfig({ focus: 'main', split_stereo: true });
     const ws = FakeWebSocket.instances[0];
     ws.open();
+    expect(ws.sent).toContain(JSON.stringify({ type: 'audio_config', focus: 'main', split_stereo: true }));
     ws.sent = [];
 
     audioManager.startRx();

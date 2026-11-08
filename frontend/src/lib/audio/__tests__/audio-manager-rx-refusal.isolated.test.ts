@@ -3,6 +3,10 @@ import { flushSync, mount, unmount } from 'svelte';
 import Toast from '../../../components/shared/Toast.svelte';
 import { setLocale } from '$lib/i18n';
 import { _resetLocale } from '$lib/i18n/store.svelte';
+import { validateCapabilities } from '$lib/types/capabilities';
+import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
+import type { RxPlayer } from '../rx-player';
+type ConsumedRouting = Pick<RxPlayer, 'focus' | 'splitStereo' | 'setFocus' | 'setSplitStereo'>;
 // The rendered-toast describe runs the refusal through the REAL runtime
 // notification path. These imports are static on purpose: Toast, the i18n
 // runtime, the real ws-client bus, the audio manager singleton and the
@@ -57,7 +61,7 @@ const { rxStart, rxStop, txStart, txStop } = vi.hoisted(() => ({
 }));
 
 vi.mock('../rx-player', () => ({
-  RxPlayer: class {
+  RxPlayer: class implements ConsumedRouting {
     start = rxStart;
     stop = rxStop;
     flush = vi.fn();
@@ -68,11 +72,11 @@ vi.mock('../rx-player', () => ({
       bufferDepthMs: 0,
       droppedFrames: 0,
     }));
-    setFocus = vi.fn();
-    setSplitStereo = vi.fn();
+    focus: ConsumedRouting['focus'] = 'main';
+    splitStereo: ConsumedRouting['splitStereo'] = false;
+    setFocus(value: Parameters<ConsumedRouting['setFocus']>[0]) { this.focus = value; }
+    setSplitStereo(value: Parameters<ConsumedRouting['setSplitStereo']>[0]) { this.splitStereo = value; }
     setChannelGainDb = vi.fn();
-    get focus() { return 'main'; }
-    get splitStereo() { return false; }
     get mainGainDb() { return 0; }
     get subGainDb() { return 0; }
     set volume(_value: number) {}
@@ -100,11 +104,6 @@ vi.mock('../tx-mic', () => ({
 vi.mock('../../stores/connection.svelte', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../stores/connection.svelte')>(),
   setAudioConnected: vi.fn(),
-}));
-
-vi.mock('$lib/stores/capabilities.svelte', async (importOriginal) => ({
-  ...await importOriginal<typeof import('$lib/stores/capabilities.svelte')>(),
-  getCapabilities: vi.fn(() => null),
 }));
 
 // The rendered-toast describe imports the REAL frontend-runtime module so
@@ -412,11 +411,17 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
 
   it('a server close with no browser demand latches nothing and reconnects nothing', async () => {
     const { audioManager } = await import('../audio-manager');
+    const { setCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const wire = structuredClone(stateWireGoldens['IC-7610'].capabilities);
+    expect(setCapabilities(validateCapabilities({
+      ...wire, capabilities: [...wire.capabilities, 'lan_dual_rx_audio_routing'],
+    }))).toBe(true);
     const audio = await import('../../stores/audio.svelte');
 
     audioManager.setAudioConfig({ focus: 'main', split_stereo: true });
     const socket = FakeWebSocket.instances[0];
     socket.open();
+    expect(socket.sent).toContain(JSON.stringify({ type: 'audio_config', focus: 'main', split_stereo: true }));
 
     socket.onclose?.({ code: 1006, reason: 'rearm' });
     expect(audio.getAudioState().rxError).toBe(false);

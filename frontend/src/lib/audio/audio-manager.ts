@@ -14,7 +14,7 @@ import { SAMPLE_RATE, TX_PCM_SAMPLE_RATES } from './constants';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback, setRxError, setTxError } from '../stores/audio.svelte';
 import { authenticatedWsUrl } from '../transport/ws-url';
-import { getCapabilities } from '$lib/stores/capabilities.svelte';
+import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 
 export type AudioFocus = RxAudioFocus;
 
@@ -131,6 +131,10 @@ class AudioManager {
   // Manager cancellation identity; internal TxMic teardown is still a genuine result.
   private txStartGeneration = 0;
   private appliedAudioConfig: Readonly<Partial<AudioRoutingConfig>> | null = null;
+  private requestedAudioConfig: AudioRoutingConfig = {
+    focus: 'both', split_stereo: false, main_gain_db: 0, sub_gain_db: 0,
+  };
+  private capabilitiesUnsubscribe: (() => void) | null = null;
   private backoff = BACKOFF_MIN;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
@@ -187,7 +191,32 @@ class AudioManager {
     this._operatorNotifier = notify;
   }
 
-  setControllerBinding(binding: AudioControllerBinding): void { this.controller = binding; }
+  setControllerBinding(binding: AudioControllerBinding): void {
+    this.controller = binding;
+    this.ensureCapabilitiesSubscription();
+  }
+
+  private ensureCapabilitiesSubscription(): void {
+    if (this.capabilitiesUnsubscribe !== null) return;
+    this.capabilitiesUnsubscribe = subscribeCapabilities(() => this.reconcileAudioCapabilities());
+  }
+
+  private reconcileAudioCapabilities(): void {
+    const supported = getCapabilities()?.capabilities.includes('lan_dual_rx_audio_routing') === true;
+    if (!supported) this._audioConfigPending = false;
+    const desired = supported ? this.requestedAudioConfig : {
+      focus: 'both' as const, split_stereo: false, main_gain_db: 0, sub_gain_db: 0,
+    };
+    const current = this.getAudioConfig();
+    if (current.focus === desired.focus && current.split_stereo === desired.split_stereo
+      && current.main_gain_db === desired.main_gain_db && current.sub_gain_db === desired.sub_gain_db) return;
+    if (current.focus !== desired.focus) this.rxPlayer.setFocus(desired.focus);
+    if (current.split_stereo !== desired.split_stereo) this.rxPlayer.setSplitStereo(desired.split_stereo);
+    if (current.main_gain_db !== desired.main_gain_db) this.rxPlayer.setChannelGainDb('main', desired.main_gain_db);
+    if (current.sub_gain_db !== desired.sub_gain_db) this.rxPlayer.setChannelGainDb('sub', desired.sub_gain_db);
+    this.appliedAudioConfig = Object.freeze(this.getAudioConfig());
+    this.notify();
+  }
 
   /** Register a change callback for reactive UI updates. Returns unsubscribe fn. */
   onChange(fn: () => void): () => void {
@@ -202,6 +231,7 @@ class AudioManager {
   // ── RX ──
 
   startRx(): void {
+    this.ensureCapabilitiesSubscription();
     if (this.controller?.remote() && !this.controller.ready()) return;
     if (this._rxEnabled) return;
     this._rxEnabled = true;
@@ -261,6 +291,13 @@ class AudioManager {
    * CI-V command never left the browser.
    */
   setAudioConfig(cfg: Partial<AudioRoutingConfig>): void {
+    this.ensureCapabilitiesSubscription();
+    this.requestedAudioConfig = { ...this.requestedAudioConfig, ...cfg };
+    const supported = getCapabilities()?.capabilities.includes('lan_dual_rx_audio_routing') === true;
+    if (!supported) {
+      cfg = { focus: 'both', split_stereo: false, main_gain_db: 0, sub_gain_db: 0 };
+      this._audioConfigPending = false;
+    }
     this.audioConfigControllerEpoch = this.controller?.epoch() ?? 0;
     if (cfg.focus !== undefined) this.rxPlayer.setFocus(cfg.focus);
     if (cfg.split_stereo !== undefined) this.rxPlayer.setSplitStereo(cfg.split_stereo);
@@ -275,6 +312,7 @@ class AudioManager {
       ...(cfg.sub_gain_db !== undefined ? { sub_gain_db: applied.sub_gain_db } : {}),
     });
     this.notify();
+    if (!supported) return;
     // Only the focus + split_stereo pair maps to CI-V; gain is local.
     if (cfg.focus === undefined && cfg.split_stereo === undefined) return;
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -291,6 +329,10 @@ class AudioManager {
   private audioConfigControllerEpoch = 0;
 
   private _flushPendingAudioConfig(): void {
+    if (getCapabilities()?.capabilities.includes('lan_dual_rx_audio_routing') !== true) {
+      this._audioConfigPending = false;
+      return;
+    }
     if (this.controller?.remote() && !this.controller.current(this.audioConfigControllerEpoch)) {
       this._audioConfigPending = false;
       return;
@@ -820,6 +862,8 @@ class AudioManager {
   /** Full cleanup. Explicit by default: acknowledges latched audio errors.
    *  { automatic: true } forwards to stopRx/stopTx and preserves them. */
   destroy(options?: { automatic?: boolean }): void {
+    this.capabilitiesUnsubscribe?.();
+    this.capabilitiesUnsubscribe = null;
     this.stopRx(options);
     this.stopTx(options);
     this.close();

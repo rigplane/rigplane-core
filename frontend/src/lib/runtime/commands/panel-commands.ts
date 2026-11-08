@@ -551,9 +551,7 @@ export function makeAudioRoutingHandlers() {
       if (split !== null) cfg.split_stereo = split;
       if (mainDb !== null) cfg.main_gain_db = mainDb;
       if (subDb !== null) cfg.sub_gain_db = subDb;
-      if (Object.keys(cfg).length > 0) {
-        audioManager.setAudioConfig(cfg);
-      }
+      if (Object.keys(cfg).length > 0) audioManager.setAudioConfig(cfg);
       return {
         focus: focus ?? 'both' as AudioFocus,
         split_stereo: split ?? false,
@@ -1259,7 +1257,7 @@ function activateReceiver(
 ): boolean {
   if (!context || knownA03cReceiver(context, target) === null) return false;
   dispatchRadioIntent({ name: 'set_vfo', params: { vfo: target } });
-  audioManager.setAudioConfig({ focus: target === 'SUB' ? 'sub' : 'main' });
+  makeAudioRoutingHandlers().onFocusChange(target === 'SUB' ? 'sub' : 'main');
   return true;
 }
 

@@ -1230,7 +1230,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onEqual();
     vfo.onSplitToggle();
     vfo.onMainVfoClick();
+    expect(localStorage.getItem('icom.audio.focus')).toBe('main');
     vfo.onSubVfoClick();
+    expect(localStorage.getItem('icom.audio.focus')).toBe('sub');
     vfo.onVfoSelect('SUB', 'B');
     vfo.onMainFreqChange(14_100_000);
     vfo.onSubFreqChange(7_100_000);
@@ -1327,6 +1329,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     ]);
     expectIntentTransport();
     expect(h.setAudioConfig).toHaveBeenCalledExactlyOnceWith({ focus: 'sub' });
+    expect(localStorage.getItem('icom.audio.focus')).toBe('sub');
     expect(h.patchRadioState).not.toHaveBeenCalled();
     expect(panel.scrollIntoView).toHaveBeenCalled();
     query.mockRestore();
