@@ -30,7 +30,7 @@ def max_hold(pixels: bytes, coverage: Coverage, view: View, width: int) -> bytes
         len(pixels), np.ceil((ends[valid] - coverage.start_hz) * native_scale)
     ).astype(np.intp)
     nonempty = first < last
-    result = np.zeros(width, dtype=np.uint8)
+    result: np.ndarray[tuple[int], np.dtype[np.uint8]] = np.zeros(width, dtype=np.uint8)
     if nonempty.any():
         positions = np.flatnonzero(valid)[nonempty]
         first, last = first[nonempty], last[nonempty]
