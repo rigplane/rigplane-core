@@ -3532,7 +3532,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     }
   });
 
-  it('keeps actual VFO digits on every drag target through coalescing and stale post-release readbacks', async () => {
+  it.each([14_034_000, 14_060_000])('keeps actual VFO digits on every drag target through coalescing and stale readbacks until fresh %i', async (settledHz) => {
     const restore = stubReducedMotion();
     const adapters = await import('$lib/runtime/adapters/panel-adapters');
     const actualAdapters = await vi.importActual<typeof adapters>('$lib/runtime/adapters/panel-adapters');
@@ -3590,6 +3590,20 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       }
       const first = commands.getCommandLifecycles()[0];
       commands.acknowledgeCommand(first.id, first.originalEpoch, first.originalEpoch);
+      const ownEcho = structuredClone(state);
+      ownEcho.observationSeq = (state.observationSeq ?? 0) + 1;
+      ownEcho.main!.freqHz = 14_040_000; ownEcho.main!.vfoA!.freqHz = 14_040_000;
+      ownEcho.fieldStatus!['main.freqHz'].lastObservedMonotonic!++;
+      expect(radio.setRadioState(ownEcho)).toBe(true);
+      runtimeHarness.state.currentState = radio.getRadioState();
+      authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration });
+      refreshSpectrumAuthority();
+      emitFrame({ startFreq: 13_990_000, endFreq: 14_090_000 });
+      await flushPreviewPaint();
+      expect(digits()).toContain('14034000');
+      pointer(spectrum, 'pointermove', 42, 133); await flushPreviewPaint();
+      expect(digits()).toContain('14034000');
+      expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
       pointer(spectrum, 'pointerup', 42, 133);
       expect(send).toHaveBeenLastCalledWith('set_freq',
         { freq: 14_034_000, receiver: 0 }, expect.any(String));
@@ -3600,14 +3614,14 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await vi.waitFor(() => expect(actualAdapters.getTuningBurstFrequencyHz(0)).toBeNull());
       await flushPreviewPaint();
       expect(actualAdapters.getPendingFrequencyHz(0)).toBe(14_034_000);
-      expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(-16_000);
+      expect(spectrumRendererHarness.lastOptions.panoramaShiftHz).toBe(-6_000);
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
       expect(send).toHaveBeenCalledTimes(2);
-      const stale = structuredClone(state);
-      stale.observationSeq = (state.observationSeq ?? 0) + 1;
+      const stale = structuredClone(ownEcho);
+      stale.observationSeq!++;
       stale.main!.freqHz = 14_040_000;
       stale.main!.vfoA!.freqHz = 14_040_000;
-      stale.fieldStatus!['main.freqHz'] = { ...stale.fieldStatus!['main.freqHz'], lastObservedMonotonic: (state.fieldStatus!['main.freqHz'].lastObservedMonotonic ?? 0) + 1 };
+      stale.fieldStatus!['main.freqHz'] = { ...stale.fieldStatus!['main.freqHz'], lastObservedMonotonic: (ownEcho.fieldStatus!['main.freqHz'].lastObservedMonotonic ?? 0) + 1 };
       expect(radio.setRadioState(stale)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
       authorityHarness.state.current = authority({ frequencyHz: 14_040_000, providerGeneration: state.providerGeneration });
@@ -3616,16 +3630,16 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_034_000);
       const confirmed = structuredClone(stale);
       confirmed.observationSeq!++;
-      confirmed.main!.freqHz = 14_034_000; confirmed.main!.vfoA!.freqHz = 14_034_000;
+      confirmed.main!.freqHz = settledHz; confirmed.main!.vfoA!.freqHz = settledHz;
       confirmed.fieldStatus!['main.freqHz'].lastObservedMonotonic!++;
       expect(radio.setRadioState(confirmed)).toBe(true);
       runtimeHarness.state.currentState = radio.getRadioState();
-      authorityHarness.state.current = authority({ frequencyHz: 14_034_000, providerGeneration: state.providerGeneration });
+      authorityHarness.state.current = authority({ frequencyHz: settledHz, providerGeneration: state.providerGeneration });
       refreshSpectrumAuthority(); await flushPreviewPaint();
       expect(actualAdapters.getPendingFrequencyHz(0)).toBeNull();
-      expect(digits()).toContain('14034000');
+      expect(digits()).toContain(String(settledHz));
       expect(radio.setRadioState(stale)).toBe(false);
-      await flushPreviewPaint(); expect(digits()).toContain('14034000');
+      await flushPreviewPaint(); expect(digits()).toContain(String(settledHz));
     } finally {
       send.mockRestore();
       scopeCommandHarness.dispatch.mockReset();

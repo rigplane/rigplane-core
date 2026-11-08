@@ -743,7 +743,6 @@
   });
   // MOR-4256/MOR-4270: the View's effective center leads while the pointer
   // is down — the viewport follows the gesture from the cached last frame,
-  // no scope frame and no command per move.
   let panoramaTargetHz = $derived(panoramaActive ? viewCenterHz(effectiveView) : null);
   // Receiver/provider/span/mode identity resets the motion on change.
   let panoramaResetKey = $derived(panoramaActive
