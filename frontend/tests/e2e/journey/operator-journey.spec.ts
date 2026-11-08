@@ -1,6 +1,10 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
+import { createSourceFile, isFunctionDeclaration, ScriptTarget, transpileModule } from 'typescript';
+import type { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/adapters/scope-adapter';
+import type { ScopeFrame } from '../../../src/lib/runtime/scope-frame';
+import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
+import { scopeWire } from '../../../src/lib/runtime/__tests__/scope-wire-fixture';
 import { startJourneyServer, type JourneyServerHandle } from './server-process';
 
 /**
@@ -460,6 +464,8 @@ test.describe('audio server killed and restarted on the same port', () => {
 });
 
 interface PanoramaWitness {
+  requests: ScopeSubscription[];
+  grants: ScopeGranted[];
   acknowledgments: string[];
   active: boolean;
   pinned: boolean;
@@ -477,16 +483,28 @@ interface PanoramaWitness {
   losses: number;
   latestMain: number;
   lastReceiver: number;
-  frames: { at: number; receiver: number; sequence: number; pixels: number; start: number; end: number }[];
+  frames: { at: number; source: ScopeFrame['source']; sourceId: string; receiver: number; sequence: number;
+    pixels: number; start: number; end: number; coverageStart: number; coverageEnd: number }[];
   samples: { at: number; main: number; mounted: boolean; width: number; height: number; signal: number }[];
 }
 
 async function installPanoramaWitness(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+  const adapter = await readFile(new URL('../../../src/lib/runtime/adapters/scope-adapter.ts', import.meta.url), 'utf8');
+  const source = createSourceFile('scope-adapter.ts', adapter, ScriptTarget.ES2022, true);
+  // Execute the production parser without loading its Svelte store dependencies in Node.
+  const parserScript = ['parseCurrentScopeFrame', 'parseScopeGranted'].map(name => {
+    const parser = source.statements.find(node => isFunctionDeclaration(node) && node.name?.text === name);
+    if (!parser) throw new Error(`Production scope parser declaration is missing: ${name}`);
+    return transpileModule(parser.getText(source).replace(/^export /, ''), {
+      compilerOptions: { target: ScriptTarget.ES2022 },
+    }).outputText;
+  }).join('\n');
+  const observe = (parseScopeFrame: typeof parseCurrentScopeFrame, parseGrant: typeof parseScopeGranted) => {
     // Exercise the production PCM fallback when optional WebCodecs is absent.
     Object.defineProperty(window, 'AudioDecoder', { configurable: true, value: undefined });
     const win = window as Window & { __PANORAMA__?: PanoramaWitness };
     const w: PanoramaWitness = {
+      requests: [], grants: [],
       acknowledgments: [], active: false, pinned: false, baselineSignal: 0, pixelLosses: 0, main: 0, sub: 0, audioWire: 0, pcmBuffers: 0,
       finiteSamples: 0, nonzeroSamples: 0, invalidSamples: 0, subChecks: 0, losses: 0,
       latestMain: -1, lastReceiver: -1, frames: [], samples: [], pcm: [],
@@ -543,11 +561,25 @@ async function installPanoramaWitness(page: Page): Promise<void> {
       constructor(url: string | URL, protocols?: string | string[]) {
         super(url, protocols as never);
         const path = new URL(String(url), location.href).pathname;
+        const send = this.send.bind(this);
+        this.send = data => {
+          send(data);
+          if (path !== '/api/v1/scope' || typeof data !== 'string') return;
+          const request = JSON.parse(data) as ScopeSubscription & { type: string };
+          if (request.type === 'subscribe' && request.sourceId === 'radio' && request.receiver === 0) {
+            w.requests.push(request);
+            // Demand alien SUB frames on this connection without replacing MAIN.
+            const spanHz = 'spanHz' in request.view ? request.view.spanHz : request.view.endHz - request.view.startHz;
+            send(JSON.stringify({ ...request, receiver: 1, view: { follow: 'vfo', spanHz } }));
+          }
+        };
         this.addEventListener('message', (event: MessageEvent) => {
           if (typeof event.data === 'string') {
             try {
               const message = JSON.parse(event.data);
               if (message.type === 'response' && message.ok === true) w.acknowledgments.push(String(message.id));
+              const grant = parseGrant(message);
+              if (grant?.sourceId === 'radio') w.grants.push(grant);
             } catch { /* Non-JSON control traffic is irrelevant to this witness. */ }
             return;
           }
@@ -556,19 +588,18 @@ async function installPanoramaWitness(page: Page): Promise<void> {
           if (path === '/api/v1/audio' && bytes.length > 8 && bytes[0] === 0x10 && bytes[1] === 2) {
             w.audioWire += 1;
           }
-          if (path !== '/api/v1/scope' || bytes.length < 16 || bytes[0] !== 1) return;
-          const view = new DataView(event.data);
-          const receiver = bytes[1];
-          const pixels = view.getUint16(14, true);
-          const start = view.getUint32(3, true);
-          const end = view.getUint32(7, true);
-          const sequence = view.getUint16(11, true);
-          if (receiver > 1 || bytes[13] !== 0 || !pixels || bytes.length !== pixels + 16 || start >= end) return;
+          if (path !== '/api/v1/scope') return;
+          const parsed = parseScopeFrame(event.data, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (!parsed.ok || parsed.frame.source !== 'radio' || parsed.frame.outOfRange || !parsed.frame.pixels) return;
+          const { receiver, width: pixels, viewStartHz: start, viewEndHz: end, seq: sequence } = parsed.frame;
+          if (receiver !== 0 && receiver !== 1) return;
           if (receiver === 0) { w.main += 1; w.latestMain = sequence; }
           else w.sub += 1;
           w.lastReceiver = receiver;
           if (w.frames.length >= 240) w.frames.shift();
-          w.frames.push({ at: performance.now(), receiver, sequence, pixels, start, end });
+          w.frames.push({ at: performance.now(), source: parsed.frame.source, sourceId: parsed.frame.sourceId,
+            receiver, sequence, pixels, start, end,
+            coverageStart: parsed.frame.coverageStartHz, coverageEnd: parsed.frame.coverageEndHz });
           if (!w.active) return;
           const mainSequence = w.latestMain;
           requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -606,7 +637,8 @@ async function installPanoramaWitness(page: Page): Promise<void> {
       }
     }
     window.WebSocket = ObservedSocket;
-  });
+  };
+  await page.addInitScript(`${parserScript}\n(${observe.toString()})(parseCurrentScopeFrame, parseScopeGranted);`);
 }
 
 async function panoramaWitness(page: Page): Promise<PanoramaWitness> {
@@ -614,15 +646,22 @@ async function panoramaWitness(page: Page): Promise<PanoramaWitness> {
 }
 
 test('MOR-4273 panorama witness accepts producer frames and requests both receivers', async ({ page }) => {
-  const golden = await readFile(new URL('../../../../tests/fixtures/scope-wire/radio.bin', import.meta.url));
-  const expected = JSON.parse(await readFile(new URL('../../../../tests/fixtures/scope-wire/radio.json', import.meta.url), 'utf8'));
+  const golden = await readFile(new URL('../../../../tests/fixtures/scope-wire/partial_coverage.bin', import.meta.url));
+  const expected = JSON.parse(await readFile(new URL('../../../../tests/fixtures/scope-wire/partial_coverage.json', import.meta.url), 'utf8'));
+  const wrongVersion = Buffer.from(golden);
+  wrongVersion[0] = 1;
+  const iq = await readFile(new URL('../../../../tests/fixtures/scope-wire/iq_fft.bin', import.meta.url));
+  const outOfRange = await readFile(new URL('../../../../tests/fixtures/scope-wire/out_of_range.bin', import.meta.url));
+  const sub = Buffer.from(scopeWire({ sourceId: 'radio:sub', receiver: 1 }));
   const requests: ScopeSubscription[] = [];
   await page.routeWebSocket('ws://scope-witness.invalid/api/v1/scope', socket => {
     socket.onMessage(message => {
       const request = JSON.parse(String(message)) as ScopeSubscription & { type: string };
       if (request.type === 'subscribe') {
         requests.push(request);
-        if (request.receiver === 0) socket.send(golden);
+        if (request.receiver === 0) {
+          socket.send(wrongVersion); socket.send(iq); socket.send(outOfRange); socket.send(golden);
+        } else if (request.receiver === 1) socket.send(sub);
       }
     });
   });
@@ -637,10 +676,15 @@ test('MOR-4273 panorama witness accepts producer frames and requests both receiv
     socket.addEventListener('open', () => socket.send(JSON.stringify({ type: 'subscribe', ...request })));
   }, request);
   await expect.poll(async () => (await panoramaWitness(page)).frames).toEqual([
-    expect.objectContaining({ receiver: expected.receiver, sequence: expected.seq, pixels: expected.width,
-      start: expected.view_start_hz, end: expected.view_end_hz }),
+    expect.objectContaining({ source: expected.source, sourceId: expected.source_id,
+      receiver: expected.receiver, sequence: expected.seq, pixels: expected.width,
+      start: expected.view_start_hz, end: expected.view_end_hz,
+      coverageStart: expected.coverage_start_hz, coverageEnd: expected.coverage_end_hz }),
+    expect.objectContaining({ source: 'radio', sourceId: 'radio:sub', receiver: 1, pixels: 4 }),
   ]);
   await expect.poll(() => requests.map(request => request.receiver)).toEqual([0, 1]);
+  expect((await panoramaWitness(page)).main).toBe(1);
+  expect((await panoramaWitness(page)).sub).toBe(1);
 });
 
 const panoramaTest = test.extend({
@@ -701,7 +745,11 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       const intervalPcm = after.pcm.filter((sample) => sample.at > (before.pcm.at(-1)?.at ?? 0));
       expect(intervalPcm.length).toBeGreaterThan(10);
       expect(intervalPcm.every((sample) => sample.state === 'running' && sample.rate === 48_000)).toBe(true);
-      expect(after.frames.filter((frame) => frame.receiver === 0).every((frame) => frame.start === 14_186_000 && frame.end === 14_386_000)).toBe(true);
+      expect(after.requests).toContainEqual(expect.objectContaining({ receiver: 0, view: { follow: 'vfo', spanHz: 100_000 } }));
+      const mainGrant = after.grants.filter(grant => grant.receiver === 0).at(-1)!;
+      expect(mainGrant.view).toEqual({ startHz: 14_236_000, endHz: 14_336_000 });
+      expect(after.frames.filter((frame) => frame.receiver === 0)
+        .every((frame) => frame.start === mainGrant.view.startHz && frame.end === mainGrant.view.endHz)).toBe(true);
       // Persist independent checks before a failing visual target can stop the test.
       const healthPath = testInfo.outputPath('joint-health.json');
       await writeFile(healthPath, JSON.stringify({ before, after, command }, null, 2));
