@@ -2,7 +2,8 @@
   import type { ScopeAudioProjection } from '$lib/runtime/scope-frame';
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
+  import { CanvasSurface } from '../../../lib/canvas/canvas-surface.svelte';
+  import { ScopeRenderScheduler } from '../../../lib/canvas/scope-render-scheduler';
   import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
@@ -62,12 +63,16 @@
   let effectiveBandwidth = $derived(bandwidth ?? sampleRate);
 
   let canvas: HTMLCanvasElement;
-  let cssWidth = $state(1);
-  let cssHeight = $state(1);
-  let rafId = 0;
-  let visible = true;
   let latestPixels: Uint8Array | null = null;
   let pushed = false;
+
+  // MOR-4271: one surface + one scheduler. The old perpetual self-rearming
+  // rAF loop painted forever (and kept the LCD ink warm for nothing); the
+  // scheduler paints only on wakes — a pushed frame, a size change, a
+  // control change or a visibility change. The visibility wake also
+  // produces the initial instrument paint (data: null).
+  const surface = new CanvasSurface({ stageScale: getStageScale() });
+  const scheduler = new ScopeRenderScheduler(draw, { active: () => surface.visible && surface.sized });
 
   // LCD ink prefix — alpha is scaled by `--lcd-alpha-*` tokens read off
   // the nearest `.lcd-screen` ancestor each frame (plan §2.4).
@@ -103,19 +108,10 @@
   let adaptiveLerp = 0.12;
 
   function draw(): void {
-    if (!visible) { rafId = 0; return; }
+    if (!surface.visible) return;
     const pixels = pushed ? latestPixels : data;
-    let w = cssWidth;
-    let h = cssHeight;
-    if ((w <= 1 || h <= 1) && canvas) {
-      w = canvas.clientWidth || canvas.parentElement?.clientWidth || 1;
-      h = canvas.clientHeight || canvas.parentElement?.clientHeight || 1;
-      if (w > 1 && h > 1) {
-        cssWidth = w;
-        cssHeight = h;
-        applyBackingStore(w, h, 1);
-      }
-    }
+    const w = surface.cssW;
+    const h = surface.cssH;
     // Detect how fast the knob is turning
     if (filterWidth !== prevTargetFilter) {
       const jump = Math.abs(filterWidth - prevTargetFilter);
@@ -138,11 +134,10 @@
       animatedFilterWidth = filterWidth;
     }
 
-    if (canvas && w > 1 && h > 1) {
+    if (canvas && surface.sized) {
       const ctx = canvas.getContext('2d');
       if (ctx) render(ctx, pixels, w, h);
     }
-    rafId = requestAnimationFrame(draw);
   }
 
   function render(
@@ -410,56 +405,34 @@
     }
   }
 
-  // See SpectrumCanvas: the stage-scale effect is the only scale reader.
-  let backingEpoch = $state(0);
+  // Any control change repaints even between FFT frames.
+  $effect(() => {
+    data; filterWidth; filterWidthMax; ifShift; contour; contourFreq;
+    manualNotch; notchFreq; notchFreqDomain; mode; sampleRate; bandwidth;
+    scheduler.wake('view');
+  });
 
-  function applyBackingStore(cssW: number, cssH: number, stageScale: number): void {
-    const backing = canvasBackingSize(cssW, cssH, window.devicePixelRatio || 1, stageScale);
-    canvas.width = backing.width;
-    canvas.height = backing.height;
-    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
-  }
-
-  // The stage's transform does not resize this canvas, so nothing else here
-  // notices a scale change (MOR-1161).
-  watchStageScale(() => { void backingEpoch; if (canvas) applyBackingStore(cssWidth, cssHeight, getStageScale()()); });
-
-  function onVisibilityChange() {
-    visible = !document.hidden;
-    if (visible && rafId === 0) rafId = requestAnimationFrame(draw);
-  }
+  $effect(() => untrack(() => surface.attach(canvas)));
+  const stopSizeListener = surface.onSizeChanged(() => scheduler.wake('size'));
+  $effect(() => {
+    if (surface.visible) scheduler.wake('visibility');
+  });
 
   let projectionKey: string | undefined;
   $effect(() => {
     const key = JSON.stringify(projection);
-    if (key !== projectionKey) { projectionKey = key; smoothed = null; runningMax = null; }
+    if (key !== projectionKey) { projectionKey = key; smoothed = null; runningMax = null; scheduler.wake('view'); }
   });
 
   onMount(() => {
     onRegisterPush?.((pixels: Uint8Array | null) => {
       pushed = true; latestPixels = pixels;
       if (pixels === null) { smoothed = null; runningMax = null; }
+      scheduler.wake('frame');
     });
-
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    rafId = requestAnimationFrame(draw);
-
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (!rect) return;
-      cssWidth = Math.max(1, Math.floor(rect.width));
-      cssHeight = Math.max(1, Math.floor(rect.height));
-      backingEpoch += 1;
-    });
-    ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => { backingEpoch += 1; });
-
     return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      stopPixelWatch();
-      ro.disconnect();
-      cancelAnimationFrame(rafId);
-      rafId = 0;
+      stopSizeListener();
+      scheduler.dispose();
     };
   });
 </script>

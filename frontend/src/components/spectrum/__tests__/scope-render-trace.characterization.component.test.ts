@@ -33,9 +33,9 @@ describe('actual canvas trace callbacks', () => {
       unobserve() {}
       disconnect() {}
     });
-    let intersectionCallback: IntersectionObserverCallback | undefined;
+    const intersectionCallbacks: IntersectionObserverCallback[] = [];
     vi.stubGlobal('IntersectionObserver', class {
-      constructor(cb: IntersectionObserverCallback) { intersectionCallback = cb; }
+      constructor(cb: IntersectionObserverCallback) { intersectionCallbacks.push(cb); }
       observe() {}
       unobserve() {}
       disconnect() {}
@@ -60,7 +60,9 @@ describe('actual canvas trace callbacks', () => {
     for (const cb of resizeCallbacks) {
       cb([{ target, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry], {} as ResizeObserver);
     }
-    intersectionCallback?.([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+    for (const cb of intersectionCallbacks) {
+      cb([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+    }
     flushSync();
     try {
       const fixture = producerFrames.frames.find(frame => frame.name === 'uncropped')!;

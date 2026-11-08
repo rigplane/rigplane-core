@@ -124,4 +124,26 @@ describe('ScopeRenderScheduler', () => {
     scheduler.wake();
     expect(t.requestedCount).toBe(1);
   });
+
+  it('cancel clears the pending frame and dirtiness but stays usable', () => {
+    const t = fakeTiming();
+    const paint = vi.fn();
+    const scheduler = new ScopeRenderScheduler(paint, { timing: t.timing });
+    scheduler.wake();
+    expect(scheduler.pending).toBe(true);
+    scheduler.cancel();
+    expect(scheduler.pending).toBe(false);
+    expect(t.pendingCount).toBe(0);
+    t.flush();
+    expect(paint).not.toHaveBeenCalled();
+    // A wake after the cancelled frame paints exactly once.
+    scheduler.wake('view');
+    expect(t.requestedCount).toBe(2);
+    t.flush();
+    expect(paint).toHaveBeenCalledTimes(1);
+    // Dirtiness recorded before the cancel died with it: a bare flush after
+    // the (already-cancelled) frame paints nothing further.
+    t.flush();
+    expect(paint).toHaveBeenCalledTimes(1);
+  });
 });

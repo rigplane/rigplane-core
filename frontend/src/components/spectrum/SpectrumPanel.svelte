@@ -18,7 +18,6 @@
     type ColorSchemeName,
   } from '../../lib/renderers/waterfall-renderer';
   import { presentationResources, runtime } from '../../lib/runtime/frontend-runtime';
-  import { LatestFramePump } from '../../lib/canvas/latest-frame-pump';
   import { type DxSpot } from '../../lib/types/protocol';
   import { getTuningStep } from '../../lib/stores/tuning.svelte';
   import {
@@ -43,6 +42,8 @@
     createScopeView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
     type View,
   } from '../../lib/runtime/scope-view';
+  import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
+  import type { CanvasSurfaceFacts } from '../../lib/canvas/canvas-surface.svelte';
   import { scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
@@ -673,7 +674,14 @@
 
   // --- Center panorama motion (MOR-2464): display-only, absolute Hz ---
   let panoramaCenter = new PanoramaViewportCenter(0);  let visualCenterHz = $state(0);
-  let panoramaRafId = 0;
+  // MOR-4271: the one redraw scheduler paces the panorama glide too — woken
+  // while the center is settling, cancelled when it settles or on retarget.
+  // The document gate pauses the glide while hidden: no animation frame is
+  // ever requested for a panorama nobody can see.
+  const panoramaScheduler = new ScopeRenderScheduler((now) => {
+    visualCenterHz = panoramaCenter.sample(now);
+    if (panoramaCenter.settling(now)) panoramaScheduler.wake('view');
+  }, { active: () => !document.hidden });
   let panoramaKeyApplied = $state<string | null>(null);
   let panoramaTargetApplied: number | null = null;
 
@@ -749,6 +757,14 @@
   let panoramaResetKey = $derived(panoramaActive
     ? [spectrumAuthority?.providerGeneration ?? 'x', spectrumAuthority?.receiver ?? 'x',
       displayGeometry?.receiver ?? 'legacy', frameScopeMode, spanHz].join('|') : '');
+  // Visibility restore: the document gate may have paused the glide while
+  // hidden — resample the (now elapsed) motion and re-arm if it is still
+  // settling, so the visual center never freezes mid-glide.
+  $effect(() => {
+    if (spectrumFacts?.visible) {
+      untrack(() => syncPanoramaMotion(panoramaResetKey, panoramaTargetHz));
+    }
+  });
   function syncPanoramaMotion(key: string, target: number | null): void {
     const now = performance.now();
     if (key !== panoramaKeyApplied) {
@@ -763,17 +779,10 @@
     }
     visualCenterHz = panoramaCenter.sample(now);
     if (panoramaCenter.settling(now)) {
-      if (!panoramaRafId) panoramaRafId = requestAnimationFrame(panoramaTick);
-    } else if (panoramaRafId) {
-      cancelAnimationFrame(panoramaRafId);
-      panoramaRafId = 0;
+      panoramaScheduler.wake('view');
+    } else {
+      panoramaScheduler.cancel();
     }
-  }
-
-  function panoramaTick(now: number): void {
-    visualCenterHz = panoramaCenter.sample(now);
-    if (panoramaCenter.settling(now)) panoramaRafId = requestAnimationFrame(panoramaTick);
-    else panoramaRafId = 0;
   }
 
 
@@ -809,16 +818,19 @@
     if (reason === 'no pixels') return t('core.scope.hatch.noPixels');
     return t('core.scope.hatch.widerThanCoverage');
   }
-  let scopeAreaWidth = $state(0);
+  // MOR-4271: the demand facts come from the spectrum canvas surface —
+  // width is the backing-store width, visible follows the surface.
+  let spectrumFacts = $state<CanvasSurfaceFacts | null>(null);
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
     const view = audioFft || followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
       ? { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) }
       : { startHz: effectiveView.startHz, endHz: effectiveView.endHz };
+    const facts = spectrumFacts;
     return scopeSubscription({
       sourceId: stream.sourceId,
       receiver: audioFft || sdrSource ? null : spectrumAuthority?.receiver ?? 0,
-      view, width: scopeAreaWidth, visible: true, maxFps: 20,
+      view, width: facts?.backingW ?? 0, visible: facts?.visible ?? false, maxFps: 20,
     });
   });
   $effect(() => {
@@ -1386,7 +1398,7 @@
         stopFrames();
         unsubDx();
         releaseScopeDemand();
-        if (panoramaRafId) cancelAnimationFrame(panoramaRafId);
+        panoramaScheduler.dispose();
       };
     });
   });
@@ -1484,9 +1496,9 @@
         <div class="tick" style="top: {tick.position}%">{tick.label}</div>
       {/each}
     </div>
-    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} bind:clientWidth={scopeAreaWidth} use:scopeSubscriptionSurface={{
+    <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} use:scopeSubscriptionSurface={{
       stream: runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware'),
-      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
+      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, facts: spectrumFacts, revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
     }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
@@ -1505,7 +1517,7 @@
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
       {#if scopeTraceLive && scopeContentState !== 'out-of-range' && frameGeometry?.hasPixels !== false}
-      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isFixedScope} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onRegisterPush={(fn) => {
+      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isFixedScope} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onSurfaceChange={(facts) => { spectrumFacts = facts; }} onRegisterPush={(fn) => {
         spectrumPush = fn;
         const geometry = frameGeometry;
         const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh'

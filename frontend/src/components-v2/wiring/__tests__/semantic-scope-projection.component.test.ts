@@ -221,7 +221,18 @@ beforeEach(() => {
   rafCallbacks = new Map(); rafId = 0;
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { rafCallbacks.set(++rafId, callback); return rafId; });
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { rafCallbacks.delete(id); });
-  vi.stubGlobal('ResizeObserver', class { constructor(private callback: ResizeObserverCallback) {} observe(target: Element) { this.callback([{ target, contentRect: { width: 800, height: 200 } } as ResizeObserverEntry], this as unknown as ResizeObserver); } unobserve() {} disconnect() {} });
+  vi.stubGlobal('ResizeObserver', class {
+    // MOR-4271: the scope canvases size through a CanvasSurface — report a
+    // real box on observe. 300x150 is jsdom's default canvas backing: the
+    // tap-math assertions in this file were calibrated on that backing.
+    constructor(private readonly callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry],
+        this as unknown as ResizeObserver);
+    }
+    unobserve() {}
+    disconnect() {}
+  });
   const noop = () => {}; const ctx = new Proxy({ measureText: () => ({ width: 1 }),
     createImageData: () => ({ data: new Uint8ClampedArray(4) }), getImageData: () => ({ data: new Uint8ClampedArray(4) }),
     createLinearGradient: () => ({ addColorStop: noop }) }, { get: (obj, key) => key in obj ? obj[key as keyof typeof obj] : noop });

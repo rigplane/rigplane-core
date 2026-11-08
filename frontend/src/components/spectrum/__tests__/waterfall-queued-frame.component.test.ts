@@ -116,7 +116,9 @@ function mountHarness(props: Record<string, unknown> = {}): void {
   intersectionCallback?.([{ target: observed!, isIntersecting: true } as IntersectionObserverEntry],
     {} as IntersectionObserver);
   flushSync();
-  rafCallbacks.clear();
+  // Drain the size/visibility wake (a pending animation frame is a real
+  // display frame — never drop it); reset only the request counter.
+  flushPaint();
   rafRequestCount = 0;
 }
 

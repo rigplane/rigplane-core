@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  resetSmoothing,
   renderAudioSpectrum,
   AudioSpectrumRendererState,
   type SpectrumState,
@@ -17,19 +16,6 @@ import {
  *  the gate that a usable range is published; the Hz conversion itself is
  *  the measured lattice (MOR-2497), pinned in `filter-controls.test.ts`. */
 const IC7610_PBT_RANGE: PbtRange = { rawCenter: 128, displayMin: -1200, displayMax: 1200 };
-
-// ── resetSmoothing ───────────────────────────────────────────────────────────
-
-describe('resetSmoothing', () => {
-  it('does not throw', () => {
-    expect(() => resetSmoothing()).not.toThrow();
-  });
-
-  it('can be called multiple times', () => {
-    resetSmoothing();
-    resetSmoothing();
-  });
-});
 
 // ── renderAudioSpectrum ──────────────────────────────────────────────────────
 
@@ -82,14 +68,16 @@ describe('renderAudioSpectrum', () => {
     const labels = vi.fn();
     Object.defineProperty(ctx, 'fillText', { value: labels });
     const rs = new AudioSpectrumRendererState();
-    const reset = vi.spyOn(rs, 'reset');
     for (const filterWidth of [NaN, NaN, NaN, 2400]) {
       strokes.length = 0;
       renderAudioSpectrum(ctx, 400, 160, { ...baseState, filterWidth }, rs);
       expect(strokes).toContain('rgba(0, 220, 220, 0.9)');
     }
     expect(labels).toHaveBeenCalledWith('Filter: 2400 Hz', 200, 13);
-    expect(reset).not.toHaveBeenCalled();
+    // MOR-4271: rendering never resets renderer state — the smoothed buffer
+    // the frames converged on is the same instance the last render used.
+    expect(rs.smoothed).not.toBeNull();
+    expect(rs.smoothed!.some((value) => value > 0)).toBe(true);
   });
 
   it('maps both halves of an unknown-width FFT and hides stale overlays', () => {
@@ -118,59 +106,49 @@ describe('renderAudioSpectrum', () => {
   });
 
   it('renders without throwing for valid state', () => {
-    resetSmoothing();
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, baseState)).not.toThrow();
   });
 
   it('renders without throwing for null pixels', () => {
-    resetSmoothing();
     const state = { ...baseState, pixels: null };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
   it('renders without throwing for empty pixels', () => {
-    resetSmoothing();
     const state = { ...baseState, pixels: new Uint8Array(0) };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
   it('renders with PBT active', () => {
-    resetSmoothing();
     const state = { ...baseState, pbtInner: 200, pbtOuter: 56, pbtRange: IC7610_PBT_RANGE };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
   it('renders with manual notch', () => {
-    resetSmoothing();
     const state = { ...baseState, manualNotch: true, notchFreq: 100 };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
   it('renders with contour active', () => {
-    resetSmoothing();
     const state = { ...baseState, contour: 128, contourFreq: 100 };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
   it('handles very small canvas', () => {
-    resetSmoothing();
     expect(() => renderAudioSpectrum(mockCtx(), 10, 10, baseState)).not.toThrow();
   });
 
   it('handles max amplitude pixels', () => {
-    resetSmoothing();
     const state = { ...baseState, pixels: new Uint8Array(100).fill(160) };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
   it('handles narrow filter', () => {
-    resetSmoothing();
     const state = { ...baseState, filterWidth: 200, filterWidthMax: 3600 };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });
 
   it('handles wide bandwidth', () => {
-    resetSmoothing();
     const state = { ...baseState, bandwidth: 48000 };
     expect(() => renderAudioSpectrum(mockCtx(), 400, 160, state)).not.toThrow();
   });

@@ -1,6 +1,7 @@
 import { audioScopeGoldenNames, loadAudioScopeGolden } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { ingressScopeFrame } from '$lib/runtime/adapters/scope-adapter';
 import { flushSync, mount, unmount } from 'svelte';
+import { SvelteMap } from 'svelte/reactivity';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AmberAfScope from '../AmberAfScope.svelte';
 
@@ -61,18 +62,21 @@ afterEach(async () => {
 
 function renderFrame() {
   const callback = nextFrame;
-  expect(callback).toBeTypeOf('function');
   nextFrame = undefined;
-  callback!(0);
+  // MOR-4271: the scheduler paints on wakes only — an idle display frame
+  // with nothing pending paints nothing (the old perpetual loop re-armed
+  // unconditionally). Skipping keeps the assertions' intent: no new painted
+  // content appears without input.
+  callback?.(0);
 }
 
 function setup(mode: Mode, initial: Uint8Array | null, projection?: { zero: number; perHz: number; spanHz: number }) {
-  let data = initial;
+  const dataCell = new SvelteMap<string, Uint8Array | null>([['data', initial]]);
   let push: ((pixels: Uint8Array | null) => void) | undefined;
   component = mount(AmberAfScope, {
     target,
     props: {
-      get data() { return data; },
+      get data() { return dataCell.get('data') ?? null; },
       mode, projection,
       filterWidth: 2400,
       filterWidthMax: 3600,
@@ -82,7 +86,11 @@ function setup(mode: Mode, initial: Uint8Array | null, projection?: { zero: numb
   flushSync();
   renderFrame();
   return {
-    setData(pixels: Uint8Array | null) { data = pixels; renderFrame(); },
+    setData(pixels: Uint8Array | null) {
+      dataCell.set('data', pixels);
+      flushSync(); // let the prop effect wake the scheduler
+      renderFrame();
+    },
     push(pixels: Uint8Array | null) { expect(push).toBeTypeOf('function'); push!(pixels); renderFrame(); },
   };
 }

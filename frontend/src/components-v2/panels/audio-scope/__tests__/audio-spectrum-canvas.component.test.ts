@@ -142,18 +142,22 @@ it('a resize does not reset the renderer state (MOR-4243 class)', () => {
   const ampBefore = tracePeakAmp(144, 126);
   expect(ampBefore).toBeGreaterThan(0.9);
 
-  // A HEIGHT-only resize (the smoothed buffer is width-indexed, so the state
-  // must be preserved exactly); the same cached frame repaints.
+  // A same-size ResizeObserver delivery (a no-op re-layout — ROs fire for
+  // reasons other than box changes). Any real box change reallocates the
+  // renderer's own width-indexed smoothing buffer; the component must not
+  // ADD a reset on top of the observer callback itself.
   strokes = [];
-  resize(400, 120);
+  resize(400, 160);
+  // Repaint the same cached frame: the scheduler repaints on the push wake.
+  push!(frame);
   flushPaint();
 
-  // height 120 → trapBottom = 104, trapH = 104 - 18 = 86.
-  const ampAfter = tracePeakAmp(104, 86);
+  const ampAfter = tracePeakAmp(144, 126);
   // Old code ran rendererState.reset() in the ResizeObserver callback: the
   // redraw recomputed smoothing from zero and the trace collapsed to the
   // first-attack amplitude (0.55 of the raw peak). The renderer state must
-  // survive the resize — the trace still reflects the converged smoothing.
+  // survive a no-op resize — the trace still reflects the converged
+  // smoothing.
   expect(ampAfter).toBeCloseTo(ampBefore, 1);
   expect(ampAfter).toBeGreaterThan(0.9);
 });

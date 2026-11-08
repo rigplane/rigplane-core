@@ -1,9 +1,10 @@
 <script lang="ts">
   import type { ScopeAudioProjection } from '$lib/runtime/scope-frame';
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { renderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from './audio-spectrum-renderer';
   import type { ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
-  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../../lib/canvas/backing-store.svelte';
+  import { CanvasSurface, type CanvasSurfaceFacts } from '../../../lib/canvas/canvas-surface.svelte';
+  import { ScopeRenderScheduler } from '../../../lib/canvas/scope-render-scheduler';
   import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
@@ -12,6 +13,7 @@
     data: Uint8Array | null;
     /** Register a push callback for streaming updates */
     onRegisterPush?: (fn: (data: Uint8Array | null) => void) => void;
+    onSurfaceChange?: (facts: CanvasSurfaceFacts) => void;
     /** Effective bandwidth of the FFT data in Hz */
     bandwidth: number;
     /** Filter passband width in Hz */
@@ -44,6 +46,7 @@
     data,
     projection = null,
     onRegisterPush,
+    onSurfaceChange,
     bandwidth = 48000,
     filterWidth = 2400,
     filterWidthMax = 4000,
@@ -60,26 +63,23 @@
   }: Props = $props();
 
   let canvas: HTMLCanvasElement;
-  let cssWidth = $state(1);
-  let cssHeight = $state(1);
-  let rafId = 0;
-  let visible = true;
-  let mounted = false;
+
+  // MOR-4271: one surface + one scheduler. A size change NEVER resets the
+  // renderer state (MOR-4243 class: a renderer-owned resize-coupled reset
+  // was the blank-audio-scope bug) — the renderer invalidates its own
+  // caches, and the smoothed trace survives a resize.
+  const surface = new CanvasSurface({ stageScale: getStageScale() });
+  const scheduler = new ScopeRenderScheduler(draw, { active: () => surface.visible && surface.sized });
+
   let latestPixels: Uint8Array | null = null;
   let pushed = false;
   const rendererState = new AudioSpectrumRendererState();
 
-  function scheduleDraw(): void {
-    if (!mounted || !visible || rafId !== 0) return;
-    rafId = requestAnimationFrame(draw);
-  }
-
   function draw(): void {
-    rafId = 0;
-    if (!visible) return;
+    if (!surface.visible) return;
     const pixels = pushed ? latestPixels : data;
 
-    if (canvas && cssWidth > 1 && cssHeight > 1) {
+    if (canvas && surface.sized) {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         if (pixels === null) rendererState.reset();
@@ -99,73 +99,41 @@
           contour,
           contourFreq,
         };
-        renderAudioSpectrum(ctx, cssWidth, cssHeight, state, rendererState);
+        renderAudioSpectrum(ctx, surface.cssW, surface.cssH, state, rendererState);
       }
     }
-
   }
-
-  function onVisibilityChange() {
-    visible = !document.hidden;
-    scheduleDraw();
-  }
-
-  // See SpectrumCanvas: the stage-scale effect is the only scale reader.
-  let backingEpoch = $state(0);
-
-  function applyBackingStore(stageScale: number): void {
-    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
-    canvas.width = backing.width;
-    canvas.height = backing.height;
-    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
-  }
-
-  // The stage's transform does not resize this canvas, so nothing else here
-  // notices a scale change (MOR-1161).
-  watchStageScale(() => { void backingEpoch; if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
 
   // A control/readout change must repaint even between FFT frames.
   $effect(() => {
     data; bandwidth; filterWidth; filterWidthMax; ifShift; pbtInner; pbtOuter;
     pbtRange; pbtStepHz; manualNotch; notchFreq; notchFreqDomain; contour; contourFreq;
-    scheduleDraw();
+    scheduler.wake('view');
+  });
+
+  $effect(() => untrack(() => surface.attach(canvas)));
+  const stopSizeListener = surface.onSizeChanged(() => scheduler.wake('size'));
+  $effect(() => {
+    if (surface.visible) scheduler.wake('visibility');
+  });
+  $effect(() => {
+    onSurfaceChange?.(surface.facts);
   });
 
   let projectionKey: string | undefined;
   $effect(() => {
     const key = JSON.stringify(projection);
-    if (key !== projectionKey) { projectionKey = key; rendererState.reset(); scheduleDraw(); }
+    if (key !== projectionKey) { projectionKey = key; rendererState.reset(); scheduler.wake('view'); }
   });
 
   onMount(() => {
     onRegisterPush?.((pixels: Uint8Array | null) => {
       pushed = true; latestPixels = pixels;
-      scheduleDraw();
+      scheduler.wake('frame');
     });
-
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    mounted = true;
-    scheduleDraw();
-
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (!rect) return;
-      cssWidth = Math.max(1, Math.floor(rect.width));
-      cssHeight = Math.max(1, Math.floor(rect.height));
-      backingEpoch += 1;
-      rendererState.reset();
-      scheduleDraw();
-    });
-    ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => { backingEpoch += 1; });
-
     return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      stopPixelWatch();
-      ro.disconnect();
-      cancelAnimationFrame(rafId);
-      rafId = 0;
-      mounted = false;
+      stopSizeListener();
+      scheduler.dispose();
     };
   });
 </script>

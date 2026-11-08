@@ -46,6 +46,19 @@ export class ScopeRenderScheduler {
     return this.rafId !== 0;
   }
 
+  /**
+   * Clears a pending frame and the recorded dirtiness; the scheduler stays
+   * usable (the next wake requests a fresh frame). SpectrumPanel's panorama
+   * glide cancels on retarget instead of letting a superseded tick paint.
+   */
+  cancel(): void {
+    this.dirty = false;
+    if (this.rafId !== 0) {
+      (this.options.timing ?? browserRenderTiming).cancelFrame(this.rafId);
+      this.rafId = 0;
+    }
+  }
+
   wake(_reason: ScopeRenderWakeReason = 'frame'): void {
     if (this.disposed) return;
     this.dirty = true;

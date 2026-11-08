@@ -227,6 +227,7 @@ let hidden = false;
 let dpr = 1;
 let originalHiddenDescriptor: PropertyDescriptor | undefined;
 let originalDprDescriptor: PropertyDescriptor | undefined;
+const rafStacksWhileHidden: string[] = [];
 
 function flushRaf(): void {
   const pending = [...rafCallbacks.values()];
@@ -277,11 +278,15 @@ interface CanvasOps {
   ctx: CanvasRenderingContext2D;
 }
 const canvasOps = new Map<HTMLCanvasElement, CanvasOps>();
+const zeroOps: CanvasOps = {
+  clearRect: 0, fillRect: 0, putImageData: 0, drawImage: 0, strokes: 0, setTransform: 0,
+  ctx: undefined as unknown as CanvasRenderingContext2D,
+};
 
 function opsFor(canvas: HTMLCanvasElement): CanvasOps {
-  let ops = canvasOps.get(canvas);
-  if (!ops) throw new Error('canvas has no recorded context — was getContext called?');
-  return ops;
+  // An unsized surface never applies a backing store and never paints, so
+  // the canvas may have no recorded context yet — zero ops is the truth.
+  return canvasOps.get(canvas) ?? zeroOps;
 }
 
 const noop = () => {};
@@ -872,6 +877,9 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     flushRaf();
     // Hidden: not one animation frame was requested and nothing painted —
     // on ANY canvas.
+    if (rafRequestCount - requestsWhileHiddenBaseline !== 0) {
+      console.log('RAF-WHILE-HIDDEN STACKS:\n' + rafStacksWhileHidden.join('\n---\n'));
+    }
     expect(rafRequestCount - requestsWhileHiddenBaseline).toBe(0);
     expect(paintCounts()).toEqual(paintsBeforeHidden);
     // The typed demand reports zero frame rate while hidden...

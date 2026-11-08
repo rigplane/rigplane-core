@@ -77,16 +77,6 @@ const DECAY = 0.25;
 export class AudioSpectrumRendererState {
   smoothed: Float32Array | null = null;
   animFilterWidth = 0;
-
-  reset(): void {
-    this.smoothed = null;
-    this.animFilterWidth = 0;
-  }
-}
-
-/** @deprecated Use AudioSpectrumRendererState.reset() instead */
-export function resetSmoothing(): void {
-  // no-op — kept for backward compat; callers should migrate to instance
 }
 
 // ── Frequency label helpers ──────────────────────────────────────────────────

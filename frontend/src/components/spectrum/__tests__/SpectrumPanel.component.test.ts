@@ -105,10 +105,19 @@ HTMLCanvasElement.prototype.getContext = vi.fn(function (this: HTMLCanvasElement
   return null;
 }) as any;
 
-// ResizeObserver
+// ResizeObserver — MOR-4271: the scope canvases size through a
+// CanvasSurface, so the observer must report a real box (asynchronously to
+// the observe() call would also do). The size is jsdom's default canvas
+// backing (300x150 at dpr 1): the assertions in this file were calibrated
+// on that backing (e.g. waterfall pixelToFreq tap math), and dpr is 1 here.
+// Individual describes override this with their own controllable stub where
+// they drive sizes explicitly.
 class MockResizeObserver {
-  constructor(private callback: ResizeObserverCallback) {}
-  observe(target: Element) { this.callback([{ target, contentRect: { width: 200, height: 100 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+  constructor(private readonly callback: ResizeObserverCallback) {}
+  observe(target: Element) {
+    this.callback([{ target, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver);
+  }
   unobserve() {}
   disconnect() {}
 }
