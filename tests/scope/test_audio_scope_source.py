@@ -219,9 +219,7 @@ async def test_full_spectrum_slice_matches_main_producer_pixels(
         await new.stop()
 
 
-async def test_ruled_slice_places_tone_at_main_offset(
-    virtual_clock, monkeypatch
-):
+async def test_ruled_slice_places_tone_at_main_offset(virtual_clock, monkeypatch):
     import rigplane.audio.fft_scope as fft_module
     from types import SimpleNamespace
 

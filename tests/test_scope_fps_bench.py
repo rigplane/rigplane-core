@@ -128,7 +128,9 @@ async def test_collect_requires_pixel_delivery_and_reports_valid_null_states(
         assert result["null_frames"] == result["out_of_range_frames"] == 0
 
 
-@pytest.mark.parametrize("granted_width,expected_error", [(475, None), (3000, "unexpected")])
+@pytest.mark.parametrize(
+    "granted_width,expected_error", [(475, None), (3000, "unexpected")]
+)
 async def test_collect_accepts_native_capped_grant(
     granted_width, expected_error, virtual_clock, monkeypatch
 ) -> None:

@@ -370,9 +370,7 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
                 end_seq = encoded[-1].seq
                 # Both clients are capped to the 475-bin native width and
                 # share one encode per native frame.
-                assert len(encoded) - start_encode == (
-                    len(native_count) - start_count
-                )
+                assert len(encoded) - start_encode == (len(native_count) - start_count)
                 assert {frame.width for frame in encoded[start_encode:]} == {475}
                 await await_until(
                     lambda: all(
@@ -490,9 +488,7 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "kind,native_width", [("radio", 475), ("audio_fft", 2049)]
-)
+@pytest.mark.parametrize("kind,native_width", [("radio", 475), ("audio_fft", 2049)])
 async def test_subscription_updates_keep_demand_and_invalid_request_keeps_previous(
     kind,
     native_width,
