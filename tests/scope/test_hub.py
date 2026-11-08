@@ -1,8 +1,14 @@
 import asyncio
 import threading
+from pathlib import Path
 
+import numpy as np
 import pytest
 
+from rigplane.audio.scope_source import AudioFftSource, AudioPassband, PcmTap
+from rigplane.profiles.rig_loader import load_rig
+from rigplane.runtime.radio_scope_source import RadioScopeSource, RadioScopeWriter
+from rigplane.scope import ScopeFrame
 from rigplane.scope.hub import ScopeHub
 from rigplane.scope.models import (
     Coverage,
@@ -15,6 +21,8 @@ from rigplane.scope.models import (
     Subscription,
     View,
 )
+from rigplane.sdr import FakeIqSource
+from rigplane.sdr.scope_source import IqFftSource
 from rigplane.testing.timing import await_until
 
 
@@ -371,3 +379,160 @@ async def test_worker_thread_frame_is_delivered_on_hub_loop(virtual_clock):
     assert encoder.frames[0].pixels == b"abcd"
     assert encoder.threads == [threading.get_ident()]
     await sub.close()
+
+
+class CleanupProbe:
+    def __init__(self, failures):
+        self.failures = failures
+        self.starts = self.stops = 0
+        self.active = False
+
+    def start(self):
+        self.starts += 1
+        self.active = True
+
+    def stop(self):
+        self.stops += 1
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("resource release failed")
+        self.active = False
+
+
+def real_flaky_source(kind, probe):
+    view = View(10_000_300, 10_002_700)
+    if kind == "radio":
+        class FlakyWriter(RadioScopeWriter):
+            def tuned_frequency(self, receiver):
+                return 10_000_000
+
+            async def set_center(self, center_hz, span_hz, receiver):
+                pass
+
+            async def set_output(self, enabled):
+                probe.start() if enabled else probe.stop()
+
+        source = RadioScopeSource(load_rig(Path("rigs/ic7300.toml")).to_profile(), FlakyWriter())
+
+        def emit():
+            source.feed_frame(ScopeFrame(0, 1, 10_000_300, 10_002_700, bytes([160]) * 8, False))
+
+        return source, Subscription("real", 0, view, 8, 20), emit
+
+    if kind == "audio_fft":
+        class FlakyTap(PcmTap):
+            callback = None
+
+            async def acquire(self, callback):
+                probe.start()
+                self.callback = callback
+
+            async def release(self):
+                probe.stop()
+                self.callback = None
+
+        tap = FlakyTap()
+        source = AudioFftSource(tap, lambda: AudioPassband(10_000_000, 300, 2700, "upper"))
+        samples = np.sin(2 * np.pi * 1500 * np.arange(4096) / 48000)
+        pcm = (samples * 16000).astype("<i2").tobytes()
+
+        def emit():
+            assert tap.callback is not None
+            tap.callback(pcm)
+
+        return source, Subscription("real", None, view, 8, 20), emit
+
+    assert kind == "iq_fft"
+
+    class FlakyProvider(FakeIqSource):
+        def open(self):
+            probe.start()
+            super().open()
+
+        def close(self):
+            probe.stop()
+            super().close()
+
+    provider = FlakyProvider(center_freq_hz=10_000_000, sample_rate_hz=48000, block_size=4096)
+    source = IqFftSource(provider, start_worker=False)
+
+    def emit():
+        provider.pump(1)
+        source.producer.process_pending()
+
+    return source, Subscription("real", None, View(9_976_000, 10_024_000), 8, 20), emit
+
+
+@pytest.mark.parametrize("kind", ["radio", "audio_fft", "iq_fft"])
+@pytest.mark.parametrize("retry", ["close", "subscribe"])
+@pytest.mark.timeout(10)
+async def test_real_failed_final_stop_is_retried_before_fresh_demand(kind, retry, virtual_clock):
+    probe = CleanupProbe(1 if retry == "close" else 2)
+    source, requested, emit = real_flaky_source(kind, probe)
+    encoder = Encoder()
+    hub = ScopeHub(encoder=encoder)
+    hub.register("real", source)
+    old = await hub.subscribe(requested)
+    emit()
+    assert await old.receive() == b"1"
+    with pytest.raises(RuntimeError, match="resource release failed"):
+        await old.close()
+    assert probe.active and probe.starts == probe.stops == 1
+    with pytest.raises(StopAsyncIteration):
+        await old.receive()
+    if retry == "close":
+        await old.close()
+        assert not probe.active and probe.stops == 2
+    else:
+        with pytest.raises(RuntimeError, match="resource release failed"):
+            await hub.subscribe(requested)
+        assert probe.active and probe.starts == 1 and probe.stops == 2
+    fresh = await hub.subscribe(requested)
+    assert probe.active and probe.starts == 2
+    await old.close()
+    assert probe.active
+    emit()
+    assert await fresh.receive() == b"2"
+    assert encoder.frames[-1].pixels is not None
+    await fresh.close()
+    assert not probe.active and probe.stops == (3 if retry == "close" else 4)
+
+
+async def test_failed_start_cleanup_is_retried_before_starting_again(virtual_clock):
+    hub, source, encoder = setup()
+    source.fail_start = source.fail_stop = True
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await hub.subscribe(request())
+    assert source.starts == source.stops == 1 and not source.callbacks
+    source.fail_start = False
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await hub.subscribe(request())
+    assert source.starts == 1 and source.stops == 2 and not source.callbacks
+    source.fail_stop = False
+    fresh = await hub.subscribe(request())
+    assert source.starts == 2 and source.stops == 3
+    await fresh.close()
+
+
+async def test_stop_retry_serializes_with_new_demand_and_repeated_cancellation(virtual_clock):
+    hub, source, encoder = setup()
+    old = await hub.subscribe(request())
+    source.fail_stop = True
+    with pytest.raises(RuntimeError, match="stop failed"):
+        await old.close()
+    source.fail_stop = False
+    source.stop_gate = asyncio.Event()
+    retrying = asyncio.create_task(old.close())
+    await virtual_clock.elapse(0)
+    assert source.stops == 2
+    opening = asyncio.create_task(hub.subscribe(request()))
+    for _ in range(2):
+        retrying.cancel()
+        await virtual_clock.elapse(0)
+        assert not retrying.done() and not opening.done() and source.starts == 1
+    source.stop_gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await retrying
+    fresh = await opening
+    assert source.starts == source.stops == 2
+    await fresh.close()
