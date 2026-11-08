@@ -269,7 +269,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     || facts.transport !== 'connected' || !facts.demanded
     || !integer(facts.transportEpoch) || facts.transportEpoch === 0
     || geometry.source !== 'radio' || geometry.receiver !== receiver
-    || geometry.freshness !== 'fresh'
+    || geometry.freshness !== 'fresh' || !geometry.hasPixels
     || !integer(geometry.mode) || geometry.mode > 255
     || !Number.isFinite(geometry.view.startHz) || !Number.isFinite(geometry.view.endHz)
     || geometry.view.endHz <= geometry.view.startHz
