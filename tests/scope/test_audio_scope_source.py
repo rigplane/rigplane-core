@@ -356,7 +356,8 @@ async def test_real_pcm_crop_width_changes_update_existing_hub_client(virtual_cl
     from rigplane.scope.hub import ScopeHub
     from rigplane.scope.models import Subscription
 
-    virtual_clock.scope_to(monkeypatch, fft_module)
+    from types import SimpleNamespace
+    monkeypatch.setattr(fft_module, "time", SimpleNamespace(monotonic=virtual_clock))
     await virtual_clock.elapse(1)
     facts = AudioPassband(14_100_000, 0, 2400, "upper")
     tap = Tap()
@@ -404,5 +405,55 @@ async def test_symmetric_web_mode_real_pcm_reaches_both_rf_halves(model, mode):
         assert (frame.coverage_start_hz, frame.coverage_end_hz) == (14_098_800, 14_101_200)
         assert max(frame.pixels[:len(frame.pixels)//2]) >= 100
         assert max(frame.pixels[len(frame.pixels)//2:]) >= 100
+    finally:
+        await sub.close()
+
+
+async def test_real_audio_producer_tracks_only_positive_hub_demand():
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+
+    tap = Tap()
+    source = AudioFftSource(tap, lambda: AudioPassband(14_100_000, 0, 2400, "upper"))
+    hub = ScopeHub(encoder=lambda frame: b"frame")
+    hub.register("audio", source)
+    request = Subscription("audio", None, View(14_100_000, 14_102_400), 1024, 0)
+    paused = await hub.subscribe(request)
+    assert tap.callback is None and tap.releases == 0
+    active = await hub.subscribe(Subscription("audio", None, request.view, 1024, 20))
+    assert tap.callback is not None
+    await active.close()
+    assert tap.callback is None and tap.releases == 1 and not paused._closed
+    resumed = await hub.subscribe(Subscription("audio", None, request.view, 1024, 20))
+    assert tap.callback is not None
+    await paused.close()
+    assert tap.releases == 1
+    await resumed.close()
+    assert tap.callback is None and tap.releases == 2
+
+
+async def test_symmetric_mode_wider_than_pcm_nyquist_reports_only_available_rf():
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+
+    facts = AudioPassband(14_100_000, -48000, 48000, "both")
+    tap = Tap()
+    source = AudioFftSource(tap, lambda: facts, fft_size=2048, sample_rate=48000)
+    view = View(14_076_000, 14_124_000)
+    assert source.coverage_for(view) == Coverage(view.start_hz, view.end_hz)
+    encoded = []
+    hub = ScopeHub(encoder=lambda frame: encoded.append(frame) or b"frame")
+    hub.register("audio", source)
+    sub = await hub.subscribe(Subscription("audio", None, view, 4096, 20))
+    try:
+        pcm = (16000 * np.sin(2 * np.pi * 1000 * np.arange(2048) / 48000)).astype("<i2").tobytes()
+        tap.callback(pcm)
+        frame = encoded[-1]
+        assert frame.width == 2049
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (view.start_hz, view.end_hz)
+        for pixels, start in ((frame.pixels[:1024], view.start_hz), (frame.pixels[1024:], facts.tuned_hz)):
+            peak = int(np.argmax(np.frombuffer(pixels, dtype=np.uint8)))
+            peak_hz = start + peak * 48000 / 2048
+            assert abs(abs(peak_hz - facts.tuned_hz) - 1000) < 50
     finally:
         await sub.close()
