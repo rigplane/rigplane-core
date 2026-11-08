@@ -162,6 +162,9 @@ from .radio_poller import (  # noqa: TID251
     DisableScope,
     EnableScope,
     RadioPoller,
+    SetScopeMode,
+    SetScopeSpan,
+    SwitchScopeReceiver,
 )
 from .monitor_mute import MonitorMuteState  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
@@ -1853,7 +1856,14 @@ class WebServer:
         else:
             self._schedule_scope_enable_when_ready(reason=reason, generation=generation)
 
-    async def _execute_scope_command(self, command: EnableScope | DisableScope) -> bool:
+    async def _execute_scope_command(
+        self,
+        command: EnableScope
+        | DisableScope
+        | SwitchScopeReceiver
+        | SetScopeMode
+        | SetScopeSpan,
+    ) -> bool:
         """Execute a scope command through the existing ordered command pipeline."""
         if self._stopping:
             return False

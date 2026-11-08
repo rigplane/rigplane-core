@@ -259,6 +259,7 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         SetScopeSpan,
         SwitchScopeReceiver,
     )
+
     server = WebServer(_scope_radio(), WebConfig(radio_model="IC-7610"))
     server._radio_state.main.freq = 14_100_000
     assert server.scope_hub is not None
@@ -328,7 +329,9 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         await virtual_clock.elapse(0)
         assert not replacement.done()
         assert [type(command) for command in replacement_commands] == [
-            SwitchScopeReceiver, SetScopeMode, SetScopeSpan
+            SwitchScopeReceiver,
+            SetScopeMode,
+            SetScopeSpan,
         ][: pending_stage + 1]
         pending = futures[-1]
         assert not pending.done()

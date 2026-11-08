@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -45,9 +44,8 @@ class WebRadioScopeWriter:
             SetScopeMode(0),
             SetScopeSpan(span),
         ):
-            future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            self._server.command_queue.put_ordered(command, future=future)
-            await future
+            if not await self._server._execute_scope_command(command):
+                raise RuntimeError(f"radio scope {type(command).__name__} failed")
 
 
 class WebScopePcmTap:
