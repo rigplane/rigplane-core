@@ -1,11 +1,11 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-11-05T20:13:14.817Z",
-  "commit": "dc88c963a8e343a8a273908add9d216ed7512ee7",
-  "commitShort": "dc88c963",
-  "branch": "codex/sql-tag-instead-of-busy",
-  "platform": "linux-x64",
-  "node": "v20.20.2",
+  "generatedAt": "2026-11-08T13:03:01.796Z",
+  "commit": "339c9c681dc30ca2d4843ca00fc8705a02011a0e",
+  "commitShort": "339c9c68",
+  "branch": "HEAD",
+  "platform": "linux-arm64",
+  "node": "v24.13.0",
   "playwright": "1.58.2",
   "comparator": {
     "engine": "playwright-bundled-pixelmatch",
