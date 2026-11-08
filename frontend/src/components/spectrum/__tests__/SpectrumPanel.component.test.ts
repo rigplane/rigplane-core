@@ -2824,6 +2824,25 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
   });
+  it('does not infer CENTER proof from a v2 span while the current scope mode is unknown', () => {
+    const controls = testScopeControls(0);
+    const unknownMode: ScopeControlsViewModel = {
+      ...controls, mode: { ...controls.mode, reading: { status: 'unknown' } },
+    };
+    runtimeHarness.state.currentState = Object.freeze({ providerGeneration: 18, active: 'MAIN' });
+    authorityHarness.state.current = authority({ providerGeneration: 18, scopeControls: unknownMode });
+    refreshSpectrumAuthority();
+    const target = mountPanel();
+    expectCenterReference(target, false);
+    harnessChannels.scope.fire(new Uint8Array(scopeWire({ sourceId: 'radio',
+      viewStartHz: 14_000_000, viewEndHz: 14_100_000 })));
+    flushSync();
+    silenceFrames();
+    expectCenterReference(target, false);
+    authorityHarness.state.current = authority({ providerGeneration: 18, scopeControls: controls });
+    refreshSpectrumAuthority(); flushSync();
+    expectCenterReference(target, true);
+  });
   it('pins no false CENTER marker when a FIX projection drops to null', () => {
     authorityHarness.state.current = authority({
       scopeControls: testScopeControls(1),
