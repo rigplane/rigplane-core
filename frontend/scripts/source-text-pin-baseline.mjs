@@ -508,7 +508,6 @@ export const SOURCE_TEXT_PIN_BASELINE = Object.freeze([
   "src/skins/__tests__/registry.test.ts::skin registry > pins a lazy-load case for every skin, in this table or the QA-gated one",
   "src/skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts::MOR-1069 — the shell's responsive selectors still match the composed tree > every :global class named by the cockpit CSS exists in the mounted DOM",
   "src/skins/dual-receiver-cockpit/__tests__/DualReceiverCockpit.component.test.ts::MOR-1257 (N4) — the components-v2 theme layer loads with this skin > imports the v2 theme layer as a side effect, the same way RadioLayout/LcdLayout do",
-  "src/skins/dual-sdr-face/__tests__/DualSdrFaceSkin.component.test.ts::DualSdrFaceSkin production entrypoint > keeps the picker options synchronized with the canonical layout vocabulary",
   "src/skins/dual-sdr-face/__tests__/DualSdrFaceSkin.component.test.ts::DualSdrFaceSkin production entrypoint > mounts the exact face through the canonical read-only semantic view",
   "src/skins/dual-sdr-face/__tests__/DualSdrFaceSkin.component.test.ts::DualSdrFaceSkin production entrypoint > uses the canonical hardware scope and grants no command callback",
   "src/skins/flagship-probe/__tests__/FlagshipProbe.component.test.ts::R52 — this shell announces nothing it does not know > has no conditional in its markup, so the geometry cannot change with state",

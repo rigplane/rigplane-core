@@ -1,6 +1,10 @@
 export const LOCAL_EXTENSION_MANIFEST_URL = '/api/local/v1/ui/manifest';
 export const LOCAL_EXTENSION_MANIFEST_VERSION = 1;
-export const LOCAL_EXTENSION_HOST_API_VERSION = '2.0';
+export const LOCAL_EXTENSION_HOST_API_VERSION = '3.0';
+type SupportedHostApiVersion = '2.0' | typeof LOCAL_EXTENSION_HOST_API_VERSION;
+function supportedHostApi(value: unknown): value is SupportedHostApiVersion {
+  return value === '2.0' || value === LOCAL_EXTENSION_HOST_API_VERSION;
+}
 
 /**
  * MOR-2242 — `/api/local/v1/*` is the Pro station-supervisor surface and does
@@ -33,7 +37,7 @@ export interface LocalExtensionDescriptor {
 
 export interface LocalExtensionManifest {
   version: typeof LOCAL_EXTENSION_MANIFEST_VERSION;
-  host_api: typeof LOCAL_EXTENSION_HOST_API_VERSION;
+  host_api: SupportedHostApiVersion;
   extensions: LocalExtensionDescriptor[];
 }
 
@@ -83,7 +87,7 @@ export function parseLocalExtensionManifest(
     return null;
   }
 
-  if (manifest.host_api !== LOCAL_EXTENSION_HOST_API_VERSION) {
+  if (!supportedHostApi(manifest.host_api)) {
     return null;
   }
 
@@ -132,7 +136,7 @@ export function parseLocalExtensionManifest(
 
   return {
     version: LOCAL_EXTENSION_MANIFEST_VERSION,
-    host_api: LOCAL_EXTENSION_HOST_API_VERSION,
+    host_api: manifest.host_api,
     extensions,
   };
 }
@@ -170,9 +174,9 @@ export async function loadLocalExtensionManifest(
     const value: unknown = await response.json();
     const manifest = asObject(value);
     if (manifest?.version === LOCAL_EXTENSION_MANIFEST_VERSION
-      && manifest.host_api !== LOCAL_EXTENSION_HOST_API_VERSION) {
+      && !supportedHostApi(manifest.host_api)) {
       console.warn(
-        '[local-extensions] Extension manifest rejected: explicit host_api "2.0" is required. '
+        '[local-extensions] Extension manifest rejected: explicit host_api "2.0" or "3.0" is required. '
         + 'Migrate to host version 2 canonical command names and parameters, including required receivers. '
         + 'Command booleans report client transport acceptance only; PTT commands remain unsupported.',
       );

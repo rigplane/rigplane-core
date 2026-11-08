@@ -37,6 +37,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  document.querySelector('meta[name="rigplane-local-supervisor"]')?.remove();
   document.body.innerHTML = '';
   localStorage.clear();
   // The i18n store is a module singleton and this file runs in the `fast`
@@ -48,6 +49,15 @@ afterEach(() => {
 });
 
 describe('LanguageSelector', () => {
+  it.each([false, true])('honors host language ownership %s', (language) => {
+    const meta = document.createElement('meta');
+    meta.name = 'rigplane-local-supervisor';
+    meta.content = JSON.stringify({ version: 1, report: false, language });
+    document.head.append(meta);
+    const { target, component } = setup();
+    expect(target.querySelector('.language-selector') === null).toBe(language);
+    unmount(component);
+  });
   it('renders one option per SUPPORTED_LOCALES entry', () => {
     const { target, component } = setup();
     const options = target.querySelectorAll('option');

@@ -205,9 +205,10 @@ It is a stable Pro-facing contract — treat it as tier 1 in this document.
 
 From `frontend/src/lib/local-extensions/host-api.ts`:
 
-- `LOCAL_EXTENSION_HOST_API_VERSION` (numeric constant, currently `2`)
+- `LOCAL_EXTENSION_HOST_API_VERSION` (numeric constant, currently `3`)
 - `RadioStateSubscriber` (type)
 - `LocalExtensionHostApiV2` (interface)
+- `LocalExtensionHostApiV3` (interface)
 - `LocalExtensionHostDependencies` (interface)
 - `LocalExtensionRegistration` (interface)
 - `LocalExtensionHostWindow` (interface)
@@ -219,7 +220,7 @@ From `frontend/src/lib/local-extensions/manifest.ts`:
 
 - `LOCAL_EXTENSION_MANIFEST_URL` (constant)
 - `LOCAL_EXTENSION_MANIFEST_VERSION` (numeric constant, currently `1`)
-- `LOCAL_EXTENSION_HOST_API_VERSION` (string version, currently `"2.0"`,
+- `LOCAL_EXTENSION_HOST_API_VERSION` (string version, currently `"3.0"`,
   mirrors the numeric constant in `host-api.ts`)
 - `LocalExtensionMount` (type)
 - `LocalExtensionDescriptor` (interface)
@@ -228,13 +229,57 @@ From `frontend/src/lib/local-extensions/manifest.ts`:
 - `parseLocalExtensionManifest` (function)
 - `loadLocalExtensionManifest` (function)
 
-**Host 2 migration.** The manifest schema remains `version: 1`, but an explicit
-`host_api: "2.0"` is required. `parseLocalExtensionManifest` rejects omitted,
+**Host 3 migration.** The manifest schema remains `version: 1`, and explicit
+`host_api: "2.0"` and `"3.0"` are accepted. `parseLocalExtensionManifest` rejects omitted,
 `"1.0"`, malformed and unsupported host declarations. Migrate extension
 commands before declaring the new version. `installLocalExtensionHostApi`
-exposes the same v2 object through `window.rigplaneExtensionHost` and its
+exposes the same v3 object through `window.rigplaneExtensionHost` and its
 deprecated naming alias; see the [migration guide](../migrate.md) for the
 alias spelling. The alias does not provide v1 behavior.
+
+Host v3 retains every v2 member and command acceptance meaning. It adds
+`connect()`, `disconnect()`, `setRadioPower(on)`, `openRadioControls()`,
+`getLayouts()`, `setLayout(id)`, `getThemes()`, `setTheme(id)`,
+`getHostSnapshot()`, `subscribeHostSnapshot(handler)`, `getListening()`,
+`setListeningMode(mode)`, `setListeningLevel(level)`, and
+`subscribeListening(handler)`. Subscriptions immediately deliver the current
+snapshot and return an unsubscribe function. They observe UI changes too.
+Connection and power requests open the same in-page confirmation as the UI;
+`true` means a UI request was accepted, not confirmed or completed. Power is
+refused when unsupported, unknown, already at the requested state, or remote.
+Radio Controls opens the layout's controls dialog, or shared radio panels when
+the layout has no dialog. Layout/theme setters use
+the same workspace/theme writers as the UI; invalid IDs return `false`.
+Release layout lists exclude test layouts; development retains `sdr-test`.
+
+Listening snapshots expose `mode` (`local`, `live`, `mute`), `level` (normalized
+radio AF or browser gain, `null` when unobserved), `target` (`radio` or
+`playback`), `enabled`, and `maxLevel`. Setters use the existing RX audio UI
+handlers: browser monitoring changes browser playback gain, local listening
+changes the active receiver's radio AF. Offline/powered-off/unsupported or
+unobserved level requests and non-finite/out-of-range levels are refused.
+Level requests in MUTE are refused; mode changes remain available.
+Mode changes retain the UI's mute/unmute and resource-demand behavior;
+these booleans do not acknowledge radio completion.
+
+The embedding host can supply report and language controls using the exported
+`LocalExtensionHostDeclaration` from `local-extensions/host-ui.ts`:
+
+```ts
+const controls: LocalExtensionHostDeclaration = {
+  version: 1, report: true, language: true,
+};
+const meta = document.createElement('meta');
+meta.name = 'rigplane-local-supervisor';
+meta.content = JSON.stringify(controls);
+document.head.append(meta); // before mounting the Core frontend
+```
+
+This is a host declaration, separate from the extension manifest. Absent,
+malformed, or unsupported declarations default both flags to `false`.
+`report: true` hides Core's report button; `language: true` hides the entire
+Core language settings section. Core-only hosts keep both controls. Declare
+only controls the embedding host actually supplies.
 
 The default host validates commands through
 `frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntentWithResult`.

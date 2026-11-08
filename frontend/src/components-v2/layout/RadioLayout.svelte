@@ -61,6 +61,8 @@
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
   import BandSelector from '../controls/BandSelector.svelte';
   import LanguageSelector from '../controls/LanguageSelector.svelte';
+  import { readHostDeclaration } from '$lib/local-extensions/host-ui';
+  const hostDeclaration = readHostDeclaration();
   import WorkspaceSettingsPanel from '../controls/WorkspaceSettingsPanel.svelte';
   import WorkspaceImportExport from '../controls/WorkspaceImportExport.svelte';
   import DspPanel from '../panels/DspPanel.svelte';
@@ -938,9 +940,11 @@
         <button class="settings-close" onclick={() => (settingsOpen = false)}>✕</button>
       </div>
       <div class="settings-content">
+        {#if !hostDeclaration.language}
         <CollapsiblePanel title="LANGUAGE" panelId="desktop-language">
           <LanguageSelector />
         </CollapsiblePanel>
+        {/if}
 
         <CollapsiblePanel title="WORKSPACE" panelId="desktop-workspace">
           <WorkspaceSettingsPanel {skinId} />

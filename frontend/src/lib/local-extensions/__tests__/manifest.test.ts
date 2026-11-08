@@ -62,11 +62,18 @@ describe('loadLocalExtensionManifest', () => {
   it('treats unsupported host API versions as no local extensions', async () => {
     const fetch = vi.fn().mockResolvedValue(mockResponse(200, {
       version: 1,
-      host_api: '3.0',
+      host_api: '4.0',
       extensions: [{ id: 'one', mount: 'floating-overlay', entry: '/local/one.js' }],
     }));
 
     await expect(loadLocalExtensionManifest({ fetch, supervisorAdvertised: true })).resolves.toBeNull();
+  });
+
+  it('accepts v3 while preserving the manifest version requested by v2 clients', () => {
+    const manifest = { version: 1, host_api: '3.0',
+      extensions: [{ id: 'one', mount: 'floating-overlay', entry: '/local/one.js' }] };
+    expect(parseLocalExtensionManifest(manifest)?.host_api).toBe('3.0');
+    expect(parseLocalExtensionManifest({ ...manifest, host_api: '2.0' })?.host_api).toBe('2.0');
   });
 
   it('treats malformed host API versions as no local extensions', async () => {
@@ -164,7 +171,7 @@ describe('local supervisor advertisement gate (MOR-2242)', () => {
 });
 
 describe('parseLocalExtensionManifest', () => {
-  it.each(['1.0', undefined, '3.0', 2, null])('rejects incompatible host API %s', (host_api) => {
+  it.each(['1.0', undefined, '4.0', 2, null])('rejects incompatible host API %s', (host_api) => {
     expect(parseLocalExtensionManifest({
       version: 1,
       ...(host_api === undefined ? {} : { host_api }),

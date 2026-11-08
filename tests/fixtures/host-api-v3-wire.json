@@ -1,0 +1,107 @@
+{
+  "controllerStatus": {
+    "protocol_version": 1,
+    "mode": "local",
+    "state": "idle",
+    "generation": 0,
+    "ttl_ms": 6000,
+    "heartbeat_ms": 2000,
+    "remaining_ms": 0
+  },
+  "controllerGrant": {
+    "controller_key": "0000000000000000000000000000000000000000000000000000000000000000",
+    "generation": 0,
+    "ttl_ms": 6000,
+    "heartbeat_ms": 2000
+  },
+  "controllerHeartbeat": {
+    "type": "controller_heartbeat",
+    "generation": 0
+  },
+  "power": {
+    "request": {
+      "state": "off"
+    },
+    "response": {
+      "status": "ok",
+      "power": "off"
+    },
+    "observed": false
+  },
+  "af": {
+    "request": {
+      "type": "cmd",
+      "id": "host-af",
+      "name": "set_af_level",
+      "params": {
+        "level": 0.42,
+        "level_unit": "normalized",
+        "receiver": 0
+      }
+    },
+    "native": 107,
+    "observed": 0.4196078431372549
+  },
+  "fieldStatus": {
+    "main.afLevel": {
+      "storePath": "receiver.0.operator_controls.af_level",
+      "observed": true,
+      "freshness": "fresh",
+      "availability": "available",
+      "lastObservedMonotonic": 1.0,
+      "maxAge": null,
+      "source": {
+        "source": "poll_response",
+        "provider": "fake_radio",
+        "transport": null,
+        "nativeId": null,
+        "capabilityId": null,
+        "commandSource": null,
+        "sessionId": null
+      },
+      "quality": [
+        "confirmed"
+      ]
+    },
+    "sub.afLevel": {
+      "storePath": "receiver.1.operator_controls.af_level",
+      "observed": true,
+      "freshness": "fresh",
+      "availability": "available",
+      "lastObservedMonotonic": 1.0,
+      "maxAge": null,
+      "source": {
+        "source": "poll_response",
+        "provider": "fake_radio",
+        "transport": null,
+        "nativeId": null,
+        "capabilityId": null,
+        "commandSource": null,
+        "sessionId": null
+      },
+      "quality": [
+        "confirmed"
+      ]
+    },
+    "active": {
+      "storePath": "global.slow_state.active",
+      "observed": true,
+      "freshness": "fresh",
+      "availability": "available",
+      "lastObservedMonotonic": 1.0,
+      "maxAge": null,
+      "source": {
+        "source": "poll_response",
+        "provider": "fake_radio",
+        "transport": null,
+        "nativeId": null,
+        "capabilityId": null,
+        "commandSource": null,
+        "sessionId": null
+      },
+      "quality": [
+        "confirmed"
+      ]
+    }
+  }
+}

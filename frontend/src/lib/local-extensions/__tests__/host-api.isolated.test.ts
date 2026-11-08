@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Capabilities } from '$lib/types/capabilities';
+import { validateCapabilities } from '$lib/types/capabilities';
+import { mockCapabilities } from '../../../../tests/e2e/i18n/fixtures';
 import type { ServerState } from '$lib/types/state';
 import { connect, disconnect } from '$lib/transport/ws-client';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
@@ -14,7 +15,7 @@ import {
   createLocalExtensionHostApi,
   installLocalExtensionHostApi,
   LOCAL_EXTENSION_HOST_API_VERSION,
-  type LocalExtensionHostApiV2,
+  type LocalExtensionHostApiV3,
   type LocalExtensionHostWindow,
   type RadioStateSubscriber,
 } from '../host-api';
@@ -31,7 +32,7 @@ describe('createLocalExtensionHostApi', () => {
 
   it('exposes a versioned state and capabilities API', () => {
     const state = { revision: 7 } as ServerState;
-    const capabilities = { model: 'TEST', capabilities: [] } as unknown as Capabilities;
+    const capabilities = validateCapabilities({ ...mockCapabilities, model: 'TEST', capabilities: [] });
     const api = createLocalExtensionHostApi({
       getState: () => state,
       getCapabilities: () => capabilities,
@@ -42,7 +43,7 @@ describe('createLocalExtensionHostApi', () => {
     });
 
     expect(api.version).toBe(LOCAL_EXTENSION_HOST_API_VERSION);
-    expect(api.version).toBe(2);
+    expect(api.version).toBe(3);
     expect(api.getState()).toBe(state);
     expect(api.getCapabilities()).toBe(capabilities);
   });
@@ -152,7 +153,7 @@ describe('createLocalExtensionHostApi', () => {
 });
 
 describe('installLocalExtensionHostApi', () => {
-  function makeApi(): LocalExtensionHostApiV2 {
+  function makeApi(): LocalExtensionHostApiV3 {
     return createLocalExtensionHostApi({
       getState: () => null,
       getCapabilities: () => null,
@@ -172,7 +173,7 @@ describe('installLocalExtensionHostApi', () => {
     expect(fakeWindow.rigplaneExtensionHost).toBe(api);
     expect(fakeWindow.icomLanExtensionHost).toBe(api);
     expect(fakeWindow.rigplaneExtensionHost).toBe(fakeWindow.icomLanExtensionHost);
-    expect(fakeWindow.icomLanExtensionHost?.version).toBe(2);
+    expect(fakeWindow.icomLanExtensionHost?.version).toBe(3);
 
     uninstall();
   });

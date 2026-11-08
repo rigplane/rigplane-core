@@ -34,6 +34,8 @@ const power = vi.hoisted(() => ({
 }));
 
 const sys = vi.hoisted(() => ({
+  connect: vi.fn(async () => {}),
+  disconnect: vi.fn(async () => {}),
   powerOn: vi.fn(async () => {}),
   powerOff: vi.fn(async () => {}),
 }));
@@ -50,6 +52,7 @@ vi.mock('$lib/stores/connection.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: () => null,
   hasAnyScope: vi.fn(() => false),
   hasAudio: vi.fn(() => false),
   hasSpectrum: vi.fn(() => false),
@@ -61,7 +64,8 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   setLayoutMode: vi.fn(),
 }));
 
-vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>(),
   getActiveFrequencyHz: vi.fn(() => null),
 }));
 
@@ -78,8 +82,8 @@ vi.mock('$lib/runtime', () => ({
       frameSeen: false,
     },
     system: {
-      disconnect: vi.fn(),
-      connect: vi.fn(),
+      disconnect: sys.disconnect,
+      connect: sys.connect,
       powerOn: sys.powerOn,
       powerOff: sys.powerOff,
       identifyFrequency: vi.fn(async () => null),
@@ -88,10 +92,13 @@ vi.mock('$lib/runtime', () => ({
 }));
 
 import StatusBar from '../StatusBar.svelte';
+import LocalExtensionsHost from '$lib/local-extensions/LocalExtensionsHost.svelte';
+import { getHostUi, type LocalExtensionHostDeclaration } from '$lib/local-extensions/host-ui';
 
 describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
   let target: HTMLElement | null = null;
   let instance: object | null = null;
+  let hostInstance: object | null = null;
   let confirmSpy: ReturnType<typeof vi.fn>;
   let alertSpy: ReturnType<typeof vi.fn>;
 
@@ -101,6 +108,8 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     power.remote = false;
     sys.powerOn.mockClear();
     sys.powerOff.mockClear();
+    sys.connect.mockClear();
+    sys.disconnect.mockClear();
     confirmSpy = vi.fn(() => true);
     alertSpy = vi.fn();
     vi.stubGlobal('confirm', confirmSpy);
@@ -108,8 +117,11 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
   });
 
   afterEach(() => {
+    document.querySelector('meta[name="rigplane-local-supervisor"]')?.remove();
     vi.unstubAllGlobals();
     if (instance) unmount(instance);
+    if (hostInstance) unmount(hostInstance);
+    hostInstance = null;
     instance = null;
     target?.remove();
     target = null;
@@ -119,6 +131,7 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     target = document.createElement('div');
     document.body.appendChild(target);
     instance = mount(StatusBar, { target, props: { onSettings } }) as object;
+    hostInstance = mount(LocalExtensionsHost, { target }) as object;
     flushSync();
     return target;
   }
@@ -138,6 +151,64 @@ describe('StatusBar power toggle (MOR-1673, in-page confirm)', () => {
     expect(btn, `expected the dialog button ${testid} to render`).not.toBeNull();
     return btn!;
   }
+
+  it('labels the sliders action Radio Controls', () => {
+    const host = render(vi.fn());
+    expect(host.querySelector('.settings-btn')?.getAttribute('aria-label')).toBe('Radio Controls');
+    expect(host.querySelector('.settings-btn')?.getAttribute('title')).toBe('Radio Controls');
+    expect(host.querySelector('.settings-btn')?.textContent?.trim()).toBe('');
+    expect(host.querySelector('.settings-btn .lucide-sliders-horizontal')).not.toBeNull();
+  });
+
+  it('routes extension disconnect through confirmation and Radio Controls through the UI callback', async () => {
+    const settings = vi.fn();
+    const host = render(settings);
+    expect(getHostUi()?.openRadioControls()).toBe(true);
+    expect(settings).toHaveBeenCalledTimes(1);
+    expect(getHostUi()?.connect()).toBe(false); // already connected
+    expect(getHostUi()?.disconnect()).toBe(true);
+    await tick();
+    expect(sys.disconnect).not.toHaveBeenCalled();
+    dialogButton(host, 'confirm-dialog-cancel').click();
+    await tick();
+    expect(sys.disconnect).not.toHaveBeenCalled();
+    expect(getHostUi()?.disconnect()).toBe(true);
+    await tick();
+    dialogButton(host, 'confirm-dialog-confirm').click();
+    await tick();
+    expect(sys.disconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('honors the host report declaration %s', (report) => {
+    const declaration: LocalExtensionHostDeclaration = { version: 1, report, language: false };
+    const meta = document.createElement('meta');
+    meta.name = 'rigplane-local-supervisor';
+    meta.content = JSON.stringify(declaration);
+    document.head.append(meta);
+    const host = render();
+    expect(host.querySelector('.report-btn') === null).toBe(report);
+  });
+
+  it('extension power request uses the UI confirmation before dispatch', async () => {
+    power.powerControl = true;
+    power.radioPowerOn = true;
+    const host = render();
+    expect(getHostUi()?.setRadioPower(false)).toBe(true);
+    await tick();
+    expect(dialog(host)).not.toBeNull();
+    expect(sys.powerOff).not.toHaveBeenCalled();
+    dialogButton(host, 'confirm-dialog-confirm').click();
+    await tick();
+    expect(sys.powerOff).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses extension power requests when unsupported', () => {
+    power.radioPowerOn = true;
+    const host = render();
+    expect(getHostUi()?.setRadioPower(false)).toBe(false);
+    expect(dialog(host)).toBeNull();
+    expect(sys.powerOff).not.toHaveBeenCalled();
+  });
 
   it('unsupported radio (no power_control): renders no power control at all', () => {
     power.powerControl = false;

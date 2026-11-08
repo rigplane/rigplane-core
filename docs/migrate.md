@@ -225,8 +225,8 @@ not an installation smoke test. Parser and lifecycle sources:
 
 ## Core extension-host migration
 
-The host contract uses numeric version `2` and an explicit
-manifest declaration `host_api: "2.0"`. Old `"1.0"` and missing declarations
+The host contract uses numeric version `3`; version 3 is additive to version 2.
+Manifests declare `host_api: "2.0"` or `"3.0"`. Old `"1.0"` and missing declarations
 must be rejected, rather than interpreted as evidence of compatibility. This
 version decision is separate from the Python package version and HTTP contract version 1.
 The manifest schema itself stays at `version: 1`. Migrate the commands before
@@ -238,13 +238,16 @@ declaring the new host contract:
 
 The entry URL here is illustrative; it must resolve to your own extension
 asset. TypeScript embedders replace `LocalExtensionHostApiV1` with
-`LocalExtensionHostApiV2` from the host module.
+`LocalExtensionHostApiV3` from the host module. Host v3 retains the v2 command
+members and accepts both `host_api: "2.0"` and `"3.0"` manifests; use `"3.0"`
+when consuming the additional UI and listening methods documented in
+[the public API surface](api/public-api-surface.md#frontend-extension-host-api-pro-facing).
 
 An extension should use a strict canonical non-TX intent, for example:
 
 ```javascript
 const host = window.rigplaneExtensionHost;
-if (!host || host.version !== 2) throw new Error('Extension requires host API 2');
+if (!host || host.version < 2) throw new Error('Extension requires host API 2 or later');
 const accepted = host.sendCommand('set_notch_filter', { value: 128, receiver: 0 });
 // `accepted` is client transport acceptance, not server admission or completion.
 ```

@@ -89,11 +89,11 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, Settings, Bug } from 'lucide-svelte';
+  import { Radio, Cable, Activity, Volume2, ArrowDownUp, Power, Unplug, Palette, Monitor, Tv, SlidersHorizontal, Bug } from 'lucide-svelte';
+  import { bindHostRadioControls, getHostUi, getLayoutOptions, readHostDeclaration } from '$lib/local-extensions/host-ui';
   import ThemePicker from '../controls/ThemePicker.svelte';
   import ManagedTotStatusControl from '../controls/ManagedTotStatusControl.svelte';
   import SendReportDialog from '../dialogs/SendReportDialog.svelte';
-  import ConfirmDialog from '../dialogs/ConfirmDialog.svelte';
   import { runtime } from '$lib/runtime';
   import { t } from '$lib/i18n';
   import {
@@ -110,7 +110,7 @@
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
   import { getAudioState } from '$lib/stores/audio.svelte';
   import { hasAnyScope, hasAudio, hasSpectrum, hasCapability } from '$lib/stores/capabilities.svelte';
-  import { getLayoutMode, setLayoutMode, type CanonicalLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
+  import { getLayoutMode, setLayoutMode, type LayoutMode } from '$lib/stores/layout.svelte';
   import type { SemanticSurfaceName } from '../../presentation/layouts/contract';
 
   interface Props {
@@ -145,25 +145,9 @@
     const raw = getLayoutMode();
     return raw === 'lcd' ? 'lcd-cockpit' : raw;
   });
-  // Skin-switcher dropdown options. `lcd` is a legacy persisted value that
-  // normalizes to `lcd-cockpit` above (kept for backward compat). Twin-skin
-  // variants (`lcd-cockpit`, `lcd-scope`) are selectable per #887 / #889.
-  // Typed `CanonicalLayoutMode`, not the wider `LayoutMode` (MOR-1257 F1):
-  // `CanonicalLayoutMode` excludes the QA-only 'dual-receiver-cockpit' value,
-  // so adding it to this array is a compile error, not just an omission —
-  // restoring the barrier that existed before that value was added to
-  // `LayoutMode`. See lib/stores/qa-cockpit-override.ts.
-  const skinOptions: Array<{ value: CanonicalLayoutMode; label: string }> = [
-    { value: 'auto', label: 'AUTO' },
-    { value: 'standard', label: 'Standard' },
-    { value: 'lcd-cockpit', label: 'LCD Cockpit' },
-    { value: 'lcd-scope', label: 'LCD Scope' },
-    { value: 'peer-split', label: 'LCD Peer Split' },
-    { value: 'unified-instrument', label: 'LCD Unified Instrument' },
-    { value: 'panadapter-first', label: 'LCD Panadapter' },
-    { value: 'sdr-test', label: 'SDR Screen (test)' },
-    { value: 'dual-sdr-face', label: 'Dual SDR Face' },
-  ];
+  // Shared catalogue keeps release filtering identical to the extension API.
+  const skinOptions = getLayoutOptions();
+  const hostDeclaration = readHostDeclaration();
 
   function handleSkinChange(ev: Event) {
     const value = (ev.currentTarget as HTMLSelectElement).value as LayoutMode;
@@ -272,97 +256,14 @@
     }
   }
 
-  // ── In-page confirmation (owner ruling 2026-09-23) ──
-  // Observed in one RigPlane Pro build: the native confirm did not
-  // appear and DISCONNECT did nothing (the same build works in
-  // Chromium), so the page no longer relies on native dialogs —
-  // connection and power toggles confirm inside the page via
-  // ConfirmDialog. The parent owns the outcome: OK runs the action
-  // exactly once (it is disabled while the action is pending) and
-  // closes the dialog on success; on failure the dialog stays open and
-  // shows the error in place of the old `alert`s. A result is applied
-  // only to the request still pending, so a result from a cancelled
-  // request can never close or annotate a newer confirm.
-  type PendingConfirm = {
-    message: string;
-    action: () => void | Promise<void>;
-    formatError?: (err: unknown) => string;
-  };
-  let confirmOpen = $state(false);
-  let confirmMessage = $state('');
-  let confirmError = $state<string | null>(null);
-  let confirmBusy = $state(false);
-  let pendingConfirm: PendingConfirm | null = null;
-
-  function requestConfirm(request: PendingConfirm) {
-    pendingConfirm = request;
-    confirmMessage = request.message;
-    confirmError = null;
-    confirmOpen = true;
-  }
-
-  function handleConfirmCancel() {
-    // Allowed while an action is pending: closing the dialog cannot
-    // un-dispatch it — handleConfirmOk discards the late result because
-    // `pendingConfirm` no longer points at that request.
-    confirmOpen = false;
-    confirmError = null;
-    pendingConfirm = null;
-  }
-
-  async function handleConfirmOk() {
-    const request = pendingConfirm;
-    if (!request) {
-      confirmOpen = false;
-      return;
-    }
-    if (confirmBusy) return;
-    confirmBusy = true;
-    try {
-      await request.action();
-      if (pendingConfirm === request) {
-        confirmOpen = false;
-        pendingConfirm = null;
-      }
-    } catch (err) {
-      if (pendingConfirm === request) {
-        confirmError = request.formatError ? request.formatError(err) : String(err);
-      }
-    } finally {
-      confirmBusy = false;
-    }
-  }
-
   function handleConnectionToggle() {
-    const isConnected = controlState === 'connected';
-    requestConfirm({
-      message: isConnected
-        ? t('core.statusbar.connection.confirmDisconnect')
-        : t('core.statusbar.connection.confirmConnect'),
-      action: () => (isConnected ? runtime.system.disconnect() : runtime.system.connect()),
-    });
+    const ui = getHostUi();
+    if (controlState === "connected") ui?.disconnect(); else ui?.connect();
   }
-
   function handlePowerToggle() {
-    // Defence in depth: never confirm or dispatch when the power state is
-    // unknown.
-    if (runtime.remoteController || radioPowerOn === null) return;
-    if (radioPowerOn === true) {
-      requestConfirm({
-        message: t('core.statusbar.power.confirmTurnOff'),
-        // The state was known when the dialog opened; re-check at OK
-        // time and refuse to dispatch if it has turned unknown since.
-        action: () => (radioPowerOn === null ? undefined : runtime.system.powerOff()),
-        formatError: (err) => t('core.statusbar.power.failedTurnOff', { detail: String(err) }),
-      });
-    } else {
-      requestConfirm({
-        message: t('core.statusbar.power.confirmTurnOn'),
-        action: () => (radioPowerOn === null ? undefined : runtime.system.powerOn()),
-        formatError: (err) => t('core.statusbar.power.failedTurnOn', { detail: String(err) }),
-      });
-    }
+    if (radioPowerOn !== null) getHostUi()?.setRadioPower(!radioPowerOn);
   }
+  onMount(() => bindHostRadioControls(onSettings));
 
   // ── Send-Report dialog (issue #1397) ──
   let reportOpen = $state(false);
@@ -562,7 +463,7 @@
     {#if showManagedTotControl}
       <ManagedTotStatusControl />
     {/if}
-    {#if !runtime.remoteController}
+    {#if !runtime.remoteController && !hostDeclaration.report}
     <button
       type="button"
       class="control-btn report-btn"
@@ -582,7 +483,7 @@
         title={t('core.statusbar.settings.tooltip')}
         aria-label={t('core.statusbar.settings.tooltip')}
       >
-        <Settings size={14} strokeWidth={2} />
+        <SlidersHorizontal size={14} strokeWidth={2} />
       </button>
     {/if}
     <label class="skin-switcher" title={t('core.statusbar.skin.selectorLabel')}>
@@ -633,16 +534,6 @@
 
 <SendReportDialog open={reportOpen && !runtime.remoteController} onClose={() => (reportOpen = false)} />
 
-<ConfirmDialog
-  open={confirmOpen}
-  message={confirmMessage}
-  error={confirmError}
-  busy={confirmBusy}
-  confirmLabel={t('common.action.ok')}
-  cancelLabel={t('common.action.cancel')}
-  onConfirm={handleConfirmOk}
-  onCancel={handleConfirmCancel}
-/>
 
 <style>
   .control-link-lost {

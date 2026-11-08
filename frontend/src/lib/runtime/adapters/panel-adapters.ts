@@ -66,6 +66,7 @@ import { currentControlSessionEpoch } from '../commands/radio-intents';
 import { getTuningBurstTargetHz } from '../commands/tuning-accumulator';
 import type { ServerState } from '$lib/types/state';
 import type { Capabilities } from '$lib/types/capabilities';
+import { isFieldAvailable } from '$lib/state/field-status';
 import {
   activeReceiverOrNull,
   agcArmed, attenuatorArmed, autoNotchArmed, dataModeArmed, filterArmed, filterShapeArmed,
@@ -792,6 +793,7 @@ export function getManualNotchArmed(): ArmedFact<boolean> {
 export function deriveAudioRoutingConfig() { return runtime.audioRouting; }
 const _audioRoutingHandlers = makeAudioRoutingHandlers();
 export function getAudioRoutingHandlers() { return _audioRoutingHandlers; }
+
 const _vfoHandlers = makeVfoHandlers();
 export function getVfoHandlers() { return _vfoHandlers; }
 

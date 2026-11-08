@@ -34,6 +34,7 @@ vi.mock('$lib/stores/connection.svelte', () => ({
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
+  getCapabilities: () => null,
   hasAnyScope: vi.fn(() => false),
   hasAudio: vi.fn(() => false),
   hasSpectrum: vi.fn(() => false),
@@ -45,7 +46,8 @@ vi.mock('$lib/stores/layout.svelte', () => ({
   setLayoutMode: vi.fn(),
 }));
 
-vi.mock('$lib/runtime/adapters/panel-adapters', () => ({
+vi.mock('$lib/runtime/adapters/panel-adapters', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/runtime/adapters/panel-adapters')>(),
   getActiveFrequencyHz: vi.fn(() => null),
 }));
 
@@ -71,10 +73,12 @@ vi.mock('$lib/runtime', () => ({
 }));
 
 import StatusBar from '../StatusBar.svelte';
+import LocalExtensionsHost from '$lib/local-extensions/LocalExtensionsHost.svelte';
 
 describe('StatusBar connection toggle (in-page confirm)', () => {
   let target: HTMLElement | null = null;
   let instance: object | null = null;
+  let hostInstance: object | null = null;
   let confirmSpy: ReturnType<typeof vi.fn>;
   let alertSpy: ReturnType<typeof vi.fn>;
 
@@ -91,6 +95,8 @@ describe('StatusBar connection toggle (in-page confirm)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     if (instance) unmount(instance);
+    if (hostInstance) unmount(hostInstance);
+    hostInstance = null;
     instance = null;
     target?.remove();
     target = null;
@@ -100,6 +106,7 @@ describe('StatusBar connection toggle (in-page confirm)', () => {
     target = document.createElement('div');
     document.body.appendChild(target);
     instance = mount(StatusBar, { target }) as object;
+    hostInstance = mount(LocalExtensionsHost, { target }) as object;
     flushSync();
     return target;
   }

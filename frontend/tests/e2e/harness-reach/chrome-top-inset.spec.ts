@@ -164,7 +164,7 @@ for (const inset of [0, 48]) {
     await expect(page.locator('.keyboard-leader-pill')).toBeVisible();
     await fits(page.locator('.keyboard-leader-pill'), inset, 800);
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'Show settings', exact: true }).click();
+    await page.getByRole('button', { name: 'Radio Controls', exact: true }).click();
     await fits(page.locator('.settings-backdrop'), inset, 800);
     await fits(page.locator('.settings-modal'), inset, 800);
   });

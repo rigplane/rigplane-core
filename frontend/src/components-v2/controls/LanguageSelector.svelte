@@ -21,6 +21,8 @@
    */
   import { getLocale, setLocale, SUPPORTED_LOCALES, t } from '$lib/i18n';
   import { PSEUDO_LOCALE, type LocaleCode } from '$lib/i18n';
+  import { readHostDeclaration } from '$lib/local-extensions/host-ui';
+  const hostDeclaration = readHostDeclaration();
 
   /**
    * Endonym lookup. Kept small and explicit because endonyms are static
@@ -68,6 +70,7 @@
   }
 </script>
 
+{#if !hostDeclaration.language}
 <div class="language-selector" data-testid="language-selector">
   <label class="lang-row">
     <span class="lang-label">{labelText}</span>
@@ -88,6 +91,7 @@
   </label>
   <p class="lang-hint" data-testid="language-hint">{srHintText}</p>
 </div>
+{/if}
 
 <style>
   .language-selector {
