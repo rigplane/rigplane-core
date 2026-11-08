@@ -2,10 +2,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import type { ControlSessionSnapshot } from '$lib/runtime/frontend-runtime';
 import type { WsChannel } from '$lib/transport/ws-client';
 import SpectrumPanel from '../SpectrumPanel.svelte';
 
-const harness = vi.hoisted(() => ({ controller: null as ScopeController | null, source: 'hardware' as 'hardware' | 'audio_fft' }));
+const harness = vi.hoisted(() => ({
+  controller: null as ScopeController | null,
+  source: 'hardware' as 'hardware' | 'audio_fft',
+  controlSession: Object.freeze({ state: 'connected' as const, epoch: 1 }) satisfies ControlSessionSnapshot,
+}));
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   presentationResources: {
     configure: vi.fn(),
@@ -14,6 +19,7 @@ vi.mock('$lib/runtime/frontend-runtime', () => ({
   },
   runtime: {
     get scope() { return harness.controller!; },
+    controlSession: harness.controlSession,
     state: null,
     get caps() { return { scopeSource: harness.source }; },
     defaultScopeStatus: { transport: 'connected' },
