@@ -229,6 +229,44 @@ const geometry = (stream: ScopeStream) => {
 };
 
 describe('MOR-2329 semantic LCD stream binding', () => {
+  it('leaves an independently demanded live stream and its authority untouched for a scope-free mount', async () => {
+    h.scope.setFrameAuthority({ source: 'hardware', receiver: 0, providerGeneration: 7 });
+    const lease = h.resources.acquire('hardware-scope', 'independent');
+    await settle(); channels.scope.connected(); const buffer = channels.scope.frame();
+    const stream = h.scope.stream('hardware');
+    const before = geometry(stream);
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    const streams = vi.spyOn(h.scope, 'stream');
+    render(); await settle();
+    expect(authority).not.toHaveBeenCalled(); expect(streams).not.toHaveBeenCalled();
+    expect(geometry(stream)).toBe(before);
+    expect(stream.latest('scope:0')?.pixels?.buffer).toBe(buffer);
+    component!.$destroy(); component = null; flushSync(); await settle();
+    expect(authority).not.toHaveBeenCalled(); expect(streams).not.toHaveBeenCalled();
+    expect(geometry(stream)).toBe(before); expect(channels.scope.count()).toBe(1);
+    expect(channels.scope.disconnect).not.toHaveBeenCalled();
+    h.resources.release(lease);
+  });
+  it('qualifies an audio-only peer as a genuine consumer and fences prior-provider audio callbacks', async () => {
+    render(); component!.$set({ displayAudioScope: true }); flushSync(); await settle();
+    const audio = h.scope.stream('audio_fft');
+    const authority = vi.spyOn(h.scope, 'setFrameAuthority');
+    expect(selected()).toBe(audio);
+    expect(h.events).toEqual(['acquire:audio-fft']);
+    expect(channels.scope.connect).not.toHaveBeenCalled();
+    channels['audio-scope'].connected(); channels['audio-scope'].frame();
+    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: 0 });
+    const previous = channels['audio-scope'].callbacks();
+    radio.current = liveState(8); expect(setCapabilities(liveCaps(8))).toBe(true);
+    publishAuthority(); flushSync(); await settle();
+    expect(authority.mock.lastCall).toEqual([{ source: 'audio_fft', receiver: 0, providerGeneration: 8 }, []]);
+    channels['audio-scope'].frame(0, [9, 9, 9], previous);
+    expect(geometry(audio)).toBeNull();
+    expect(channels['audio-scope'].connect).toHaveBeenCalledTimes(2);
+    channels['audio-scope'].connected(); channels['audio-scope'].frame();
+    expect(geometry(audio)).toMatchObject({ source: 'audio_fft', receiver: 0, freshness: 'fresh' });
+    expect(h.events).toEqual(['acquire:audio-fft']);
+  });
   it('owns one selected-source lease, preserves stream/pixel identity, and switches sources without fallback', async () => {
     const authority = vi.spyOn(h.scope, 'setFrameAuthority');
     render('audio-fft'); await settle();
