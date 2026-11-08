@@ -1257,7 +1257,7 @@ function activateReceiver(
 ): boolean {
   if (!context || knownA03cReceiver(context, target) === null) return false;
   dispatchRadioIntent({ name: 'set_vfo', params: { vfo: target } });
-  audioManager.setAudioConfig({ focus: target === 'SUB' ? 'sub' : 'main' });
+  makeAudioRoutingHandlers().onFocusChange(target === 'SUB' ? 'sub' : 'main');
   return true;
 }
 

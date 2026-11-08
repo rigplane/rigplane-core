@@ -10,6 +10,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { flushSync } from 'svelte';
 import { validateCapabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 // @ts-expect-error -- Svelte does not publish types for its test-only effect harness.
 import { effect_root, render_effect } from 'svelte/internal/client';
@@ -54,12 +55,14 @@ vi.mock('$lib/transport/ws-client', () => ({
 }));
 vi.mock('$lib/runtime/commands/radio-intents', () => ({
   dispatchRadioIntent: vi.fn(() => ({ id: 'test-lifecycle', status: 'pending' })),
+  currentControlSessionEpoch: vi.fn(() => controller.epoch),
   isNormalizedLevel: (value: unknown) =>
     typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1,
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
   getCapabilities: vi.fn(() => null),
+  capabilitiesMatchGeneration: vi.fn(() => false),
   setCapabilities: vi.fn(),
   subscribeCapabilities: vi.fn(),
   hasSpectrum: vi.fn(() => false),
@@ -145,15 +148,16 @@ vi.mock('./system-controller', async () => {
 
 import { fetchCapabilities, fetchMemoryPage } from '$lib/transport/http-client';
 import { connect, disconnectAll, getChannel, getControlSession, onControlSessionTransition, onMessage, sendRaw, emitLocalNotification } from '$lib/transport/ws-client';
-import { getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
-import { radio, subscribeRadioState } from '$lib/stores/radio.svelte';
+import { capabilitiesMatchGeneration, getCapabilities, setCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
+import { getRadioState, radio, subscribeRadioState } from '$lib/stores/radio.svelte';
 import { audioManager } from '$lib/audio/audio-manager';
 import { getRxAudioTargetSnapshot, subscribeRxAudioTarget } from '$lib/stores/audio.svelte';
 import { clearLegacyPendingModInputRestore } from '../adapters/mod-input-auto.svelte';
 import { PresentationResourceHost } from '../resource-host';
 import { presentationResources } from '../frontend-runtime';
 import { scopeController } from '../scope-controller.svelte';
-import { makeRxAudioHandlers } from '../commands/panel-commands';
+import { makeRxAudioHandlers, makeVfoHandlers } from '../commands/panel-commands';
+import { dispatchRadioIntent } from '../commands/radio-intents';
 
 // The runtime singleton injects its operator notifier during construction,
 // which happens at the import above. Capture the injected sink here so the
@@ -557,6 +561,41 @@ describe('FrontendRuntime.bootstrap()', () => {
     expect(localStorage.getItem('icom.audio.main_gain_db')).toBe('-27');
     expect(localStorage.getItem('icom.audio.focus')).toBe('main');
     localStorage.clear();
+    await cleanup();
+  });
+
+  it('preserves explicit SUB activation over a control reconnect and supported capability publication', async () => {
+    localStorage.setItem('icom.audio.focus', 'main');
+    const wire = structuredClone(stateWireGoldens['IC-7610'].capabilities);
+    const caps = validateCapabilities({
+      ...wire, capabilities: [...wire.capabilities, 'dual_rx', 'lan_dual_rx_audio_routing'],
+    });
+    const state = structuredClone(stateWireGoldens['IC-7610'].allObserved.data) as unknown as ServerState;
+    vi.mocked(getRadioState).mockReturnValue(state);
+    vi.mocked(capabilitiesMatchGeneration).mockImplementation((generation) => generation === caps.providerGeneration);
+    vi.mocked(getCapabilities).mockReturnValue(caps);
+    let listener!: Parameters<typeof subscribeCapabilities>[0];
+    vi.mocked(subscribeCapabilities).mockImplementation((next) => {
+      listener = next;
+      next(caps);
+      return vi.fn();
+    });
+    const rt = await freshRuntime();
+    const cleanup = await rt.bootstrap();
+    expect(audioManager.setAudioConfig).toHaveBeenLastCalledWith({ focus: 'main' });
+    makeVfoHandlers().onSubVfoClick();
+    expect(dispatchRadioIntent).toHaveBeenLastCalledWith({ name: 'set_vfo', params: { vfo: 'SUB' } });
+    expect(audioManager.setAudioConfig).toHaveBeenLastCalledWith({ focus: 'sub' });
+
+    vi.mocked(getCapabilities).mockReturnValue(null);
+    listener(null);
+    vi.mocked(getCapabilities).mockReturnValue(caps);
+    listener(caps);
+    expect(audioManager.setAudioConfig).toHaveBeenLastCalledWith({ focus: 'sub' });
+    expect(localStorage.getItem('icom.audio.focus')).toBe('sub');
+
+    vi.mocked(getRadioState).mockReturnValue(null);
+    vi.mocked(capabilitiesMatchGeneration).mockReturnValue(false);
     await cleanup();
   });
 
