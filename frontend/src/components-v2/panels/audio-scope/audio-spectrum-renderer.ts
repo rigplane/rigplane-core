@@ -144,8 +144,8 @@ export function renderAudioSpectrum(
     if (Math.abs(fwDiff) <= 1) rs.animFilterWidth = filterWidth;
   }
 
-  // Zero means no width has been reported. Keep the last finite width when
-  // a later readout is unknown; before the first one, draw an unclipped trace.
+  // Zero means no width has been reported. Draw an unclipped trace whenever
+  // the current readout is unknown, retaining animation state for its return.
   // ── Trapezoid geometry ──
   const totalHalfW = width * 0.45;
   const whiskerLeft = width / 2 - totalHalfW;
@@ -176,7 +176,8 @@ export function renderAudioSpectrum(
   // without PBT supplies the radio's signed native IF-shift instead; zero
   // keeps the established baseband-centred geometry.
   const centerOffsetHz = pbtRange ? avgPbtHz : ifShift;
-  const showFilterOverlay = rs.animFilterWidth > 0 && Number.isFinite(centerOffsetHz) && Number.isFinite(filterWidthMax);
+  const showFilterOverlay = Number.isFinite(filterWidth) && filterWidth > 0 && rs.animFilterWidth > 0
+    && Number.isFinite(centerOffsetHz) && Number.isFinite(filterWidthMax);
   const shiftRef = Math.max(rs.animFilterWidth, filterWidthMax * 0.5);
   const cx = showFilterOverlay
     ? width / 2 + (centerOffsetHz / shiftRef) * totalHalfW * 0.6
@@ -304,7 +305,8 @@ export function renderAudioSpectrum(
 
   // ── Passband fraction (used for bin mapping below) ──
   const filterHz = Math.round(rs.animFilterWidth);
-  const passbandFrac = showFilterOverlay ? Math.min(1, filterHz / halfBw) : 1;
+  const passbandFrac = showFilterOverlay && Number.isFinite(halfBw) && halfBw > 0
+    ? Math.min(1, filterHz / halfBw) : 1;
 
   // ── Spectrum: gradient fill + line, clipped to trapezoid ──
   if (pixels && pixels.length > 0) {
@@ -327,8 +329,10 @@ export function renderAudioSpectrum(
 
       // Map x position to passband FFT bin
       const barFrac = i / numPoints;
-      const pixIdx = dcIdx + Math.floor(barFrac * passbandFrac * positiveLen);
-      const clamped = Math.max(dcIdx, Math.min(pixels.length - 1, pixIdx));
+      const pixIdx = showFilterOverlay
+        ? dcIdx + Math.floor(barFrac * passbandFrac * positiveLen)
+        : Math.floor(barFrac * pixels.length);
+      const clamped = Math.max(0, Math.min(pixels.length - 1, pixIdx));
       const rawAmp = Math.min(pixels[clamped], MAX_AMPLITUDE) / MAX_AMPLITUDE;
 
       // Smooth

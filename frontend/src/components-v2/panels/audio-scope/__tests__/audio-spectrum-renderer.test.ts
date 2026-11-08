@@ -79,6 +79,8 @@ describe('renderAudioSpectrum', () => {
     const strokes: string[] = [];
     Object.defineProperty(ctx, 'strokeStyle', { set: (value: string) => { style = value; } });
     Object.defineProperty(ctx, 'stroke', { value: () => strokes.push(style) });
+    const labels = vi.fn();
+    Object.defineProperty(ctx, 'fillText', { value: labels });
     const rs = new AudioSpectrumRendererState();
     const reset = vi.spyOn(rs, 'reset');
     for (const filterWidth of [NaN, NaN, NaN, 2400]) {
@@ -86,7 +88,33 @@ describe('renderAudioSpectrum', () => {
       renderAudioSpectrum(ctx, 400, 160, { ...baseState, filterWidth }, rs);
       expect(strokes).toContain('rgba(0, 220, 220, 0.9)');
     }
+    expect(labels).toHaveBeenCalledWith('Filter: 2400 Hz', 200, 13);
     expect(reset).not.toHaveBeenCalled();
+  });
+
+  it('maps both halves of an unknown-width FFT and hides stale overlays', () => {
+    const ctx = mockCtx();
+    const points: [number, number][] = [];
+    const labels = vi.fn();
+    Object.defineProperty(ctx, 'fillText', { value: labels });
+    Object.defineProperty(ctx, 'lineTo', { value: (x: number, y: number) => points.push([x, y]) });
+    const rs = new AudioSpectrumRendererState();
+    renderAudioSpectrum(ctx, 400, 160, baseState, rs);
+    labels.mockClear();
+    points.length = 0;
+    const pixels = new Uint8Array(100);
+    pixels[25] = 160;
+    pixels[75] = 160;
+    renderAudioSpectrum(ctx, 400, 160, { ...baseState, pixels, filterWidth: NaN }, rs);
+    expect(labels.mock.calls.some(([label]) => String(label).startsWith('Filter:'))).toBe(false);
+    expect(points.some(([x, y]) => x === 100 && y < 80)).toBe(true);
+    expect(points.some(([x, y]) => x === 300 && y < 80)).toBe(true);
+  });
+
+  it('does not poison smoothing when bandwidth is unknown', () => {
+    const rs = new AudioSpectrumRendererState();
+    renderAudioSpectrum(mockCtx(), 400, 160, { ...baseState, bandwidth: NaN }, rs);
+    expect(rs.smoothed?.every(Number.isFinite)).toBe(true);
   });
 
   it('renders without throwing for valid state', () => {
