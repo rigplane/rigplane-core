@@ -137,3 +137,20 @@ it.each(['error-first', 'facts-first'])('retries refused startup once for change
   expect(publish).toHaveBeenCalledTimes(before + 1);
   action.destroy(); node.remove();
 });
+
+it('shares the attempted facts revision across surfaces of the same upstream target', () => {
+  const { value, publish } = stream();
+  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
+  const nodes = [document.createElement('div'), document.createElement('div')];
+  nodes.forEach((node, index) => Object.defineProperty(node, 'clientWidth', { value: 100 + index * 100 }));
+  const params = { stream: value, receiver: 0, view: request().view, revision: 'unknown' };
+  const actions = nodes.map(node => scopeSubscriptionSurface(node, params));
+  const before = publish.mock.calls.length;
+  for (const action of actions) action.update({ ...params, revision: 'observed' });
+  value.handleMessage({ type: 'error', message: 'old request rejected' });
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  value.handleMessage({ type: 'error', message: 'same facts still rejected' });
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  for (const action of actions) action.destroy();
+});
