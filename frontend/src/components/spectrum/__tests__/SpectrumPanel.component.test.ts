@@ -4802,10 +4802,16 @@ describe('review corrections for requested View and sample retirement', () => {
     spectrumRendererHarness.render.mockClear();
     emitFrame({ pixels: new Uint8Array(0), outOfRange: false }); await flushWaterfallPaint();
     expect(target.querySelector('.spectrum-area canvas')).toBeNull();
+    const hatch = target.querySelector<HTMLElement>('.spectrum-area .scope-hatch[data-reason="no pixels"]');
+    expect(hatch).not.toBeNull();
+    expect(hatch!.style.left).toBe('0%');
+    expect(hatch!.style.width).toBe('100%');
     expect(spectrumRendererHarness.render).not.toHaveBeenCalled();
     expect(target.querySelector('.waterfall-content canvas')).toBe(waterfall);
     emitFrame({ pixels: new Uint8Array([1, 2, 3]) }); await flushWaterfallPaint();
     expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([1, 2, 3]);
+    expect(target.querySelector('.spectrum-area .scope-hatch[data-reason="no pixels"]')).toBeNull();
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
     expect(target.querySelector('.waterfall-content canvas')).toBe(waterfall);
   });
 
