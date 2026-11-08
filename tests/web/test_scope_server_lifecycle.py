@@ -260,6 +260,7 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         SwitchScopeReceiver,
     )
     server = WebServer(_scope_radio(), WebConfig(radio_model="IC-7610"))
+    server._radio_state.main.freq = 14_100_000
     assert server.scope_hub is not None
     source = server._radio_scope_source
     assert source is not None
@@ -306,7 +307,7 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         Subscription("radio", 0, View(14_090_000, 14_110_000), 100, 10)
     )
     await handler._handle_control(request)
-    assert handler._streams
+    assert handler._streams, handler._ws.text
     server.command_queue.drain_entries()
     poller.stop()
     replacing = True
