@@ -657,7 +657,7 @@ async def test_failed_demand_callback_cleans_up_subscriber_and_frame_hook():
 
     hub.register("radio", source, on_demand=demand)
     with pytest.raises(RuntimeError, match="demand failed"):
-        await hub.subscribe(request())
+        await hub.subscribe(request(source="radio"))
     assert not source.callbacks
     assert not hub._sources["radio"].clients
     assert source.stops == 1

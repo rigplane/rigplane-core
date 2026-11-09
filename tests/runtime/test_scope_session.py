@@ -298,3 +298,13 @@ async def test_invalid_view_write_does_not_poison_the_next_request():
         await session.configure(mode=99)
     await session.configure(span=4)
     assert writes == [("mode", 99), ("span", 4)]
+
+
+async def test_restore_only_writes_view_settings_the_session_changed():
+    writer = Writer()
+    session = ScopeSession(writer.read, writer.write, ready=True, spans=(2500, 5000, 10000, 25000))
+    await session.set_output(True)
+    await session.set_center(14100000, 25000, 0)
+    assert writer.views == [("span", 3, 0)]
+    await session.set_output(False)
+    assert writer.views == [("span", 3, 0), ("span", 2, 0)]
