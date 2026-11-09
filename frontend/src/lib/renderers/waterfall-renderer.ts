@@ -91,6 +91,7 @@ float profile(float column, vec4 grid, vec4 extra, int row) {
   if (coordinate < 0.0 || coordinate > 1.0) return 0.0;
   int bin = clamp(int(floor(coordinate * extra.z + 0.0001)), 0, int(extra.z) - 1);
   float value = texelFetch(uRing, ivec2(bin + int(extra.w), row), 0).r * 255.0;
+  if (extra.y == 80.0) return value;
   return floor(min(value, extra.y) * 80.0 / extra.y + 0.5);
 }
 void main() {
@@ -108,7 +109,10 @@ void main() {
   }
   vec4 grid = rowInfo(row, 2);
   // rc3 pushRow interpolated the translated screen profile before the colour curve.
-  float column = (coordinate - grid.y) / grid.z * grid.x;
+  float spanScale = uView.y == info.z ? 1.0 : uView.y / info.z;
+  float pixelScale = grid.x == uSize.x ? 1.0 : grid.x / uSize.x;
+  float column = (delta / info.z - grid.y) / grid.z * grid.x
+    + floor(gl_FragCoord.x) * (spanScale / grid.z) * pixelScale;
   float left = floor(column + 0.0001), fraction = clamp(column - left, 0.0, 1.0);
   float sampleValue = mix(profile(left, grid, extra, row), profile(left + 1.0, grid, extra, row), fraction);
   float t = floor(sqrt(clamp((sampleValue + uRef * (40.0/60.0)) / 80.0, 0.0, 1.0)) * 255.0) / 255.0;
