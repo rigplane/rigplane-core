@@ -62,7 +62,7 @@ export class ScopeStream {
     const key = `${subscription.sourceId}:${subscription.receiver}`;
     const previous = this.confirmedFrequencies.get(key);
     if (frequencyHz != null) this.confirmedFrequencies.set(key, frequencyHz);
-    const refresh = !('follow' in subscription.view) && frequencyHz != null && previous !== frequencyHz;
+    const refresh = frequencyHz != null && previous !== frequencyHz;
     return this.publishSurfaceDemand(retry, revision, key, refresh);
   }
 

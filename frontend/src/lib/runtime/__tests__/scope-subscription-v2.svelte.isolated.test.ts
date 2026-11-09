@@ -20,19 +20,26 @@ const surfaceFacts = (backingW = 100): CanvasSurfaceFacts => ({
   cssW: backingW, cssH: 50, backingW, backingH: 50, pixelScale: 1, visible: true,
 });
 
-it('refreshes an explicit view once per confirmed retune across surfaces', () => {
+it.each([false, true])('refreshes only the selected explicit demand regardless of surface order (follow first: %s)', followFirst => {
   const { value, publish } = stream();
   const params = { stream: value, receiver: 0, view: { startHz: 14_225_000, endHz: 14_275_000 },
     facts: surfaceFacts(), frequencyHz: 14_250_000, revision: 'initial' };
-  const actions = [0, 1].map(() => scopeSubscriptionSurface(document.createElement('div'), params));
+  const follow = { ...params, facts: surfaceFacts(50), view: { follow: 'vfo' as const, spanHz: 100_000 } };
+  const inputs = followFirst ? [follow, params] : [params, follow];
+  const actions = inputs.map(input => scopeSubscriptionSurface(document.createElement('div'), input));
   const peer = scopeSubscriptionSurface(document.createElement('div'), { ...params, receiver: 1, frequencyHz: 7_100_000 });
   const before = publish.mock.calls.length;
-  actions.forEach(action => action.update({ ...params, revision: 'geometry-only' }));
+  actions.forEach((action, i) => action.update({ ...inputs[i], revision: 'geometry-only' }));
   expect(publish).toHaveBeenCalledTimes(before);
-  actions.forEach(action => action.update({ ...params, frequencyHz: 14_290_000 }));
+  actions.forEach((action, i) => action.update({ ...inputs[i], frequencyHz: 14_290_000 }));
   expect(publish).toHaveBeenCalledTimes(before + 1);
-  actions.forEach(action => action.update({ ...params, frequencyHz: 14_290_000, revision: 'new-frame' }));
+  expect(publish.mock.lastCall).toEqual([expect.objectContaining({ view: params.view }), expect.anything(), true]);
+  actions.forEach((action, i) => action.update({ ...inputs[i], frequencyHz: 14_290_000, revision: 'new-frame' }));
   expect(publish).toHaveBeenCalledTimes(before + 1);
+  actions[followFirst ? 1 : 0].destroy();
+  const followOnly = publish.mock.calls.length;
+  actions[followFirst ? 0 : 1].update({ ...follow, frequencyHz: 14_300_000 });
+  expect(publish).toHaveBeenCalledTimes(followOnly);
   actions.forEach(action => action.destroy());
   peer.destroy();
 });
