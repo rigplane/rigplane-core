@@ -384,11 +384,11 @@ describe('IC-7300 fixture — handler dispatch through real factories (MOR-1418/
   // passes and the real command factory sends the exact WS frame. The
   // actual defect was the backend never re-confirming the leaf after a
   // write (`radio_poller.py`'s `_reconfirm_scope_field`, MOR-1446 fix).
-  it('scope span: dispatches set_scope_span for the confirmed span leaf', () => {
+  it('scope span: refuses legacy indices without a radio command', () => {
     expect(IC7300_STATE.fieldStatus?.['scopeControls.span']?.observed).toBe(true);
     expectFrames(
       () => makeScopeControlsHandlers().onSpanChange(6),
-      [['set_scope_span', { span: 6 }]],
+      [],
     );
   });
 

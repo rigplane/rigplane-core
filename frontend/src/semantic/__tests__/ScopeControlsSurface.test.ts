@@ -89,7 +89,7 @@ function render(view: RadioViewModel, handlers: Handlers = {}, props: { rowTail?
           + '<button data-overflow="quick" data-testid="row-tail-quick">AVG</button></div>',
       }))
     : undefined;
-  const component = mount(ScopeControlsSurface, { target, props: { view, ...handlers, rowTail } });
+  const component = mount(ScopeControlsSurface, { target, props: { view, spanHz: view.scopeControls?.span.reading.status === 'known' ? 100000 : null, ...handlers, rowTail } });
   flushSync();
   const q = <T extends HTMLElement>(sel: string) => target.querySelector(sel) as T | null;
   const el = (id: string) => q<HTMLElement>(`[data-testid="${id}"]`);
@@ -128,9 +128,9 @@ describe('structural presence: absent group / absent leaves render nothing extra
 });
 
 describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top of facts', () => {
-  it('shows EDGE in More and hides SPAN when mode is known FIX (1)', () => {
+  it('shows EDGE and granted subscription SPAN when mode is known FIX (1)', () => {
     const r = render(withSc({ mode: known(1) }));
-    expect(r.el('scope-span')).toBeNull();
+    expect(r.el('scope-span-value')!.textContent).toBe('±50k');
     r.openMore();
     expect(r.el('scope-edge')).not.toBeNull();
     r.dispose();
@@ -168,7 +168,7 @@ describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top
   it('lights the SPAN value once the mode is read (CTR)', () => {
     const r = render(withSc({ mode: known(0) }));
     expect(r.el('scope-span')!.querySelector('button')!.hasAttribute('disabled')).toBe(false);
-    expect(r.el('scope-span-value')!.textContent).toBe('±25k'); // fixture span = 3
+    expect(r.el('scope-span-value')!.textContent).toBe('±50k'); // granted full width = 100000
     r.dispose();
   });
 
@@ -748,12 +748,12 @@ describe('field identity: every control names ITS OWN field, never a neighbour\'
 });
 
 describe('steppers compute the next value with the shipped clamp functions', () => {
-  it('SPAN increments through clampSpan, not a re-derived formula', () => {
+  it('SPAN emits a subscription step direction', () => {
     const onSpanChange = vi.fn();
     const r = render(withSc({ mode: known(0), span: known(3) }), { onSpanChange });
     r.el('scope-span')!.querySelectorAll('button')[1]!.click();
     flushSync();
-    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(4);
+    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(1);
     r.dispose();
   });
 
@@ -827,12 +827,12 @@ describe('steppers compute the next value with the shipped clamp functions', () 
   });
 
   // F1 — SPAN at the ceiling stays 7, never 8 (domain 0-7)
-  it('SPAN at the ceiling clamped to 7, never exceeds domain', () => {
+  it('SPAN delegates bounds to the subscription owner', () => {
     const onSpanChange = vi.fn();
     const r = render(withSc({ mode: known(0), span: known(7) }), { onSpanChange });
     r.el('scope-span')!.querySelectorAll('button')[1]!.click();
     flushSync();
-    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(7);
+    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(1);
     r.dispose();
   });
 
@@ -888,14 +888,14 @@ describe('external finite appearance', () => {
     const onSpanChange = vi.fn(), onToggleChange = vi.fn(), onChoiceChange = vi.fn();
     const component = mount(ScopeControlsSurface, { target, props: {
       view: withSc({ mode: known(0), span: known(3), hold: known(false), centerType: known(1) }),
-      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(), spanHz: 100000,
       onSpanChange, onToggleChange, onChoiceChange,
     } });
     flushSync();
     (target.querySelector('[aria-label="Increase scope span"]') as HTMLButtonElement).click();
     (target.querySelector('[data-testid="external-HOLD"]') as HTMLButtonElement).click();
     (target.querySelector('[data-testid="external-Scope center type-2"]') as HTMLButtonElement).click();
-    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(4);
+    expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(1);
     expect(onToggleChange).toHaveBeenCalledExactlyOnceWith('hold', true);
     expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith('centerType', 2);
     unmount(component);
@@ -972,7 +972,7 @@ describe('external finite appearance', () => {
   it('renders finite SPAN/SPEED as EMPTY when known but unlabelled or unread, never a dash (MOR-2653)', () => {
     const component = mount(ScopeControlsSurface, { target, props: {
       view: withSc({ mode: known(0), span: known(9), speed: known(9) }),
-      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(), spanHz: null,
     } });
     flushSync();
     for (const id of ['scope-span-value', 'scope-speed-value']) {
@@ -984,7 +984,7 @@ describe('external finite appearance', () => {
     unmount(component);
     const unreadComponent = mount(ScopeControlsSurface, { target, props: {
       view: withSc({ mode: known(0), speed: unread() }),
-      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(), spanHz: 100000,
     } });
     flushSync();
     expect(target.querySelector<HTMLElement>('[data-testid="scope-speed-value"]')!.textContent)
@@ -1009,13 +1009,13 @@ describe('MOR-2704 T1: a read value stays visible while its control is unavailab
   it('shows a read span in the row and in More while every span key is disabled and inert', () => {
     const onSpanChange = vi.fn();
     const r = render(withSc({ mode: known(0), span: known(3, READ_NOT_OPERATIONAL) }), { onSpanChange });
-    expect(r.el('scope-span-value')!.textContent).toBe('±25k');
+    expect(r.el('scope-span-value')!.textContent).toBe('±50k');
     for (const key of r.el('scope-span')!.querySelectorAll('button')) {
       expect(key.hasAttribute('disabled')).toBe(true);
       bypassClick(key);
     }
     r.openMore();
-    expect(r.el('scope-overflow-span-value')!.textContent).toBe('±25k');
+    expect(r.el('scope-overflow-span-value')!.textContent).toBe('±50k');
     for (const key of r.el('scope-overflow-span')!.querySelectorAll('button')) {
       expect(key.hasAttribute('disabled')).toBe(true);
       bypassClick(key);
@@ -1046,11 +1046,11 @@ describe('MOR-2704 T1: a read value stays visible while its control is unavailab
       view: withSc({
         mode: known(0), span: known(3, READ_NOT_OPERATIONAL), speed: known(1, READ_NOT_OPERATIONAL),
       }),
-      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(),
+      finiteAppearance: appearance, rendererContext: createFiniteRendererContext(), spanHz: 100000,
       onSpanChange, onSpeedChange,
     } });
     flushSync();
-    expect(target.querySelector('[data-testid="scope-span-value"]')!.textContent).toBe('±25k');
+    expect(target.querySelector('[data-testid="scope-span-value"]')!.textContent).toBe('±50k');
     expect(target.querySelector('[data-testid="scope-speed-value"]')!.textContent).toBe('MID');
     for (const label of [
       'Decrease scope span', 'Increase scope span', 'Decrease scope speed', 'Increase scope speed',
@@ -1250,4 +1250,17 @@ describe('phone More sheet (MOR-2987)', () => {
     expect(key.getAttribute('aria-checked')).toBe('false');
     r.dispose();
   });
+});
+
+
+it('uses the granted subscription span and emits subscription step directions', () => {
+  const onSpanChange = vi.fn();
+  const component = mount(ScopeControlsSurface, { target, props: {
+    view: withSc({ mode: known(0), span: known(3) }), spanHz: 100000, onSpanChange,
+  } });
+  flushSync();
+  expect(target.querySelector('[data-testid="scope-span-value"]')!.textContent).toBe('±50k');
+  (target.querySelector('[aria-label="Increase scope span"]') as HTMLButtonElement).click();
+  expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(1);
+  unmount(component);
 });
