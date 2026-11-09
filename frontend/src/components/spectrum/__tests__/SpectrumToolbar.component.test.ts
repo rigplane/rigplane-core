@@ -16,7 +16,7 @@ const runtimeHarness = vi.hoisted(() => ({
   runtime: {
     state: Object.freeze({ identity: 'toolbar-state' }),
     caps: Object.freeze({ identity: 'toolbar-capabilities' }),
-    scope: { spanControl: { spanHz: 100000 as number | null } satisfies ScopeSpanControl },
+    scope: { spanControl: { spanHz: 100000 as number | null, step: vi.fn() } satisfies ScopeSpanControl },
   },
 }));
 

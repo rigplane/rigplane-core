@@ -84,7 +84,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
-    scope: { spanControl: { step: h.spanStep } satisfies ScopeSpanControl },
+    scope: { spanControl: { spanHz: 100000, step: h.spanStep } satisfies ScopeSpanControl },
     get rxEnabled() { return h.rxEnabled; },
     get audio() { return { volume: h.volume }; },
     setMuted: h.setMuted,

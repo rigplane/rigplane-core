@@ -851,7 +851,8 @@
           ? geometry.view.endHz - geometry.view.startHz : null;
       },
       step(delta: -1 | 1): void {
-        const current = control.spanHz;
+        const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
+          : followSpanHz ?? control.spanHz;
         const choices = runtime.caps?.span_choices_hz ?? [];
         if (current === null) return;
         const next = delta > 0 ? choices.find(span => span > current)

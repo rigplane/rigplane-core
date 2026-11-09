@@ -164,7 +164,7 @@ type TestScopeFrame = ScopeFrame;
 // channels, so every frame assertion runs the real ingress, stream and
 // sink path (zero-copy included). The bridge is assigned after imports.
 type ScopeBridge = {
-  spanControl?: ScopeSpanControl | null;
+  spanControl: ScopeSpanControl | null;
   stream(source: 'hardware' | 'audio_fft'): ReturnType<ScopeController['stream']>;
   registerPresentationDriver: ScopeController['registerPresentationDriver'];
   subscribeTraceReceipt: ScopeController['subscribeTraceReceipt'];
@@ -288,6 +288,8 @@ let scopeControllerHarness = new ScopeController(
   },
 );
 runtimeHarness.runtime.scope = {
+  get spanControl() { return scopeControllerHarness.spanControl; },
+  set spanControl(control) { scopeControllerHarness.spanControl = control; },
   stream: (source) => scopeControllerHarness.stream(source),
   registerPresentationDriver: (host, config) => scopeControllerHarness.registerPresentationDriver(host, config),
   subscribeTraceReceipt: (observer) => scopeControllerHarness.subscribeTraceReceipt(observer),
@@ -951,6 +953,7 @@ describe('SpectrumPanel component', () => {
       const expected = second === -1 ? 25_000 : 100_000;
       expect(view()).toEqual({ follow: 'vfo', spanHz: expected });
       expect(control.spanHz).toBe(100_000);
+      expect(target.querySelector('[title="Scope span"] .toolbar-value')?.textContent).toBe('±50k');
       emitFrame({ startFreq: 14_050_000 - expected / 2, endFreq: 14_050_000 + expected / 2, sequence: 2 });
       expect(control.spanHz).toBe(expected);
     });
