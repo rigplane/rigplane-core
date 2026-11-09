@@ -189,7 +189,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         panel, output = await self.get_scope_session_state()
         controls = self._scope_controls()
         return ScopeState(
-            panel, output, controls.mode or 0, controls.span or 0, controls.edge or 1
+            panel, output, controls.mode or 0, controls.span or 0, controls.edge or 1,
+            await self.get_scope_dual() if self._profile.receiver_count > 1 else False,
         )
 
     def _scope_setting_frame(
@@ -202,6 +203,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             frame = self._commands.scope_data_output(
                 bool(value), to_addr=self._radio_addr
             )
+        elif name == "dual":
+            frame = self._commands.scope_single_dual(bool(value), to_addr=self._radio_addr)
         elif name == "fixed_edge":
             assert isinstance(value, ScopeFixedEdge)
             frame = self._commands.scope_set_fixed_edge(
@@ -243,7 +246,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if response is None or parse_ack_nak(response) is not True:
             raise CommandError(f"Radio did not acknowledge scope {name}")
         controls = self._scope_controls()
-        if name == "fixed_edge":
+        if name == "dual":
+            controls.dual = bool(value)
+        elif name == "fixed_edge":
             assert isinstance(value, ScopeFixedEdge)
             controls.fixed_edge = value
         elif name not in ("scope_on", "output_on") and receiver == controls.receiver:

@@ -16,7 +16,7 @@ from rigplane.scope.models import ScopeDemand
 logger = logging.getLogger(__name__)
 
 ScopeSetting: TypeAlias = Literal[
-    "scope_on", "output_on", "mode", "span", "edge", "fixed_edge"
+    "scope_on", "output_on", "mode", "span", "edge", "fixed_edge", "dual"
 ]
 ScopeValue: TypeAlias = bool | int | ScopeFixedEdge
 
@@ -28,6 +28,7 @@ class ScopeState:
     mode: int = 0
     span: int = 2
     edge: int = 1
+    dual: bool = False
 
 
 @dataclass(frozen=True)
@@ -119,12 +120,14 @@ class ScopeSession:
 
     async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
         await self.configure(
-            receiver=receiver, mode=0, span=self._spans.index(int(span_hz))
+            receiver=receiver, mode=0, span=self._spans.index(int(span_hz)),
+            **({"dual": True} if receiver else {}),
         )
 
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None:
         await self.configure(
-            receiver=receiver, fixed_edge=edges, edge=edges.edge, mode=1
+            receiver=receiver, fixed_edge=edges, edge=edges.edge, mode=1,
+            **({"dual": True} if receiver else {}),
         )
 
     def suspend(self) -> None:
@@ -168,6 +171,10 @@ class ScopeSession:
                     self._applied[key] = value
                 return
         self._applied[receiver, name] = value
+        if name == "dual":
+            if self.observed is not None:
+                self.observed = replace(self.observed, dual=bool(value))
+            return
         if name != "fixed_edge" and receiver == 0:
             base = self.observed or self._original
             if base is not None:
@@ -285,6 +292,7 @@ class ScopeSession:
                     "span",
                     "edge",
                     "fixed_edge",
+                    "dual",
                 ):
                     raise ValueError(f"unknown scope setting {name}")
                 if self._validate is not None:
@@ -412,6 +420,7 @@ class ScopeSession:
         for (receiver, name), value in sorted(
             self._desired.items(),
             key=lambda item: (
+                "dual",
                 "fixed_edge",
                 "edge",
                 "mode",
@@ -443,6 +452,8 @@ class ScopeSession:
                         self._applied[receiver, name] = value
                         continue
                     self._fixed[slot] = captured_fixed
+            elif name == "dual" and self._original is not None:
+                self._previous.setdefault((receiver, name), self._original.dual)
             elif self._original is not None:
                 key = (receiver, name)
                 if key not in self._previous:
