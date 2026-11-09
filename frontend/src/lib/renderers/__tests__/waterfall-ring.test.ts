@@ -52,11 +52,11 @@ describe('MOR-4272 texture ring', () => {
     r.updateOptions({ coverage: { startHz: 14_025_000, endHz: 14_075_000 } });
     r.pushRow(new Uint8Array(100).fill(80));
     const first = f.named('bufferSubData').at(-1)!;
-    expect(Array.from(first.args[2] as Float32Array)).toEqual([-50_000, 0, 100_000, 25_000, 75_000, 80, 100, 0]);
+    expect(Array.from(first.args[2] as Float32Array)).toEqual([-50_000, 0, 100_000, 25_000, 75_000, 80, 100, 0, 100, 0, 1, 0]);
     f.calls.length = 0;
     r.updateOptions({ centerHz: 14_060_000, panoramaShiftHz: 0 });
     r.pushRow(new Uint8Array(100).fill(80));
-    expect(f.named('bufferSubData')[0].args[1]).toBe(32);
+    expect(f.named('bufferSubData')[0].args[1]).toBe(48);
     expect(f.named('texSubImage2D')).toHaveLength(1);
   });
   it('reports WebGL unavailability as a typed error and never requests a 2D context', () => {
