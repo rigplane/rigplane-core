@@ -52,7 +52,9 @@ async def web(radio):
             )
             key = (await response.json())["controller_key"]
             protocols = (f"rigplane-controller-v1.{key}",)
-            async with client.ws_connect(base + "/api/v1/ws", protocols=protocols) as control:
+            async with client.ws_connect(
+                base + "/api/v1/ws", protocols=protocols
+            ) as control:
                 await control.send_json({"type": "subscribe", "streams": ["state"]})
                 yield server, client, base, protocols, control
     finally:
@@ -138,7 +140,14 @@ async def test_control_ws_reapplies_span_after_real_front_panel_readback(sdk):
     sim.views[0] = (0, 4, 1)
     assert await radio.get_scope_span() == 4
     async with web(radio) as (_, _, _, _, ws):
-        await ws.send_json({"type": "cmd", "id": "span", "name": "set_scope_span", "params": {"span": 3}})
+        await ws.send_json(
+            {
+                "type": "cmd",
+                "id": "span",
+                "name": "set_scope_span",
+                "params": {"span": 3},
+            }
+        )
         assert await await_until(lambda: sim.views[0][1] == 3)
 
 

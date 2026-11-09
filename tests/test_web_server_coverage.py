@@ -5521,8 +5521,11 @@ async def test_health_snapshot_cannot_delay_fresh_scope_resume(
     assert virtual_clock() - started <= 0.1
 
 
-async def test_scope_monitor_survives_pending_restore_failure(virtual_clock, monkeypatch):
+async def test_scope_monitor_survives_pending_restore_failure(
+    virtual_clock, monkeypatch
+):
     from rigplane.core.exceptions import CommandError
+
     srv, radio, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
     session = srv._radio_scope_session
     await session.set_output(False, release=False)

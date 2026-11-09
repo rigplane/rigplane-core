@@ -390,3 +390,13 @@ async def test_matching_fixed_slot_is_not_programmed_or_restored_again():
     assert writer.views == []
     await session.set_output(False)
     assert writer.views == []
+
+
+async def test_fixed_readback_updates_the_shared_slot_across_receivers():
+    writer = Writer()
+    session = ScopeSession(writer.read, writer.write, ready=True)
+    desired = ScopeFixedEdge(6, 1, 14000000, 14350000)
+    await session.configure(receiver=1, fixed_edge=desired)
+    session.observe("fixed_edge", ScopeFixedEdge(6, 1, 14100000, 14300000), 0)
+    await session.configure(receiver=1, fixed_edge=desired)
+    assert writer.views == [("fixed_edge", desired, 1), ("fixed_edge", desired, 1)]

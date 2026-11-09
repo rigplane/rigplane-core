@@ -232,6 +232,7 @@ async def test_off_band_fixed_request_uses_center_uncovered_fallback():
     class FixedWriter(Writer):
         async def set_fixed(self, edges, receiver):
             self.writes.append((edges, receiver))
+
     writer = FixedWriter()
     source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
     grant = await source.set_view(View(7_050_000, 7_150_000), 0)
