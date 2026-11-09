@@ -7503,3 +7503,21 @@ async def test_mixed_idle_and_valid_batch_establishes_liveness(
                 assert len(routed) == 1
             finally:
                 await radio._civ_runtime.stop_pump()
+
+
+@pytest.mark.parametrize("middle_mode", [0, 1])
+async def test_scope_selection_return_refreshes_stream_display_facts(radio, middle_mode):
+    for receiver, mode, hz in ((0, 0, 5000), (1, middle_mode, 2500), (0, 0, 5000)):
+        radio._civ_runtime._update_state_cache_from_frame(
+            _make_frame(cmd=0x27, sub=0x12, data=bytes([receiver]))
+        )
+        await radio._civ_runtime._route_civ_frame(
+            _make_scope_waveform_frame(receiver=receiver, mode=mode, end_hz=hz),
+            generation=radio._civ_epoch,
+        )
+        snapshot = radio._state_store.snapshot()
+        assert snapshot.field("scope_controls.global.display.mode").value == mode
+        if mode == 0:
+            assert snapshot.field("scope_controls.global.display.span").value == (
+                radio._profile.scope_span_presets_hz.index(hz)
+            )
