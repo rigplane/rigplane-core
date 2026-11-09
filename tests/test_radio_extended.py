@@ -24,6 +24,7 @@ from test_radio import (
     _nak_response,
     _wrap_civ_in_udp,
 )
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 def _digisel_off_response() -> bytes:
@@ -47,7 +48,7 @@ def radio(mock_transport: MockTransport) -> IcomRadio:
     r = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
-    r._connected = True
+    fake_connected(r)
     observe_selected_receiver(r, 0)
     return r
 

@@ -20,6 +20,7 @@ from _audio_stream_fake import FakeAudioStream
 from rigplane.core.radio_protocol import AudioTransport
 from rigplane.core.types import AudioCodec
 from rigplane.radio import IcomRadio
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -29,7 +30,7 @@ from rigplane.radio import IcomRadio
 def _make_radio() -> tuple[IcomRadio, FakeAudioStream]:
     """Build a 'connected' IcomRadio with a FakeAudioStream installed."""
     radio = IcomRadio("192.168.1.100", model="IC-7610")
-    radio._connected = True
+    fake_connected(radio)
     radio._civ_transport = MagicMock()
     stream = FakeAudioStream()
     radio._audio_stream = stream

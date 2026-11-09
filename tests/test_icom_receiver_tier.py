@@ -26,6 +26,7 @@ from rigplane.radio_protocol import ReceiverBankCapable, VfoSlotCapable
 
 from test_radio import MockTransport, _wrap_civ_in_udp
 from _helpers import observe_selected_receiver
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +44,7 @@ def _make_radio(model: str, mock_transport: MockTransport) -> IcomRadio:
     r = IcomRadio("192.168.1.100", model=model, timeout=0.05)
     r._civ_transport = mock_transport
     r._ctrl_transport = mock_transport
-    r._connected = True
+    fake_connected(r)
     observe_selected_receiver(r, 0)
     return r
 

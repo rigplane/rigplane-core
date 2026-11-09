@@ -19,6 +19,7 @@ from rigplane.audio import AudioState
 from rigplane.radio import AudioRecoveryState, IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.session_lifecycle import LifecycleState
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ def _make_radio(**kwargs) -> IcomRadio:
     radio._ctrl_transport = mt
     radio._civ_transport = MagicMock()
     radio._civ_transport.disconnect = AsyncMock()
-    radio._connected = True
+    fake_connected(radio)
     radio._token = 0x1234
     return radio
 

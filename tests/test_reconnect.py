@@ -17,6 +17,7 @@ from rigplane.web.server import WebConfig, WebServer
 from test_audio_session_health import _FakeWriter, _response_json
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _ConnectOnceStubs, _build_conninfo
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 @pytest.fixture
@@ -31,7 +32,7 @@ def radio() -> IcomRadio:
     )
     mt = MockTransport()
     r._ctrl_transport = mt
-    r._connected = True
+    fake_connected(r)
     r._token = 0x1234
     return r
 
@@ -82,7 +83,7 @@ class TestWatchdog:
             model=request.param,
         )
         r._ctrl_transport = MockTransport()
-        r._connected = True
+        fake_connected(r)
         r._token = 0x1234
         return r
 

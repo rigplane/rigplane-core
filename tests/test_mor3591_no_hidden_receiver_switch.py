@@ -41,6 +41,7 @@ from rigplane.radio import IcomRadio
 from rigplane.runtime.callable_support import unselected_selector_is_sub
 
 from test_radio import MockTransport
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 _SELECT_CODES = frozenset({0xD0, 0xD1})
 _FREQ = 145_500_000
@@ -125,7 +126,7 @@ class Wire:
 
 def _radio(model: str) -> tuple[IcomRadio, Wire]:
     radio = IcomRadio("192.168.1.102", timeout=0.05, model=model)
-    radio._connected = True
+    fake_connected(radio)
     transport = MockTransport()
     radio._civ_transport = transport
     radio._ctrl_transport = transport
@@ -609,7 +610,7 @@ def _commander_radio(
     transport = MockTransport()
     radio._civ_transport = transport
     radio._ctrl_transport = transport
-    radio._connected = True
+    fake_connected(radio)
     radio._radio_state.main.mode = "USB"
     observe_selected_receiver(radio, 0)
     return radio, transport

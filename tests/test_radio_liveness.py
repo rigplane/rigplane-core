@@ -45,6 +45,7 @@ from rigplane.web.state_schema import ServerStatePublic
 from test_radio import MockTransport
 from test_yaesu_cat_transport import FakeStreamReader, FakeStreamWriter
 from test_icom7610_serial_radio import _FakeSerialCivLink
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 def _liveness(radio: Any, *, now: float | None = None) -> dict[str, Any] | None:
@@ -130,7 +131,7 @@ def civ_radio() -> IcomRadio:
     transport = MockTransport()
     radio._civ_transport = transport  # noqa: SLF001
     radio._ctrl_transport = transport  # noqa: SLF001
-    radio._connected = True  # noqa: SLF001
+    fake_connected(radio)
     return radio
 
 

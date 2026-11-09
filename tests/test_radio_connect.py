@@ -396,6 +396,7 @@ class TestConninfoNoticeWiring:
         ):
             await radio._control_phase._connect_once()
         assert seen == [True]
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_after_setup_the_callback_is_the_notice_handler(self) -> None:
@@ -419,6 +420,7 @@ class TestConninfoNoticeWiring:
         ):
             await radio._control_phase._connect_once()
         assert seen[-1] == radio._control_phase._on_conninfo_notice
+        await radio.disconnect()
 
     def test_busy_zero_requests_recovery(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
@@ -1114,6 +1116,7 @@ class TestConnectSessionRejection:
         assert radio._audio_codec == AudioCodec.PCM_1CH_16BIT
         assert radio.audio_codec == AudioCodec.PCM_1CH_16BIT
         assert radio._civ_port == 50001
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_explicit_stereo_codec_rejection_does_not_fallback(self) -> None:
@@ -1246,6 +1249,7 @@ class TestConnectSessionRejection:
             == AudioConfigSource.PROFILE_DEFAULT
         )
         assert radio._civ_port == 50001
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_stereo_codec_fallback_raises_on_second_rejection(self) -> None:
@@ -1377,6 +1381,7 @@ class TestConnectSessionRejection:
             "Codec must stay on mono through busy-retry"
         )
         assert radio._civ_port == 50001
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_mono_codec_no_fallback_raises_immediately(self) -> None:
@@ -1746,6 +1751,7 @@ class TestStartupBusyHoldBudget:
         assert kinds == ["login", "remove"] * 2 + ["login"]
         removes = _token_remove_tokens([p for p in mt.sent_packets if len(p) == 0x40])
         assert removes == tokens[:2]
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_first_busy_hold_beyond_the_cap_raises_never_ready(self) -> None:
@@ -1855,6 +1861,7 @@ class TestStartupBusyHoldBudget:
             assert f"attempt {i}" in message
             assert "30" in message
             assert "600" in message
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_mono_rejection_still_raises_immediately(self) -> None:
@@ -2423,6 +2430,7 @@ class TestStartupBusyHoldSignal:
         # The grant clears the signal and the retry number with it.
         assert radio.startup_busy_hold_event.is_set() is False
         assert radio.startup_busy_hold_retry_in_seconds is None
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_reconnect_busy_reject_never_sets_the_busy_signal(self) -> None:
@@ -2578,6 +2586,7 @@ class TestStartupBusyHoldSignal:
         assert retry < total
         assert radio.startup_busy_hold_event.is_set() is False
         assert radio.startup_busy_hold_retry_in_seconds is None
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_discovery_pass_reports_the_busy_hold_like_a_busy_reject(
@@ -2786,6 +2795,7 @@ class TestWifiBindBehavior:
             "local_host": "192.168.2.194",
             "local_port": 50002,
         }
+        await radio.disconnect()
 
     @pytest.mark.asyncio
     async def test_connect_raises_on_persistent_civ_port_zero_without_error_flag(

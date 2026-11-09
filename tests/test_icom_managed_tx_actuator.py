@@ -26,6 +26,7 @@ from rigplane.runtime.managed_tx_state import (
 from rigplane.runtime.radio import CoreRadio, IcomRadio
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 class _TrackedTransport:
@@ -389,7 +390,7 @@ async def test_serial_writer_rechecks_managed_currency(
     transport = SerialCivTransport(link)
     radio = _profile_bound_radio()
     radio._civ_transport = transport
-    radio._connected = True
+    fake_connected(radio)
     monkeypatch.setattr(radio._civ_runtime, "start_pump", lambda: None)
     state = {"current": True, "calls": 0}
     entered = asyncio.Event()

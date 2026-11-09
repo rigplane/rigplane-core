@@ -34,6 +34,7 @@ from rigplane.audio.session import AudioSession, AudioSessionState
 from rigplane.audio.usb_driver import AudioAlreadyStartedError
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime.radio import IcomRadio
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 _PACKET = AudioPacket(ident=0x0080, send_seq=1, data=b"\x01\x00" * 160)
 
@@ -109,7 +110,7 @@ def _make_radio(**kwargs: object) -> IcomRadio:
     radio = IcomRadio("192.168.1.100", **kwargs)  # type: ignore[arg-type]
     radio._ctrl_transport = MagicMock()
     radio._civ_transport = MagicMock()
-    radio._connected = True
+    fake_connected(radio)
     return radio
 
 

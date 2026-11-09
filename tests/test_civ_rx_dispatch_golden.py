@@ -24,6 +24,7 @@ from rigplane.commands import CONTROLLER_ADDR
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.types import CivFrame
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 _FIXTURES_PATH = Path(__file__).parent / "fixtures" / "civ_rx_frames.json"
 
@@ -69,7 +70,7 @@ def radio() -> IcomRadio:
     r = IcomRadio("192.168.1.100", model="IC-7610")
     r._civ_transport = transport
     r._ctrl_transport = transport
-    r._connected = True
+    fake_connected(r)
     r._radio_state = RadioState()
     return r
 

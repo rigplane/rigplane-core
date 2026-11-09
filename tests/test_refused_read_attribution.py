@@ -27,6 +27,7 @@ from rigplane.runtime._state_queries import (
 )
 
 from _helpers import observe_selected_receiver
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 class _SilentTransport:
@@ -56,7 +57,7 @@ def _radio(model: str) -> tuple[IcomRadio, AcquisitionScheduler]:
     transport = _SilentTransport()
     radio._civ_transport = transport
     radio._ctrl_transport = transport
-    radio._connected = True
+    fake_connected(radio)
     observe_selected_receiver(radio, 0)
     scheduler = AcquisitionScheduler(profile=radio._profile.state_acquisition)
     radio._acquisition_scheduler = scheduler

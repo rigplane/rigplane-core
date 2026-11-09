@@ -122,3 +122,4 @@ async def test_soft_reconnect_reuses_token_and_does_not_reauth() -> None:
 
     mock_login.assert_not_called()
     assert r._token == 0x1234
+    await r.disconnect()

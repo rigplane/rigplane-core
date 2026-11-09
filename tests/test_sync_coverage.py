@@ -9,8 +9,8 @@ import pytest
 
 from rigplane.core.capabilities import CAP_POWER_CONTROL
 from rigplane.profiles import resolve_radio_profile
-from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.sync import IcomRadio
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 def _radio() -> IcomRadio:
@@ -42,7 +42,7 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
     r._radio._ctrl_transport = MagicMock()
     r._radio._ctrl_transport._udp_transport = MagicMock()
     r._radio._civ_transport = MagicMock()
-    r._radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(r._radio)
     r._radio.get_freq = AsyncMock(return_value=7_100_000)
     r._radio.get_mode = AsyncMock(return_value=("USB", 2))
     r._radio.get_mode_info = AsyncMock(return_value=("USB", 2))
@@ -305,7 +305,7 @@ def test_vfo_dispatch_single_rx_uses_ab_methods() -> None:
     r._radio._ctrl_transport = MagicMock()
     r._radio._ctrl_transport._udp_transport = MagicMock()
     r._radio._civ_transport = MagicMock()
-    r._radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(r._radio)
     r._radio.equalize_vfo_ab = AsyncMock()
     r._radio.swap_vfo_ab = AsyncMock()
     # Canonical dual-RX methods must NOT be touched on a single-RX rig
@@ -375,7 +375,7 @@ def test_sync_get_alc_meter_returns_int() -> None:
     r._radio._ctrl_transport = MagicMock()
     r._radio._ctrl_transport._udp_transport = MagicMock()
     r._radio._civ_transport = MagicMock()
-    r._radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(r._radio)
     r._radio.get_alc_meter = AsyncMock(return_value=128)
 
     try:
@@ -394,7 +394,7 @@ def test_sync_get_swr_meter_returns_int() -> None:
     r._radio._ctrl_transport = MagicMock()
     r._radio._ctrl_transport._udp_transport = MagicMock()
     r._radio._civ_transport = MagicMock()
-    r._radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(r._radio)
     r._radio.get_swr_meter = AsyncMock(return_value=120)
 
     try:
@@ -413,7 +413,7 @@ def test_sync_get_swr_returns_float() -> None:
     r._radio._ctrl_transport = MagicMock()
     r._radio._ctrl_transport._udp_transport = MagicMock()
     r._radio._civ_transport = MagicMock()
-    r._radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(r._radio)
     r._radio.get_swr = AsyncMock(return_value=1.7)
 
     try:

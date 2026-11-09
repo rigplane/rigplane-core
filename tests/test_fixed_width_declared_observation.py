@@ -24,6 +24,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.radio_state import RadioState
 from rigplane.types import CivFrame
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 _FILTER_WIDTH = FieldPath.active("0", "freq_mode", "filter_width")
 _MODE = FieldPath.active("0", "freq_mode", "mode")
@@ -41,7 +42,7 @@ def _radio(model: str) -> IcomRadio:
     radio = IcomRadio("192.168.1.100", model=model)
     radio._civ_transport = transport  # type: ignore[attr-defined]
     radio._ctrl_transport = transport  # type: ignore[attr-defined]
-    radio._connected = True  # type: ignore[attr-defined]
+    fake_connected(radio)
     radio._radio_state = RadioState()  # type: ignore[attr-defined]
     return radio
 

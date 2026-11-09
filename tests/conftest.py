@@ -8,7 +8,11 @@ _os.environ.setdefault("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", "1")
 del _os
 
 # MOR-4075: refuse new tests that depend on the real clock (see the plugin's docstring).
-pytest_plugins = ["rigplane_testkit.realtime_guard"]
+pytest_plugins = [
+    "rigplane_testkit.realtime_guard",
+    # MOR-4333: a test that leaks a connected Radio fails itself, not a neighbour.
+    "rigplane_testkit.leaked_radio_guard",
+]
 
 import struct  # noqa: E402
 from collections.abc import AsyncGenerator, Iterator  # noqa: E402

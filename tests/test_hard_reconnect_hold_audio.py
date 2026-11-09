@@ -33,6 +33,7 @@ from test_audio_recovery_session import (
     _install_stream,
     _make_radio,
 )
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 def _hold_link(radio: IcomRadio) -> None:
@@ -118,7 +119,7 @@ async def test_no_hold_recovers_at_once_exactly_once() -> None:
     sub = await radio.audio_session.subscribe_rx("web")
 
     async def connect_clean() -> None:
-        radio._conn_state = RadioConnectionState.CONNECTED
+        fake_connected(radio)
 
     await _run_hard_reconnect(radio, connect_clean)
 

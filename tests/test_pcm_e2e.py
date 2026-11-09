@@ -16,6 +16,7 @@ import pytest
 from rigplane.audio import AudioPacket, AudioState, AudioStats
 from rigplane.core.types import AudioCodec
 from rigplane.radio import IcomRadio
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ class _DummyTranscoder:
 def _make_radio() -> IcomRadio:
     """Build an IcomRadio pre-wired with mocks for PCM pipeline tests."""
     radio = IcomRadio("192.168.1.100", model="IC-7610")
-    radio._connected = True
+    fake_connected(radio)
     radio._civ_transport = MagicMock()
     radio._audio_stream = MagicMock()
     radio._audio_stream.start_rx = AsyncMock()

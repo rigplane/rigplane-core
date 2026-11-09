@@ -24,6 +24,7 @@ from _helpers import wrap_civ_in_udp
 from test_radio import MockTransport
 from test_radio_connect import ConnectMockTransport, _ConnectOnceStubs
 from rigplane.testing.timing import await_until
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 _IDENTITY_CMD = 0x19
 _IDENTITY_SUB = 0x00
@@ -45,7 +46,7 @@ def _session_lifecycle_double(radio: IcomRadio) -> AsyncMock:
     """Drive CONNECTED/DISCONNECTED as the actual lifecycle does."""
 
     async def _connect() -> None:
-        radio._conn_state = RadioConnectionState.CONNECTED
+        fake_connected(radio)
         # ``_connect_once`` routes token answers to the control phase.
         radio._ctrl_transport._token_reply_callback = (
             radio._control_phase._on_token_reply
@@ -206,7 +207,7 @@ async def test_transport_open_during_connect_still_refuses_commands() -> None:
     opened, release = asyncio.Event(), asyncio.Event()
 
     async def connect() -> None:
-        radio._conn_state = RadioConnectionState.CONNECTED
+        fake_connected(radio)
         opened.set()
         await release.wait()
 
@@ -231,7 +232,7 @@ async def test_two_connect_callers_share_one_identity_read() -> None:
 
     async def connect() -> None:
         await opened.wait()
-        radio._conn_state = RadioConnectionState.CONNECTED
+        fake_connected(radio)
 
     radio._session_lifecycle.connect.side_effect = connect
 
@@ -446,7 +447,7 @@ async def test_reconnect_after_disconnect_re_answers_at_the_new_epoch() -> None:
 async def test_checking_hold_refuses_a_normal_write_at_the_command_gate() -> None:
     radio, transport = make_radio(expected_ids=("0B90",))
     # Park the status exactly where an in-flight gate leaves it.
-    radio._connected = True
+    fake_connected(radio)
     radio._connection_identity = RadioIdentity(
         status=RadioIdentityStatus.CHECKING, expected_model="IC-7610"
     )

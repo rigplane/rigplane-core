@@ -27,6 +27,7 @@ from _helpers import freq_response as _freq_response
 from _helpers import mode_response as _mode_response
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
 from _helpers import observe_selected_receiver
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 def _power_response(level: int) -> bytes:
@@ -142,7 +143,7 @@ def backend_fixture(request: pytest.FixtureRequest) -> _BackendFixture:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._civ_transport = transport
         radio._ctrl_transport = transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio._civ_stream_ready = True
         radio._last_civ_data_received = 1e9

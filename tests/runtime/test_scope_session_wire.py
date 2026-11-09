@@ -1,4 +1,5 @@
 import pytest
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 @pytest.mark.realtime(reason="local simulator and real server websocket integration")
@@ -88,7 +89,7 @@ async def test_real_scope_writer_emits_one_enable_per_transport(transport, monke
         if transport == "lan"
         else Ic7300SerialRadio(device="/dev/fake-scope", baudrate=115200)
     )
-    radio._connected = True
+    fake_connected(radio)
     writes = []
 
     async def send(payload, **kwargs):
@@ -140,7 +141,7 @@ async def test_last_release_restores_wire_snapshot_once(
         if transport == "lan"
         else Ic7300SerialRadio(device="/dev/fake-scope", baudrate=115200)
     )
-    radio._connected = True
+    fake_connected(radio)
     observed = {0x10: initial[0], 0x11: initial[1]}
     writes = []
 
@@ -180,7 +181,7 @@ async def test_known_tx_defers_sdk_scope_wire_writes(monkeypatch):
     from unittest.mock import AsyncMock
 
     radio = IcomRadio("127.0.0.1", model="IC-7300")
-    radio._connected = True
+    fake_connected(radio)
     radio._radio_state.ptt = True
     monkeypatch.setattr(radio, "_check_connected", lambda: None)
     send = AsyncMock()
