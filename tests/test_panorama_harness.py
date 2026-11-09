@@ -39,10 +39,19 @@ def test_panorama_waveform_and_control_span_agree(model: str, tmp_path: Path) ->
     pytest.fail("simulator produced no complete waveform")
 
 
-def test_panorama_receipt_contract() -> None:
+def test_panorama_receipt_contract(tmp_path: Path) -> None:
     from e2e.panorama_web_server import ScopeWriteReceipt
 
     wire = (Path(__file__).parent / "fixtures/panorama-receipt.json").read_text()
-    receipt = ScopeWriteReceipt(**json.loads(wire))
-    assert receipt == ScopeWriteReceipt(sub=21, data=[0, 0, 0, 16, 0, 0], span=100_000)
-    assert json.loads(receipt.to_json()) == json.loads(wire)
+    for item in json.loads(wire):
+        receipt = ScopeWriteReceipt(**item)
+        evidence = tmp_path / f"{receipt.sub}.jsonl"
+        sim = PanoramaSimulator("IC-7610", evidence)
+        data = bytes(receipt.data)
+        read = data[:2] if receipt.sub == 0x1E else data[:1] if receipt.sub in (0x14, 0x15, 0x16) else b""
+        for count in (1, 2):
+            assert sim._dispatch_scope(bytes([receipt.sub]) + data, 0xE0) is not None
+            assert evidence.exists(), f"missing write receipt: {receipt.sub:#x}"
+            assert sim._dispatch_scope(bytes([receipt.sub]) + read, 0xE0) is not None
+            assert [ScopeWriteReceipt(**json.loads(line)) for line in evidence.read_text().splitlines()] == [receipt] * count
+        assert json.loads(receipt.to_json()) == item
