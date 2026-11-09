@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc4] — 2026-11-09
+
+This is the fourth release candidate of 3.2.0. It equals 3.2.0rc3 plus the WebGL
+waterfall from main.
+
+### Changed
+
+- Waterfall: the waterfall now draws through WebGL with a texture-ring history, and the spectrum keeps a cached static layer instead of redrawing it every frame. WebGL is required; where it is unavailable, the waterfall shows a clear message. (MOR-4272, #4525)
+
 ## [3.2.0rc3] — 2026-11-09
 
 This is the third release candidate of 3.2.0. It equals 3.2.0rc2 except for one
@@ -5227,7 +5236,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc3...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc4...HEAD
+[3.2.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc3...v3.2.0rc4
 [3.2.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc2...v3.2.0rc3
 [3.2.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc1...v3.2.0rc2
 [3.2.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.4...v3.2.0rc1
