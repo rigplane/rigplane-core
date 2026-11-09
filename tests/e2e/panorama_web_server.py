@@ -49,6 +49,30 @@ class PanoramaSimulator(MockIcomRadio):
         self.set_frequency(14_250_000)
 
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
+        reply = self._dispatch_scope_reply(payload, from_addr)
+        lengths = {
+            0x10: 2,
+            0x11: 2,
+            0x12: 2,
+            0x13: 2,
+            0x14: 3,
+            0x15: 7,
+            0x16: 3,
+            0x1E: 13,
+        }
+        if payload and len(payload) == lengths.get(payload[0]):
+            with self.evidence.open("a") as stream:
+                stream.write(
+                    ScopeWriteReceipt(
+                        payload[0],
+                        list(payload[1:]),
+                        self.profile.scope_span_presets_hz[self.span_index],
+                    ).to_json()
+                    + "\n"
+                )
+        return reply
+
+    def _dispatch_scope_reply(self, payload: bytes, from_addr: int) -> bytes | None:
         if payload and payload[0] == 0x1E and len(payload) == 3:
             return self._civ_frame(
                 from_addr,
@@ -97,16 +121,6 @@ class PanoramaSimulator(MockIcomRadio):
                     return self._civ_nak(from_addr, self._radio_addr)
             else:
                 reply = super()._dispatch_scope(payload, from_addr)
-            if rest:
-                with self.evidence.open("a") as stream:
-                    stream.write(
-                        ScopeWriteReceipt(
-                            sub,
-                            list(rest),
-                            self.profile.scope_span_presets_hz[self.span_index],
-                        ).to_json()
-                        + "\n"
-                    )
             return reply
         return super()._dispatch_scope(payload, from_addr)
 
