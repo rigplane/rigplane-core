@@ -320,3 +320,14 @@ async def test_shared_fixed_slot_is_actuated_again_after_other_receiver_changes_
     await session.set_fixed(second, 1)
     await session.set_fixed(first, 0)
     assert [value for name, value, receiver in writer.views if name == "fixed_edge"] == [first, second, first]
+
+
+async def test_last_release_before_readiness_discards_the_pending_view():
+    writer = Writer()
+    session = ScopeSession(writer.read, writer.write)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(mode=1, span=3)
+    await session.set_demand(ScopeDemand(0, 0))
+    await session.set_ready(True)
+    assert writer.writes == [] and writer.views == []
+    assert not session.active
