@@ -116,6 +116,8 @@ async def test_real_scope_writer_emits_one_enable_per_transport(transport, monke
     monkeypatch.setattr(radio, "_check_connected", lambda: None)
     monkeypatch.setattr(radio, "_send_civ_expect", expect)
     await radio.enable_scope(policy="verify")
+    import asyncio
+    asyncio.get_running_loop().call_soon(radio._scope_activity_event.set)
     await radio.enable_scope(policy="verify")
     assert writes == [(0x27, 0x10, b"\x01"), (0x27, 0x11, b"\x01")]
     await radio.disable_scope()

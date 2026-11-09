@@ -1,4 +1,5 @@
 """R5 review regressions: real Core RX, SDK and local WebSocket seams."""
+
 import asyncio
 from contextlib import asynccontextmanager
 
@@ -8,20 +9,29 @@ import pytest
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.radio import IcomRadio
-from rigplane.scope.models import FollowView, Subscription, View
+from rigplane.scope.models import FollowView, Subscription
 from rigplane.testing.timing import await_until
 from rigplane.web.protocol import encode_scope_subscription
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.icom.scope_control import ScopeControlSimulator
 
-pytestmark = [pytest.mark.realtime(reason="real local simulator and WebSocket seams"), pytest.mark.timeout(30)]
+pytestmark = [
+    pytest.mark.realtime(reason="real local simulator and WebSocket seams"),
+    pytest.mark.timeout(30),
+]
 
 
 @pytest.fixture
 async def sdk():
     sim = ScopeControlSimulator(scope_stream=True)
     await sim.start()
-    radio = IcomRadio("127.0.0.1", port=sim.control_port, username="testuser", password="testpass", model="IC-7610")
+    radio = IcomRadio(
+        "127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        model="IC-7610",
+    )
     await radio.connect()
     try:
         yield radio, sim
@@ -37,15 +47,24 @@ async def web(radio):
     base = f"http://127.0.0.1:{server._server.sockets[0].getsockname()[1]}"
     try:
         async with aiohttp.ClientSession() as client:
-            response = await client.post(base + "/api/v1/controller", json={"kind": "browser"})
+            response = await client.post(
+                base + "/api/v1/controller", json={"kind": "browser"}
+            )
             key = (await response.json())["controller_key"]
-            yield server, client, base, (f"rigplane-controller-v1.{key}",)
+            protocols = (f"rigplane-controller-v1.{key}",)
+            async with client.ws_connect(base + "/api/v1/ws", protocols=protocols) as control:
+                await control.send_json({"type": "subscribe", "streams": ["state"]})
+                yield server, client, base, protocols
     finally:
         await server.stop()
 
 
 async def grant(ws, receiver=0, fps=20):
-    await ws.send_str(encode_scope_subscription(Subscription("radio", receiver, FollowView("vfo", 100000), 100, fps)))
+    await ws.send_str(
+        encode_scope_subscription(
+            Subscription("radio", receiver, FollowView("vfo", 100000), 100, fps)
+        )
+    )
     while True:
         message = await ws.receive(timeout=5)
         if message.type is aiohttp.WSMsgType.TEXT:
@@ -54,7 +73,13 @@ async def grant(ws, receiver=0, fps=20):
 
 
 def ptt_reply(radio, on):
-    radio._update_state_cache_from_frame(parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0x1C, sub=0, data=bytes([on]))))
+    radio._update_state_cache_from_frame(
+        parse_civ_frame(
+            build_civ_frame(
+                CONTROLLER_ADDR, radio._radio_addr, 0x1C, sub=0, data=bytes([on])
+            )
+        )
+    )
 
 
 async def test_sdk_only_tx_off_drives_deferred_demand(sdk):
@@ -97,7 +122,12 @@ async def test_sdk_frames_stay_visible_when_web_pauses(sdk):
             try:
                 for _ in range(3):
                     await asyncio.wait_for(arrivals.get(), 5)
-                assert radio.scope_session().health(civ_flowing=True, silence_seconds=0.05).hidden is False
+                assert (
+                    radio.scope_session()
+                    .health(civ_flowing=True, silence_seconds=0.05)
+                    .hidden
+                    is False
+                )
             finally:
                 radio._scope_stream_callbacks.remove(arrivals.put_nowait)
 
@@ -109,20 +139,31 @@ async def test_control_ws_reapplies_span_after_real_front_panel_readback(sdk):
     assert await radio.get_scope_span() == 4
     async with web(radio) as (_, client, base, protocols):
         async with client.ws_connect(base + "/api/v1/ws", protocols=protocols) as ws:
-            await ws.send_json({"type": "cmd", "id": "span", "name": "set_scope_span", "params": {"span": 3}})
+            await ws.send_json(
+                {
+                    "type": "cmd",
+                    "id": "span",
+                    "name": "set_scope_span",
+                    "params": {"span": 3},
+                }
+            )
             assert await await_until(lambda: sim.views[0][1] == 3)
 
 
-async def test_uncertain_write_cannot_suppress_the_previous_acknowledged_value(sdk, monkeypatch):
+async def test_uncertain_write_cannot_suppress_the_previous_acknowledged_value(
+    sdk, monkeypatch
+):
     radio, sim = sdk
     await radio.set_scope_mode(1)
     send = radio._send_civ_raw
+
     async def lost_ack(payload, **kwargs):
         response = await send(payload, **kwargs)
         frame = parse_civ_frame(payload)
         if frame.command == 0x27 and frame.sub == 0x14 and frame.data == b"\x00\x02":
             raise CommandError("lost ACK")
         return response
+
     monkeypatch.setattr(radio, "_send_civ_raw", lost_ack)
     with pytest.raises(CommandError, match="lost ACK"):
         await radio.set_scope_mode(2)
