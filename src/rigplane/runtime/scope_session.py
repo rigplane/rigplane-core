@@ -382,7 +382,6 @@ class ScopeSession:
             self._fixed.clear()
             self._views.clear()
             self._desired.clear()
-            self._applied.clear()
             self._uncertain.clear()
             self._restore_pending = self._paused = False
             self._connection_epoch = None
