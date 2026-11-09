@@ -143,6 +143,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 lambda: bool(self._radio_state.ptt),
                 ready=self._connected,
                 validate=self._scope_setting_frame,
+                read_dual=self.get_scope_dual,
             )
             self._control_scope_session = session
         return session
@@ -189,8 +190,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         panel, output = await self.get_scope_session_state()
         controls = self._scope_controls()
         return ScopeState(
-            panel, output, controls.mode or 0, controls.span or 0, controls.edge or 1,
-            await self.get_scope_dual() if self._profile.receiver_count > 1 else False,
+            panel, output, controls.mode or 0, controls.span or 0, controls.edge or 1
         )
 
     def _scope_setting_frame(
@@ -204,7 +204,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 bool(value), to_addr=self._radio_addr
             )
         elif name == "dual":
-            frame = self._commands.scope_single_dual(bool(value), to_addr=self._radio_addr)
+            frame = self._commands.scope_single_dual(
+                bool(value), to_addr=self._radio_addr
+            )
         elif name == "fixed_edge":
             assert isinstance(value, ScopeFixedEdge)
             frame = self._commands.scope_set_fixed_edge(

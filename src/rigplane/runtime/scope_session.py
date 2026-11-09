@@ -50,6 +50,7 @@ class ScopeSession:
         tx_probe: Callable[[], bool] | None = None,
         *,
         ready: bool = False,
+        read_dual: Callable[[], Awaitable[bool]] | None = None,
         validate: Callable[[ScopeSetting, ScopeValue, int], object] | None = None,
         clock: Callable[[], float] = time.monotonic,
         disable_grace_seconds: float = 0,
@@ -57,6 +58,7 @@ class ScopeSession:
         hidden_grace_seconds: float = 30,
     ) -> None:
         self._validate = validate
+        self._read_dual = read_dual
         self._read = read
         self._write = write
         self._read_fixed = read_fixed
@@ -120,13 +122,18 @@ class ScopeSession:
 
     async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
         await self.configure(
-            receiver=receiver, mode=0, span=self._spans.index(int(span_hz)),
+            receiver=receiver,
+            mode=0,
+            span=self._spans.index(int(span_hz)),
             **({"dual": True} if receiver else {}),
         )
 
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None:
         await self.configure(
-            receiver=receiver, fixed_edge=edges, edge=edges.edge, mode=1,
+            receiver=receiver,
+            fixed_edge=edges,
+            edge=edges.edge,
+            mode=1,
             **({"dual": True} if receiver else {}),
         )
 
@@ -454,7 +461,12 @@ class ScopeSession:
                         continue
                     self._fixed[slot] = captured_fixed
             elif name == "dual" and self._original is not None:
-                self._previous.setdefault((receiver, name), self._original.dual)
+                if (receiver, name) not in self._previous:
+                    self._previous[receiver, name] = (
+                        await self._read_dual()
+                        if self._read_dual is not None
+                        else self._original.dual
+                    )
             elif self._original is not None:
                 key = (receiver, name)
                 if key not in self._previous:

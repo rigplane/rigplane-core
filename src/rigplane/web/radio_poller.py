@@ -1690,7 +1690,18 @@ class RadioPoller:
         # during connect(). Just signal readiness immediately.
         self._initial_fetch_done.set()
         if CAP_SCOPE in self._caps:
-            await self._radio.scope_session().set_ready(True)
+            try:
+                await self._radio.scope_session().set_ready(True)
+            except (
+                TimeoutError,
+                RigplaneTimeoutError,
+                CommandError,
+                RadioConnectionError,
+            ):
+                logger.warning(
+                    "radio-poller: startup scope reconciliation remains pending",
+                    exc_info=True,
+                )
 
         # NB depth/width are global menu items that cannot ride the poll-query
         # envelope, so seed them once at connect via direct getters (MOR-491-B).

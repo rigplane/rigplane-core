@@ -108,7 +108,9 @@ async def test_sub_view_real_dispatch_preserves_main_sdk_selection(sdk):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
             await grant(ws, receiver=1)
             assert (await ws.receive(timeout=5)).type is aiohttp.WSMsgType.BINARY
-            async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as main:
+            async with client.ws_connect(
+                base + "/api/v1/scope", protocols=protocols
+            ) as main:
                 await grant(main)
                 assert (await main.receive(timeout=5)).type is aiohttp.WSMsgType.BINARY
                 assert (await ws.receive(timeout=5)).type is aiohttp.WSMsgType.BINARY
@@ -275,10 +277,14 @@ async def test_successive_fixed_sessions_capture_fresh_panel_slot(sdk):
     async with web(radio) as (_, client, base, protocols, _):
         for original in (requested, changed):
             sim.fixed[b"\x06\x01"] = original
-            async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
-                await ws.send_str(encode_scope_subscription(
-                    Subscription("radio", 0, View(14100000, 14120000), 100, 20)
-                ))
+            async with client.ws_connect(
+                base + "/api/v1/scope", protocols=protocols
+            ) as ws:
+                await ws.send_str(
+                    encode_scope_subscription(
+                        Subscription("radio", 0, View(14100000, 14120000), 100, 20)
+                    )
+                )
                 message = await ws.receive(timeout=5)
                 assert message.type is aiohttp.WSMsgType.TEXT
                 assert '"error"' not in message.data
