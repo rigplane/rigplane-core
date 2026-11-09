@@ -124,6 +124,20 @@ function mountHarness(props: Record<string, unknown> = {}): void {
   rafRequestCount = 0;
 }
 
+it('does not schedule paint for identical visual options during frame silence', () => {
+  mountHarness();
+  flushPaint();
+  flushSync();
+  flushPaint();
+  const before = rafRequestCount;
+  for (let i = 0; i < 10; i++) {
+    harnessOptions.value = { ...harnessOptions.value };
+    flushSync();
+    flushPaint();
+  }
+  expect(rafRequestCount).toBe(before);
+});
+
 describe('queued frame vs. an advancing viewport (MOR-4206 review round 2)', () => {
   it('paints the queued row under the newer viewport with a recomputed sampling shift', () => {
     const updateSpy = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');

@@ -3629,7 +3629,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
       // viewportStartFreq = centerHz - spanHz / 2 tracks the candidate.
       expect(spectrumRendererHarness.render).toHaveBeenCalledTimes(settledCalls + 1);
-      expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view).toEqual({ startHz: 13_990_000, endHz: 14_090_000 });
+      expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view).toEqual({ follow: 'vfo', spanHz: 100_000 });
       expect(spectrumRendererHarness.lastOptions.centerHz).toBe(14_040_000);
       expect(spectrumRendererHarness.lastOptions.centerHz
         - spectrumRendererHarness.lastOptions.spanHz / 2).toBe(13_990_000);
@@ -3638,7 +3638,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-20_000));
       expect(spectrumRendererHarness.render).toHaveBeenCalledTimes(settledCalls + 2);
-      expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view).toEqual({ startHz: 13_980_000, endHz: 14_080_000 });
+      expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view).toEqual({ follow: 'vfo', spanHz: 100_000 });
 
       // Every repaint since the press drew the SAME cached frame pixels —
       // the preview never waits for a new scope frame.
