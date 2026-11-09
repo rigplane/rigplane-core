@@ -10,7 +10,7 @@ import { parseScopeWriteReceipt } from './panorama-receipt';
 interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
 declare global { interface Window { panoramaWork: Work } }
 
-for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
+for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7610', 1]] as const).entries()) {
   for (const zoom of [false, true]) {
     test(`${model}: ${zoom ? 'zoom then drag' : 'one drag'} settles subscriptions and WebKit renderer work`, async ({ page }, info) => {
       const evidence = info.outputPath('radio.jsonl');
@@ -122,7 +122,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         expect.soft(quietEnd.work.labels[0]).toBe((view[0] / 1e6).toFixed(3));
         expect.soft(quietEnd.work.labels.at(-1)).toBe((view[1] / 1e6).toFixed(3));
         expect.soft(quietEnd.work.draw - quietStart.work.draw).toBeGreaterThan(0);
-        if (zoom) expect.soft((await writes()).filter(receipt => receipt.sub === 0x14 && receipt.data.length === 2).at(-1)?.data[1]).toBe(1);
+        if (zoom) expect.soft((await writes()).filter(receipt => receipt.sub === 0x14 && receipt.data.length === 2).at(-1)?.data[1] ?? 0).toBe(zoomMode);
         await writeFile(evidence.replace('.jsonl', '.pause'), 'pause');
         await page.waitForTimeout(2000);
         const idleStart = await work();

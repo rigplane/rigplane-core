@@ -86,6 +86,7 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
   facts: import('../canvas/canvas-surface.svelte').CanvasSurfaceFacts | null;
   maxFps?: number;
   revision?: string;
+  frequencyHz?: number | null;
 }) {
   let parameters = initial;
   const token = Symbol('scope surface');
@@ -102,7 +103,7 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
       sourceId: parameters.stream.sourceId, receiver: parameters.stream.kind === 'radio' ? parameters.receiver : null,
       view: parameters.view, width, visible: facts?.visible === true && facts.backingW > 0,
       maxFps: parameters.maxFps ?? 20,
-    }), !attempted || attemptedRevision !== parameters.revision, parameters.revision);
+    }), !attempted || attemptedRevision !== parameters.revision, parameters.revision, parameters.frequencyHz);
     if (sent) { attempted = true; attemptedRevision = parameters.revision; }
   };
   const watchError = () => parameters.stream?.error.subscribe(error => {
