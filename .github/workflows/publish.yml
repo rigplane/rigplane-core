@@ -94,6 +94,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Frontend install + check + tests + build
+        env:
+          # Same heap as quick.yml: svelte-check on Node 20 needs 1.5-2 GiB, and
+          # Node's default limit was ~1 GB here (rc2 publish OOM, run 42565818574).
+          NODE_OPTIONS: --max-old-space-size=3072
         run: |
           cd frontend
           npm ci
