@@ -1251,3 +1251,16 @@ describe('phone More sheet (MOR-2987)', () => {
     r.dispose();
   });
 });
+
+
+it('uses the granted subscription span and emits subscription step directions', () => {
+  const onSpanChange = vi.fn();
+  const component = mount(ScopeControlsSurface, { target, props: {
+    view: withSc({ mode: known(0), span: known(3) }), spanHz: 100000, onSpanChange,
+  } });
+  flushSync();
+  expect(target.querySelector('[data-testid="scope-span-value"]')!.textContent).toBe('±50k');
+  (target.querySelector('[aria-label="Increase scope span"]') as HTMLButtonElement).click();
+  expect(onSpanChange).toHaveBeenCalledExactlyOnceWith(1);
+  unmount(component);
+});

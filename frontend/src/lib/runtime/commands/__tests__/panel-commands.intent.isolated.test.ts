@@ -16,6 +16,7 @@ import type { ServerState } from '$lib/types/state';
 import { FTX1_CAPABILITIES } from '../../adapters/__tests__/fixtures/ftx1-profile';
 
 const h = vi.hoisted(() => ({
+  spanStep: vi.fn(),
   state: null as ServerState | null,
   unavailable: new Set<string>(),
   caps: {
@@ -82,6 +83,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    scope: { spanControl: { step: h.spanStep } },
     get rxEnabled() { return h.rxEnabled; },
     get audio() { return { volume: h.volume }; },
     setMuted: h.setMuted,
@@ -3319,4 +3321,13 @@ describe('MOR-2535 onFilterWidthReset radio-default reset intent', () => {
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
   });
+});
+
+
+it('keyboard span uses the subscription owner without a radio command', () => {
+  h.caps = { ...h.caps!, scope: true, capabilities: ['scope'] };
+  h.state = { ...h.state!, scopeControls: { span: 3 } } as ServerState;
+  dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'up' } });
+  expect(h.spanStep).toHaveBeenCalledWith(1);
+  expect(h.sendCommand).not.toHaveBeenCalled();
 });

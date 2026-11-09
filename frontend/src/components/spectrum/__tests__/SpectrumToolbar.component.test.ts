@@ -15,6 +15,7 @@ const runtimeHarness = vi.hoisted(() => ({
   runtime: {
     state: Object.freeze({ identity: 'toolbar-state' }),
     caps: Object.freeze({ identity: 'toolbar-capabilities' }),
+    scope: { spanControl: { spanHz: 100000 } },
   },
 }));
 
@@ -329,11 +330,11 @@ describe('scope-control intents', () => {
     const target = mountToolbar();
     buttons(target).find((item) => item.title === 'Decrease span')!.click();
     flushSync();
-    expectOnlyScopeCall('onSpanChange', 2);
+    expectOnlyScopeCall('onSpanChange', -1);
     clearIntentSpies();
     buttons(target).find((item) => item.title === 'Increase span')!.click();
     flushSync();
-    expectOnlyScopeCall('onSpanChange', 4);
+    expectOnlyScopeCall('onSpanChange', 1);
   });
 
   it('routes speed down/up through exactly one clamped intent', () => {

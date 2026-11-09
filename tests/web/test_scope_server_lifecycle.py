@@ -66,6 +66,7 @@ async def test_cli_selection_is_separate_from_all_available_sources(
     assert payload["scopeSources"] == ["radio", "audio_fft", "iq_fft"]
     assert payload["scopeDefaultSourceId"] == expected
     assert payload["scopeSource"] is None
+    assert payload["span_choices_hz"] == list(server._radio_scope_source.capabilities().span_choices_hz)
 
 
 async def test_optional_sdr_factory_failure_keeps_http_radio_audio_and_retries():

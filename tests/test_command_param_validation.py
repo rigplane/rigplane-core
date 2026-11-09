@@ -547,3 +547,14 @@ async def test_programmer_error_from_executor_still_logs_an_error(
     assert len(errors) == 1
     assert errors[0].exc_info is not None
     assert errors[0].exc_info[0] is AttributeError
+
+
+async def test_scope_span_refused_without_radio_write() -> None:
+    handler, ws, queue = _handler_with_legacy_queue()
+    await handler._handle_command(  # noqa: SLF001
+        {"id": "span", "name": "set_scope_span", "params": {"span": 4}}
+    )
+    assert ws.sent[0]["ok"] is False
+    assert ws.sent[0]["error"] == "unsupported_command"
+    assert "scope subscription view" in ws.sent[0]["message"]
+    assert queue.commands == []
