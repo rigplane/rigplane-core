@@ -261,3 +261,27 @@ async def test_panel_output_readbacks_allow_sdk_reenable(sdk):
     assert not radio.scope_session().enabled
     await radio.enable_scope(policy="verify")
     assert sim._scope_10 == sim._scope_11 == 1
+
+
+async def test_successive_fixed_sessions_capture_fresh_panel_slot(sdk):
+    from rigplane.core.types import ScopeFixedEdge
+    from rigplane.scope.models import View
+
+    radio, sim = sdk
+    radio._radio_state.main.freq = 14100000
+    requested = ScopeFixedEdge(6, 1, 14100000, 14120000)
+    changed = ScopeFixedEdge(6, 1, 14000000, 14300000)
+    sim.fixed[b"\x06\x01"] = requested
+    async with web(radio) as (_, client, base, protocols, _):
+        for original in (requested, changed):
+            sim.fixed[b"\x06\x01"] = original
+            async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+                await ws.send_str(encode_scope_subscription(
+                    Subscription("radio", 0, View(14100000, 14120000), 100, 20)
+                ))
+                message = await ws.receive(timeout=5)
+                assert message.type is aiohttp.WSMsgType.TEXT
+                assert '"error"' not in message.data
+                assert sim.fixed[b"\x06\x01"] == requested
+            assert await await_until(lambda: not radio.scope_session().active)
+            assert sim.fixed[b"\x06\x01"] == original
