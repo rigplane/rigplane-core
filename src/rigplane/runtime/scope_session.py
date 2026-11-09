@@ -457,8 +457,12 @@ class ScopeSession:
                             if self._read_receiver is not None
                             else self._original
                         )
+                        for setting in ("mode", "span", "edge"):
+                            self._applied[receiver, cast(ScopeSetting, setting)] = getattr(
+                                self._views[receiver], setting
+                            )
                     captured = self._views[receiver]
-                    if getattr(captured, name) == value and key not in self._uncertain:
+                    if self._applied.get(key) == value and key not in self._uncertain:
                         self._applied[key] = value
                         continue
                     self._previous[key] = getattr(captured, name)
