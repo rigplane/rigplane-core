@@ -7,8 +7,8 @@ from rigplane.core.types import ScopeFixedEdge
 from rigplane.runtime.scope_session import ScopeSession, ScopeState
 
 
-def attach_scope_session(radio, **kwargs):
-    current = ScopeState(False, False, 0, 0, 1)
+def attach_scope_session(radio, *, initial=None, **kwargs):
+    current = initial or ScopeState(False, False, 0, 0, 1)
     writes = []
 
     async def read():

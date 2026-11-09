@@ -3997,12 +3997,12 @@ async def test_stale_deferred_enable_cannot_requeue_after_newer_disable() -> Non
     poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
     poller._initial_fetch_done.clear()  # noqa: SLF001
 
-    queue.put(EnableScope(policy="fast", generation=1))
+    queue.put(EnableScope(policy="fast"))
     (old_enable,) = queue.drain()
     await poller._execute(old_enable)  # noqa: SLF001
     assert queue.has_commands is False
 
-    queue.put(DisableScope(generation=2))
+    queue.put(DisableScope())
     for command in queue.drain():
         await poller._execute(command)  # noqa: SLF001
 
@@ -4017,9 +4017,9 @@ async def test_stale_disable_is_inert_after_newer_enable_demand() -> None:
     queue = CommandQueue()
     poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
-    queue.put(DisableScope(generation=3))
+    queue.put(DisableScope())
     (old_disable,) = queue.drain()
-    queue.put(EnableScope(policy="fast", generation=4))
+    queue.put(EnableScope(policy="fast"))
 
     await poller._execute(old_disable)  # noqa: SLF001
     for command in queue.drain():
@@ -4035,8 +4035,8 @@ async def test_current_scope_generation_preserves_recovery_enable() -> None:
     queue = CommandQueue()
     poller = RadioPoller(radio, StateCache(), queue, radio_state=RadioState())
 
-    await poller._execute(EnableScope(generation=5))  # noqa: SLF001
-    await poller._execute(EnableScope(generation=5))  # noqa: SLF001
+    await poller._execute(EnableScope())  # noqa: SLF001
+    await poller._execute(EnableScope())  # noqa: SLF001
 
     assert radio.enable_scope.await_count == 1
     radio.get_scope_session_state.assert_awaited_once()
@@ -4051,9 +4051,9 @@ async def test_scope_session_restores_exact_initial_state(
     radio.get_scope_session_state.return_value = initial
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=RadioState())
 
-    await poller._execute(EnableScope(generation=1))  # noqa: SLF001
-    await poller._execute(EnableScope(generation=1))  # noqa: SLF001
-    await poller._execute(DisableScope(generation=2))  # noqa: SLF001
+    await poller._execute(EnableScope())  # noqa: SLF001
+    await poller._execute(EnableScope())  # noqa: SLF001
+    await poller._execute(DisableScope())  # noqa: SLF001
 
     radio.get_scope_session_state.assert_awaited_once()
     assert radio.enable_scope.await_count == 1
@@ -4070,8 +4070,8 @@ async def test_failed_scope_enable_rolls_back_captured_state() -> None:
     poller = RadioPoller(radio, StateCache(), CommandQueue(), radio_state=RadioState())
 
     with pytest.raises(ConnectionError, match="low baud"):
-        await poller._execute(EnableScope(generation=1))  # noqa: SLF001
-    await poller._execute(DisableScope(generation=2))  # noqa: SLF001
+        await poller._execute(EnableScope())  # noqa: SLF001
+    await poller._execute(DisableScope())  # noqa: SLF001
 
     assert radio.scope_session().observed.scope_on is False
     assert radio.scope_session().observed.output_on is False
@@ -5844,6 +5844,7 @@ def _shutdown_server(
         _dx_client_task=None,
         _zombie_reaper_task=None,
         _scope_health_task=None,
+        _scope_handlers=set(),
         _scope_reenable_task=None,
         _bg_tasks=[],
         _client_tasks=client_tasks,

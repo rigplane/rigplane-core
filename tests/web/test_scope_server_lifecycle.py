@@ -158,7 +158,7 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
     cancelled_close, monkeypatch
 ):
     from rigplane.radio import IcomRadio
-    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
 
     sim = MockIcomRadio(scope_stream=True)
     await sim.start()
@@ -206,9 +206,12 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
         poller.stop()
         await asyncio.gather(poll_task, return_exceptions=True)
         if cancelled_close:
+            source = server.scope_hub._sources["radio"]
+            await source.lock.acquire()
             closing = asyncio.create_task(handler._unsubscribe())
-            await await_until(lambda: server.command_queue.has_commands)
+            await await_until(lambda: not handler._streams)
             closing.cancel()
+            source.lock.release()
         restore = AsyncMock(wraps=poller.restore_scope_after_shutdown)
         monkeypatch.setattr(poller, "restore_scope_after_shutdown", restore)
         stopping = asyncio.create_task(server.stop())
@@ -218,6 +221,7 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
         )
         await stopping
         if closing is not None:
+            await await_until(closing.done, timeout=1)
             assert closing.done(), (
                 "cancelled unsubscribe retained its shielded queue wait"
             )
@@ -227,9 +231,8 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
         assert server._server is None
         assert not server._bg_tasks
         assert not server.command_queue.has_commands
-        assert not server._scope_command_futures
         assert not server._radio_scope_source._active
-        restore.assert_awaited_once()
+        assert not radio.scope_session().active
         assert not server._radio_scope_session.enabled
     finally:
         # Recover the old implementation's blocked queue wait after the RED assertion.
@@ -253,18 +256,17 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
 ):
     from unittest.mock import MagicMock
 
-    from rigplane.web.radio_poller import (
-        PttOff,
-        SetScopeMode,
-        SetScopeSpan,
-        SwitchScopeReceiver,
-    )
+    from rigplane.web.radio_poller import PttOff
+    from rigplane.runtime.scope_session import ScopeState
+    from rigplane.scope.models import FollowView
+    from rigplane.profiles import resolve_radio_profile
+    from _scope_session_fake import attach_scope_session
 
-    server = WebServer(_scope_radio(), WebConfig(radio_model="IC-7610"))
-    server._radio_state.main.freq = 14_100_000
-    assert server.scope_hub is not None
-    source = server._radio_scope_source
-    assert source is not None
+    radio = _scope_radio()
+    radio.profile = resolve_radio_profile(model="IC-7610")
+    session = attach_scope_session(radio, initial=ScopeState(False, False, 0, 0, 2))
+    server = WebServer(radio, WebConfig(radio_model="IC-7610"))
+    source = server.scope_hub._sources["radio"].plugin
     listener = MagicMock()
     listener.wait_closed = AsyncMock()
     server._server = listener
@@ -272,20 +274,26 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
     futures = []
     replacement_commands = []
     replacing = False
-    put_ordered = server.command_queue.put_ordered
+    restoring = False
 
-    def enqueue(command, **kwargs):
-        put_ordered(command, **kwargs)
-        future = kwargs.get("future")
-        if future is None:
-            return
-        futures.append(future)
-        if replacing:
-            replacement_commands.append(command)
-        if not replacing or len(replacement_commands) <= pending_stage:
-            future.set_result(None)
+    async def step(name):
+        if replacing and not restoring:
+            replacement_commands.append(name)
+            future = asyncio.get_running_loop().create_future()
+            futures.append(future)
+            if len(replacement_commands) <= pending_stage:
+                future.set_result(None)
+            await future
 
-    monkeypatch.setattr(server.command_queue, "put_ordered", enqueue)
+    async def fixed(**kwargs):
+        await step("fixed_edge")
+    async def edge(value):
+        await step("edge")
+    async def mode(value):
+        await step("mode")
+    radio.set_scope_fixed_edge.side_effect = fixed
+    radio.set_scope_edge.side_effect = edge
+    radio.set_scope_mode.side_effect = mode
     poller = MagicMock()
     poller.stop.side_effect = lambda: events.append("poller-stopped")
 
@@ -296,7 +304,11 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         events.append("tx-drain")
 
     async def restore():
+        nonlocal restoring
         assert events[-1] == "tx-drain"
+        restoring = True
+        await session.set_inputs(ready=True, tx=False)
+        assert not session.restoring
         events.append("scope-restored")
 
     poller.drain_tx_safety_commands = AsyncMock(side_effect=drain)
@@ -305,13 +317,14 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
     handler = ScopeHandler(Socket(), server)
     server.register_scope_handler(handler)
     request = encode_scope_subscription(
-        Subscription("radio", 0, View(14_090_000, 14_110_000), 100, 10)
+        Subscription("radio", 0, FollowView("vfo", 25000), 100, 10)
     )
     await handler._handle_control(request)
     assert handler._streams, handler._ws.text
     server.command_queue.drain_entries()
     poller.stop()
     replacing = True
+    request = encode_scope_subscription(Subscription("radio", 0, View(14_200_000, 14_300_000), 100, 10))
     replacement = asyncio.create_task(handler._handle_control(request))
 
     async def client():
@@ -328,11 +341,7 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
     try:
         await virtual_clock.elapse(0)
         assert not replacement.done()
-        assert [type(command) for command in replacement_commands] == [
-            SwitchScopeReceiver,
-            SetScopeMode,
-            SetScopeSpan,
-        ][: pending_stage + 1]
+        assert replacement_commands == ["fixed_edge", "edge", "mode"][: pending_stage + 1]
         pending = futures[-1]
         assert not pending.done()
         stopping = asyncio.create_task(server.stop())
@@ -344,13 +353,11 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         assert client_task.done()
         assert len(replacement_commands) == pending_stage + 1
         assert all(future.done() for future in futures)
-        assert not server._scope_command_futures
         assert not server.command_queue.has_commands
         assert not handler._streams
         assert not source._active
         assert not source._callbacks
         assert not server._radio_scope_session.enabled
-        assert not server._scope_enable_failed
         assert server._server is None
         listener.close.assert_called_once()
         listener.wait_closed.assert_awaited_once()

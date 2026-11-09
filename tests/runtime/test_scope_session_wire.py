@@ -11,7 +11,7 @@ async def test_server_simulator_pause_resume_release_counts_scope_writes(monkeyp
     from rigplane.testing.timing import await_until
     from rigplane.web.protocol import encode_scope_subscription
     from rigplane.web.server import WebConfig, WebServer
-    from _scope_simulator import ScopeControlSimulator
+    from rigplane_testkit.icom.scope_control import ScopeControlSimulator
     from test_web_server import _addr
 
     sim = ScopeControlSimulator(scope_stream=True)
@@ -164,6 +164,7 @@ async def test_known_tx_defers_sdk_scope_wire_writes(monkeypatch):
     radio = IcomRadio("127.0.0.1", model="IC-7300")
     radio._connected = True
     radio._radio_state.ptt = True
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
     send = AsyncMock()
     monkeypatch.setattr(radio, "_send_civ_raw", send)
     await radio.enable_scope(policy="fast")

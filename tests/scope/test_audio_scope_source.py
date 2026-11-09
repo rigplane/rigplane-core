@@ -273,7 +273,9 @@ async def test_unavailable_facts_drop_pcm_and_recovery_cannot_mix_history(
 ):
     from types import SimpleNamespace
     from unittest.mock import Mock
+    import logging
     import rigplane.audio.fft_scope as fft_module
+    caplog.set_level(logging.WARNING)
 
     monkeypatch.setattr(fft_module, "time", SimpleNamespace(monotonic=virtual_clock))
     valid = AudioPassband(14_100_000, 300, 2700, "upper")

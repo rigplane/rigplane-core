@@ -2275,8 +2275,8 @@ async def test_rejected_low_baud_scope_enable_never_emits_scope_off() -> None:
     poller = RadioPoller(radio, queue, radio_state=radio.radio_state)
 
     with pytest.raises(CommandError, match="baudrate"):
-        await poller._execute(EnableScope(generation=1))
-    await poller._execute(DisableScope(generation=2))
+        await poller._execute(EnableScope())
+    await poller._execute(DisableScope())
     await radio.disconnect()
 
     signatures = [
@@ -2319,9 +2319,9 @@ async def test_verify_timeout_after_scope_on_rolls_back_exact_initial_state() ->
     poller = RadioPoller(radio, CommandQueue(), radio_state=radio.radio_state)
 
     with pytest.raises(RigplaneTimeoutError, match="verification timed out"):
-        await poller._execute(EnableScope(policy="verify", generation=1))
+        await poller._execute(EnableScope(policy="verify"))
     sent_before_disable = len(link.sent_frames)
-    await poller._execute(DisableScope(generation=2))
+    await poller._execute(DisableScope())
     assert len(link.sent_frames) == sent_before_disable
     await radio.disconnect()
 

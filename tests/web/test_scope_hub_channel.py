@@ -117,7 +117,7 @@ async def test_two_clients_resample_and_pace_simulator_frames(
 ):
     from rigplane.scope import ScopeAssembler
     from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_frame_v2
-    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
 
     server = WebServer(None)
     writer = Writer()
@@ -179,7 +179,7 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
     from rigplane.scope import ScopeAssembler
     from rigplane.web.protocol import decode_scope_frame_v2
     from rigplane.web.server import WebConfig
-    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
     from test_web_server import _addr
 
     server = WebServer(None, WebConfig(host="127.0.0.1", port=0))
@@ -302,7 +302,7 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
     monkeypatch.setattr(
         testkit, "_SCOPE_GAP_S", {key: 1 / 30 for key in testkit._SCOPE_GAP_S}
     )
-    from _scope_simulator import ScopeControlSimulator
+    from rigplane_testkit.icom.scope_control import ScopeControlSimulator
 
     sim = ScopeControlSimulator(scope_stream=True)
     assembler = ScopeAssembler()
@@ -879,7 +879,7 @@ async def test_one_real_scope_socket_multiplexes_radio_and_audio():
     from rigplane.web.protocol import decode_scope_frame_v2
     from rigplane.web.scope_sources import WebScopePcmTap
     from rigplane.web.server import WebConfig
-    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
     from test_handlers_coverage import _RelayRadio
     from test_audio_scope_dispatch import _seed_audio_facts
     from test_web_server import _addr

@@ -331,3 +331,14 @@ async def test_last_release_before_readiness_discards_the_pending_view():
     await session.set_ready(True)
     assert writer.writes == [] and writer.views == []
     assert not session.active
+
+
+async def test_restored_output_without_subscribers_has_no_menu_verdict(virtual_clock):
+    writer = Writer()
+    writer.state = ScopeState(True, True)
+    session = ScopeSession(writer.read, writer.write, ready=True, clock=virtual_clock)
+    await session.set_output(True)
+    await session.set_output(False)
+    virtual_clock.advance(60)
+    assert session.observed.output_on is True
+    assert session.health(civ_flowing=True).hidden is None
