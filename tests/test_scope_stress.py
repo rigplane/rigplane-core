@@ -164,12 +164,18 @@ async def test_scope_stress_slow_consumer_queue_bounded(
         await asyncio.sleep(run_duration_s)
     finally:
         radio._connected = False
-        await asyncio.wait_for(consumer, timeout=2.0)
+        try:
+            await asyncio.wait_for(consumer, timeout=2.0)
+        finally:
+            await radio._civ_runtime.stop_pump()
 
     assert max_qsize_seen <= max_queue_size, (
         f"Queue grew beyond bound: max_qsize_seen={max_qsize_seen}, max={max_queue_size}"
     )
     assert len(received) >= 1, "Consumer should have received at least one frame"
+    assert received[-1].pixels == bytes([(num_frames - 1) % 256] * 32), (
+        "Slow consumer must eventually receive the newest frame"
+    )
 
 
 @pytest.mark.asyncio
