@@ -223,3 +223,16 @@ async def test_standalone_control_ws_setter_retires_after_ack(sdk, monkeypatch):
         finally:
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
+
+
+@pytest.mark.parametrize("defer", ["readiness", "tx"])
+@pytest.mark.parametrize("setting", ["mode", "span", "edge"])
+async def test_invalid_deferred_setting_cannot_poison_later_work(sdk, defer, setting):
+    radio, sim = sdk
+    session = radio.scope_session()
+    await session.set_inputs(ready=defer != "readiness", tx=defer == "tx")
+    with pytest.raises(ValueError):
+        await session.configure(**{setting: 99})
+    await session.configure(span=2)
+    await session.set_inputs(ready=True, tx=False)
+    assert sim.views[0][1] == 2
