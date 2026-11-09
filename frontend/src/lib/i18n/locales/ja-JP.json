@@ -138,6 +138,7 @@
   "core.overlay.scopeDisconnected": "スコープが切断されました — 再接続中…",
   "core.overlay.scopeOutOfRange": "周波数が固定スコープの範囲外です（{start}–{end} MHz）",
   "core.overlay.scopeSwitchToCtr": "CTR に切り替え",
+  "core.scope.webglRequired": "ウォーターフォールには WebGL が必要です",
   "core.scope.presets": "スコープのプリセット",
   "core.scope.preset.follow": "VFO に追従",
   "core.scope.zoomIn": "パノラマ表示を拡大",

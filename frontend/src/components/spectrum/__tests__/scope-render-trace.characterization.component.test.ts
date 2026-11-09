@@ -1,3 +1,4 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -40,7 +41,8 @@ describe('actual canvas trace callbacks', () => {
       unobserve() {}
       disconnect() {}
     });
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement, kind: string) {
+      if (kind === 'webgl2') return webglFixture(this.width, this.height).gl;
       return { canvas: this, createImageData: (width: number, height: number) =>
         ({ width, height, data: new Uint8ClampedArray(width * height * 4) }),
         fillRect() {}, drawImage() {}, setTransform() {}, clearRect() {}, putImageData() {},

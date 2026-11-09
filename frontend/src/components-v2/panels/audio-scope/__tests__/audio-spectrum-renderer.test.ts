@@ -1,9 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  renderAudioSpectrum,
+  renderAudioSpectrum as rawRenderAudioSpectrum,
   AudioSpectrumRendererState,
   type SpectrumState,
 } from '../audio-spectrum-renderer';
+import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
+function renderAudioSpectrum(ctx: CanvasRenderingContext2D, width: number, height: number, state: SpectrumState, rs = new AudioSpectrumRendererState()) {
+  recordCanvasLayers(ctx); return rawRenderAudioSpectrum(ctx, width, height, state, rs);
+}
 import type { PbtRange } from '$lib/radio/filter-controls';
 import { toAudioSpectrumProps } from '$lib/runtime/props/panel-props';
 import {

@@ -1,3 +1,5 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
+import { RecordedPath } from '$lib/renderers/__tests__/canvas-layers-fixture';
 /**
  * MOR-4271 (R2, GREEN-B RED): the four scope canvases — SpectrumCanvas,
  * WaterfallCanvas, AudioSpectrumCanvas and AmberAfScope — migrate onto
@@ -698,10 +700,12 @@ beforeEach(() => {
   originalDprDescriptor = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
   Object.defineProperty(window, 'devicePixelRatio', { configurable: true, get: () => dpr });
 
+  vi.stubGlobal('Path2D', RecordedPath);
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
     this: HTMLCanvasElement,
     type: string,
   ) {
+    if (type === 'webgl2') return webglFixture(this.width, this.height).gl;
     if (type !== '2d') return null;
     let ops = canvasOps.get(this);
     if (!ops) {
@@ -887,10 +891,12 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     // ...and the visibility wake repaints exactly once per canvas FROM THE
     // CACHED LATEST FRAME — no new frame is delivered here.
     const paintsBeforeRestore = paintCounts();
+    const historyDraw = vi.spyOn(WaterfallRenderer.prototype, 'draw');
     flushRaf();
     const paintsAfterRestore = paintCounts();
     expect(paintsAfterRestore.spectrum - paintsBeforeRestore.spectrum).toBe(1);
-    expect(paintsAfterRestore.waterfall - paintsBeforeRestore.waterfall).toBe(1);
+    expect(paintsAfterRestore.waterfall - paintsBeforeRestore.waterfall).toBe(0);
+    expect(historyDraw).toHaveBeenCalledTimes(1);
     expect(paintsAfterRestore.audio - paintsBeforeRestore.audio).toBe(1);
     expect(paintsAfterRestore.amber - paintsBeforeRestore.amber).toBe(1);
     const restoredSubscription = readSubscription();

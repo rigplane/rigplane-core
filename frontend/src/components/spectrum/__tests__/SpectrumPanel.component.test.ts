@@ -1,3 +1,5 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
+import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
 /**
  * SpectrumPanel component-level render tests.
  * Mounts the actual Svelte component in jsdom and verifies DOM structure,
@@ -100,10 +102,12 @@ const noopCanvas: Record<string, unknown> = {
   globalCompositeOperation: 'source-over',
 };
 
-HTMLCanvasElement.prototype.getContext = vi.fn(function (this: HTMLCanvasElement, type: string) {
+const panelCanvasContext = function (this: HTMLCanvasElement, type: string) {
+  if (type === 'webgl2') return webglFixture(this.width, this.height).gl;
   if (type === '2d') return noopCanvas;
   return null;
-}) as any;
+};
+HTMLCanvasElement.prototype.getContext = vi.fn(panelCanvasContext) as any;
 
 // ResizeObserver — MOR-4271: the scope canvases size through a
 // CanvasSurface, so the observer must report a real box (asynchronously to
@@ -870,6 +874,7 @@ function mountPanel(props: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  HTMLCanvasElement.prototype.getContext = vi.fn(panelCanvasContext) as any;
   components = [];
   traceReceiptCreations = 0;
   capturedStreamSinks.length = 0;
@@ -1036,7 +1041,8 @@ describe('SpectrumPanel component', () => {
     const original = spectrumRendererHarness.render.getMockImplementation()!;
     spectrumRendererHarness.render.mockImplementation((_ctx, pixels, width, height, options) => {
       spectrumRendererHarness.lastOptions = options;
-      actual.render(painted as unknown as CanvasRenderingContext2D, pixels, width, height, options);
+      recordCanvasLayers(painted as unknown as CanvasRenderingContext2D);
+    actual.render(painted as unknown as CanvasRenderingContext2D, pixels, width, height, options);
     });
     try {
       mountPanel();
@@ -1047,7 +1053,8 @@ describe('SpectrumPanel component', () => {
       emitFrame({ pixels: new Uint8Array([0, 0, 0, 0]), sequence: 2 });
       await flushWaterfallPaint();
       const last = spectrumRendererHarness.render.mock.calls.at(-1)!;
-      expected.render(fresh as unknown as CanvasRenderingContext2D, last[1], last[2], last[3], last[4]);
+      recordCanvasLayers(fresh as unknown as CanvasRenderingContext2D);
+    expected.render(fresh as unknown as CanvasRenderingContext2D, last[1], last[2], last[3], last[4]);
       expect(painted.lineTo.mock.calls).toEqual(fresh.lineTo.mock.calls);
       expect(painted.moveTo.mock.calls).toEqual(fresh.moveTo.mock.calls);
     } finally {
@@ -2682,6 +2689,7 @@ describe('managed scope projection (MOR-2367)', () => {
       const fills: string[] = [];
       const ctx = { ...noopCanvas, fillStyle: '', setLineDash: noop, fillRect() { fills.push(this.fillStyle); } };
       const options = spectrumRendererHarness.lastOptions;
+      recordCanvasLayers(ctx as unknown as CanvasRenderingContext2D);
       renderSpectrum(ctx as unknown as CanvasRenderingContext2D, new Uint8Array(100).fill(80), 400, 100, options);
       expect(options).toMatchObject({ sampleSpanHz: 100_000, spanHz: 40_000, tuneHz: 0, showTuneIndicator: false });
       expect(fills).not.toContain(options.passbandFillColor);
@@ -4019,12 +4027,12 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       vi.mocked(requestAnimationFrame).mockClear();
       // A 120 Hz pointermove stream inside ONE animation frame: the View
       // takes every candidate synchronously while the canvas keeps AT MOST
-      // one pending redraw request.
+      // one pending redraw request per surface.
       pointer(spectrum, 'pointermove', 36, 110);
-      expect(vi.mocked(requestAnimationFrame)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(requestAnimationFrame)).toHaveBeenCalledTimes(2);
       pointer(spectrum, 'pointermove', 36, 120);
       pointer(spectrum, 'pointermove', 36, 130);
-      expect(vi.mocked(requestAnimationFrame)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(requestAnimationFrame)).toHaveBeenCalledTimes(2);
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-15_000));
       pointer(spectrum, 'pointerup', 36, 130);
@@ -4213,7 +4221,7 @@ describe('center panorama motion (MOR-2464)', () => {
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
   });
 
-  it('resets the panorama and clears waterfall history when the span changes mid-animation', async () => {
+  it('resets the panorama while retaining waterfall history when the span changes mid-animation', async () => {
     const clearSpy = vi.spyOn(WaterfallRenderer.prototype, 'clear');
     try {
       const { target, props } = mountPanorama(panoramaProjection());
@@ -4221,7 +4229,7 @@ describe('center panorama motion (MOR-2464)', () => {
       await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0)).toBe(true));
       props.set('projection', panoramaProjection(14_100_000, 100_000, 2)); flushSync();
       await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
-      expect(clearSpy).toHaveBeenCalled();
+      expect(clearSpy).not.toHaveBeenCalled();
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     } finally {
       clearSpy.mockRestore();
@@ -4922,6 +4930,7 @@ describe('review corrections for requested View and sample retirement', () => {
       const { renderSpectrum } = await vi.importActual<typeof import('$lib/renderers/spectrum-renderer')>('$lib/renderers/spectrum-renderer');
       const ctx = { ...noopCanvas, setLineDash: noop, lineTo: vi.fn(), moveTo: vi.fn() };
       const options = spectrumRendererHarness.lastOptions;
+      recordCanvasLayers(ctx as unknown as CanvasRenderingContext2D);
       renderSpectrum(ctx as unknown as CanvasRenderingContext2D, new Uint8Array(100).fill(80), 300, 100, options);
       const covered = ctx.lineTo.mock.calls.filter(([x, y]) => x < 300 && y === 0).map(([x]) => x);
       expect(Math.max(...covered)).toBe(99);
