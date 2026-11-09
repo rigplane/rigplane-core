@@ -7,10 +7,16 @@
   "span_hz": 100000,
   "requested_width": 1024,
   "granted_width": 475,
-  "frame_count": 84,
-  "fps": 4.2,
+  "frame_count": 125,
+  "duration_seconds": 30,
+  "recorded_at": "2026-11-09T20:4xZ",
+  "recorded_at_precision": "Coordinator supplied only the 20:40\u201320:49 UTC window",
   "core_version": "3.2.0rc5",
-  "load": "dummy load",
-  "source_path": "~/validation/rigdeck-bench/ic705_scope_100k_1024.frames",
+  "load": "live air 20 m",
+  "retained_frame_range_1_based": [
+    1,
+    125
+  ],
+  "byte_length": 67500,
   "format": "Repeated u32 little-endian byte length followed by a v2 binary scope frame"
 }

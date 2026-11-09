@@ -7,16 +7,23 @@ import recordedWires from './reference/recorded-scope-v2.json' with { type: 'jso
 const recordings: Record<string, number[][]> = recordedWires;
 
 // Only the recording's u32-LE envelope is decoded here; the browser uses the production v2 parser.
-const capture = readFileSync(new URL('../../../../tests/fixtures/scope-wire/ic705_dummy_load_100k.frames', import.meta.url));
-const sharedWires: number[][] = [];
-for (let offset = 0; offset < capture.length;) {
-  const length = capture.readUInt32LE(offset); offset += 4;
-  if (length === 0 || offset + length > capture.length) throw new Error('Truncated scope recording');
-  sharedWires.push(Array.from(capture.subarray(offset, offset + length))); offset += length;
+const liveCaptures = [
+  { name: 'ic705_air_20m_ref-10', frames: 125, bytes: 67_500, p99: 40, max: 53 },
+  { name: 'ic705_air_20m_ref+10', frames: 83, bytes: 44_820, p99: 85, max: 96 },
+];
+for (const recording of liveCaptures) {
+  const capture = readFileSync(new URL(`../../../../tests/fixtures/scope-wire/${recording.name}.frames`, import.meta.url));
+  expect(capture.length).toBe(recording.bytes);
+  const wires: number[][] = [];
+  for (let offset = 0; offset < capture.length;) {
+    const length = capture.readUInt32LE(offset); offset += 4;
+    if (length === 0 || offset + length > capture.length) throw new Error('Truncated scope recording');
+    wires.push(Array.from(capture.subarray(offset, offset + length))); offset += length;
+  }
+  recordings[recording.name] = wires;
 }
-recordings.ic705_shared = sharedWires;
 
-for (const profile of ['ic705', 'ic7610', 'ic705_shared']) for (const dpr of [1, 2]) {
+for (const profile of Object.keys(recordings)) for (const dpr of [1, 2]) {
   test.describe(`${profile} DPR ${dpr}`, () => {
     test.use({ deviceScaleFactor: dpr, viewport: { width: 1920, height: 900 } });
     for (const shift of [0, 0.5]) test(`rc3 image parity, ${shift} backing pixel offset`, async ({ page }, info) => {
@@ -43,13 +50,14 @@ for (const profile of ['ic705', 'ic7610', 'ic705_shared']) for (const dpr of [1,
         const options = { ...defaultWaterfallOptions, centerHz: (frame.viewStartHz + frame.viewEndHz) / 2,
           spanHz: span, panoramaShiftHz: shift * span / width };
         const reference = new Reference(canvases[0], options), current = new WaterfallRenderer(canvases[1], options);
-        for (let i = 0; i < height; i++) {
+        for (let i = 0; i < Math.max(height, frames.length); i++) {
           const pixels = frames[i % frames.length].pixels!;
           reference.pushRow(pixels); current.pushRow(pixels);
         }
         const pixels = frames.flatMap(f => Array.from(f.pixels!)).sort((a, b) => a - b);
         return { bins: [...new Set(frames.map(f => f.width))], frames: frames.length, width, height, dpr,
           pixelCount: pixels.length, zeroCount: pixels.filter(p => p === 0).length,
+          p10: pixels[Math.floor(pixels.length * 0.1)], median: pixels[Math.floor(pixels.length * 0.5)],
           p90: pixels[Math.floor(pixels.length * 0.9)], p99Amplitude: pixels[Math.floor(pixels.length * 0.99)],
           maxAmplitude: pixels.at(-1),
           css: canvases.map(c => [c.getBoundingClientRect().width, c.getBoundingClientRect().height]),
@@ -97,10 +105,14 @@ for (const profile of ['ic705', 'ic7610', 'ic705_shared']) for (const dpr of [1,
       expect(result.glError).toBe(0);
       // RGB with a one-backing-pixel horizontal tolerance for nearest-bin boundary rounding.
       if (profile.startsWith('ic705')) expect(result.active).toBeGreaterThan(0);
-      if (profile === 'ic705_shared') {
-        expect(capture.length).toBe(45_360); expect(result.frames).toBe(84);
-        expect(result.bins).toEqual([475]); expect(result.pixelCount).toBe(39_900);
-        expect(result.p90).toBe(2); expect(result.p99Amplitude).toBe(34); expect(result.maxAmplitude).toBe(51);
+      const live = liveCaptures.find(c => c.name === profile);
+      if (live) {
+        expect(result.frames).toBe(live.frames); expect(result.bins).toEqual([475]);
+        expect(result.pixelCount).toBe(live.frames * 475); expect(result.maxAmplitude).toBe(live.max);
+        expect(result.p99Amplitude).toBe(live.p99);
+        if (live.name.endsWith('ref+10')) {
+          expect([result.p10, result.median, result.p90]).toEqual([22, 34, 45]);
+        }
       }
       expect(result.tolerantMean).toBeLessThan(0.25);
       expect(result.mean).toBeLessThan(0.25);
