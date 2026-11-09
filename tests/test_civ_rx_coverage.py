@@ -5601,15 +5601,15 @@ def test_update_radio_state_advanced_scope_family(
     for frame in (
         _make_frame(cmd=0x27, sub=0x12, data=b"\x01"),
         _make_frame(cmd=0x27, sub=0x13, data=b"\x01"),
-        _make_frame(cmd=0x27, sub=0x14, data=b"\x00\x03"),
-        _make_frame(cmd=0x27, sub=0x15, data=b"\x00" + bcd_encode(250_000)),
-        _make_frame(cmd=0x27, sub=0x16, data=b"\x00\x04"),
-        _make_frame(cmd=0x27, sub=0x17, data=b"\x00\x01"),
-        _make_frame(cmd=0x27, sub=0x19, data=b"\x00\x10\x50\x01"),
-        _make_frame(cmd=0x27, sub=0x1A, data=b"\x00\x02"),
+        _make_frame(cmd=0x27, sub=0x14, data=b"\x01\x03"),
+        _make_frame(cmd=0x27, sub=0x15, data=b"\x01" + bcd_encode(250_000)),
+        _make_frame(cmd=0x27, sub=0x16, data=b"\x01\x04"),
+        _make_frame(cmd=0x27, sub=0x17, data=b"\x01\x01"),
+        _make_frame(cmd=0x27, sub=0x19, data=b"\x01\x10\x50\x01"),
+        _make_frame(cmd=0x27, sub=0x1A, data=b"\x01\x02"),
         _make_frame(cmd=0x27, sub=0x1B, data=b"\x01"),
-        _make_frame(cmd=0x27, sub=0x1C, data=b"\x00\x02"),
-        _make_frame(cmd=0x27, sub=0x1D, data=b"\x00\x01"),
+        _make_frame(cmd=0x27, sub=0x1C, data=b"\x01\x02"),
+        _make_frame(cmd=0x27, sub=0x1D, data=b"\x01\x01"),
         _make_frame(
             cmd=0x27,
             sub=0x1E,
@@ -5751,6 +5751,9 @@ def test_scope_control_observation_backed(
     expected: dict[str, object],
 ) -> None:
     """MOR-557: 0x27 scope-control responses emit StateStore observations."""
+    radio._civ_runtime._update_state_cache_from_frame(
+        _make_frame(cmd=0x27, sub=0x12, data=b"\x00")
+    )
     radio._civ_runtime._update_state_cache_from_frame(frame)
 
     snapshot = radio._state_store.snapshot()
@@ -5826,8 +5829,8 @@ async def test_scope_waveform_fixed_mode_emits_no_span_edge_or_fixed_edge(
     republishes nothing beyond ``mode`` itself. ``edge`` has no
     frame-carried source at all. ``fixed_edge`` has no declared table of
     legal (start_hz, end_hz) pairs to match a frame's edges against
-    (``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` maps a start_hz to a band, not
-    to a specific stored preset) — MOR-2256 rules out guessing which
+    (``RadioProfile.scope_fixed_edge_ranges`` describes bands, not
+    specific stored presets) — MOR-2256 rules out guessing which
     preset is active. ``span`` is center-mode-only by construction
     (``_publish_scope_span_observation`` returns immediately when
     ``scope_frame.mode != 0``), so a fixed-mode frame never reaches its
@@ -6069,6 +6072,10 @@ def test_scope_control_observations_project_public(radio: IcomRadio) -> None:
     )
 
     for frame, _expected in _SCOPE_CONTROL_OBSERVATION_CASES:
+        if frame.sub == 0x14:
+            radio._civ_runtime._update_state_cache_from_frame(
+                _make_frame(cmd=0x27, sub=0x12, data=b"\x00")
+            )
         radio._civ_runtime._update_state_cache_from_frame(frame)
 
     payload = build_public_state_payload_from_snapshot(
