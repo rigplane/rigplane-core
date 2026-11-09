@@ -29,13 +29,13 @@ from collections.abc import Callable
 import pytest
 
 from rigplane.audio import AudioPacket
-from rigplane.audio.session import AudioSessionEvent
+from rigplane.audio.session import AudioSessionEvent, RX_LIVENESS_TIMEOUT_S
 from rigplane.core.exceptions import ConnectionError as CoreConnectionError
 from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
 from scripts.soak import soak_driver
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import ManualClock, await_until
 
 #: Bound for "frames reach the subscription again" (the property a fix must give).
 RESUME_BOUND_S = 10.0
@@ -661,36 +661,84 @@ async def test_genuine_rx_resumed_reopens_episode() -> None:
         await stack.aclose()
 
 
-async def test_two_rx_silent_start_one_repair_task() -> None:
-    """Two rx_silent in quick succession schedule exactly one repair task.
-
-    The silence is real (a killed leg): with healthy frames a repair task
-    would correctly exit quietly (MOR-3401 r3), so single-flight is pinned
-    against a death instead. Both emits land before the watchdog's own
-    edge — the first schedules the task synchronously, the second sees it
-    running.
-    """
+@pytest.mark.parametrize("later_watchdog_edge", [False, True])
+async def test_two_rx_silent_start_one_repair_task(
+    monkeypatch: pytest.MonkeyPatch, later_watchdog_edge: bool
+) -> None:
+    """Duplicate emits share a task; a later watchdog recovery may start another."""
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
-        sub = await radio.audio_session.subscribe_rx("web-audio")
+        session = radio.audio_session
+        sub = await session.subscribe_rx("web-audio")
         assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
+        # Inject the watchdog loop so wall time cannot add an unrequested edge.
+        watchdog = session._watchdog_task
+        assert watchdog is not None
+        watchdog.cancel()
+        await asyncio.gather(watchdog, return_exceptions=True)
+        monkeypatch.setattr(session, "_watchdog_loop", asyncio.Event().wait)
+
+        repair_tasks: list[asyncio.Task[None]] = []
+
+        def record_task(event: AudioSessionEvent) -> None:
+            if event.reason == "rx_silent":
+                task = radio._audio_silence_repair_task
+                assert task is not None
+                repair_tasks.append(task)
+
+        session.add_listener(record_task)
+        bus = session.bus
+        on_packet = bus._on_opus_packet
+        allow_frames = not later_watchdog_edge
+
+        def gate_frames(packet: AudioPacket | None) -> None:
+            if allow_frames:
+                on_packet(packet)
+
+        monkeypatch.setattr(bus, "_on_opus_packet", gate_frames)
         calls, restore = _spy_method(radio, "_teardown_audio_transport")
         try:
             _kill_client_audio_only(radio)
             _drain(sub)
-            radio.audio_session._emit("rx_silent")  # noqa: SLF001
-            radio.audio_session._emit("rx_silent")  # noqa: SLF001
+            session._emit("rx_silent")  # noqa: SLF001
+            first_task = radio._audio_silence_repair_task
+            assert first_task is not None
+            session._emit("rx_silent")  # noqa: SLF001
+            assert repair_tasks == [first_task, first_task]
+            await asyncio.wait_for(asyncio.shield(first_task), RESUME_BOUND_S)
+            assert radio._audio_silence_repair_task is None
 
-            # The single repair task still re-establishes RX.
+            if later_watchdog_edge:
+                # A replacement without frames gets the real liveness decision,
+                # with only its clock advanced; no socket callback runs here.
+                heartbeat = bus.last_rx_frame_monotonic
+                assert heartbeat is not None
+                clock = ManualClock(start=max(heartbeat, session._rx_armed_at))
+                clock.advance(RX_LIVENESS_TIMEOUT_S)
+                async with session._lock:
+                    with monkeypatch.context() as clock_patch:
+                        clock_patch.setattr(session, "_monotonic", clock)
+                        session._check_liveness_locked()
+                second_task = radio._audio_silence_repair_task
+                assert second_task is not None
+                assert second_task is not first_task
+                assert first_task.done()
+                assert repair_tasks == [first_task, first_task, second_task]
+                allow_frames = True
+                await asyncio.wait_for(asyncio.shield(second_task), RESUME_BOUND_S)
+                assert radio._audio_silence_repair_task is None
+
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
-            assert await await_until(
-                lambda: radio._audio_silence_repair_task is None, timeout=5.0
+            print(
+                f"[MOR-4351] tasks={[id(task) for task in repair_tasks]} "
+                f"teardowns={len(calls)} later_watchdog_edge={later_watchdog_edge}"
             )
             assert len(calls) == 1, "a second rx_silent started a second repair"
         finally:
             restore()
+            session.remove_listener(record_task)
         await sub.release()
     finally:
         await stack.aclose()
