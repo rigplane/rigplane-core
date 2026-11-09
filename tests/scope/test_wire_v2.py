@@ -113,7 +113,12 @@ def test_golden_fixtures_and_standalone_decoder():
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    names = sorted(FIXTURES.glob("*.json"))
+    names = sorted(path.with_suffix(".json") for path in FIXTURES.glob("*.bin"))
+    assert {path.stem for path in FIXTURES.glob("*.json")} == {
+        path.stem
+        for pattern in ("*.bin", "*.frames")
+        for path in FIXTURES.glob(pattern)
+    }
     assert len(names) == 8
     for path in names:
         expected = parse_fixture_json(path.read_text())
@@ -179,7 +184,9 @@ def test_fixture_generator_is_reproducible(tmp_path):
     spec.loader.exec_module(module)
     module.generate(tmp_path)
     assert {path.name for path in tmp_path.iterdir()} == {
-        path.name for path in FIXTURES.iterdir() if path.suffix in (".bin", ".json")
+        path.name
+        for wire in FIXTURES.glob("*.bin")
+        for path in (wire, wire.with_suffix(".json"))
     }
     for generated in tmp_path.iterdir():
         assert generated.read_bytes() == (FIXTURES / generated.name).read_bytes()
