@@ -185,6 +185,7 @@ const STATIC_KEYS: readonly (keyof SpectrumOptions)[] = ['bgColor', 'gridColor',
   'tuneLineColor', 'passbandFillColor', 'passbandEdgeColor', 'sampleSpanHz', 'panoramaShiftHz'];
 
 class SpectrumPaintState {
+  trace: Path2D | null = null;
   y = new Float32Array(0);
   covered = new Uint8Array(0);
   readonly background = document.createElement('canvas');
@@ -256,15 +257,16 @@ export function renderSpectrum(
     cache.current = { grad, height, fillColor, fillColorBottom };
   }
   const path = new Path2D();
+  state.trace = path;
   let first = 0, last = width - 1;
   while (first < width && !covered[first]) first++;
   while (last >= first && !covered[last]) last--;
   if (first <= last) {
     path.moveTo(first, yPoints[first]);
-    ctx.beginPath(); ctx.moveTo(first, height);
-    for (let x = first; x <= last; x++) { ctx.lineTo(x, yPoints[x]); if (x > first) path.lineTo(x, yPoints[x]); }
-    ctx.lineTo(last + 1, height); ctx.closePath();
-    ctx.fillStyle = cache.current.grad; ctx.fill();
+    for (let x = first + 1; x <= last; x++) path.lineTo(x, yPoints[x]);
+    const fill = new Path2D(path);
+    fill.lineTo(last + 1, height); fill.lineTo(first, height); fill.closePath();
+    ctx.fillStyle = cache.current.grad; ctx.fill(fill);
   }
   ctx.strokeStyle = lineColor; ctx.lineWidth = lineWidth; ctx.stroke(path);
   ctx.drawImage(state.overlay, 0, 0, width, height);
@@ -462,15 +464,12 @@ export class SpectrumRenderer {
     if (this.peakHoldEnabled) this.drawPeakHold(ctx, width, height, this.displayOptions);
   }
   private drawPeakHold(ctx: CanvasRenderingContext2D, width: number, height: number, options: SpectrumOptions): void {
-    const { y: yPoints, covered } = paintState(ctx);
+    const { trace, covered } = paintState(ctx);
     const shiftPx = panoramaShiftPixels(options, width);
     const peaks = this.peakValues;
-    ctx.fillStyle = 'rgba(200, 200, 200, 0.25)'; ctx.beginPath();
-    let lineOpen = false;
-    for (let x = 0; x < width; x++) {
-      if (!covered[x]) continue;
-      if (lineOpen) ctx.lineTo(x, yPoints[x]); else { ctx.moveTo(x, yPoints[x]); lineOpen = true; }
-    }
+    ctx.fillStyle = 'rgba(200, 200, 200, 0.25)';
+    const area = new Path2D(trace!);
+    let lineOpen = covered.some(Boolean);
     const window = options.sampleWindow;
     const reversed = window !== undefined && window.end < window.start;
     const scale = options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1;
@@ -480,8 +479,8 @@ export class SpectrumRenderer {
       const x = width / 2 + (fraction * width - width / 2 - shiftPx) / scale;
       if (x < 0 || x >= width || !covered[Math.floor(x)]) continue;
       const y = height * (1 - spectrumDisplayAmplitude(peaks[i], options.refLevel));
-      if (lineOpen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); lineOpen = true; }
+      if (lineOpen) area.lineTo(x, y); else { area.moveTo(x, y); lineOpen = true; }
     }
-    ctx.closePath(); ctx.fill();
+    area.closePath(); ctx.fill(area);
   }
 }

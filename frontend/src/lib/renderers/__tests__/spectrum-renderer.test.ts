@@ -381,7 +381,8 @@ describe('panorama viewport shift (MOR-2464)', () => {
     const { ctx, log } = createMockCtx();
     renderSpectrum(ctx, peakData(50), WIDTH, HEIGHT, baseOpts({ panoramaShiftHz: -10 }));
     expect(tracePoints(log).some(([x, y]) => x === 60 && y === 0)).toBe(true);
-    expect(Math.min(...tracePoints(log).map(([x]) => x))).toBe(10);
+    expect(log.moveTo.some(([x, y]) => x === 10 && y < HEIGHT)).toBe(true);
+    expect(Math.min(...tracePoints(log).map(([x]) => x))).toBeGreaterThanOrEqual(10);
     expect(tracePoints(log).some(([x]) => x === 9)).toBe(false);
   });
 
@@ -611,7 +612,8 @@ describe('requested View coordinates (MOR-4270)', () => {
       showRfOverlays: false,
     }));
     const tracePoints = log.lineTo.slice(17).filter(([, y]) => y === 0);
-    expect(Math.min(...tracePoints.map(([x]) => x))).toBe(25);
+    expect(log.moveTo).toContainEqual([25, 0]);
+    expect(Math.min(...tracePoints.map(([x]) => x))).toBeGreaterThanOrEqual(25);
     expect(Math.max(...tracePoints.map(([x]) => x))).toBe(74);
   });
 });

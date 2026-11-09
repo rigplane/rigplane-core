@@ -137,6 +137,11 @@ export class WaterfallRenderer {
   private readonly originHz: number;
   private viewCenter: number;
   private viewSpan: number;
+  private viewDirty = true;
+  private sizeDirty = true;
+  private appearanceDirty = true;
+  private sentHead = -2;
+  private sentCount = -1;
   private destroyed = false;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
@@ -189,6 +194,9 @@ export class WaterfallRenderer {
       'uRef', 'uColors', 'uStops', 'uColorCount']) {
       this.uniforms.set(name, gl.getUniformLocation(program, name));
     }
+    gl.uniform1i(this.uniforms.get('uRing')!, 0);
+    this.viewDirty = this.sizeDirty = this.appearanceDirty = true;
+    this.sentHead = -2; this.sentCount = -1;
     for (let i = 0; i < Math.ceil(this.rows / this.blockRows); i++) {
       const buffer = gl.createBuffer();
       if (!buffer) throw new WaterfallRenderError();
@@ -241,6 +249,7 @@ export class WaterfallRenderer {
     if (this.canvas.width !== width) this.canvas.width = width;
     if (this.canvas.height !== height) this.canvas.height = height;
     this.width = width; this.height = height;
+    this.sizeDirty = true;
     if (width <= 0 || height <= 0 || height === this.rows) return;
     const gl = this.gl;
     this.blockRows = Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / 32);
@@ -304,36 +313,51 @@ export class WaterfallRenderer {
   draw(): void {
     if (this.destroyed || !this.program || this.width <= 0 || this.height <= 0) return;
     const gl = this.gl, o = this.options;
-    const viewStart = this.viewCenter - this.viewSpan / 2 - this.originHz, viewHigh = Math.fround(viewStart);
-    gl.useProgram(this.program); gl.viewport(0, 0, this.width, this.height);
-    gl.uniform1i(this.uniforms.get('uRing')!, 0);
-    gl.uniform2f(this.uniforms.get('uView')!, viewHigh, this.viewSpan);
-    gl.uniform1f(this.uniforms.get('uViewLow')!, viewStart - viewHigh);
-    gl.uniform2f(this.uniforms.get('uSize')!, this.width, this.height);
-    gl.uniform1i(this.uniforms.get('uHead')!, this.head);
-    gl.uniform1i(this.uniforms.get('uCount')!, this.count);
-    gl.uniform1i(this.uniforms.get('uRows')!, this.rows);
-    gl.uniform1f(this.uniforms.get('uRef')!, o.refLevel);
-    const palette = COLOR_SCHEMES[o.colorScheme];
-    if (this.palette !== o.colorScheme) {
-      this.palette = o.colorScheme;
-      for (let i = 0; i < palette.length; i++) {
-        this.stops[i] = palette[i].stop;
-        const value = Number.parseInt(palette[i].color.slice(1), 16);
-        this.colors[i * 3] = value >> 16;
-        this.colors[i * 3 + 1] = (value >> 8) & 255;
-        this.colors[i * 3 + 2] = value & 255;
-      }
+    if (this.viewDirty) {
+      const viewStart = this.viewCenter - this.viewSpan / 2 - this.originHz, viewHigh = Math.fround(viewStart);
+      gl.uniform2f(this.uniforms.get('uView')!, viewHigh, this.viewSpan);
+      gl.uniform1f(this.uniforms.get('uViewLow')!, viewStart - viewHigh);
+      this.viewDirty = false;
     }
-    gl.uniform3fv(this.uniforms.get('uColors')!, this.colors);
-    gl.uniform1fv(this.uniforms.get('uStops')!, this.stops);
-    gl.uniform1i(this.uniforms.get('uColorCount')!, palette.length);
+    if (this.sizeDirty) {
+      gl.viewport(0, 0, this.width, this.height);
+      gl.uniform2f(this.uniforms.get('uSize')!, this.width, this.height);
+      gl.uniform1i(this.uniforms.get('uRows')!, this.rows);
+      this.sizeDirty = false;
+    }
+    if (this.sentHead !== this.head) {
+      gl.uniform1i(this.uniforms.get('uHead')!, this.head); this.sentHead = this.head;
+    }
+    if (this.sentCount !== this.count) {
+      gl.uniform1i(this.uniforms.get('uCount')!, this.count); this.sentCount = this.count;
+    }
+    if (this.appearanceDirty) {
+      gl.uniform1f(this.uniforms.get('uRef')!, o.refLevel);
+      const palette = COLOR_SCHEMES[o.colorScheme];
+      if (this.palette !== o.colorScheme) {
+        this.palette = o.colorScheme;
+        for (let i = 0; i < palette.length; i++) {
+          this.stops[i] = palette[i].stop;
+          const value = Number.parseInt(palette[i].color.slice(1), 16);
+          this.colors[i * 3] = value >> 16;
+          this.colors[i * 3 + 1] = (value >> 8) & 255;
+          this.colors[i * 3 + 2] = value & 255;
+        }
+      }
+      gl.uniform3fv(this.uniforms.get('uColors')!, this.colors);
+      gl.uniform1fv(this.uniforms.get('uStops')!, this.stops);
+      gl.uniform1i(this.uniforms.get('uColorCount')!, palette.length);
+      this.appearanceDirty = false;
+    }
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
   updateOptions(options: Partial<WaterfallOptions>): void {
+    if ((options.colorScheme !== undefined && options.colorScheme !== this.options.colorScheme)
+      || (options.refLevel !== undefined && options.refLevel !== this.options.refLevel)) this.appearanceDirty = true;
     Object.assign(this.options, options);
     if (this.options.spanHz > 0 && Number.isFinite(this.options.centerHz)) {
+      if (this.viewCenter !== this.options.centerHz || this.viewSpan !== this.options.spanHz) this.viewDirty = true;
       this.viewCenter = this.options.centerHz; this.viewSpan = this.options.spanHz;
     }
   }

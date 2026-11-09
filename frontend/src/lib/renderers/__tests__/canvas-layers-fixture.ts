@@ -2,6 +2,7 @@ import { vi } from 'vitest';
 import { webglFixture } from './webgl-fixture';
 export class RecordedPath {
     readonly points: [number, number, boolean][] = [];
+    constructor(path?: RecordedPath) { if (path) this.points.push(...path.points); }
     moveTo(x: number, y: number) { this.points.push([x, y, true]); }
     lineTo(x: number, y: number) { this.points.push([x, y, false]); }
     closePath() {}
@@ -21,13 +22,15 @@ export function recordCanvasLayers(ctx: CanvasRenderingContext2D) {
   if (!wrapped.has(ctx)) {
   wrapped.add(ctx);
   const stroke = ctx.stroke.bind(ctx);
-  ctx.stroke = ((path?: RecordedPath) => {
+  const fill = ctx.fill.bind(ctx);
+  const replay = (path?: RecordedPath) => {
     if (path instanceof RecordedPath) {
       ctx.beginPath();
       for (const [x, y, move] of path.points) { if (move) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
     }
-    stroke();
-  }) as typeof ctx.stroke;
+  };
+  ctx.stroke = ((path?: RecordedPath) => { replay(path); stroke(); }) as typeof ctx.stroke;
+  ctx.fill = ((path?: RecordedPath) => { replay(path); fill(); }) as typeof ctx.fill;
   }
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement, kind: string) { return kind === 'webgl2' ? webglFixture(this.width, this.height).gl : ctx; });
   return ctx;
