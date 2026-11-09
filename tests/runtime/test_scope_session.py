@@ -377,3 +377,14 @@ async def test_restore_keeps_the_actual_view_observation_instead_of_cached_defau
     assert session.observed.mode == writer.state.mode == 3
     await session.configure(mode=0)
     assert writer.state.mode == 0
+
+
+async def test_matching_fixed_slot_is_not_programmed_or_restored_again():
+    writer = Writer()
+    writer.state = ScopeState(False, False, 1, 2, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed, ready=True)
+    await session.set_output(True)
+    await session.set_fixed(ScopeFixedEdge(6, 1, 14000000, 14350000), 0)
+    assert writer.views == []
+    await session.set_output(False)
+    assert writer.views == []
