@@ -698,7 +698,17 @@ async def test_two_rx_silent_start_one_repair_task(
                 on_packet(packet)
 
         monkeypatch.setattr(bus, "_on_opus_packet", gate_frames)
-        calls, restore = _spy_method(radio, "_teardown_audio_transport")
+        teardown_tasks: list[asyncio.Task[None] | None] = []
+        teardown = radio._teardown_audio_transport
+
+        async def record_teardown() -> None:
+            nonlocal allow_frames
+            teardown_tasks.append(asyncio.current_task())
+            await teardown()
+            if teardown_tasks[-1] is not first_task:
+                allow_frames = True
+
+        monkeypatch.setattr(radio, "_teardown_audio_transport", record_teardown)
         try:
             _kill_client_audio_only(radio)
             _drain(sub)
@@ -726,18 +736,17 @@ async def test_two_rx_silent_start_one_repair_task(
                 assert second_task is not first_task
                 assert first_task.done()
                 assert repair_tasks == [first_task, first_task, second_task]
-                allow_frames = True
                 await asyncio.wait_for(asyncio.shield(second_task), RESUME_BOUND_S)
                 assert radio._audio_silence_repair_task is None
 
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             print(
                 f"[MOR-4351] tasks={[id(task) for task in repair_tasks]} "
-                f"teardowns={len(calls)} later_watchdog_edge={later_watchdog_edge}"
+                f"teardowns={[id(task) for task in teardown_tasks]} "
+                f"later_watchdog_edge={later_watchdog_edge}"
             )
-            assert len(calls) == 1, "a second rx_silent started a second repair"
+            assert len(teardown_tasks) == 1, "a second rx_silent started a second repair"
         finally:
-            restore()
             session.remove_listener(record_task)
         await sub.release()
     finally:
