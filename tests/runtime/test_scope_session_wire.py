@@ -125,13 +125,18 @@ async def test_real_scope_writer_emits_one_enable_per_transport(transport, monke
 
 @pytest.mark.parametrize("transport", ["lan", "serial"])
 @pytest.mark.parametrize("initial", [(False, False), (True, False), (True, True)])
-async def test_last_release_restores_wire_snapshot_once(transport, initial, monkeypatch):
+async def test_last_release_restores_wire_snapshot_once(
+    transport, initial, monkeypatch
+):
     from rigplane.radio import IcomRadio
     from rigplane.backends.ic7300 import Ic7300SerialRadio
     from rigplane.commands import parse_civ_frame, build_civ_frame, CONTROLLER_ADDR
 
-    radio = (IcomRadio("127.0.0.1", model="IC-7300") if transport == "lan"
-             else Ic7300SerialRadio(device="/dev/fake-scope", baudrate=115200))
+    radio = (
+        IcomRadio("127.0.0.1", model="IC-7300")
+        if transport == "lan"
+        else Ic7300SerialRadio(device="/dev/fake-scope", baudrate=115200)
+    )
     radio._connected = True
     observed = {0x10: initial[0], 0x11: initial[1]}
     writes = []
@@ -140,11 +145,21 @@ async def test_last_release_restores_wire_snapshot_once(transport, initial, monk
         frame = parse_civ_frame(payload)
         observed[frame.sub] = bool(frame.data[0])
         writes.append((frame.sub, frame.data))
-        return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB))
+        return parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB)
+        )
 
     async def expect(payload, **kwargs):
         frame = parse_civ_frame(payload)
-        return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, frame.command, sub=frame.sub, data=bytes([observed[frame.sub]])))
+        return parse_civ_frame(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                radio._radio_addr,
+                frame.command,
+                sub=frame.sub,
+                data=bytes([observed[frame.sub]]),
+            )
+        )
 
     monkeypatch.setattr(radio, "_send_civ_raw", send)
     monkeypatch.setattr(radio, "_send_civ_expect", expect)

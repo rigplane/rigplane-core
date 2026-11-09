@@ -67,6 +67,7 @@ def _radio() -> MagicMock:
     radio.set_ptt = AsyncMock()
     radio._civ_epoch = 1
     from _scope_session_fake import attach_scope_session
+
     attach_scope_session(radio)
     return radio
 

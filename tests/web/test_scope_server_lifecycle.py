@@ -158,7 +158,9 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
     cancelled_close, monkeypatch
 ):
     from rigplane.radio import IcomRadio
-    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import (
+        ScopeControlSimulator as MockIcomRadio,
+    )
 
     sim = MockIcomRadio(scope_stream=True)
     await sim.start()
@@ -287,10 +289,13 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
 
     async def fixed(**kwargs):
         await step("fixed_edge")
+
     async def edge(value):
         await step("edge")
+
     async def mode(value):
         await step("mode")
+
     radio.set_scope_fixed_edge.side_effect = fixed
     radio.set_scope_edge.side_effect = edge
     radio.set_scope_mode.side_effect = mode
@@ -324,7 +329,9 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
     server.command_queue.drain_entries()
     poller.stop()
     replacing = True
-    request = encode_scope_subscription(Subscription("radio", 0, View(14_200_000, 14_300_000), 100, 10))
+    request = encode_scope_subscription(
+        Subscription("radio", 0, View(14_200_000, 14_300_000), 100, 10)
+    )
     replacement = asyncio.create_task(handler._handle_control(request))
 
     async def client():
@@ -341,7 +348,9 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
     try:
         await virtual_clock.elapse(0)
         assert not replacement.done()
-        assert replacement_commands == ["fixed_edge", "edge", "mode"][: pending_stage + 1]
+        assert (
+            replacement_commands == ["fixed_edge", "edge", "mode"][: pending_stage + 1]
+        )
         pending = futures[-1]
         assert not pending.done()
         stopping = asyncio.create_task(server.stop())

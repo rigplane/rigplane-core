@@ -117,7 +117,9 @@ async def test_two_clients_resample_and_pace_simulator_frames(
 ):
     from rigplane.scope import ScopeAssembler
     from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_frame_v2
-    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import (
+        ScopeControlSimulator as MockIcomRadio,
+    )
 
     server = WebServer(None)
     writer = Writer()
@@ -179,7 +181,9 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
     from rigplane.scope import ScopeAssembler
     from rigplane.web.protocol import decode_scope_frame_v2
     from rigplane.web.server import WebConfig
-    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import (
+        ScopeControlSimulator as MockIcomRadio,
+    )
     from test_web_server import _addr
 
     server = WebServer(None, WebConfig(host="127.0.0.1", port=0))
@@ -586,8 +590,11 @@ async def test_server_drains_scope_before_stopping_command_executor(monkeypatch)
         )
     )
 
+    real_stop = web_startup.stop_web_server
+
     async def stop_executor(received):
         assert received is server
+        await real_stop(received)
         assert writer.output == [True, False]
         assert not handler._streams
 
@@ -719,8 +726,11 @@ async def test_shutdown_cleanup_failure_keeps_other_sources_releasing(
         handlers.append(handler)
     failed_subscription = next(iter(handlers[0]._streams.values())).subscription
 
+    real_stop = web_startup.stop_web_server
+
     async def stop_executor(received):
         assert received is server
+        await real_stop(received)
         assert healthy.output == [True, False]
         assert all(not handler._streams for handler in handlers)
 
@@ -879,7 +889,9 @@ async def test_one_real_scope_socket_multiplexes_radio_and_audio():
     from rigplane.web.protocol import decode_scope_frame_v2
     from rigplane.web.scope_sources import WebScopePcmTap
     from rigplane.web.server import WebConfig
-    from rigplane_testkit.icom.scope_control import ScopeControlSimulator as MockIcomRadio
+    from rigplane_testkit.icom.scope_control import (
+        ScopeControlSimulator as MockIcomRadio,
+    )
     from test_handlers_coverage import _RelayRadio
     from test_audio_scope_dispatch import _seed_audio_facts
     from test_web_server import _addr

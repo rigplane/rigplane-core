@@ -222,4 +222,7 @@ async def test_fixed_views_on_two_receivers_use_distinct_profile_slots():
     source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
     await source.set_view(View(14_050_000, 14_150_000), 0)
     await source.set_view(View(14_150_000, 14_250_000), 1)
-    assert [(value.edge, receiver) for value, receiver in writer.writes] == [(1, 0), (2, 1)]
+    assert [(value.edge, receiver) for value, receiver in writer.writes] == [
+        (1, 0),
+        (2, 1),
+    ]

@@ -350,9 +350,30 @@ async def test_restored_output_without_subscribers_has_no_menu_verdict(virtual_c
 
 async def test_missing_frames_after_oor_use_the_arrival_deadline(virtual_clock):
     writer = Writer()
-    session = ScopeSession(writer.read, writer.write, ready=True, clock=virtual_clock, silence_seconds=1)
+    session = ScopeSession(
+        writer.read, writer.write, ready=True, clock=virtual_clock, silence_seconds=1
+    )
     await session.set_output(True)
     session.on_frame(ScopeFrame(0, 1, 14000000, 14350000, b"", True))
     assert session.health(civ_flowing=True).hidden is False
     virtual_clock.advance(2)
     assert session.health(civ_flowing=True).hidden is True
+
+
+async def test_restore_keeps_the_actual_view_observation_instead_of_cached_defaults():
+    writer = Writer()
+    writer.state = ScopeState(False, False, 3, 2, 1)
+
+    async def read_flags():
+        return ScopeState(False, False, 0, 2, 1)
+
+    async def read_receiver(receiver):
+        return writer.state
+
+    session = ScopeSession(read_flags, writer.write, read_receiver=read_receiver, ready=True)
+    await session.set_output(True)
+    await session.configure(mode=1)
+    await session.set_output(False)
+    assert session.observed.mode == writer.state.mode == 3
+    await session.configure(mode=0)
+    assert writer.state.mode == 0
