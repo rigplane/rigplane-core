@@ -11,7 +11,11 @@ from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.radio import IcomRadio
 from rigplane.scope.models import FollowView, Subscription
 from rigplane.testing.timing import await_until
-from rigplane.web.protocol import encode_scope_subscription
+from rigplane.web.protocol import (
+    decode_scope_frame_v2,
+    decode_scope_granted,
+    encode_scope_subscription,
+)
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.icom.scope_control import ScopeControlSimulator
 
@@ -143,22 +147,65 @@ async def test_sdk_frames_stay_visible_when_web_pauses(sdk):
                 radio._scope_stream_callbacks.remove(arrivals.put_nowait)
 
 
-async def test_control_ws_reapplies_span_after_real_front_panel_readback(sdk):
+async def test_control_ws_refuses_legacy_span_preserving_subscription(sdk):
     radio, sim = sdk
-    await radio.enable_scope(policy="fast")
-    await radio.set_scope_span(3)
-    sim.views[0] = (0, 4, 1)
-    assert await radio.get_scope_span() == 4
-    async with web(radio) as (_, _, _, _, ws):
-        await ws.send_json(
-            {
-                "type": "cmd",
-                "id": "span",
-                "name": "set_scope_span",
-                "params": {"span": 3},
-            }
-        )
-        assert await await_until(lambda: sim.views[0][1] == 3)
+    sim.capture_civ_frames = True
+
+    def scope_writes():
+        lengths = dict.fromkeys((0x10, 0x11, 0x12, 0x13), 1)
+        lengths.update({0x14: 2, 0x15: 6, 0x16: 2, 0x1E: 12})
+        return [
+            frame
+            for raw in sim.civ_frames_received
+            if (frame := parse_civ_frame(raw)).command == 0x27
+            and len(frame.data) == lengths.get(frame.sub)
+        ]
+
+    async with web(radio) as (_, client, base, protocols, control):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            subscription = encode_scope_subscription(
+                Subscription("radio", 0, FollowView("vfo", 100000), 100, 20)
+            )
+            await ws.send_str(subscription)
+            granted = decode_scope_granted(await ws.receive_str(timeout=5))
+            await ws.receive_bytes(timeout=5)
+            before = scope_writes()
+            assert before
+            views = dict(sim.views)
+            assert views[0][1] != 3
+            await control.send_json(
+                {
+                    "type": "cmd",
+                    "id": "legacy-span",
+                    "name": "set_scope_span",
+                    "params": {"span": 3},
+                }
+            )
+            async with asyncio.timeout(5):
+                while True:
+                    response = await control.receive_json()
+                    if (
+                        response.get("type") == "response"
+                        and response.get("id") == "legacy-span"
+                    ):
+                        break
+            assert response["ok"] is False
+            assert response["error"] == "unsupported_command"
+            assert "scope subscription view" in response["message"]
+            await ws.send_str(subscription)
+            async with asyncio.timeout(5):
+                while True:
+                    message = await ws.receive()
+                    if message.type is aiohttp.WSMsgType.TEXT:
+                        assert decode_scope_granted(message.data) == granted
+                        break
+            frame = decode_scope_frame_v2(await ws.receive_bytes(timeout=5))
+            assert (frame.view_start_hz, frame.view_end_hz) == (
+                granted.view.start_hz,
+                granted.view.end_hz,
+            )
+            assert sim.views == views
+            assert scope_writes() == before
 
 
 async def test_uncertain_write_cannot_suppress_the_previous_acknowledged_value(
