@@ -479,9 +479,20 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
     writer = WebRadioScopeWriter(server)
     source = RadioScopeSource(resolve_radio_profile(model=model), writer)
     commands = []
+    fail_span = False
 
     def execute(command, *, future):
         commands.append(command)
+        if isinstance(command, SetScopeSpan) and fail_span:
+            future.set_exception(RuntimeError("lost span acknowledgement"))
+            return
+        controls = server._radio_state.scope_controls
+        if isinstance(command, SwitchScopeReceiver):
+            controls.receiver = command.receiver
+        elif isinstance(command, SetScopeMode):
+            controls.mode = command.mode
+        elif isinstance(command, SetScopeSpan):
+            controls.span = command.span
         future.set_result(None)
 
     monkeypatch.setattr(server.command_queue, "put_ordered", execute)
@@ -494,6 +505,23 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
     index = server._get_profile().scope_span_presets_hz.index(span)
     assert commands == [SwitchScopeReceiver(0), SetScopeMode(0), SetScopeSpan(index)]
     assert server._radio_state.main.freq == 14_100_000
+    commands.clear()
+    await source.set_view(View(14_175_000, 14_195_000), 0)
+    assert commands == []
+    server._radio_state.scope_controls.mode = 1
+    await source.set_view(requested, 0)
+    assert commands == [SwitchScopeReceiver(0), SetScopeMode(0), SetScopeSpan(index)]
+    commands.clear()
+    server.command_state_store.begin_provider_generation()
+    await source.set_view(requested, 0)
+    assert len(commands) == 3
+    fail_span = True
+    with pytest.raises(RuntimeError, match="SetScopeSpan failed"):
+        await source.set_view(View(14_099_000, 14_101_000), 0)
+    fail_span = False
+    commands.clear()
+    await source.set_view(requested, 0)
+    assert len(commands) == 3
 
 
 @pytest.mark.asyncio

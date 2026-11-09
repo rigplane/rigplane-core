@@ -827,9 +827,9 @@
   });
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = audioFft || followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
-      ? { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) }
-      : { startHz: effectiveView.startHz, endHz: effectiveView.endHz };
+    const view = !audioFft && requestedView !== null
+      ? requestedView
+      : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
     const facts = spectrumFacts;
     return scopeSubscription({
       sourceId: stream.sourceId,
@@ -1508,7 +1508,9 @@
     </div>
     <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} use:scopeSubscriptionSurface={{
       stream: runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware'),
-      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, facts: spectrumFacts, revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
+      receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, facts: spectrumFacts,
+      revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
+      frequencyHz: spectrumAuthority?.frequencyHz,
     }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
