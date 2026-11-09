@@ -69,8 +69,8 @@ function fragmentShader(height: number, blockRows: number): string {
   const blocks = Math.ceil(height / blockRows);
   let declarations = '', lookup = '';
   for (let i = 0; i < blocks; i++) {
-    declarations += `layout(std140) uniform Rows${i} { vec4 rows${i}[${blockRows * 2}]; };\n`;
-    lookup += `if (row < ${(i + 1) * blockRows}) return rows${i}[(row - ${i * blockRows}) * 2 + part];\n`;
+    declarations += `layout(std140) uniform Rows${i} { vec4 rows${i}[${blockRows * 3}]; };\n`;
+    lookup += `if (row < ${(i + 1) * blockRows}) return rows${i}[(row - ${i * blockRows}) * 3 + part];\n`;
   }
   return `#version 300 es
 precision highp float;
@@ -86,6 +86,13 @@ uniform int uColorCount;
 ${declarations}
 vec4 rowInfo(int row, int part) { ${lookup} return vec4(0.0); }
 out vec4 color;
+float profile(float column, vec4 grid, vec4 extra, int row) {
+  float coordinate = grid.y + column / grid.x * grid.z;
+  if (coordinate < 0.0 || coordinate > 1.0) return 0.0;
+  int bin = clamp(int(floor(coordinate * extra.z + 0.0001)), 0, int(extra.z) - 1);
+  float value = texelFetch(uRing, ivec2(bin + int(extra.w), row), 0).r * 255.0;
+  return floor(min(value, extra.y) * 80.0 / extra.y + 0.5);
+}
 void main() {
   int age = int(floor(uSize.y - gl_FragCoord.y));
   if (age >= uCount) { color = vec4(0.0, 16.0/255.0, 32.0/255.0, 1.0); return; }
@@ -99,12 +106,11 @@ void main() {
     color = vec4(mix(vec3(0.0, 16.0, 32.0), vec3(36.0, 48.0, 60.0), hatch) / 255.0, 1.0);
     return;
   }
-  int samples = int(extra.z);
-  float binCoordinate = delta / info.z * float(samples)
-    + floor(gl_FragCoord.x) * (uView.y / info.z) * (float(samples) / uSize.x);
-  int bin = clamp(int(floor(binCoordinate + 0.0001)), 0, samples - 1);
-  float sampleValue = texelFetch(uRing, ivec2(bin + int(extra.w), row), 0).r * 255.0;
-  sampleValue = floor(min(sampleValue, extra.y) * 80.0 / extra.y + 0.5);
+  vec4 grid = rowInfo(row, 2);
+  // rc3 pushRow interpolated the translated screen profile before the colour curve.
+  float column = (coordinate - grid.y) / grid.z * grid.x;
+  float left = floor(column + 0.0001), fraction = clamp(column - left, 0.0, 1.0);
+  float sampleValue = mix(profile(left, grid, extra, row), profile(left + 1.0, grid, extra, row), fraction);
   float t = floor(sqrt(clamp((sampleValue + uRef * (40.0/60.0)) / 80.0, 0.0, 1.0)) * 255.0) / 255.0;
   vec3 rgb = uColors[0];
   for (int i = 1; i < 6; i++) {
@@ -122,7 +128,7 @@ export class WaterfallRenderer {
   private texture: WebGLTexture | null = null;
   private readonly blocks: WebGLBuffer[] = [];
   private readonly uniforms = new Map<string, WebGLUniformLocation | null>();
-  private readonly row = new Float32Array(8);
+  private readonly row = new Float32Array(12);
   private metadata = new Float32Array(0);
   private readonly colors = new Float32Array(18);
   private readonly stops = new Float32Array(6);
@@ -202,7 +208,7 @@ export class WaterfallRenderer {
       if (!buffer) throw new WaterfallRenderError();
       this.blocks.push(buffer);
       gl.bindBuffer(gl.UNIFORM_BUFFER, buffer);
-      gl.bufferData(gl.UNIFORM_BUFFER, this.blockRows * 32, gl.DYNAMIC_DRAW);
+      gl.bufferData(gl.UNIFORM_BUFFER, this.blockRows * 48, gl.DYNAMIC_DRAW);
       gl.bindBufferBase(gl.UNIFORM_BUFFER, i, buffer);
       gl.uniformBlockBinding(program, gl.getUniformBlockIndex(program, `Rows${i}`), i);
     }
@@ -212,9 +218,9 @@ export class WaterfallRenderer {
   private uploadMetadata(): void {
     const gl = this.gl;
     for (let i = 0; i < this.blocks.length; i++) {
-      const offset = i * this.blockRows * 8;
+      const offset = i * this.blockRows * 12;
       gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[i]);
-      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.metadata, offset, Math.min(this.blockRows * 8, this.metadata.length - offset));
+      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.metadata, offset, Math.min(this.blockRows * 12, this.metadata.length - offset));
     }
   }
 
@@ -252,20 +258,20 @@ export class WaterfallRenderer {
     this.sizeDirty = true;
     if (width <= 0 || height <= 0 || height === this.rows) return;
     const gl = this.gl;
-    this.blockRows = Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / 32);
+    this.blockRows = Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / 48);
     if (height > gl.getParameter(gl.MAX_TEXTURE_SIZE)
       || Math.ceil(height / this.blockRows) > gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_BLOCKS)) throw new WaterfallRenderError();
-    const metadata = new Float32Array(height * 8), retained = Math.min(this.count, height);
+    const metadata = new Float32Array(height * 12), retained = Math.min(this.count, height);
     const texture = this.createTexture(Math.max(1, this.textureWidth), height);
     try {
       if (this.texture && retained > 0) this.copyTexture(this.texture, () => {
         const oldest = (this.head - retained + 1 + this.rows) % this.rows;
         const first = Math.min(retained, this.rows - oldest), second = retained - first;
         gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, oldest, this.textureWidth, first);
-        metadata.set(this.metadata.subarray(oldest * 8, (oldest + first) * 8));
+        metadata.set(this.metadata.subarray(oldest * 12, (oldest + first) * 12));
         if (second > 0) {
           gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, first, 0, 0, this.textureWidth, second);
-          metadata.set(this.metadata.subarray(0, second * 8), first * 8);
+          metadata.set(this.metadata.subarray(0, second * 12), first * 12);
         }
       });
     } catch (error) { gl.deleteTexture(texture); throw error; }
@@ -301,9 +307,10 @@ export class WaterfallRenderer {
     this.row[3] = (o.coverage?.startHz ?? Math.min(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[4] = (o.coverage?.endHz ?? Math.max(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[5] = o.sampleAmplitudeMax ?? 80; this.row[6] = samples; this.row[7] = offset;
-    this.metadata.set(this.row, this.head * 8);
+    this.row[8] = this.width; this.row[9] = start; this.row[10] = range;
+    this.metadata.set(this.row, this.head * 12);
     gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[Math.floor(this.head / this.blockRows)]);
-    gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 32, this.row);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 48, this.row);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, this.head, data.length, 1, gl.RED, gl.UNSIGNED_BYTE, data, 0);
     this.draw();
