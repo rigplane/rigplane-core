@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   validate:
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    # Build pool, not the 2 GiB gate pool: svelte-check needs ~2 GiB of Node heap
+    # (same pool as quick.yml's quick-frontend job, MOR-4214).
+    runs-on: [self-hosted, Linux, ARM64, build]
     timeout-minutes: 25
     env:
       # Pin uv to the matrix interpreter; unpinned, `uv run` picks the newest
