@@ -76,6 +76,32 @@ def test_radio_still_referenced_at_teardown_is_not_collected_yet():
 """
 
 
+_FIXTURE_LEAK = """
+import gc
+
+import pytest
+
+from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.runtime.radio import CoreRadio
+
+
+@pytest.fixture
+def connected_radio():
+    radio = CoreRadio("127.0.0.1", model="IC-7610")
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio.cycle = radio  # only the cyclic collector can reclaim it
+    return radio
+
+
+def test_a_uses_a_fixture_that_hands_out_a_connected_radio(connected_radio):
+    assert connected_radio is not None
+
+
+def test_b_collects_whatever_the_neighbour_left_behind():
+    gc.collect()
+"""
+
+
 def _run(tmp_path: Path, source: str) -> subprocess.CompletedProcess[str]:
     (tmp_path / "test_sample.py").write_text(textwrap.dedent(source))
     return subprocess.run(
@@ -139,3 +165,21 @@ def test_the_failure_names_the_leaked_radio_warning(tmp_path) -> None:
     out = result.stdout + result.stderr
 
     assert "Radio collected with active connection" in out, out
+
+
+def test_a_connected_radio_held_by_a_fixture_value_fails_its_owner_not_the_collector(
+    tmp_path,
+) -> None:
+    # pytest drops a test's fixture values only after every teardown hook has returned,
+    # so the guard has to release them itself before it collects.
+    result = _run(tmp_path, _FIXTURE_LEAK)
+    out = result.stdout + result.stderr
+
+    assert (
+        "ERROR test_sample.py::test_a_uses_a_fixture_that_hands_out_a_connected_radio"
+        in out
+    ), out
+    assert (
+        "PASSED test_sample.py::test_b_collects_whatever_the_neighbour_left_behind"
+        in out
+    ), out

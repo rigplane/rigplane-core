@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from rigplane.core.auth import build_login_packet as real_build_login_packet
+from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime.radio import IcomRadio
 
 
@@ -123,3 +124,6 @@ async def test_soft_reconnect_reuses_token_and_does_not_reauth() -> None:
     mock_login.assert_not_called()
     assert r._token == 0x1234
     await r.disconnect()
+    # The lifecycle swallows a failing release, so a half-done cleanup only shows here.
+    assert r.conn_state is RadioConnectionState.DISCONNECTED
+    civ.disconnect.assert_awaited_once()
