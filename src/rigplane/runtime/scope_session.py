@@ -49,11 +49,13 @@ class ScopeSession:
         tx_probe: Callable[[], bool] | None = None,
         *,
         ready: bool = False,
+        validate: Callable[[ScopeSetting, ScopeValue, int], object] | None = None,
         clock: Callable[[], float] = time.monotonic,
         disable_grace_seconds: float = 0,
         silence_seconds: float = 5,
         hidden_grace_seconds: float = 30,
     ) -> None:
+        self._validate = validate
         self._read = read
         self._write = write
         self._read_fixed = read_fixed
@@ -275,12 +277,6 @@ class ScopeSession:
 
     async def configure(self, *, receiver: int = 0, **settings: ScopeValue) -> None:
         async with self._lock:
-            previous_desired = dict(self._desired)
-            if settings.get("mode") == 1 and "fixed_edge" in settings:
-                self._desired.pop((receiver, "span"), None)
-            elif settings.get("mode") == 0 and "span" in settings:
-                self._desired.pop((receiver, "fixed_edge"), None)
-                self._desired.pop((receiver, "edge"), None)
             for name, value in settings.items():
                 if name not in (
                     "scope_on",
@@ -291,6 +287,15 @@ class ScopeSession:
                     "fixed_edge",
                 ):
                     raise ValueError(f"unknown scope setting {name}")
+                if self._validate is not None:
+                    self._validate(cast(ScopeSetting, name), value, receiver)
+            previous_desired = dict(self._desired)
+            if settings.get("mode") == 1 and "fixed_edge" in settings:
+                self._desired.pop((receiver, "span"), None)
+            elif settings.get("mode") == 0 and "span" in settings:
+                self._desired.pop((receiver, "fixed_edge"), None)
+                self._desired.pop((receiver, "edge"), None)
+            for name, value in settings.items():
                 if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
                     for key, prior in tuple(self._desired.items()):
                         if (

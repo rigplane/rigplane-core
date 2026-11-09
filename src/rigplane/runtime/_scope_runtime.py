@@ -142,6 +142,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 self._profile.scope_span_presets_hz,
                 lambda: bool(self._radio_state.ptt),
                 ready=self._connected,
+                validate=self._scope_setting_frame,
             )
             self._control_scope_session = session
         return session
@@ -191,15 +192,9 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             panel, output, controls.mode or 0, controls.span or 0, controls.edge or 1
         )
 
-    async def _write_scope_setting(
+    def _scope_setting_frame(
         self, name: ScopeSetting, value: ScopeValue, receiver: int
-    ) -> None:
-        """The sole writer for scope lifecycle and viewport commands."""
-        self._check_connected()
-        if self.external_cat_session_active:
-            raise CommandError(
-                "scope restore deferred while an external CAT session owns the wire"
-            )
+    ) -> bytes:
         if name == "scope_on":
             builder = self._commands.scope_on if value else self._commands.scope_off
             frame = builder(to_addr=self._radio_addr)
@@ -232,6 +227,18 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 else self._commands.scope_set_edge
             )
             frame = builder(value, receiver=receiver, to_addr=self._radio_addr)
+        return frame
+
+    async def _write_scope_setting(
+        self, name: ScopeSetting, value: ScopeValue, receiver: int
+    ) -> None:
+        """The sole writer for scope lifecycle and viewport commands."""
+        self._check_connected()
+        if self.external_cat_session_active:
+            raise CommandError(
+                "scope restore deferred while an external CAT session owns the wire"
+            )
+        frame = self._scope_setting_frame(name, value, receiver)
         response = await self._send_civ_raw(frame, wait_response=True)
         if response is None or parse_ack_nak(response) is not True:
             raise CommandError(f"Radio did not acknowledge scope {name}")
