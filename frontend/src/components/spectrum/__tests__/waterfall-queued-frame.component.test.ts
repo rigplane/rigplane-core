@@ -1,3 +1,4 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 /**
  * MOR-4206 review round 2, finding 1: a frame queued in the latest-wins
  * scheduler carries a delivery-time options snapshot. When the panorama
@@ -83,7 +84,8 @@ beforeEach(() => {
   // jsdom lacks pointer capture; the gesture recognizer calls it on pointerdown.
   HTMLElement.prototype.setPointerCapture = vi.fn();
   HTMLElement.prototype.releasePointerCapture = vi.fn();
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement, kind: string) {
+      if (kind === 'webgl2') return webglFixture(this.width, this.height).gl;
     return {
       canvas: this, fillRect: vi.fn(), drawImage: vi.fn(),
       createImageData: (width: number, height: number) => ({
