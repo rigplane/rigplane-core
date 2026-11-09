@@ -1,11 +1,22 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
 import recordedWires from './reference/recorded-scope-v2.json' with { type: 'json' };
 
 // ScopeAssembler → ScopeWireFrame → encode_scope_frame_v2, from simulator recordings
 // tests/fixtures/{ic705,ic7610}/civ_pairs.jsonl. No live radio is used.
 const recordings: Record<string, number[][]> = recordedWires;
 
-for (const profile of ['ic705', 'ic7610']) for (const dpr of [1, 2]) {
+// Only the recording's u32-LE envelope is decoded here; the browser uses the production v2 parser.
+const capture = readFileSync(new URL('../../../../tests/fixtures/scope-wire/ic705_dummy_load_100k.frames', import.meta.url));
+const sharedWires: number[][] = [];
+for (let offset = 0; offset < capture.length;) {
+  const length = capture.readUInt32LE(offset); offset += 4;
+  if (length === 0 || offset + length > capture.length) throw new Error('Truncated scope recording');
+  sharedWires.push(Array.from(capture.subarray(offset, offset + length))); offset += length;
+}
+recordings.ic705_shared = sharedWires;
+
+for (const profile of ['ic705', 'ic7610', 'ic705_shared']) for (const dpr of [1, 2]) {
   test.describe(`${profile} DPR ${dpr}`, () => {
     test.use({ deviceScaleFactor: dpr, viewport: { width: 1920, height: 900 } });
     for (const shift of [0, 0.5]) test(`rc3 image parity, ${shift} backing pixel offset`, async ({ page }, info) => {
@@ -36,7 +47,11 @@ for (const profile of ['ic705', 'ic7610']) for (const dpr of [1, 2]) {
           const pixels = frames[i % frames.length].pixels!;
           reference.pushRow(pixels); current.pushRow(pixels);
         }
-        return { bins: frames.map(f => f.width), frames: frames.length, width, height, dpr,
+        const pixels = frames.flatMap(f => Array.from(f.pixels!)).sort((a, b) => a - b);
+        return { bins: [...new Set(frames.map(f => f.width))], frames: frames.length, width, height, dpr,
+          pixelCount: pixels.length, zeroCount: pixels.filter(p => p === 0).length,
+          p90: pixels[Math.floor(pixels.length * 0.9)], p99Amplitude: pixels[Math.floor(pixels.length * 0.99)],
+          maxAmplitude: pixels.at(-1),
           css: canvases.map(c => [c.getBoundingClientRect().width, c.getBoundingClientRect().height]),
           glError: canvases[1].getContext('webgl2')!.getError() };
       }, { wires: recordings[profile], shift, dpr });
@@ -81,7 +96,12 @@ for (const profile of ['ic705', 'ic7610']) for (const dpr of [1, 2]) {
       expect(result.screenshotWidth).toBe(result.width); expect(result.screenshotHeight).toBe(result.height);
       expect(result.glError).toBe(0);
       // RGB with a one-backing-pixel horizontal tolerance for nearest-bin boundary rounding.
-      if (profile === 'ic705') expect(result.active).toBeGreaterThan(0);
+      if (profile.startsWith('ic705')) expect(result.active).toBeGreaterThan(0);
+      if (profile === 'ic705_shared') {
+        expect(capture.length).toBe(45_360); expect(result.frames).toBe(84);
+        expect(result.bins).toEqual([475]); expect(result.pixelCount).toBe(39_900);
+        expect(result.p90).toBe(2); expect(result.p99Amplitude).toBe(34); expect(result.maxAmplitude).toBe(51);
+      }
       expect(result.tolerantMean).toBeLessThan(0.25);
       expect(result.mean).toBeLessThan(0.25);
       expect(result.p99).toBeLessThanOrEqual(1);

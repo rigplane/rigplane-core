@@ -1,0 +1,16 @@
+{
+  "radio": "IC-705",
+  "frequency_hz": 14322000,
+  "mode": "USB",
+  "scope_ref_db": -10,
+  "scope_mode": "follow-VFO",
+  "span_hz": 100000,
+  "requested_width": 1024,
+  "granted_width": 475,
+  "frame_count": 84,
+  "fps": 4.2,
+  "core_version": "3.2.0rc5",
+  "load": "dummy load",
+  "source_path": "~/validation/rigdeck-bench/ic705_scope_100k_1024.frames",
+  "format": "Repeated u32 little-endian byte length followed by a v2 binary scope frame"
+}
