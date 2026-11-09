@@ -645,3 +645,19 @@ async def test_failed_stop_retries_with_retained_paused_subscription():
     assert source.stops == 2
     await paused.close()
     assert source.stops == 2
+
+
+async def test_failed_demand_callback_cleans_up_subscriber_and_frame_hook():
+    source = FakeSource()
+    hub = ScopeHub(encoder=Encoder())
+
+    async def demand(value):
+        if value.subscribers:
+            raise RuntimeError("demand failed")
+
+    hub.register("radio", source, on_demand=demand)
+    with pytest.raises(RuntimeError, match="demand failed"):
+        await hub.subscribe(request())
+    assert not source.callbacks
+    assert not hub._sources["radio"].clients
+    assert source.stops == 1

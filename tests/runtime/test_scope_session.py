@@ -263,3 +263,38 @@ async def test_lost_output_ack_still_restores_the_uncertain_write():
     await session.set_demand(ScopeDemand(0, 0))
     assert current == original
     assert writes[-1] == ("output_on", False)
+
+
+async def test_initial_paused_demand_never_enables_panel_and_keeps_hub_count():
+    writer = Writer()
+    session = ScopeSession(writer.read, writer.write, ready=True)
+    await session.set_demand(ScopeDemand(3, 0))
+    assert writer.writes == []
+    generation = session.generation
+    await session.set_output(False, release=False)
+    assert session.generation == generation
+    await session.set_demand(ScopeDemand(3, 1))
+    assert writer.writes == [(0x10, True), (0x11, True)]
+    await session.set_demand(ScopeDemand(3, 0))
+    assert writer.writes[-1] == (0x11, False)
+    assert writer.writes.count((0x10, False)) == 0
+    await session.set_demand(ScopeDemand(0, 0))
+    assert writer.state == ScopeState(False, False)
+
+
+async def test_invalid_view_write_does_not_poison_the_next_request():
+    writes = []
+
+    async def read():
+        return ScopeState(False, False)
+
+    async def write(name, value, receiver):
+        writes.append((name, value))
+        if name == "mode" and value == 99:
+            raise ValueError("invalid mode")
+
+    session = ScopeSession(read, write, ready=True)
+    with pytest.raises(ValueError, match="invalid mode"):
+        await session.configure(mode=99)
+    await session.configure(span=4)
+    assert writes == [("mode", 99), ("span", 4)]
