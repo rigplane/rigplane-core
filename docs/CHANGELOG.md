@@ -11,10 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc1] — 2026-11-09
+
+This is the first release candidate of 3.2.0. It collects the changes made on
+`main` since 3.1.2rc4: the one scope channel with wire v2, a 4 m band for the
+IC-7300 and IC-7300MK2, host API v3, an IC-905 profile, phone-layout Memory and
+power controls, managed-transmit and session facts pushed on the control
+WebSocket, an SQL tag in place of the BUSY lamp, and several smaller repairs.
+Details below.
+
 ### Added
 
 - **Experimental** — 4 m (70 MHz) band for the IC-7300 and IC-7300MK2: a 4 m band button (tunes 70.200 MHz) with the band's rated power (50 W), and 4 m segments in the IARU Region 1 band-plan overlay. Whether the radio transmits on 70 MHz is left to the radio (only European versions do). Experimental until a real European radio confirms it. (MOR-4300)
 - Control WebSocket: managed-transmit, connection identity/session and audio-receive facts are pushed as typed records. The `managed_transmit_changed` event now carries the full `GET /api/v1/managed-transmit` document (including `txObservation.observedPtt`) instead of an empty payload, sent once on connect and on every change; the public state payload gains `connection.identity`, `connection.session` and `audioReceive` leaves with the same records `GET /api/v1/info` serves. All pushes are change-driven. The record types are exposed in `rigplane.web.api_contract` for SDK consumers. (MOR-4279)
+- Host API v3 for the desktop host: local extensions can read the host's capabilities, request host actions and control listening, through the same UI actions the web UI uses. Version 2 commands and manifests keep working unchanged. (MOR-4258)
+- Web UI phone layout: the Memory button is now reachable on every radio and opens the same memory surface as the desktop. A radio without a readable memory list still shows the button and the local channels. (MOR-4299)
+- Web UI phone layout: the radio can be switched on and off from SETUP, with a confirmation, and the power-off overlay offers the same action. (MOR-4299)
+- IC-905 profile (144, 430, 1200, 2400 and 5600 MHz), documented tier: CI-V address 0xAC, one receiver with VFO A/B, LAN and USB CI-V, per-band rated power, scope and tone/repeater data from the official CI-V reference. The 10 GHz band, the DD/ATV modes and memory channels are not supported yet. No IC-905 hardware has been tested. (MOR-3984)
 
 ### Removed
 
@@ -25,12 +38,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scope WebSocket clients now select `radio`, `audio_fft` or `iq_fft` explicitly on `/api/v1/scope`, with a requested view, pixel width and maximum frame rate. The server replies with granted geometry and binary v2 frames, including source identity, coverage and nullable pixels. `/api/v1/audio-scope` and binary v1 scope delivery are removed; clients must migrate their subscription and decoder. (MOR-4273)
 - The SDK `scope_stream()` iterator is a deprecated compatibility adapter that emits `DeprecationWarning`; use `on_scope_data()`. The low-level `scope_data_output_on()` / `scope_data_output_off()` builders are removed; use `scope_data_output(True)` / `scope_data_output(False)`. (MOR-4273)
 - The red BUSY lamp is gone. In its place an SQL tag shows next to the receiver tags whenever the squelch is closed or partly closed (level above 0), on every band, and nothing shows while the squelch is fully open. The radio's squelch-open status is no longer read over CI-V. (MOR-4223)
+- Web UI scope: every panorama view now reads one typed scope stream, one geometry store and one band-plan view, and every scope canvas shares one canvas surface and render scheduler: a canvas mounted at zero size paints once it gains size, a burst of frames draws once, and nothing is drawn while the canvas is hidden. (MOR-4270, MOR-4271)
+- Web UI panorama: while you drag to tune, the spectrum, waterfall, band plan and passband follow the pointer as a display-only preview. One tune command is sent on release, and the waterfall keeps its history if the drag is cancelled. (MOR-4256)
+- Scope: scope frames are encoded once and shared between clients, WebSocket compression contexts are reused, and scope liveness stamps no longer wake control clients. (MOR-4268)
 
 ### Fixed
 
 - Memory recall now puts the radio on the channel. `set_memory_mode` with `group` (the RECALL button of the memory list) selected the group and the channel but never sent the bare `08` "Select the Memory mode", so a radio in the VFO mode acknowledged both frames and stayed where it was. The recall now ends with that `08`, requires an ACK for every frame (a NAK or any other answer fails the command), and works on the channel-addressed IC-7300, IC-7300MK2 and IC-7610 as well (group 0). Not yet verified on hardware. (MOR-4219)
 - Windows USB audio: selection failures now offer explicit audio device candidates when USB topology or endpoint name matching is unavailable, and matching accounts for Windows' numbered endpoint prefixes. (MOR-4119)
 - Web UI: the memory list (local channels and the radio's own list with Reload, More and Recall) is no longer shown inline on the station page. The Memory panel now holds a Memory button that opens the list in the shared dialog. Escape, the close button or a backdrop click close it, Tab stays inside, and the list scrolls within the window. The radio's list still loads with the page. The frequency-entry dialog it reuses now also closes on Escape after focus fell out of it, without the Escape also clearing RIT/XIT. (MOR-4220)
+- Split TX frequency: during a split transmission the phone layout headers show the transmit frequency for the whole transmission and return to the receive frequency afterwards. An untagged CI-V frequency report received while transmitting no longer overwrites the receive frequency. (MOR-4298)
+- Icom serial radios on Python 3.11: a shutdown could lose the cancellation of a pending RX read, so the receive loop did not stop. The timed read now keeps the cancellation. (MOR-4317)
+- Web UI audio: a saved RX routing is applied only when the radio reports that it supports RX routing, an explicit receiver audio focus is saved, and a capability update no longer replays routing commands. (MOR-4296)
+- Scope: a frame the radio marks as out of range counts as a live frame for the scope watchdog and keeps its content. The view shows fixed edges with a CTR action to bring the signal back. (MOR-4241)
+- Web UI: the audio scope stays visible, and aligned with the frequency axis, when the filter width is unknown. (MOR-4243)
+- Radio liveness for rigctld and Yaesu CAT: a radio counts as alive only after a fully decoded answer from the current connection. A malformed answer, or one from an earlier connection, no longer refreshes liveness. (MOR-3872)
+
+## [3.1.4] — 2026-11-07
+
+This is the first release candidate of 3.1.4. It collects the fixes made on
+`main` after 3.1.3: a lower CPU and bandwidth cost of the web UI and audio path,
+LAN CI-V datagrams delivered in the radio's order, serial radios contacted at
+their own baud rate first, a quieter-RX makeup gain, a Memory button and an SQL
+tag in the web UI, and several smaller repairs. Details below.
+
+### Changed
+
+- The red BUSY lamp is gone. In its place an SQL tag shows next to the receiver tags whenever the squelch is closed or partly closed (level above 0), on every band, and nothing shows while the squelch is fully open. The radio's squelch-open status is no longer read over CI-V. (MOR-4223, #4491)
+- Web UI RX volume: the player now has makeup gain up to +20 dB above the radio's AF level 1 (unity stays exact), with an output soft limiter, so a radio already at its maximum USB AF output (IC-705) is no longer far quieter than normal program audio. A centred mono signal no longer loses 3 dB to the panner. (MOR-4210, #4480)
+- Quiet RX source: the browser detects a quiet RX source and names the radio's own audio output menu item, taken from the new optional profile key `[audio].rx_audio_level_menu`, which `/api/v1/capabilities` serves as `rxAudioLevelMenu` (`null` when the profile declares none). (MOR-4210, #4479, #4481)
+- Performance, state stream: the WebSocket state encoder diffs down to the leaves and sends leaf deltas (`deltaVersion` 2) instead of resending whole top-level maps, which cuts the state stream about 37 times. (MOR-4206, #4476)
+- Performance, state store: unchanged field snapshots are reused, so a state broadcast no longer deep-copies and re-sorts the whole store, and a single field is read without copying the store. Unchanged polled fields are no longer re-published. (MOR-4212, MOR-4211, #4485, #4483)
+- Performance, web UI: the radio view model is derived once per state change instead of once per caller, and at most one waterfall frame is drawn per animation frame (the latest wins). (MOR-4213, MOR-4206, #4486, #4482)
+- Performance, audio and event loop: the RX downmix and the RMS meter use numpy with results identical to the previous code, audio-thread wake-ups of the event loop are coalesced, and only changed state is copied. (MOR-4227, #4494)
+
+### Fixed
+
+- LAN radios: CI-V datagrams are delivered in the radio's sequence order, and the simulator numbers its CI-V echo in the radio's own sequence as the recorded IC-7610 does. (MOR-4205, #4492)
+- Serial radios: connect and discovery now open the port at the profile baud rate first and treat the baud passed in by the caller as a fallback hint, so an Icom on CI-V USB Baud Rate = Auto locks to 115200 instead of 19200 and the scope is no longer refused. (MOR-4207, #4484, #4487)
+- CI-V reads: a bare `FA` no longer refuses a read whose own answer was lost; the refusal is attributed to the read the radio actually refused. (MOR-4209, #4478)
+- IC-705 scope: the scope-health watchdog never re-enables the scope while the radio is in its menu (the radio sends no scope frames there), the reconnect path respects the same rule, and the watchdog no longer logs a negative elapsed time. (MOR-3690, #4477)
+- RX audio in a starved browser tab (App Nap, an unfocused WKWebView): a late burst of frames after a delivery stall is kept instead of being dropped at the jitter ceiling, so it no longer runs the buffer dry and stutters. (MOR-4221, #4489)
+- Memory recall now puts the radio on the channel. `set_memory_mode` with `group` (the RECALL button of the memory list) selected the group and the channel but never sent the bare `08` "Select the Memory mode", so a radio in the VFO mode acknowledged both frames and stayed where it was. The recall now ends with that `08`, requires an ACK for every frame (a NAK or any other answer fails the command), and works on the channel-addressed IC-7300, IC-7300MK2 and IC-7610 as well (group 0). Not yet verified on hardware. (MOR-4219, #4490)
+- Windows USB audio: selection failures now offer explicit audio device candidates when USB topology or endpoint name matching is unavailable, and matching accounts for Windows' numbered endpoint prefixes. (MOR-4119, #4473)
+- Web UI: the memory list (local channels and the radio's own list with Reload, More and Recall) is no longer shown inline on the station page. The Memory panel now holds a Memory button that opens the list in the shared dialog. Escape, the close button or a backdrop click close it, Tab stays inside, and the list scrolls within the window. The radio's list still loads with the page. The frequency-entry dialog it reuses now also closes on Escape after focus fell out of it, without the Escape also clearing RIT/XIT. (MOR-4220, #4493)
+- Test suite: every Core test that was red on some host is deterministic (WSL2 mirrored-loopback races, the port-9 connect test, the golden clock, simulator session-release timing). Tests only; no product change. (MOR-4214, #4488)
+
+## [3.1.3] — 2026-11-04
+
+This is the first release candidate of 3.1.3. It adds one safety fix on top of
+3.1.2: a transmitter left keyed after a crash is released when Core starts or
+reconnects.
+
+### Fixed
+
+- Transmitter left keyed after a crash: when Core starts or reconnects, it reads the radio's PTT before the radio is offered to clients; if the radio is transmitting and no one in this Core owns the transmission, Core releases it through the managed-TX authority and logs `managed_tx.startup_unkey`. A failed or unverified read writes nothing. (MOR-4186, #4474)
 
 ## [3.1.2rc4] — 2026-11-03
 
@@ -5147,7 +5209,10 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc4...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc1...HEAD
+[3.2.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.4...v3.2.0rc1
+[3.1.4]: https://github.com/rigplane/rigplane-core/compare/v3.1.3...v3.1.4
+[3.1.3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...v3.1.3
 [3.1.2rc4]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2rc4
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2

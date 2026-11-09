@@ -1246,7 +1246,7 @@ class ManagedTxAuthority:
         self, action: str, owner: str | None = None
     ) -> ManagedTxSubmission:
         async with self._lock:
-            self._require_ingress_open_locked()
+            self._require_ingress_open_locked(release=action == "force_off")
             transition, full_force = self._transition_locked(action, owner)
             if transition is None:
                 transition = ManagedTxTransition(self._state, ManagedTxOutcome.REJECTED)
@@ -1492,9 +1492,18 @@ class ManagedTxAuthority:
         if self._closing or self._closed:
             raise RuntimeError("managed TX authority is closed")
 
-    def _require_ingress_open_locked(self) -> None:
+    def _require_ingress_open_locked(self, *, release: bool = False) -> None:
+        """Refuse ingress once shutdown has begun.
+
+        ``close_ingress_for_shutdown`` stops new keying only: a release
+        (``force_off``) is still admitted until the shutdown itself starts,
+        as :meth:`is_effect_current` still admits FORCE_RECEIVE. A release
+        only adds an obligation the shutdown drain then owes (MOR-4186: the
+        release of an aborted startup publication must survive the closed
+        ingress, or shutdown would drain a possibly keyed rig as clean).
+        """
         self._require_open_locked()
-        if self._shutdown_requested or self._shutting_down:
+        if self._shutting_down or (self._shutdown_requested and not release):
             raise RuntimeError("managed TX authority is shutting down")
 
     def _require_provider_change_locked(self) -> None:
