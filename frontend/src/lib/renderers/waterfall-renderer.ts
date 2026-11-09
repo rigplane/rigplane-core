@@ -352,7 +352,7 @@ export class WaterfallRenderer {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
 
-  updateOptions(options: Partial<WaterfallOptions>): void {
+  updateOptions(options: Partial<WaterfallOptions>): boolean {
     if ((options.colorScheme !== undefined && options.colorScheme !== this.options.colorScheme)
       || (options.refLevel !== undefined && options.refLevel !== this.options.refLevel)) this.appearanceDirty = true;
     Object.assign(this.options, options);
@@ -360,6 +360,7 @@ export class WaterfallRenderer {
       if (this.viewCenter !== this.options.centerHz || this.viewSpan !== this.options.spanHz) this.viewDirty = true;
       this.viewCenter = this.options.centerHz; this.viewSpan = this.options.spanHz;
     }
+    return this.viewDirty || this.appearanceDirty;
   }
   get paintedView(): View {
     return { startHz: this.viewCenter - this.viewSpan / 2, endHz: this.viewCenter + this.viewSpan / 2 };

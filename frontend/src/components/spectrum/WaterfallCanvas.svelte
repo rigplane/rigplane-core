@@ -87,8 +87,7 @@
 
   $effect(() => {
     if (rendererReady && renderer && options) {
-      renderer.updateOptions(options);
-      scheduler.wake('view');
+      if (renderer.updateOptions(options)) scheduler.wake('view');
     }
   });
 

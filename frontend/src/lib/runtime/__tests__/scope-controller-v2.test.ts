@@ -84,6 +84,20 @@ describe('scope subscription retirement', () => {
 });
 
 describe('one multiplexed subscribed scope channel', () => {
+  it('forwards confirmed-retune refresh through session deduplication exactly once', async () => {
+    const { port, change } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
+    const token = Symbol('surface'), stream = owner.stream('hardware');
+    const demand = { ...request('radio', 0), view: { startHz: 14_225_000, endHz: 14_275_000 } };
+    stream.updateSurfaceSubscription(token, demand, true, 'initial', 14_250_000);
+    const handle = await owner.hardwareScopeDriver.start(); change('connected');
+    port.sendRaw.mockClear();
+    stream.updateSurfaceSubscription(token, demand, false, 'geometry', 14_250_000);
+    expect(port.sendRaw).not.toHaveBeenCalled();
+    stream.updateSurfaceSubscription(token, demand, false, 'confirmed', 14_290_000);
+    stream.updateSurfaceSubscription(token, demand, false, 'frame', 14_290_000);
+    expect(port.sendRaw).toHaveBeenCalledExactlyOnceWith({ type: 'subscribe', ...demand });
+    stream.removeSurfaceSubscription(token); await owner.hardwareScopeDriver.stop(handle);
+  });
   it('opens once, routes radio/audio zero-copy, pauses hidden demand, and releases one source at a time', async () => {
     const { port, change } = channel(); const factory = vi.fn(() => port as unknown as WsChannel);
     const owner = new ScopeController(factory);

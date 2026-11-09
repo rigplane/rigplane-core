@@ -524,6 +524,10 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
         index = radio.profile.scope_span_presets_hz.index(span)
         assert radio.scope_writes == [("mode", 0, 0), ("span", index, 0)]
     assert writer.tuned_frequency(0) == 14_100_000
+    radio.scope_writes.clear()
+    repeated = await source.set_view(requested, 0)
+    assert repeated.coverage == grant.coverage
+    assert radio.scope_writes == []
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,30 @@ const surfaceFacts = (backingW = 100): CanvasSurfaceFacts => ({
   cssW: backingW, cssH: 50, backingW, backingH: 50, pixelScale: 1, visible: true,
 });
 
+it.each([false, true])('refreshes only the selected explicit demand regardless of surface order (follow first: %s)', followFirst => {
+  const { value, publish } = stream();
+  const params = { stream: value, receiver: 0, view: { startHz: 14_225_000, endHz: 14_275_000 },
+    facts: surfaceFacts(), frequencyHz: 14_250_000, revision: 'initial' };
+  const follow = { ...params, facts: surfaceFacts(50), view: { follow: 'vfo' as const, spanHz: 100_000 } };
+  const inputs = followFirst ? [follow, params] : [params, follow];
+  const actions = inputs.map(input => scopeSubscriptionSurface(document.createElement('div'), input));
+  const peer = scopeSubscriptionSurface(document.createElement('div'), { ...params, receiver: 1, frequencyHz: 7_100_000 });
+  const before = publish.mock.calls.length;
+  actions.forEach((action, i) => action.update({ ...inputs[i], revision: 'geometry-only' }));
+  expect(publish).toHaveBeenCalledTimes(before);
+  actions.forEach((action, i) => action.update({ ...inputs[i], frequencyHz: 14_290_000 }));
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  expect(publish.mock.lastCall).toEqual([expect.objectContaining({ view: params.view }), expect.anything(), true]);
+  actions.forEach((action, i) => action.update({ ...inputs[i], frequencyHz: 14_290_000, revision: 'new-frame' }));
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  actions[followFirst ? 1 : 0].destroy();
+  const followOnly = publish.mock.calls.length;
+  actions[followFirst ? 0 : 1].update({ ...follow, frequencyHz: 14_300_000 });
+  expect(publish).toHaveBeenCalledTimes(followOnly);
+  actions.forEach(action => action.destroy());
+  peer.destroy();
+});
+
 describe('ScopeStream subscription negotiation', () => {
   it('publishes changed source, receiver, view, width and visible fps without duplicate requests', () => {
     const { value, publish } = stream();
@@ -180,10 +204,11 @@ it('observes native backing width, intersection and document visibility for dema
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-it.each(['error-first', 'facts-first'])('retries refused startup once for changed facts in %s order', (order) => {
+it.each(['error-first', 'facts-first'].flatMap(order => [false, true].map(explicit => ({ order, explicit }))))('retries refused startup once for changed facts: $order, explicit=$explicit', ({ order, explicit }) => {
   const { value, publish } = stream();
   const node = document.createElement('div'); document.body.append(node);
-  const params = { stream: value, receiver: 0, view: request().view, facts: surfaceFacts(), revision: 'unknown' };
+  const params = { stream: value, receiver: 0, view: explicit ? { startHz: 14_225_000, endHz: 14_275_000 } : request().view,
+    facts: surfaceFacts(), frequencyHz: 14_250_000, revision: 'unknown' };
   const action = scopeSubscriptionSurface(node, params);
   const before = publish.mock.calls.length;
   const error = () => value.handleMessage({ type: 'error', message: 'audio mapping unavailable' });

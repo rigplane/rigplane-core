@@ -227,11 +227,11 @@ export class ScopeController {
         this._arrivals[source] = null; this._slotArrivals[source].clear();
         this._setHealth(source, { ...this._readHealth(source), frameSeen: false });
       },
-      (subscription, previous) => {
+      (subscription, previous, refresh) => {
         if (previous && (subscription === null || previous.sourceId !== subscription.sourceId || previous.receiver !== subscription.receiver)) {
           this._sendUnsubscribe(previous);
         }
-        if (subscription) this._sendSubscription(source, subscription);
+        if (subscription) this._sendSubscription(source, subscription, refresh);
 
       },
     );
@@ -270,11 +270,11 @@ export class ScopeController {
     }
   }
 
-  private _sendSubscription(source: ScopeSource, subscription: ScopeSubscription): void {
+  private _sendSubscription(source: ScopeSource, subscription: ScopeSubscription, refresh = false): void {
     if (!this._sourceDemanded(source) || this._channel?.state !== 'connected') return;
     const key = `${subscription.sourceId}:${subscription.receiver}`;
     const identity = JSON.stringify([this._channel.sessionEpoch, subscription]);
-    if (this._sentSubscriptions.get(key) === identity) return;
+    if (!refresh && this._sentSubscriptions.get(key) === identity) return;
     if (this._channel.sendRaw({ type: 'subscribe', ...subscription })) this._sentSubscriptions.set(key, identity);
   }
 

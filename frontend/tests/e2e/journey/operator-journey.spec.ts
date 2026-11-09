@@ -729,8 +729,15 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       expect(before.invalidSamples).toBe(0);
       const modeKey = page.getByTestId('standard-mode-LSB').getByRole('radio');
       await expect.poll(async () => (await panoramaWitness(page)).pinned).toBe(true);
+      const requestsBefore = (await panoramaWitness(page)).requests.length;
+      const refusalsBefore = (await panoramaWitness(page)).refusals.length;
       await modeKey.click();
-      await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(0);
+      await page.getByTestId('scope-more').click();
+      await page.getByTestId('scope-zoom-in').click();
+      await page.keyboard.press('Escape');
+      await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
+        .some(request => 'startHz' in request.view)).toBe(true);
+      await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(refusalsBefore);
       await expect.poll(() => sentParams(page, 'set_mode')).toContainEqual({ mode: 'LSB', receiver: 0 });
       await expectServerMain(page, { mode: 'LSB' });
       await expect(modeKey).toHaveAttribute('aria-checked', 'true');

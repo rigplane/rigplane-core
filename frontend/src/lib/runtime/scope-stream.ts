@@ -27,6 +27,7 @@ export class ScopeStream {
   private subscriptionKey: string | null = null;
   private retryNeeded = false;
   private readonly attemptedFacts = new Map<string, string>();
+  private readonly confirmedFrequencies = new Map<string, number>();
   private subscriptionsValue: readonly ScopeSubscription[] = [];
   private surfaces = new Map<symbol, ScopeSubscription>();
   private readonly geometryStore = writable<ScopeGeometry | null>(null);
@@ -47,7 +48,7 @@ export class ScopeStream {
     context: CurrentScopeContext,
     private readonly ownership: 'owned' | 'borrowed',
     private readonly malformed?: (reason: ScopeParseError) => void,
-    private readonly publishSubscription?: (subscription: ScopeSubscription | null, previous: ScopeSubscription | null) => void,
+    private readonly publishSubscription?: (subscription: ScopeSubscription | null, previous: ScopeSubscription | null, refresh?: boolean) => void,
   ) {
     this.geometry = { subscribe: this.geometryStore.subscribe };
     this.context = { ...context };
@@ -56,9 +57,13 @@ export class ScopeStream {
 
   get subscription(): ScopeSubscription | null { return this.subscriptionValue; }
 
-  updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription, retry = true, revision?: string): boolean {
+  updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription, retry = true, revision?: string, frequencyHz?: number | null): boolean {
     this.surfaces.set(token, subscription);
-    return this.publishSurfaceDemand(retry, revision);
+    const key = `${subscription.sourceId}:${subscription.receiver}`;
+    const previous = this.confirmedFrequencies.get(key);
+    if (frequencyHz != null) this.confirmedFrequencies.set(key, frequencyHz);
+    const refresh = frequencyHz != null && previous !== frequencyHz;
+    return this.publishSurfaceDemand(retry, revision, key, refresh);
   }
 
   removeSurfaceSubscription(token: symbol): void {
@@ -68,7 +73,7 @@ export class ScopeStream {
 
   get subscriptions(): readonly ScopeSubscription[] { return this.subscriptionsValue; }
 
-  private publishSurfaceDemand(retry = true, revision?: string): boolean {
+  private publishSurfaceDemand(retry = true, revision?: string, targetKey?: string, refresh = false): boolean {
     const groups = new Map<string, ScopeSubscription[]>();
     for (const request of this.surfaces.values()) {
       const key = `${request.sourceId}:${request.receiver}`;
@@ -82,7 +87,7 @@ export class ScopeStream {
       next.push({ ...selected, width: Math.max(...candidates.map(request => request.width)),
         maxFps: Math.max(...candidates.map(request => request.maxFps)) });
     }
-    return this.applySubscriptions(next, retry, revision);
+    return this.applySubscriptions(next, retry, revision, targetKey, refresh);
   }
 
   setSubscription(subscription: ScopeSubscription): void {
@@ -90,17 +95,18 @@ export class ScopeStream {
     this.applySubscriptions([subscription]);
   }
 
-  private applySubscriptions(next: readonly ScopeSubscription[], retry = true, revision?: string): boolean {
+  private applySubscriptions(next: readonly ScopeSubscription[], retry = true, revision?: string, targetKey?: string, refresh = false): boolean {
     const key = JSON.stringify(next);
     if (key === this.subscriptionKey) {
-      const changedFacts = next.filter(request => revision === undefined
-        || this.attemptedFacts.get(`${request.sourceId}:${request.receiver}`) !== revision);
-      if (retry && this.retryNeeded && changedFacts.length > 0) {
+      const changedFacts = next.filter(request => (refresh && targetKey === `${request.sourceId}:${request.receiver}` && !('follow' in request.view))
+        || (retry && this.retryNeeded
+          && (revision === undefined || this.attemptedFacts.get(`${request.sourceId}:${request.receiver}`) !== revision)));
+      if (changedFacts.length > 0) {
         this.retryNeeded = false;
         this.errorStore.set(null);
         for (const request of changedFacts) {
           if (revision !== undefined) this.attemptedFacts.set(`${request.sourceId}:${request.receiver}`, revision);
-          this.publishSubscription?.(request, request);
+          this.publishSubscription?.(request, request, true);
         }
         return true;
       }
@@ -122,6 +128,7 @@ export class ScopeStream {
     for (const old of previous) {
       if (!next.some(request => request.sourceId === old.sourceId && request.receiver === old.receiver)) {
         this.attemptedFacts.delete(`${old.sourceId}:${old.receiver}`);
+        this.confirmedFrequencies.delete(`${old.sourceId}:${old.receiver}`);
         this.publishSubscription?.(null, old);
       }
     }
@@ -271,6 +278,7 @@ export class ScopeStream {
     this.disposed = true;
     this.sinks.clear();
     this.attemptedFacts.clear();
+    this.confirmedFrequencies.clear();
     this.frames.clear();
     try { this.detach?.(); this.detach = null; }
     finally {
