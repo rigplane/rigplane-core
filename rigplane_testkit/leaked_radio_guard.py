@@ -22,8 +22,10 @@ the test does not perform) gets the fake undone when the test ends, so the radio
 disconnected the way a real one would be. A test that provokes the finalizer's warning on
 purpose says so with ``@pytest.mark.leaks_connected_radio(reason="...")``.
 
-Known limit: a radio that is still referenced after teardown (a module- or session-scoped
-fixture, a module global) is not collected there, so it is judged when it is finally
+Fixture values of the test are released before the collection (pytest would keep them
+until after the teardown hooks). Known limit: a radio that is still referenced after
+teardown (a module- or session-scoped fixture, a module global, an attribute of a test
+class instance, or the traceback of a failed test) is not collected there, so it is judged when it is finally
 dropped, in whichever test's teardown that happens.
 """
 
@@ -135,9 +137,23 @@ def pytest_runtest_setup(item: pytest.Item) -> Generator[None, None, None]:
     return (yield)
 
 
-def _collect_leaks() -> list[str]:
+def _release_fixture_values(item: pytest.Item) -> None:
+    """Drop the test's fixture values, which pytest keeps until after teardown returns.
+
+    ``runtestprotocol`` sets ``item.funcargs = None`` only once every teardown hook has
+    run, so a function-scoped fixture that handed out a connected radio would still be
+    referenced here and the collector would reach the radio during a later test. The
+    finalizers have already run when this is called, so nothing needs the values again.
+    """
+    funcargs = getattr(item, "funcargs", None)
+    if isinstance(funcargs, dict):
+        funcargs.clear()
+
+
+def _collect_leaks(item: pytest.Item) -> list[str]:
     """Collect now if a connected radio is still alive; return the finalizer's warnings."""
     _undo_faked_connections()
+    _release_fixture_values(item)
     if _connected_radio_alive():
         gc.collect()
     leaks = list(_recorder.leaks)
@@ -155,9 +171,9 @@ def pytest_runtest_teardown(
     except BaseException:
         # A finalizer already failed this test. Still collect so the warning is spent
         # here instead of landing in the next test, but keep the original error.
-        _collect_leaks()
+        _collect_leaks(item)
         raise
-    leaks = _collect_leaks()
+    leaks = _collect_leaks(item)
     if leaks and not _expects_leak(item):
         raise LeakedRadioError(
             f"{item.nodeid} left a connected Radio for the garbage collector "

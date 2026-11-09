@@ -7,7 +7,7 @@ must NOT re-authenticate.
 
 import time
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -114,6 +114,7 @@ async def test_soft_reconnect_reuses_token_and_does_not_reauth() -> None:
     # Healthy CI-V transport with fresh data => soft_reconnect noop path.
     civ = MagicMock()
     civ._udp_transport = object()
+    civ.disconnect = AsyncMock()
     r._civ_transport = civ
     r._last_civ_data_received = time.monotonic()
     r.update_credentials(password="new-pass")
