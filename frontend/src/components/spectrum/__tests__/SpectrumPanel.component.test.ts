@@ -1139,7 +1139,7 @@ describe('SpectrumPanel component', () => {
     refreshSpectrumAuthority(); flushSync();
     const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     expect(request.receiver).toBeNull();
-    expect(request.view).toEqual({ startHz: 14_100_000, endHz: 14_200_000 });
+    expect(request.view).toEqual({ follow: 'vfo', spanHz: 100_000 });
   });
 
   it.each([0, 1] as const)('requests the numeric receiver %s from authority', (receiver) => {
@@ -1196,7 +1196,7 @@ describe('SpectrumPanel component', () => {
     const target = mountPanel(); emitFrame({ mode: 1 });
     await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-    expect(read().view).toEqual({ startHz: 14_000_000, endHz: 14_100_000 });
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
     flushSync(); await flushWaterfallPaint();
     expect(read().view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
@@ -5045,12 +5045,13 @@ describe('review corrections for requested View and sample retirement', () => {
     const spy = vi.spyOn(presets, 'scopePresets').mockReturnValue([{ kind: 'cw', label: 'Same edges', view: { startHz: 14_010_000, endHz: 14_110_000 } }]);
     try {
       const target = mountPanel(); emitFrame(); setPendingFrequency(0, 14_060_000); flushSync(); await flushWaterfallPaint();
-      const before = requested(target); const { waterfall } = prepareGeometry(target);
+      const before = spectrumRendererHarness.lastOptions.centerHz; const { waterfall } = prepareGeometry(target);
       pointer(waterfall.querySelector('.passband-resize-zone')!, 'pointerdown', 207, 110);
       pointer(waterfall, 'pointermove', 207, 120);
       const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
       select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
-      expect(requested(target)).toEqual(before);
+      expect(spectrumRendererHarness.lastOptions.centerHz).toBe(before);
+      expect(requested(target)).toEqual({ startHz: 14_010_000, endHz: 14_110_000 });
       pointer(waterfall, 'pointerup', 207, 120);
       expect(handlerHarness.filter.onFilterWidthCommit).not.toHaveBeenCalled();
     } finally { spy.mockRestore(); }

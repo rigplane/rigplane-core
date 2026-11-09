@@ -479,9 +479,13 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
     writer = WebRadioScopeWriter(server)
     source = RadioScopeSource(resolve_radio_profile(model=model), writer)
     commands = []
+    fail_span = False
 
     def execute(command, *, future):
         commands.append(command)
+        if isinstance(command, SetScopeSpan) and fail_span:
+            future.set_exception(RuntimeError("lost span acknowledgement"))
+            return
         controls = server._radio_state.scope_controls
         if isinstance(command, SwitchScopeReceiver):
             controls.receiver = command.receiver
@@ -507,6 +511,17 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
     server._radio_state.scope_controls.mode = 1
     await source.set_view(requested, 0)
     assert commands == [SwitchScopeReceiver(0), SetScopeMode(0), SetScopeSpan(index)]
+    commands.clear()
+    server.command_state_store.begin_provider_generation()
+    await source.set_view(requested, 0)
+    assert len(commands) == 3
+    fail_span = True
+    with pytest.raises(RuntimeError, match="SetScopeSpan failed"):
+        await source.set_view(View(14_099_000, 14_101_000), 0)
+    fail_span = False
+    commands.clear()
+    await source.set_view(requested, 0)
+    assert len(commands) == 3
 
 
 @pytest.mark.asyncio

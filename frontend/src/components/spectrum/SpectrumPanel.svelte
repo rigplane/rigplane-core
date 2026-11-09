@@ -827,9 +827,9 @@
   });
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = audioFft || followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
-      ? { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) }
-      : { startHz: effectiveView.startHz, endHz: effectiveView.endHz };
+    const view = !audioFft && requestedView !== null
+      ? requestedView
+      : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
     const facts = spectrumFacts;
     return scopeSubscription({
       sourceId: stream.sourceId,
