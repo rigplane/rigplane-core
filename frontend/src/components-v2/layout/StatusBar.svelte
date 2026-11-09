@@ -127,8 +127,8 @@
      *  the resolved SurfacePlan (S5 ruling), and it is safe only because
      *  MOR-1336's `zoned()` degrades to a bare render for an unzoned surface
      *  (S5-N3). Default empty set ⇒ no-op, so mobile/LCD and every caller that
-     *  omits the prop keep the indicator. Note the OTHER four indicators
-     *  (radio/control/audio/http) have no semantic twin and are never gated. */
+     *  omits the prop keep the indicator. Radio/control/audio/http have no
+     *  semantic twin; embedding-host health ownership gates them separately. */
     declared?: ReadonlySet<SemanticSurfaceName>;
   }
   let {
@@ -367,13 +367,14 @@
 
 </script>
 
-{#if controlState === 'disconnected'}
+{#if !hostDeclaration.health && controlState === 'disconnected'}
   <div class="control-link-lost">{t('core.statusbar.controlLinkLost')}</div>
 {/if}
 <!-- MOR-1240: this bar publishes `--rp-status-bar-bottom` while mounted;
      AppGlobalHost's powered-off overlay consumes it in CSS. -->
 <div class="status-bar" bind:this={barEl}>
   <div class="status-indicators">
+    {#if !hostDeclaration.health}
     <span class="indicator" role="status" title={radioHealthLabel ? t('core.statusbar.indicator.radioWithReason', { state: radioHealth?.likelyCause === 'operator_disconnected' ? radioIndicatorState : radioState, reason: radioHealthLabel }) : t('core.statusbar.indicator.radio', { state: radioState })} style="--indicator-color: {stateColor(radioIndicatorState)}">
       <span class="indicator-dot"></span>
       <Radio size={12} color="currentColor" strokeWidth={2.5} />
@@ -389,6 +390,7 @@
         <span class="bad-link-label">{t('core.statusbar.badLink.label')}</span>
       </span>
     {/if}
+    {/if}
     {#if hasAnyScope() && !declared.has('scopeDisplay')}
       <span class="indicator" role="status" title={t('core.statusbar.indicator.scope', { state: scopeState })} style="--indicator-color: {stateColor(scopeState)}">
         <span class="indicator-dot"></span>
@@ -396,16 +398,19 @@
       </span>
     {/if}
     {#if hasAudio()}
+      {#if !hostDeclaration.health}
       <span class="indicator" role="status" data-testid="audio-chip" title={audioTooltip} style="--indicator-color: {stateColor(audioState)}">
         <span class="indicator-dot"></span>
         <Volume2 size={12} color="currentColor" strokeWidth={2.5} />
       </span>
+      {/if}
       {#if txCodecFallback}
         <span class="indicator tx-codec-fallback" role="status" data-testid="tx-codec-fallback" title={t('core.statusbar.txCodecFallback.tooltip')} style="--indicator-color: {stateColor('degraded')}">
           <span class="codec-fallback-label">{t('core.statusbar.txCodecFallback.label')}</span>
         </span>
       {/if}
     {/if}
+    {#if !hostDeclaration.health}
     <span class="indicator" role="status" title={t('core.statusbar.indicator.http', { state: httpState })} style="--indicator-color: {stateColor(httpState)}">
       <span class="indicator-dot"></span>
       <ArrowDownUp size={12} color="currentColor" strokeWidth={2.5} />
@@ -413,6 +418,7 @@
         <span class="http-lost-label">{t('core.statusbar.offline')}</span>
       {/if}
     </span>
+    {/if}
   </div>
 
   <div class="status-info">
@@ -505,6 +511,7 @@
       </select>
     </label>
     <ThemePicker />
+    {#if !hostDeclaration.health}
     <button
       type="button"
       class="control-btn"
@@ -514,6 +521,7 @@
       <Unplug size={14} strokeWidth={2} />
       <span class="btn-label">{controlState === 'connected' ? t('core.statusbar.connection.actionDisconnect') : t('core.statusbar.connection.actionConnect')}</span>
     </button>
+    {/if}
     {#if powerControlSupported && !runtime.remoteController}
       <button
         type="button"

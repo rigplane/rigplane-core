@@ -4,7 +4,9 @@
  * tests/test_host_api_v3_wire_contract.py::test_af_handler_dispatch_and_observed_publication
  * ACKs acknowledge dispatch; only a subsequent provider observation changes readings.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import hostWire from '../../../../../tests/fixtures/host-api-v3-wire.json';
 import { flushSync, mount, unmount } from 'svelte';
 import App from '../../../App.svelte';
@@ -14,6 +16,10 @@ import { validateCapabilities, type Capabilities } from '$lib/types/capabilities
 import { mockCapabilities, mockState, mockLocalControllerStatus, mockControllerGrant } from '../../../../tests/e2e/i18n/fixtures';
 import type { InfoResponse } from '$lib/types/protocol';
 import { audioManager } from '$lib/audio/audio-manager';
+import { setTxCodecFallback } from '$lib/stores/audio.svelte';
+import { markStateUpdated, setWsConnected } from '$lib/stores/connection.svelte';
+import { runtime } from '$lib/runtime';
+import type { EibiResult } from '$lib/runtime/system-controller';
 import { LOCAL_SUPERVISOR_META_NAME } from '../manifest';
 import { parseHostDeclaration, readHostDeclaration, getLayoutOptions, type LocalExtensionHostDeclaration } from '../host-ui';
 import type { ServerState } from '$lib/types/state';
@@ -41,6 +47,8 @@ vi.mock('$lib/audio/audio-manager', async () => {
 let app: ReturnType<typeof mount> | undefined;
 let caps: Capabilities;
 let powerFails = false;
+let station: EibiResult;
+let frequencyFields: ServerState['fieldStatus'];
 const requests: Array<{ url: string; init?: RequestInit }> = [];
 const info: InfoResponse = { version: 'test', revision: 1, updatedAt: '2026-01-01T00:00:00Z', uptime: 0 };
 const viewport = { width: window.innerWidth, height: window.innerHeight };
@@ -63,13 +71,29 @@ async function start(receivers: 1 | 2) {
   const socket = instances[0];
   socket.simulateOpen();
   const state: ServerState = { ...mockState, active: receivers === 2 ? 'SUB' : 'MAIN',
-    fieldStatus: hostWire.fieldStatus as ServerState['fieldStatus'],
+    fieldStatus: { ...hostWire.fieldStatus, ...frequencyFields } as ServerState['fieldStatus'],
     main: { ...mockState.main, afLevel: 0.4 }, sub: { ...mockState.main, afLevel: 0.6 } };
   socket.simulateMessage(JSON.stringify({ type: 'state_update', data: { type: 'full',
     stateContractVersion: 1, providerGeneration: 0, data: state } }));
   await settled();
   await vi.waitFor(() => { flushSync(); expect(host()?.getListening().enabled).toBe(true); });
 }
+
+beforeAll(() => {
+  // Use the HTTP producer's serializer, including its real display fields.
+  const documents = JSON.parse(execFileSync('uv', ['run', 'python', '-c', [
+    'import json, sys',
+    'sys.path.insert(0, "tests")',
+    'from rigplane.web.eibi import EiBiStation',
+    'from test_host_api_v3_wire_contract import _observe, FieldPath, WebServer, WebConfig, _capable_radio',
+    'server = WebServer(_capable_radio(), WebConfig(radio_model="IC-7610"))',
+    '_observe(server, FieldPath.receiver("0", "freq_mode", "freq_hz"), 14205000)',
+    'station = EiBiStation(freq_khz=14074, time_start=0, time_end=2400, days="", country="USA", station="Host Test Station", language="E", target="NAm", remarks="", persistence=1, start_date="", end_date="")',
+    'fields = server.build_public_state()["fieldStatus"]',
+    'print(json.dumps({"station": {"stations": [station.to_dict()]}, "fields": {"main.freqHz": fields["main.freqHz"]}}))',
+  ].join('\n')], { cwd: resolve(import.meta.dirname, '../../../../..'), encoding: 'utf8', timeout: 30_000 })) as { station: EibiResult; fields: ServerState['fieldStatus'] };
+  station = documents.station; frequencyFields = documents.fields;
+}, 30_000);
 
 beforeEach(() => {
   requests.length = 0; instances.length = 0; powerFails = false;
@@ -85,7 +109,7 @@ beforeEach(() => {
   });
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     requests.push({ url, init });
-    const body = url.endsWith('/capabilities') ? caps : url.endsWith('/controller')
+    const body = url.startsWith('/api/v1/eibi/identify?') ? station : url.endsWith('/capabilities') ? caps : url.endsWith('/controller')
       ? init?.method === 'POST' ? mockControllerGrant : mockLocalControllerStatus
       : url.endsWith('/info') ? info : url.endsWith('/radio/power')
         ? powerFails ? { error: 'power unavailable' } : hostWire.power.response : {};
@@ -103,6 +127,55 @@ afterEach(async () => {
 });
 
 describe('installed host API v3 with production UI handlers', () => {
+  it.each([undefined, {}, { health: false }, { health: true }, { health: 'true' }])(
+    'respects host health ownership %j without hiding independent status controls', async (flags: { health?: unknown } | undefined) => {
+      if (flags) {
+        const declaration = { version: 1, report: false, language: false, ...flags };
+        const meta = document.createElement('meta'); meta.name = LOCAL_SUPERVISOR_META_NAME;
+        meta.content = JSON.stringify(declaration); document.head.append(meta);
+      }
+      await start(1);
+      const owned = flags?.health === true;
+      const bar = () => document.querySelector('.status-bar')!;
+      const indicator = (name: string) => bar().querySelector(`[title^="${name}"]`);
+      expect(indicator('Radio ↔ Server:') === null).toBe(owned);
+      expect(indicator('Control WebSocket:') === null).toBe(owned);
+      expect(indicator('State HTTP:') === null).toBe(owned);
+      expect(bar().querySelector('[data-testid="audio-chip"]') === null).toBe(owned);
+      const connection = () => Array.from(bar().querySelectorAll('button'))
+        .find(button => /^(Connect|Disconnect)$/.test(button.textContent?.trim() ?? ''));
+      expect(connection() === undefined).toBe(owned);
+      if (!owned) expect(connection()?.textContent?.trim()).toBe('Disconnect');
+      expect(bar().querySelector('.power-toggle-btn')).not.toBeNull();
+      expect(bar().querySelector('.skin-select')).not.toBeNull();
+      expect(bar().querySelector('.settings-btn')).not.toBeNull();
+      expect(bar().querySelector('[data-testid="managed-tot-status"]')).not.toBeNull();
+      await vi.waitFor(() => expect(bar().querySelector('.now-playing')?.textContent).toContain('Host Test Station'), { timeout: 3_000 });
+
+      setTxCodecFallback(true); flushSync();
+      expect(bar().querySelector('[data-testid="tx-codec-fallback"]')).not.toBeNull();
+      // Drive the real staleness interval from its production state-update clock.
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 7_000);
+      await vi.waitFor(() => { flushSync(); expect(runtime.connectionStale).toBe(true); }, { timeout: 2_000 });
+      expect(bar().querySelector('[data-testid="bad-link-chip"]') === null).toBe(owned);
+      clock.mockRestore(); markStateUpdated();
+
+      setWsConnected(false); flushSync();
+      expect(document.querySelector('.control-link-lost') === null).toBe(owned);
+      expect(bar().querySelector('.http-lost-label') === null).toBe(owned);
+      expect(connection() === undefined).toBe(owned);
+      if (!owned) expect(connection()?.textContent?.trim()).toBe('Connect');
+      setWsConnected(true); flushSync();
+
+      // LCD's legacy scope indicator has no declared semantic replacement.
+      expect(host().setLayout('lcd-cockpit')).toBe(true);
+      await vi.waitFor(() => { flushSync(); expect(document.querySelector('.lcd-layout')).not.toBeNull(); });
+      expect(indicator('Scope WebSocket:')).not.toBeNull();
+      expect(bar().querySelector('[data-testid="managed-tot-status"]')).not.toBeNull();
+      setTxCodecFallback(false);
+    }, 30_000,
+  );
+
   it('publishes AF and power only after producer-verified provider readback', async () => {
     await start(1);
     const socket = instances[0];
@@ -193,11 +266,12 @@ describe('installed host API v3 with production UI handlers', () => {
     stop();
   });
 
-  it.each([{ version: 1, report: true, language: 'true' }, { version: 1, language: true }])('preserves standalone controls for invalid declaration %j', async declaration => {
+  it.each([{ version: 1, report: true, language: 'true', health: true }, { version: 1, language: true, health: true }])('preserves standalone controls for invalid declaration %j', async declaration => {
     const meta = document.createElement('meta'); meta.name = LOCAL_SUPERVISOR_META_NAME;
     meta.content = JSON.stringify(declaration); document.head.append(meta);
     await start(1);
     expect(document.querySelector('.report-btn')).not.toBeNull();
+    expect(document.querySelector('[data-testid="audio-chip"]')).not.toBeNull();
     host().openRadioControls(); flushSync();
     expect(document.querySelector('.language-selector')).not.toBeNull();
   });
@@ -277,10 +351,16 @@ describe('installed host API v3 with production UI handlers', () => {
   }, 30000);
 
   it('reads only the typed versioned supervisor declaration', () => {
-    expect(parseHostDeclaration(null)).toEqual({ version: 1, report: false, language: false });
+    expect(parseHostDeclaration(null)).toEqual({ version: 1, report: false, language: false, health: false });
     expect(parseHostDeclaration({ version: 2, report: true }).report).toBe(false);
     expect(parseHostDeclaration({ version: 1, report: 'true' }).report).toBe(false);
-    const declaration: LocalExtensionHostDeclaration = { version: 1, report: true, language: true };
+    const declaration: LocalExtensionHostDeclaration = { version: 1, report: true, language: true, health: true };
+    expect(parseHostDeclaration({ version: 1, report: true, language: true })).toEqual({ ...declaration, health: false });
+    for (const health of [false, 'true', 1, null, {}, []]) {
+      expect(parseHostDeclaration({ ...declaration, health })).toEqual({ ...declaration, health: false });
+    }
+    expect(parseHostDeclaration({ ...declaration, version: 2 }).health).toBe(false);
+    expect(parseHostDeclaration({ ...declaration, language: 'true' }).health).toBe(false);
     const meta = document.createElement('meta'); meta.name = LOCAL_SUPERVISOR_META_NAME;
     meta.content = JSON.stringify(declaration); document.head.append(meta);
     expect(readHostDeclaration()).toEqual(declaration); meta.remove();

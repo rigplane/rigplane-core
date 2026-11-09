@@ -262,12 +262,12 @@ Level requests in MUTE are refused; mode changes remain available.
 Mode changes retain the UI's mute/unmute and resource-demand behavior;
 these booleans do not acknowledge radio completion.
 
-The embedding host can supply report and language controls using the exported
+The embedding host can supply report, language and health controls using the exported
 `LocalExtensionHostDeclaration` from `local-extensions/host-ui.ts`:
 
 ```ts
 const controls: LocalExtensionHostDeclaration = {
-  version: 1, report: true, language: true,
+  version: 1, report: true, language: true, health: true,
 };
 const meta = document.createElement('meta');
 meta.name = 'rigplane-local-supervisor';
@@ -276,10 +276,16 @@ document.head.append(meta); // before mounting the Core frontend
 ```
 
 This is a host declaration, separate from the extension manifest. Absent,
-malformed, or unsupported declarations default both flags to `false`.
+malformed, or unsupported declarations default the flags to `false`.
 `report: true` hides Core's report button; `language: true` hides the entire
-Core language settings section. Core-only hosts keep both controls. Declare
-only controls the embedding host actually supplies.
+Core language settings section. Optional `health: true` hides the status bar's
+radio, control-link, HTTP, bad-link and audio indicators, the control-link-lost
+banner, Offline label and Connect/Disconnect button. Only literal `true` enables
+health ownership; omitted, false or malformed health values preserve these
+controls, including in existing version-1 declarations. Power, skin/layout,
+Radio Controls, managed TOT, scope, the TX codec fallback warning and Now Playing
+remain available under their existing conditions. Core-only hosts keep all
+controls. Declare only controls the embedding host actually supplies.
 
 The default host validates commands through
 `frontend/src/lib/runtime/commands/radio-intents.ts: dispatchRadioIntentWithResult`.
