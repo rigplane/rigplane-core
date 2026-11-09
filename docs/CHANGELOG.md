@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc2] — 2026-11-09
+
+This is the second release candidate of 3.2.0. It equals 3.2.0rc1 except for one
+test fix: the slow scope stress test of rc1 was stale and blocked the release run.
+
+### Fixed
+
+- Tests: the slow scope stress test (`tests/test_scope_stress.py`) now exercises the v2 scope hub. It was a release blocker for 3.2.0rc1. No product code changed. (MOR-4273, #4523)
+
 ## [3.2.0rc1] — 2026-11-09
 
 This is the first release candidate of 3.2.0. It collects the changes made on
@@ -5209,7 +5218,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc2...HEAD
+[3.2.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc1...v3.2.0rc2
 [3.2.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.4...v3.2.0rc1
 [3.1.4]: https://github.com/rigplane/rigplane-core/compare/v3.1.3...v3.1.4
 [3.1.3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2...v3.1.3
