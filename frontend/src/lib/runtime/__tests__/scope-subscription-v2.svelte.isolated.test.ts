@@ -20,6 +20,21 @@ const surfaceFacts = (backingW = 100): CanvasSurfaceFacts => ({
   cssW: backingW, cssH: 50, backingW, backingH: 50, pixelScale: 1, visible: true,
 });
 
+it('refreshes an explicit view once per confirmed retune across surfaces', () => {
+  const { value, publish } = stream();
+  const params = { stream: value, receiver: 0, view: { startHz: 14_225_000, endHz: 14_275_000 },
+    facts: surfaceFacts(), revision: '14250000' };
+  const actions = [0, 1].map(() => scopeSubscriptionSurface(document.createElement('div'), params));
+  const before = publish.mock.calls.length;
+  actions.forEach(action => action.update({ ...params }));
+  expect(publish).toHaveBeenCalledTimes(before);
+  actions.forEach(action => action.update({ ...params, revision: '14290000' }));
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  actions.forEach(action => action.update({ ...params, revision: '14290000' }));
+  expect(publish).toHaveBeenCalledTimes(before + 1);
+  actions.forEach(action => action.destroy());
+});
+
 describe('ScopeStream subscription negotiation', () => {
   it('publishes changed source, receiver, view, width and visible fps without duplicate requests', () => {
     const { value, publish } = stream();
