@@ -5,20 +5,28 @@ import { countTypedArrays } from './webgl-fixture';
 
 function contexts() {
   const labels = vi.fn(); const measure = vi.fn(() => ({ width: 40 }));
-  const draw = vi.fn(); const gradient = vi.fn(() => ({ addColorStop() {} }));
+  const draw = vi.fn(), line = vi.fn(); const gradient = vi.fn(() => ({ addColorStop() {} }));
   const make = (canvas: HTMLCanvasElement) => new Proxy({ canvas, fillText: labels, measureText: measure,
-    drawImage: draw, createLinearGradient: gradient }, {
+    drawImage: draw, lineTo: line, createLinearGradient: gradient }, {
     get: (target, key) => key in target ? Reflect.get(target, key) : () => {},
     set: (target, key, value) => Reflect.set(target, key, value),
   }) as unknown as CanvasRenderingContext2D;
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) { return make(this); });
   vi.stubGlobal('Path2D', class { moveTo() {} lineTo() {} closePath() {} });
   const canvas = document.createElement('canvas'); canvas.width = 400; canvas.height = 160;
-  return { ctx: make(canvas), labels, measure, draw, gradient };
+  return { ctx: make(canvas), labels, measure, draw, gradient, line };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('MOR-4272 static layers and reused buffers', () => {
+  it('reuses the trace geometry for the fill and peak area', () => {
+    const { ctx, line } = contexts(); const r = new SpectrumRenderer();
+    const pixels = new Uint8Array(100).fill(40);
+    r.render(ctx, pixels, 400, 160, defaultSpectrumOptions);
+    line.mockClear();
+    r.render(ctx, pixels, 400, 160, defaultSpectrumOptions);
+    expect(line.mock.calls.length).toBeLessThanOrEqual(pixels.length);
+  });
   it('keeps spectrum typed-array allocation constant over 1000 frames including average and peak hold', () => {
     const { ctx } = contexts(); const r = new SpectrumRenderer();
     const pixels = new Uint8Array(100).fill(40);
