@@ -9,6 +9,7 @@ Uses mock transport and scope helpers; no real hardware.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import ClassVar, TYPE_CHECKING
 
 import pytest
@@ -17,8 +18,20 @@ from rigplane.core.transport import IcomCivTransport
 from rigplane import IC_7610_ADDR
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.radio import IcomRadio
+from rigplane.profiles import resolve_radio_profile
+from rigplane.runtime.radio_scope_source import RadioScopeSource
 from rigplane.scope import ScopeFrame
+from rigplane.scope.models import ScopeTarget, Subscription, View
+from rigplane.testing.timing import VirtualClock
 from rigplane.types import bcd_encode
+from rigplane.web.handlers.scope import ScopeHandler
+from rigplane.web.protocol import (
+    decode_scope_frame_v2,
+    decode_scope_granted,
+    encode_scope_subscription,
+)
+from rigplane.web.server import WebServer
+from rigplane.ws import WS_OP_TEXT
 
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
 
@@ -131,51 +144,161 @@ def radio_with_mock() -> tuple[IcomRadio, MockTransport]:
 # ---------------------------------------------------------------------------
 
 
+class _ScopeWriter:
+    def __init__(self) -> None:
+        self.output: list[bool] = []
+
+    def tuned_frequency(self, receiver: int) -> float:
+        return 14_100_000
+
+    async def set_output(self, enabled: bool) -> None:
+        self.output.append(enabled)
+
+    async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
+        pass
+
+
+class _SlowScopeSocket:
+    """Connection fake whose binary sends wait for explicit drain permits."""
+
+    def __init__(self) -> None:
+        self.incoming: asyncio.Queue[str | None] = asyncio.Queue()
+        self.text: list[str] = []
+        self.binary: list[bytes] = []
+        self.permits = asyncio.Semaphore(0)
+        self.in_flight: bytes | None = None
+        self.send_attempts = 0
+        self.closed = False
+
+    async def recv(self) -> tuple[int, bytes]:
+        message = await self.incoming.get()
+        if message is None:
+            raise EOFError
+        return WS_OP_TEXT, message.encode()
+
+    async def send_text(self, text: str) -> None:
+        self.text.append(text)
+
+    async def send_binary(self, data: bytes) -> None:
+        assert self.in_flight is None
+        self.in_flight = data
+        self.send_attempts += 1
+        try:
+            await self.permits.acquire()
+            self.binary.append(data)
+        finally:
+            self.in_flight = None
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.abort()
+
+    def abort(self) -> None:
+        self.closed = True
+        self.incoming.put_nowait(None)
+
+    def is_alive(self) -> bool:
+        return not self.closed
+
+
 @pytest.mark.slow
 @pytest.mark.asyncio
+@pytest.mark.timeout(20)
+@pytest.mark.parametrize("model", ["ic7300", "ic7610"])
 async def test_scope_stress_slow_consumer_queue_bounded(
-    radio_with_mock: tuple[IcomRadio, MockTransport],
+    model: str,
+    virtual_clock: VirtualClock,
 ) -> None:
-    """Feed many scope frames with a slow consumer; queue must not grow without bound."""
-    radio, transport = radio_with_mock
+    """Bound v2 delivery to two hub frames plus one blocked send; newest wins."""
+    server = WebServer(None)
+    writer = _ScopeWriter()
+    source = RadioScopeSource(resolve_radio_profile(model=model), writer)
+    server.scope_hub.register("radio", source)
+    ws = _SlowScopeSocket()
+    handler = ScopeHandler(ws, server)
+    consumer = asyncio.create_task(handler.run())
     num_frames = 400
-    slow_delay_s = 0.02
-    run_duration_s = 3.0
-    max_queue_size = 64  # deprecated iterator adapter buffer
-
-    for pkt in _make_scope_udp_packets(num_frames):
-        transport.queue_response(pkt)
-
-    radio._civ_runtime.start_pump()
-    received: list[ScopeFrame] = []
-    max_qsize_seen = 0
-
-    async def consume(stream: AsyncGenerator[ScopeFrame, None]) -> None:
-        nonlocal max_qsize_seen
-        async for frame in stream:
-            qsize = radio._scope_stream_callbacks[0].__self__.qsize()
-            if qsize > max_qsize_seen:
-                max_qsize_seen = qsize
-            received.append(frame)
-            await asyncio.sleep(slow_delay_s)
-
-    consumer = asyncio.create_task(consume(radio.scope_stream()))
+    width = 1024
+    view = View(14_090_000, 14_110_000)
     try:
-        await asyncio.sleep(run_duration_s)
-    finally:
-        radio._connected = False
-        try:
-            await asyncio.wait_for(consumer, timeout=2.0)
-        finally:
-            await radio._civ_runtime.stop_pump()
+        ws.incoming.put_nowait(
+            encode_scope_subscription(Subscription("radio", 0, view, width, 10))
+        )
+        await virtual_clock.elapse(0)
+        assert len(ws.text) == 1
+        assert decode_scope_granted(ws.text[0]).width == width
+        stream = handler._streams[ScopeTarget("radio", 0)]
+        subscription = stream.subscription
+        sender = stream.sender
+        assert sender is not None and not sender.done()
+        assert writer.output == [True]
 
-    assert max_qsize_seen <= max_queue_size, (
-        f"Queue grew beyond bound: max_qsize_seen={max_qsize_seen}, max={max_queue_size}"
-    )
-    assert len(received) >= 1, "Consumer should have received at least one frame"
-    assert received[-1].pixels == bytes([(num_frames - 1) % 256] * 32), (
-        "Slow consumer must eventually receive the newest frame"
-    )
+        def publish(index: int) -> None:
+            source.feed_frame(
+                ScopeFrame(
+                    0,
+                    1,
+                    int(view.start_hz),
+                    int(view.end_hz),
+                    bytes([index % 161]) * width,
+                    False,
+                )
+            )
+
+        publish(0)
+        await virtual_clock.elapse(0)
+        assert ws.in_flight is not None
+        wire_size = len(ws.in_flight)
+        assert decode_scope_frame_v2(ws.in_flight).seq == 1
+        max_retained_frames = 0
+        for index in range(1, num_frames):
+            publish(index)
+            retained = [
+                delivery[1]
+                for delivery in (subscription._latest, subscription._pending)
+                if delivery is not None
+            ]
+            max_retained_frames = max(max_retained_frames, len(retained))
+            assert len(retained) <= 2
+            assert sum(map(len, retained)) + len(ws.in_flight) <= 3 * wire_size
+            assert stream.sender is sender and not sender.done()
+            assert ws.send_attempts == 1 and ws.binary == []
+            await virtual_clock.elapse(0.001)
+        assert max_retained_frames == 2
+
+        await virtual_clock.elapse(0.1)
+        assert subscription._pending is None and subscription._timer is None
+        assert subscription._latest is not None
+        assert decode_scope_frame_v2(subscription._latest[1]).seq == num_frames
+
+        ws.permits.release()
+        await virtual_clock.elapse(0)
+        assert ws.in_flight is not None
+        newest = decode_scope_frame_v2(ws.in_flight)
+        assert newest.seq == num_frames
+        assert newest.pixels == bytes([(num_frames - 1) % 161]) * width
+        assert newest.source_id == "radio" and newest.receiver == 0
+        assert subscription._latest is None and subscription._pending is None
+        ws.permits.release()
+        await virtual_clock.elapse(0)
+        assert [decode_scope_frame_v2(data).seq for data in ws.binary] == [
+            1,
+            num_frames,
+        ]
+        assert ws.send_attempts == 2 and ws.in_flight is None
+
+        ws.incoming.put_nowait(None)
+        await virtual_clock.elapse(0)
+        assert consumer.done()
+        await consumer
+        assert sender.done() and handler._streams == {}
+        assert subscription._latest is None and subscription._pending is None
+        assert subscription._timer is None
+        assert writer.output == [True, False]
+        assert handler not in server._scope_handlers
+    finally:
+        consumer.cancel()
+        with suppress(asyncio.CancelledError):
+            await consumer
 
 
 @pytest.mark.asyncio
