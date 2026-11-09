@@ -7506,7 +7506,9 @@ async def test_mixed_idle_and_valid_batch_establishes_liveness(
 
 
 @pytest.mark.parametrize("middle_mode", [0, 1])
-async def test_scope_selection_return_refreshes_stream_display_facts(radio, middle_mode):
+async def test_scope_selection_return_refreshes_stream_display_facts(
+    radio, middle_mode
+):
     for receiver, mode, hz in ((0, 0, 5000), (1, middle_mode, 2500), (0, 0, 5000)):
         radio._civ_runtime._update_state_cache_from_frame(
             _make_frame(cmd=0x27, sub=0x12, data=bytes([receiver]))

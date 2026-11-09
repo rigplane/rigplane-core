@@ -188,9 +188,11 @@ async def test_sub_fixed_slot_capture_preserves_main_selected_edge(sdk):
     radio._radio_state.sub.freq = 14100000
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
-            await ws.send_str(encode_scope_subscription(
-                Subscription("radio", 1, View(14100000, 14120000), 100, 20)
-            ))
+            await ws.send_str(
+                encode_scope_subscription(
+                    Subscription("radio", 1, View(14100000, 14120000), 100, 20)
+                )
+            )
             message = await ws.receive(timeout=5)
             assert message.type is aiohttp.WSMsgType.TEXT
             assert '"error"' not in message.data
@@ -203,8 +205,14 @@ async def test_standalone_control_ws_setter_retires_after_ack(sdk, monkeypatch):
     radio, sim = sdk
     async with web(radio) as (server, _, _, _, ws):
         server._scope_health_interval = 0.05
-        await ws.send_json({"type": "cmd", "id": "span", "name": "set_scope_span",
-                            "params": {"span": 2}})
+        await ws.send_json(
+            {
+                "type": "cmd",
+                "id": "span",
+                "name": "set_scope_span",
+                "params": {"span": 2},
+            }
+        )
         assert await await_until(lambda: sim.views[0][1] == 2)
         sim.views[0] = (0, 4, 1)
         assert await radio.get_scope_span() == 4
