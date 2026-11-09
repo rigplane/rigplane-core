@@ -732,6 +732,9 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       const requestsBefore = (await panoramaWitness(page)).requests.length;
       const refusalsBefore = (await panoramaWitness(page)).refusals.length;
       await modeKey.click();
+      await page.getByTestId('scope-more').click();
+      await page.getByTestId('scope-zoom-in').click();
+      await page.keyboard.press('Escape');
       await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
         .some(request => 'startHz' in request.view)).toBe(true);
       await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(refusalsBefore);
