@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PLUGIN = "rigplane_testkit.leaked_radio_guard"
 
 _LEAK = """
+import gc
+
 import pytest
 
 from rigplane.runtime._connection_state import RadioConnectionState
@@ -56,6 +58,13 @@ def test_never_connected_radio_is_not_a_leak():
 
 def test_fake_connected_is_undone_when_the_test_ends():
     _drop_in_a_cycle(fake_connected(CoreRadio("127.0.0.1", model="IC-7610")))
+
+
+def test_fake_connected_radio_dropped_mid_test_is_not_finalized_while_connected():
+    # A radio the test lets go of before it ends (a local of a helper, one per loop
+    # turn) can be reached by the collector at any time: timing, not logic, decides.
+    _drop_in_a_cycle(fake_connected(CoreRadio("127.0.0.1", model="IC-7610")))
+    gc.collect()
 
 
 @pytest.mark.leaks_connected_radio(reason="provokes the finalizer on purpose")
@@ -154,6 +163,15 @@ def test_the_test_that_leaks_a_connected_radio_fails_not_its_neighbour(
     assert (
         "PASSED test_sample.py::test_fake_connected_is_undone_when_the_test_ends" in out
     ), out
+    assert (
+        "PASSED test_sample.py::"
+        "test_fake_connected_radio_dropped_mid_test_is_not_finalized_while_connected"
+    ) in out, out
+    # -rA lists a test as PASSED for its call phase even when its teardown errored.
+    assert (
+        "ERROR test_sample.py::"
+        "test_fake_connected_radio_dropped_mid_test_is_not_finalized_while_connected"
+    ) not in out, out
     assert "PASSED test_sample.py::test_marked_test_may_leak_on_purpose" in out, out
     assert "ERROR test_sample.py::test_mark_without_a_reason_is_refused" in out, out
     assert "ERROR test_sample.py::test_innocent_neighbour_after_the_leak" not in out
