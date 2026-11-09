@@ -118,10 +118,15 @@ async def test_watchdog_ignores_simulator_blank_stream(
         queued.clear()
         source = srv._radio_scope_source
         assert source is not None
+        from rigplane.radio import IcomRadio
+
+        publisher = IcomRadio("127.0.0.1", model="IC-7610")
+        publisher._control_scope_session = srv._radio_scope_session
+        publisher.on_scope_data(source.feed_frame)
         monitor = asyncio.create_task(srv._scope_health_monitor())
         try:
             for index in range(6):
-                source.feed_frame(frames[index % len(frames)])
+                publisher._civ_runtime._publish_scope_frame(frames[index % len(frames)])
                 await clock.elapse(srv._scope_health_interval / 2)
         finally:
             monitor.cancel()

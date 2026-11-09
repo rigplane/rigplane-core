@@ -44,6 +44,16 @@ def _identity(value: object) -> None:
 
 
 @dataclass(frozen=True)
+class ScopeDemand:
+    subscribers: int
+    active: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.active <= self.subscribers:
+            raise ValueError("scope demand requires 0 <= active <= subscribers")
+
+
+@dataclass(frozen=True)
 class View:
     start_hz: float
     end_hz: float
@@ -263,7 +273,7 @@ class ScopeSourcePlugin(Protocol):
         self, view: ViewRequest, receiver: int | None = None
     ) -> GrantedView: ...
     async def start(self) -> None: ...
-    async def stop(self) -> None: ...
+    async def stop(self, *, release: bool = True) -> None: ...
     def on_frame(
         self, callback: Callable[[NativeFrame], None]
     ) -> Callable[[], None]: ...

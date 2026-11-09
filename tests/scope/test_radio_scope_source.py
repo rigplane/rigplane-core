@@ -13,10 +13,13 @@ class Writer(RadioScopeWriter):
         self.writes = []
         self.frequency = 14_100_000
 
+    def on_frame(self, frame):
+        pass
+
     def tuned_frequency(self, receiver):
         return self.frequency
 
-    async def set_output(self, enabled):
+    async def set_output(self, enabled, *, release=True):
         self.writes.append(enabled)
 
     async def set_center(self, center_hz, span_hz, receiver):
@@ -116,7 +119,7 @@ async def test_real_assembler_oor_routes_through_hub(mode, first, last, expected
 
 async def test_failed_output_off_can_be_retried():
     class FlakyWriter(Writer):
-        async def set_output(self, enabled):
+        async def set_output(self, enabled, *, release=True):
             self.writes.append(enabled)
             if not enabled and self.writes.count(False) == 1:
                 raise RuntimeError("output-off failed")
@@ -136,7 +139,7 @@ async def test_failed_start_and_failed_rollback_preserve_output_off_retry():
             super().__init__()
             self.output = False
 
-        async def set_output(self, enabled):
+        async def set_output(self, enabled, *, release=True):
             self.writes.append(enabled)
             if enabled:
                 self.output = True
@@ -172,3 +175,66 @@ async def test_native_width_is_observed_from_frames(model, width):
     )
     assert source.capabilities().native_width_for(0) == width + 11
     await source.stop()
+
+
+async def test_fixed_edges_are_negotiated_from_profile_data():
+    class FixedWriter(Writer):
+        async def set_fixed(self, fixed_edge, receiver):
+            self.writes.append((fixed_edge, receiver))
+
+    from rigplane.core.types import ScopeFixedEdge
+
+    profile = load_rig(Path("rigs/ic7610.toml")).to_profile()
+    writer = FixedWriter()
+    source = RadioScopeSource(profile, writer)
+    request = View(14_050_000, 14_150_000)
+    grant = await source.set_view(request, 0)
+    assert "fixed" in source.capabilities().view_modes
+    assert grant.coverage == Coverage(request.start_hz, request.end_hz)
+    assert writer.writes[-1] == (ScopeFixedEdge(6, 1, 14_050_000, 14_150_000), 0)
+    # The 11 MHz range boundary crosses two profile entries.
+    request = View(10_950_000, 11_050_000)
+    await source.set_view(request, 0)
+    assert isinstance(writer.writes[-1][0], float)
+
+
+async def test_fixed_edge_quantization_is_profile_data():
+    class FixedWriter(Writer):
+        async def set_fixed(self, fixed_edge, receiver):
+            self.writes.append((fixed_edge, receiver))
+
+    from rigplane.core.types import ScopeFixedEdge
+
+    writer = FixedWriter()
+    source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
+    request = View(14_050_123, 14_150_567)
+    grant = await source.set_view(request, 0)
+    assert writer.writes[-1] == (ScopeFixedEdge(6, 1, 14_050_000, 14_151_000), 0)
+    assert grant.coverage == Coverage(14_050_000, 14_151_000)
+
+
+async def test_fixed_views_on_two_receivers_use_distinct_profile_slots():
+    class FixedWriter(Writer):
+        async def set_fixed(self, edges, receiver):
+            self.writes.append((edges, receiver))
+
+    writer = FixedWriter()
+    source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
+    await source.set_view(View(14_050_000, 14_150_000), 0)
+    await source.set_view(View(14_150_000, 14_250_000), 1)
+    assert [(value.edge, receiver) for value, receiver in writer.writes] == [
+        (1, 0),
+        (2, 1),
+    ]
+
+
+async def test_off_band_fixed_request_uses_center_uncovered_fallback():
+    class FixedWriter(Writer):
+        async def set_fixed(self, edges, receiver):
+            self.writes.append((edges, receiver))
+
+    writer = FixedWriter()
+    source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
+    grant = await source.set_view(View(7_050_000, 7_150_000), 0)
+    assert grant.coverage == Coverage(13_850_000, 14_350_000)
+    assert writer.writes[-1] == (14_100_000, 500000, 0)

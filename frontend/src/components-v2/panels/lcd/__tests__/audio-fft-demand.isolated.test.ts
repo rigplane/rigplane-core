@@ -466,8 +466,9 @@ it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
       flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
       mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
       flushSync(); expect(scopeChildProbe.pushed.mock.lastCall?.[0]).toBeInstanceOf(Uint8Array);
-      mocks.channel.message({ type: 'error', sourceId: 'audio_fft', receiver: null, message: 'source stopped' });
-      flushSync(); expect(scopeChildProbe.pushed).toHaveBeenLastCalledWith(null);
+      const retained = scopeChildProbe.pushed.mock.lastCall?.[0];
+      mocks.channel.message({ type: 'error', sourceId: 'audio_fft', receiver: null, message: 'view update refused' });
+      flushSync(); expect(scopeChildProbe.pushed.mock.lastCall?.[0]).toBe(retained);
       mocks.channel.fire(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null }));
       flushSync(); expect(scopeChildProbe.pushed.mock.lastCall?.[0]).toBeInstanceOf(Uint8Array);
       mocks.channel.disconnect();

@@ -73,7 +73,7 @@ class FakeSource:
         if self.fail_start:
             raise RuntimeError("start failed")
 
-    async def stop(self):
+    async def stop(self, *, release=True):
         self.stops += 1
         if self.stop_gate is not None:
             await self.stop_gate.wait()
@@ -406,7 +406,7 @@ def real_flaky_source(probe):
         async def set_center(self, center_hz, span_hz, receiver):
             pass
 
-        async def set_output(self, enabled):
+        async def set_output(self, enabled, *, release=True):
             probe.start() if enabled else probe.stop()
 
     source = RadioScopeSource(
@@ -502,12 +502,18 @@ async def test_stop_retry_serializes_with_new_demand_and_repeated_cancellation(
 
 
 class NativeWriter:
+    def on_frame(self, frame):
+        pass
+
+    async def set_fixed(self, edges, receiver):
+        pass
+
     """Minimal RadioScopeWriter for the width-cap tests."""
 
     def tuned_frequency(self, receiver):
         return 10_000_000
 
-    async def set_output(self, enabled):
+    async def set_output(self, enabled, *, release=True):
         pass
 
     async def set_center(self, center_hz, span_hz, receiver):
@@ -639,3 +645,19 @@ async def test_failed_stop_retries_with_retained_paused_subscription():
     assert source.stops == 2
     await paused.close()
     assert source.stops == 2
+
+
+async def test_failed_demand_callback_cleans_up_subscriber_and_frame_hook():
+    source = FakeSource()
+    hub = ScopeHub(encoder=Encoder())
+
+    async def demand(value):
+        if value.subscribers:
+            raise RuntimeError("demand failed")
+
+    hub.register("radio", source, on_demand=demand)
+    with pytest.raises(RuntimeError, match="demand failed"):
+        await hub.subscribe(request(source="radio"))
+    assert not source.callbacks
+    assert not hub._sources["radio"].clients
+    assert source.stops == 1

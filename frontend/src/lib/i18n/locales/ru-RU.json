@@ -116,6 +116,7 @@
   "core.overlay.scopeSwitchToCtr": "Переключить в CTR",
   "core.scope.webglRequired": "Для водопада требуется WebGL",
   "core.scope.presets": "Наблюдение панорамы",
+  "core.scope.viewRefused": "Запрос вида панорамы отклонён: {reason}",
   "core.scope.preset.follow": "Следовать за VFO",
   "core.scope.zoomIn": "Сузить обзор панорамы",
   "core.scope.zoomOut": "Расширить обзор панорамы",

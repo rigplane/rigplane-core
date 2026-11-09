@@ -46,6 +46,8 @@ its own ``receiver`` parameter rather than special-casing 0x1C.
 
 from __future__ import annotations
 
+from rigplane.core.types import ScopeFixedEdgeRange
+
 from typing import TYPE_CHECKING
 
 from ..types import ScopeFixedEdge, bcd_decode, bcd_encode
@@ -76,24 +78,6 @@ from ._frame import (
 if TYPE_CHECKING:
     from ..command_map import CommandMap
     from ..types import CivFrame
-
-
-_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ: tuple[int, ...] = (
-    50_000_000,
-    28_000_000,
-    24_890_000,
-    21_000_000,
-    18_068_000,
-    14_000_000,
-    10_100_000,
-    7_000_000,
-    5_250_000,
-    3_500_000,
-    1_800_000,
-    472_000,
-    135_000,
-    10_000,
-)
 
 
 # Scope sub-commands whose READ query carries a one-byte Main/Sub scope
@@ -269,17 +253,6 @@ def _decode_scope_bcd_value(
     value = _bcd_decode_value(payload)
     _validate_scope_range("scope value", value, minimum, maximum)
     return receiver, value
-
-
-def _resolve_scope_fixed_edge_range(start_hz: int) -> int:
-    if start_hz < 0:
-        raise ValueError(f"scope fixed edge start_hz must be >= 0, got {start_hz}")
-    for index, band_start in enumerate(_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ, start=1):
-        if start_hz >= band_start:
-            return index
-    raise ValueError(
-        f"scope fixed edge start_hz {start_hz} is outside known IC-7610 bands"
-    )
 
 
 def _scope_ref_encode(ref: float, bounds: tuple[float, float] | None = None) -> bytes:
@@ -836,6 +809,7 @@ def scope_set_fixed_edge(
     start_hz: int,
     end_hz: int,
     to_addr: int,
+    ranges: tuple[ScopeFixedEdgeRange, ...] = (),
     range_index: int | None = None,
     from_addr: int = CONTROLLER_ADDR,
     cmd_map: CommandMap,
@@ -847,11 +821,20 @@ def scope_set_fixed_edge(
         raise ValueError(
             f"scope fixed edge end_hz must be greater than start_hz, got {start_hz}..{end_hz}"
         )
-    resolved_range = (
-        _resolve_scope_fixed_edge_range(start_hz)
-        if range_index is None
-        else _validate_scope_range("scope fixed edge range", range_index, 1, 99)
-    )
+    if range_index is None:
+        range_index = next(
+            (
+                item.range_index
+                for item in ranges
+                if item.start_hz <= start_hz < end_hz <= item.end_hz
+            ),
+            None,
+        )
+        if range_index is None:
+            raise ValueError(
+                "scope fixed edge requires profile ranges covering both edges"
+            )
+    resolved_range = _validate_scope_range("scope fixed edge range", range_index, 1, 99)
     payload = (
         bcd_encode_value(resolved_range, byte_count=1)
         + bcd_encode_value(edge, byte_count=1)

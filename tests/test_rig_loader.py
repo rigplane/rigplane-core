@@ -3024,6 +3024,68 @@ class TestScopeSpanPresets:
         assert rig.to_profile().scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
 
 
+class TestScopeFixedEdgeRanges:
+    def test_shipped_profiles_preserve_typed_fixed_edge_ranges(self):
+        from rigplane.core.types import ScopeFixedEdgeRange
+
+        rig = load_rig(RIGS_DIR / "ic7610.toml")
+        assert len(rig.scope_fixed_edge_ranges) == 12
+        assert rig.scope_fixed_edge_step_hz == 1000
+        assert rig.to_profile().scope_fixed_edge_step_hz == 1000
+        assert rig.scope_fixed_edge_ranges[0] == ScopeFixedEdgeRange(
+            1, 30_000, 1_600_000
+        )
+        assert rig.scope_fixed_edge_ranges[5] == ScopeFixedEdgeRange(
+            6, 11_000_000, 15_000_000
+        )
+        assert rig.scope_fixed_edge_ranges[-1] == ScopeFixedEdgeRange(
+            12, 45_000_000, 60_000_000
+        )
+        assert rig.to_profile().scope_fixed_edge_ranges == rig.scope_fixed_edge_ranges
+        center = load_rig(RIGS_DIR / "ic7300.toml")
+        assert center.scope_fixed_edge_ranges == ()
+        assert center.to_profile().scope_fixed_edge_ranges == ()
+        assert center.scope_fixed_edge_step_hz is None
+        assert center.to_profile().scope_fixed_edge_step_hz is None
+
+    @pytest.mark.parametrize(
+        "ranges",
+        [
+            "[]",
+            "[{range_index = 0, start_hz = 1000, end_hz = 2000}]",
+            "[{range_index = 1, start_hz = 2000, end_hz = 1000}]",
+            "[{range_index = true, start_hz = 1000, end_hz = 2000}]",
+            "[{range_index = 1, start_hz = 1000.0, end_hz = 2000}]",
+            "[{range_index = 1, start_hz = 1000, end_hz = 2000}, {range_index = 1, start_hz = 2000, end_hz = 3000}]",
+            "[{range_index = 1, start_hz = 1000, end_hz = 2500}, {range_index = 2, start_hz = 2000, end_hz = 3000}]",
+        ],
+    )
+    def test_rejects_invalid_ranges(self, tmp_path, ranges):
+        text = (
+            _MINIMAL_TOML
+            + f"\n[scope]\nfixed_edge_ranges = {ranges}\nfixed_edge_step_hz = 1000\n"
+        )
+        with pytest.raises(RigLoadError, match="fixed_edge_ranges"):
+            load_rig(_write_toml(tmp_path, text))
+
+    @pytest.mark.parametrize(
+        "declaration",
+        [
+            "fixed_edge_step_hz = 1000",
+            "fixed_edge_ranges = [{range_index = 1, start_hz = 1000, end_hz = 2000}]",
+            "fixed_edge_ranges = [{range_index = 1, start_hz = 1000, end_hz = 2000}]\nfixed_edge_step_hz = 0",
+            "fixed_edge_ranges = [{range_index = 1, start_hz = 1000, end_hz = 2000}]\nfixed_edge_step_hz = true",
+        ],
+    )
+    def test_fixed_ranges_and_positive_step_are_declared_together(
+        self, tmp_path, declaration
+    ):
+        with pytest.raises(RigLoadError, match="fixed_edge"):
+            load_rig(
+                _write_toml(tmp_path, _MINIMAL_TOML + f"\n[scope]\n{declaration}\n")
+            )
+
+
 class TestAudioPolicy:
     """Per-profile [audio] codec and sample-rate policy (#1470)."""
 

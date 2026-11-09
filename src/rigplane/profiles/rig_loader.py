@@ -31,6 +31,7 @@ from rigplane.core.state_acquisition_policy import (
 )
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.types import (
+    ScopeFixedEdgeRange,
     MEMORY_WRITE_CLEAR_FORMS,
     MemoryWriteField,
     MemoryWriteLayout,
@@ -720,6 +721,10 @@ class RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = field(
+        default=(), kw_only=True
+    )
+    scope_fixed_edge_step_hz: int | None = field(default=None, kw_only=True)
     codec_preference: tuple[str, ...] | None = None
     tx_codec: str | None = None
     default_sample_rate_hz: int | None = None
@@ -972,6 +977,8 @@ class RigConfig:
             scope_ref_max_db=self.scope_ref_max_db,
             scope_ref_step_db=self.scope_ref_step_db,
             scope_span_presets_hz=self.scope_span_presets_hz,
+            scope_fixed_edge_ranges=self.scope_fixed_edge_ranges,
+            scope_fixed_edge_step_hz=self.scope_fixed_edge_step_hz,
             codec_preference=self.codec_preference,
             tx_codec=self.tx_codec,
             default_sample_rate_hz=self.default_sample_rate_hz,
@@ -3048,7 +3055,46 @@ def load_rig(path: Path) -> RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = ()
+    scope_fixed_edge_step_hz: int | None = None
     if scope_section:
+        entries = scope_section.get("fixed_edge_ranges", [])
+        step = scope_section.get("fixed_edge_step_hz")
+        if "fixed_edge_ranges" in scope_section or step is not None:
+            if (
+                not isinstance(entries, list)
+                or not entries
+                or type(step) is not int
+                or step <= 0
+            ):
+                raise RigLoadError(
+                    f"{filename}: fixed_edge_ranges require a positive fixed_edge_step_hz"
+                )
+            fixed_ranges: list[ScopeFixedEdgeRange] = []
+            for entry in entries:
+                if (
+                    not isinstance(entry, dict)
+                    or set(entry) != {"range_index", "start_hz", "end_hz"}
+                    or any(type(v) is not int for v in entry.values())
+                ):
+                    raise RigLoadError(f"{filename}: invalid fixed_edge_ranges")
+                item = ScopeFixedEdgeRange(**entry)
+                if not (
+                    1 <= item.range_index <= 99 and 0 <= item.start_hz < item.end_hz
+                ):
+                    raise RigLoadError(f"{filename}: invalid fixed_edge_ranges limits")
+                if any(
+                    other.range_index == item.range_index
+                    or max(other.start_hz, item.start_hz)
+                    < min(other.end_hz, item.end_hz)
+                    for other in fixed_ranges
+                ):
+                    raise RigLoadError(
+                        f"{filename}: overlapping or duplicate fixed_edge_ranges"
+                    )
+                fixed_ranges.append(item)
+            scope_fixed_edge_ranges = tuple(fixed_ranges)
+            scope_fixed_edge_step_hz = step
         scope_ref_min_db = (
             float(scope_section["ref_min_db"])
             if "ref_min_db" in scope_section
@@ -3706,6 +3752,8 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_max_db=scope_ref_max_db,
         scope_ref_step_db=scope_ref_step_db,
         scope_span_presets_hz=scope_span_presets_hz,
+        scope_fixed_edge_ranges=scope_fixed_edge_ranges,
+        scope_fixed_edge_step_hz=scope_fixed_edge_step_hz,
         codec_preference=codec_preference,
         tx_codec=tx_codec,
         default_sample_rate_hz=default_sample_rate_hz,

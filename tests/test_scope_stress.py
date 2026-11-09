@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from typing import ClassVar, TYPE_CHECKING
+from unittest.mock import call, create_autospec
 
 import pytest
 
@@ -20,8 +21,15 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.radio import IcomRadio
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio_scope_source import RadioScopeSource
+from rigplane.runtime.scope_session import ScopeSession
 from rigplane.scope import ScopeFrame
-from rigplane.scope.models import ScopeTarget, Subscription, View
+from rigplane.scope.models import (
+    Coverage,
+    GrantedSubscription,
+    ScopeTarget,
+    Subscription,
+    View,
+)
 from rigplane.testing.timing import VirtualClock
 from rigplane.types import bcd_encode
 from rigplane.web.handlers.scope import ScopeHandler
@@ -144,20 +152,6 @@ def radio_with_mock() -> tuple[IcomRadio, MockTransport]:
 # ---------------------------------------------------------------------------
 
 
-class _ScopeWriter:
-    def __init__(self) -> None:
-        self.output: list[bool] = []
-
-    def tuned_frequency(self, receiver: int) -> float:
-        return 14_100_000
-
-    async def set_output(self, enabled: bool) -> None:
-        self.output.append(enabled)
-
-    async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
-        pass
-
-
 class _SlowScopeSocket:
     """Connection fake whose binary sends wait for explicit drain permits."""
 
@@ -210,7 +204,8 @@ async def test_scope_stress_slow_consumer_queue_bounded(
 ) -> None:
     """Bound v2 delivery to two hub frames plus one blocked send; newest wins."""
     server = WebServer(None)
-    writer = _ScopeWriter()
+    writer = create_autospec(ScopeSession, instance=True, spec_set=True)
+    writer.tuned_frequency.return_value = 14_100_000
     source = RadioScopeSource(resolve_radio_profile(model=model), writer)
     server.scope_hub.register("radio", source)
     ws = _SlowScopeSocket()
@@ -225,12 +220,14 @@ async def test_scope_stress_slow_consumer_queue_bounded(
         )
         await virtual_clock.elapse(0)
         assert len(ws.text) == 1
-        assert decode_scope_granted(ws.text[0]).width == width
+        assert decode_scope_granted(ws.text[0]) == GrantedSubscription(
+            "radio", 0, view, Coverage(view.start_hz, view.end_hz), width, 10
+        )
         stream = handler._streams[ScopeTarget("radio", 0)]
         subscription = stream.subscription
         sender = stream.sender
         assert sender is not None and not sender.done()
-        assert writer.output == [True]
+        assert writer.set_output.await_args_list == [call(True)]
 
         def publish(index: int) -> None:
             source.feed_frame(
@@ -293,7 +290,10 @@ async def test_scope_stress_slow_consumer_queue_bounded(
         assert sender.done() and handler._streams == {}
         assert subscription._latest is None and subscription._pending is None
         assert subscription._timer is None
-        assert writer.output == [True, False]
+        assert writer.set_output.await_args_list == [
+            call(True),
+            call(False, release=True),
+        ]
         assert handler not in server._scope_handlers
     finally:
         consumer.cancel()

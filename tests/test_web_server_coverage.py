@@ -278,7 +278,9 @@ def _scope_radio(
     radio.get_scope_hold = AsyncMock(return_value=False)
     radio.set_scope_hold = AsyncMock()
 
-    return radio
+    from test_web_server import _add_scope_capable_attrs
+
+    return _add_scope_capable_attrs(radio)
 
 
 class _StateNotifyRadio(MagicMock):
@@ -452,6 +454,9 @@ class _ManagedTxStateNotifyRadio(_StateNotifyRadio):
         # attributes do not satisfy.
         self.capabilities = {"scope"}
         self.on_scope_data = MagicMock()
+        from test_web_server import _add_scope_capable_attrs
+
+        _add_scope_capable_attrs(self)
 
 
 ScopeCapable.register(_ManagedTxStateNotifyRadio)
@@ -500,15 +505,15 @@ async def test_managed_tx_start_still_registers_reconnect_recovery_pass() -> Non
         # Simulate the radio's post-soft_reconnect edge: the registered
         # callback must refetch state and queue the scope re-enable.
         srv._scope_handlers.add(MagicMock())  # noqa: SLF001
-        srv._radio_scope_demand = True
-        scope_callbacks_before = radio.on_scope_data.call_count
+        srv.scope_hub
+        await srv._radio_scope_session.set_output(True)
+        radio.enable_scope.reset_mock()
         radio._reconnect_callback()
-        await _await_condition(
-            lambda: radio.on_scope_data.call_count > scope_callbacks_before
-        )
+        await _await_condition(lambda: radio._fetch_initial_state.await_count == 1)
 
         radio._fetch_initial_state.assert_awaited_once()
-        assert any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
+        radio.enable_scope.assert_awaited_once()
+        assert srv._radio_scope_session.enabled
         await srv.stop()
 
     fake_poller.stop.assert_called_once()
@@ -3552,15 +3557,14 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
     radio._fetch_initial_state = AsyncMock()
     srv = WebServer(radio)
     srv._scope_handlers.add(MagicMock())
-    srv._radio_scope_demand = True
-
-    scope_callbacks_before = radio.on_scope_data.call_count
+    srv.scope_hub
+    await srv._radio_scope_session.set_output(True)
+    radio.enable_scope.reset_mock()
     srv._on_radio_reconnect()  # noqa: SLF001
-    await _await_condition(
-        lambda: radio.on_scope_data.call_count > scope_callbacks_before
-    )
+    await _await_condition(lambda: radio._fetch_initial_state.await_count == 1)
 
-    assert any(isinstance(c, EnableScope) for c in srv.command_queue.drain())
+    radio.enable_scope.assert_awaited_once()
+    assert srv._radio_scope_session.enabled
     assert radio.radio_ready is False  # gate was bypassed, not flipped
 
 
@@ -3635,7 +3639,7 @@ async def test_scope_health_monitor_link_down_then_menu_silence(
 ) -> None:
     """MOR-3690: link down resets the frame clock; menu silence (no frames,
     CI-V healthy) publishes hidden and never enqueues an enable."""
-    srv, radio, queued = _virtual_scope_server(monkeypatch, virtual_clock)
+    srv, radio, queued = await _virtual_scope_server(monkeypatch, virtual_clock)
     radio.connected = False
     radio.radio_ready = False
     srv._scope_started_at = 0.0  # noqa: SLF001
@@ -3644,7 +3648,12 @@ async def test_scope_health_monitor_link_down_then_menu_silence(
     try:
         await _elapse_scope_windows(virtual_clock, 2)
         # Link down: the frame clock is reset inside the monitor window.
-        assert 0.0 <= virtual_clock() - srv._scope_started_at <= 10.0  # noqa: SLF001
+        assert (
+            srv._radio_scope_session.health(
+                civ_flowing=True, link_ready=radio.radio_ready
+            ).hidden
+            is None
+        )  # noqa: SLF001
         radio.connected = True
         radio.radio_ready = True
         await _elapse_scope_windows(
@@ -3742,6 +3751,8 @@ def test_scope_frame_fixtures_are_producer_typed() -> None:
 
 def _feed_scope_health(srv: WebServer, frame: ScopeFrame) -> None:
     now = asyncio.get_running_loop().time()
+    if srv._radio_scope_session is not None:
+        srv._radio_scope_session.on_frame(frame)
     hub = srv.scope_hub
     hub._sources["radio"].health[frame.receiver] = ScopeHealth(
         now,
@@ -3759,7 +3770,7 @@ def _scope_hidden_verdict(srv: WebServer) -> object:
     return None
 
 
-def _virtual_scope_server(
+async def _virtual_scope_server(
     monkeypatch: pytest.MonkeyPatch,
     clock: VirtualClock,
     *,
@@ -3780,27 +3791,24 @@ def _virtual_scope_server(
     if radio is None:
         radio = _scope_radio()
     radio._fetch_initial_state = AsyncMock()  # noqa: SLF001
+    from _scope_session_fake import attach_scope_session
+    from rigplane.scope.models import ScopeDemand
+
+    radio.get_scope_session_state.return_value = (True, True)
+    session = attach_scope_session(radio, clock=clock, silence_seconds=interval)
     srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
     srv.scope_hub
-    srv._scope_handlers.add(MagicMock())  # noqa: SLF001
-    srv._radio_scope_demand = True
-    srv._scope_enabled = True  # noqa: SLF001
+    srv._scope_handlers.add(MagicMock())
+    await session.set_demand(ScopeDemand(1, 1))
     srv._scope_health_interval = interval  # noqa: SLF001
     queued: list[EnableScope] = []
-    put_ordered = srv.command_queue.put_ordered  # noqa: SLF001
 
-    def observe_and_complete(command: object, **kwargs: object) -> object:
-        entry = put_ordered(command, **kwargs)
-        if isinstance(command, EnableScope):
-            queued.append(command)
-            if on_enable is not None:
-                on_enable()
-        future = kwargs.get("future")
-        if isinstance(future, asyncio.Future) and not future.done():
-            future.set_result(None)
-        return entry
+    async def record_enable(**kwargs):
+        queued.append(EnableScope())
+        if on_enable is not None:
+            on_enable()
 
-    monkeypatch.setattr(srv.command_queue, "put_ordered", observe_and_complete)
+    radio.enable_scope.side_effect = record_enable
     clock.scope_to(monkeypatch, server_module)
     return srv, radio, queued
 
@@ -3931,7 +3939,7 @@ async def test_scope_health_monitor_verdicts_around_tx(
 ) -> None:
     """MOR-2859/MOR-3690: TX pauses judgement; live frames publish visible;
     a later menu silence publishes hidden — all without a single write."""
-    srv, radio, queued = _virtual_scope_server(monkeypatch, virtual_clock)
+    srv, radio, queued = await _virtual_scope_server(monkeypatch, virtual_clock)
     srv._managed_tx_keyed = True  # noqa: SLF001
 
     monitor = asyncio.create_task(srv._scope_health_monitor())  # noqa: SLF001
@@ -3968,7 +3976,7 @@ async def test_scope_health_monitor_stale_ptt_writes_nothing(
 ) -> None:
     """MOR-2859/MOR-3690: stale observed PTT is not TX — the monitor judges
     the stall normally (publishes hidden) and still never writes."""
-    srv, radio, queued = _virtual_scope_server(monkeypatch, virtual_clock)
+    srv, radio, queued = await _virtual_scope_server(monkeypatch, virtual_clock)
     # The ON observation is already stale: stamped 100 s behind the clock.
     srv.command_state_store.apply_current(
         _store_observation(
@@ -5485,3 +5493,52 @@ class TestStateEtag:
         assert "200" in status_line, f"Expected 200, got: {status_line}"
         body_start = text.index("\r\n\r\n") + 4
         assert len(text[body_start:]) > 0, "200 response must have a body"
+
+
+@pytest.mark.parametrize("signal", ["tx", "readiness"])
+async def test_health_snapshot_cannot_delay_fresh_scope_resume(
+    signal, virtual_clock, monkeypatch
+):
+    srv, radio, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
+    session = srv._radio_scope_session
+    transmitting = False
+    radio.radio_ready = signal != "readiness"
+    monkeypatch.setattr(srv, "_scope_tx_known", lambda: transmitting)
+    session.tx_probe = lambda: transmitting
+    await session.set_output(False, release=False)
+    transmitting = signal == "tx"
+    monitor = asyncio.create_task(srv._scope_health_monitor())
+    try:
+        await _elapse_scope_windows(virtual_clock, 1)
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
+    transmitting = False
+    radio.radio_ready = True
+    started = virtual_clock()
+    await session.set_output(True)
+    assert session.enabled
+    assert virtual_clock() - started <= 0.1
+
+
+async def test_scope_monitor_survives_pending_restore_failure(
+    virtual_clock, monkeypatch
+):
+    from rigplane.core.exceptions import CommandError
+
+    srv, radio, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
+    session = srv._radio_scope_session
+    await session.set_output(False, release=False)
+    radio.enable_scope.side_effect = CommandError("external CAT owns wire")
+    with pytest.raises(CommandError):
+        await session.set_output(False)
+    monitor = asyncio.create_task(srv._scope_health_monitor())
+    try:
+        await _elapse_scope_windows(virtual_clock, 1)
+        assert not monitor.done()
+        radio.enable_scope.side_effect = None
+        await _elapse_scope_windows(virtual_clock, 1)
+        assert not session.restoring
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)

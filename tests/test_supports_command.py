@@ -78,7 +78,6 @@ _EXPECTED_COUNTS = {
     "X6200": (15, 19),
 }
 _ALIASES = {
-    "disable_scope": ScopeRuntimeMixin,
     "get_scope_dual": ScopeRuntimeMixin,
     "get_scope_receiver": ScopeRuntimeMixin,
     "set_scope_receiver": ScopeRuntimeMixin,
@@ -155,8 +154,14 @@ def _assert_parity(relations, sources=None) -> None:
             builder.__name__ for builder in by_name[name].builders
         }
     scope = by_name["enable_scope"].builders
-    assert {b.__name__ for b in scope} == _command_calls(
-        ScopeRuntimeMixin, "enable_scope", sources
+    assert {b.__name__ for b in scope} == {"scope_on", "scope_data_output"}
+    assert "scope_session" in _self_calls(ScopeRuntimeMixin, "enable_scope", sources)
+    assert "scope_session" in _self_calls(ScopeRuntimeMixin, "disable_scope", sources)
+    assert "_scope_setting_frame" in _self_calls(
+        ScopeRuntimeMixin, "_write_scope_setting", sources
+    )
+    assert "scope_data_output" in _command_calls(
+        ScopeRuntimeMixin, "_scope_setting_frame", sources
     )
     assert by_name["capture_scope_frame"].builders == scope
     assert by_name["capture_scope_frames"].builders == scope
@@ -416,6 +421,14 @@ class TestRelationMutations:
         delegate_module = inspect.getmodule(dual_watch.builders[0])
         assert delegate_module is not None
         mutants = (
+            (
+                (ScopeRuntimeMixin, "_write_scope_setting"),
+                "async def f(self):\n return None",
+            ),
+            (
+                (ScopeRuntimeMixin, "_scope_setting_frame"),
+                'def f(self):\n return b""',
+            ),
             (
                 (CoreRadio, "get_mode_info"),
                 'async def f(self):\n """_get_mode_info_main"""\n return await self._get_unselected_mode()',

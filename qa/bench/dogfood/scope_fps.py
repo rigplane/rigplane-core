@@ -78,7 +78,9 @@ async def simulator() -> AsyncIterator[tuple[str, float]]:
 
     previous_gaps = testkit._SCOPE_GAP_S
     testkit._SCOPE_GAP_S = {speed: 1 / 30 for speed in previous_gaps}
-    fake = testkit.MockIcomRadio(scope_stream=True, enable_audio=True)
+    from rigplane_testkit.icom.scope_control import ScopeControlSimulator
+
+    fake = ScopeControlSimulator(scope_stream=True, enable_audio=True)
     receiver, templates = next(iter(fake._scope_templates.items()))
     wave = parse_civ_frame(templates[0])
     native = ScopeAssembler().feed(wave.data[1:], receiver)

@@ -148,7 +148,9 @@ export class ScopeStream {
       if (selected && this.matchingSubscription(granted)?.maxFps !== 0) this.publishGeometry(scopeGrantedGeometry(granted, this.context));
     } else if (message && typeof message === 'object' && 'type' in message && message.type === 'error'
       && 'message' in message && typeof message.message === 'string') {
-      this.reset(); this.retryNeeded = true; this.errorStore.set(message.message);
+      // A rejected update leaves the server's previous subscription running.
+      if (this.frames.size === 0) this.reset();
+      this.retryNeeded = true; this.errorStore.set(message.message);
     }
   }
 

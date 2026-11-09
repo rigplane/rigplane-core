@@ -193,6 +193,7 @@ class _FakeSerialCivLink:
         self.model_id = model_id
         self.identity_queries = 0
         self.selection_reads: list[bytes] = []
+        self.scope_state = {0x10: False, 0x11: False}
 
     def set_device(self, device: str) -> None:
         self.device_history.append(device)
@@ -234,8 +235,33 @@ class _FakeSerialCivLink:
             return
         self.sent_frames.append(payload)
         send_no = len(self.sent_frames)
-        for response in self._responses_by_send.pop(send_no, []):
+        scripted = self._responses_by_send.pop(send_no, [])
+        for response in scripted:
             self._responses.put_nowait(response)
+        civ = parse_civ_frame(payload)
+        if civ.command == 0x27 and civ.sub in (0x10, 0x11):
+            if not civ.data:
+                state_replies = [
+                    parse_civ_frame(item)
+                    for item in scripted
+                    if parse_civ_frame(item).command == 0x27
+                    and parse_civ_frame(item).sub == civ.sub
+                ]
+                if state_replies:
+                    self.scope_state[civ.sub] = bool(state_replies[0].data[0])
+                else:
+                    self._responses.put_nowait(
+                        _scope_state_response(civ.sub, self.scope_state[civ.sub])
+                    )
+            else:
+                self.scope_state[civ.sub] = bool(civ.data[0])
+                if not any(
+                    parse_civ_frame(item).command in (0xFA, 0xFB) for item in scripted
+                ):
+                    self._responses.put_nowait(
+                        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0xFB)
+                    )
+            return
         # MOR-3071: the connect-time identity read. The reply is a real
         # 19 00 answer from the frame's own radio address, carrying the
         # IC-7610 model-ID byte (0x98 — opaque, never compared
@@ -2132,10 +2158,14 @@ async def test_serial_scope_enable_disable_full_lifecycle_commands() -> None:
     # MOR-3071: connect sends the identity read first (its answer carries
     # the 0x98 payload, not the request).
     assert signatures[0] == (0x19, 0x00, b"")
-    assert signatures[1] == (0x27, 0x10, b"\x01")
-    assert signatures[2] == (0x27, 0x11, b"\x01")
-    assert signatures[3] == (0x27, 0x11, b"\x00")
-    assert signatures[4] == (0x27, 0x10, b"\x00")
+    assert signatures[1:] == [
+        (0x27, 0x10, b""),
+        (0x27, 0x11, b""),
+        (0x27, 0x10, b"\x01"),
+        (0x27, 0x11, b"\x01"),
+        (0x27, 0x10, b"\x00"),
+        (0x27, 0x11, b"\x00"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -2215,12 +2245,12 @@ async def test_scope_session_restore_preserves_panel_and_output_state_exactly() 
     ]
     assert initial == (True, False)
     assert signatures == [
-        (0x19, 0x00, b""),  # MOR-3071 identity read on connect
+        (0x19, 0x00, b""),
         (0x27, 0x10, b""),
         (0x27, 0x11, b""),
-        (0x27, 0x10, b"\x01"),
+        (0x27, 0x10, b""),
+        (0x27, 0x11, b""),
         (0x27, 0x11, b"\x01"),
-        (0x27, 0x10, b"\x01"),
         (0x27, 0x11, b"\x00"),
     ]
 
@@ -2245,8 +2275,8 @@ async def test_rejected_low_baud_scope_enable_never_emits_scope_off() -> None:
     poller = RadioPoller(radio, queue, radio_state=radio.radio_state)
 
     with pytest.raises(CommandError, match="baudrate"):
-        await poller._execute(EnableScope(generation=1))
-    await poller._execute(DisableScope(generation=2))
+        await poller._execute(EnableScope())
+    await poller._execute(DisableScope())
     await radio.disconnect()
 
     signatures = [
@@ -2289,9 +2319,9 @@ async def test_verify_timeout_after_scope_on_rolls_back_exact_initial_state() ->
     poller = RadioPoller(radio, CommandQueue(), radio_state=radio.radio_state)
 
     with pytest.raises(RigplaneTimeoutError, match="verification timed out"):
-        await poller._execute(EnableScope(policy="verify", generation=1))
+        await poller._execute(EnableScope(policy="verify"))
     sent_before_disable = len(link.sent_frames)
-    await poller._execute(DisableScope(generation=2))
+    await poller._execute(DisableScope())
     assert len(link.sent_frames) == sent_before_disable
     await radio.disconnect()
 
@@ -2569,8 +2599,33 @@ class _GateSerialLink(_FakeSerialCivLink):
             self.lifecycle_events.append(("send", payload))
         self.sent_frames.append(payload)
         send_no = len(self.sent_frames)
-        for response in self._responses_by_send.pop(send_no, []):
+        scripted = self._responses_by_send.pop(send_no, [])
+        for response in scripted:
             self._responses.put_nowait(response)
+        civ = parse_civ_frame(payload)
+        if civ.command == 0x27 and civ.sub in (0x10, 0x11):
+            if not civ.data:
+                state_replies = [
+                    parse_civ_frame(item)
+                    for item in scripted
+                    if parse_civ_frame(item).command == 0x27
+                    and parse_civ_frame(item).sub == civ.sub
+                ]
+                if state_replies:
+                    self.scope_state[civ.sub] = bool(state_replies[0].data[0])
+                else:
+                    self._responses.put_nowait(
+                        _scope_state_response(civ.sub, self.scope_state[civ.sub])
+                    )
+            else:
+                self.scope_state[civ.sub] = bool(civ.data[0])
+                if not any(
+                    parse_civ_frame(item).command in (0xFA, 0xFB) for item in scripted
+                ):
+                    self._responses.put_nowait(
+                        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0xFB)
+                    )
+            return
         if payload[4:-1] == b"\x19\x00":
             self.identity_queries += 1
             if self.policy_answer and (
@@ -3718,3 +3773,34 @@ async def test_startup_gate_releases_at_once_while_identity_is_no_response(
         if record.levelno >= logging.WARNING and "identity" in record.getMessage()
     ]
     assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reconnect", [False, True])
+async def test_retained_sdk_scope_resumes_after_late_serial_identity(reconnect):
+    link = _GateSerialLink(answer_identity=True, model_id=IC_7610_ADDR)
+    radio = Icom7610SerialRadio(device="/dev/fake-scope", civ_link=link)
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.05
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (0.05,)
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 0.05
+    try:
+        await radio.connect()
+        await radio.enable_scope(policy="fast")
+        if not reconnect:
+            await radio.disconnect()
+        link.policy_answer = False
+        link.scope_state[0x11] = False
+        if reconnect:
+            link.ready = link.healthy = False
+            await radio.soft_reconnect()
+        else:
+            await radio.connect()
+        assert await await_until(
+            lambda: radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+        )
+        link.policy_answer = True
+        assert await await_until(lambda: radio.connected)
+        assert await await_until(lambda: link.scope_state[0x11])
+    finally:
+        await radio.disconnect()

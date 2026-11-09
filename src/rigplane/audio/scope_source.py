@@ -130,7 +130,7 @@ class AudioFftSource:
             await self.stop()
             raise
 
-    async def stop(self) -> None:
+    async def stop(self, *, release: bool = True) -> None:
         if not self._active:
             return
         self._active = False

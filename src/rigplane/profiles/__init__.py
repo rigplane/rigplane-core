@@ -23,6 +23,7 @@ from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.types import (
+    ScopeFixedEdgeRange,
     MemoryProfile,
     MemoryWriteLayout,
     ToneSquelchType,
@@ -537,6 +538,10 @@ class RadioProfile:
     # which take it as a parameter because commands/ may not import
     # profiles/ (.importlinter).
     scope_span_presets_hz: tuple[int, ...] = ()
+    scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = field(
+        default=(), kw_only=True
+    )
+    scope_fixed_edge_step_hz: int | None = field(default=None, kw_only=True)
     # Per-profile RX codec preference override (#797). When non-None, the first
     # entry is used as the initial ``audio_codec`` for radios created under this
     # profile (unless the caller passes an explicit non-default value). Values

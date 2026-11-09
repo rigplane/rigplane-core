@@ -522,12 +522,11 @@ class VfoEqualize:
 @dataclass(frozen=True, slots=True)
 class EnableScope:
     policy: str = "fast"
-    generation: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class DisableScope:
-    generation: int = 0
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -1306,7 +1305,6 @@ class CommandQueue:
     def __init__(self) -> None:
         self._segments: list[_CommandQueueSegment] = []
         self._notify: asyncio.Event = asyncio.Event()
-        self._scope_demand_generation = 0
         # MOR-1013: ids of the control sessions currently connected. An entry
         # outlives its author, and the poller keys on behalf of a session it
         # cannot otherwise see (decision D1-a), so the queue that carries the
@@ -1386,13 +1384,6 @@ class CommandQueue:
         """Whether ``session_id`` still has a connected control session."""
         return self._live_sessions is None or session_id in self._live_sessions
 
-    def _record_scope_demand(self, cmd: Command) -> None:
-        if isinstance(cmd, (EnableScope, DisableScope)):
-            self._scope_demand_generation = max(
-                self._scope_demand_generation,
-                cmd.generation,
-            )
-
     def _coalesced_tail(self) -> _CommandQueueSegment:
         if self._segments and self._segments[-1].kind == "coalesced":
             return self._segments[-1]
@@ -1413,7 +1404,6 @@ class CommandQueue:
         connection_generation: object | None = None,
     ) -> None:
         controller_ticket = self._controller_ticket(cmd)
-        self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
             cmd,
             command_id=command_id,
@@ -1451,7 +1441,6 @@ class CommandQueue:
         positive_tx_submission: asyncio.Task[Any] | None = None,
     ) -> CommandQueueEntry:
         controller_ticket = self._controller_ticket(cmd)
-        self._record_scope_demand(cmd)
         entry = CommandQueueEntry(
             cmd,
             future=future,
@@ -1543,10 +1532,6 @@ class CommandQueue:
     @property
     def has_commands(self) -> bool:
         return any(segment.has_commands for segment in self._segments)
-
-    @property
-    def latest_scope_demand_generation(self) -> int:
-        return self._scope_demand_generation
 
     async def wait(self, timeout: float | None = None) -> None:
         try:

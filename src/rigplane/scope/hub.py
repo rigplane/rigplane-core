@@ -13,6 +13,7 @@ from .models import (
     GrantedView,
     NativeFrame,
     ScopeSourcePlugin,
+    ScopeDemand,
     ScopeWireFrame,
     SourceCapabilities,
     Subscription,
@@ -32,6 +33,7 @@ class ScopeHealth:
 @dataclass
 class _Source:
     plugin: ScopeSourcePlugin
+    on_demand: Callable[[ScopeDemand], Awaitable[None]] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     clients: set[HubSubscription] = field(default_factory=set)
     unsubscribe: Callable[[], None] | None = None
@@ -141,10 +143,16 @@ class ScopeHub:
         self._loop = loop if loop is not None else asyncio.get_running_loop()
         self._sources: dict[str, _Source] = {}
 
-    def register(self, source_id: str, plugin: ScopeSourcePlugin) -> None:
+    def register(
+        self,
+        source_id: str,
+        plugin: ScopeSourcePlugin,
+        *,
+        on_demand: Callable[[ScopeDemand], Awaitable[None]] | None = None,
+    ) -> None:
         if source_id in self._sources:
             raise ValueError(f"duplicate scope source: {source_id}")
-        self._sources[source_id] = _Source(plugin)
+        self._sources[source_id] = _Source(plugin, on_demand)
 
     def capabilities(self, source_id: str) -> SourceCapabilities:
         return self._sources[source_id].plugin.capabilities()
@@ -203,6 +211,13 @@ class ScopeHub:
                     ),
                 )
                 source.clients.add(subscription)
+                try:
+                    await self._notify_demand(source)
+                except BaseException:
+                    subscription._discard()
+                    source.clients.remove(subscription)
+                    await _finish(self._notify_demand(source))
+                    raise
                 return subscription
             except BaseException:
                 if first:
@@ -231,18 +246,31 @@ class ScopeHub:
                 return
             client._discard()
             source.clients.remove(client)
-            if not any(client.granted.max_fps > 0 for client in source.clients) and (
-                source.unsubscribe is not None or source.stop_pending
-            ):
-                try:
-                    self._detach(source)
-                finally:
-                    await _finish(self._stop(source))
+            try:
+                await self._notify_demand(source)
+            finally:
+                if not any(c.granted.max_fps > 0 for c in source.clients) and (
+                    source.unsubscribe is not None or source.stop_pending
+                ):
+                    try:
+                        self._detach(source)
+                    finally:
+                        await _finish(self._stop(source))
+
+    @staticmethod
+    async def _notify_demand(source: _Source) -> None:
+        if source.on_demand is not None:
+            await source.on_demand(
+                ScopeDemand(
+                    len(source.clients),
+                    sum(c.granted.max_fps > 0 for c in source.clients),
+                )
+            )
 
     @staticmethod
     async def _stop(source: _Source) -> None:
         source.stop_pending = True
-        await source.plugin.stop()
+        await source.plugin.stop(release=not source.clients)
         source.stop_pending = False
 
     def _receive_frame(

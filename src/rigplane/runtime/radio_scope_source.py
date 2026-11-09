@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+import math
 from typing import Literal, Protocol
 
 from rigplane.profiles import RadioProfile
+from rigplane.core.types import ScopeFixedEdge
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import (
     Coverage,
@@ -21,7 +23,8 @@ from rigplane.scope.models import (
 
 class RadioScopeWriter(Protocol):
     def tuned_frequency(self, receiver: int) -> float: ...
-    async def set_output(self, enabled: bool) -> None: ...
+    async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
+    async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
     async def set_center(
         self, center_hz: float, span_hz: float, receiver: int
     ) -> None: ...
@@ -38,13 +41,17 @@ class RadioScopeSource:
         max_fps: float = 30,
     ) -> None:
         self._writer = writer
+        self._fixed_ranges = profile.scope_fixed_edge_ranges
+        self._fixed_step = profile.scope_fixed_edge_step_hz
         self._caps = SourceCapabilities(
             tuple(range(profile.receiver_count)),
-            ("center",),
+            ("center", "fixed") if self._fixed_ranges else ("center",),
             profile.scope_span_presets_hz,
             None,
             max_fps,
-            "center ± span/2",
+            "profile fixed edges or center ± span/2"
+            if self._fixed_ranges
+            else "center ± span/2",
         )
         if not self._caps.span_choices_hz:
             raise ValueError("radio scope requires profile span presets")
@@ -72,23 +79,51 @@ class RadioScopeSource:
 
     def coverage_for(self, view: ViewRequest, receiver: int | None = None) -> Coverage:
         resolved = self.resolve_view(view, receiver)
+        fixed = (
+            None
+            if isinstance(view, FollowView)
+            else self._fixed_edges(resolved, self._receiver(receiver))
+        )
+        if fixed is not None:
+            return Coverage(fixed.start_hz, fixed.end_hz)
         center = self._writer.tuned_frequency(self._receiver(receiver))
         needed = 2 * max(abs(resolved.start_hz - center), abs(resolved.end_hz - center))
         spans = self._caps.span_choices_hz
         span = next((span for span in spans if span >= needed), spans[-1])
         return Coverage(center - span / 2, center + span / 2)
 
+    def _fixed_edges(self, view: View, receiver: int) -> ScopeFixedEdge | None:
+        if self._fixed_step is None:
+            return None
+        tuned = self._writer.tuned_frequency(receiver)
+        for limits in self._fixed_ranges:
+            if not limits.start_hz <= tuned < limits.end_hz:
+                continue
+            start = math.floor(view.start_hz / self._fixed_step) * self._fixed_step
+            end = math.ceil(view.end_hz / self._fixed_step) * self._fixed_step
+            if limits.start_hz <= start < end <= limits.end_hz:
+                return ScopeFixedEdge(limits.range_index, receiver + 1, start, end)
+        return None
+
     async def set_view(
         self, view: ViewRequest, receiver: int | None = None
     ) -> GrantedView:
         selected = self._receiver(receiver)
         resolved = self.resolve_view(view, selected)
-        coverage = self.coverage_for(resolved, selected)
-        await self._writer.set_center(
-            (coverage.start_hz + coverage.end_hz) / 2,
-            coverage.end_hz - coverage.start_hz,
-            selected,
+        coverage = self.coverage_for(view, selected)
+        fixed = (
+            None
+            if isinstance(view, FollowView)
+            else self._fixed_edges(resolved, self._receiver(receiver))
         )
+        if fixed is not None:
+            await self._writer.set_fixed(fixed, selected)
+        else:
+            await self._writer.set_center(
+                (coverage.start_hz + coverage.end_hz) / 2,
+                coverage.end_hz - coverage.start_hz,
+                selected,
+            )
         return GrantedView(resolved, coverage)
 
     async def start(self) -> None:
@@ -101,10 +136,9 @@ class RadioScopeSource:
             await self.stop()
             raise
 
-    async def stop(self) -> None:
-        if self._active:
-            await self._writer.set_output(False)
-            self._active = False
+    async def stop(self, *, release: bool = True) -> None:
+        await self._writer.set_output(False, release=release)
+        self._active = False
 
     def on_frame(self, callback: Callable[[NativeFrame], None]) -> Callable[[], None]:
         self._callbacks.append(callback)

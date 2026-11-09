@@ -2479,6 +2479,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if self._civ_epoch != epoch:
             return
         await self._arm_managed_tx()
+        await self._scope_session_ready()
         await self._run_hard_reconnect_deferred_audio(epoch)
 
     async def _recover_audio_after_connect(

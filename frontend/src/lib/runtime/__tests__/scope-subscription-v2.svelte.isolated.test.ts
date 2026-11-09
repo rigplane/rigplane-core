@@ -113,6 +113,35 @@ it('retries a refused startup follow subscription after observed facts change', 
   expect(publish.mock.lastCall?.[0].view).toEqual({ follow: 'vfo', spanHz: 100000 });
 });
 
+it.each([0, 1])('keeps MAIN pixels and geometry after a receiver %i update is refused during SUB traffic', receiver => {
+  const { value } = stream();
+  const main = Symbol('main'), sub = Symbol('sub');
+  value.updateSurfaceSubscription(main, request());
+  value.updateSurfaceSubscription(sub, { ...request(), receiver: 1 });
+  value.setSlotFilter(scopeSlotKey('radio', 0));
+  const ingress = (receiver: number) => value.ingress(ingressScopeFrame(
+    scopeWire({ sourceId: 'radio', receiver }),
+    { source: 'radio', sourceId: 'radio', epoch: 1, mode: 3 },
+  ));
+  ingress(0);
+  const geometry = get(value.geometry);
+  const frame = value.latest('radio:0');
+  expect(geometry).toMatchObject({ receiver: 0, hasPixels: true, freshness: 'fresh' });
+  expect(frame?.pixels).not.toBeNull();
+  value.updateSurfaceSubscription(main, { ...request(), view: { startHz: 14_000_000, endHz: 14_100_000 } });
+  value.handleMessage({ type: 'error', sourceId: 'radio', receiver, message: 'CI-V command 0x27 refused (NAK)' });
+  ingress(1);
+  expect(get(value.error)).toBe('CI-V command 0x27 refused (NAK)');
+  expect(get(value.geometry)).toBe(geometry);
+  expect(value.latest('radio:0')).toBe(frame);
+  value.setFreshness('stale');
+  expect(get(value.geometry)?.freshness).toBe('stale');
+  value.setSessionEpoch(2);
+  expect(get(value.geometry)).toBeNull();
+  expect(value.latest('radio:0')).toBeNull();
+  value.dispose();
+});
+
 
 it('observes native backing width, intersection and document visibility for demand only', () => {
   const { value, publish } = stream();

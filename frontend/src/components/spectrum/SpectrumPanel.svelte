@@ -49,6 +49,7 @@
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
+  import StatusIndicator from '../../lib/Button/StatusIndicator.svelte';
   import { getBandPlanRegion, loadBandPlanConfig } from '$lib/stores/band-plan-region.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
   import EiBiBrowser from './EiBiBrowser.svelte';
@@ -1304,6 +1305,7 @@
   // R53: the panel keeps no pixels across a drop — replay may only paint a
   // frame the sink actually delivered to THIS display since the last drop.
   let samplePlaneLive = false;
+  let scopeError = $state<string | null>(null);
   let cachedWhileOff = false;
   let acceptScopeFrame: ((frame: ScopeFrame, slotKey: string) => void) | null = null;
 
@@ -1359,7 +1361,7 @@
       clearSample();
       if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
       const scopeStream = runtime.scope.stream(sourceIsAudio ? 'audio_fft' : 'hardware');
-      const stopError = scopeStream.error.subscribe(error => { if (error) clearSample(); });
+      const stopError = scopeStream.error.subscribe(error => { scopeError = error; });
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
@@ -1471,6 +1473,15 @@
     <ScopeSourceBadge source="sdr" sdr={sdrState} />
     <ScopeSourceSelector sources={[...sdrOtherSources, 'sdr']} active="sdr" />
   {/snippet}
+  {#snippet panelScopeStatus()}
+    {#if sdrSource}{@render sdrToolbarStatus()}
+    {:else if scopeStatusIndicator}{@render scopeStatusIndicator()}{/if}
+    {#if scopeError}
+      <span class="scope-refusal" role="status" title={scopeError}>
+        <StatusIndicator active color="amber" label={t('core.scope.viewRefused', { reason: scopeError })} />
+      </span>
+    {/if}
+  {/snippet}
   {#if traceCandidate}
     <div class="scope-trace-controls" aria-label="Scope render trace">
       <button type="button" onclick={() => startTrace()} disabled={traceStatus === 'recording' || !scopeDemandOn || !scopeConnected}>Start trace</button>
@@ -1492,8 +1503,9 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource ? sdrToolbarStatus : scopeStatusIndicator} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
+  {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
     class="spectrum-split-region"
     bind:this={splitRegion}
@@ -1668,6 +1680,7 @@
 {/key}
 
 <style>
+  .scope-refusal { min-width: 0; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .waterfall-history { position: absolute; inset: 0; }
   .scope-hatch {
     position: absolute;

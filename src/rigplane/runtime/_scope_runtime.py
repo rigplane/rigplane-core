@@ -6,10 +6,12 @@ Part of the radio.py decomposition (#505). All methods are accessed via
 
 from __future__ import annotations
 
+from rigplane.scope.models import ScopeDemand
+
 import asyncio
 import logging
 import warnings
-from typing import TYPE_CHECKING, AsyncGenerator
+from typing import TYPE_CHECKING, AsyncGenerator, Literal
 
 if TYPE_CHECKING:
     from typing import Callable
@@ -35,7 +37,6 @@ from rigplane.commands import (
     get_scope_speed,
     get_scope_vbw,
     parse_ack_nak,
-    parse_civ_frame,
     parse_scope_center_type_response,
     parse_scope_data_output_enabled_response,
     parse_scope_during_tx_response,
@@ -57,6 +58,12 @@ from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.radio_state import ScopeControlsState
 from rigplane.scope import ScopeFrame
 from rigplane.core.types import ScopeCompletionPolicy, ScopeFixedEdge
+from rigplane.runtime.scope_session import (
+    ScopeSession,
+    ScopeState,
+    ScopeSetting,
+    ScopeValue,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +123,139 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         finally:
             self._scope_stream_callbacks.remove(callback)
 
+    def scope_session(self) -> ScopeSession:
+        """Return the single scope-control owner for this radio."""
+        session = getattr(self, "_control_scope_session", None)
+        if not isinstance(session, ScopeSession):
+            session = ScopeSession(
+                self._read_scope_session,
+                self._write_scope_setting,
+                lambda range_index, edge: self.get_scope_fixed_edge(
+                    range_index=range_index, edge=edge
+                ),
+                self._read_scope_receiver,
+                lambda receiver: float(
+                    self._radio_state.main.freq
+                    if receiver == 0
+                    else self._radio_state.sub.freq
+                ),
+                self._profile.scope_span_presets_hz,
+                lambda: bool(self._radio_state.ptt),
+                ready=self._connected,
+                validate=self._scope_setting_frame,
+                read_dual=self.get_scope_dual,
+            )
+            self._control_scope_session = session
+        return session
+
+    async def _scope_session_ready(self) -> None:
+        session = getattr(self, "_control_scope_session", None)
+        if isinstance(session, ScopeSession):
+            try:
+                await session.set_ready(True)
+            except Exception:
+                logger.warning(
+                    "scope reconciliation remains pending after readiness",
+                    exc_info=True,
+                )
+
+    async def _read_scope_receiver(self, receiver: int) -> ScopeState:
+        _, mode = await self._read_scope_view_setting("mode", receiver)
+        _, span = await self._read_scope_view_setting("span", receiver)
+        _, edge = await self._read_scope_view_setting("edge", receiver)
+        return ScopeState(False, False, mode, span, edge)
+
+    async def _read_scope_view_setting(
+        self, name: Literal["mode", "span", "edge"], receiver: int
+    ) -> tuple[int | None, int]:
+        """Read an explicit receiver without changing shared SDK selection/cache."""
+        self._check_connected()
+        builder = getattr(self._commands, f"get_scope_{name}")
+        resp = await self._send_civ_expect(
+            builder(to_addr=self._radio_addr, receiver=receiver),
+            label=f"get_scope_{name}",
+        )
+        if name == "span":
+            command, sub, _ = self._expect_shape(get_scope_span)
+            return parse_scope_span_response(
+                resp, self._profile.scope_span_presets_hz, command=command, sub=sub
+            )
+        if name == "mode":
+            command, sub, _ = self._expect_shape(get_scope_mode)
+            return parse_scope_mode_response(resp, command=command, sub=sub)
+        command, sub, _ = self._expect_shape(get_scope_edge)
+        return parse_scope_edge_response(resp, command=command, sub=sub)
+
+    async def _read_scope_session(self) -> ScopeState:
+        panel, output = await self.get_scope_session_state()
+        controls = self._scope_controls()
+        return ScopeState(
+            panel, output, controls.mode or 0, controls.span or 0, controls.edge or 1
+        )
+
+    def _scope_setting_frame(
+        self, name: ScopeSetting, value: ScopeValue, receiver: int
+    ) -> bytes:
+        if name == "scope_on":
+            builder = self._commands.scope_on if value else self._commands.scope_off
+            frame = builder(to_addr=self._radio_addr)
+        elif name == "output_on":
+            frame = self._commands.scope_data_output(
+                bool(value), to_addr=self._radio_addr
+            )
+        elif name == "dual":
+            frame = self._commands.scope_single_dual(
+                bool(value), to_addr=self._radio_addr
+            )
+        elif name == "fixed_edge":
+            assert isinstance(value, ScopeFixedEdge)
+            frame = self._commands.scope_set_fixed_edge(
+                edge=value.edge,
+                start_hz=value.start_hz,
+                end_hz=value.end_hz,
+                range_index=value.range_index,
+                to_addr=self._radio_addr,
+            )
+        elif name == "span":
+            assert isinstance(value, int)
+            frame = self._commands.scope_set_span(
+                value,
+                presets=self._profile.scope_span_presets_hz,
+                receiver=receiver,
+                to_addr=self._radio_addr,
+            )
+        else:
+            assert isinstance(value, int)
+            builder = (
+                self._commands.scope_set_mode
+                if name == "mode"
+                else self._commands.scope_set_edge
+            )
+            frame = builder(value, receiver=receiver, to_addr=self._radio_addr)
+        return frame
+
+    async def _write_scope_setting(
+        self, name: ScopeSetting, value: ScopeValue, receiver: int
+    ) -> None:
+        """The sole writer for scope lifecycle and viewport commands."""
+        self._check_connected()
+        if self.external_cat_session_active:
+            raise CommandError(
+                "scope restore deferred while an external CAT session owns the wire"
+            )
+        frame = self._scope_setting_frame(name, value, receiver)
+        response = await self._send_civ_raw(frame, wait_response=True)
+        if response is None or parse_ack_nak(response) is not True:
+            raise CommandError(f"Radio did not acknowledge scope {name}")
+        controls = self._scope_controls()
+        if name == "dual":
+            controls.dual = bool(value)
+        elif name == "fixed_edge":
+            assert isinstance(value, ScopeFixedEdge)
+            controls.fixed_edge = value
+        elif name not in ("scope_on", "output_on") and receiver == controls.receiver:
+            setattr(controls, name, value)
+
     async def enable_scope(
         self,
         *,
@@ -123,40 +263,15 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         policy: ScopeCompletionPolicy | str = ScopeCompletionPolicy.VERIFY,
         timeout: float = 5.0,
     ) -> None:
-        """Enable scope display and data output on the radio.
-
-        Args:
-            output: Also enable wave data output (default True).
-            policy: Completion policy (strict, fast, verify).
-            timeout: Verification timeout in seconds.
-
-        Raises:
-            CommandError: If the radio rejects the command (in strict mode).
-            TimeoutError: If verification times out (in verify mode).
-        """
+        """Acquire SDK scope demand through the shared acknowledged session."""
         self._check_connected()
         pol = ScopeCompletionPolicy(policy)
-        wait_resp = pol == ScopeCompletionPolicy.STRICT
-
-        if pol == ScopeCompletionPolicy.VERIFY:
+        if pol == ScopeCompletionPolicy.VERIFY or not self.scope_session().enabled:
             self._scope_activity_event.clear()
-
-        resp = await self._send_civ_raw(
-            self._commands.scope_on(to_addr=self._radio_addr), wait_response=wait_resp
-        )
-        if wait_resp and resp is not None:
-            if parse_ack_nak(resp) is False:
-                raise CommandError("Radio rejected scope enable")
-        if output:
-            resp = await self._send_civ_raw(
-                self._commands.scope_data_output(True, to_addr=self._radio_addr),
-                wait_response=wait_resp,
-            )
-            if wait_resp and resp is not None:
-                if parse_ack_nak(resp) is False:
-                    raise CommandError("Radio rejected scope data output enable")
-
-        if pol == ScopeCompletionPolicy.VERIFY:
+        await self.scope_session().set_demand(ScopeDemand(1, int(output)), owner="sdk")
+        if not output:
+            await self.scope_session().configure(scope_on=True)
+        if output and pol == ScopeCompletionPolicy.VERIFY:
             try:
                 await asyncio.wait_for(
                     self._scope_activity_event.wait(), timeout=timeout
@@ -189,42 +304,18 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         )
 
     async def restore_scope_session_state(self, state: tuple[bool, bool]) -> None:
-        """Restore the exact panel/output state captured before a web session."""
-        self._check_connected()
-        panel_enabled, output_enabled = state
-        await self._send_civ_raw(
-            (self._commands.scope_on if panel_enabled else self._commands.scope_off)(
-                to_addr=self._radio_addr
-            ),
-            wait_response=False,
-        )
-        await self._send_civ_raw(
-            self._commands.scope_data_output(output_enabled, to_addr=self._radio_addr),
-            wait_response=False,
-        )
+        """Apply an explicit SDK panel/output snapshot through the shared writer."""
+        session = self.scope_session()
+        await session.set_demand(ScopeDemand(0, 0), owner="sdk")
+        if not session.active:
+            await session.configure(scope_on=state[0], output_on=state[1])
 
     async def disable_scope(
         self, *, policy: ScopeCompletionPolicy | str = ScopeCompletionPolicy.FAST
     ) -> None:
-        """Disable scope data output on the radio.
-
-        Args:
-            policy: Completion policy, usually fast.
-
-        Raises:
-            CommandError: If the radio rejects the command (strict mode).
-        """
-        self._check_connected()
-        pol = ScopeCompletionPolicy(policy)
-        wait_resp = pol == ScopeCompletionPolicy.STRICT
-
-        resp = await self._send_civ_raw(
-            self._commands.scope_data_output(False, to_addr=self._radio_addr),
-            wait_response=wait_resp,
-        )
-        if wait_resp and resp is not None:
-            if parse_ack_nak(resp) is False:
-                raise CommandError("Radio rejected scope data output disable")
+        """Release SDK demand and restore the pre-session scope settings."""
+        ScopeCompletionPolicy(policy)
+        await self.scope_session().set_demand(ScopeDemand(0, 0), owner="sdk")
 
     async def get_scope_receiver(self) -> int:
         """Read the selected scope receiver (0=MAIN, 1=SUB)."""
@@ -275,89 +366,48 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
 
     async def get_scope_mode(self) -> int:
         """Read the current scope mode (0=center, 1=fixed, 2=scroll-C, 3=scroll-F)."""
-        self._check_connected()
-        receiver = self._scope_controls().receiver
-        resp = await self._send_civ_expect(
-            self._commands.get_scope_mode(to_addr=self._radio_addr, receiver=receiver),
-            label="get_scope_mode",
+        rx_hint, mode = await self._read_scope_view_setting(
+            "mode", self._scope_controls().receiver
         )
-        command, sub, _ = self._expect_shape(get_scope_mode)
-        rx_hint, mode = parse_scope_mode_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().mode = mode
         return mode
 
     async def set_scope_mode(self, mode: int) -> None:
-        """Set the scope mode (0=center, 1=fixed, 2=scroll-C, 3=scroll-F)."""
-        self._check_connected()
-        receiver = self._scope_controls().receiver
-        await self._send_civ_raw(
-            self._commands.scope_set_mode(
-                mode, to_addr=self._radio_addr, receiver=receiver
-            ),
-            wait_response=False,
+        """Set the scope mode through the shared session."""
+        await self.scope_session().configure(
+            receiver=self._scope_controls().receiver, mode=mode
         )
-        self._scope_controls().mode = mode
 
     async def get_scope_span(self) -> int:
         """Read the scope span preset index (0..7)."""
-        self._check_connected()
-        receiver = self._scope_controls().receiver
-        resp = await self._send_civ_expect(
-            self._commands.get_scope_span(to_addr=self._radio_addr, receiver=receiver),
-            label="get_scope_span",
-        )
-        command, sub, _ = self._expect_shape(get_scope_span)
-        rx_hint, span = parse_scope_span_response(
-            resp,
-            self._profile.scope_span_presets_hz,
-            command=command,
-            sub=sub,
+        rx_hint, span = await self._read_scope_view_setting(
+            "span", self._scope_controls().receiver
         )
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().span = span
         return span
 
     async def set_scope_span(self, span: int) -> None:
-        """Set the scope span preset index (0..7)."""
-        self._check_connected()
-        receiver = self._scope_controls().receiver
-        await self._send_civ_raw(
-            self._commands.scope_set_span(
-                span,
-                to_addr=self._radio_addr,
-                presets=self._profile.scope_span_presets_hz,
-                receiver=receiver,
-            ),
-            wait_response=False,
+        """Set the scope span through the shared session."""
+        await self.scope_session().configure(
+            receiver=self._scope_controls().receiver, span=span
         )
-        self._scope_controls().span = span
 
     async def get_scope_edge(self) -> int:
         """Read the fixed-edge selection (1..4)."""
-        self._check_connected()
-        receiver = self._scope_controls().receiver
-        resp = await self._send_civ_expect(
-            self._commands.get_scope_edge(to_addr=self._radio_addr, receiver=receiver),
-            label="get_scope_edge",
+        rx_hint, edge = await self._read_scope_view_setting(
+            "edge", self._scope_controls().receiver
         )
-        command, sub, _ = self._expect_shape(get_scope_edge)
-        rx_hint, edge = parse_scope_edge_response(resp, command=command, sub=sub)
         self._apply_scope_receiver_hint(rx_hint)
         self._scope_controls().edge = edge
         return edge
 
     async def set_scope_edge(self, edge: int) -> None:
-        """Set the fixed-edge selection (1..4)."""
-        self._check_connected()
-        receiver = self._scope_controls().receiver
-        await self._send_civ_raw(
-            self._commands.scope_set_edge(
-                edge, to_addr=self._radio_addr, receiver=receiver
-            ),
-            wait_response=False,
+        """Set the fixed-edge slot through the shared session."""
+        await self.scope_session().configure(
+            receiver=self._scope_controls().receiver, edge=edge
         )
-        self._scope_controls().edge = edge
 
     async def get_scope_hold(self) -> bool:
         """Read whether scope hold is enabled."""
@@ -559,7 +609,6 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         command, sub, _ = self._expect_shape(get_scope_fixed_edge)
         fixed_edge = parse_scope_fixed_edge_response(resp, command=command, sub=sub)
         self._scope_controls().fixed_edge = fixed_edge
-        self._scope_controls().edge = fixed_edge.edge
         return fixed_edge
 
     async def set_scope_fixed_edge(
@@ -570,28 +619,25 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         end_hz: int,
         range_index: int | None = None,
     ) -> None:
-        """Set the fixed-edge scope bounds."""
-        self._check_connected()
-        civ = self._commands.scope_set_fixed_edge(
-            edge=edge,
-            start_hz=start_hz,
-            end_hz=end_hz,
-            range_index=range_index,
-            to_addr=self._radio_addr,
+        """Set a fixed-edge slot using the profile's documented limits."""
+        if range_index is None:
+            limits = next(
+                (
+                    item
+                    for item in self._profile.scope_fixed_edge_ranges
+                    if item.start_hz <= start_hz < end_hz <= item.end_hz
+                ),
+                None,
+            )
+            if limits is None:
+                raise ValueError("scope fixed edges are outside profile limits")
+            range_index = limits.range_index
+        step = self._profile.scope_fixed_edge_step_hz
+        if step is not None and (start_hz % step or end_hz % step):
+            raise ValueError("scope fixed edges must follow the profile frequency step")
+        await self.scope_session().configure(
+            fixed_edge=ScopeFixedEdge(range_index, edge, start_hz, end_hz)
         )
-        await self._send_civ_raw(
-            civ,
-            wait_response=False,
-        )
-        # Re-parse the frame we just built to recover the resolved range_index
-        # (computed inside commands/scope.py: scope_set_fixed_edge) without
-        # duplicating logic.
-        command, sub, _ = self._expect_shape(get_scope_fixed_edge)
-        fixed_edge = parse_scope_fixed_edge_response(
-            parse_civ_frame(civ), command=command, sub=sub
-        )
-        self._scope_controls().fixed_edge = fixed_edge
-        self._scope_controls().edge = fixed_edge.edge
 
     async def get_scope_rbw(self) -> int:
         """Read the scope RBW preset (0=wide, 1=mid, 2=narrow)."""

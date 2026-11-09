@@ -1117,6 +1117,9 @@ class ControlPhaseRuntime:
                     "soft_reconnect: managed TX re-arm failed", exc_info=True
                 )
 
+        scope_ready = getattr(h, "_scope_session_ready", None)
+        if scope_ready is not None:
+            await scope_ready()
         on_reconnect = getattr(h, "_on_reconnect", None)
         if on_reconnect is not None:
             try:

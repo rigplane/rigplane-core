@@ -2589,6 +2589,7 @@ class TestAdvancedScopeControls:
     async def test_set_scope_fixed_edge_updates_radio_state(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
+        mock_transport.queue_response(_ack_response())
         await radio.set_scope_fixed_edge(edge=4, start_hz=14_000_000, end_hz=14_350_000)
         fixed_edge = radio.radio_state.scope_controls.fixed_edge
         assert fixed_edge.range_index == 6
@@ -2662,6 +2663,8 @@ class TestAdvancedScopeControls:
         field_name: str,
         expected: object,
     ) -> None:
+        if method_name in ("set_scope_mode", "set_scope_span", "set_scope_edge"):
+            mock_transport.queue_response(_ack_response())
         await getattr(radio, method_name)(**kwargs)
         assert getattr(radio.radio_state.scope_controls, field_name) == expected
         assert len(mock_transport.sent_packets) > 0
