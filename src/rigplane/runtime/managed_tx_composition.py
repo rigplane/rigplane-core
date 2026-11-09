@@ -331,10 +331,13 @@ class ManagedTxComposition:
         here.
         """
         try:
+            # Admitted after ``close_ingress_for_shutdown`` too: a closed
+            # ingress refuses keying, never a release (Codex gate P0).
             await self._authority.submit_force_off()
         except Exception:
-            # The authority may already be closing for shutdown; its
-            # own shutdown path then owes and drives the release.
+            # Only a closed, terminated or already shutting-down
+            # authority refuses; its own shutdown path then owes and
+            # drives the release.
             logger.info(
                 "managed_tx.startup_unkey: recording the release debt of "
                 "an aborted publication failed; the authority's own "
@@ -569,10 +572,11 @@ class ManagedTxComposition:
             task = self._transition_task
             if task is not None:
                 await asyncio.shield(task)
-            if not self._events:
-                await self._authority.close()
-                return ShutdownResult.DRAINED
             if self._active_provider is None:
+                # The clean-close shortcut never discards a release: close()
+                # refuses an authority that still owes one, and the owed
+                # release then goes through the authority's shutdown, which
+                # reports DRAINED only after a confirmed release.
                 try:
                     await self._authority.close()
                 except RuntimeError:

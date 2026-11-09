@@ -44,6 +44,7 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxOutcome,
 )
 from rigplane.runtime.radio import IcomRadio
+from rigplane.testing.timing import VirtualClock
 
 _COMPOSITION_LOGGER = "rigplane.runtime.managed_tx_composition"
 
@@ -78,6 +79,25 @@ async def _shutdown_terminated(
     termination = asyncio.Event()
     termination.set()
     return await composition.shutdown(termination)
+
+
+async def _shutdown_owes_until_terminated(
+    composition: ManagedTxComposition, clock: VirtualClock
+) -> ShutdownResult:
+    """Shutdown with a release owed and no provider to confirm it.
+
+    Codex gate P0 on #4521: shutdown must not report DRAINED while the
+    release is unconfirmed; it waits for the drain or the termination
+    signal, and only termination can end it here.
+    """
+    termination = asyncio.Event()
+    shutdown = asyncio.create_task(composition.shutdown(termination))
+    await clock.elapse(30.0)
+    assert not shutdown.done(), (
+        f"shutdown returned {shutdown.result()} with the release owed"
+    )
+    termination.set()
+    return await shutdown
 
 
 class _YaesuStartupFake:
@@ -665,8 +685,15 @@ async def test_cancelled_activation_joins_the_startup_release(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "ingress_closed", [False, True], ids=["open", "ingress-closed"]
+)
 async def test_cancelled_publication_task_never_spins_and_owes_the_release(
-    tmp_path, caplog: pytest.LogCaptureFixture
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+    virtual_clock: VirtualClock,
+    ingress_closed: bool,
 ) -> None:
     """Round-2 P1, inner half: cancelling the publication task itself.
 
@@ -675,6 +702,11 @@ async def test_cancelled_publication_task_never_spins_and_owes_the_release(
     abort retires the prepared provider, and the interrupted read
     leaves the release owed — shutdown never drains the provider as
     clean while the rig may still be keyed.
+
+    ``ingress-closed`` (Codex gate P0 on #4521): the production shutdown
+    sequence closes managed-TX ingress before its blanket cancellation;
+    the owed release must still be recorded, and shutdown must not
+    report DRAINED without a confirmed release.
     """
     fake = _YaesuSuspendedReadFake(ptt_token="1")
     caplog.set_level(logging.INFO)
@@ -692,6 +724,8 @@ async def test_cancelled_publication_task_never_spins_and_owes_the_release(
         for task in asyncio.all_tasks()
         if task.get_name() == "managed-tx-provider-publication"
     )
+    if ingress_closed:
+        composition.authority.close_ingress_for_shutdown()
     publication.cancel()
     activation.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -701,14 +735,22 @@ async def test_cancelled_publication_task_never_spins_and_owes_the_release(
     state = (await composition.authority.snapshot()).state
     assert state.intent.kind is ManagedTxIntentKind.RX
     assert state.release_required
-    termination = asyncio.Event()
-    termination.set()
-    assert await composition.shutdown(termination) is ShutdownResult.TERMINATED
+    assert (
+        await _shutdown_owes_until_terminated(composition, virtual_clock)
+        is ShutdownResult.TERMINATED
+    )
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(60)
+@pytest.mark.parametrize(
+    "ingress_closed", [False, True], ids=["open", "ingress-closed"]
+)
 async def test_cancelled_unstarted_publication_retires_and_owes(
-    tmp_path, caplog: pytest.LogCaptureFixture
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+    virtual_clock: VirtualClock,
+    ingress_closed: bool,
 ) -> None:
     """Round-3 P1: a publication cancelled before its own bookkeeping.
 
@@ -716,6 +758,8 @@ async def test_cancelled_unstarted_publication_retires_and_owes(
     before any of its own bookkeeping ran. The owning wrapper must
     still retire the prepared provider and record the release debt, so
     shutdown can never report DRAINED while the rig may be keyed.
+    ``ingress-closed``: the same after the production shutdown sequence
+    has already closed managed-TX ingress (Codex gate P0 on #4521).
     """
     retired: list[int] = []
 
@@ -750,6 +794,8 @@ async def test_cancelled_unstarted_publication_retires_and_owes(
         for task in asyncio.all_tasks()
         if task.get_name() == "managed-tx-provider-publication"
     )
+    if ingress_closed:
+        composition.authority.close_ingress_for_shutdown()
     publication.cancel()
     activation.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -759,9 +805,10 @@ async def test_cancelled_unstarted_publication_retires_and_owes(
     state = (await composition.authority.snapshot()).state
     assert state.intent.kind is ManagedTxIntentKind.RX
     assert state.release_required
-    termination = asyncio.Event()
-    termination.set()
-    assert await composition.shutdown(termination) is ShutdownResult.TERMINATED
+    assert (
+        await _shutdown_owes_until_terminated(composition, virtual_clock)
+        is ShutdownResult.TERMINATED
+    )
 
 
 @pytest.mark.asyncio
