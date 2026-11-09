@@ -106,7 +106,7 @@ class PanoramaSimulator(MockIcomRadio):
     def pump_scope_stream(self) -> int:
         if self.evidence.with_suffix(".pause").exists():
             return 0
-        half = self.profile.scope_span_presets_hz[self.span_index] // 2
+        half = self.profile.scope_span_presets_hz[self.span_index]
         first, last = self.fixed if self.scope_mode == 1 else (self._frequency, half)
         for receiver, templates in self._scope_templates.items():
             shaped = []
