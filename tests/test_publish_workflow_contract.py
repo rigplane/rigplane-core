@@ -38,3 +38,20 @@ def test_publish_uploads_only_from_a_directory_unique_to_the_run_attempt() -> No
     )
     assert re.search(r'run: uv publish .* "\$DIST_DIR"/\*$', publish, re.M)
     assert "dist/*" not in publish.replace('"$DIST_DIR"/*', "")
+
+
+def test_validate_frontend_step_sets_the_node_heap_svelte_check_needs() -> None:
+    # Core 3.2.0rc2 failed to publish: `npm run check` (svelte-check) died with
+    # "JavaScript heap out of memory" at ~1 GB in this step (run 42565818574).
+    # quick.yml already gives its frontend step this value; publish must match.
+    validate = _job("validate")
+    step = validate.split(
+        "      - name: Frontend install + check + tests + build\n", 1
+    )[1]
+    step = step.split("\n      - name:", 1)[0]
+    assert "npm run check" in step
+    assert re.search(
+        r"^        env:\n(?:          #.*\n)*          NODE_OPTIONS: --max-old-space-size=3072$",
+        step,
+        re.M,
+    ), "the publish frontend step must set NODE_OPTIONS=--max-old-space-size=3072"
