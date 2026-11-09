@@ -16,6 +16,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const port = Number(process.env.PANORAMA_PORT ?? 18845) + index;
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
+    try {
     const sent: Array<ScopeSubscription & { type: string }> = [];
     const grants: ScopeGranted[] = [];
     const frames: Array<{ view: number[]; coverage: number[] }> = [];
@@ -77,7 +78,6 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       return contents.trim().split('\n').filter(Boolean).map(
         parseScopeWriteReceipt);
     };
-    try {
       await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
       await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
       const area = page.locator('.spectrum-area').first();
@@ -118,7 +118,6 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       expect.soft(idleEnd.rafMs - idleStart.rafMs).toBeLessThan(20);
       expect(errors).toEqual([]);
     } finally {
-      console.log('receipts', JSON.stringify({ sent: sent.length, grants: grants.length, frames: frames.length, errors }));
       await server.kill();
     }
   });
