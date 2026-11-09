@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   validate:
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    # Build pool, not the 2 GiB gate pool: svelte-check needs ~2 GiB of Node heap
+    # (same pool as quick.yml's quick-frontend job, MOR-4214).
+    runs-on: [self-hosted, Linux, ARM64, build]
     timeout-minutes: 25
     env:
       # Pin uv to the matrix interpreter; unpinned, `uv run` picks the newest
@@ -94,6 +96,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Frontend install + check + tests + build
+        env:
+          # Same heap as quick.yml: svelte-check on Node 20 needs 1.5-2 GiB, and
+          # Node's default limit was ~1 GB here (rc2 publish OOM, run 42565818574).
+          NODE_OPTIONS: --max-old-space-size=3072
         run: |
           cd frontend
           npm ci

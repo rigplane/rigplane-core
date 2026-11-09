@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc3] — 2026-11-09
+
+This is the third release candidate of 3.2.0. It equals 3.2.0rc2 except for one
+CI change: the rc2 publish run failed with a svelte-check out-of-memory error.
+
+### Fixed
+
+- CI: the publish frontend step gets the Node heap setting used by quick (the rc2 publish failed with a svelte-check out-of-memory). No product code changed.
+
 ## [3.2.0rc2] — 2026-11-09
 
 This is the second release candidate of 3.2.0. It equals 3.2.0rc1 except for one
@@ -5218,7 +5227,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc3...HEAD
+[3.2.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc2...v3.2.0rc3
 [3.2.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc1...v3.2.0rc2
 [3.2.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.1.4...v3.2.0rc1
 [3.1.4]: https://github.com/rigplane/rigplane-core/compare/v3.1.3...v3.1.4
