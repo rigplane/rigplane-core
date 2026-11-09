@@ -7045,3 +7045,29 @@ async def test_shutdown_drain_executes_cancelled_unkey_after_callback_turn() -> 
     radio.set_freq.assert_not_awaited()
     assert reply.cancelled()
     assert not queue.has_commands
+
+
+@pytest.mark.parametrize("failure", [TimeoutError, RigplaneTimeoutError, CommandError])
+async def test_startup_scope_failure_keeps_command_executor_alive(failure, caplog):
+    from rigplane.scope.models import ScopeDemand
+
+    radio, queue = _make_radio(), CommandQueue()
+    session = radio.scope_session()
+    await session.set_ready(False)
+    await session.set_demand(ScopeDemand(1, 1))
+    radio.enable_scope.side_effect = [failure("scope unavailable"), None]
+    completed = asyncio.get_running_loop().create_future()
+    queue.put_ordered(SetFreq(14_074_000), future=completed)
+    poller = RadioPoller(radio, queue, radio_state=RadioState())
+
+    async def stop_turn(*args, **kwargs):
+        raise asyncio.CancelledError
+
+    queue.wait = stop_turn
+    await poller._run()
+    assert completed.done() and completed.exception() is None
+    radio.set_freq.assert_awaited_once()
+    assert not session.enabled
+    assert "scope" in caplog.text and "pending" in caplog.text
+    await session.reconcile()
+    assert session.enabled
