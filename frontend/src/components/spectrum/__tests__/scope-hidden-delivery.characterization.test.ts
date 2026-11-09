@@ -197,7 +197,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       resizeCallback?.([{ target: observed!, contentRect: { width: 301, height: 150 } } as ResizeObserverEntry],
         {} as ResizeObserver);
       flushSync(); flushPaint();
-      expect(pushed).toHaveBeenCalledTimes(4);
+      expect(pushed).toHaveBeenCalledTimes(3);
 
       hidden = true;
       document.dispatchEvent(new Event('visibilitychange'));
@@ -211,8 +211,8 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(arrivals).toEqual([...baselineIds, ...hiddenIds]);
       expect(accepted.map((value) => value.id)).toEqual([...baselineIds, ...hiddenIds]);
       expect(accepted.map((value) => value.sequence)).toEqual([...baselineIds, ...hiddenIds]);
-      expect(pushed).toHaveBeenCalledTimes(4);
-      expect(paint).toHaveBeenCalledTimes(4);
+      expect(pushed).toHaveBeenCalledTimes(3);
+      expect(paint).toHaveBeenCalledTimes(3);
       expect(raf.mock.calls.length - rafRequestsBeforeHiddenBurst).toBe(0);
       expect(rafCallbacks.size).toBe(0);
 
@@ -226,14 +226,14 @@ describe('same-session scope delivery across hidden rendering', () => {
       document.dispatchEvent(new Event('visibilitychange'));
       flushSync();
       flushPaint();
-      expect(pushed).toHaveBeenCalledTimes(5);
+      expect(pushed).toHaveBeenCalledTimes(4);
       expect(pushed.mock.calls.at(-1)![0][0]).toBe(hiddenIds.at(-1));
-      expect(paint).toHaveBeenCalledTimes(5);
+      expect(paint).toHaveBeenCalledTimes(4);
 
       // Live frames after the return: each paints in its own animation frame.
       for (const id of liveIds) { advance(83); deliver(frame(id)); }
       expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(
-        [...baselineIds, baselineIds.at(-1)!, hiddenIds.at(-1)!, ...liveIds]);
+        [...baselineIds, hiddenIds.at(-1)!, ...liveIds]);
       expect(accepted.at(-1)?.receivedAt).toBe(now);
       expect(get(controller.stream('hardware').geometry)?.freshness).toBe('fresh');
       expect(socket.sessionEpoch).toBe(1);
@@ -245,10 +245,10 @@ describe('same-session scope delivery across hidden rendering', () => {
       resizeCallback?.([{ target: observed!, contentRect: { width: 302, height: 150 } } as ResizeObserverEntry],
         {} as ResizeObserver);
       flushSync(); flushPaint();
-      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize + 1);
+      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize);
       hidden = true; document.dispatchEvent(new Event('visibilitychange')); flushSync(); flushPaint();
       hidden = false; document.dispatchEvent(new Event('visibilitychange')); flushSync(); flushPaint();
-      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize + 1);
+      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize);
       expect(pushed.mock.calls.at(-1)![0][0]).toBe(liveIds.at(-1));
     } finally {
       unsubscribe();

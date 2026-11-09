@@ -187,6 +187,7 @@ export function renderAudioSpectrum(
   const target = ctx;
   const redraw = audioStaticChanged(rs, ctx, width, height, state);
   if (redraw) {
+    rs.gradient = null;
     rs.background.width = ctx.canvas.width; rs.background.height = ctx.canvas.height;
     rs.overlay.width = ctx.canvas.width; rs.overlay.height = ctx.canvas.height;
     ctx = rs.background.getContext('2d')!;

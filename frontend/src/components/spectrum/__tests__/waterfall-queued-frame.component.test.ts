@@ -219,3 +219,20 @@ describe('queued frame vs. an advancing viewport (MOR-4206 review round 2)', () 
     expect(pushSpy.mock.calls.at(-1)![0][0]).toBe(21);
   });
 });
+
+it('restores the painted View and cached frame when context recovery occurs during frame silence', () => {
+  let push: ((pixels: Uint8Array, frameOptions?: WaterfallOptions) => void) | undefined;
+  mountHarness({ onRegisterPush: (fn: typeof push) => { push = fn; } });
+  push!(new Uint8Array(100).fill(80), options(DELIVERED_CENTER_HZ, 0)); flushPaint();
+  harnessOptions.value = { ...options(0, 0), spanHz: 0 };
+  flushSync(); flushPaint();
+  const canvas = target.querySelector('canvas')!;
+  canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true })); flushSync();
+  expect(target.querySelector('[role="alert"]')).not.toBeNull();
+  const draw = vi.spyOn(WaterfallRenderer.prototype, 'draw');
+  canvas.dispatchEvent(new Event('webglcontextrestored')); flushSync(); flushPaint();
+  expect(target.querySelector('[role="alert"]')).toBeNull();
+  expect((draw.mock.instances.at(-1)! as WaterfallRenderer).paintedView).toEqual({
+    startHz: DELIVERED_CENTER_HZ - SPAN_HZ / 2, endHz: DELIVERED_CENTER_HZ + SPAN_HZ / 2,
+  });
+});

@@ -94,7 +94,7 @@ describe.each(audioScopeGoldenNames)('actual PCM → hub RF frame %s', name => {
     const upload = f.named('texSubImage2D').at(-1)!;
     expect(upload.args[8]).toBe(frame.pixels);
     const mapping = f.named('bufferSubData').at(-1)!.args[2] as Float32Array;
-    const bin = (expected.input.toneHz - projection.spanHz / 2 - mapping[0]) / mapping[1];
+    const bin = (expected.input.toneHz - projection.spanHz / 2 - mapping[0] - mapping[1]) / mapping[2];
     const peakBin = frame.pixels!.indexOf(Math.max(...frame.pixels!)) / frame.width;
     expect(bin).toBeCloseTo(peakBin, 1);
     waterfall.destroy();

@@ -7,7 +7,7 @@ export function webglFixture(width = 100, height = 50) {
     'TEXTURE_2D', 'TEXTURE0', 'R8', 'RED', 'UNSIGNED_BYTE', 'TEXTURE_MIN_FILTER',
     'TEXTURE_MAG_FILTER', 'NEAREST', 'TEXTURE_WRAP_S', 'TEXTURE_WRAP_T', 'CLAMP_TO_EDGE',
     'UNPACK_ALIGNMENT', 'TRIANGLE_STRIP', 'UNIFORM_BUFFER', 'DYNAMIC_DRAW',
-    'MAX_UNIFORM_BLOCK_SIZE', 'MAX_FRAGMENT_UNIFORM_BLOCKS', 'MAX_TEXTURE_SIZE'];
+    'FRAMEBUFFER', 'COLOR_ATTACHMENT0', 'FRAMEBUFFER_COMPLETE', 'MAX_UNIFORM_BLOCK_SIZE', 'MAX_FRAGMENT_UNIFORM_BLOCKS', 'MAX_TEXTURE_SIZE'];
   const values = Object.fromEntries(constants.map((key, index) => [key, index + 1]));
   const canvas = document.createElement('canvas');
   canvas.width = width; canvas.height = height;
@@ -19,6 +19,7 @@ export function webglFixture(width = 100, height = 50) {
         if (key === 'getShaderParameter' || key === 'getProgramParameter') return true;
         if (key === 'getParameter') return args[0] === values.MAX_UNIFORM_BLOCK_SIZE ? 16384
           : args[0] === values.MAX_FRAGMENT_UNIFORM_BLOCKS ? 12 : 16384;
+        if (key === 'checkFramebufferStatus') return values.FRAMEBUFFER_COMPLETE;
         if (key.startsWith('create')) return {};
         if (key === 'getUniformLocation') return args[1];
         if (key === 'getUniformBlockIndex') return 0;

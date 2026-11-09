@@ -6,6 +6,7 @@
     type WaterfallOptions,
   } from '../../lib/renderers/waterfall-renderer';
   import { t } from '$lib/i18n';
+  import type { View } from '$lib/runtime/scope-view';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
   import { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
@@ -25,6 +26,7 @@
   let canvas: HTMLCanvasElement;
   let renderer: WaterfallRenderer | null = null;
   let failure = $state<WaterfallRenderError | null>(null);
+  let restorationView: View | null = null;
   function failed(error: unknown): void {
     if (!(error instanceof WaterfallRenderError)) throw error;
     failure = error; renderer?.destroy(); renderer = null;
@@ -43,7 +45,7 @@
       try { renderer?.resize(backing.width, backing.height); } catch (error) { failed(error); }
     },
   });
-  const scheduler = new ScopeRenderScheduler(paint, { active: () => surface.visible && surface.sized });
+  const scheduler = new ScopeRenderScheduler(paint, { active: () => surface.visible && surface.sized && renderer !== null });
 
   const frame = { pixels: null as Uint8Array | null, options: undefined as WaterfallOptions | undefined,
     token: null as TraceToken | null };
@@ -76,7 +78,7 @@
   }
 
   function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions, token?: TraceToken | null): void {
-    if (!renderer) return;
+    if (!rendererReady) return;
     if (trace?.status === 'recording' && scheduler.pending && pending) trace.record('coalesced', frame.token, 0, true);
     frame.pixels = pixels; frame.options = frameOptions ?? options; frame.token = token ?? null;
     pending = true;
@@ -91,10 +93,7 @@
   });
 
   $effect(() => untrack(() => surface.attach(canvas)));
-  const stopSizeListener = surface.onSizeChanged(() => {
-    if (frame.pixels) pending = true;
-    scheduler.wake('size');
-  });
+  const stopSizeListener = surface.onSizeChanged(() => scheduler.wake('size'));
   $effect(() => {
     if (surface.visible) untrack(() => {
       scheduler.wake('visibility');
@@ -119,21 +118,39 @@
     },
   };
 
-  function contextLost(event: Event): void { event.preventDefault(); failed(new WaterfallRenderError()); }
+  function contextLost(event: Event): void {
+    event.preventDefault(); restorationView = renderer?.paintedView ?? null;
+    failed(new WaterfallRenderError());
+  }
+  function initializeRenderer(): void {
+    renderer?.destroy(); renderer = null;
+    try {
+      const initial = { ...options };
+      if (!(initial.spanHz > 0)) {
+        const saved = restorationView;
+        if (saved) { initial.centerHz = (saved.startHz + saved.endHz) / 2; initial.spanHz = saved.endHz - saved.startHz; }
+        else if (frame.options && frame.options.spanHz > 0) {
+          initial.centerHz = frame.options.centerHz; initial.spanHz = frame.options.spanHz;
+        }
+      }
+      renderer = new WaterfallRenderer(canvas, initial);
+      const facts = surface.facts;
+      if (facts.backingW > 0 && facts.backingH > 0) renderer.resize(facts.backingW, facts.backingH);
+      failure = null; restorationView = null;
+      pending = frame.pixels !== null;
+      scheduler.wake('size');
+    } catch (error) { failed(error); }
+  }
 
   onMount(() => {
     canvas.addEventListener('webglcontextlost', contextLost);
-    try { renderer = new WaterfallRenderer(canvas, options); } catch (error) { failed(error); }
+    canvas.addEventListener('webglcontextrestored', initializeRenderer);
+    initializeRenderer();
     rendererReady = true;
-    // The surface may have attached (and published facts) before the
-    // renderer existed — apply the current backing once.
-    const facts = surface.facts;
-    if (facts.backingW > 0 && facts.backingH > 0) {
-      try { renderer?.resize(facts.backingW, facts.backingH); } catch (error) { failed(error); }
-    }
     onRegisterPush?.(directPush);
     return () => {
       canvas.removeEventListener('webglcontextlost', contextLost);
+      canvas.removeEventListener('webglcontextrestored', initializeRenderer);
       stopSizeListener();
       scheduler.dispose();
       renderer?.destroy();
@@ -143,13 +160,10 @@
   });
 </script>
 
-<div class="waterfall-surface" data-error={failure?.code}>
-  <canvas bind:this={canvas} use:gesture={waterfallGestures}></canvas>
-  {#if failure}<div class="waterfall-error" role="alert">{t('core.scope.webglRequired')}</div>{/if}
-</div>
+<canvas bind:this={canvas} data-error={failure?.code} use:gesture={waterfallGestures}></canvas>
+{#if failure}<div class="waterfall-error" role="alert" data-error={failure.code}>{t('core.scope.webglRequired')}</div>{/if}
 
 <style>
-  .waterfall-surface { position: relative; width: 100%; height: 100%; }
   .waterfall-error { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-secondary); background: #001020; padding: 8px; }
 
   canvas {
