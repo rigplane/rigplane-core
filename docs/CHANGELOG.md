@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc7] — 2026-11-09
+
+This is the seventh release candidate of 3.2.0. Equals 3.2.0rc6 except one test fix: the scope-hidden test no longer sits on a float idle==interval boundary that failed on hosts in some uptime bands (the rc6 PyPI publish validation failed on it). No product code change. (MOR-4353, #4542)
+
 ## [3.2.0rc6] — 2026-11-09
 
 This is the sixth release candidate of 3.2.0. It equals 3.2.0rc5 plus the panorama
@@ -5256,7 +5260,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc6...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc7...HEAD
+[3.2.0rc7]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc6...v3.2.0rc7
 [3.2.0rc6]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc5...v3.2.0rc6
 [3.2.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc4...v3.2.0rc5
 [3.2.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc3...v3.2.0rc4
