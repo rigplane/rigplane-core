@@ -19,8 +19,9 @@ Load it from the top-level ``conftest.py`` of a suite::
 
 A test that fakes a connection (``fake_connected(radio)``, which stands in for a login
 the test does not perform) gets the fake undone when the test ends, so the radio is
-disconnected the way a real one would be. A test that provokes the finalizer's warning on
-purpose says so with ``@pytest.mark.leaks_connected_radio(reason="...")``.
+disconnected the way a real one would be. A faked radio is kept alive until then, so the
+collector cannot finalize it while it still reads as connected. A test that provokes the
+finalizer's warning on purpose says so with ``@pytest.mark.leaks_connected_radio(reason="...")``.
 
 Fixture values of the test are released before the collection (pytest would keep them
 until after the teardown hooks). Known limit: a radio that is still referenced after
@@ -66,7 +67,7 @@ class _Recorder(logging.Handler):
 
 
 _recorder = _Recorder()
-_faked: list[weakref.ref[CoreRadio]] = []
+_faked: list[CoreRadio] = []
 _alive: list[weakref.ref[CoreRadio]] = []
 _original_init = CoreRadio.__init__
 
@@ -84,15 +85,16 @@ def fake_connected(radio: CoreRadio) -> CoreRadio:
     is what keeps its finalizer quiet.
     """
     radio._connected = True
-    _faked.append(weakref.ref(radio))
+    # A strong reference: a radio the test lets go of early (a helper's local, one per loop
+    # turn) must not be finalized while still marked connected, which only the timing of the
+    # collector would decide. It is released after the fake is undone.
+    _faked.append(radio)
     return radio
 
 
 def _undo_faked_connections() -> None:
-    for ref in _faked:
-        radio = ref()
-        if radio is not None:
-            radio._connected = False
+    for radio in _faked:
+        radio._connected = False
     _faked.clear()
 
 
