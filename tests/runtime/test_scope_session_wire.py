@@ -121,3 +121,50 @@ async def test_real_scope_writer_emits_one_enable_per_transport(transport, monke
     await radio.disable_scope()
     await radio.disable_scope()
     assert writes[-2:] == [(0x27, 0x10, b"\x00"), (0x27, 0x11, b"\x00")]
+
+
+@pytest.mark.parametrize("transport", ["lan", "serial"])
+@pytest.mark.parametrize("initial", [(False, False), (True, False), (True, True)])
+async def test_last_release_restores_wire_snapshot_once(transport, initial, monkeypatch):
+    from rigplane.radio import IcomRadio
+    from rigplane.backends.ic7300 import Ic7300SerialRadio
+    from rigplane.commands import parse_civ_frame, build_civ_frame, CONTROLLER_ADDR
+
+    radio = (IcomRadio("127.0.0.1", model="IC-7300") if transport == "lan"
+             else Ic7300SerialRadio(device="/dev/fake-scope", baudrate=115200))
+    radio._connected = True
+    observed = {0x10: initial[0], 0x11: initial[1]}
+    writes = []
+
+    async def send(payload, **kwargs):
+        frame = parse_civ_frame(payload)
+        observed[frame.sub] = bool(frame.data[0])
+        writes.append((frame.sub, frame.data))
+        return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, 0xFB))
+
+    async def expect(payload, **kwargs):
+        frame = parse_civ_frame(payload)
+        return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, frame.command, sub=frame.sub, data=bytes([observed[frame.sub]])))
+
+    monkeypatch.setattr(radio, "_send_civ_raw", send)
+    monkeypatch.setattr(radio, "_send_civ_expect", expect)
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+    await radio.enable_scope(policy="fast")
+    await radio.disable_scope()
+    assert (observed[0x10], observed[0x11]) == initial
+    restored = list(writes)
+    await radio.disable_scope()
+    assert writes == restored
+
+
+async def test_known_tx_defers_sdk_scope_wire_writes(monkeypatch):
+    from rigplane.radio import IcomRadio
+    from unittest.mock import AsyncMock
+
+    radio = IcomRadio("127.0.0.1", model="IC-7300")
+    radio._connected = True
+    radio._radio_state.ptt = True
+    send = AsyncMock()
+    monkeypatch.setattr(radio, "_send_civ_raw", send)
+    await radio.enable_scope(policy="fast")
+    send.assert_not_awaited()
