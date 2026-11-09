@@ -421,15 +421,6 @@ class ScopeSession:
             ):
                 continue
             if (
-                self._original is None
-                and receiver == 0
-                and self.observed is not None
-                and name != "fixed_edge"
-                and getattr(self.observed, name) == value
-                and (receiver, name) not in self._uncertain
-            ):
-                continue
-            if (
                 self._applied.get((receiver, name)) == value
                 and (receiver, name) not in self._uncertain
             ):
@@ -471,6 +462,13 @@ class ScopeSession:
                 or (receiver, name) in self._uncertain
             ):
                 await self._put(name, value, receiver)
+
+        if not any(d.subscribers for d in self._demands.values()):
+            self._desired = {
+                key: value
+                for key, value in self._desired.items()
+                if key in self._uncertain or self._applied.get(key) != value
+            }
 
 
 class ScopeSessionProvider(Protocol):
