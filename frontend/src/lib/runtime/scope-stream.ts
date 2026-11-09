@@ -113,7 +113,11 @@ export class ScopeStream {
     this.subscriptionValue = this.subscriptionsValue[0] ?? null;
     const selected = this.subscriptionValue;
     const priorSelected = previous[0];
-    if (priorSelected?.sourceId !== selected?.sourceId || priorSelected?.receiver !== selected?.receiver) this.reset();
+    if (priorSelected?.sourceId !== selected?.sourceId || priorSelected?.receiver !== selected?.receiver) {
+      const firstMatchingRequest = priorSelected === undefined && selected !== undefined
+        && this.geometryValue !== null && scopeMatchesSubscription(this.geometryValue, selected);
+      if (!firstMatchingRequest) this.reset();
+    }
     this.errorStore.set(null);
     for (const old of previous) {
       if (!next.some(request => request.sourceId === old.sourceId && request.receiver === old.receiver)) {

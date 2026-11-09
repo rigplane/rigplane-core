@@ -78,10 +78,10 @@ beforeEach(() => {
     createLinearGradient: () => ({ addColorStop: noop }),
     measureText: (text: string) => ({ width: String(text).length * 8 }),
   }, {
-    get: (obj, key) => (key in obj ? obj[key] : noop),
+    get: (obj, key) => (key in obj ? Reflect.get(obj, key) : noop),
     set: (obj, key, value) => {
       if (key === 'strokeStyle') style = String(value);
-      else obj[key] = value;
+      else Reflect.set(obj, key, value);
       return true;
     },
   }) as unknown as CanvasRenderingContext2D;

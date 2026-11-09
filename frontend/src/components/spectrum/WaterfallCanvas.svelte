@@ -46,6 +46,7 @@
     token: TraceToken | null;
   }
   let pendingFrame: WaterfallFrame | null = null;
+  let latestFrame: WaterfallFrame | null = null;
 
   // Review round 2 (MOR-4206): the queued pixels were sampled against the
   // delivery-time sample window, but the panorama may have advanced while
@@ -64,6 +65,7 @@
     const frame = pendingFrame;
     pendingFrame = null;
     if (!renderer || !frame) return;
+    latestFrame = frame;
     const measuring = trace?.status === 'recording';
     if (measuring) trace?.recordGeometry('waterfall', surface.cssW, surface.cssH, canvas.width, canvas.height, window.devicePixelRatio || 1);
     const optionsStart = measuring ? performance.now() : 0;
@@ -96,7 +98,10 @@
   $effect(() => untrack(() => surface.attach(canvas)));
   const stopSizeListener = surface.onSizeChanged(() => scheduler.wake('size'));
   $effect(() => {
-    if (surface.visible) scheduler.wake('visibility');
+    if (surface.visible) untrack(() => {
+      pendingFrame ??= latestFrame;
+      scheduler.wake('visibility');
+    });
   });
 
   // Tap-to-tune only — drag-to-pan handled by SpectrumPanel (parent).

@@ -20,9 +20,10 @@
     onRegisterPush?: (fn: (data: Uint8Array, token?: TraceToken | null) => void) => void;
     /** Surface facts on every size/visibility change (MOR-4271). */
     onSurfaceChange?: (facts: CanvasSurfaceFacts) => void;
+    surface?: CanvasSurface;
   }
 
-  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, onSurfaceChange, trace = null }: Props = $props();
+  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, onSurfaceChange, surface: sharedSurface, trace = null }: Props = $props();
 
   const renderer = new SpectrumRenderer();
 
@@ -43,7 +44,8 @@
   // scheduler. The scheduler requests an animation frame only while the
   // surface is active (sized ∧ visible); the visibility wake repaints from
   // the cached latest frame.
-  const surface = new CanvasSurface({ stageScale: getStageScale() });
+  const suppliedSurface = untrack(() => sharedSurface);
+  const surface = suppliedSurface ?? new CanvasSurface({ stageScale: getStageScale() });
   const scheduler = new ScopeRenderScheduler(draw, { active: () => surface.visible && surface.sized });
 
   // Latest scope pixels — updated directly from WS binary, not via Svelte props
@@ -88,7 +90,7 @@
 
   // The surface publishes sizing (RO ∧ DPR ∧ stage scale) and visibility
   // (IO ∧ !document.hidden); size and visibility wakes repaint from cache.
-  $effect(() => untrack(() => surface.attach(canvas)));
+  $effect(() => untrack(() => suppliedSurface ? surface.bindBacking(canvas) : surface.attach(canvas)));
   const stopSizeListener = surface.onSizeChanged(() => wake('size'));
   $effect(() => {
     if (surface.visible) wake('visibility');

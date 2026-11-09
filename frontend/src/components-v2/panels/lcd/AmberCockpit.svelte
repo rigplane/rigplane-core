@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { CanvasSurfaceFacts } from '$lib/canvas/canvas-surface.svelte';
   import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onDestroy } from 'svelte';
@@ -183,6 +184,7 @@
   let fftGeometry = $state.raw<import('$lib/runtime/scope-frame').ScopeGeometry | null>(null);
   let fftProjection = $derived(audioScopeProjection(fftGeometry, runtime.state));
   let fftBandwidth = $state<number | undefined>(undefined);
+  let surfaceFacts = $state<CanvasSurfaceFacts | null>(null);
   let fftPush: ((data: Uint8Array | null) => void) | null = null;
   let showFft = $derived(cockpitProps.hasAudioFft);
 
@@ -548,10 +550,11 @@
     <div class="lcd-filter-row" style:grid-area="scope">
       {#if showFft}
         <div class="lcd-scope-strip" use:scopeSubscriptionSurface={{
-          stream: runtime.scope.stream('audio_fft'), receiver: null, view: { follow: 'vfo', spanHz: 48000 },
+          stream: runtime.scope.stream('audio_fft'), receiver: null, facts: showFft ? surfaceFacts : null, view: { follow: 'vfo', spanHz: 48000 },
           revision: audioScopeFactsRevision(radioState, caps),
         }}>
           <AmberAfScope
+          onSurfaceChange={(facts) => { surfaceFacts = facts; }}
             projection={fftProjection}
               data={null}
               onRegisterPush={(fn) => { fftPush = fn; }}

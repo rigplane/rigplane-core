@@ -3,12 +3,13 @@
   import { onMount, untrack } from 'svelte';
   import type { ControlDisplayDomain } from '$lib/radio/filter-controls';
   import { getLcdContrastPreset } from '$lib/runtime/adapters/lcd-chrome-adapter';
-  import { CanvasSurface } from '../../../lib/canvas/canvas-surface.svelte';
+  import { CanvasSurface, type CanvasSurfaceFacts } from '../../../lib/canvas/canvas-surface.svelte';
   import { ScopeRenderScheduler } from '../../../lib/canvas/scope-render-scheduler';
   import { getStageScale } from '../../../primitives/stage/stage-scale';
 
   interface Props {
     projection?: ScopeAudioProjection | null;
+    onSurfaceChange?: (facts: CanvasSurfaceFacts) => void;
     /** FFT pixel data from AudioFftScope (0-160 range) */
     data: Uint8Array | null;
     /** Register a push callback for streaming updates */
@@ -47,6 +48,7 @@
     data,
     projection = null,
     onRegisterPush,
+    onSurfaceChange,
     filterWidth = 13,
     filterWidthMax = 36,
     ifShift = 0,
@@ -430,6 +432,8 @@
   $effect(() => {
     if (surface.visible) scheduler.wake('visibility');
   });
+
+  $effect(() => { onSurfaceChange?.(surface.facts); });
 
   let projectionKey: string | undefined;
   $effect(() => {

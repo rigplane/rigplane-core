@@ -91,10 +91,9 @@ export class CanvasSurface {
   pixelScale = $state(1);
   visible = $state(false);
 
-  private canvas: HTMLCanvasElement | null = null;
+  private host: Element | null = null;
   private stageScaleValue = 1;
   private intersecting = false;
-  private lastApplied: CanvasBackingSize | null = null;
   private readonly sizeListeners = new Set<(facts: CanvasSurfaceFacts) => void>();
   private readonly visibilityListeners = new Set<(visible: boolean) => void>();
 
@@ -134,9 +133,22 @@ export class CanvasSurface {
     return () => this.visibilityListeners.delete(listener);
   }
 
-  /** Attaches all observers to the canvas. Returns the detach function. */
-  attach(canvas: HTMLCanvasElement): () => void {
-    this.canvas = canvas;
+  /** Binds backing dimensions without observing the canvas. Returns the unbind function. */
+  bindBacking(canvas: HTMLCanvasElement): () => void {
+    const apply = (facts: CanvasSurfaceFacts) => {
+      if (facts.backingW <= 0 || facts.backingH <= 0) return;
+      (this.options.applyBacking ?? defaultApplyBacking)(canvas, {
+        width: facts.backingW, height: facts.backingH, pixelScale: facts.pixelScale,
+      });
+    };
+    apply(this.facts);
+    return this.onSizeChanged(apply);
+  }
+
+  /** Observes the host and binds its backing store when it is a canvas. */
+  attach(host: Element): () => void {
+    this.host = host;
+    const unbindBacking = host instanceof HTMLCanvasElement ? this.bindBacking(host) : () => {};
     this.intersecting = typeof IntersectionObserver === 'undefined';
 
     const resizeObserver = new ResizeObserver((entries) => {
@@ -155,7 +167,7 @@ export class CanvasSurface {
       this.cssH = h;
       this.refreshBacking();
     });
-    resizeObserver.observe(canvas);
+    resizeObserver.observe(host);
 
     const intersectionObserver =
       typeof IntersectionObserver === 'undefined'
@@ -167,7 +179,7 @@ export class CanvasSurface {
             },
             { rootMargin: this.options.rootMargin },
           );
-    intersectionObserver?.observe(canvas);
+    intersectionObserver?.observe(host);
 
     const stopDprWatch = watchDevicePixelRatio(() => this.refreshBacking());
     const onDocumentVisibility = () => this.updateVisibility();
@@ -181,7 +193,8 @@ export class CanvasSurface {
       intersectionObserver?.disconnect();
       stopDprWatch();
       document.removeEventListener('visibilitychange', onDocumentVisibility);
-      this.canvas = null;
+      unbindBacking();
+      this.host = null;
     };
   }
 
@@ -193,18 +206,12 @@ export class CanvasSurface {
   }
 
   private refreshBacking(): void {
-    const canvas = this.canvas;
-    if (!canvas) return;
+    if (!this.host) return;
     if (this.cssW <= 0 || this.cssH <= 0) {
       this.publishFacts(0, 0, this.pixelScale);
       return;
     }
     const backing = canvasBackingSize(this.cssW, this.cssH, window.devicePixelRatio || 1, this.stageScaleValue);
-    const applied = this.lastApplied;
-    if (!applied || applied.width !== backing.width || applied.height !== backing.height || applied.pixelScale !== backing.pixelScale) {
-      (this.options.applyBacking ?? defaultApplyBacking)(canvas, backing);
-      this.lastApplied = backing;
-    }
     this.publishFacts(backing.width, backing.height, backing.pixelScale);
   }
 

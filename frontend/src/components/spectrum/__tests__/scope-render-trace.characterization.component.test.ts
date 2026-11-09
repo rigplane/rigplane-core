@@ -58,10 +58,10 @@ describe('actual canvas trace callbacks', () => {
     // MOR-4271: the schedulers only paint a sized, visible surface — give
     // both canvases their size and visibility explicitly.
     for (const cb of resizeCallbacks) {
-      cb([{ target, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry], {} as ResizeObserver);
+      cb([{ target, contentRect: { width: 300, height: 150 } } as unknown as ResizeObserverEntry], {} as ResizeObserver);
     }
     for (const cb of intersectionCallbacks) {
-      cb([{ target, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver);
+      cb([{ target, isIntersecting: true } as unknown as IntersectionObserverEntry], {} as IntersectionObserver);
     }
     flushSync();
     try {

@@ -9,11 +9,11 @@
  * spectrum canvas surface facts (width = backingW, visible = facts.visible),
  * so the typed subscription demand follows the real surface.
  *
- * Harness: a real ScopeController over fake channels feeds the REAL
- * ScopeStream (golden scope-wire.json bytes included), SpectrumPanel mounts
+ * Harness: a real ScopeController over a real WsChannel feeds the REAL
+ * ScopeStream (producer v2 golden bytes included), SpectrumPanel mounts
  * with the same runtime seam as SpectrumPanel.component.test.ts, and every
  * browser primitive the components rely on is owned by the test:
- * ResizeObserver (explicit per-canvas sizes, 0x0 first), IntersectionObserver
+ * ResizeObserver (explicit scope-host/canvas sizes, 0x0 first), IntersectionObserver
  * (explicit isIntersecting), a counting rAF queue (explicit flush), a
  * document.hidden getter + visibilitychange, the matchMedia re-arm pattern,
  * and a per-canvas 2D context spy that records draw operations.
@@ -37,7 +37,7 @@ import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-
 import type { ScopeSubscription } from '$lib/runtime/scope-view';
 import type { SpectrumAuthority, SpectrumFilterRule } from '$lib/runtime/adapters/scope-adapter';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
-import goldenScopeWire from '../../../lib/runtime/__tests__/fixtures/scope-wire.json';
+import { scopeWire, loadScopeWireGolden } from '../../../lib/runtime/__tests__/scope-wire-fixture';
 
 // ---------------------------------------------------------------------------
 // Hoisted harness state (must exist before vi.mock factories run)
@@ -360,7 +360,6 @@ function wrapCanvasWidth(canvas: HTMLCanvasElement): void {
 // ---------------------------------------------------------------------------
 
 const SCOPE_URL = '/api/v1/scope';
-const AUDIO_SCOPE_URL = '/api/v1/audio-scope';
 
 let harnessChannels: Record<string, WsChannel> = {};
 let controller: ScopeController;
@@ -371,6 +370,8 @@ function wireController(): void {
     harnessChannels[name] ??= new WsChannel(false);
     return harnessChannels[name]!;
   });
+  controller.stream('hardware').setSource('radio', loadScopeWireGolden('radio.bin').expected.source_id);
+  controller.stream('audio_fft').setSource('audio_fft', loadScopeWireGolden('audio_fft.bin').expected.source_id);
   mockRuntime.scope = {
     stream: (source) => controller.stream(source),
     registerPresentationDriver: (host, config) => controller.registerPresentationDriver(host, config),
@@ -402,78 +403,55 @@ function wireController(): void {
 // Frame delivery
 // ---------------------------------------------------------------------------
 
-type EmitOverrides = {
-  receiver?: number;
-  mode?: number;
-  startFreq?: number;
-  endFreq?: number;
-  outOfRange?: boolean;
-  pixels?: Uint8Array | null;
-  sequence?: number;
-};
-function encodeScopeWire(overrides: EmitOverrides): Uint8Array<ArrayBuffer> {
-  const pixels = overrides.pixels ?? new Uint8Array(475).fill(64);
-  const bytes = new Uint8Array(16 + pixels.length);
-  const view = new DataView(bytes.buffer);
-  view.setUint8(0, 1);
-  view.setUint8(1, overrides.receiver ?? 0);
-  view.setUint8(2, overrides.mode ?? 0);
-  view.setUint32(3, overrides.startFreq ?? 14_000_000, true);
-  view.setUint32(7, overrides.endFreq ?? 14_100_000, true);
-  view.setUint16(11, (overrides.sequence ?? 1) & 0xffff, true);
-  view.setUint8(13, overrides.outOfRange ? 1 : 0);
-  view.setUint16(14, pixels.length, true);
-  bytes.set(pixels, 16);
-  return bytes;
-}
-/** The MockWebSocket the real channel opened for `name`. */
-function socketFor(name: string): MockWebSocket {
-  const url = name === 'audio-scope' ? AUDIO_SCOPE_URL : SCOPE_URL;
-  const socket = wsInstances.find((candidate) =>
-    candidate.url.includes(url) && !(name === 'scope' && candidate.url.includes(AUDIO_SCOPE_URL)));
-  if (!socket) throw new Error(`no socket opened for ${name} — did the driver connect?`);
+type EmitOverrides = Partial<Omit<TestScopeFrame, 'pixels'>> & { pixels?: Uint8Array | null };
+
+/** Both source kinds use the controller's one real scope channel. */
+function scopeSocket(): MockWebSocket {
+  const socket = wsInstances.find((candidate) => candidate.url.includes(SCOPE_URL));
+  if (!socket) throw new Error('no scope socket opened — did the driver connect?');
   return socket;
 }
 
-/** Deliver one synthetic hardware frame through the real channel. */
+/** Deliver producer-derived v2 hardware bytes through the real channel. */
 function emitFrame(overrides: EmitOverrides = {}): void {
-  const frame: EmitOverrides = {
-    receiver: 0, mode: 0, startFreq: 14_000_000, endFreq: 14_100_000,
-    outOfRange: false, ...overrides,
-  };
-  socketFor('scope').simulateMessage(encodeScopeWire(frame).buffer);
-  flushSync();
-}
-/** Deliver one synthetic audio-FFT frame through the real channel. */
-function emitAudioFrame(overrides: EmitOverrides = {}): void {
-  const frame: EmitOverrides = {
-    receiver: 1, mode: 1, startFreq: 0, endFreq: 48_000,
-    outOfRange: false, ...overrides,
-  };
-  socketFor('audio-scope').simulateMessage(encodeScopeWire(frame).buffer);
-  flushSync();
-}
-function deliverGoldenBytes(): void {
-  socketFor('scope').simulateMessage(new Uint8Array(goldenScopeWire.radio).buffer);
-  socketFor('audio-scope').simulateMessage(new Uint8Array(goldenScopeWire.audio).buffer);
+  scopeSocket().simulateMessage(scopeWire({
+    source: 'radio', sourceId: loadScopeWireGolden('radio.bin').expected.source_id, receiver: 0,
+    viewStartHz: 14_000_000, viewEndHz: 14_100_000,
+    pixels: new Uint8Array(475).fill(64), ...overrides,
+  }));
   flushSync();
 }
 
-/**
- * Bring both transports up after mount and assert the channel state and the
- * controller transport health agree before any frame is delivered.
- */
+/** Deliver producer-derived v2 audio-FFT bytes through the same channel. */
+function emitAudioFrame(overrides: EmitOverrides = {}): void {
+  scopeSocket().simulateMessage(scopeWire({
+    source: 'audio_fft', sourceId: loadScopeWireGolden('audio_fft.bin').expected.source_id, receiver: null,
+    viewStartHz: 0, viewEndHz: 48_000,
+    pixels: new Uint8Array(475).fill(64), ...overrides,
+  }));
+  flushSync();
+}
+
+function deliverGoldenBytes(): void {
+  const radio = loadScopeWireGolden('radio.bin');
+  const audio = loadScopeWireGolden('audio_fft.bin');
+  // Node's fs buffer has a different realm; WebSocket dispatch recognizes
+  // the test realm's ArrayBuffer, with the producer bytes copied unchanged.
+  scopeSocket().simulateMessage(new Uint8Array(new Uint8Array(radio.buffer)).buffer);
+  flushSync();
+  scopeSocket().simulateMessage(new Uint8Array(new Uint8Array(audio.buffer)).buffer);
+  flushSync();
+}
+
+/** Both demanded sources report health from the same connected channel. */
 async function openChannels(): Promise<void> {
-  socketFor('scope').simulateOpen();
+  scopeSocket().simulateOpen();
   await vi.waitFor(() => {
     expect(harnessChannels.scope!.state).toBe('connected');
     expect(controller.snapshotHealth('hardware').transport).toBe('connected');
-  });
-  socketFor('audio-scope').simulateOpen();
-  await vi.waitFor(() => {
-    expect(harnessChannels['audio-scope']!.state).toBe('connected');
     expect(controller.snapshotHealth('audio_fft').transport).toBe('connected');
   });
+  expect(wsInstances).toHaveLength(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -618,22 +596,23 @@ function mountAllUnsized(): void {
   mountAudioPanel();
   mountAmber();
   intersectAll(true);
+  fireResize(panelTarget.querySelector('.spectrum-area')!, 0, 0);
   const early = canvasesSafe();
   if (early.audio) fireResize(early.audio, 0, 0);
   if (early.amber) fireResize(early.amber, 0, 0);
 }
 
-/** The panel canvases mount on the first accepted frame — report 0x0. */
+/** The persistent spectrum host and first-frame waterfall remain at 0x0. */
 function holdPanelCanvasesAtZero(): void {
   intersectAll(true);
   const found = canvases();
-  fireResize(found.spectrum, 0, 0);
+  fireResize(panelTarget.querySelector('.spectrum-area')!, 0, 0);
   fireResize(found.waterfall, 0, 0);
 }
 
 function sizeAllReal(): void {
   const found = canvases();
-  fireResize(found.spectrum, SPECTRUM_SIZE.w, SPECTRUM_SIZE.h);
+  fireResize(panelTarget.querySelector('.spectrum-area')!, SPECTRUM_SIZE.w, SPECTRUM_SIZE.h);
   fireResize(found.waterfall, WATERFALL_SIZE.w, WATERFALL_SIZE.h);
   fireResize(found.audio, AUDIO_SIZE.w, AUDIO_SIZE.h);
   fireResize(found.amber, AMBER_SIZE.w, AMBER_SIZE.h);
@@ -655,6 +634,14 @@ function paintCounts(): PaintCounts {
  *  back into the producer's type, not a hand-shaped subset. */
 function readSubscription(): ScopeSubscription {
   return JSON.parse(panelTarget.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!) as ScopeSubscription;
+}
+
+/** Inspect the actual v2 demand serialized by the real controller/channel. */
+function readSentSubscription(sourceId: string): ScopeSubscription {
+  const subscriptions = scopeSocket().sent.map(message => JSON.parse(message))
+    .filter((message: ScopeSubscription & { type: string }) => message.type === 'subscribe' && message.sourceId === sourceId);
+  expect(subscriptions.length).toBeGreaterThan(0);
+  return subscriptions.at(-1)! as ScopeSubscription;
 }
 
 // ---------------------------------------------------------------------------
@@ -790,9 +777,9 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     emitAudioFrame();
 
     // Deliveries while every canvas reports 0x0: nothing may paint.
-    emitFrame({ sequence: 2 });
-    emitFrame({ sequence: 3 });
-    emitAudioFrame({ sequence: 2 });
+    emitFrame({ seq: 2 });
+    emitFrame({ seq: 3 });
+    emitAudioFrame({ seq: 2 });
     flushRaf();
     expect(paintCounts()).toEqual({ spectrum: 0, waterfall: 0, audio: 0, amber: 0 });
 
@@ -820,8 +807,8 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     holdPanelCanvasesAtZero();
     emitAudioFrame();
     sizeAllReal();
-    emitFrame({ sequence: 10 });
-    emitAudioFrame({ sequence: 10 });
+    emitFrame({ seq: 10 });
+    emitAudioFrame({ seq: 10 });
     // Drain re-arming loops (the old amber perpetual loop re-arms on every
     // tick, so "settled" here only means: one flush consumes everything
     // currently queued). Assertions below are deltas around the burst.
@@ -830,8 +817,8 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     const requestsBefore = rafRequestCount;
     const paintsBefore = paintCounts();
     for (let sequence = 11; sequence <= 70; sequence++) {
-      emitFrame({ sequence });
-      emitAudioFrame({ sequence });
+      emitFrame({ seq: sequence });
+      emitAudioFrame({ seq: sequence });
     }
     // Latest-wins: each canvas requested exactly one animation frame for the
     // whole burst — no per-frame rAF, and the idle amber scope requested its
@@ -856,8 +843,8 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     holdPanelCanvasesAtZero();
     emitAudioFrame();
     sizeAllReal();
-    emitFrame({ sequence: 20 });
-    emitAudioFrame({ sequence: 20 });
+    emitFrame({ seq: 20 });
+    emitAudioFrame({ seq: 20 });
     settleRaf();
 
     // While visible the demand carries the spectrum backing width and the
@@ -865,6 +852,7 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     const visibleSubscription = readSubscription();
     expect(visibleSubscription.width).toBe(canvases().spectrum.width);
     expect(visibleSubscription.maxFps).toBe(20);
+    expect(readSentSubscription(visibleSubscription.sourceId)).toMatchObject(visibleSubscription);
 
     hidden = true;
     document.dispatchEvent(new Event('visibilitychange'));
@@ -874,8 +862,8 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     const requestsWhileHiddenBaseline = rafRequestCount;
     const paintsBeforeHidden = paintCounts();
     for (let sequence = 21; sequence <= 40; sequence++) {
-      emitFrame({ sequence });
-      emitAudioFrame({ sequence });
+      emitFrame({ seq: sequence });
+      emitAudioFrame({ seq: sequence });
     }
     flushRaf();
     // Hidden: not one animation frame was requested and nothing painted —
@@ -888,6 +876,10 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     // The typed demand reports zero frame rate while hidden...
     expect(readSubscription().maxFps).toBe(0);
     expect(readSubscription().width).toBe(canvases().spectrum.width);
+    expect(readSentSubscription(visibleSubscription.sourceId).maxFps).toBe(0);
+    const audioDemand = scopeSocket().sent.map(message => JSON.parse(message))
+      .filter((message: { sourceId?: string }) => message.sourceId === controller.stream('audio_fft').sourceId).at(-1);
+    expect(audioDemand?.type === 'unsubscribe' || (audioDemand?.type === 'subscribe' && audioDemand.maxFps === 0)).toBe(true);
 
     hidden = false;
     document.dispatchEvent(new Event('visibilitychange'));
@@ -904,6 +896,7 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     const restoredSubscription = readSubscription();
     expect(restoredSubscription.maxFps).toBe(20);
     expect(restoredSubscription.width).toBe(canvases().spectrum.width);
+    expect(readSentSubscription(restoredSubscription.sourceId)).toMatchObject(restoredSubscription);
   });
 
   // -------------------------------------------------------------------------
@@ -918,8 +911,8 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
     emitAudioFrame();
     const found = canvases(); // wraps canvas.width counting before sizing
     sizeAllReal();
-    emitFrame({ sequence: 30 });
-    emitAudioFrame({ sequence: 30 });
+    emitFrame({ seq: 30 });
+    emitAudioFrame({ seq: 30 });
     settleRaf();
     for (const canvas of [found.spectrum, found.waterfall, found.audio, found.amber]) {
       expect(widthSets.get(canvas)).toBeGreaterThan(0);
@@ -946,20 +939,19 @@ describe('scope canvases on CanvasSurface + ScopeRenderScheduler (MOR-4271)', ()
   it('integration sanity: golden wire frames paint with the fixture pixels unchanged', async () => {
     mountAllUnsized();
     await openChannels();
-    emitFrame();
+    deliverGoldenBytes();
     holdPanelCanvasesAtZero();
-    emitAudioFrame();
     sizeAllReal();
     deliverGoldenBytes();
     settleRaf();
 
     const spectrumPixels = spectrumRenderSpy.mock.calls.at(-1)![1] as Uint8Array;
-    expect([...spectrumPixels]).toEqual([0, 64, 128, 255]);
+    expect([...spectrumPixels]).toEqual(loadScopeWireGolden('radio.bin').expected.pixels);
     const waterfallPixels = waterfallPushSpy.mock.calls.at(-1)![0] as Uint8Array;
-    expect([...waterfallPixels]).toEqual([0, 64, 128, 255]);
+    expect([...waterfallPixels]).toEqual(loadScopeWireGolden('radio.bin').expected.pixels);
     expect(audioPaint).toHaveBeenCalled();
     const audioArgs = audioPaint.mock.calls.at(-1)!;
-    expect([...(audioArgs[3] as { pixels: Uint8Array }).pixels]).toEqual([1, 127, 254]);
+    expect([...(audioArgs[3] as { pixels: Uint8Array }).pixels]).toEqual(loadScopeWireGolden('audio_fft.bin').expected.pixels);
     // The amber scope consumed the same audio bytes (paint recorded).
     expect(paintCounts().amber).toBeGreaterThan(0);
   });

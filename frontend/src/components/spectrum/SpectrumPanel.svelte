@@ -43,7 +43,8 @@
     type View,
   } from '../../lib/runtime/scope-view';
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
-  import type { CanvasSurfaceFacts } from '../../lib/canvas/canvas-surface.svelte';
+  import { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
   import { scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
@@ -818,9 +819,12 @@
     if (reason === 'no pixels') return t('core.scope.hatch.noPixels');
     return t('core.scope.hatch.widerThanCoverage');
   }
-  // MOR-4271: the demand facts come from the spectrum canvas surface —
-  // width is the backing-store width, visible follows the surface.
-  let spectrumFacts = $state<CanvasSurfaceFacts | null>(null);
+  const spectrumSurface = new CanvasSurface({ stageScale: getStageScale() });
+  let spectrumFacts = $derived(spectrumSurface.facts);
+  $effect(() => {
+    const host = spectrumArea;
+    if (host) return untrack(() => spectrumSurface.attach(host));
+  });
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
     const view = audioFft || followSpanHz !== null || effectiveView.endHz <= effectiveView.startHz
@@ -1521,7 +1525,7 @@
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
       {#if scopeTraceLive && scopeContentState !== 'out-of-range' && frameGeometry?.hasPixels !== false}
-      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isFixedScope} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} onSurfaceChange={(facts) => { spectrumFacts = facts; }} onRegisterPush={(fn) => {
+      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isFixedScope} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
         spectrumPush = fn;
         const geometry = frameGeometry;
         const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh'

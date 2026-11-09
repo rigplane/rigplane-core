@@ -7,6 +7,9 @@
 </script>
 
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { CanvasSurface } from '$lib/canvas/canvas-surface.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
   import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
   import { spectrumDisplayAmplitude } from '../../lib/renderers/spectrum-renderer';
   import type { PeerSplitReceiverDisplay } from '../../semantic/radio-display-model';
@@ -34,6 +37,9 @@
   const PLOT_HEIGHT = PLOT_BOTTOM - PLOT_TOP;
 
   let { receiver, scopeStream = null, carrierHz, passband }: Props = $props();
+  let surfaceElement: SVGSVGElement;
+  const surface = new CanvasSurface({ stageScale: getStageScale() });
+  $effect(() => untrack(() => surface.attach(surfaceElement)));
   let geometry = $state.raw<ScopeGeometry | null>(null);
   let bars = $state<SVGGElement>();
   let pixels: Uint8Array | null = null;
@@ -109,8 +115,9 @@
 </script>
 
 <svg
+  bind:this={surfaceElement}
   use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: receiver === 'SUB' ? 1 : 0,
-    view: { follow: 'vfo', spanHz: 100000 } }}
+    view: { follow: 'vfo', spanHz: 100000 }, facts: surface.facts }}
   data-testid="lcd-rf-panadapter"
   data-rf-mode={liveFrame === null ? 'ghost' : 'live'}
   data-frame-reason={frameReason}

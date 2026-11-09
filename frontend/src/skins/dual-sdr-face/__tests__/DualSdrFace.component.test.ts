@@ -46,7 +46,7 @@ function wireFrame(pixels: Uint8Array, startFreq = 1, endFreq = 2, receiver = 0)
 
 const known = <T>(value: T) => ({ reading: { status: 'known' as const, value }, availability: { structural: true, operational: true } });
 const unknown = () => ({ reading: { status: 'unknown' as const }, availability: { structural: true, operational: false } });
-const canvas = { clearRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), strokeStyle: '', lineWidth: 0 };
+const canvas = { setTransform: vi.fn(), clearRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(), stroke: vi.fn(), strokeStyle: '', lineWidth: 0 };
 const dualEffectRuns = new Map<number, number>();
 const realUserEffect = svelteClient.user_effect;
 beforeEach(() => {
@@ -197,6 +197,7 @@ describe('DualSdrFace', () => {
     expect(target.querySelector('[data-receiver-cluster="0"] canvas')?.getAttribute('data-supplied-pixels')).toBe('2');
     // MOR-4270: the typed pixel view rides the wire buffer with no copy —
     // a producer-side mutation after delivery is visible by design.
+    flushScopePaint();
     expect(canvas.lineTo).toHaveBeenCalledWith(1, 0);
     deliver(wireFrame(new Uint8Array([3]), 3, 4, 1), 'scope:1');
     await tick();
@@ -523,13 +524,42 @@ describe('DualSdrFace', () => {
 });
 
 
-beforeEach(() => { vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} }); });
+const scopeAnimationFrames = new Map<number, FrameRequestCallback>();
+let scopeAnimationFrameId = 0;
+function flushScopePaint(): void {
+  const pending = [...scopeAnimationFrames.values()];
+  scopeAnimationFrames.clear();
+  for (const callback of pending) callback(0);
+}
+beforeEach(() => {
+  scopeAnimationFrames.clear();
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    const id = ++scopeAnimationFrameId;
+    scopeAnimationFrames.set(id, callback);
+    return id;
+  });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { scopeAnimationFrames.delete(id); });
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, contentRect: new DOMRect(0, 0, 10, 10) } as ResizeObserverEntry], this as unknown as ResizeObserver);
+    }
+    disconnect() {}
+  });
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(private callback: IntersectionObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+    disconnect() {}
+  });
+});
 afterEach(() => { vi.unstubAllGlobals(); });
 
 it.each(['radio', 'iq_fft'] as const)('keeps receiver-neutral IQ demand and paint after an initial %s source', async (initial) => {
   vi.stubGlobal('ResizeObserver', class {
     constructor(private callback: ResizeObserverCallback) {}
-    observe() { this.callback([{ contentRect: { width: 200 } } as ResizeObserverEntry], this as unknown as ResizeObserver); }
+    observe(target: Element) { this.callback([{ target, contentRect: new DOMRect(0, 0, 200, 150) } as ResizeObserverEntry], this as unknown as ResizeObserver); }
     disconnect() {}
   });
   let receive = (_buffer: ArrayBuffer) => {};

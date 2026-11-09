@@ -167,6 +167,46 @@ describe('CanvasSurface sizing', () => {
     destroy();
   });
 
+  it('binds replacement canvases to current host facts without adding observers', () => {
+    dpr = 2;
+    const { surface, destroy } = createSurface({ stageScale: () => 2 });
+    const host = document.createElement('div');
+    const first = document.createElement('canvas');
+    const second = document.createElement('canvas');
+    const detach = surface.attach(host);
+    let unbind = () => {};
+    try {
+      fireResize(host, 200, 75);
+      flushSync();
+      expect(surface.facts).toMatchObject({ backingW: 800, backingH: 300, pixelScale: 4 });
+      expect(setTransform).not.toHaveBeenCalled();
+      unbind = surface.bindBacking(first);
+      expect([first.width, first.height]).toEqual([800, 300]);
+      expect(setTransform).toHaveBeenCalledExactlyOnceWith(4, 0, 0, 4, 0, 0);
+      unbind();
+      unbind = surface.bindBacking(second);
+      expect([second.width, second.height]).toEqual([800, 300]);
+      expect(setTransform).toHaveBeenCalledTimes(2);
+      expect(resizeObservers).toHaveLength(1);
+      expect(intersectionObservers).toHaveLength(1);
+
+      dpr = 3;
+      fireMedia('(resolution: 2dppx)');
+      flushSync();
+      expect([second.width, second.height]).toEqual([1200, 450]);
+      expect([first.width, first.height]).toEqual([800, 300]);
+      expect(setTransform).toHaveBeenCalledTimes(3);
+      expect(setTransform).toHaveBeenLastCalledWith(6, 0, 0, 6, 0, 0);
+      fireResize(host, 200, 75);
+      flushSync();
+      expect(setTransform).toHaveBeenCalledTimes(3);
+      expect(resizeObservers).toHaveLength(1);
+      expect(intersectionObservers).toHaveLength(1);
+    } finally {
+      unbind(); detach(); destroy();
+    }
+  });
+
   it('keeps the fractional content box and rounds the backing product (MOR-4271 visual parity)', () => {
     const { surface, destroy } = createSurface({ stageScale: () => 1 });
     const canvas = document.createElement('canvas');

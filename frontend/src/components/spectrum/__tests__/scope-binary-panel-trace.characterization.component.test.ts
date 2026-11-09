@@ -119,6 +119,9 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       const pending = [...rafs.values()]; rafs.clear();
       for (const draw of pending) draw(performance.now());
     };
+    const stream = harness.controller.stream(source);
+    const visibleConsumer = Symbol('visible transition-trace consumer');
+    let visibleConsumerRegistered = false;
     try {
       flushSync();
       // Literal Python-encoder golden: seed connection liveness before opt-in.
@@ -137,6 +140,16 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         return;
       }
       const transition = mode === 'continued-hidden' || mode === 'deferred-return';
+      if (transition) {
+        // A second visible consumer keeps this shared source delivering while
+        // the traced panel hides; the panel's own hidden demand remains paused.
+        const subscription = stream.subscription;
+        expect(subscription).not.toBeNull();
+        if (subscription === null) throw new Error('seed did not establish scope demand');
+        stream.updateSurfaceSubscription(visibleConsumer, { ...subscription, maxFps: 20 });
+        visibleConsumerRegistered = true;
+        expect(stream.subscription).toMatchObject({ ...subscription, maxFps: 20 });
+      }
       const start = button(transition ? 'Start transition trace' : 'Start trace');
       expect(start).toBeDefined();
       expect(start.disabled).toBe(false);
@@ -161,6 +174,8 @@ describe('binary → actual controller → actual panel → actual canvases', ()
           return;
         }
         expect(completed).not.toHaveBeenCalled();
+        expect(visibleConsumerRegistered).toBe(true);
+        expect(stream.subscription?.maxFps).toBe(20);
         now += 10;
         if (mode === 'continued-hidden') {
           transport.receive(0);
@@ -257,6 +272,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       expect(completed).toHaveBeenCalledTimes(1);
     } finally {
       await unmount(panel);
+      if (visibleConsumerRegistered) stream.removeSurfaceSubscription(visibleConsumer);
       harness.controller = null;
     }
   });
