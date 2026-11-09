@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -18,6 +19,16 @@ from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
+
+
+@dataclass(frozen=True)
+class ScopeWriteReceipt:
+    sub: int
+    data: list[int]
+    span: int
+
+    def to_json(self) -> str:
+        return json.dumps(asdict(self))
 
 
 class PanoramaSimulator(MockIcomRadio):
@@ -89,15 +100,9 @@ class PanoramaSimulator(MockIcomRadio):
             if rest:
                 with self.evidence.open("a") as stream:
                     stream.write(
-                        json.dumps(
-                            {
-                                "sub": sub,
-                                "data": list(rest),
-                                "span": self.profile.scope_span_presets_hz[
-                                    self.span_index
-                                ],
-                            }
-                        )
+                        ScopeWriteReceipt(
+                            sub, list(rest), self.profile.scope_span_presets_hz[self.span_index]
+                        ).to_json()
                         + "\n"
                     )
             return reply

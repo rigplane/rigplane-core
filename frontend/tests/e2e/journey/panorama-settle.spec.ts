@@ -5,6 +5,7 @@ import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runt
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import { startJourneyServer } from './server-process';
+import { parseScopeWriteReceipt } from './panorama-receipt';
 
 interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number }
 declare global { interface Window { panoramaWork: Work } }
@@ -74,7 +75,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       let contents = '';
       for await (const chunk of createReadStream(evidence, { encoding: 'utf8' })) contents += chunk;
       return contents.trim().split('\n').filter(Boolean).map(
-        line => JSON.parse(line) as { sub: number; data: number[]; span: number });
+        parseScopeWriteReceipt);
     };
     try {
       await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
