@@ -11,10 +11,9 @@
  */
 export const SPEED_STATIC_LABEL = 'SPEED';
 
-export const SPAN_LABELS: Record<number, string> = {
-  0: '\u00b12.5k', 1: '\u00b15k', 2: '\u00b110k', 3: '\u00b125k',
-  4: '\u00b150k', 5: '\u00b1100k', 6: '\u00b1250k', 7: '\u00b1500k',
-};
+export function formatSpanHz(spanHz: number): string {
+  return `±${spanHz / 2000}k`;
+}
 
 export const SPEED_LABELS: Record<number, string> = { 0: 'FST', 1: 'MID', 2: 'SLO' };
 
@@ -46,10 +45,6 @@ export function isEdgeApplicable(mode: number | undefined): boolean {
 }
 
 /* ── Range clamps ── */
-
-export function clampSpan(current: number, delta: number): number {
-  return Math.max(0, Math.min(7, current + delta));
-}
 
 /**
  * Clamp speed value after applying delta.

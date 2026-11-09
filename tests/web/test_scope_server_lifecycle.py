@@ -61,12 +61,15 @@ async def test_cli_selection_is_separate_from_all_available_sources(
         async def drain(self):
             pass
 
+    _ = server.scope_hub
     await server._serve_capabilities(Capture())
     payload = json.loads(b"".join(chunks).split(b"\r\n\r\n", 1)[1])
     assert payload["scopeSources"] == ["radio", "audio_fft", "iq_fft"]
     assert payload["scopeDefaultSourceId"] == expected
     assert payload["scopeSource"] is None
-    assert payload["span_choices_hz"] == list(server._radio_scope_source.capabilities().span_choices_hz)
+    assert payload["span_choices_hz"] == list(
+        server._radio_scope_source.capabilities().span_choices_hz
+    )
 
 
 async def test_optional_sdr_factory_failure_keeps_http_radio_audio_and_retries():

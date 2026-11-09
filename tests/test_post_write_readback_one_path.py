@@ -391,6 +391,7 @@ def test_legacy_command_names_match_the_web_ingress() -> None:
         # Built inline in ``_ro_set_tuner_status``, not an ``_enqueue_rc_*``
         # arm (MOR-2425 PR-1b).
         "SetTunerStatus",
+        "SetScopeSpan",  # Hub writer actuator; external WS writes are refused.
     }
     for command_type, name in LEGACY_COMMAND_NAMES.items():
         if command_type.__name__ in unreachable:

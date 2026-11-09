@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Panorama SPAN controls step the scope subscription view and display the granted ±half width. Breaking for WS clients: `set_scope_span` is refused; use the scope subscription view. (MOR-4349)
+
 ## [3.2.0rc5] — 2026-11-09
 
 This is the fifth release candidate of 3.2.0. It equals 3.2.0rc4 plus the panorama

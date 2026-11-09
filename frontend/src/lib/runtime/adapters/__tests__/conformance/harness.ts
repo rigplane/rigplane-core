@@ -104,6 +104,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    scope: { spanControl: null },
     get rxEnabled() { return h.rxEnabled; },
     setMuted: h.setMuted,
     setRxLive: h.setRxLive,

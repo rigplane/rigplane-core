@@ -130,7 +130,6 @@ from ..radio_poller import (  # noqa: TID251
     SetScopeDual,
     SetScopeMode,
     SetScopeRbw,
-    SetScopeSpan,
     SetScopeSpeed,
     SetScopeRef,
     SetScopeHold,
@@ -3205,10 +3204,9 @@ class ControlHandler:
                 q.put(SetScopeMode(scope_mode))
                 return {"mode": scope_mode}
             case "set_scope_span":
-                span = _int_param(params["span"], "span")
-                self._ensure_capability("scope", "set_scope_span")
-                q.put(SetScopeSpan(span))
-                return {"span": span}
+                raise CommandUnsupportedError(
+                    "set_scope_span is refused; use the scope subscription view"
+                )
             case "set_scope_speed":
                 speed = _int_param(params["speed"], "speed")
                 self._ensure_capability("scope", "set_scope_speed")
