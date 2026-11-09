@@ -136,6 +136,7 @@ async def test_sdk_frames_stay_visible_when_web_pauses(sdk):
 
 async def test_control_ws_reapplies_span_after_real_front_panel_readback(sdk):
     radio, sim = sdk
+    await radio.enable_scope(policy="fast")
     await radio.set_scope_span(3)
     sim.views[0] = (0, 4, 1)
     assert await radio.get_scope_span() == 4
