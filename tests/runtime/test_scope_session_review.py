@@ -178,3 +178,21 @@ async def test_verify_requires_new_activity_after_a_previous_stream(sdk):
     sim._scope_stream = False
     with pytest.raises(TimeoutError, match="verification"):
         await radio.enable_scope(policy="verify", timeout=0.1)
+
+
+async def test_sub_fixed_slot_capture_preserves_main_selected_edge(sdk):
+    from rigplane.scope.models import View
+
+    radio, sim = sdk
+    radio._radio_state.sub.freq = 14100000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await ws.send_str(encode_scope_subscription(
+                Subscription("radio", 1, View(14100000, 14120000), 100, 20)
+            ))
+            message = await ws.receive(timeout=5)
+            assert message.type is aiohttp.WSMsgType.TEXT
+            assert '"error"' not in message.data
+            assert sim.views[1][2] == 2
+            assert radio._scope_controls().receiver == 0
+            assert radio._scope_controls().edge == sim.views[0][2] == 1
