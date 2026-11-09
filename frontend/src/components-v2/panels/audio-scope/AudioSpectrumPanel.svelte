@@ -1,9 +1,9 @@
 <script lang="ts">
   import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
-  import { onMount } from 'svelte';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { deriveAudioSpectrumProps } from '$lib/runtime/adapters/panel-adapters';
+  import type { CanvasSurfaceFacts } from '$lib/canvas/canvas-surface.svelte';
   import AudioSpectrumCanvas from './AudioSpectrumCanvas.svelte';
 
   // ── Radio state extraction (via runtime adapter) ──
@@ -16,20 +16,11 @@
   let fftProjection = $derived(audioScopeProjection(fftGeometry, runtime.state));
   let fftBandwidth = $state(48000);
   let fftPush: ((data: Uint8Array | null) => void) | null = null;
-  let panel: HTMLDivElement;
-  let visible = $state(typeof IntersectionObserver === 'undefined');
-
-  onMount(() => {
-    if (typeof IntersectionObserver === 'undefined') {
-      visible = true;
-      return;
-    }
-    const observer = new IntersectionObserver(([entry]) => {
-      visible = entry?.isIntersecting === true;
-    }, { rootMargin: '64px' });
-    observer.observe(panel);
-    return () => observer.disconnect();
-  });
+  // MOR-4271: the canvas surface (IntersectionObserver ∧ !document.hidden)
+  // is the one visibility mechanism; the panel gates its demand lease and
+  // its streaming attribute on the facts the canvas reports.
+  let surfaceFacts = $state<CanvasSurfaceFacts | null>(null);
+  let visible = $derived(surfaceFacts?.visible === true);
 
   // Scope frames and resource demand have separate lifetimes (ADR INV-2, INV-5).
   $effect(() => {
@@ -50,7 +41,7 @@
       }
     });
     const unsubscribe = stream.subscribe((frame) => {
-      if (!visible || document.hidden) return;
+      if (!visible) return;
       hasPixels = frame.pixels !== null; fftPush?.(frame.pixels);
     });
     let released = false;
@@ -65,14 +56,15 @@
   });
 </script>
 
-<div class="audio-spectrum-panel" bind:this={panel} data-streaming={visible} use:scopeSubscriptionSurface={{
-  stream: runtime.scope.stream('audio_fft'), receiver: null,
+<div class="audio-spectrum-panel" data-streaming={visible} use:scopeSubscriptionSurface={{
+  stream: runtime.scope.stream('audio_fft'), receiver: null, facts: surfaceFacts,
   view: { follow: 'vfo', spanHz: 48000 }, revision: audioScopeFactsRevision(runtime.state, runtime.caps),
 }}>
   <AudioSpectrumCanvas
     projection={fftProjection}
     data={null}
     onRegisterPush={(fn) => { fftPush = fn; }}
+    onSurfaceChange={(facts) => { surfaceFacts = facts; }}
     bandwidth={fftBandwidth}
     filterWidth={p.filterWidth}
     filterWidthMax={p.filterWidthMax}

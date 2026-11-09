@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
+import { flushSync } from 'svelte';
+import { CanvasSurface, type CanvasSurfaceFacts } from '../../canvas/canvas-surface.svelte';
 import { ScopeStream } from '../scope-stream';
+import { ingressScopeFrame, scopeSlotKey } from '../adapters/scope-adapter';
+import { scopeWire } from './scope-wire-fixture';
 import { scopeSubscription, scopeSubscriptionSurface } from '../scope-view';
 
 function stream() {
@@ -11,6 +15,10 @@ function stream() {
 }
 const request = () => scopeSubscription({ sourceId: 'radio', receiver: 0,
   view: { follow: 'vfo', spanHz: 100_000 }, width: 2800, visible: true, maxFps: 20 });
+
+const surfaceFacts = (backingW = 100): CanvasSurfaceFacts => ({
+  cssW: backingW, cssH: 50, backingW, backingH: 50, pixelScale: 1, visible: true,
+});
 
 describe('ScopeStream subscription negotiation', () => {
   it('publishes changed source, receiver, view, width and visible fps without duplicate requests', () => {
@@ -26,6 +34,25 @@ describe('ScopeStream subscription negotiation', () => {
     expect(publish).toHaveBeenCalledTimes(6);
     expect(publish.mock.lastCall?.[0]).toEqual(updates.at(-1));
   });
+  it.each([true, false])('preserves an already-qualified frame only for a matching first subscription (%s)', matching => {
+    const { value, publish } = stream();
+    const buffer = scopeWire({ sourceId: 'radio', receiver: 0 });
+    const slot = scopeSlotKey('radio', 0);
+    value.ingress(ingressScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 1, mode: 3 }));
+    const geometry = get(value.geometry);
+    const frame = value.latest(slot);
+    expect(geometry).toMatchObject({ sourceId: 'radio', receiver: 0, hasPixels: true, freshness: 'fresh' });
+    expect(frame?.pixels?.buffer).toBe(buffer);
+
+    const subscription = { ...request(), receiver: matching ? 0 : 1 };
+    value.updateSurfaceSubscription(Symbol('first surface'), subscription);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(subscription, null);
+    expect(get(value.geometry)).toBe(matching ? geometry : null);
+    expect(value.latest(slot)).toBe(matching ? frame : null);
+    expect(value.selectedSlot).toBe(matching ? slot : null);
+    value.dispose();
+  });
+
   it('publishes actual granted width/fps/view/coverage without claiming pixels', () => {
     const { value } = stream(); value.setSubscription(request());
     const granted = { type: 'granted', sourceId: 'radio', receiver: 0,
@@ -89,20 +116,26 @@ it('retries a refused startup follow subscription after observed facts change', 
 
 it('observes native backing width, intersection and document visibility for demand only', () => {
   const { value, publish } = stream();
-  let resize = (_entries: { contentRect: { width: number } }[]) => {};
+  let resize = (_entries: { contentRect: { width: number; height: number } }[]) => {};
   let intersect = (_entries: { isIntersecting: boolean }[]) => {};
   vi.stubGlobal('ResizeObserver', class { constructor(callback: typeof resize) { resize = callback; } observe() {} disconnect() {} });
   vi.stubGlobal('IntersectionObserver', class { constructor(callback: typeof intersect) { intersect = callback; } observe() {} disconnect() {} });
-  const node = document.createElement('div'); document.body.append(node);
-  Object.defineProperty(node, 'clientWidth', { value: 100 });
-  Object.defineProperty(node, 'offsetWidth', { value: 100 });
-  vi.spyOn(node, 'getBoundingClientRect').mockReturnValue({ width: 200 } as DOMRect);
+  const node = document.createElement('canvas'); document.body.append(node);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ setTransform: vi.fn() } as unknown as RenderingContext);
   vi.spyOn(window, 'devicePixelRatio', 'get').mockReturnValue(2);
   let hidden = false;
   vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
-  const action = scopeSubscriptionSurface(node, { stream: value, receiver: 0, view: request().view });
+  let surface!: CanvasSurface;
+  const destroyRoot = $effect.root(() => { surface = new CanvasSurface({ stageScale: () => 2 }); });
+  const detach = surface.attach(node);
+  const params = { stream: value, receiver: 0, view: request().view };
+  const action = scopeSubscriptionSurface(node, { ...params, facts: surface.facts });
+  const publishFacts = () => action.update({ ...params, facts: surface.facts });
+  const stopSize = surface.onSizeChanged(publishFacts);
+  const stopVisibility = surface.onVisibilityChanged(publishFacts);
   try {
-    resize([{ contentRect: { width: 100 } }]); intersect([{ isIntersecting: true }]);
+    flushSync();
+    resize([{ contentRect: { width: 100, height: 50 } }]); intersect([{ isIntersecting: true }]);
     expect(publish.mock.lastCall?.[0]).toMatchObject({ width: 400, maxFps: 20 });
     hidden = true; document.dispatchEvent(new Event('visibilitychange'));
     expect(publish.mock.lastCall?.[0]).toMatchObject({ width: 400, maxFps: 0 });
@@ -111,7 +144,8 @@ it('observes native backing width, intersection and document visibility for dema
     intersect([{ isIntersecting: false }]);
     expect(publish.mock.lastCall?.[0]).toMatchObject({ maxFps: 0 });
   } finally {
-    action.destroy(); node.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks();
+    stopSize(); stopVisibility(); action.destroy(); detach(); destroyRoot(); node.remove();
+    vi.unstubAllGlobals(); vi.restoreAllMocks();
   }
 });
 
@@ -119,11 +153,8 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 it.each(['error-first', 'facts-first'])('retries refused startup once for changed facts in %s order', (order) => {
   const { value, publish } = stream();
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
-  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
   const node = document.createElement('div'); document.body.append(node);
-  Object.defineProperty(node, 'clientWidth', { value: 100 });
-  const params = { stream: value, receiver: 0, view: request().view, revision: 'unknown' };
+  const params = { stream: value, receiver: 0, view: request().view, facts: surfaceFacts(), revision: 'unknown' };
   const action = scopeSubscriptionSurface(node, params);
   const before = publish.mock.calls.length;
   const error = () => value.handleMessage({ type: 'error', message: 'audio mapping unavailable' });
@@ -140,14 +171,12 @@ it.each(['error-first', 'facts-first'])('retries refused startup once for change
 
 it('shares the attempted facts revision across surfaces of the same upstream target', () => {
   const { value, publish } = stream();
-  vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
-  vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
   const nodes = [document.createElement('div'), document.createElement('div')];
-  nodes.forEach((node, index) => Object.defineProperty(node, 'clientWidth', { value: 100 + index * 100 }));
-  const params = { stream: value, receiver: 0, view: request().view, revision: 'unknown' };
-  const actions = nodes.map(node => scopeSubscriptionSurface(node, params));
+  const params = { stream: value, receiver: 0, view: request().view, facts: surfaceFacts(), revision: 'unknown' };
+  const parameters = nodes.map((_, index) => ({ ...params, facts: surfaceFacts(100 + index * 100) }));
+  const actions = nodes.map((node, index) => scopeSubscriptionSurface(node, parameters[index]));
   const before = publish.mock.calls.length;
-  for (const action of actions) action.update({ ...params, revision: 'observed' });
+  actions.forEach((action, index) => action.update({ ...parameters[index], revision: 'observed' }));
   value.handleMessage({ type: 'error', message: 'old request rejected' });
   expect(publish).toHaveBeenCalledTimes(before + 1);
   value.handleMessage({ type: 'error', message: 'same facts still rejected' });

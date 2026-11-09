@@ -84,11 +84,6 @@ export class AudioSpectrumRendererState {
   }
 }
 
-/** @deprecated Use AudioSpectrumRendererState.reset() instead */
-export function resetSmoothing(): void {
-  // no-op — kept for backward compat; callers should migrate to instance
-}
-
 // ── Frequency label helpers ──────────────────────────────────────────────────
 
 function formatHz(hz: number): string {

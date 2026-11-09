@@ -81,7 +81,18 @@ describe('binary → actual controller → actual panel → actual canvases', ()
     vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => hidden ? 'hidden' : 'visible');
     vi.spyOn(document, 'hasFocus').mockImplementation(() => focused);
     vi.stubEnv('VITE_SCOPE_TRACE_CANDIDATE', mode === 'disabled' ? '0' : '1');
-    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    // MOR-4271: the scope canvases size through a CanvasSurface — the
+    // observer must report a real box (jsdom's default canvas backing) or
+    // the schedulers never paint.
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private readonly callback: ResizeObserverCallback) {}
+      observe(target: Element) {
+        this.callback([{ target, contentRect: { width: 300, height: 150 } } as ResizeObserverEntry],
+          this as unknown as ResizeObserver);
+      }
+      unobserve() {}
+      disconnect() {}
+    });
     const rafs = new Map<number, FrameRequestCallback>();
     let nextRaf = 0;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { rafs.set(++nextRaf, callback); return nextRaf; });
@@ -108,6 +119,9 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       const pending = [...rafs.values()]; rafs.clear();
       for (const draw of pending) draw(performance.now());
     };
+    const stream = harness.controller.stream(source);
+    const visibleConsumer = Symbol('visible transition-trace consumer');
+    let visibleConsumerRegistered = false;
     try {
       flushSync();
       // Literal Python-encoder golden: seed connection liveness before opt-in.
@@ -126,6 +140,16 @@ describe('binary → actual controller → actual panel → actual canvases', ()
         return;
       }
       const transition = mode === 'continued-hidden' || mode === 'deferred-return';
+      if (transition) {
+        // A second visible consumer keeps this shared source delivering while
+        // the traced panel hides; the panel's own hidden demand remains paused.
+        const subscription = stream.subscription;
+        expect(subscription).not.toBeNull();
+        if (subscription === null) throw new Error('seed did not establish scope demand');
+        stream.updateSurfaceSubscription(visibleConsumer, { ...subscription, maxFps: 20 });
+        visibleConsumerRegistered = true;
+        expect(stream.subscription).toMatchObject({ ...subscription, maxFps: 20 });
+      }
       const start = button(transition ? 'Start transition trace' : 'Start trace');
       expect(start).toBeDefined();
       expect(start.disabled).toBe(false);
@@ -150,6 +174,8 @@ describe('binary → actual controller → actual panel → actual canvases', ()
           return;
         }
         expect(completed).not.toHaveBeenCalled();
+        expect(visibleConsumerRegistered).toBe(true);
+        expect(stream.subscription?.maxFps).toBe(20);
         now += 10;
         if (mode === 'continued-hidden') {
           transport.receive(0);
@@ -184,12 +210,17 @@ describe('binary → actual controller → actual panel → actual canvases', ()
           ]);
         }
         // MOR-4206 rAF coalescing, consolidated: every visible delivery
-        // reaches the waterfall pump unfiltered (no spacing gate upstream),
-        // and the pump paints the latest frame per rAF, tracing the
-        // dropped stale one as `coalesced`. In continued-hidden seq 3 is
-        // withheld (delivered while hidden, never reaches the pump); in
-        // deferred-return seq 3 and seq 4 land in the same task after the
-        // gap resolves, so the pump paints only seq 4 and drops seq 3.
+        // reaches the waterfall unfiltered (no spacing gate upstream), and
+        // the scheduler paints the latest frame per rAF. MOR-4271: frames
+        // delivered while the surface is inactive (hidden) are CACHED, never
+        // dropped — a cached frame is replaced latest-wins by the next
+        // delivery without a `coalesced` trace record (that stage now means
+        // "a frame AWAITING ITS PAINT was replaced", which requires the
+        // scheduler to be pending). In continued-hidden seq 3 is delivered
+        // while hidden, cached, then replaced by seq 4 before the wake — it
+        // never paints and traces nothing; in deferred-return seq 3 and seq
+        // 4 land in the same task before the visibilitychange, so the same
+        // cache-replace stands in for both silent drops.
         expect(events('waterfall_push').map((e: { acceptedSequence: number }) => e.acceptedSequence))
           .toEqual([2, 4]);
         for (const stage of ['raf', 'spectrum_render']) {
@@ -198,13 +229,13 @@ describe('binary → actual controller → actual panel → actual canvases', ()
             { atMs: 550, wireSequence: 1, acceptedSequence: 4, document: { hidden: false } },
           ]);
         }
-        if (mode === 'deferred-return') {
-          // The waterfall pump's latest-wins drop of seq 3; the spectrum
-          // side stays silent — its scheduling is suppressed while hidden.
-          expect(events('coalesced')).toMatchObject([{ wireSequence: 0, acceptedSequence: 3 }]);
-        } else {
-          expect(events('coalesced')).toEqual([]);
-        }
+        // MOR-4271: with the hidden-drop gone, neither mode replaces a frame
+        // that was awaiting its paint — the pre-event deliveries in
+        // deferred-return are cached while the scheduler is inactive, so the
+        // `coalesced` stage is empty in both modes. The coalesced tracing
+        // itself is pinned by scope-render-trace.characterization and the
+        // 'consolidates backlog handling' case in SpectrumPanel.component.test.ts.
+        expect(events('coalesced')).toEqual([]);
         expect(report.timeline.every((e: { document?: unknown }) => e.document !== undefined)).toBe(true);
         return;
       }
@@ -241,6 +272,7 @@ describe('binary → actual controller → actual panel → actual canvases', ()
       expect(completed).toHaveBeenCalledTimes(1);
     } finally {
       await unmount(panel);
+      if (visibleConsumerRegistered) stream.removeSurfaceSubscription(visibleConsumer);
       harness.controller = null;
     }
   });

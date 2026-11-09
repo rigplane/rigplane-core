@@ -339,14 +339,14 @@ describe('MOR-2355 central default scope source', () => {
     const panel = target.querySelector<HTMLElement>('.audio-spectrum-panel')!;
     expect(panel.dataset.streaming).toBe('false');
 
-    callbacks.get(panel)?.([{
+    callbacks.get(panel.querySelector('canvas')!)?.([{
       isIntersecting: true, target: panel,
     } as unknown as IntersectionObserverEntry], observer);
     flushSync();
     expect(host.snapshot('audio-fft').demand).toBe(2);
     expect(panel.dataset.streaming).toBe('true');
 
-    callbacks.get(panel)?.([{
+    callbacks.get(panel.querySelector('canvas')!)?.([{
       isIntersecting: false, target: panel,
     } as unknown as IntersectionObserverEntry], observer);
     flushSync();

@@ -4,6 +4,7 @@ import { ScopeController } from '../scope-controller.svelte';
 import { scopeWire } from './scope-wire-fixture';
 import type { WsChannel } from '$lib/transport/ws-client';
 import { scopeSubscriptionSurface } from '../scope-view';
+import type { CanvasSurfaceFacts } from '../../canvas/canvas-surface.svelte';
 
 function channel() {
   const binary = new Set<(buffer: ArrayBuffer) => void>();
@@ -38,12 +39,11 @@ describe('scope subscription retirement', () => {
     const { port, change } = channel();
     const owner = new ScopeController(() => port as unknown as WsChannel);
     const handle = await owner.audioFftDriver.start(); change('connected');
-    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
-    vi.stubGlobal('IntersectionObserver', class { observe() {} disconnect() {} });
     const node = document.createElement('div');
-    Object.defineProperty(node, 'clientWidth', { value: 390 });
+    const facts: CanvasSurfaceFacts = { cssW: 390, cssH: 50, backingW: 390, backingH: 50,
+      pixelScale: 1, visible: true };
     const surface = scopeSubscriptionSurface(node, { stream: owner.stream('hardware'),
-      receiver: 0, view: request('radio', 0).view });
+      receiver: 0, view: request('radio', 0).view, facts });
     expect(owner.stream('hardware').subscriptions).toHaveLength(1);
     expect(port.sendRaw).not.toHaveBeenCalled();
     surface.destroy(); surface.destroy();

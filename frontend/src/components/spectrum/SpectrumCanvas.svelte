@@ -1,11 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import {
     SpectrumRenderer,
     defaultSpectrumOptions,
     type SpectrumOptions,
   } from '../../lib/renderers/spectrum-renderer';
-  import { canvasBackingSize, watchDevicePixelRatio, watchStageScale } from '../../lib/canvas/backing-store.svelte';
+  import { CanvasSurface, type CanvasSurfaceFacts } from '../../lib/canvas/canvas-surface.svelte';
+  import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
   import { getStageScale } from '../../primitives/stage/stage-scale';
   import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
   interface Props {
@@ -17,9 +18,12 @@
     enablePeakHold?: boolean;
     trace?: ScopeRenderTrace | null;
     onRegisterPush?: (fn: (data: Uint8Array, token?: TraceToken | null) => void) => void;
+    /** Surface facts on every size/visibility change (MOR-4271). */
+    onSurfaceChange?: (facts: CanvasSurfaceFacts) => void;
+    surface?: CanvasSurface;
   }
 
-  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, trace = null }: Props = $props();
+  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, onSurfaceChange, surface: sharedSurface, trace = null }: Props = $props();
 
   const renderer = new SpectrumRenderer();
 
@@ -35,45 +39,40 @@
   }
 
   let canvas: HTMLCanvasElement;
-  let cssWidth = 1;
-  let cssHeight = 1;
-  let rafId = 0;
-  let visible = true;
-  let mounted = false;
+
+  // MOR-4271: the one sizing/visibility mechanism and the one redraw
+  // scheduler. The scheduler requests an animation frame only while the
+  // surface is active (sized ∧ visible); the visibility wake repaints from
+  // the cached latest frame.
+  const suppliedSurface = untrack(() => sharedSurface);
+  const surface = suppliedSurface ?? new CanvasSurface({ stageScale: getStageScale() });
+  const scheduler = new ScopeRenderScheduler(draw, { active: () => surface.visible && surface.sized });
 
   // Latest scope pixels — updated directly from WS binary, not via Svelte props
   let latestPixels: Uint8Array | null = null;
   let latestToken: TraceToken | null = null;
   let scheduledAt = 0;
 
-  function scheduleDraw(): void {
-    if (!mounted || !visible || rafId !== 0) return;
+  function wake(reason: 'frame' | 'view' | 'size' | 'visibility'): void {
     if (trace?.status === 'recording') scheduledAt = performance.now();
-    rafId = requestAnimationFrame(draw);
+    scheduler.wake(reason);
   }
 
-  // Bumped when the canvas box or the pixel ratio changes, so the stage-scale
-  // effect below re-runs after either. It is the only reader of the scale:
-  // reading it in the observer too would hide a missing effect read (MOR-1161).
-  let backingEpoch = $state(0);
-
-  function applyBackingStore(stageScale: number): void {
-    const backing = canvasBackingSize(cssWidth, cssHeight, window.devicePixelRatio || 1, stageScale);
-    canvas.width = backing.width;
-    canvas.height = backing.height;
-    canvas.getContext('2d')?.setTransform(backing.pixelScale, 0, 0, backing.pixelScale, 0, 0);
-  }
-
-  function draw(): void {
-    rafId = 0;
-    if (!visible) return; // restarted by visibilitychange
+  function draw(now: number): void {
+    void now;
+    if (!surface.visible) return;
+    // The pre-surface component floored the observer rect for drawing; the
+    // surface now carries the fractional box, so the historical floor lives
+    // here.
+    const cssWidth = Math.max(1, Math.floor(surface.cssW));
+    const cssHeight = Math.max(1, Math.floor(surface.cssH));
     const pixels = latestPixels ?? data;
     const token = latestToken;
     const measuring = trace?.status === 'recording';
     if (measuring && canvas) trace?.recordGeometry('spectrum', cssWidth, cssHeight, canvas.width, canvas.height, window.devicePixelRatio || 1);
     const drawAt = measuring ? performance.now() : 0;
     if (measuring && scheduledAt) trace?.record('raf', token, drawAt - scheduledAt);
-    if (canvas && pixels && cssWidth > 0 && cssHeight > 0) {
+    if (canvas && pixels && surface.sized) {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         renderer.render(ctx, pixels, cssWidth, cssHeight, options);
@@ -83,55 +82,38 @@
     scheduledAt = 0;
   }
 
-  function onVisibilityChange() {
-    visible = !document.hidden;
-    scheduleDraw();
-  }
-
-  // The stage's transform does not resize this canvas, so nothing else here
-  // notices a scale change (MOR-1161).
-  watchStageScale(() => { void backingEpoch; if (mounted) { applyBackingStore(getStageScale()()); scheduleDraw(); } });
-
   // Renderer options and fallback prop data can change without a stream push.
   $effect(() => {
     data; options; spanHz; enableAvg; enablePeakHold;
-    scheduleDraw();
+    wake('view');
+  });
+
+  // The surface publishes sizing (RO ∧ DPR ∧ stage scale) and visibility
+  // (IO ∧ !document.hidden); size and visibility wakes repaint from cache.
+  $effect(() => untrack(() => suppliedSurface ? surface.bindBacking(canvas) : surface.attach(canvas)));
+  const stopSizeListener = surface.onSizeChanged(() => wake('size'));
+  $effect(() => {
+    if (surface.visible) wake('visibility');
+  });
+  $effect(() => {
+    onSurfaceChange?.(surface.facts);
   });
 
   onMount(() => {
     // Register push callback with parent — parent handles WS subscription
     onRegisterPush?.((pixels: Uint8Array, token?: TraceToken | null) => {
       const measuring = trace?.status === 'recording';
-      if (measuring && rafId !== 0 && latestToken && token && latestToken !== token) {
+      if (measuring && scheduler.pending && latestToken && token && latestToken !== token) {
         trace?.record('coalesced', latestToken, 0, true);
       }
       latestPixels = pixels;
       latestToken = token ?? null;
       if (measuring) trace?.record('spectrum_push', latestToken);
-      scheduleDraw();
+      wake('frame');
     });
-
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    mounted = true;
-    scheduleDraw();
-
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (!rect) return;
-      cssWidth = Math.max(1, Math.floor(rect.width));
-      cssHeight = Math.max(1, Math.floor(rect.height));
-      backingEpoch += 1;
-    });
-    ro.observe(canvas);
-    const stopPixelWatch = watchDevicePixelRatio(() => { backingEpoch += 1; });
-
     return () => {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-      stopPixelWatch();
-      ro.disconnect();
-      cancelAnimationFrame(rafId);
-      rafId = 0;
-      mounted = false;
+      stopSizeListener();
+      scheduler.dispose();
     };
   });
 </script>

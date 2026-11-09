@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { audioScopeGoldenNames, loadAudioScopeGolden, scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { ScopeStream } from '../../../lib/runtime/scope-stream';
@@ -8,7 +8,23 @@ import { radio } from '$lib/stores/radio.svelte';
 import type { ServerState } from '$lib/types/state';
 import observedState from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 
-vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(private callback: ResizeObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, contentRect: new DOMRect(0, 0, 500, 100) } as ResizeObserverEntry], this as unknown as ResizeObserver);
+    }
+    disconnect() {}
+  });
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(private callback: IntersectionObserverCallback) {}
+    observe(target: Element) {
+      this.callback([{ target, isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+    }
+    disconnect() {}
+  });
+});
+afterEach(() => { vi.unstubAllGlobals(); });
 
 function audioState(freqHz: number, mode = 'USB', cwPitch = 600): ServerState {
   const state = structuredClone(observedState) as unknown as ServerState;
@@ -39,13 +55,13 @@ describe('LCD leaves consume ScopeStream directly', () => {
     const stream = new ScopeStream({ subscribe(sink) { receive = sink; return () => {}; }, close() {} },
       { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed', undefined, publish);
     const target = document.createElement('div'); document.body.append(target);
-    const width = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(500);
     const component = mount(LcdAfFft, { target, props: {
       scopeStream: stream, receiver: 'MAIN', inputState: 'live', receiverActivity: 'active',
     } });
     try {
       flushSync();
       expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish.mock.lastCall?.[0]).toMatchObject({ width: Math.round(500 * (window.devicePixelRatio || 1)), maxFps: 20 });
       stream.handleMessage({ type: 'error', message: 'audio mapping unavailable' }); flushSync();
       expect(target.querySelector('[data-fft-mode]')?.getAttribute('data-fft-mode')).toBe('safe-empty');
       const usable = audioState(14_200_000);
@@ -67,7 +83,7 @@ describe('LCD leaves consume ScopeStream directly', () => {
       expect(target.querySelector('.fft-trace')?.getAttribute('d')).toBe('M0.00,92.00 L250.00,50.84 L500.00,10.00');
       expect(publish).toHaveBeenCalledTimes(2);
     } finally {
-      await unmount(component); stream.dispose(); target.remove(); width.mockRestore(); radio.current = previous;
+      await unmount(component); stream.dispose(); target.remove(); radio.current = previous;
     }
   });
   it('keeps retained TX-freeze samples live and clears only header-only out-of-range frames', async () => {
@@ -164,8 +180,12 @@ describe('LCD leaves consume ScopeStream directly', () => {
     try {
       flushSync(); wire.frame();
       expect([...target.querySelectorAll('[data-rf-sample]')].map(node => Number(node.getAttribute('data-rf-sample')))).toEqual([0, 128, 255]);
+      expect(wire.stream.subscriptions.map(request => request.receiver)).toEqual([0]);
+      expect(wire.stream.selectedSlot).toBe('radio:0');
       wire.frame(1, [255, 0]);
-      expect(target.querySelectorAll('[data-rf-sample]')).toHaveLength(0);
+      expect(wire.stream.selectedSlot).toBe('radio:0');
+      expect([...target.querySelectorAll('[data-rf-sample]')].map(node => Number(node.getAttribute('data-rf-sample')))).toEqual([0, 128, 255]);
+      expect([...target.querySelectorAll('[data-rf-sample]')].map(node => Number(node.getAttribute('data-rf-sample')))).not.toEqual([255, 0]);
     } finally { await unmount(component); wire.stream.dispose(); target.remove(); }
   });
 });

@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { CanvasSurface } from '$lib/canvas/canvas-surface.svelte';
+  import { getStageScale } from '../../primitives/stage/stage-scale';
   import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
@@ -17,6 +20,11 @@
   let { scopeStream = null, receiver = null, inputState, receiverActivity }: Props = $props();
   let geometry = $state.raw<ScopeGeometry | null>(null);
   let svg = $state<SVGSVGElement>();
+  const surface = new CanvasSurface({ stageScale: getStageScale() });
+  $effect(() => {
+    const element = svg;
+    if (element) return untrack(() => surface.attach(element));
+  });
   let trace = $state<SVGPathElement>();
   let pixels: Uint8Array | null = null;
 
@@ -79,7 +87,7 @@
 {#if inputState !== 'unsupported'}
   <svg
     use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: null, view: { follow: 'vfo', spanHz: 48000 },
-      revision: audioScopeFactsRevision(runtime.state, runtime.caps) }}
+      revision: audioScopeFactsRevision(runtime.state, runtime.caps), facts: surface.facts }}
     bind:this={svg}
     data-testid="lcd-af-fft"
     data-fft-mode="safe-empty"
