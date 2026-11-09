@@ -103,13 +103,20 @@ async def test_sdk_only_reconnect_reapplies_demand(sdk):
 
 async def test_sub_view_real_dispatch_preserves_main_sdk_selection(sdk):
     radio, sim = sdk
+    sim._scope_12 = sim._scope_13 = 0
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
             await grant(ws, receiver=1)
+            assert (await ws.receive(timeout=5)).type is aiohttp.WSMsgType.BINARY
+            async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as main:
+                await grant(main)
+                assert (await main.receive(timeout=5)).type is aiohttp.WSMsgType.BINARY
+                assert (await ws.receive(timeout=5)).type is aiohttp.WSMsgType.BINARY
             assert radio._scope_controls().receiver == 0
             await radio.set_scope_span(4)
             assert sim.views[0][1] == 4
             assert sim.views[1][1] == 5
+    assert sim._scope_12 == sim._scope_13 == 0
 
 
 async def test_sdk_frames_stay_visible_when_web_pauses(sdk):
