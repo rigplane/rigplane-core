@@ -418,7 +418,6 @@ const LEGACY_OPTIMISTIC_FAMILY: ReadonlyArray<readonly [string, Record<string, u
   ['set_vfo', { vfo: 'VFOB' }],
   ['select_vfo', { vfo: 'A' }],
   ['set_scope_mode', { mode: 1 }],
-  ['set_scope_span', { span: 25_000 }],
   ['set_scope_hold', { on: true }],
   ['set_scope_ref', { ref: -10 }],
   ['set_antenna_1', { on: true }],
@@ -1641,7 +1640,6 @@ describe('control channel singleton', () => {
       ['set_split', { on: true }],
       ['set_af_level', { level: 42 }],
       ['set_vfo', { vfo: 'SUB' }],
-      ['set_scope_span', { span: 25_000 }],
     ];
     representatives.forEach(([name, params], index) => {
       expect(sendCommand(name, params, `representative-${index}`)).toBe(true);

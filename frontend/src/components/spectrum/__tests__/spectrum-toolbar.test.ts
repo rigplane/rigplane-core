@@ -7,10 +7,10 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
+  formatSpanHz, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
   toggleLayer, isLayerVisible,
   isSpanApplicable, isEdgeApplicable,
-  clampSpan, clampSpeed, clampBrt, stepRef, refRangeFromCaps,
+  clampSpeed, clampBrt, stepRef, refRangeFromCaps,
   type RefRange,
 } from '../spectrum-toolbar-logic';
 
@@ -21,13 +21,6 @@ function nextReceiver(current: number): number {
 // ── Tests ──
 
 describe('SpectrumToolbar constants', () => {
-  it('SPAN_LABELS covers indices 0–7', () => {
-    for (let i = 0; i <= 7; i++) {
-      expect(SPAN_LABELS[i]).toBeDefined();
-    }
-    expect(SPAN_LABELS[8]).toBeUndefined();
-  });
-
   it('SPEED_LABELS covers indices 0–2', () => {
     expect(SPEED_LABELS[0]).toBe('FST');
     expect(SPEED_LABELS[1]).toBe('MID');
@@ -125,24 +118,6 @@ describe('Scope mode applicability', () => {
     for (const [mode] of MODE_BUTTONS) {
       expect(isSpanApplicable(mode) !== isEdgeApplicable(mode)).toBe(true);
     }
-  });
-});
-
-describe('Span clamping', () => {
-  it('increments within range', () => {
-    expect(clampSpan(3, 1)).toBe(4);
-  });
-
-  it('decrements within range', () => {
-    expect(clampSpan(3, -1)).toBe(2);
-  });
-
-  it('clamps at upper bound (7)', () => {
-    expect(clampSpan(7, 1)).toBe(7);
-  });
-
-  it('clamps at lower bound (0)', () => {
-    expect(clampSpan(0, -1)).toBe(0);
   });
 });
 
@@ -258,14 +233,8 @@ describe('refRangeFromCaps (MOR-3694)', () => {
 });
 
 describe('Label display formatting', () => {
-  it('SPAN defaults to ±25k when index is 3', () => {
-    expect(SPAN_LABELS[3]).toBe('±25k');
-  });
-
-  it('fallback for unknown span index matches component behavior', () => {
-    // Component: SPAN_LABELS[scopeControls?.span ?? 3] ?? '±25k'
-    const fallback = SPAN_LABELS[99] ?? '±25k';
-    expect(fallback).toBe('±25k');
+  it('formats granted full width as ±half width', () => {
+    expect(formatSpanHz(100000)).toBe('±50k');
   });
 
   it('SPEED defaults to MID when index is 1', () => {

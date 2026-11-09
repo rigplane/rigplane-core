@@ -193,7 +193,6 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_split',
   'set_vfo',
   'set_freq',
-  'set_scope_span',
   'set_scope_speed',
   'set_scope_ref',
   // MOR-1560 (C6) — DSP family walk
@@ -298,7 +297,7 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 92;
+export const CLAIMED_INTENTS_COUNT = 91;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.

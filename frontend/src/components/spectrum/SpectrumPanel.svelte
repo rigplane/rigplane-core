@@ -842,6 +842,32 @@
     const mode = spectrumAuthority?.scopeControls?.mode.reading;
     if (mode?.status === 'known') runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware').setMode(mode.value);
   });
+  $effect(() => {
+    if (audioFft || sdrSource || !runtime.caps?.span_choices_hz?.length) return;
+    const receiver = spectrumAuthority?.receiver ?? 0;
+    const control = {
+      get spanHz(): number | null {
+        const geometry = frameGeometry;
+        return geometry?.source === 'radio' && geometry.receiver === receiver
+          ? geometry.view.endHz - geometry.view.startHz : null;
+      },
+      step(delta: -1 | 1): void {
+        const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
+          : followSpanHz ?? control.spanHz;
+        const choices = runtime.caps?.span_choices_hz ?? [];
+        if (current === null) return;
+        const next = delta > 0 ? choices.find(span => span > current)
+          : [...choices].reverse().find(span => span < current);
+        if (next === undefined) return;
+        explicitView = false;
+        requestedView = null;
+        followSpanHz = next;
+        scopeView.set('gesture', null);
+      },
+    };
+    runtime.scope.spanControl = control;
+    return () => { if (runtime.scope.spanControl === control) runtime.scope.spanControl = null; };
+  });
   // Band-plan presets (MOR-4270 item 3) derived from profile data.
   let scopePresetOptions = $derived.by(() => {
     if (audioFft) return [];

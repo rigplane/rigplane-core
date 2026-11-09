@@ -8,6 +8,7 @@ import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte
 import { createRawSnippet, mount, unmount, flushSync, tick } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 
 // ── Hoisted authority/intent harnesses ─────────────────────────────────────
 
@@ -15,6 +16,7 @@ const runtimeHarness = vi.hoisted(() => ({
   runtime: {
     state: Object.freeze({ identity: 'toolbar-state' }),
     caps: Object.freeze({ identity: 'toolbar-capabilities' }),
+    scope: { spanControl: { spanHz: 100000 as number | null, step: vi.fn() } satisfies ScopeSpanControl },
   },
 }));
 
@@ -245,6 +247,7 @@ function clearIntentSpies() {
 }
 
 beforeEach(() => {
+  runtimeHarness.runtime.scope.spanControl.spanHz = 100000;
   components = [];
   localStorage.clear();
   vi.clearAllMocks();
@@ -329,11 +332,11 @@ describe('scope-control intents', () => {
     const target = mountToolbar();
     buttons(target).find((item) => item.title === 'Decrease span')!.click();
     flushSync();
-    expectOnlyScopeCall('onSpanChange', 2);
+    expectOnlyScopeCall('onSpanChange', -1);
     clearIntentSpies();
     buttons(target).find((item) => item.title === 'Increase span')!.click();
     flushSync();
-    expectOnlyScopeCall('onSpanChange', 4);
+    expectOnlyScopeCall('onSpanChange', 1);
   });
 
   it('routes speed down/up through exactly one clamped intent', () => {
@@ -490,9 +493,10 @@ describe('known-value rendering', () => {
   });
 
   it.each([
-    [0, '±2.5k'], [1, '±5k'], [2, '±10k'], [3, '±25k'],
-    [4, '±50k'], [5, '±100k'], [6, '±250k'], [7, '±500k'],
-  ] as const)('renders exact span %i label %s', (value, label) => {
+    [5000, '±2.5k'], [10000, '±5k'], [20000, '±10k'], [50000, '±25k'],
+    [100000, '±50k'], [200000, '±100k'], [500000, '±250k'], [1000000, '±500k'],
+  ] as const)('renders granted span %i label %s', (value, label) => {
+    runtimeHarness.runtime.scope.spanControl.spanHz = value;
     authorityHarness.current = authority({ scopeControls: scopeFacts({ mode: field(0), span: field(value) }) });
     const target = mountToolbar();
     expect(target.textContent).toContain(label);
@@ -541,8 +545,6 @@ type FieldCase = Readonly<{
 const failClosedCases: readonly FieldCase[] = [
   { name: 'mode', valid: 0, invalid: 4, find: (root) => button(root, 'CTR') },
   { name: 'edge', valid: 1, invalid: 0, base: { mode: field(1) }, find: (root) => button(root, '1') },
-  { name: 'span', valid: 3, invalid: 8, base: { mode: field(0) },
-    find: (root) => buttons(root).find((item) => item.title === 'Decrease span') },
   { name: 'speed', valid: 1, invalid: 3,
     find: (root) => buttons(root).find((item) => item.title === 'Decrease speed') },
   { name: 'hold', valid: false, invalid: 0, find: (root) => button(root, 'HOLD') },
@@ -1327,4 +1329,12 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
     expect(target.querySelector('[data-testid="toolbar-scope-status"]')).toBeNull();
   });
+});
+
+
+it('keeps SPAN inert without a subscription grant', () => {
+  runtimeHarness.runtime.scope.spanControl.spanHz = null;
+  const target = mountToolbar();
+  expect(buttons(target).find(item => item.title === 'Increase span')!.disabled).toBe(true);
+  expect(target.textContent).not.toContain('±50k');
 });
