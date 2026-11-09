@@ -474,8 +474,14 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
             assert decoded.out_of_range is out_of_range
             assert decoded.pixels is None
             assert decoded.coverage_start_hz == decoded.coverage_end_hz
+            assert session.health(civ_flowing=True).last_frame_at == virtual_clock()
+            server._radio.last_valid_frame_monotonic = virtual_clock()
             await virtual_clock.elapse(0.1)
         assert server._scope_hidden_published is False
+        for _ in range(3):
+            server._radio.last_valid_frame_monotonic = virtual_clock()
+            await virtual_clock.elapse(0.05)
+        assert server._scope_hidden_published is True
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
