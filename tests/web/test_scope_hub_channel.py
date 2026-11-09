@@ -8,7 +8,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio_scope_source import RadioScopeSource
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import ScopeTarget, Subscription, View
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web.api_contract import STABLE_WEBSOCKET_ROUTES
 from rigplane.web.handlers.scope import ScopeHandler
 from rigplane.web.protocol import decode_scope_granted, encode_scope_subscription
@@ -419,44 +419,64 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "clock_start",
+    [1_728_000.0, 3_000_000.0, 300_000.0],
+    ids=["bad-20d", "bad-35d", "good-3.5d"],
+)
+@pytest.mark.parametrize(
     "out_of_range,pixels", [(True, b"\x01"), (False, b""), (False, b"\x00")]
 )
 async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
-    virtual_clock, monkeypatch, out_of_range, pixels
+    monkeypatch, clock_start, out_of_range, pixels
 ):
     from types import SimpleNamespace
     from rigplane.web.protocol import decode_scope_frame_v2
 
-    source = RadioScopeSource(resolve_radio_profile(model="ic705"), Writer())
-    server = WebServer(None)
-    server.scope_hub.register("radio", source)
-    server._radio_scope_source = source
-    server._radio = SimpleNamespace(last_valid_frame_monotonic=virtual_clock())
-    server._hardware_scope_available = True
-    server._radio_scope_demand = True
-    server._scope_enabled = True
-    server._scope_health_interval = 0.1
-    monkeypatch.setattr(server, "_radio_ready", lambda: True)
-    monkeypatch.setattr(server, "_scope_tx_known", lambda: False)
-    sub = await server.scope_hub.subscribe(
-        Subscription("radio", 0, View(20_000_000, 20_100_000), 1024, 20)
-    )
-    task = asyncio.create_task(server._scope_health_monitor())
+    # The monitor computes idle as float(tick) - last_frame_at and compares it
+    # with the 0.1 interval; on whole power-of-2 bands of the loop's start
+    # time (= machine uptime) that difference sits one ULP above 0.1 and the
+    # monitor publishes nothing. Force the start so the band is deterministic
+    # instead of inherited from the host's uptime (MOR-4353).
+    loop = asyncio.get_running_loop()
+    clock = VirtualClock(clock_start)
+    clock.install(loop)
     try:
-        for _ in range(3):
-            source.feed_frame(
-                ScopeFrame(0, 1, 14_000_000, 14_100_000, pixels, out_of_range)
-            )
-            decoded = decode_scope_frame_v2(await sub.receive())
-            assert decoded.out_of_range is out_of_range
-            assert decoded.pixels is None
-            assert decoded.coverage_start_hz == decoded.coverage_end_hz
-            await virtual_clock.elapse(0.1)
-        assert server._scope_hidden_published is False
+        source = RadioScopeSource(resolve_radio_profile(model="ic705"), Writer())
+        server = WebServer(None)
+        server.scope_hub.register("radio", source)
+        server._radio_scope_source = source
+        server._radio = SimpleNamespace(last_valid_frame_monotonic=clock())
+        server._hardware_scope_available = True
+        server._radio_scope_demand = True
+        server._scope_enabled = True
+        server._scope_health_interval = 0.1
+        monkeypatch.setattr(server, "_radio_ready", lambda: True)
+        monkeypatch.setattr(server, "_scope_tx_known", lambda: False)
+        sub = await server.scope_hub.subscribe(
+            Subscription("radio", 0, View(20_000_000, 20_100_000), 1024, 20)
+        )
+        task = asyncio.create_task(server._scope_health_monitor())
+        try:
+            for _ in range(3):
+                # Feed strictly inside the 0.1 window: at exactly 0.1 the
+                # monitor's idle can land one ULP above the interval on bad
+                # start-time bands and nothing is published (MOR-4353).
+                await clock.elapse(0.01)
+                source.feed_frame(
+                    ScopeFrame(0, 1, 14_000_000, 14_100_000, pixels, out_of_range)
+                )
+                decoded = decode_scope_frame_v2(await sub.receive())
+                assert decoded.out_of_range is out_of_range
+                assert decoded.pixels is None
+                assert decoded.coverage_start_hz == decoded.coverage_end_hz
+                await clock.elapse(0.09)
+            assert server._scope_hidden_published is False
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await sub.close()
     finally:
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        await sub.close()
+        clock.uninstall(loop)
 
 
 @pytest.mark.asyncio
