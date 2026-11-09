@@ -5,6 +5,7 @@ import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runt
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import { startJourneyServer } from './server-process';
+import { parseScopeWriteReceipt } from './panorama-receipt';
 
 interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number }
 declare global { interface Window { panoramaWork: Work } }
@@ -15,6 +16,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const port = Number(process.env.PANORAMA_PORT ?? 18845) + index;
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
+    try {
     const sent: Array<ScopeSubscription & { type: string }> = [];
     const grants: ScopeGranted[] = [];
     const frames: Array<{ view: number[]; coverage: number[] }> = [];
@@ -74,9 +76,8 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       let contents = '';
       for await (const chunk of createReadStream(evidence, { encoding: 'utf8' })) contents += chunk;
       return contents.trim().split('\n').filter(Boolean).map(
-        line => JSON.parse(line) as { sub: number; data: number[]; span: number });
+        parseScopeWriteReceipt);
     };
-    try {
       await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
       await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
       const area = page.locator('.spectrum-area').first();
