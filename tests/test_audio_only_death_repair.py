@@ -719,6 +719,7 @@ async def test_two_rx_silent_start_one_repair_task(
             assert repair_tasks == [first_task, first_task]
             await asyncio.wait_for(asyncio.shield(first_task), RESUME_BOUND_S)
             assert radio._audio_silence_repair_task is None
+            assert teardown_tasks == [first_task]
 
             if later_watchdog_edge:
                 # A replacement without frames gets the real liveness decision,
@@ -738,6 +739,7 @@ async def test_two_rx_silent_start_one_repair_task(
                 assert repair_tasks == [first_task, first_task, second_task]
                 await asyncio.wait_for(asyncio.shield(second_task), RESUME_BOUND_S)
                 assert radio._audio_silence_repair_task is None
+                assert teardown_tasks == [first_task, second_task]
 
             assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None
             print(
@@ -745,9 +747,9 @@ async def test_two_rx_silent_start_one_repair_task(
                 f"teardowns={[id(task) for task in teardown_tasks]} "
                 f"later_watchdog_edge={later_watchdog_edge}"
             )
-            assert len(teardown_tasks) == 1, "a second rx_silent started a second repair"
         finally:
             session.remove_listener(record_task)
+            monkeypatch.undo()
         await sub.release()
     finally:
         await stack.aclose()
