@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from rigplane.core.radio_protocol import ManagedTxSupervisor
+from rigplane.core.radio_protocol import ManagedTxSupervisor, TransmitStateReadable
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
@@ -34,6 +35,8 @@ from rigplane.runtime.managed_tx_fence import TxAbortFence
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
 
+logger = logging.getLogger(__name__)
+
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
 
 
@@ -42,6 +45,14 @@ class _ProviderEvent:
     provider_generation: int
     observation_generation: int
     transport_identity: object
+
+
+@dataclass(frozen=True, slots=True)
+class _StartupRelease:
+    """A startup release debt recorded before its provider is published."""
+
+    backend_label: str
+    model_label: str
 
 
 _ProviderHook = Callable[[_ProviderEvent], Awaitable[None]]
@@ -122,6 +133,7 @@ class ManagedTxComposition:
     ) -> None:
         if not isinstance(actuator, ManagedTxActuator):
             raise TypeError("production managed TX requires a normalized actuator")
+        self._actuator = actuator
         self._prepare_provider = prepare_provider
         self._retire_provider = retire_provider
         self._abort_fence = TxAbortFence()
@@ -268,9 +280,86 @@ class ManagedTxComposition:
             await self._retire_once(event)
             return
         self._events[event.provider_generation] = event
+        await self._publish_prepared_provider(event)
+
+    async def _publish_prepared_provider(self, event: _ProviderEvent) -> None:
+        """Publish a prepared provider as one cancellation-joined unit.
+
+        The bounded sequence — startup PTT read, release-debt recording,
+        provider availability, currency re-check, activation — runs as
+        its own task, and a cancellation of the activating caller joins
+        it to completion instead of bisecting it (round-2 review P1):
+        the read still reaches its answer, any debt is still recorded,
+        and the provider is still published so its retry force-offs a
+        rig the read found keyed. Shutdown can therefore never drain a
+        half-activated provider as clean while the radio stays keyed.
+
+        A shutdown-time blanket cancellation may also cancel the
+        publication task itself — before its first instruction, so none
+        of its own bookkeeping ran (round-3 review P1). The owning
+        wrapper therefore performs the fail-closed abort bookkeeping
+        for every publication that did not complete, and the
+        ``done()``-guarded join exits without spinning (the shield of a
+        cancelled task re-raises without yielding).
+        """
+        publication = asyncio.create_task(
+            self._publish_provider_once(event),
+            name="managed-tx-provider-publication",
+        )
+        publication.add_done_callback(self._harvest)
+        cancelled = False
+        while not publication.done():
+            try:
+                await asyncio.shield(publication)
+            except asyncio.CancelledError:
+                cancelled = True
+        if publication.cancelled():
+            await self._abort_prepared_publication(event)
+            raise asyncio.CancelledError
+        if cancelled:
+            raise asyncio.CancelledError
+        await publication
+
+    async def _abort_prepared_publication(self, event: _ProviderEvent) -> None:
+        """Fail-closed bookkeeping for a publication that did not complete.
+
+        An aborted publication leaves an unresolved PTT read behind, so
+        the release is owed, never assumed clean: the debt keeps every
+        shutdown path from draining the provider as clean while the rig
+        may still be keyed. Idempotent — a publication whose own error
+        path already recorded the debt or retired the event no-ops
+        here.
+        """
         try:
+            # Admitted after ``close_ingress_for_shutdown`` too: a closed
+            # ingress refuses keying, never a release (Codex gate P0).
+            await self._authority.submit_force_off()
+        except Exception:
+            # Only a closed, terminated or already shutting-down
+            # authority refuses; its own shutdown path then owes and
+            # drives the release.
+            logger.info(
+                "managed_tx.startup_unkey: recording the release debt of "
+                "an aborted publication failed; the authority's own "
+                "shutdown path owes the release",
+                exc_info=True,
+            )
+        await self._retire_once(event)
+
+    async def _publish_provider_once(self, event: _ProviderEvent) -> None:
+        # MOR-4186 review P1-1: PTT is read and any release debt is
+        # recorded BEFORE the provider is published. While the read is
+        # in flight the authority holds no provider, so no managed
+        # ingress can be admitted and this release can never hit a TX
+        # this process owns; provider_available() then issues the
+        # force_receive under its own lock, before any ingress can key.
+        try:
+            startup_release = await self._record_startup_release()
             await self._authority.provider_available(event.provider_generation)
         except BaseException:
+            # Any abort — a failed publication or a cancellation of the
+            # publication task itself — retires the prepared provider;
+            # the owning wrapper records the fail-closed release debt.
             await self._retire_once(event)
             raise
         if not self._candidate_is_current(event):
@@ -279,6 +368,134 @@ class ManagedTxComposition:
             await self._retire_once(event)
             return
         self._active_provider = event
+        if startup_release is not None:
+            await self._log_startup_release(startup_release)
+
+    async def _record_startup_release(self) -> _StartupRelease | None:
+        """MOR-4186: record a release debt for a rig still keyed at the edge.
+
+        Runs once at every provider activation — process start and every
+        radio (re)connect, the one edge every backend already reports
+        through :meth:`transport_ready` — while the authority still holds
+        no provider: no managed ingress can be admitted yet, so a TX
+        this process owns can never be caught by this release (the
+        review's P1-1 race). PTT is read through the backend's normal
+        read path (:class:`~rigplane.core.radio_protocol.TransmitStateReadable`);
+        only a reading that positively says transmitting with a verified
+        readback (the protocol's freshness proof — a bare value is not)
+        while this process owes no release (the state a SIGKILLed Core
+        leaves behind on a USB-serial rig with no link watchdog)
+        records exactly one release debt:
+        :meth:`ManagedTxAuthority.submit_force_off` with no provider,
+        i.e. ``ManagedTxSubmission.pending_release``.
+        :meth:`ManagedTxAuthority.provider_available` then issues the
+        ``RetryForceReceive`` under its own lock before any ingress can
+        key, and every TX ON is refused while the debt stays owed. An
+        unconfirmed release keeps the authority's fail-closed retry
+        policy and its visible release debt, surfaced by
+        :meth:`_log_startup_release` as "may still be transmitting";
+        nothing here reports the rig as receiving. A PTT read that
+        fails or is unreadable does nothing (no blind writes) and logs
+        at INFO; an unverified "transmitting" reading also leaves the
+        rig untouched and logs at WARNING. Never raises: this is part
+        of the connect path.
+        """
+        actuator = self._actuator
+        if not isinstance(actuator, TransmitStateReadable):
+            return None
+        backend = getattr(actuator, "backend_id", None)
+        backend_label = (
+            backend
+            if isinstance(backend, str) and backend
+            else (type(actuator).__name__)
+        )
+        model = getattr(actuator, "model", None)
+        model_label = model if isinstance(model, str) and model else "unknown"
+        try:
+            projection = await self._authority.snapshot()
+            state = projection.state
+            if (
+                state.intent.kind is not ManagedTxIntentKind.RX
+                or state.release_required
+                or state.pending_effect is not None
+            ):
+                # A managed-TX owner or a release this process already
+                # owes covers the rig; the startup release is only for
+                # a key nothing in this process made.
+                return None
+            reading = await actuator.read_transmit_state()
+        except Exception:
+            # Not an error: a radio whose PTT cannot be established is
+            # left untouched (no blind writes).
+            logger.info(
+                "managed_tx.startup_unkey: PTT read at connect failed; "
+                "leaving the rig untouched",
+                exc_info=True,
+            )
+            return None
+        if reading.value is not True:
+            if reading.value is None:
+                logger.info(
+                    "managed_tx.startup_unkey: PTT unreadable at connect "
+                    "(%s); leaving the rig untouched",
+                    reading.failure or "no value",
+                )
+            return None
+        if reading.failure is not None or not reading.verified_readback:
+            # The read contract: a returned value does not by itself prove
+            # a fresh physical-radio read, so an unverified "transmitting"
+            # is not the positive answer rule 4 requires.
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s PTT "
+                "reading at connect says transmitting without a "
+                "verified readback (failure=%s verified=%s); leaving "
+                "the rig untouched",
+                backend_label,
+                model_label,
+                reading.failure,
+                reading.verified_readback,
+            )
+            return None
+        try:
+            await self._authority.submit_force_off()
+        except Exception:
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s was "
+                "transmitting at connect with no managed-TX owner; "
+                "force_receive could not be submitted",
+                backend_label,
+                model_label,
+                exc_info=True,
+            )
+            return None
+        return _StartupRelease(backend_label, model_label)
+
+    async def _log_startup_release(self, release: _StartupRelease) -> None:
+        """Log the startup release outcome from the post-availability state.
+
+        The outcome is read from the authority snapshot after
+        :meth:`ManagedTxAuthority.provider_available` issued the
+        force_receive: ``release_required`` is cleared only by an
+        accepted readback, so a debt still visible here means the rig
+        may still be transmitting.
+        """
+        projection = await self._authority.snapshot()
+        if projection.state.release_required:
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s was "
+                "transmitting at connect with no managed-TX owner; the "
+                "release stays owed and the rig may still be transmitting",
+                release.backend_label,
+                release.model_label,
+            )
+        else:
+            logger.warning(
+                "managed_tx.startup_unkey: backend=%s model=%s was "
+                "transmitting at connect with no managed-TX owner; "
+                "force_receive confirmed",
+                release.backend_label,
+                release.model_label,
+            )
 
     def _candidate_is_current(self, event: _ProviderEvent) -> bool:
         store = self._state_store
@@ -355,10 +572,11 @@ class ManagedTxComposition:
             task = self._transition_task
             if task is not None:
                 await asyncio.shield(task)
-            if not self._events:
-                await self._authority.close()
-                return ShutdownResult.DRAINED
             if self._active_provider is None:
+                # The clean-close shortcut never discards a release: close()
+                # refuses an authority that still owes one, and the owed
+                # release then goes through the authority's shutdown, which
+                # reports DRAINED only after a confirmed release.
                 try:
                     await self._authority.close()
                 except RuntimeError:
