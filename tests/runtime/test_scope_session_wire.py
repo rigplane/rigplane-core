@@ -184,3 +184,25 @@ async def test_known_tx_defers_sdk_scope_wire_writes(monkeypatch):
     monkeypatch.setattr(radio, "_send_civ_raw", send)
     await radio.enable_scope(policy="fast")
     send.assert_not_awaited()
+
+
+async def test_view_capture_does_not_retarget_the_shared_scope_receiver(monkeypatch):
+    from rigplane.radio import IcomRadio
+    from rigplane.commands import parse_civ_frame, build_civ_frame, CONTROLLER_ADDR
+
+    radio = IcomRadio("127.0.0.1", model="IC-7610")
+    controls = radio._scope_controls()
+    controls.receiver, controls.mode, controls.span, controls.edge = 0, 0, 2, 1
+    monkeypatch.setattr(radio, "_check_connected", lambda: None)
+
+    async def expect(payload, **kwargs):
+        assert controls.receiver == 0
+        request = parse_civ_frame(payload)
+        assert request.data == b"\x01"
+        value = 1 if request.sub == 0x16 else 0
+        return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, request.command, sub=request.sub, data=bytes([1, value])))
+
+    monkeypatch.setattr(radio, "_send_civ_expect", expect)
+    captured = await radio._read_scope_receiver(1)
+    assert (captured.mode, captured.span, captured.edge) == (0, 0, 1)
+    assert (controls.receiver, controls.mode, controls.span, controls.edge) == (0, 0, 2, 1)
