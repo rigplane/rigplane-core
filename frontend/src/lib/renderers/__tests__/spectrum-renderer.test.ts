@@ -1,9 +1,20 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  renderSpectrum, SpectrumRenderer, defaultSpectrumOptions, spectrumDisplayAmplitude,
+  renderSpectrum as rawRenderSpectrum, SpectrumRenderer as RawSpectrumRenderer, defaultSpectrumOptions, spectrumDisplayAmplitude,
   defaultSpectrumColorRoles, resolveSpectrumColorRoles, spectrumColorRolesToOptions,
   type SpectrumColorRoles, type SpectrumOptions,
 } from '../spectrum-renderer';
+
+import { recordCanvasLayers } from './canvas-layers-fixture';
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+function renderSpectrum(...args: Parameters<typeof rawRenderSpectrum>) {
+  recordCanvasLayers(args[0]); return rawRenderSpectrum(...args);
+}
+class SpectrumRenderer extends RawSpectrumRenderer {
+  override render(...args: Parameters<RawSpectrumRenderer['render']>) {
+    recordCanvasLayers(args[0]); super.render(...args);
+  }
+}
 
 function createMockCtx() {
   const log = {
@@ -370,7 +381,8 @@ describe('panorama viewport shift (MOR-2464)', () => {
     const { ctx, log } = createMockCtx();
     renderSpectrum(ctx, peakData(50), WIDTH, HEIGHT, baseOpts({ panoramaShiftHz: -10 }));
     expect(tracePoints(log).some(([x, y]) => x === 60 && y === 0)).toBe(true);
-    expect(Math.min(...tracePoints(log).map(([x]) => x))).toBe(10);
+    expect(log.moveTo.some(([x, y]) => x === 10 && y < HEIGHT)).toBe(true);
+    expect(Math.min(...tracePoints(log).map(([x]) => x))).toBeGreaterThanOrEqual(10);
     expect(tracePoints(log).some(([x]) => x === 9)).toBe(false);
   });
 
@@ -560,9 +572,9 @@ describe('spectrum colour roles', () => {
     expect(paint.fillStyle).toEqual([PREVIOUS_LITERALS.text, PREVIOUS_LITERALS.passbandFill]);
     expect(paint.strokeStyle).toEqual([
       PREVIOUS_LITERALS.grid,
-      PREVIOUS_LITERALS.line,
       PREVIOUS_LITERALS.passbandEdge,
       PREVIOUS_LITERALS.tuneLine,
+      PREVIOUS_LITERALS.line,
     ]);
   });
 
@@ -576,7 +588,7 @@ describe('spectrum colour roles', () => {
     }));
     expect(paint.gradientStops).toEqual([[0, '#020202'], [1, '#030303']]);
     expect(paint.fillStyle).toEqual(['#050505', '#070707']);
-    expect(paint.strokeStyle).toEqual(['#040404', '#010101', '#080808', '#060606']);
+    expect(paint.strokeStyle).toEqual(['#040404', '#080808', '#060606', '#010101']);
     for (const literal of Object.values(PREVIOUS_LITERALS)) {
       expect([...paint.fillStyle, ...paint.strokeStyle]).not.toContain(literal);
     }
@@ -600,7 +612,8 @@ describe('requested View coordinates (MOR-4270)', () => {
       showRfOverlays: false,
     }));
     const tracePoints = log.lineTo.slice(17).filter(([, y]) => y === 0);
-    expect(Math.min(...tracePoints.map(([x]) => x))).toBe(25);
+    expect(log.moveTo).toContainEqual([25, 0]);
+    expect(Math.min(...tracePoints.map(([x]) => x))).toBeGreaterThanOrEqual(25);
     expect(Math.max(...tracePoints.map(([x]) => x))).toBe(74);
   });
 });

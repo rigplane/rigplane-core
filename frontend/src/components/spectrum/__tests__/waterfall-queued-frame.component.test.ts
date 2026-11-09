@@ -1,3 +1,4 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 /**
  * MOR-4206 review round 2, finding 1: a frame queued in the latest-wins
  * scheduler carries a delivery-time options snapshot. When the panorama
@@ -83,7 +84,8 @@ beforeEach(() => {
   // jsdom lacks pointer capture; the gesture recognizer calls it on pointerdown.
   HTMLElement.prototype.setPointerCapture = vi.fn();
   HTMLElement.prototype.releasePointerCapture = vi.fn();
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement, kind: string) {
+      if (kind === 'webgl2') return webglFixture(this.width, this.height).gl;
     return {
       canvas: this, fillRect: vi.fn(), drawImage: vi.fn(),
       createImageData: (width: number, height: number) => ({
@@ -215,5 +217,22 @@ describe('queued frame vs. an advancing viewport (MOR-4206 review round 2)', () 
     flushPaint();
     expect(pushSpy).toHaveBeenCalledTimes(2);
     expect(pushSpy.mock.calls.at(-1)![0][0]).toBe(21);
+  });
+});
+
+it('restores the painted View and cached frame when context recovery occurs during frame silence', () => {
+  let push: ((pixels: Uint8Array, frameOptions?: WaterfallOptions) => void) | undefined;
+  mountHarness({ onRegisterPush: (fn: typeof push) => { push = fn; } });
+  push!(new Uint8Array(100).fill(80), options(DELIVERED_CENTER_HZ, 0)); flushPaint();
+  harnessOptions.value = { ...options(0, 0), spanHz: 0 };
+  flushSync(); flushPaint();
+  const canvas = target.querySelector('canvas')!;
+  canvas.dispatchEvent(new Event('webglcontextlost', { cancelable: true })); flushSync();
+  expect(target.querySelector('[role="alert"]')).not.toBeNull();
+  const draw = vi.spyOn(WaterfallRenderer.prototype, 'draw');
+  canvas.dispatchEvent(new Event('webglcontextrestored')); flushSync(); flushPaint();
+  expect(target.querySelector('[role="alert"]')).toBeNull();
+  expect((draw.mock.instances.at(-1)! as WaterfallRenderer).paintedView).toEqual({
+    startHz: DELIVERED_CENTER_HZ - SPAN_HZ / 2, endHz: DELIVERED_CENTER_HZ + SPAN_HZ / 2,
   });
 });

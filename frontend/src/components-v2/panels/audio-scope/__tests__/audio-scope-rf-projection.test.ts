@@ -1,8 +1,13 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import { describe, expect, it, vi } from 'vitest';
 import { audioScopeGoldenNames, loadAudioScopeGolden } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { ingressScopeFrame } from '$lib/runtime/adapters/scope-adapter';
-import { renderAudioSpectrum, AudioSpectrumRendererState } from '../audio-spectrum-renderer';
-import { renderSpectrum, SpectrumRenderer, defaultSpectrumOptions } from '$lib/renderers/spectrum-renderer';
+import { renderAudioSpectrum as rawRenderAudioSpectrum, AudioSpectrumRendererState, type SpectrumState } from '../audio-spectrum-renderer';
+import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
+function renderAudioSpectrum(ctx: CanvasRenderingContext2D, width: number, height: number, state: SpectrumState, rs = new AudioSpectrumRendererState()) {
+  recordCanvasLayers(ctx); return rawRenderAudioSpectrum(ctx, width, height, state, rs);
+}
+import { renderSpectrum as rawRenderSpectrum, SpectrumRenderer as RawSpectrumRenderer, defaultSpectrumOptions } from '$lib/renderers/spectrum-renderer';
 import { WaterfallRenderer, defaultWaterfallOptions } from '$lib/renderers/waterfall-renderer';
 
 function context() {
@@ -81,13 +86,22 @@ describe.each(audioScopeGoldenNames)('actual PCM → hub RF frame %s', name => {
     const trace = strokes.find(stroke => stroke.points.length >= 480)!;
     const peak = trace.points.reduce((best, point) => point[1] < best[1] ? point : best);
     expect(peak[0] / 480 * projection.spanHz).toBeCloseTo(expected.input.toneHz, -2);
-    const waterfall = new WaterfallRenderer({ getContext: () => ctx } as unknown as HTMLCanvasElement,
-      { ...defaultWaterfallOptions, colorScheme: 'grayscale', sampleWindow, sampleAmplitudeMax: 160 });
+    const f = webglFixture(480, 160);
+    const waterfall = new WaterfallRenderer(f.canvas,
+      { ...defaultWaterfallOptions, spanHz: projection.spanHz, centerHz: projection.spanHz / 2,
+        colorScheme: 'grayscale', sampleWindow, sampleAmplitudeMax: 160 });
     waterfall.pushRow(frame.pixels!);
-    const row = vi.mocked(ctx.putImageData).mock.lastCall![0].data;
-    const peakColumn = Array.from({ length: 480 }, (_, i) => row[i * 4]).indexOf(255);
-    expect(peakColumn / 480 * projection.spanHz).toBeCloseTo(expected.input.toneHz, -2);
-    expect(frame.pixels?.buffer).toBe(buffer);
+    const upload = f.named('texSubImage2D').at(-1)!;
+    expect(upload.args[8]).toBe(frame.pixels);
+    const mapping = f.named('bufferSubData').at(-1)!.args[2] as Float32Array;
+    const bin = (expected.input.toneHz - projection.spanHz / 2 - mapping[0] - mapping[1]) / mapping[2];
+    const peakBin = frame.pixels!.indexOf(Math.max(...frame.pixels!)) / frame.width;
+    expect(bin).toBeCloseTo(peakBin, 1);
     waterfall.destroy();
   });
 });
+
+function renderSpectrum(...args: Parameters<typeof rawRenderSpectrum>) { recordCanvasLayers(args[0]); return rawRenderSpectrum(...args); }
+class SpectrumRenderer extends RawSpectrumRenderer {
+  override render(...args: Parameters<RawSpectrumRenderer['render']>) { recordCanvasLayers(args[0]); super.render(...args); }
+}

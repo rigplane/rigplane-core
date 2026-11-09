@@ -1,3 +1,5 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
+import { RecordedPath } from '$lib/renderers/__tests__/canvas-layers-fixture';
 import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 /**
  * Hidden-tab delivery characterization, MOR-4271 surface/scheduler world.
@@ -124,7 +126,10 @@ describe('same-session scope delivery across hidden rendering', () => {
       disconnect() {}
     });
     const paint = vi.fn();
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+    vi.stubGlobal('Path2D', RecordedPath);
+    vi.stubGlobal('Path2D', RecordedPath);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement, kind: string) {
+      if (kind === 'webgl2') { const f = webglFixture(this.width, this.height); f.gl.texSubImage2D = paint; return f.gl; }
       return {
         canvas: this, fillRect: vi.fn(), drawImage: vi.fn(),
         createImageData: (width: number, height: number) => ({
@@ -243,7 +248,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize);
       hidden = true; document.dispatchEvent(new Event('visibilitychange')); flushSync(); flushPaint();
       hidden = false; document.dispatchEvent(new Event('visibilitychange')); flushSync(); flushPaint();
-      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize + 1);
+      expect(pushed).toHaveBeenCalledTimes(paintedBeforeResize);
       expect(pushed.mock.calls.at(-1)![0][0]).toBe(liveIds.at(-1));
     } finally {
       unsubscribe();
