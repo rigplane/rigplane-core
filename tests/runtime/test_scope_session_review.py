@@ -23,7 +23,7 @@ pytestmark = [
 
 @pytest.fixture
 async def sdk():
-    sim = ScopeControlSimulator(scope_stream=True)
+    sim = ScopeControlSimulator(scope_stream=True, dual_receiver=True)
     await sim.start()
     radio = IcomRadio(
         "127.0.0.1",
