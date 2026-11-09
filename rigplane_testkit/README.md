@@ -21,6 +21,13 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   `tests/realtime_baseline.txt`, which may only shrink (`--realtime-write-baseline`
   regenerates it from a full collection; `python -m rigplane_testkit.realtime_guard
   tests/realtime_baseline.txt origin/main` fails if it grew).
+- `rigplane_testkit.leaked_radio_guard` — a teardown plugin (loaded from
+  `tests/conftest.py`, MOR-4333) that fails the test which leaves a connected
+  `CoreRadio` for the garbage collector, instead of letting the finalizer's
+  "collected with active connection" warning land in a neighbour test. A test
+  that fakes a connection calls `fake_connected(radio)`, which is undone when
+  the test ends; a test that provokes the warning on purpose carries
+  `@pytest.mark.leaks_connected_radio(reason="...")`.
 - `rigplane_testkit.icom` — `MockIcomRadio`, an asyncio UDP simulator of an
   Icom IC-7610 LAN interface: control-port discovery/login/token/ping, a CI-V
   command port, single-owner session holding with keepalive renewal, and

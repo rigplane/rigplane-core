@@ -61,6 +61,7 @@ from _helpers import mode_response as _mode_response
 from _helpers import observe_selected_receiver
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
 from rigplane.testing.timing import VirtualClock, await_until
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -499,7 +500,7 @@ class TestSetModeSelected0x26:
         r = IcomRadio("192.168.1.100", model=model, timeout=0.05)
         r._civ_transport = mock_transport
         r._ctrl_transport = mock_transport
-        r._connected = True
+        fake_connected(r)
         observe_selected_receiver(r, 0)
         return r
 
@@ -769,7 +770,7 @@ class TestPower:
         )
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         with pytest.raises(CommandError, match="power_control"):
             await radio.set_rf_power(128)
@@ -785,7 +786,7 @@ class TestPower:
         radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         await radio.set_rf_power(128)
         assert bytes(mock_transport.sent_packets[-1]).endswith(
@@ -803,7 +804,7 @@ class TestPower:
         radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6100")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         await radio.set_rf_power(128)
         assert bytes(mock_transport.sent_packets[-1]).endswith(
@@ -822,7 +823,7 @@ class TestPower:
         radio = IcomRadio("192.168.1.100", timeout=2.0, model="X6200")
         radio._civ_transport = mock_transport
         radio._ctrl_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         with pytest.raises(CommandError):
             await radio.set_powerstat(False)
@@ -1375,7 +1376,7 @@ class TestTimeout:
         radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         with pytest.raises(TimeoutError):
             await radio.get_freq()
@@ -1387,7 +1388,7 @@ class TestTimeout:
         radio = IcomRadio("192.168.1.100", timeout=0.2, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
 
         with pytest.raises(TimeoutError):
@@ -1615,7 +1616,7 @@ class TestAckSinkRobustness:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
         radio._ctrl_transport = t
         radio._civ_transport = t
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
 
         ff = build_civ_frame(
@@ -2858,7 +2859,7 @@ class TestCivTimeoutIsolation:
         radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
 
         # First command: no response → times out
@@ -2881,7 +2882,7 @@ class TestCivTimeoutIsolation:
         radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
 
         # Two timeouts in a row
@@ -2904,7 +2905,7 @@ class TestCivTimeoutIsolation:
         radio = IcomRadio("192.168.1.100", timeout=0.1, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
 
         # get_frequency times out
@@ -3012,7 +3013,7 @@ class TestSpeechTransceiverIdXfc:
     @pytest.fixture
     def radio(self, mock_transport: MockTransport) -> IcomRadio:
         r = IcomRadio("192.168.1.100", model="IC-7610")
-        r._connected = True
+        fake_connected(r)
         observe_selected_receiver(r, 0)
         r._radio_addr = 0x98
         r._civ_transport = mock_transport
@@ -3093,7 +3094,7 @@ class TestStateCacheFromUnsolicitedFrames:
 
     def _make_radio(self) -> IcomRadio:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         return radio
 
@@ -3185,7 +3186,7 @@ class TestGetFallbackToCache:
         radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_freq(7_200_000)
 
@@ -3200,7 +3201,7 @@ class TestGetFallbackToCache:
         radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
 
         with pytest.raises(TimeoutError):
@@ -3214,7 +3215,7 @@ class TestGetFallbackToCache:
         radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_mode("CW", 2)
 
@@ -3230,7 +3231,7 @@ class TestGetFallbackToCache:
         radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7610")
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
 
         with pytest.raises(TimeoutError):
@@ -3255,7 +3256,7 @@ class TestGetFallbackCacheTTL:
         )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_freq(7_200_000)
         # Back-date to make it stale
@@ -3274,7 +3275,7 @@ class TestGetFallbackCacheTTL:
         )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_freq(7_200_000)
 
@@ -3291,7 +3292,7 @@ class TestGetFallbackCacheTTL:
         )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_mode("CW", 2)
         radio.state_cache.mode_ts = radio.state_cache.mode_ts - 20.0
@@ -3309,7 +3310,7 @@ class TestGetFallbackCacheTTL:
         )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_mode("CW", 2)
 
@@ -3330,7 +3331,7 @@ class TestGetFallbackCacheTTL:
         )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_rf_power(128 / 255.0)
         radio.state_cache.rf_power_ts = radio.state_cache.rf_power_ts - 60.0
@@ -3351,7 +3352,7 @@ class TestGetFallbackCacheTTL:
         )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         radio.state_cache.update_rf_power(128 / 255.0)
 
@@ -3434,7 +3435,7 @@ class TestSetterTargetsNotCached:
         )
         radio._ctrl_transport = mock_transport
         radio._civ_transport = mock_transport
-        radio._connected = True
+        fake_connected(radio)
         observe_selected_receiver(radio, 0)
         return radio
 

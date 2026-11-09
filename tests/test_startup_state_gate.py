@@ -73,6 +73,7 @@ from rigplane.web.web_startup import (
 )
 from rigplane.testing.timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
 MODE = FieldPath.active("main", "freq_mode", "mode")
@@ -2309,8 +2310,6 @@ async def _served_silent_server_with_reopened_port() -> tuple[WebServer, IcomRad
     ``radio_ready``) say connected/ready again while the radio has still
     answered nothing (the 2026-09-28 pty check on mini .77)."""
 
-    from rigplane.runtime._connection_state import RadioConnectionState
-
     PTT = FieldPath.global_("tx_state", "ptt")
     scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
     server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
@@ -2325,7 +2324,7 @@ async def _served_silent_server_with_reopened_port() -> tuple[WebServer, IcomRad
     # stream counts as healthy, and a fresh-enough liveness tick makes the
     # session count as ready — the exact input the live-state health read
     # misreported as ``connected``/``ready``.
-    radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(radio)
     radio._civ_transport = object()
     radio._civ_stream_ready = True
     radio._civ_recovering = False
@@ -2387,8 +2386,6 @@ async def test_silent_link_then_radio_answers_completes_acquisition() -> None:
     release, not the named defect.
     """
 
-    from rigplane.runtime._connection_state import RadioConnectionState
-
     PTT = FieldPath.global_("tx_state", "ptt")
     scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
     server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
@@ -2401,7 +2398,7 @@ async def test_silent_link_then_radio_answers_completes_acquisition() -> None:
             return
         # The radio starts answering (for example after Power ON): the
         # critical observation lands and the link recovers.
-        radio._conn_state = RadioConnectionState.CONNECTED
+        fake_connected(radio)
         server.command_state_store.apply(_observation(PTT, False, at=now))
 
     clock = _GateClock(stop_at=3.0)

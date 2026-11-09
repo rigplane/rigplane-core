@@ -15,6 +15,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame
 from test_radio import MockTransport, _wrap_civ_in_udp
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 IC705_ADDR = 0xA4
 
@@ -36,7 +37,7 @@ def radio(transport: MockTransport) -> IcomRadio:
     r = IcomRadio("192.168.1.100", timeout=0.05, model="IC-705")
     r._civ_transport = transport
     r._ctrl_transport = transport
-    r._connected = True
+    fake_connected(r)
     return r
 
 

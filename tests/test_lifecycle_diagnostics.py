@@ -24,6 +24,7 @@ from rigplane.web.server import WebConfig, WebServer
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.leaks_connected_radio(reason="asserts the finalizer's warning itself")
 @pytest.mark.filterwarnings("ignore:coroutine .* was never awaited:RuntimeWarning")
 def test_radio_gc_with_active_connection_logs_warning(
     caplog: pytest.LogCaptureFixture,
@@ -45,6 +46,9 @@ def test_radio_gc_with_active_connection_logs_warning(
     assert any(r.levelno == logging.WARNING for r in caplog.records)
 
 
+@pytest.mark.leaks_connected_radio(
+    reason="models a neighbour's leaked radio on purpose"
+)
 def test_radio_gc_when_disconnected_does_not_log_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

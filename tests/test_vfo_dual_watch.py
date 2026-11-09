@@ -40,6 +40,7 @@ from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.types import CivFrame
 from _command_test_helpers import bind_default_addr_globals
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
 
@@ -659,7 +660,7 @@ class TestCommandDistinctness:
 def _make_radio(model: str) -> IcomRadio:
     """Build a connected IcomRadio for ``model`` with a recording stub for sends."""
     r = IcomRadio("127.0.0.1", model=model, timeout=0.05)
-    r._connected = True
+    fake_connected(r)
     r._check_connected = lambda: None  # type: ignore[method-assign]
     return r
 

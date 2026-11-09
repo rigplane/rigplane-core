@@ -62,6 +62,7 @@ from rigplane.types import bcd_encode
 from rigplane.radio import IcomRadio
 from _command_test_helpers import bind_default_addr_globals, bind_default_addr_module
 from _helpers import wrap_civ_in_udp as _wrap_civ_in_udp
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 bind_default_addr_module(raw_commands, to_addr=IC_7610_ADDR)
 bind_default_addr_globals(globals(), to_addr=IC_7610_ADDR)
@@ -1084,7 +1085,7 @@ def radio_with_mock() -> tuple[IcomRadio, MockTransport]:
     r = IcomRadio("192.168.1.1", model="IC-7610")
     r._civ_transport = t  # type: ignore[assignment]
     r._ctrl_transport = t  # type: ignore[assignment]
-    r._connected = True
+    fake_connected(r)
     return r, t
 
 

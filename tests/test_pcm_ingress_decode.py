@@ -37,6 +37,7 @@ from rigplane.audio import AudioPacket, PcmFrame
 from rigplane.audio._codecs import decode_ulaw_to_pcm16
 from rigplane.core.types import AudioCodec
 from rigplane.runtime.radio import IcomRadio
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 _MIXIN_MODULE = "rigplane.runtime._audio_runtime_mixin"
 
@@ -44,7 +45,7 @@ _MIXIN_MODULE = "rigplane.runtime._audio_runtime_mixin"
 def _lan_radio(codec: AudioCodec, stream: FakeAudioStream) -> IcomRadio:
     """Connected LAN radio with a fake audio stream and a forced RX codec."""
     radio = IcomRadio("192.168.1.100", model="IC-7610")
-    radio._connected = True
+    fake_connected(radio)
     radio._civ_transport = MagicMock()
     radio._audio_stream = stream  # type: ignore[assignment]
     radio._audio_codec = codec

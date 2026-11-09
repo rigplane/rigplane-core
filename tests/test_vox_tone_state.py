@@ -23,6 +23,7 @@ from rigplane.web.radio_poller import (
     SetVoxDelay,
     SetVoxGain,
 )
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 # MOR-1884: this suite drives ``RadioPoller._execute`` directly to exercise
 # dispatch bodies; the interlock seat now lives at its head, so the RF
@@ -57,7 +58,7 @@ def _make_radio_with_state(*, model: str = "IC-7610") -> IcomRadio:
     r = IcomRadio("192.168.1.100", model=model)
     r._civ_transport = MockTransport()
     r._ctrl_transport = r._civ_transport
-    r._connected = True
+    fake_connected(r)
     r._radio_state = RadioState()
     return r
 

@@ -21,11 +21,11 @@ import pytest
 
 from rigplane.core.exceptions import ConnectionError, TimeoutError
 from rigplane.radio import IcomRadio
-from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._control_phase import OPENCLOSE_SIZE
 from rigplane.transport import CONTROL_SIZE, ConnectionState, IcomTransport
 
 from test_radio_connect import ConnectMockTransport, _build_conninfo, _ConnectOnceStubs
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 _OPENCLOSE_OPEN = 0x04
 _SEQ_OFFSET = 6
@@ -132,7 +132,7 @@ def _kept_session_radio() -> IcomRadio:
     radio._ctrl_transport = ctrl
     radio._civ_port = 50002
     radio._local_bind_host = "127.0.0.1"
-    radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(radio)
     return radio
 
 
@@ -285,6 +285,7 @@ async def test_fresh_login_starts_the_civ_numbering_at_zero() -> None:
         if new is not None:
             await new.disconnect()
         radio._control_phase._close_pending_sockets()
+        await radio.disconnect()
 
 
 @pytest.mark.parametrize("teardown", ["release", "disconnect"])

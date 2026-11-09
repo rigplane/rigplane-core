@@ -392,6 +392,7 @@ async def test_acceptance_resets_the_escalation_spacing() -> None:
     radio._fetch_initial_state.assert_awaited_once()
     assert radio._lan_identity_escalated_at is None
     assert requests == []
+    await radio.disconnect()
 
 
 async def test_owner_connect_and_disconnect_reset_the_escalation_spacing() -> None:
@@ -493,6 +494,7 @@ async def test_connect_routes_token_answers_to_the_probe_only_after_setup() -> N
         await radio._control_phase._connect_once()
     assert during_setup == [None]
     assert mt._token_reply_callback == radio._control_phase._on_token_reply
+    await radio.disconnect()
 
 
 # ---------------------------------------------------------------------------

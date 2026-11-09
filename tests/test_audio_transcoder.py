@@ -18,6 +18,7 @@ from rigplane.exceptions import (
 from rigplane.radio import IcomRadio
 from rigplane.types import AudioCodec
 from _audio_stream_fake import FakeAudioStream
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 class _FakeBackend:
@@ -178,7 +179,7 @@ class TestRadioPcmRxApi:
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_decodes_and_forwards_gaps(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
         fake_stream = FakeAudioStream()
         radio._audio_stream = fake_stream  # type: ignore[assignment]
@@ -235,7 +236,7 @@ class TestRadioPcmRxApi:
     @pytest.mark.asyncio
     async def test_start_audio_rx_pcm_invalid_format(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
         with pytest.raises(AudioFormatError, match="Unsupported sample_rate"):
             await radio.start_audio_rx_pcm(lambda _: None, sample_rate=44100)
@@ -251,7 +252,7 @@ class TestRadioPcmTxApi:
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_starts_stream_and_tracks_format(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
         fake_stream = FakeAudioStream()
         radio._audio_stream = fake_stream  # type: ignore[assignment]
@@ -266,7 +267,7 @@ class TestRadioPcmTxApi:
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_sends_raw_pcm(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
         radio._pcm_tx_fmt = (48000, 1, 20)
         radio.push_audio_tx_opus = AsyncMock()  # type: ignore[method-assign]
@@ -278,7 +279,7 @@ class TestRadioPcmTxApi:
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_not_started(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
 
         with pytest.raises(RuntimeError, match="start_audio_tx_pcm"):
@@ -297,7 +298,7 @@ class TestRadioPcmTxApi:
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_invalid_format(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
 
         with pytest.raises(AudioFormatError, match="Unsupported sample_rate"):
@@ -306,7 +307,7 @@ class TestRadioPcmTxApi:
     @pytest.mark.asyncio
     async def test_start_audio_tx_pcm_does_not_require_opus_backend(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
         fake_stream = FakeAudioStream()
         radio._audio_stream = fake_stream  # type: ignore[assignment]
@@ -350,7 +351,7 @@ class TestRadioPcmTxApi:
     @pytest.mark.asyncio
     async def test_push_audio_tx_pcm_frame_size_error(self) -> None:
         radio = IcomRadio("192.168.1.100", model="IC-7610")
-        radio._connected = True
+        fake_connected(radio)
         radio._civ_transport = MagicMock()
         radio._pcm_tx_fmt = (48000, 1, 20)
 

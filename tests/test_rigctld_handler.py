@@ -48,6 +48,7 @@ from rigplane.rigctld.contract import (
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import format_response, parse_line
 from rigplane.types import CivFrame, Mode
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -3353,7 +3354,7 @@ def _real_att_radio(model: str) -> tuple[IcomRadio, MockTransport]:
     radio = IcomRadio("192.168.1.100", timeout=0.05, model=model)
     radio._civ_transport = transport
     radio._ctrl_transport = transport
-    radio._connected = True
+    fake_connected(radio)
     return radio, transport
 
 
@@ -6953,7 +6954,7 @@ def _fm_legacy_cache_radio() -> tuple[IcomRadio, MockTransport]:
     radio = IcomRadio("192.168.1.100", timeout=0.05, model="IC-7300")
     radio._ctrl_transport = transport  # type: ignore[attr-defined]
     radio._civ_transport = transport  # type: ignore[attr-defined]
-    radio._connected = True  # type: ignore[attr-defined]
+    fake_connected(radio)
     radio.state_cache.update_mode("FM", 2)
     radio._radio_state.main.mode = "FM"  # type: ignore[attr-defined]
     return radio, transport

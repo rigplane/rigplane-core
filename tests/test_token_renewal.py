@@ -8,6 +8,7 @@ import pytest
 from rigplane.radio import IcomRadio
 
 from test_radio import MockTransport
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 @pytest.fixture
@@ -15,7 +16,7 @@ def radio() -> IcomRadio:
     r = IcomRadio("192.168.1.100", model="IC-7610")
     mt = MockTransport()
     r._ctrl_transport = mt
-    r._connected = True
+    fake_connected(r)
     r._token = 0xDEADBEEF
     r._tok_request = 0xABCD
     r._auth_seq = 10

@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.radio import IcomRadio
 from rigplane.web.server import WebConfig, WebServer
+from rigplane_testkit.leaked_radio_guard import fake_connected
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +32,7 @@ def _assert_doc_patterns(rel_path: str, patterns: list[str]) -> None:
 
 def test_runtime_invariant_radio_ready_tracks_civ_health() -> None:
     radio = IcomRadio("127.0.0.1", model="IC-7610")
-    radio._conn_state = RadioConnectionState.CONNECTED
+    fake_connected(radio)
     radio._civ_transport = SimpleNamespace(_udp_error_count=0)
     radio._civ_stream_ready = True
     radio._civ_recovering = False
