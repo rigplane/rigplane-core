@@ -1,15 +1,7 @@
-// Framework-agnostic waterfall renderer for radio scope data.
-// Maintains a scrolling bitmap: each pushRow() adds a new line at the top
-// and shifts existing content down — no full redraw needed.
-
 interface ColorStop {
   stop: number;
   color: string;
 }
-
-// Blank background for uncovered edges and clear(); RGB twin for putImageData rows.
-const WATERFALL_BACKGROUND = '#001020';
-const WATERFALL_BACKGROUND_RGB: readonly [number, number, number] = [0x00, 0x10, 0x20];
 
 export const COLOR_SCHEMES = {
   classic: [
@@ -36,6 +28,7 @@ export const COLOR_SCHEMES = {
 export type ColorSchemeName = keyof typeof COLOR_SCHEMES;
 
 export interface WaterfallOptions {
+  coverage?: Readonly<{ startHz: number; endHz: number }>;
   colorScheme: ColorSchemeName;
   refLevel: number;  // -30 to +30 dB brightness offset
   speed: number;     // rows scrolled per pushRow call (1 = normal)
@@ -59,305 +52,220 @@ export const defaultWaterfallOptions: WaterfallOptions = {
   panoramaShiftHz: 0,
 };
 
-function hexToRgb(hex: string): [number, number, number] {
-  const h = hex.replace('#', '');
-  return [
-    parseInt(h.slice(0, 2), 16),
-    parseInt(h.slice(2, 4), 16),
-    parseInt(h.slice(4, 6), 16),
-  ];
+export class WaterfallRenderError extends Error {
+  readonly code = 'webgl-required';
+  constructor() { super('WebGL required for the waterfall'); }
 }
 
-// Build a 256-entry RGB lookup table from gradient color stops.
-function buildColorLut(scheme: ColorSchemeName): Uint8Array {
-  const lut = new Uint8Array(256 * 3);
-  const palette = COLOR_SCHEMES[scheme];
-  const stops = palette.map(({ stop, color }) => ({ stop, rgb: hexToRgb(color) }));
+const VERTEX = `#version 300 es
+void main() {
+  vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
 
-  for (let v = 0; v < 256; v++) {
-    const t = v / 255;
-    let r = 0, g = 0, b = 0;
-
-    if (t <= stops[0].stop) {
-      [r, g, b] = stops[0].rgb;
-    } else if (t >= stops[stops.length - 1].stop) {
-      [r, g, b] = stops[stops.length - 1].rgb;
-    } else {
-      for (let i = 0; i < stops.length - 1; i++) {
-        if (t >= stops[i].stop && t <= stops[i + 1].stop) {
-          const range = stops[i + 1].stop - stops[i].stop;
-          const frac = range > 0 ? (t - stops[i].stop) / range : 0;
-          r = Math.round(stops[i].rgb[0] + frac * (stops[i + 1].rgb[0] - stops[i].rgb[0]));
-          g = Math.round(stops[i].rgb[1] + frac * (stops[i + 1].rgb[1] - stops[i].rgb[1]));
-          b = Math.round(stops[i].rgb[2] + frac * (stops[i + 1].rgb[2] - stops[i].rgb[2]));
-          break;
-        }
-      }
-    }
-
-    const i = v * 3;
-    lut[i] = r;
-    lut[i + 1] = g;
-    lut[i + 2] = b;
+function fragmentShader(height: number, blockRows: number): string {
+  const blocks = Math.ceil(height / blockRows);
+  let declarations = '', lookup = '';
+  for (let i = 0; i < blocks; i++) {
+    declarations += `layout(std140) uniform Rows${i} { vec4 rows${i}[${blockRows}]; };\n`;
+    lookup += `if (row < ${(i + 1) * blockRows}) return rows${i}[row - ${i * blockRows}];\n`;
   }
-  return lut;
+  return `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D uRing;
+uniform vec2 uView;
+uniform vec2 uSize;
+uniform int uHead, uCount, uRows, uSamples;
+uniform float uRef, uAmplitudeMax;
+uniform vec3 uColors[6];
+uniform float uStops[6];
+uniform int uColorCount;
+${declarations}
+vec4 rowInfo(int row) { ${lookup} return vec4(0.0); }
+out vec4 color;
+void main() {
+  int age = int(floor(uSize.y - gl_FragCoord.y));
+  if (age >= uCount) { color = vec4(0.0, 16.0/255.0, 32.0/255.0, 1.0); return; }
+  int row = (uHead - age + uRows) % uRows;
+  vec4 info = rowInfo(row);
+  float hz = uView.x + floor(gl_FragCoord.x) / uSize.x * uView.y;
+  float coordinate = (hz - info.x) / info.y;
+  if (coordinate < 0.0 || coordinate >= 1.0 || hz < info.z || hz >= info.w) {
+    float hatch = step(4.0, mod(floor(gl_FragCoord.x) + floor(uSize.y - gl_FragCoord.y), 8.0));
+    color = vec4(mix(vec3(0.0, 16.0, 32.0), vec3(36.0, 48.0, 60.0), hatch) / 255.0, 1.0);
+    return;
+  }
+  int bin = clamp(int(floor(coordinate * float(uSamples))), 0, uSamples - 1);
+  float sampleValue = texelFetch(uRing, ivec2(bin, row), 0).r * 255.0;
+  sampleValue = floor(min(sampleValue, uAmplitudeMax) * 80.0 / uAmplitudeMax + 0.5);
+  float t = floor(sqrt(clamp((sampleValue + uRef * (40.0/60.0)) / 80.0, 0.0, 1.0)) * 255.0) / 255.0;
+  vec3 rgb = uColors[0];
+  for (int i = 1; i < 6; i++) {
+    if (i >= uColorCount) break;
+    if (t >= uStops[i-1]) rgb = mix(uColors[i-1], uColors[i], clamp((t-uStops[i-1])/(uStops[i]-uStops[i-1]), 0.0, 1.0));
+  }
+  color = vec4(floor(rgb + 0.5) / 255.0, 1.0);
+}`;
 }
 
 export class WaterfallRenderer {
-  private ctx: CanvasRenderingContext2D;
-  private options: WaterfallOptions;
-  private lut: Uint8Array;
-  private width: number;
-  private height: number;
-  private rowBuf: ImageData | null = null;
-  private rowData: Uint8ClampedArray | null = null;
+  private readonly gl: WebGL2RenderingContext;
+  private readonly options: WaterfallOptions;
+  private program: WebGLProgram | null = null;
+  private texture: WebGLTexture | null = null;
+  private readonly blocks: WebGLBuffer[] = [];
+  private readonly uniforms = new Map<string, WebGLUniformLocation | null>();
+  private readonly row = new Float32Array(4);
+  private readonly colors = new Float32Array(18);
+  private readonly stops = new Float32Array(6);
+  private palette: ColorSchemeName | null = null;
+  private blockRows = 0;
+  private width = 0;
+  private height = 0;
+  private samples = 0;
+  private head = -1;
+  private count = 0;
+  private originHz: number;
   private destroyed = false;
-  // MOR-2464: history reprojects by viewport-center deltas only; the
-  // sampling offset places new rows.
-  private anchoredViewportHz: number;
-  private appliedViewportPx = 0;
-  private viewportAnchorValid = false;
-  // Last confirmed (non-zero) spanHz we've rendered rows under. Used to
-  // detect a genuine SPAN change (MOR-1479) vs. a same-value re-observation
-  // or the initial 0→real transition (first frame / reconnect), neither of
-  // which should clear the backlog. Kept separate from `options.spanHz` so
-  // a transient 0 (disconnect / not-yet-observed) doesn't get treated as a
-  // "real" span and doesn't erase the baseline used for comparison.
-  private lastConfirmedSpanHz: number | null = null;
 
-  constructor(canvas: HTMLCanvasElement, options: WaterfallOptions) {
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Cannot get 2d context from waterfall canvas');
-    this.ctx = ctx;
+  constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
+    const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
+    if (!gl) throw new WaterfallRenderError();
+    this.gl = gl;
     this.options = { ...options };
-    this.lut = buildColorLut(options.colorScheme);
-    this.width = canvas.width;
-    this.height = canvas.height;
-    this.anchoredViewportHz = this.options.centerHz;
-    if (this.width > 0 && this.height > 0) {
-      this._initBuffers();
-      this.clear();
-    }
+    this.originHz = options.centerHz;
+    try { this.resize(canvas.width, canvas.height); }
+    catch (error) { this.destroy(); throw error; }
   }
 
-  private _initBuffers(): void {
-    this.rowBuf = this.ctx.createImageData(this.width, 1);
-    this.rowData = this.rowBuf.data;
+  private shader(type: number, source: string): WebGLShader {
+    const gl = this.gl, shader = gl.createShader(type);
+    if (!shader) throw new WaterfallRenderError();
+    gl.shaderSource(shader, source); gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      gl.deleteShader(shader); throw new WaterfallRenderError();
+    }
+    return shader;
   }
 
-  // Exact device-pixel sampling offset for the NEXT row.
-  private samplingShiftPx(): number {
-    const { spanHz, panoramaShiftHz } = this.options;
-    if (!(spanHz > 0) || !Number.isFinite(panoramaShiftHz) || this.width <= 0) return 0;
-    return (panoramaShiftHz / (this.options.sampleSpanHz || spanHz)) * this.width;
+  private release(): void {
+    const gl = this.gl;
+    gl.deleteTexture(this.texture); this.texture = null;
+    gl.deleteProgram(this.program); this.program = null;
+    for (const buffer of this.blocks) gl.deleteBuffer(buffer);
+    this.blocks.length = 0; this.uniforms.clear();
   }
 
-  // Rounded device-pixel offset of the viewport center from the anchor.
-  private viewportOffsetPx(): number {
-    const { spanHz, centerHz } = this.options;
-    if (!(spanHz > 0) || !Number.isFinite(centerHz) || this.width <= 0) return 0;
-    return Math.round(((centerHz - this.anchoredViewportHz) / spanHz) * this.width);
-  }
-
-  // Reproject the drawn history onto the current viewport (MOR-2464):
-  // integer delta between rounded viewport offsets, uncovered strip
-  // blanked; the first binding of a real sample window anchors silently.
-  private _applyViewportShift(): void {
-    const { spanHz, centerHz } = this.options;
-    if (!(spanHz > 0)) return;
-    if (!this.viewportAnchorValid) {
-      this.anchoredViewportHz = centerHz;
-      this.appliedViewportPx = 0;
-      this.viewportAnchorValid = true;
-      return;
-    }
-    const target = this.viewportOffsetPx();
-    const delta = target - this.appliedViewportPx;
-    if (delta === 0) return;
-    this.appliedViewportPx = target;
-    const ctx = this.ctx;
-    if (this.destroyed || !ctx) return;
-    const canvas = ctx.canvas;
-    const w = canvas.width;
-    const h = canvas.height;
-    if (w <= 0 || h <= 0) return;
-    const copyWidth = w - Math.abs(delta);
-    ctx.fillStyle = WATERFALL_BACKGROUND;
-    if (copyWidth <= 0) {
-      ctx.fillRect(0, 0, w, h);
-      return;
-    }
-    if (delta > 0) {
-      ctx.drawImage(canvas, delta, 0, copyWidth, h, 0, 0, copyWidth, h);
-      ctx.fillRect(copyWidth, 0, delta, h);
-    } else {
-      ctx.drawImage(canvas, 0, 0, copyWidth, h, -delta, 0, copyWidth, h);
-      ctx.fillRect(0, 0, -delta, h);
-    }
-  }
-
-  /** Add a new scope data row at the top; shift existing content down. */
-  pushRow(data: Uint8Array): void {
-    if (this.destroyed) return;
-    const ctx = this.ctx;
-    if (!ctx) return;
-    const canvas = ctx.canvas;
-    const w = canvas.width;
-    const h = canvas.height;
-    const offset = this.options.sampleOffset ?? 0;
-    const n = data.length - offset;
-    if (!n || w <= 0 || h <= 0) return;
-
-    // Shift existing waterfall content down by 1 row (no full redraw)
-    ctx.drawImage(canvas, 0, 0, w, h - 1, 0, 1, w, h - 1);
-
-    // Reuse or allocate rowBuf if size changed
-    if (!this.rowBuf || this.rowBuf.width !== w) {
-      this.rowBuf = ctx.createImageData(w, 1);
-      this.rowData = this.rowBuf.data;
-    }
-    const rowData = this.rowData!;
-
-    // Build the new top row using the color LUT. MOR-2464: the resting row
-    // keeps the established nearest-bin mapping; a fractional shift
-    // interpolates the translated screen profile; uncovered stays blank.
-    const lut = this.lut;
-    const shiftPx = this.samplingShiftPx();
-    const profile = (column: number): number => {
-      const window = this.options.sampleWindow;
-      const coordinate = window ? window.start + (column / w) * (window.end - window.start) : column / w;
-      const value = coordinate < 0 || coordinate > 1 ? 0 : data[offset + Math.min(n - 1, Math.floor(coordinate * n))];
-      const amplitudeMax = this.options.sampleAmplitudeMax ?? 80;
-      return amplitudeMax === 80 ? value : Math.round(Math.min(value, amplitudeMax) * 80 / amplitudeMax);
-    };
-    // Ref level: maps -30..+30 dB → ±20 on 0-80 scale
-    const refAdjust = (this.options.refLevel / 60) * 40;
-    for (let x = 0; x < w; x++) {
-      const pi = x * 4;
-      const scale = this.options.sampleSpanHz && this.options.sampleSpanHz > 0
-        ? this.options.spanHz / this.options.sampleSpanHz : 1;
-      const p = w / 2 + (x - w / 2) * scale + shiftPx;
-      if (p < 0 || p > w - 1) {
-        rowData[pi] = WATERFALL_BACKGROUND_RGB[0];
-        rowData[pi + 1] = WATERFALL_BACKGROUND_RGB[1];
-        rowData[pi + 2] = WATERFALL_BACKGROUND_RGB[2];
-        rowData[pi + 3] = 255;
-        continue;
-      }
-      const i0 = Math.floor(p);
-      const frac = p - i0;
-      const sample = frac === 0
-        ? profile(i0)
-        : profile(i0) * (1 - frac) + profile(i0 + 1) * frac;
-      // Gain boost: map 0-80 → 0-255 with sqrt curve for better contrast
-      // at low signal levels (IC-7610 scope data typically peaks at ~55)
-      const adjusted = Math.min(80, Math.max(0, sample + refAdjust));
-      const norm = adjusted / 80;
-      const v = Math.floor(Math.sqrt(norm) * 255);
-      const li = v * 3;
-      rowData[pi] = lut[li];
-      rowData[pi + 1] = lut[li + 1];
-      rowData[pi + 2] = lut[li + 2];
-      rowData[pi + 3] = 255;
-    }
-    ctx.putImageData(this.rowBuf, 0, 0);
-  }
-
-  /** Resize the waterfall canvas, preserving existing content scaled to new dimensions. */
   resize(width: number, height: number): void {
-    if (this.destroyed) return;
-    // Capture current content before resize clears the canvas
-    let oldCanvas: HTMLCanvasElement | null = null;
-    const prevW = this.ctx.canvas.width;
-    const prevH = this.ctx.canvas.height;
-    if (prevW > 0 && prevH > 0) {
-      oldCanvas = document.createElement('canvas');
-      oldCanvas.width = prevW;
-      oldCanvas.height = prevH;
-      const offCtx = oldCanvas.getContext('2d');
-      if (offCtx) {
-        offCtx.drawImage(this.ctx.canvas, 0, 0);
-      } else {
-        oldCanvas = null;
-      }
+    if (this.destroyed || (width === this.width && height === this.height)) return;
+    this.canvas.width = width; this.canvas.height = height;
+    this.width = width; this.height = height;
+    this.release(); this.samples = 0; this.head = -1; this.count = 0;
+    if (width <= 0 || height <= 0) return;
+    const gl = this.gl;
+    this.blockRows = Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / 16);
+    if (height > gl.getParameter(gl.MAX_TEXTURE_SIZE)
+      || Math.ceil(height / this.blockRows) > gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_BLOCKS)) throw new WaterfallRenderError();
+    const program = gl.createProgram();
+    if (!program) throw new WaterfallRenderError();
+    this.program = program;
+    const vertex = this.shader(gl.VERTEX_SHADER, VERTEX);
+    let fragment: WebGLShader | null = null;
+    try {
+      fragment = this.shader(gl.FRAGMENT_SHADER, fragmentShader(height, this.blockRows));
+      gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new WaterfallRenderError();
+    } finally { gl.deleteShader(vertex); gl.deleteShader(fragment); }
+    gl.useProgram(program);
+    for (const name of ['uRing', 'uView', 'uSize', 'uHead', 'uCount', 'uRows', 'uSamples',
+      'uRef', 'uAmplitudeMax', 'uColors', 'uStops', 'uColorCount']) {
+      this.uniforms.set(name, gl.getUniformLocation(program, name));
     }
-
-    this.width = width;
-    this.height = height;
-    this.rowBuf = null;
-    this.rowData = null;
-    // Scaled content no longer matches the old pixel anchor.
-    this.anchoredViewportHz = this.options.centerHz;
-    this.appliedViewportPx = 0;
-    this.viewportAnchorValid = this.options.spanHz > 0;
-    if (width > 0 && height > 0) {
-      this.ctx.canvas.width = width;
-      this.ctx.canvas.height = height;
-      this._initBuffers();
-      if (oldCanvas) {
-        // Restore preserved content scaled to new dimensions
-        this.ctx.drawImage(oldCanvas, 0, 0, width, height);
-      } else {
-        this.clear();
-      }
+    for (let i = 0; i < Math.ceil(height / this.blockRows); i++) {
+      const buffer = gl.createBuffer();
+      if (!buffer) throw new WaterfallRenderError();
+      this.blocks.push(buffer);
+      gl.bindBuffer(gl.UNIFORM_BUFFER, buffer);
+      gl.bufferData(gl.UNIFORM_BUFFER, this.blockRows * 16, gl.DYNAMIC_DRAW);
+      gl.bindBufferBase(gl.UNIFORM_BUFFER, i, buffer);
+      gl.uniformBlockBinding(program, gl.getUniformBlockIndex(program, `Rows${i}`), i);
     }
+    this.texture = gl.createTexture();
+    if (!this.texture) throw new WaterfallRenderError();
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    this.draw();
   }
 
-  /** Update rendering options (e.g. colorScheme, refLevel, centerHz, spanHz). */
-  updateOptions(opts: Partial<WaterfallOptions>): void {
-    this.options = { ...this.options, ...opts };
-    if (opts.colorScheme !== undefined) {
-      this.lut = buildColorLut(this.options.colorScheme);
-      // NOTE: Existing canvas pixels retain the old color mapping. A proper fix
-      // requires a ring buffer of raw amplitude rows to re-render with the new LUT.
-      // For now, new rows will use the new scheme and old rows will fade out naturally.
+  pushRow(data: Uint8Array): void {
+    if (this.destroyed || !this.program || this.width <= 0 || this.height <= 0) return;
+    const offset = this.options.sampleOffset ?? 0, samples = data.length - offset;
+    if (samples <= 0) return;
+    const gl = this.gl;
+    if (samples !== this.samples) {
+      if (samples > gl.getParameter(gl.MAX_TEXTURE_SIZE)) throw new WaterfallRenderError();
+      this.samples = samples; this.head = -1; this.count = 0;
+      this.originHz = this.options.centerHz;
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, samples, this.height, 0, gl.RED, gl.UNSIGNED_BYTE, null);
     }
-    // MOR-1479: SPAN change remaps every row's pixel→frequency (pixelToFreq
-    // reads options.spanHz directly), so rows drawn under the old span would
-    // bend/jump at the seam once a new span applies. Owner ruling: clear the
-    // backlog on a genuine SPAN change so every visible row shares the
-    // current mapping. `opts.spanHz` here is the CONFIRMED value the caller
-    // (SpectrumPanel) derives from the actual scope frame's startFreq/
-    // endFreq — the same value pixelToFreq uses — not a pending/optimistic
-    // one, so this can't double-clear on armed-then-confirmed span changes.
-    //
-    // A momentary 0 (no data yet / disconnected) is not a "real" span and is
-    // ignored on both sides of the comparison: it neither triggers a clear
-    // nor overwrites the last confirmed span, so the first real observation
-    // and a reconnect-to-the-same-span both stay quiet.
-    if (opts.spanHz !== undefined && opts.spanHz > 0) {
-      if (this.lastConfirmedSpanHz !== null && this.lastConfirmedSpanHz !== opts.spanHz) {
-        this.clear();
-      }
-      this.lastConfirmedSpanHz = opts.spanHz;
-    }
-    // MOR-2464: history follows viewport-center deltas (centerHz) only.
-    if (opts.centerHz !== undefined || opts.spanHz !== undefined) {
-      this._applyViewportShift();
-    }
+    this.head = (this.head + 1) % this.height;
+    this.count = Math.min(this.height, this.count + 1);
+    const o = this.options, span = o.sampleSpanHz || o.spanHz || 1;
+    const start = o.sampleWindow?.start ?? 0, range = (o.sampleWindow?.end ?? 1) - start;
+    const sampleStart = o.centerHz - o.panoramaShiftHz - span / 2 - start * span / range;
+    this.row[0] = sampleStart - this.originHz;
+    this.row[1] = span / range;
+    this.row[2] = (o.coverage?.startHz ?? Math.min(sampleStart, sampleStart + span / range)) - this.originHz;
+    this.row[3] = (o.coverage?.endHz ?? Math.max(sampleStart, sampleStart + span / range)) - this.originHz;
+    gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[Math.floor(this.head / this.blockRows)]);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 16, this.row);
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, this.head, samples, 1, gl.RED, gl.UNSIGNED_BYTE, data, offset);
+    this.draw();
   }
 
-  /** Map a canvas x-pixel to the corresponding frequency in Hz. */
+  /** Repaints history without mutating either the texture or its row geometry. */
+  draw(): void {
+    if (this.destroyed || !this.program || this.width <= 0 || this.height <= 0) return;
+    const gl = this.gl, o = this.options;
+    gl.useProgram(this.program); gl.viewport(0, 0, this.width, this.height);
+    gl.uniform1i(this.uniforms.get('uRing')!, 0);
+    gl.uniform2f(this.uniforms.get('uView')!, o.centerHz - (o.spanHz || 1) / 2 - this.originHz, o.spanHz || 1);
+    gl.uniform2f(this.uniforms.get('uSize')!, this.width, this.height);
+    gl.uniform1i(this.uniforms.get('uHead')!, this.head);
+    gl.uniform1i(this.uniforms.get('uCount')!, this.count);
+    gl.uniform1i(this.uniforms.get('uRows')!, this.height);
+    gl.uniform1i(this.uniforms.get('uSamples')!, this.samples);
+    gl.uniform1f(this.uniforms.get('uRef')!, o.refLevel);
+    gl.uniform1f(this.uniforms.get('uAmplitudeMax')!, o.sampleAmplitudeMax ?? 80);
+    const palette = COLOR_SCHEMES[o.colorScheme];
+    if (this.palette !== o.colorScheme) {
+      this.palette = o.colorScheme;
+    for (let i = 0; i < palette.length; i++) {
+      this.stops[i] = palette[i].stop;
+      const value = Number.parseInt(palette[i].color.slice(1), 16);
+      this.colors[i * 3] = value >> 16;
+      this.colors[i * 3 + 1] = (value >> 8) & 255;
+      this.colors[i * 3 + 2] = value & 255;
+    }
+    }
+    gl.uniform3fv(this.uniforms.get('uColors')!, this.colors);
+    gl.uniform1fv(this.uniforms.get('uStops')!, this.stops);
+    gl.uniform1i(this.uniforms.get('uColorCount')!, palette.length);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+
+  updateOptions(options: Partial<WaterfallOptions>): void { Object.assign(this.options, options); }
   pixelToFreq(x: number): number {
-    const { centerHz, spanHz } = this.options;
-    if (spanHz <= 0 || this.width <= 0) return centerHz;
-    return centerHz - spanHz / 2 + (x / this.width) * spanHz;
+    return this.width > 0 && this.options.spanHz > 0
+      ? this.options.centerHz - this.options.spanHz / 2 + x / this.width * this.options.spanHz : this.options.centerHz;
   }
-
-  /** Fill the canvas with the background color and re-anchor the viewport. */
-  clear(): void {
-    if (this.destroyed || this.width <= 0 || this.height <= 0) return;
-    this.anchoredViewportHz = this.options.centerHz;
-    this.appliedViewportPx = 0;
-    this.viewportAnchorValid = this.options.spanHz > 0;
-    this.ctx.fillStyle = WATERFALL_BACKGROUND;
-    this.ctx.fillRect(0, 0, this.width, this.height);
-  }
-
-  destroy(): void {
-    this.destroyed = true;
-    this.rowBuf = null;
-    this.rowData = null;
-    this.ctx = null as unknown as CanvasRenderingContext2D;
-  }
+  clear(): void { this.head = -1; this.count = 0; this.draw(); }
+  destroy(): void { if (!this.destroyed) { this.destroyed = true; this.release(); } }
 }

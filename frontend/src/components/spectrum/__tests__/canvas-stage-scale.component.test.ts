@@ -1,3 +1,5 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
+import { RecordedPath } from '$lib/renderers/__tests__/canvas-layers-fixture';
 /**
  * MOR-1161: backing store is cssSize * devicePixelRatio * stageScale, and a
  * stage-scale change recomputes it.
@@ -38,7 +40,9 @@ beforeEach(() => {
   vi.stubGlobal('requestAnimationFrame', () => 1);
   vi.stubGlobal('cancelAnimationFrame', () => {});
   vi.stubGlobal('ResizeObserver', BoxResizeObserver);
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+  vi.stubGlobal('Path2D', RecordedPath);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement, kind: string) {
+      if (kind === 'webgl2') return webglFixture(this.width, this.height).gl;
     return {
       canvas: this, setTransform: () => {}, clearRect: () => {}, fillRect: () => {}, drawImage: () => {},
       createImageData: (w: number) => ({ data: new Uint8ClampedArray(w * 4), width: w, height: 1 }),

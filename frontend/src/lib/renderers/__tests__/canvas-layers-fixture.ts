@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import { webglFixture } from './webgl-fixture';
-  class RecordedPath {
+export class RecordedPath {
     readonly points: [number, number, boolean][] = [];
     moveTo(x: number, y: number) { this.points.push([x, y, true]); }
     lineTo(x: number, y: number) { this.points.push([x, y, false]); }

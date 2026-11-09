@@ -77,6 +77,13 @@ const DECAY = 0.25;
 export class AudioSpectrumRendererState {
   smoothed: Float32Array | null = null;
   animFilterWidth = 0;
+  points = new Float32Array(0);
+  readonly background = document.createElement('canvas');
+  readonly overlay = document.createElement('canvas');
+  cached: SpectrumState | null = null;
+  width = 0; height = 0; backingW = 0; backingH = 0;
+  cachedFilterWidth = 0;
+  gradient: CanvasGradient | null = null;
 
   reset(): void {
     this.smoothed = null;
@@ -96,9 +103,6 @@ function formatHz(hz: number): string {
   return `${sign}${abs}`;
 }
 
-// Default singleton for backward compat (single-instance usage)
-const _defaultState = new AudioSpectrumRendererState();
-
 function chooseGridStep(halfBw: number): number {
   const steps = [100, 200, 500, 1000, 2000, 5000, 10000];
   for (const s of steps) {
@@ -115,19 +119,10 @@ export function renderAudioSpectrum(
   width: number,
   height: number,
   state: SpectrumState,
-  rs?: AudioSpectrumRendererState,
+  rs: AudioSpectrumRendererState,
 ): void {
-  // Use provided instance state, or fall back to a default singleton for compat
-  if (!rs) {
-    rs = _defaultState;
-  }
   const { pixels, bandwidth, filterWidth, filterWidthMax, ifShift, pbtInner, pbtOuter,
           pbtRange, pbtStepHz, manualNotch, notchFreq, notchFreqDomain, contour, contourFreq } = state;
-
-  // Clear
-  ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = 'rgba(8, 12, 18, 0.95)';
-  ctx.fillRect(0, 0, width, height);
 
   const trapTop = TOP_LABEL_H;
   const trapBottom = height - BOTTOM_LABEL_H;
@@ -157,16 +152,13 @@ export function renderAudioSpectrum(
   // animated `rs.animFilterWidth` the geometry below tweens through: a value
   // mid-tween is not a width the radio is in, and the lattice is only defined
   // at widths it is.
-  const toPbtHz = (raw: number): number | null => (
-    pbtRange && pbtStepHz !== undefined ? measuredPbtRawToHz(raw, filterWidth, pbtStepHz) : null
-  );
   // Averaged in Hz rather than in raw. Raw steps are unevenly spaced on the
   // lattice (alternating 3 and 4 raw units at a 3600 Hz filter), so the mean of
   // two raws can land on a position neither edge occupies, while Hz positions
   // are exactly one step apart. This is also how `deriveIfShift` combines the
   // two edges for the passband display, which the scope compares against.
-  const innerPbtHz = toPbtHz(pbtInner);
-  const outerPbtHz = toPbtHz(pbtOuter);
+  const innerPbtHz = pbtRange && pbtStepHz !== undefined ? measuredPbtRawToHz(pbtInner, filterWidth, pbtStepHz) : null;
+  const outerPbtHz = pbtRange && pbtStepHz !== undefined ? measuredPbtRawToHz(pbtOuter, filterWidth, pbtStepHz) : null;
   const avgPbtHz = innerPbtHz !== null && outerPbtHz !== null
     ? (innerPbtHz + outerPbtHz) / 2
     : 0;
@@ -191,6 +183,15 @@ export function renderAudioSpectrum(
   const bl = cx - topHalfW - slopeExtra;
   const br = cx + topHalfW + slopeExtra;
 
+  const halfBw = state.projection?.spanHz ?? bandwidth / 2;
+  const target = ctx;
+  const redraw = audioStaticChanged(rs, ctx, width, height, state);
+  if (redraw) {
+    rs.background.width = ctx.canvas.width; rs.background.height = ctx.canvas.height;
+    rs.overlay.width = ctx.canvas.width; rs.overlay.height = ctx.canvas.height;
+    ctx = rs.background.getContext('2d')!;
+    ctx.setTransform(rs.background.width / width, 0, 0, rs.background.height / height, 0, 0);
+    ctx.fillStyle = 'rgba(8, 12, 18, 0.95)'; ctx.fillRect(0, 0, width, height);
   // ── Filter label (top) ──
   // Skipped entirely when non-finite — see `showFilterOverlay` above.
   if (showFilterOverlay) {
@@ -201,7 +202,6 @@ export function renderAudioSpectrum(
   }
 
   // ── Frequency grid labels (bottom) ──
-  const halfBw = state.projection?.spanHz ?? bandwidth / 2;
   const step = chooseGridStep(halfBw);
   ctx.font = '9px system-ui, sans-serif';
   ctx.textAlign = 'center';
@@ -301,6 +301,10 @@ export function renderAudioSpectrum(
     ctx.fill();
   }
 
+  }
+  ctx = target;
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(rs.background, 0, 0, width, height);
   // ── Passband fraction (used for bin mapping below) ──
   const filterHz = Math.round(rs.animFilterWidth);
   const passbandFrac = showFilterOverlay && Number.isFinite(halfBw) && halfBw > 0
@@ -313,12 +317,13 @@ export function renderAudioSpectrum(
     const numPoints = botRight - botLeft;
     if (numPoints <= 0) return;
 
-    if (!rs.smoothed || rs.smoothed.length !== numPoints) {
-      rs.smoothed = new Float32Array(numPoints);
+    if (!rs.smoothed || rs.smoothed.length < width) {
+      const smoothed = new Float32Array(width);
+      if (rs.smoothed) smoothed.set(rs.smoothed);
+      rs.smoothed = smoothed;
     }
-
-    // Build spectrum line points (only inside trapezoid)
-    const points: number[] = new Array(numPoints);
+    if (rs.points.length < width) rs.points = new Float32Array(width);
+    const points = rs.points;
     const dcIdx = Math.floor(pixels.length / 2);
     const positiveLen = pixels.length - dcIdx;
 
@@ -379,11 +384,14 @@ export function renderAudioSpectrum(
     ctx.lineTo(botRight, trapBottom);
     ctx.closePath();
 
-    const grad = ctx.createLinearGradient(0, trapTop, 0, trapBottom);
-    grad.addColorStop(0, 'rgba(0, 220, 180, 0.45)');
-    grad.addColorStop(0.4, 'rgba(0, 180, 220, 0.25)');
-    grad.addColorStop(1, 'rgba(0, 120, 200, 0.05)');
-    ctx.fillStyle = grad;
+    if (!rs.gradient || redraw) {
+      const grad = ctx.createLinearGradient(0, trapTop, 0, trapBottom);
+      grad.addColorStop(0, 'rgba(0, 220, 180, 0.45)');
+      grad.addColorStop(0.4, 'rgba(0, 180, 220, 0.25)');
+      grad.addColorStop(1, 'rgba(0, 120, 200, 0.05)');
+      rs.gradient = grad;
+    }
+    ctx.fillStyle = rs.gradient;
     ctx.fill();
 
     // Spectrum line on top
@@ -400,6 +408,9 @@ export function renderAudioSpectrum(
 
   }
 
+  if (redraw) {
+    ctx = rs.overlay.getContext('2d')!;
+    ctx.setTransform(rs.overlay.width / width, 0, 0, rs.overlay.height / height, 0, 0);
   // ── Contour (inside trapezoid) ──
   // Skipped entirely when non-finite (positioned relative to the
   // trapezoid's tl/tr, both NaN-tainted) — see `showFilterOverlay` above.
@@ -439,4 +450,20 @@ export function renderAudioSpectrum(
     ctx.closePath();
     ctx.fill();
   }
+    rs.cached = { ...state, pixels: null };
+    rs.width = width; rs.height = height; rs.backingW = target.canvas.width; rs.backingH = target.canvas.height;
+    rs.cachedFilterWidth = rs.animFilterWidth;
+  }
+  target.drawImage(rs.overlay, 0, 0, width, height);
+}
+
+const STATIC_AUDIO_KEYS: readonly (keyof SpectrumState)[] = ['bandwidth', 'filterWidth', 'filterWidthMax', 'ifShift',
+  'pbtInner', 'pbtOuter', 'pbtStepHz', 'manualNotch', 'notchFreq', 'contour', 'contourFreq'];
+function audioStaticChanged(rs: AudioSpectrumRendererState, ctx: CanvasRenderingContext2D, width: number, height: number, state: SpectrumState): boolean {
+  const old = rs.cached;
+  if (!old || width !== rs.width || height !== rs.height || ctx.canvas.width !== rs.backingW || ctx.canvas.height !== rs.backingH
+    || rs.animFilterWidth !== rs.cachedFilterWidth) return true;
+  for (const key of STATIC_AUDIO_KEYS) if (!Object.is(old[key], state[key])) return true;
+  return old.projection?.zero !== state.projection?.zero || old.projection?.perHz !== state.projection?.perHz
+    || old.projection?.spanHz !== state.projection?.spanHz || old.pbtRange !== state.pbtRange || old.notchFreqDomain !== state.notchFreqDomain;
 }

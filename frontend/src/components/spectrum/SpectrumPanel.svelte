@@ -881,6 +881,7 @@
     ...spectrumColorRolesToOptions(resolvedColorRoles),
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
+    coverage: audioFft ? undefined : frameGeometry?.coverage,
     sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
@@ -901,6 +902,7 @@
     ...defaultWaterfallOptions,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
+    coverage: audioFft ? undefined : frameGeometry?.coverage,
     sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
@@ -1672,6 +1674,8 @@
     top: 0;
     bottom: 0;
     pointer-events: none;
+  }
+  .scope-hatch[data-reason="no pixels"] {
     background: repeating-linear-gradient(45deg, transparent 0 6px, rgba(255, 255, 255, 0.08) 6px 12px);
     border-inline: 1px dashed rgba(255, 255, 255, 0.25);
   }

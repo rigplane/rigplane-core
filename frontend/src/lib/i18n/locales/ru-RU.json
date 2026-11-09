@@ -114,6 +114,7 @@
   "core.overlay.scopeDisconnected": "Панорама отключена — переподключение…",
   "core.overlay.scopeOutOfRange": "Частота за пределами фиксированных границ панорамы ({start}–{end} МГц)",
   "core.overlay.scopeSwitchToCtr": "Переключить в CTR",
+  "core.scope.webglRequired": "Для водопада требуется WebGL",
   "core.scope.presets": "Наблюдение панорамы",
   "core.scope.preset.follow": "Следовать за VFO",
   "core.scope.zoomIn": "Сузить обзор панорамы",

@@ -16,7 +16,7 @@ for (const scheme of ['classic', 'thermal', 'grayscale'] as const) {
       const pixels = new Uint8Array(100).fill(40); pixels[50] = 80;
       let uploads = 0;
       const upload = gl.texSubImage2D.bind(gl);
-      gl.texSubImage2D = (...args: Parameters<typeof gl.texSubImage2D>) => { uploads++; upload(...args); };
+      gl.texSubImage2D = ((...args: unknown[]) => { uploads++; Reflect.apply(upload, gl, args); }) as typeof gl.texSubImage2D;
       const pixel = (x: number, age = 0) => {
         const value = new Uint8Array(4); gl.readPixels(x, 19 - age, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, value);
         return Array.from(value);
@@ -48,7 +48,7 @@ test('WebGL unavailable renders an explicit surface error', async ({ page }) => 
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
     const get = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function (kind: string, ...args: unknown[]) {
+    HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, kind: string, ...args: unknown[]) {
       return kind === 'webgl2' ? null : Reflect.apply(get, this, [kind, ...args]);
     } as typeof get;
   });
