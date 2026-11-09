@@ -247,9 +247,6 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         seqs = [frame.inner_seq for frame in frames]
         assert all((b - a) & 0xFFFF == 1 for a, b in zip(seqs, seqs[1:]))
 
-        problems = check_marker(analyze_marker_pcm16(captured, spec), spec)
-        assert problems == [], problems
-
         first = frames[0]
         assert first.received_at - sent_first <= _WS_TO_SINK_BOUND_S
         assert first.received_at - t_ptt_on <= _PTT_ON_TO_SINK_BOUND_S
@@ -264,6 +261,12 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         frozen = len(sim.audio_tx_frames)
         await _send_pcm(mic, pcm[:rate], rate)  # 0.5 s more tone
         assert len(sim.audio_tx_frames) == frozen
+
+    # The analysis is CPU-heavy and blocks the event loop the simulator and the
+    # client share: it runs after the arena is torn down, never while keyed
+    # (MOR-4331). Only the cheap capture happens inside.
+    problems = check_marker(analyze_marker_pcm16(captured, spec), spec)
+    assert problems == [], problems
 
 
 async def test_marker_check_catches_a_wrong_tone(
@@ -287,12 +290,13 @@ async def test_marker_check_catches_a_wrong_tone(
         await _send_pcm(mic, sent, rate)
         await _wait_sink_bytes(arena.sim, len(sent))
 
-        problems = check_marker(
-            analyze_marker_pcm16(arena.sim.audio_tx_pcm(), spec), spec
-        )
-        assert any("frequency" in problem for problem in problems)
+        captured = arena.sim.audio_tx_pcm()
         await _assert_session_held(arena.sim)
         await arena.unkey(session)
+
+    # Analysis after the arena (MOR-4331): it blocks the shared event loop.
+    problems = check_marker(analyze_marker_pcm16(captured, spec), spec)
+    assert any("frequency" in problem for problem in problems)
 
 
 class _StallRightAfterCheck:
