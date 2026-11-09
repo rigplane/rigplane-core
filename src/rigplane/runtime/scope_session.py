@@ -398,6 +398,7 @@ class ScopeSession:
             any(d.subscribers for d in self._demands.values())
             and self._original is None
         ):
+            self._applied.clear()
             self._original = await self._read()
             self.observed = self._original
             if self._original.output_on:
