@@ -54,7 +54,7 @@ async def web(radio):
             protocols = (f"rigplane-controller-v1.{key}",)
             async with client.ws_connect(base + "/api/v1/ws", protocols=protocols) as control:
                 await control.send_json({"type": "subscribe", "streams": ["state"]})
-                yield server, client, base, protocols
+                yield server, client, base, protocols, control
     finally:
         await server.stop()
 
@@ -94,14 +94,14 @@ async def test_sdk_only_tx_off_drives_deferred_demand(sdk):
 async def test_sdk_only_reconnect_reapplies_demand(sdk):
     radio, sim = sdk
     await radio.enable_scope(policy="fast")
-    sim._scope_11 = 0
-    await radio.soft_reconnect()
+    await radio.disconnect()
+    await radio.connect()
     assert await await_until(lambda: sim._scope_11 == 1)
 
 
 async def test_sub_view_real_dispatch_preserves_main_sdk_selection(sdk):
     radio, sim = sdk
-    async with web(radio) as (_, client, base, protocols):
+    async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
             await grant(ws, receiver=1)
             assert radio._scope_controls().receiver == 0
@@ -113,7 +113,7 @@ async def test_sub_view_real_dispatch_preserves_main_sdk_selection(sdk):
 async def test_sdk_frames_stay_visible_when_web_pauses(sdk):
     radio, _ = sdk
     await radio.enable_scope(policy="verify")
-    async with web(radio) as (_, client, base, protocols):
+    async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
             await grant(ws)
             await grant(ws, fps=0)
@@ -137,17 +137,9 @@ async def test_control_ws_reapplies_span_after_real_front_panel_readback(sdk):
     await radio.set_scope_span(3)
     sim.views[0] = (0, 4, 1)
     assert await radio.get_scope_span() == 4
-    async with web(radio) as (_, client, base, protocols):
-        async with client.ws_connect(base + "/api/v1/ws", protocols=protocols) as ws:
-            await ws.send_json(
-                {
-                    "type": "cmd",
-                    "id": "span",
-                    "name": "set_scope_span",
-                    "params": {"span": 3},
-                }
-            )
-            assert await await_until(lambda: sim.views[0][1] == 3)
+    async with web(radio) as (_, _, _, _, ws):
+        await ws.send_json({"type": "cmd", "id": "span", "name": "set_scope_span", "params": {"span": 3}})
+        assert await await_until(lambda: sim.views[0][1] == 3)
 
 
 async def test_uncertain_write_cannot_suppress_the_previous_acknowledged_value(
