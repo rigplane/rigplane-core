@@ -244,3 +244,13 @@ async def test_invalid_deferred_setting_cannot_poison_later_work(sdk, defer, set
     await session.configure(span=2)
     await session.set_inputs(ready=True, tx=False)
     assert sim.views[0][1] == 2
+
+
+async def test_panel_output_readbacks_allow_sdk_reenable(sdk):
+    radio, sim = sdk
+    await radio.enable_scope(policy="verify")
+    sim._scope_10 = sim._scope_11 = 0
+    assert await radio.get_scope_session_state() == (False, False)
+    assert not radio.scope_session().enabled
+    await radio.enable_scope(policy="verify")
+    assert sim._scope_10 == sim._scope_11 == 1
