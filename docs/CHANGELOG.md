@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc5] — 2026-11-09
+
+This is the fifth release candidate of 3.2.0. It equals 3.2.0rc4 plus the panorama
+oscillation fix.
+
+### Fixed
+
+- Panorama: dragging or zooming the panorama no longer starts a re-subscribe loop between the page and the radio (span flipping, constant radio writes, high page CPU); display previews stay local and the server writes nothing to the radio for an unchanged view. (MOR-4345, #4531)
+
 ## [3.2.0rc4] — 2026-11-09
 
 This is the fourth release candidate of 3.2.0. It equals 3.2.0rc3 plus the WebGL
@@ -5236,7 +5245,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc4...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc5...HEAD
+[3.2.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc4...v3.2.0rc5
 [3.2.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc3...v3.2.0rc4
 [3.2.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc2...v3.2.0rc3
 [3.2.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc1...v3.2.0rc2
