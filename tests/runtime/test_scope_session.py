@@ -302,7 +302,9 @@ async def test_invalid_view_write_does_not_poison_the_next_request():
 
 async def test_restore_only_writes_view_settings_the_session_changed():
     writer = Writer()
-    session = ScopeSession(writer.read, writer.write, ready=True, spans=(2500, 5000, 10000, 25000))
+    session = ScopeSession(
+        writer.read, writer.write, ready=True, spans=(2500, 5000, 10000, 25000)
+    )
     await session.set_output(True)
     await session.set_center(14100000, 25000, 0)
     assert writer.views == [("span", 3, 0)]
@@ -319,7 +321,9 @@ async def test_shared_fixed_slot_is_actuated_again_after_other_receiver_changes_
     await session.set_fixed(first, 0)
     await session.set_fixed(second, 1)
     await session.set_fixed(first, 0)
-    assert [value for name, value, receiver in writer.views if name == "fixed_edge"] == [first, second, first]
+    assert [
+        value for name, value, receiver in writer.views if name == "fixed_edge"
+    ] == [first, second, first]
 
 
 async def test_last_release_before_readiness_discards_the_pending_view():
@@ -342,3 +346,13 @@ async def test_restored_output_without_subscribers_has_no_menu_verdict(virtual_c
     virtual_clock.advance(60)
     assert session.observed.output_on is True
     assert session.health(civ_flowing=True).hidden is None
+
+
+async def test_missing_frames_after_oor_use_the_arrival_deadline(virtual_clock):
+    writer = Writer()
+    session = ScopeSession(writer.read, writer.write, ready=True, clock=virtual_clock, silence_seconds=1)
+    await session.set_output(True)
+    session.on_frame(ScopeFrame(0, 1, 14000000, 14350000, b"", True))
+    assert session.health(civ_flowing=True).hidden is False
+    virtual_clock.advance(2)
+    assert session.health(civ_flowing=True).hidden is True
