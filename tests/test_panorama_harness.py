@@ -46,3 +46,16 @@ def test_panorama_receipt_contract() -> None:
     receipt = ScopeWriteReceipt(**json.loads(wire))
     assert receipt == ScopeWriteReceipt(sub=21, data=[0, 0, 0, 16, 0, 0], span=100_000)
     assert json.loads(receipt.to_json()) == json.loads(wire)
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-7300"])
+def test_scope_span_capability_fixture(model: str) -> None:
+    from test_web_server_coverage import _scope_radio
+    from rigplane.web.server import WebConfig, WebServer
+
+    server = WebServer(
+        _scope_radio(), WebConfig(radio_model=model, scope_source="hardware")
+    )
+    caps = server._scope_source_capabilities(server._get_profile())
+    fixture = Path(__file__).parent / "fixtures/scope-span-capabilities.json"
+    assert caps == json.loads(fixture.read_text())

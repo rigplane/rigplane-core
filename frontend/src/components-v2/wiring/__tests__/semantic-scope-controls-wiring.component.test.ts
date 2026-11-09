@@ -22,6 +22,8 @@
  *       the same fixture in single to foreclose vacuity.
  *   (c) the default path (no `scope` capability) stays byte-identical.
  */
+import { runtime } from '$lib/runtime';
+import { runtime as commandRuntime } from '$lib/runtime/frontend-runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRawSnippet, flushSync, mount, unmount, type Snippet } from 'svelte';
 import { SvelteMap } from 'svelte/reactivity';
@@ -33,6 +35,7 @@ import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 
 const h = vi.hoisted(() => ({
+  spanControl: { spanHz: 100000, step: vi.fn() },
   state: null as unknown,
   caps: null as unknown,
   live: null as unknown,
@@ -92,7 +95,7 @@ vi.mock('$lib/runtime', () => ({
         lifecycle: 'inactive', transport: 'disconnected', frameSeen: false,
       };
     },
-    get scope() { return { hardwareScopeConnected: false }; },
+    get scope() { return { hardwareScopeConnected: false, spanControl: h.spanControl }; },
   },
 }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
@@ -235,6 +238,7 @@ const finiteAppearance = {
 } satisfies FiniteControlAppearance;
 
 beforeEach(() => {
+  commandRuntime.scope.spanControl = h.spanControl;
   h.live = new SvelteMap<string, unknown>();
   h.selectedFiniteAppearance = undefined;
   h.controlSession = { state: 'connected', epoch: 1 };
@@ -251,6 +255,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  commandRuntime.scope.spanControl = null;
   if (component) unmount(component);
   component = null;
   expect(h.authoritySubscribers.size).toBe(0);
@@ -345,12 +350,13 @@ describe('the surface intents reach the shipped scope command vocabulary', () =>
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_vbw', { narrow: true });
   });
 
-  it('the SPAN stepper sends set_scope_span through the shipped clampSpan', () => {
+  it('the SPAN stepper edits the subscription owner without a radio command', () => {
     useState(liveState({ scopeControls: { ...liveState().scopeControls, mode: 0, span: 3 } } as Partial<ServerState>));
     render();
     el('scope-span')!.querySelectorAll('button')[1]!.click();
     flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_scope_span', { span: 4 });
+    expect(runtime.scope.spanControl!.step).toHaveBeenCalledExactlyOnceWith(1);
+    expect(sendCommand).not.toHaveBeenCalled();
   });
 
   it('the SPEED stepper sends set_scope_speed', () => {

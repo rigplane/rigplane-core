@@ -23,8 +23,7 @@ params refusal, so an unhashable name never reaches ``command_descriptor``
 inside the failure sender); ``ptt_off`` with ``params: null`` is admitted
 past ingress validation. Legacy executor-side commands whose params are
 coerced inside the command-service executor (``set_band``, ``set_nr_level``,
-``set_data_mode``, ``set_rit_frequency``, ``set_key_speed``,
-``set_scope_span``) fail the same way: one ``command_failed`` reply naming
+``set_data_mode``, ``set_rit_frequency``, ``set_key_speed``) fail the same way: one ``command_failed`` reply naming
 the field, one WARNING record, no ERROR record, and nothing queued. The
 control row pins that a genuine programmer error — an executor raising
 ``AttributeError`` — is still logged at ERROR. Infinite JSON numbers
@@ -302,11 +301,6 @@ async def test_non_string_command_name_gets_unknown_command(
             "speed",
             id="set_key_speed-speed-non-numeric",
         ),
-        pytest.param(
-            {"id": "e6", "name": "set_scope_span", "params": {"span": None}},
-            "span",
-            id="set_scope_span-span-null",
-        ),
     ],
 )
 async def test_executor_side_param_coercion_fails_as_client_error(
@@ -547,3 +541,15 @@ async def test_programmer_error_from_executor_still_logs_an_error(
     assert len(errors) == 1
     assert errors[0].exc_info is not None
     assert errors[0].exc_info[0] is AttributeError
+
+
+async def test_scope_span_refused_without_radio_write() -> None:
+    handler, ws, queue = _handler_with_legacy_queue()
+    handler._radio.capabilities.add("scope")
+    await handler._handle_command(  # noqa: SLF001
+        {"id": "span", "name": "set_scope_span", "params": {"span": 4}}
+    )
+    assert ws.sent[0]["ok"] is False
+    assert ws.sent[0]["error"] == "unsupported_command"
+    assert "scope subscription view" in ws.sent[0]["message"]
+    assert queue.commands == []

@@ -272,6 +272,7 @@ export interface Capabilities {
   keyboard?: KeyboardConfig | null;
   antennas?: number;      // Number of antenna ports
   hasRxAntenna?: boolean;
+  span_choices_hz?: readonly number[];
   scopeSources?: readonly string[];
   scopeDefaultSourceId?: 'radio' | 'audio_fft' | 'iq_fft' | null;
   scopeSource?: string | null;  // "hardware", "audio_fft", or null
@@ -603,6 +604,14 @@ export function validateCapabilities(value: unknown): Capabilities {
       if (!Array.isArray(raw[field])) invalid(`$.${field}`, 'an array');
       raw[field].forEach((entry, index) => requireInteger(entry, `$.${field}[${index}]`));
     }
+  }
+  if ('span_choices_hz' in raw) {
+    const choices = raw.span_choices_hz;
+    if (!Array.isArray(choices)) invalid('$.span_choices_hz', 'an array');
+    choices.forEach((span, index) => {
+      if (typeof span !== 'number' || !Number.isSafeInteger(span) || span <= 0
+        || (index > 0 && span <= choices[index - 1])) invalid('$.span_choices_hz', 'positive increasing integer widths');
+    });
   }
   normalizeNotchWidthChoices(raw);
   normalizeBreakInChoices(raw);

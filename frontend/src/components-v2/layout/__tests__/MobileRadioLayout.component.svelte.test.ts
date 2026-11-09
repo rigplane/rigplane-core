@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { mount, unmount, flushSync } from 'svelte';
+import { runtime } from '$lib/runtime/frontend-runtime';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 
@@ -274,7 +275,7 @@ import {
   resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY,
 } from '../../../presentation/workspace/resolution';
 import {
-  SPAN_LABELS, clampSpan, clampSpeed, stepRef, type RefRange,
+  formatSpanHz, clampSpeed, stepRef, type RefRange,
 } from '../../../components/spectrum/spectrum-toolbar-logic';
 import { MOD_INPUT_SOURCES } from '$lib/radio/mod-input';
 import {
@@ -1072,6 +1073,8 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
    *  `2/main_sub`). */
   function withHardwareScopeRadio(options: { dual?: boolean; mode?: number } = {}): () => void {
     const dual = options.dual !== false;
+    const previousSpanControl = runtime.scope.spanControl;
+    runtime.scope.spanControl = { spanHz: 100000, step: vi.fn() };
     const oldCaps = getCapabilities();
     vi.mocked(hasSpectrum).mockReturnValue(true);
     vi.mocked(getScopeSource).mockReturnValue('hardware');
@@ -1105,6 +1108,7 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       }])),
     } as never;
     return () => {
+      runtime.scope.spanControl = previousSpanControl;
       vi.mocked(hasSpectrum).mockReturnValue(false);
       vi.mocked(getScopeSource).mockReturnValue(null);
       vi.mocked(getCapabilities).mockReturnValue(oldCaps);
@@ -1176,12 +1180,12 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
       expect(scopeIntents.onModeChange).toHaveBeenCalledExactlyOnceWith(1);
       // SPAN — both steppers and the value.
       expect(panel.querySelector('[data-testid="scope-span-value"]')!.textContent)
-        .toBe(SPAN_LABELS[SCOPE_READS.span]);
+        .toBe(formatSpanHz(100000));
       panel.querySelector<HTMLButtonElement>(
         '[data-testid="scope-span"] button[aria-label="Decrease scope span"]',
       )!.click();
       flushSync();
-      expect(scopeIntents.onSpanChange).toHaveBeenCalledExactlyOnceWith(clampSpan(SCOPE_READS.span, -1));
+      expect(scopeIntents.onSpanChange).toHaveBeenCalledExactlyOnceWith(-1);
       // REF — both steppers and the value.
       expect(panel.querySelector('[data-testid="scope-ref-value"]')!.textContent)
         .toBe(String(SCOPE_READS.refDb));

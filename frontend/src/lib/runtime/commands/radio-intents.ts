@@ -39,7 +39,7 @@ const intentSpecs = [
   { names: ['set_agc', 'set_apf', 'set_data_mode'], params: { mode: 'integer', receiver: 'receiver' } },
   { names: ['set_data_off_mod_input', 'set_data1_mod_input', 'set_data2_mod_input', 'set_data3_mod_input'], params: { source: 'integer' } },
   { names: ['set_break_in', 'scan_set_resume', 'set_scope_mode'], params: { mode: 'integer' } },
-  { names: ['scan_set_df_span', 'set_scope_span'], params: { span: 'integer' } },
+  { names: ['scan_set_df_span'], params: { span: 'integer' } },
   { names: ['set_key_speed', 'set_scope_speed'], params: { speed: 'integer' } },
   { names: ['scan_start'], params: { type: 'integer' } },
   { names: ['set_attenuator'], params: { db: 'integer', receiver: 'receiver' } },
