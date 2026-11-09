@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -32,3 +33,12 @@ def test_panorama_waveform_and_control_span_agree(model: str, tmp_path: Path) ->
             ) == index
             return
     pytest.fail("simulator produced no complete waveform")
+
+
+def test_panorama_receipt_contract() -> None:
+    from e2e.panorama_web_server import ScopeWriteReceipt
+
+    wire = (Path(__file__).parent / "fixtures/panorama-receipt.json").read_text()
+    receipt = ScopeWriteReceipt(**json.loads(wire))
+    assert receipt == ScopeWriteReceipt(sub=21, data=[0, 0, 0, 16, 0, 0], span=100_000)
+    assert json.loads(receipt.to_json()) == json.loads(wire)
