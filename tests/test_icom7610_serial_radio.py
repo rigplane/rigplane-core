@@ -3773,3 +3773,34 @@ async def test_startup_gate_releases_at_once_while_identity_is_no_response(
         if record.levelno >= logging.WARNING and "identity" in record.getMessage()
     ]
     assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reconnect", [False, True])
+async def test_retained_sdk_scope_resumes_after_late_serial_identity(reconnect):
+    link = _GateSerialLink(answer_identity=True, model_id=IC_7610_ADDR)
+    radio = Icom7610SerialRadio(device="/dev/fake-scope", civ_link=link)
+    radio._civ_min_interval = 0.001
+    radio._civ_get_timeout = 0.05
+    radio._SERIAL_IDENTITY_REREAD_BACKOFF_S = (0.05,)
+    radio._SERIAL_IDENTITY_REREAD_STEADY_S = 0.05
+    try:
+        await radio.connect()
+        await radio.enable_scope(policy="fast")
+        if not reconnect:
+            await radio.disconnect()
+        link.policy_answer = False
+        link.scope_state[0x11] = False
+        if reconnect:
+            link.ready = link.healthy = False
+            await radio.soft_reconnect()
+        else:
+            await radio.connect()
+        assert await await_until(
+            lambda: radio.connection_identity.status is RadioIdentityStatus.NO_RESPONSE
+        )
+        link.policy_answer = True
+        assert await await_until(lambda: radio.connected)
+        assert await await_until(lambda: link.scope_state[0x11])
+    finally:
+        await radio.disconnect()
