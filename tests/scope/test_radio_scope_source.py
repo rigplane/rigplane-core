@@ -211,3 +211,15 @@ async def test_fixed_edge_quantization_is_profile_data():
     grant = await source.set_view(request, 0)
     assert writer.writes[-1] == (ScopeFixedEdge(6, 1, 14_050_000, 14_151_000), 0)
     assert grant.coverage == Coverage(14_050_000, 14_151_000)
+
+
+async def test_fixed_views_on_two_receivers_use_distinct_profile_slots():
+    class FixedWriter(Writer):
+        async def set_fixed(self, edges, receiver):
+            self.writes.append((edges, receiver))
+
+    writer = FixedWriter()
+    source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
+    await source.set_view(View(14_050_000, 14_150_000), 0)
+    await source.set_view(View(14_150_000, 14_250_000), 1)
+    assert [(value.edge, receiver) for value, receiver in writer.writes] == [(1, 0), (2, 1)]
