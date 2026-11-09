@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from e2e.panorama_web_server import PanoramaSimulator
+from e2e.panorama_web_server import PanoramaSimulator, ScopeWriteReceipt
 from rigplane.commands import parse_civ_frame
 from rigplane.commands.scope import _span_index_for_hz, parse_scope_span_response
 from rigplane.scope import ScopeAssembler
@@ -39,19 +39,33 @@ def test_panorama_waveform_and_control_span_agree(model: str, tmp_path: Path) ->
     pytest.fail("simulator produced no complete waveform")
 
 
-def test_panorama_receipt_contract(tmp_path: Path) -> None:
-    from e2e.panorama_web_server import ScopeWriteReceipt
-
-    wire = (Path(__file__).parent / "fixtures/panorama-receipt.json").read_text()
-    for item in json.loads(wire):
-        receipt = ScopeWriteReceipt(**item)
-        evidence = tmp_path / f"{receipt.sub}.jsonl"
-        sim = PanoramaSimulator("IC-7610", evidence)
-        data = bytes(receipt.data)
-        read = data[:2] if receipt.sub == 0x1E else data[:1] if receipt.sub in (0x14, 0x15, 0x16) else b""
-        for count in (1, 2):
-            assert sim._dispatch_scope(bytes([receipt.sub]) + data, 0xE0) is not None
-            assert evidence.exists(), f"missing write receipt: {receipt.sub:#x}"
-            assert sim._dispatch_scope(bytes([receipt.sub]) + read, 0xE0) is not None
-            assert [ScopeWriteReceipt(**json.loads(line)) for line in evidence.read_text().splitlines()] == [receipt] * count
-        assert json.loads(receipt.to_json()) == item
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        ScopeWriteReceipt(**item)
+        for item in json.loads(
+            (Path(__file__).parent / "fixtures/panorama-receipt.json").read_text()
+        )
+    ],
+    ids=lambda receipt: f"{receipt.sub:#x}",
+)
+def test_panorama_receipt_contract(receipt: ScopeWriteReceipt, tmp_path: Path) -> None:
+    evidence = tmp_path / f"{receipt.sub}.jsonl"
+    sim = PanoramaSimulator("IC-7610", evidence)
+    data = bytes(receipt.data)
+    read = (
+        data[:2]
+        if receipt.sub == 0x1E
+        else data[:1]
+        if receipt.sub in (0x14, 0x15, 0x16)
+        else b""
+    )
+    for count in (1, 2):
+        assert sim._dispatch_scope(bytes([receipt.sub]) + data, 0xE0) is not None
+        assert evidence.exists(), f"missing write receipt: {receipt.sub:#x}"
+        assert sim._dispatch_scope(bytes([receipt.sub]) + read, 0xE0) is not None
+        assert [
+            ScopeWriteReceipt(**json.loads(line))
+            for line in evidence.read_text().splitlines()
+        ] == [receipt] * count
+    assert ScopeWriteReceipt(**json.loads(receipt.to_json())) == receipt
