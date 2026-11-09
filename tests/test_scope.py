@@ -928,7 +928,10 @@ class TestScopeCommandBuilders:
 
     def test_scope_set_fixed_edge(self, cmd_map) -> None:
         frame = scope_set_fixed_edge(
-            edge=4, start_hz=14_000_000, end_hz=14_350_000, cmd_map=cmd_map,
+            edge=4,
+            start_hz=14_000_000,
+            end_hz=14_350_000,
+            cmd_map=cmd_map,
             ranges=load_rig(RIG_DIR / "ic7610.toml").scope_fixed_edge_ranges,
         )
         assert frame[4] == 0x27
@@ -938,17 +941,27 @@ class TestScopeCommandBuilders:
         assert frame[8:13] == bcd_encode(14_000_000)
         assert frame[13:18] == bcd_encode(14_350_000)
 
-    @pytest.mark.parametrize("start,end,code", [
-        (1_800_000, 1_900_000, 2), (3_500_000, 3_800_000, 3),
-        (7_100_000, 7_200_000, 4), (14_200_000, 14_350_000, 6),
-        (50_000_000, 50_500_000, 12), (1_500_000, 1_600_000, 1),
-        (1_600_000, 1_700_000, 2), (1_900_000, 2_000_000, 2),
-        (2_000_000, 2_100_000, 3),
-    ])
+    @pytest.mark.parametrize(
+        "start,end,code",
+        [
+            (1_800_000, 1_900_000, 2),
+            (3_500_000, 3_800_000, 3),
+            (7_100_000, 7_200_000, 4),
+            (14_200_000, 14_350_000, 6),
+            (50_000_000, 50_500_000, 12),
+            (1_500_000, 1_600_000, 1),
+            (1_600_000, 1_700_000, 2),
+            (1_900_000, 2_000_000, 2),
+            (2_000_000, 2_100_000, 3),
+        ],
+    )
     def test_fixed_edge_range_comes_from_profile(self, cmd_map, start, end, code):
         rig = load_rig(RIG_DIR / "ic7610.toml")
         frame = scope_set_fixed_edge(
-            edge=1, start_hz=start, end_hz=end, ranges=rig.scope_fixed_edge_ranges,
+            edge=1,
+            start_hz=start,
+            end_hz=end,
+            ranges=rig.scope_fixed_edge_ranges,
             cmd_map=cmd_map,
         )
         assert frame[6] == _bcd_byte(code)
@@ -956,20 +969,34 @@ class TestScopeCommandBuilders:
     def test_fixed_edge_without_profile_requires_explicit_selector(self, cmd_map):
         with pytest.raises(ValueError, match="profile range"):
             scope_set_fixed_edge(
-                edge=1, start_hz=14_000_000, end_hz=14_350_000, cmd_map=cmd_map,
+                edge=1,
+                start_hz=14_000_000,
+                end_hz=14_350_000,
+                cmd_map=cmd_map,
             )
         frame = scope_set_fixed_edge(
-            edge=1, start_hz=14_000_000, end_hz=14_350_000, range_index=6,
+            edge=1,
+            start_hz=14_000_000,
+            end_hz=14_350_000,
+            range_index=6,
             cmd_map=cmd_map,
         )
         assert frame[6] == 6
 
-    @pytest.mark.parametrize("start,end", [(1_500_000, 1_700_000), (29_000, 31_000), (59_900_000, 60_001_000)])
-    def test_fixed_edge_rejects_view_outside_one_profile_range(self, cmd_map, start, end):
+    @pytest.mark.parametrize(
+        "start,end",
+        [(1_500_000, 1_700_000), (29_000, 31_000), (59_900_000, 60_001_000)],
+    )
+    def test_fixed_edge_rejects_view_outside_one_profile_range(
+        self, cmd_map, start, end
+    ):
         rig = load_rig(RIG_DIR / "ic7610.toml")
         with pytest.raises(ValueError, match="profile range"):
             scope_set_fixed_edge(
-                edge=1, start_hz=start, end_hz=end, ranges=rig.scope_fixed_edge_ranges,
+                edge=1,
+                start_hz=start,
+                end_hz=end,
+                ranges=rig.scope_fixed_edge_ranges,
                 cmd_map=cmd_map,
             )
 
@@ -977,8 +1004,11 @@ class TestScopeCommandBuilders:
         rig = load_rig(RIG_DIR / "ic7300.toml")
         with pytest.raises(ValueError, match="profile range"):
             scope_set_fixed_edge(
-                edge=1, start_hz=14_000_000, end_hz=14_350_000,
-                ranges=rig.scope_fixed_edge_ranges, cmd_map=cmd_map,
+                edge=1,
+                start_hz=14_000_000,
+                end_hz=14_350_000,
+                ranges=rig.scope_fixed_edge_ranges,
+                cmd_map=cmd_map,
             )
 
     def test_get_scope_rbw(self, cmd_map) -> None:

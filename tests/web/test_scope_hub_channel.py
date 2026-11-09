@@ -20,10 +20,16 @@ class Writer:
     def __init__(self):
         self.output = []
 
+    async def set_fixed(self, edges, receiver):
+        pass
+
+    def on_frame(self, frame):
+        pass
+
     def tuned_frequency(self, receiver):
         return 14_100_000
 
-    async def set_output(self, enabled):
+    async def set_output(self, enabled, *, release=True):
         self.output.append(enabled)
 
     async def set_center(self, center_hz, span_hz, receiver):
@@ -111,7 +117,7 @@ async def test_two_clients_resample_and_pace_simulator_frames(
 ):
     from rigplane.scope import ScopeAssembler
     from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_frame_v2
-    from rigplane_testkit.icom import MockIcomRadio
+    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
 
     server = WebServer(None)
     writer = Writer()
@@ -173,7 +179,7 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
     from rigplane.scope import ScopeAssembler
     from rigplane.web.protocol import decode_scope_frame_v2
     from rigplane.web.server import WebConfig
-    from rigplane_testkit.icom import MockIcomRadio
+    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
     from test_web_server import _addr
 
     server = WebServer(None, WebConfig(host="127.0.0.1", port=0))
@@ -192,7 +198,10 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
             a = await client.ws_connect(f"http://{host}:{port}/api/v1/scope")
             b = await client.ws_connect(f"http://{host}:{port}/api/v1/scope")
             try:
-                assert server._radio_scope_demand is False
+                assert (
+                    server._radio_scope_session is None
+                    or server._radio_scope_session.active is False
+                )
                 for ws, width, fps in ((a, 1024, 10), (b, 2800, 20)):
                     await ws.send_str(
                         encode_scope_subscription(
@@ -293,7 +302,9 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
     monkeypatch.setattr(
         testkit, "_SCOPE_GAP_S", {key: 1 / 30 for key in testkit._SCOPE_GAP_S}
     )
-    sim = testkit.MockIcomRadio(scope_stream=True)
+    from _scope_simulator import ScopeControlSimulator
+
+    sim = ScopeControlSimulator(scope_stream=True)
     assembler = ScopeAssembler()
     native = None
     for raw in sim._scope_templates[0]:
@@ -331,6 +342,7 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
             feed(frame)
 
         monkeypatch.setattr(source, "feed_frame", count)
+        server._set_scope_data_callback(count)
         host, port = _addr(server)
         received = [[], []]
         async with aiohttp.ClientSession() as client:
@@ -340,7 +352,7 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
             ]
             readers = []
             try:
-                assert not server._scope_enabled
+                assert not server._radio_scope_session.enabled
                 for ws, width, fps in zip(sockets, (1024, 2800), (10, 20), strict=True):
                     await ws.send_str(
                         encode_scope_subscription(
@@ -408,7 +420,9 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
                 for ws in sockets:
                     await ws.close()
                 await asyncio.gather(*readers, return_exceptions=True)
-            await await_until(lambda: not server._scope_enabled, timeout=5)
+            await await_until(
+                lambda: not server._radio_scope_session.enabled, timeout=5
+            )
             assert sim._scope_11 == 0
     finally:
         if server is not None:
@@ -427,14 +441,19 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
     from types import SimpleNamespace
     from rigplane.web.protocol import decode_scope_frame_v2
 
-    source = RadioScopeSource(resolve_radio_profile(model="ic705"), Writer())
+    from test_web_server_coverage import _scope_radio
+    from _scope_session_fake import attach_scope_session
+
+    radio = _scope_radio()
+    radio.profile = resolve_radio_profile(model="ic705")
+    session = attach_scope_session(radio, clock=virtual_clock)
+    source = RadioScopeSource(radio.profile, session)
     server = WebServer(None)
-    server.scope_hub.register("radio", source)
+    server.scope_hub.register("radio", source, on_demand=session.set_demand)
     server._radio_scope_source = source
+    server._radio_scope_session = session
     server._radio = SimpleNamespace(last_valid_frame_monotonic=virtual_clock())
     server._hardware_scope_available = True
-    server._radio_scope_demand = True
-    server._scope_enabled = True
     server._scope_health_interval = 0.1
     monkeypatch.setattr(server, "_radio_ready", lambda: True)
     monkeypatch.setattr(server, "_scope_tx_known", lambda: False)
@@ -464,36 +483,33 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
 async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
     model, monkeypatch
 ):
-    from rigplane.web.radio_poller import (
-        SetScopeMode,
-        SetScopeSpan,
-        SwitchScopeReceiver,
-    )
-    from rigplane.radio_state import RadioState
-    from rigplane.web.server import WebConfig
-    from rigplane.web.scope_sources import WebRadioScopeWriter
+    from _scope_session_fake import attach_scope_session
+    from test_web_server_coverage import _scope_radio
 
-    server = WebServer(None, WebConfig(radio_model=model))
-    server._radio_state = RadioState()
-    server._radio_state.main.freq = 14_100_000
-    writer = WebRadioScopeWriter(server)
-    source = RadioScopeSource(resolve_radio_profile(model=model), writer)
-    commands = []
+    radio = _scope_radio()
+    radio.profile = resolve_radio_profile(model=model)
+    writer = attach_scope_session(radio)
+    source = RadioScopeSource(radio.profile, writer)
+    from rigplane.core.types import ScopeFixedEdge
 
-    def execute(command, *, future):
-        commands.append(command)
-        future.set_result(None)
-
-    monkeypatch.setattr(server.command_queue, "put_ordered", execute)
     requested = View(14_180_000, 14_200_000)
     grant = await source.set_view(requested, 0)
     assert grant.view == requested
     assert grant.coverage is not None
-    assert (grant.coverage.start_hz + grant.coverage.end_hz) / 2 == 14_100_000
-    span = grant.coverage.end_hz - grant.coverage.start_hz
-    index = server._get_profile().scope_span_presets_hz.index(span)
-    assert commands == [SwitchScopeReceiver(0), SetScopeMode(0), SetScopeSpan(index)]
-    assert server._radio_state.main.freq == 14_100_000
+    if radio.profile.scope_fixed_edge_ranges:
+        assert grant.coverage.start_hz == requested.start_hz
+        assert grant.coverage.end_hz == requested.end_hz
+        assert radio.scope_writes == [
+            ("fixed_edge", ScopeFixedEdge(6, 1, 14180000, 14200000), 0),
+            ("edge", 1, 0),
+            ("mode", 1, 0),
+        ]
+    else:
+        assert (grant.coverage.start_hz + grant.coverage.end_hz) / 2 == 14_100_000
+        span = grant.coverage.end_hz - grant.coverage.start_hz
+        index = radio.profile.scope_span_presets_hz.index(span)
+        assert radio.scope_writes == [("mode", 0, 0), ("span", index, 0)]
+    assert writer.tuned_frequency(0) == 14_100_000
 
 
 @pytest.mark.asyncio
@@ -680,7 +696,7 @@ async def test_shutdown_cleanup_failure_keeps_other_sources_releasing(
     class FailingWriter(Writer):
         fail = True
 
-        async def set_output(self, enabled):
+        async def set_output(self, enabled, *, release=True):
             await super().set_output(enabled)
             if not enabled and self.fail:
                 raise RuntimeError("output restoration failed")
@@ -721,46 +737,43 @@ async def test_shutdown_cleanup_failure_keeps_other_sources_releasing(
 async def test_reconnect_waiting_behind_last_close_cannot_revive_output(monkeypatch):
     from unittest.mock import AsyncMock
     from test_web_server_coverage import _scope_radio
-    from rigplane.web.radio_poller import DisableScope, EnableScope
     from rigplane.web.server import WebConfig
 
     radio = _scope_radio()
     radio._fetch_initial_state = AsyncMock()
     server = WebServer(radio, WebConfig(radio_model="IC-7610"))
-    server._radio_scope_demand = True
-    server._scope_enabled = True
     server.scope_hub
-    commands = []
-    held = []
-    put = server.command_queue.put_ordered
+    session = server._radio_scope_session
+    await session.set_output(True)
+    changes = []
+    held = asyncio.Event()
+    release = asyncio.Event()
 
-    def complete(command, **kwargs):
-        entry = put(command, **kwargs)
-        commands.append(command)
-        future = kwargs.get("future")
-        if isinstance(command, EnableScope) and not held:
-            held.append(future)
-        elif future is not None:
-            future.set_result(None)
-        return entry
+    async def enable(**kwargs):
+        changes.append(True)
+        held.set()
+        await release.wait()
 
-    monkeypatch.setattr(server.command_queue, "put_ordered", complete)
+    async def disable(**kwargs):
+        changes.append(False)
+
+    radio.enable_scope.side_effect = enable
+    radio.disable_scope.side_effect = disable
     first = asyncio.create_task(server._refetch_and_reenable())
     close = second = None
     try:
-        await await_until(lambda: bool(held))
-        close = asyncio.create_task(server._set_radio_scope_output(False))
-        await await_until(lambda: len(server._scope_enable_lock._waiters or ()) == 1)
+        assert await await_until(held.is_set)
+        close = asyncio.create_task(session.set_output(False))
+        assert await await_until(lambda: len(session._lock._waiters or ()) == 1)
         second = asyncio.create_task(server._refetch_and_reenable())
-        await await_until(lambda: len(server._scope_enable_lock._waiters or ()) == 2)
-        held[0].set_result(None)
+        assert await await_until(lambda: len(session._lock._waiters or ()) == 2)
+        release.set()
         await asyncio.gather(first, close, second)
-        assert [type(command) for command in commands] == [EnableScope, DisableScope]
-        assert server._radio_scope_demand is False
-        assert server._scope_enabled is False
+        assert changes == [True, False]
+        assert session.active is False
+        assert session.enabled is False
     finally:
-        if held and not held[0].done():
-            held[0].set_result(None)
+        release.set()
         tasks = [task for task in (first, close, second) if task is not None]
         for task in tasks:
             if not task.done():
@@ -778,11 +791,11 @@ async def test_previous_session_health_cannot_override_new_session_grace(
         _live_scope_frame,
     )
 
-    server, _, _ = _virtual_scope_server(monkeypatch, virtual_clock)
+    server, _, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
     _feed_scope_health(server, _live_scope_frame())
     await virtual_clock.elapse(100)
-    await server._set_radio_scope_output(False)
-    await server._set_radio_scope_output(True)
+    await server._radio_scope_session.set_output(False)
+    await server._radio_scope_session.set_output(True)
     monkeypatch.setattr(server, "_civ_link_flowing", lambda now: True)
     import rigplane.web.server as server_module
 
@@ -803,17 +816,15 @@ async def test_scope_enable_success_starts_new_health_grace(
 ):
     from test_web_server_coverage import _virtual_scope_server
 
-    server, _, _ = _virtual_scope_server(monkeypatch, virtual_clock)
+    server, _, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
     await virtual_clock.elapse(100)
-    server._scope_enabled = False
+    await server._radio_scope_session.invalidate()
     if enable_path == "deferred":
-        await server._wait_and_enable_scope(
-            reason="readiness", generation=server._scope_demand_generation
-        )
+        await server._radio_scope_session.set_ready(True)
     else:
         await server._refetch_and_reenable()
-    assert server._scope_enabled is True
-    assert server._scope_started_at == virtual_clock()
+    assert server._radio_scope_session.enabled is True
+    assert server._radio_scope_session.health(civ_flowing=True).hidden is False
 
 
 @pytest.mark.parametrize(
@@ -868,7 +879,7 @@ async def test_one_real_scope_socket_multiplexes_radio_and_audio():
     from rigplane.web.protocol import decode_scope_frame_v2
     from rigplane.web.scope_sources import WebScopePcmTap
     from rigplane.web.server import WebConfig
-    from rigplane_testkit.icom import MockIcomRadio
+    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
     from test_handlers_coverage import _RelayRadio
     from test_audio_scope_dispatch import _seed_audio_facts
     from test_web_server import _addr
@@ -993,7 +1004,7 @@ async def test_multiplex_cleanup_attempts_all_streams_after_one_stop_fails():
     class FailingWriter(Writer):
         fail = True
 
-        async def set_output(self, enabled):
+        async def set_output(self, enabled, *, release=True):
             await super().set_output(enabled)
             if not enabled and self.fail:
                 raise RuntimeError("restore failed")

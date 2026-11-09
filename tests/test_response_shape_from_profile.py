@@ -663,17 +663,20 @@ async def test_set_scope_fixed_edge_reply_shape_comes_from_the_map(
     monkeypatch.setattr(CoreRadio, "_check_connected", lambda self: None)
     radio = CoreRadio("198.51.100.1", profile=mutated_profile)
 
-    async def _fake_send_civ_raw(civ: bytes, **kwargs: Any) -> None:
-        return None
+    async def _fake_send_civ_raw(civ: bytes, **kwargs: Any) -> CivFrame:
+        return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFB)
 
     monkeypatch.setattr(radio, "_send_civ_raw", _fake_send_civ_raw)
 
+    await radio.scope_session().set_ready(True)
     # The request builder reads this SAME mutated map, so the frame it
     # builds already carries sub=_SCOPE_DIVERGENT_SUB. A parser still
     # checking the module's hardcoded _SUB_SCOPE_FIXED_EDGE would reject
     # its own request's echo; deriving the shape from the same map instead
     # (this call site's retrofit) must not raise here.
-    await radio.set_scope_fixed_edge(edge=1, start_hz=1_000_000, end_hz=2_000_000)
+    await radio.set_scope_fixed_edge(
+        edge=1, range_index=1, start_hz=1_000_000, end_hz=2_000_000
+    )
 
 
 # MOR-2106: `commands/scope.py: scope_main_sub` (the WRITE builder) used to

@@ -158,7 +158,7 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
     cancelled_close, monkeypatch
 ):
     from rigplane.radio import IcomRadio
-    from rigplane_testkit.icom import MockIcomRadio
+    from _scope_simulator import ScopeControlSimulator as MockIcomRadio
 
     sim = MockIcomRadio(scope_stream=True)
     await sim.start()
@@ -230,7 +230,7 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
         assert not server._scope_command_futures
         assert not server._radio_scope_source._active
         restore.assert_awaited_once()
-        assert not server._scope_enabled
+        assert not server._radio_scope_session.enabled
     finally:
         # Recover the old implementation's blocked queue wait after the RED assertion.
         for future in futures:
@@ -349,7 +349,7 @@ async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
         assert not handler._streams
         assert not source._active
         assert not source._callbacks
-        assert not server._scope_enabled
+        assert not server._radio_scope_session.enabled
         assert not server._scope_enable_failed
         assert server._server is None
         listener.close.assert_called_once()

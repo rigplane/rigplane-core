@@ -365,6 +365,9 @@ def _add_scope_capable_attrs(radio: MagicMock) -> MagicMock:
     radio.get_scope_hold = AsyncMock(return_value=False)
     radio.set_scope_hold = AsyncMock()
 
+    from _scope_session_fake import attach_scope_session
+
+    attach_scope_session(radio)
     return radio
 
 
@@ -2696,7 +2699,8 @@ class TestScopeLifecycle:
         """A dead executor cannot block the later client-teardown phase."""
         radio = _add_scope_capable_attrs(MagicMock())
         server = WebServer(radio)
-        server._scope_enabled = True
+        server.scope_hub
+        await server._radio_scope_session.set_output(True)
         client_teardown = asyncio.Event()
 
         async def _client() -> None:
@@ -2714,7 +2718,7 @@ class TestScopeLifecycle:
 
         assert client_teardown.is_set()
         assert server._radio_poller is None
-        assert server._scope_enabled  # retained as pending restoration evidence
+        assert server._radio_scope_session.active  # pending restoration
         assert not server._command_queue.has_commands
         assert "radio poller is unavailable" in caplog.text
 
@@ -2860,6 +2864,10 @@ class TestRadioPoller:
         radio.equalize_main_sub = AsyncMock()
         radio.send_civ = AsyncMock()  # RadioPoller now calls send_civ directly
         radio.state_cache = StateCache()
+        from _scope_session_fake import attach_scope_session
+
+        radio.get_scope_session_state = AsyncMock(return_value=(False, False))
+        attach_scope_session(radio)
         return radio
 
     async def test_poller_starts_and_stops(self) -> None:
@@ -3033,6 +3041,10 @@ class TestSwitchScopeReceiver:
 
         radio.select_receiver = AsyncMock(side_effect=_select_receiver)
         radio.set_vfo_slot = AsyncMock()
+        from _scope_session_fake import attach_scope_session
+
+        radio.get_scope_session_state = AsyncMock(return_value=(False, False))
+        attach_scope_session(radio)
         return radio
 
     async def test_switch_scope_receiver_main_sends_civ(self) -> None:

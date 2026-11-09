@@ -1,4 +1,3 @@
-
 import pytest
 import asyncio
 
@@ -75,7 +74,9 @@ async def test_enabled_requires_acknowledgement():
 async def test_pause_only_output_resume_once_and_release_restores(virtual_clock):
     writer = Writer()
     writer.state = ScopeState(True, False)
-    session = ScopeSession(writer.read, writer.write, writer.read_fixed, clock=virtual_clock)
+    session = ScopeSession(
+        writer.read, writer.write, writer.read_fixed, clock=virtual_clock
+    )
     await session.set_inputs(ready=True, tx=False)
     await session.set_demand(ScopeDemand(2, 2))
     await session.set_demand(ScopeDemand(2, 0))
@@ -98,14 +99,18 @@ async def test_view_and_touched_fixed_slot_restored():
     fixed = ScopeFixedEdge(7, 1, 14050000, 14150000)
     await session.set_fixed(fixed, 0)
     await session.set_fixed(fixed, 0)
-    assert writer.views == [("fixed_edge", fixed, 0), ("edge", 1, 0), ("mode", 1, 0)]
+    assert writer.views == [("fixed_edge", fixed, 0), ("mode", 1, 0)]
     await session.set_demand(ScopeDemand(0, 0))
-    assert ("mode", 0, 0) in writer.views[3:]
-    assert ("fixed_edge", ScopeFixedEdge(7, 1, 14000000, 14350000), 0) in writer.views[3:]
+    assert ("mode", 0, 0) in writer.views[2:]
+    assert ("fixed_edge", ScopeFixedEdge(7, 1, 14000000, 14350000), 0) in writer.views[
+        2:
+    ]
 
 
 async def test_oor_is_arrival_never_hidden(virtual_clock):
-    session = ScopeSession(Writer().read, Writer().write, clock=virtual_clock, silence_seconds=1)
+    session = ScopeSession(
+        Writer().read, Writer().write, clock=virtual_clock, silence_seconds=1
+    )
     await session.set_inputs(ready=True, tx=False)
     await session.set_demand(ScopeDemand(1, 1))
     session.on_frame(ScopeFrame(0, 1, 14000000, 14350000, b"", True))
@@ -114,7 +119,13 @@ async def test_oor_is_arrival_never_hidden(virtual_clock):
 
 async def test_release_grace_cancelled_by_resume(virtual_clock):
     writer = Writer()
-    session = ScopeSession(writer.read, writer.write, writer.read_fixed, clock=virtual_clock, disable_grace_seconds=0.25)
+    session = ScopeSession(
+        writer.read,
+        writer.write,
+        writer.read_fixed,
+        clock=virtual_clock,
+        disable_grace_seconds=0.25,
+    )
     await session.set_inputs(ready=True, tx=False)
     await session.set_demand(ScopeDemand(1, 1))
     await session.set_demand(ScopeDemand(0, 0))
@@ -163,7 +174,6 @@ async def test_shared_demand_ack_restore_and_pause(transport):
 
 @pytest.mark.asyncio
 async def test_no_writes_during_tx_and_enabled_waits_for_ack():
-    import asyncio
 
     ack = asyncio.Event()
     writes = []
@@ -214,3 +224,42 @@ async def test_reconnect_retains_original_capture():
     await session.set_demand(ScopeDemand(0, 0))
     assert captures == 1
     assert current == original
+
+
+async def test_sdk_demand_survives_web_pause_and_last_owner_restores():
+    writer = Writer()
+    session = ScopeSession(writer.read, writer.write, ready=True)
+    await session.set_demand(ScopeDemand(1, 1), owner="sdk")
+    await session.set_demand(ScopeDemand(3, 0))
+    assert session.enabled
+    assert writer.writes == [(0x10, True), (0x11, True)]
+    await session.set_demand(ScopeDemand(0, 0), owner="sdk")
+    assert writer.writes[-1] == (0x11, False)
+    assert session.active
+    await session.set_demand(ScopeDemand(0, 0))
+    assert writer.state == ScopeState(False, False)
+    assert not session.active
+
+
+async def test_lost_output_ack_still_restores_the_uncertain_write():
+    original = ScopeState(False, False)
+    current = original
+    writes = []
+
+    async def read():
+        return original
+
+    async def write(name, value, receiver):
+        nonlocal current
+        writes.append((name, value))
+        current = replace(current, **{name: value})
+        if name == "output_on" and value:
+            raise RuntimeError("lost ack")
+
+    session = ScopeSession(read, write, ready=True)
+    with pytest.raises(RuntimeError, match="lost ack"):
+        await session.set_demand(ScopeDemand(1, 1))
+    assert not session.enabled
+    await session.set_demand(ScopeDemand(0, 0))
+    assert current == original
+    assert writes[-1] == ("output_on", False)

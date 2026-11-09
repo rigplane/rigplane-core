@@ -136,6 +136,7 @@ def radio(mock_transport: MockTransport):
     r._ctrl_transport = mock_transport
     r._connected = True
     observe_selected_receiver(r, 0)
+    r.get_scope_session_state = AsyncMock(return_value=(False, False))
     yield r
     r._connected = False  # reset _conn_state so __del__ stays quiet
 
@@ -1263,7 +1264,8 @@ async def test_scope_stream_exits_when_disconnected(radio: IcomRadio) -> None:
 async def test_enable_scope_fast_policy_no_wait(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
-    """FAST policy sends commands without waiting for ACK or verification."""
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     from rigplane.types import ScopeCompletionPolicy
 
     await radio.enable_scope(policy=ScopeCompletionPolicy.FAST)
@@ -1273,6 +1275,8 @@ async def test_enable_scope_fast_policy_no_wait(
 async def test_enable_scope_fast_no_output(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     """enable_scope(output=False) should only send the on command."""
     from rigplane.types import ScopeCompletionPolicy
 
@@ -1314,7 +1318,7 @@ async def test_enable_scope_strict_nak_raises(
     from rigplane.types import ScopeCompletionPolicy
 
     mock_transport.queue_response(_nak_response())
-    with pytest.raises(CommandError, match="scope enable"):
+    with pytest.raises(CommandError, match="scope scope_on"):
         await radio.enable_scope(policy=ScopeCompletionPolicy.STRICT)
 
 
@@ -1326,6 +1330,8 @@ async def test_enable_scope_strict_nak_raises(
 async def test_enable_scope_verify_times_out(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     """VERIFY policy raises TimeoutError if no scope data arrives."""
     from rigplane.types import ScopeCompletionPolicy
 
@@ -1337,6 +1343,8 @@ async def test_enable_scope_verify_times_out(
 async def test_enable_scope_verify_succeeds_when_event_fires(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     """VERIFY policy succeeds when scope activity event fires."""
     from rigplane.types import ScopeCompletionPolicy
 
@@ -1366,7 +1374,7 @@ async def test_disable_scope_fast_sends_command(
     from rigplane.types import ScopeCompletionPolicy
 
     await radio.disable_scope(policy=ScopeCompletionPolicy.FAST)
-    assert len(mock_transport.sent_packets) >= 1
+    assert len(mock_transport.sent_packets) == 0
 
 
 async def test_disable_scope_strict_nak_raises(
@@ -1374,8 +1382,11 @@ async def test_disable_scope_strict_nak_raises(
 ) -> None:
     from rigplane.types import ScopeCompletionPolicy
 
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
+    await radio.enable_scope(policy=ScopeCompletionPolicy.STRICT)
     mock_transport.queue_response(_nak_response())
-    with pytest.raises(CommandError, match="scope data output disable"):
+    with pytest.raises(CommandError, match="scope scope_on"):
         await radio.disable_scope(policy=ScopeCompletionPolicy.STRICT)
 
 
@@ -1396,6 +1407,8 @@ async def test_disable_scope_strict_ack_succeeds(
 async def test_capture_scope_frame_returns_first_frame(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     """capture_scope_frame() should return the first frame received."""
     frame = ScopeFrame(
         receiver=0,
@@ -1429,6 +1442,8 @@ async def test_capture_scope_frame_returns_first_frame(
 async def test_capture_scope_frames_timeout_raises(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     """capture_scope_frames() raises TimeoutError if not enough frames arrive."""
     with pytest.raises(TimeoutError, match="timed out"):
         await radio.capture_scope_frames(count=5, timeout=0.05)
@@ -1437,6 +1452,8 @@ async def test_capture_scope_frames_timeout_raises(
 async def test_capture_scope_frames_multiple(
     radio: IcomRadio, mock_transport: MockTransport
 ) -> None:
+    mock_transport.queue_response_on_send(1, _ack_response())
+    mock_transport.queue_response_on_send(2, _ack_response())
     """capture_scope_frames(count=3) collects exactly 3 frames."""
     frames = [
         ScopeFrame(
