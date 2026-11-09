@@ -11,9 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+## [3.2.0rc6] — 2026-11-09
 
-- Panorama SPAN controls step the scope subscription view and display the granted ±half width. Breaking for WS clients: `set_scope_span` is refused; use the scope subscription view. (MOR-4349)
+This is the sixth release candidate of 3.2.0. It equals 3.2.0rc5 plus the panorama
+SPAN fix, the panorama retune demand refresh and the waterfall look restore.
+
+### Fixed
+
+- Panorama: an explicit scope demand now refreshes on a confirmed retune, regardless of which surface (page or radio state) updates first. (MOR-4345, #4535)
+- Panorama: the SPAN control works again. Every span control drives the scope subscription and the label shows the granted span. Breaking for WS clients: the legacy `set_scope_span` intent now gets a typed refusal pointing at the scope subscription. (MOR-4349, #4536)
+- Waterfall: the WebGL renderer restores the 3.2.0rc3 2D look (interpolation between adjacent bins before the level map), checked by a parity test on recorded IC-705 live-air frames. (MOR-4348, #4537)
 
 ## [3.2.0rc5] — 2026-11-09
 
@@ -5249,7 +5256,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc5...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc6...HEAD
+[3.2.0rc6]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc5...v3.2.0rc6
 [3.2.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc4...v3.2.0rc5
 [3.2.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc3...v3.2.0rc4
 [3.2.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc2...v3.2.0rc3
