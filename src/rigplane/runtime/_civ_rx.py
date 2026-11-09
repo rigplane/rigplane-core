@@ -4175,7 +4175,6 @@ class CivRuntime:
             scope.vbw_narrow = vbw_narrow
         elif frame.sub == 0x1E:
             scope.fixed_edge = parse_scope_fixed_edge_response(frame)
-            scope.edge = scope.fixed_edge.edge
         elif frame.sub == 0x1F:
             receiver, rbw = parse_scope_rbw_response(frame)
             if receiver is not None and receiver != scope.receiver:

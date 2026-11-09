@@ -595,7 +595,6 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         command, sub, _ = self._expect_shape(get_scope_fixed_edge)
         fixed_edge = parse_scope_fixed_edge_response(resp, command=command, sub=sub)
         self._scope_controls().fixed_edge = fixed_edge
-        self._scope_controls().edge = fixed_edge.edge
         return fixed_edge
 
     async def set_scope_fixed_edge(
