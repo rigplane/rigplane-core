@@ -69,6 +69,7 @@ export function spectrumColorRolesToOptions(roles: SpectrumColorRoles) {
 }
 
 export interface SpectrumOptions {
+  coverage?: Readonly<{ startHz: number; endHz: number }>;
   showRfOverlays?: boolean;
   showTuneIndicator?: boolean;
   bgColor: string;
@@ -146,21 +147,23 @@ function mapShiftedPoints(
   offset = 0,
   amplitudeMax = 80,
   sampleWindow?: Readonly<{ start: number; end: number }>,
+  coverage?: SpectrumOptions['coverage'], centerHz = 0, spanHz = 0,
 ): void {
   const n = data.length - offset;
-  const profile = (column: number): number => {
-    const coordinate = sampleWindow ? sampleWindow.start + (column / width) * (sampleWindow.end - sampleWindow.start) : column / width;
-    const value = coordinate < 0 || coordinate > 1 ? 0 : data[offset + Math.min(n - 1, Math.floor(coordinate * n))];
-    return amplitudeMax === 80 ? value : Math.round(Math.min(value, amplitudeMax) * 80 / amplitudeMax);
-  };
+  const start = sampleWindow?.start ?? 0, range = (sampleWindow?.end ?? 1) - start;
   for (let x = 0; x < width; x++) {
+    const hz = centerHz - spanHz / 2 + x / width * spanHz;
+    if (coverage && (hz < coverage.startHz || hz >= coverage.endHz)) continue;
     const p = width / 2 + (x - width / 2) * viewScale + shiftPx;
     if (p < 0 || p > width - 1) continue;
     const i0 = Math.floor(p);
     const frac = p - i0;
-    const sample = frac === 0
-      ? profile(i0)
-      : profile(i0) * (1 - frac) + profile(i0 + 1) * frac;
+    const c0 = start + i0 / width * range, c1 = start + (i0 + 1) / width * range;
+    const v0 = c0 < 0 || c0 > 1 ? 0 : data[offset + Math.min(n - 1, Math.floor(c0 * n))];
+    const v1 = c1 < 0 || c1 > 1 ? 0 : data[offset + Math.min(n - 1, Math.floor(c1 * n))];
+    const a0 = amplitudeMax === 80 ? v0 : Math.round(Math.min(v0, amplitudeMax) * 80 / amplitudeMax);
+    const a1 = amplitudeMax === 80 ? v1 : Math.round(Math.min(v1, amplitudeMax) * 80 / amplitudeMax);
+    const sample = frac === 0 ? a0 : a0 * (1 - frac) + a1 * frac;
     yPoints[x] = height * (1 - spectrumDisplayAmplitude(sample, refLevel));
     covered[x] = 1;
   }
@@ -176,40 +179,102 @@ type GradCache = {
   grad: CanvasGradient; height: number; fillColor: string; fillColorBottom: string;
 };
 
-/**
- * Render a spectrum line chart onto an existing 2D canvas context.
- *
- * The caller is responsible for DPR scaling: set canvas physical dimensions
- * to width*dpr × height*dpr, call ctx.setTransform(dpr,0,0,dpr,0,0) once,
- * then pass CSS logical width/height here.
- *
- * Optimization note: the $effect in SpectrumCanvas triggers on every data change;
- * for smoother perf consider throttling to requestAnimationFrame (already done via scheduleRender).
- *
- * @param gradCache - optional per-instance cache object; pass a {current: null} ref to avoid
- *   cross-instance invalidation when multiple SpectrumCanvas components exist at different heights.
- */
+const paintStates = new WeakMap<CanvasRenderingContext2D, SpectrumPaintState>();
+const STATIC_KEYS: readonly (keyof SpectrumOptions)[] = ['bgColor', 'gridColor', 'textColor', 'spanHz', 'centerHz',
+  'tuneHz', 'passbandHz', 'passbandShiftHz', 'mode', 'scopeMode', 'showRfOverlays', 'showTuneIndicator',
+  'tuneLineColor', 'passbandFillColor', 'passbandEdgeColor', 'sampleSpanHz', 'panoramaShiftHz'];
+
+class SpectrumPaintState {
+  trace: Path2D | null = null;
+  y = new Float32Array(0);
+  covered = new Uint8Array(0);
+  readonly background = document.createElement('canvas');
+  readonly overlay = document.createElement('canvas');
+  options: SpectrumOptions | null = null;
+  backingW = 0; backingH = 0; width = 0; height = 0;
+  readonly gradient: { current: GradCache | null } = { current: null };
+}
+
+function paintState(ctx: CanvasRenderingContext2D): SpectrumPaintState {
+  let state = paintStates.get(ctx);
+  if (!state) { state = new SpectrumPaintState(); paintStates.set(ctx, state); }
+  return state;
+}
+
+function staticChanged(state: SpectrumPaintState, ctx: CanvasRenderingContext2D, width: number, height: number, options: SpectrumOptions): boolean {
+  const old = state.options;
+  if (!old || state.width !== width || state.height !== height
+    || state.backingW !== ctx.canvas.width || state.backingH !== ctx.canvas.height
+    || old.coverage?.startHz !== options.coverage?.startHz || old.coverage?.endHz !== options.coverage?.endHz) return true;
+  for (const key of STATIC_KEYS) if (!Object.is(old[key], options[key])) return true;
+  return false;
+}
+
+function layerContext(canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, width: number, height: number): CanvasRenderingContext2D {
+  canvas.width = ctx.canvas.width; canvas.height = ctx.canvas.height;
+  const layer = canvas.getContext('2d')!;
+  layer.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
+  return layer;
+}
+
 export function renderSpectrum(
-  ctx: CanvasRenderingContext2D,
-  data: Uint8Array,
-  width: number,
-  height: number,
-  options: SpectrumOptions,
-  gradCache?: { current: GradCache | null },
+  ctx: CanvasRenderingContext2D, data: Uint8Array, width: number, height: number,
+  options: SpectrumOptions, gradCache?: { current: GradCache | null },
 ): void {
-  const n = data.length;
-  if (!n || width <= 0 || height <= 0) return;
-
-  const { bgColor, lineColor, fillColor, fillColorBottom, gridColor, textColor, spanHz, centerHz, lineWidth, tuneHz, passbandHz, passbandShiftHz } =
-    options;
-
-  ctx.clearRect(0, 0, width, height);
-
-  if (bgColor !== 'transparent') {
-    ctx.fillStyle = bgColor;
-    ctx.fillRect(0, 0, width, height);
+  if (!data.length || width <= 0 || height <= 0) return;
+  const state = paintState(ctx);
+  if (staticChanged(state, ctx, width, height, options)) {
+    const background = layerContext(state.background, ctx, width, height);
+    drawSpectrumBackground(background, width, height, options);
+    const overlay = layerContext(state.overlay, ctx, width, height);
+    drawSpectrumOverlay(overlay, width, height, options);
+    state.options = { ...options }; state.width = width; state.height = height;
+    state.backingW = ctx.canvas.width; state.backingH = ctx.canvas.height;
+    state.gradient.current = null;
   }
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(state.background, 0, 0, width, height);
+  const { lineColor, lineWidth, fillColor, fillColorBottom } = options;
+  // Map amplitude data to canvas y-coordinates
+  // Gain boost: map 0-80 → full height with sqrt curve for better contrast
+  // at low signal levels (IC-7610 scope data typically peaks at ~55)
+  // Ref level: -30..+30 dB → ±40 on 0-80 scale (same mapping as waterfall)
+  const shiftPx = panoramaShiftPixels(options, width);
+  if (state.y.length !== width) { state.y = new Float32Array(width); state.covered = new Uint8Array(width); }
+  const yPoints = state.y, covered = state.covered;
+  covered.fill(0);
+  mapShiftedPoints(data, width, height, shiftPx, options.refLevel, yPoints, covered,
+    options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1,
+    options.sampleOffset ?? 0, options.sampleAmplitudeMax ?? 80, options.sampleWindow, options.coverage, options.centerHz, options.spanHz);
 
+  // Filled area under spectrum (gradient cached per-instance; recreated only when height or either stop changes)
+  const cache = gradCache ?? state.gradient;
+  if (!cache.current || cache.current.height !== height
+    || cache.current.fillColor !== fillColor || cache.current.fillColorBottom !== fillColorBottom) {
+    const grad = ctx.createLinearGradient(0, 0, 0, height);
+    grad.addColorStop(0, fillColor);
+    grad.addColorStop(1, fillColorBottom);
+    cache.current = { grad, height, fillColor, fillColorBottom };
+  }
+  const path = new Path2D();
+  state.trace = path;
+  let first = 0, last = width - 1;
+  while (first < width && !covered[first]) first++;
+  while (last >= first && !covered[last]) last--;
+  if (first <= last) {
+    path.moveTo(first, yPoints[first]);
+    for (let x = first + 1; x <= last; x++) path.lineTo(x, yPoints[x]);
+    const fill = new Path2D(path);
+    fill.lineTo(last + 1, height); fill.lineTo(first, height); fill.closePath();
+    ctx.fillStyle = cache.current.grad; ctx.fill(fill);
+  }
+  ctx.strokeStyle = lineColor; ctx.lineWidth = lineWidth; ctx.stroke(path);
+  ctx.drawImage(state.overlay, 0, 0, width, height);
+}
+
+function drawSpectrumBackground(ctx: CanvasRenderingContext2D, width: number, height: number, options: SpectrumOptions): void {
+  const { bgColor, gridColor, textColor, spanHz, centerHz } = options;
+  if (bgColor !== 'transparent') { ctx.fillStyle = bgColor; ctx.fillRect(0, 0, width, height); }
   // Grid
   const H_LINES = 5;
   const V_LINES = 10;
@@ -280,56 +345,10 @@ export function renderSpectrum(
     }
   }
 
-  // Map amplitude data to canvas y-coordinates
-  // Gain boost: map 0-80 → full height with sqrt curve for better contrast
-  // at low signal levels (IC-7610 scope data typically peaks at ~55)
-  // Ref level: -30..+30 dB → ±40 on 0-80 scale (same mapping as waterfall)
-  const shiftPx = panoramaShiftPixels(options, width);
-  const yPoints = new Float32Array(width);
-  const covered = new Uint8Array(width);
-  mapShiftedPoints(data, width, height, shiftPx, options.refLevel, yPoints, covered,
-    options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1,
-    options.sampleOffset ?? 0, options.sampleAmplitudeMax ?? 80, options.sampleWindow);
+}
 
-  // Filled area under spectrum (gradient cached per-instance; recreated only when height or either stop changes)
-  const cache = gradCache ?? { current: null };
-  if (!cache.current || cache.current.height !== height
-    || cache.current.fillColor !== fillColor || cache.current.fillColorBottom !== fillColorBottom) {
-    const grad = ctx.createLinearGradient(0, 0, 0, height);
-    grad.addColorStop(0, fillColor);
-    grad.addColorStop(1, fillColorBottom);
-    cache.current = { grad, height, fillColor, fillColorBottom };
-  }
-  ctx.fillStyle = cache.current.grad;
-  for (let runStart = 0; runStart < width;) {
-    if (!covered[runStart]) { runStart++; continue; }
-    let runEnd = runStart;
-    while (runEnd + 1 < width && covered[runEnd + 1]) runEnd++;
-    ctx.beginPath();
-    ctx.moveTo(runStart, height);
-    for (let x = runStart; x <= runEnd; x++) {
-      ctx.lineTo(x, yPoints[x]);
-    }
-    // Close at the right edge of the last covered column — a full run
-    // reproduces the pre-MOR-2464 corner at (width, height).
-    ctx.lineTo(runEnd + 1, height);
-    ctx.closePath();
-    ctx.fill();
-    runStart = runEnd + 1;
-  }
-
-  // Spectrum line
-  ctx.strokeStyle = lineColor;
-  ctx.lineWidth = lineWidth;
-  ctx.beginPath();
-  let lineOpen = false;
-  for (let x = 0; x < width; x++) {
-    if (!covered[x]) { lineOpen = false; continue; }
-    if (lineOpen) ctx.lineTo(x, yPoints[x]);
-    else { ctx.moveTo(x, yPoints[x]); lineOpen = true; }
-  }
-  ctx.stroke();
-
+function drawSpectrumOverlay(ctx: CanvasRenderingContext2D, width: number, height: number, options: SpectrumOptions): void {
+  const { spanHz, centerHz, tuneHz, passbandHz, passbandShiftHz } = options;
   // Tuning indicator + passband overlay
   if (options.showRfOverlays !== false && spanHz > 0) {
     // scopeMode: 0=CTR, 1=FIX, 2=SCROLL-C, 3=SCROLL-F
@@ -373,145 +392,95 @@ export function renderSpectrum(
       ctx.stroke();
     }
   }
+  const sampleSpan = options.sampleSpanHz || spanHz;
+  if (spanHz > 0 && sampleSpan > 0) {
+    const sourceCenter = centerHz - options.panoramaShiftHz;
+    const viewStart = centerHz - spanHz / 2;
+    const left = clamp(((options.coverage?.startHz ?? sourceCenter - sampleSpan / 2) - viewStart) / spanHz * width, 0, width);
+    const right = clamp(((options.coverage?.endHz ?? sourceCenter + sampleSpan / 2) - viewStart) / spanHz * width, 0, width);
+    if (left <= 0 && right >= width) return;
+    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, left, height); ctx.rect(right, 0, width - right, height); ctx.clip();
+    ctx.fillStyle = 'rgba(20,30,40,0.65)'; ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = 'rgba(120,140,160,0.3)'; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = -height; x < width; x += 8) { ctx.moveTo(x, 0); ctx.lineTo(x + height, height); }
+    ctx.stroke(); ctx.restore();
+  }
 }
 
-// --- Stateful renderer class (averaging + peak hold) ---
-
-const AVG_DEPTH = 15;  // ~500ms window at 30 fps
+const AVG_DEPTH = 15;
 const PEAK_DECAY_MS = 3000;
 
 export class SpectrumRenderer {
-  private frameHistory: Uint8Array[] = [];
-  private peakValues: number[] = [];
-  private peakTimestamps: number[] = [];
+  private history = new Uint8Array(0);
+  private sums = new Uint32Array(0);
+  private averaged = new Uint8Array(0);
+  private peakValues = new Uint8Array(0);
+  private peakTimestamps = new Float64Array(0);
+  private cursor = 0;
+  private frames = 0;
   private avgEnabled = true;
   private peakHoldEnabled = true;
   private lastGeometryKey: string | null = null;
-  private readonly _gradCache: { current: GradCache | null } = { current: null };
+  private readonly displayOptions = { ...defaultSpectrumOptions };
 
   setAvgEnabled(enabled: boolean): void {
+    if (enabled !== this.avgEnabled) { this.frames = 0; this.cursor = 0; this.sums.fill(0); this.history.fill(0); }
     this.avgEnabled = enabled;
-    if (!enabled) this.frameHistory = [];
   }
-
   setPeakHoldEnabled(enabled: boolean): void {
+    if (enabled !== this.peakHoldEnabled) { this.peakValues.fill(0); this.peakTimestamps.fill(0); }
     this.peakHoldEnabled = enabled;
-    if (!enabled) {
-      this.peakValues = [];
-      this.peakTimestamps = [];
-    }
   }
-
-  render(
-    ctx: CanvasRenderingContext2D,
-    data: Uint8Array,
-    width: number,
-    height: number,
-    options: SpectrumOptions,
-  ): void {
-    const now = performance.now();
-
-    // A changed SOURCE window invalidates sample-space state (MOR-2464).
+  render(ctx: CanvasRenderingContext2D, data: Uint8Array, width: number, height: number, options: SpectrumOptions): void {
+    const offset = options.sampleOffset ?? 0, amplitudeMax = options.sampleAmplitudeMax ?? 80;
+    const n = data.length - offset;
+    if (n <= 0 || width <= 0 || height <= 0) return;
+    if (this.averaged.length !== n) {
+      this.history = new Uint8Array(n * AVG_DEPTH); this.sums = new Uint32Array(n);
+      this.averaged = new Uint8Array(n); this.peakValues = new Uint8Array(n); this.peakTimestamps = new Float64Array(n);
+      this.frames = 0; this.cursor = 0;
+    }
     if (options.geometryKey !== this.lastGeometryKey) {
-      this.lastGeometryKey = options.geometryKey;
-      this.frameHistory = [];
-      this.peakValues = [];
-      this.peakTimestamps = [];
+      this.lastGeometryKey = options.geometryKey; this.frames = 0; this.cursor = 0;
+      this.sums.fill(0); this.history.fill(0); this.peakValues.fill(0); this.peakTimestamps.fill(0);
     }
-
-    // --- Moving average ---
-    let displayData = data;
-    const offset = options.sampleOffset ?? 0;
-    const amplitudeMax = options.sampleAmplitudeMax ?? 80;
-    const sampleCount = data.length - offset;
-    const sample = (index: number) => amplitudeMax === 80 ? data[index + offset]
-      : Math.round(Math.min(data[index + offset], amplitudeMax) * 80 / amplitudeMax);
-    let displayOptions = options;
-    if (this.avgEnabled) {
-      const history = new Uint8Array(sampleCount);
-      for (let i = 0; i < sampleCount; i++) history[i] = sample(i);
-      this.frameHistory.push(history);
-      if (this.frameHistory.length > AVG_DEPTH) this.frameHistory.shift();
-      const averaged = new Uint8Array(sampleCount);
-      for (let i = 0; i < sampleCount; i++) {
-        let sum = 0;
-        for (const frame of this.frameHistory) sum += frame[i];
-        averaged[i] = Math.round(sum / this.frameHistory.length);
-      }
-      displayData = averaged;
-      if (offset !== 0 || amplitudeMax !== 80) displayOptions = { ...options, sampleOffset: 0, sampleAmplitudeMax: 80 };
-    }
-
-    // --- Peak hold update ---
-    if (this.peakHoldEnabled) {
-      const n = sampleCount;
-      if (this.peakValues.length !== n) {
-        this.peakValues = new Array(n).fill(0);
-        this.peakTimestamps = new Array(n).fill(now);
-      }
-      for (let i = 0; i < n; i++) {
-        if (sample(i) > this.peakValues[i]) {
-          this.peakValues[i] = sample(i);
-          this.peakTimestamps[i] = now;
-        } else if (now - this.peakTimestamps[i] > PEAK_DECAY_MS) {
-          this.peakValues[i] = sample(i);
-          this.peakTimestamps[i] = now;
-        }
+    const now = performance.now(), base = this.cursor * n;
+    if (this.avgEnabled) this.frames = Math.min(AVG_DEPTH, this.frames + 1);
+    for (let i = 0; i < n; i++) {
+      const sample = amplitudeMax === 80 ? data[offset + i] : Math.round(Math.min(data[offset + i], amplitudeMax) * 80 / amplitudeMax);
+      if (this.avgEnabled) {
+        this.sums[i] += sample - this.history[base + i]; this.history[base + i] = sample;
+        this.averaged[i] = Math.round(this.sums[i] / this.frames);
+      } else this.averaged[i] = sample;
+      if (this.peakHoldEnabled && (sample > this.peakValues[i] || now - this.peakTimestamps[i] > PEAK_DECAY_MS)) {
+        this.peakValues[i] = sample; this.peakTimestamps[i] = now;
       }
     }
-
-    // Draw main spectrum first
-    renderSpectrum(ctx, displayData, width, height, displayOptions, this._gradCache);
-
-    // Draw peak hold fill on top (subtle overlay above spectrum)
-    if (this.peakHoldEnabled) {
-      this._drawPeakHold(ctx, displayData, this.peakValues, width, height, displayOptions);
-    }
+    if (this.avgEnabled) this.cursor = (this.cursor + 1) % AVG_DEPTH;
+    Object.assign(this.displayOptions, options);
+    this.displayOptions.sampleOffset = 0; this.displayOptions.sampleAmplitudeMax = 80;
+    renderSpectrum(ctx, this.averaged, width, height, this.displayOptions);
+    if (this.peakHoldEnabled) this.drawPeakHold(ctx, width, height, this.displayOptions);
   }
-
-  private _drawPeakHold(
-    ctx: CanvasRenderingContext2D,
-    currentData: Uint8Array,
-    peaks: number[],
-    width: number,
-    height: number,
-    options: SpectrumOptions,
-  ): void {
-    // Draw peak hold as subtle gray fill between current spectrum and peak line
+  private drawPeakHold(ctx: CanvasRenderingContext2D, width: number, height: number, options: SpectrumOptions): void {
+    const { trace, covered } = paintState(ctx);
     const shiftPx = panoramaShiftPixels(options, width);
-    const yPoints = new Float32Array(width);
-    const covered = new Uint8Array(width);
-    mapShiftedPoints(currentData, width, height, shiftPx, options.refLevel, yPoints, covered,
-      options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1,
-      options.sampleOffset ?? 0, options.sampleAmplitudeMax ?? 80, options.sampleWindow);
-
+    const peaks = this.peakValues;
     ctx.fillStyle = 'rgba(200, 200, 200, 0.25)';
-    ctx.beginPath();
-
-    // Start from left, draw current spectrum line
-    let lineOpen = false;
-    for (let x = 0; x < width; x++) {
-      if (!covered[x]) { lineOpen = false; continue; }
-      if (lineOpen) ctx.lineTo(x, yPoints[x]);
-      else { ctx.moveTo(x, yPoints[x]); lineOpen = true; }
-    }
-
-    // Draw back along peak line (right to left) under the same viewport
+    const area = new Path2D(trace!);
+    let lineOpen = covered.some(Boolean);
     const window = options.sampleWindow;
     const reversed = window !== undefined && window.end < window.start;
+    const scale = options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1;
     for (let step = 0; step < peaks.length; step++) {
       const i = reversed ? step : peaks.length - 1 - step;
-      const scale = options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1;
       const fraction = window ? (i / peaks.length - window.start) / (window.end - window.start) : i / peaks.length;
       const x = width / 2 + (fraction * width - width / 2 - shiftPx) / scale;
-      if (x < 0 || x >= width) continue;
-      const amplitude = spectrumDisplayAmplitude(peaks[i], options.refLevel);
-      const y = height * (1 - amplitude);
-      if (lineOpen) ctx.lineTo(x, y);
-      else { ctx.moveTo(x, y); lineOpen = true; }
+      if (x < 0 || x >= width || !covered[Math.floor(x)]) continue;
+      const y = height * (1 - spectrumDisplayAmplitude(peaks[i], options.refLevel));
+      if (lineOpen) area.lineTo(x, y); else { area.moveTo(x, y); lineOpen = true; }
     }
-
-    ctx.closePath();
-    ctx.fill();
+    area.closePath(); ctx.fill(area);
   }
 }

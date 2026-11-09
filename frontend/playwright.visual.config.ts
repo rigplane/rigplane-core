@@ -78,8 +78,10 @@ export default defineConfig({
     headless: true,
     // MOR1090_CHROMIUM: same escape hatch as capture.mjs's MOR1070_CHROMIUM,
     // for hosts where the exact pinned revision isn't installed. Unset in CI.
-    launchOptions: process.env.MOR1090_CHROMIUM
-      ? { executablePath: process.env.MOR1090_CHROMIUM } : {},
+    launchOptions: {
+      args: ['--enable-unsafe-swiftshader'],
+      ...(process.env.MOR1090_CHROMIUM ? { executablePath: process.env.MOR1090_CHROMIUM } : {}),
+    },
   },
   webServer: [
     {

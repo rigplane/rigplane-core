@@ -74,6 +74,8 @@
   let latestPixels: Uint8Array | null = null;
   let pushed = false;
   const rendererState = new AudioSpectrumRendererState();
+  const state: SpectrumState = { pixels: null, bandwidth: 0, filterWidth: 0, filterWidthMax: 0,
+    ifShift: 0, pbtInner: 128, pbtOuter: 128, manualNotch: false, notchFreq: 128, contour: 0, contourFreq: 128 };
 
   function draw(): void {
     if (!surface.visible) return;
@@ -83,22 +85,11 @@
       const ctx = canvas.getContext('2d');
       if (ctx) {
         if (pixels === null) rendererState.reset();
-        const state: SpectrumState = {
-          pixels, projection,
-          bandwidth,
-          filterWidth,
-          filterWidthMax,
-          ifShift,
-          pbtInner,
-          pbtOuter,
-          pbtRange,
-          pbtStepHz,
-          manualNotch,
-          notchFreq,
-          notchFreqDomain,
-          contour,
-          contourFreq,
-        };
+        state.pixels = pixels; state.projection = projection; state.bandwidth = bandwidth;
+        state.filterWidth = filterWidth; state.filterWidthMax = filterWidthMax; state.ifShift = ifShift;
+        state.pbtInner = pbtInner; state.pbtOuter = pbtOuter; state.pbtRange = pbtRange; state.pbtStepHz = pbtStepHz;
+        state.manualNotch = manualNotch; state.notchFreq = notchFreq; state.notchFreqDomain = notchFreqDomain;
+        state.contour = contour; state.contourFreq = contourFreq;
         // The pre-surface component floored the observer rect for drawing;
         // the surface now carries the fractional box, so the historical
         // floor lives here.

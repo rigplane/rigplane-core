@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import {
-    WaterfallRenderer,
+    WaterfallRenderer, WaterfallRenderError,
     defaultWaterfallOptions,
     type WaterfallOptions,
   } from '../../lib/renderers/waterfall-renderer';
+  import { t } from '$lib/i18n';
+  import type { View } from '$lib/runtime/scope-view';
   import { gesture } from '../../lib/gestures/use-gesture';
   import { vibrate } from '../../lib/utils/haptics';
   import { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
@@ -23,6 +25,12 @@
 
   let canvas: HTMLCanvasElement;
   let renderer: WaterfallRenderer | null = null;
+  let failure = $state<WaterfallRenderError | null>(null);
+  let restorationView: View | null = null;
+  function failed(error: unknown): void {
+    if (!(error instanceof WaterfallRenderError)) throw error;
+    failure = error; renderer?.destroy(); renderer = null;
+  }
   // `renderer` is a plain variable, so the options effect below would not
   // re-run after mount without reading this flag.
   let rendererReady = $state(false);
@@ -33,65 +41,54 @@
   // the canvas dimensions through the surface's `applyBacking` override.
   const surface = new CanvasSurface({
     stageScale: getStageScale(),
-    applyBacking: (target, backing) => renderer?.resize(backing.width, backing.height),
+    applyBacking: (_target, backing) => {
+      try { renderer?.resize(backing.width, backing.height); } catch (error) { failed(error); }
+    },
   });
-  const scheduler = new ScopeRenderScheduler(paint, { active: () => surface.visible && surface.sized });
+  const scheduler = new ScopeRenderScheduler(paint, { active: () => surface.visible && surface.sized && renderer !== null });
 
-  // MOR-4206: scope frames can arrive faster than the display paints. The
-  // scheduler keeps only the LATEST pending frame and paints once per
-  // animation frame; at or below the display rate every frame paints.
-  interface WaterfallFrame {
-    pixels: Uint8Array;
-    options: WaterfallOptions | undefined;
-    token: TraceToken | null;
-  }
-  let pendingFrame: WaterfallFrame | null = null;
-  let latestFrame: WaterfallFrame | null = null;
-
-  // Review round 2 (MOR-4206): the queued pixels were sampled against the
-  // delivery-time sample window, but the panorama may have advanced while
-  // the frame awaited its animation frame — the options effect below has
-  // already applied the newer viewport. Keep the frame's sample-window
-  // center and paint it under the CURRENT viewport and appearance options,
-  // recomputing the sampling shift. Applying the delivery-time snapshot
-  // instead would scroll history backward against the spectrum/overlays
-  // and revert the center pixelToFreq() tunes against.
-  function reconciledFrameOptions(frameOptions: WaterfallOptions): WaterfallOptions {
-    const sampleWindowCenterHz = frameOptions.centerHz - frameOptions.panoramaShiftHz;
-    return { ...options, panoramaShiftHz: options.centerHz - sampleWindowCenterHz };
-  }
+  const frame = { pixels: null as Uint8Array | null, options: undefined as WaterfallOptions | undefined,
+    token: null as TraceToken | null };
+  const paintOptions = { ...defaultWaterfallOptions };
+  let pending = false;
 
   function paint(): void {
-    const frame = pendingFrame;
-    pendingFrame = null;
-    if (!renderer || !frame) return;
-    latestFrame = frame;
+    if (!renderer) return;
     const measuring = trace?.status === 'recording';
     if (measuring) trace?.recordGeometry('waterfall', surface.cssW, surface.cssH, canvas.width, canvas.height, window.devicePixelRatio || 1);
     const optionsStart = measuring ? performance.now() : 0;
-    if (frame.options) renderer.updateOptions(reconciledFrameOptions(frame.options));
-    if (measuring) trace?.record('waterfall_options', frame.token, performance.now() - optionsStart);
-    const pushStart = measuring ? performance.now() : 0;
-    renderer.pushRow(frame.pixels);
-    if (measuring) trace?.record('waterfall_push', frame.token, performance.now() - pushStart);
+    try {
+      if (pending && frame.options) {
+        Object.assign(paintOptions, options);
+        paintOptions.sampleSpanHz = frame.options.sampleSpanHz || frame.options.spanHz;
+        paintOptions.sampleWindow = frame.options.sampleWindow;
+        paintOptions.sampleOffset = frame.options.sampleOffset;
+        paintOptions.sampleAmplitudeMax = frame.options.sampleAmplitudeMax;
+        paintOptions.coverage = frame.options.coverage;
+        paintOptions.panoramaShiftHz = options.centerHz - (frame.options.centerHz - frame.options.panoramaShiftHz);
+        renderer.updateOptions(paintOptions);
+      } else renderer.updateOptions(options);
+      if (measuring) trace?.record('waterfall_options', frame.token, performance.now() - optionsStart);
+      const pushStart = measuring ? performance.now() : 0;
+      if (pending && frame.pixels) renderer.pushRow(frame.pixels);
+      else renderer.draw();
+      pending = false;
+      if (measuring) trace?.record('waterfall_push', frame.token, performance.now() - pushStart);
+    } catch (error) { failed(error); }
   }
 
   function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions, token?: TraceToken | null): void {
-    if (!renderer) return;
-    // The push fires synchronously from the frame handler while the options
-    // $effect runs later — prefer the caller's fresh snapshot. A push that
-    // arrives while a paint is pending replaces (and traces) the pending
-    // frame, exactly like the old latest-wins pump.
-    if (trace?.status === 'recording' && scheduler.pending && pendingFrame) {
-      trace?.record('coalesced', pendingFrame.token, 0, true);
-    }
-    pendingFrame = { pixels, options: frameOptions ?? options, token: token ?? null };
+    if (!rendererReady) return;
+    if (trace?.status === 'recording' && scheduler.pending && pending) trace.record('coalesced', frame.token, 0, true);
+    frame.pixels = pixels; frame.options = frameOptions ?? options; frame.token = token ?? null;
+    pending = true;
     scheduler.wake('frame');
   }
 
   $effect(() => {
     if (rendererReady && renderer && options) {
       renderer.updateOptions(options);
+      scheduler.wake('view');
     }
   });
 
@@ -99,7 +96,6 @@
   const stopSizeListener = surface.onSizeChanged(() => scheduler.wake('size'));
   $effect(() => {
     if (surface.visible) untrack(() => {
-      pendingFrame ??= latestFrame;
       scheduler.wake('visibility');
     });
   });
@@ -122,17 +118,39 @@
     },
   };
 
+  function contextLost(event: Event): void {
+    event.preventDefault(); restorationView = renderer?.paintedView ?? null;
+    failed(new WaterfallRenderError());
+  }
+  function initializeRenderer(): void {
+    renderer?.destroy(); renderer = null;
+    try {
+      const initial = { ...options };
+      if (!(initial.spanHz > 0)) {
+        const saved = restorationView;
+        if (saved) { initial.centerHz = (saved.startHz + saved.endHz) / 2; initial.spanHz = saved.endHz - saved.startHz; }
+        else if (frame.options && frame.options.spanHz > 0) {
+          initial.centerHz = frame.options.centerHz; initial.spanHz = frame.options.spanHz;
+        }
+      }
+      renderer = new WaterfallRenderer(canvas, initial);
+      const facts = surface.facts;
+      if (facts.backingW > 0 && facts.backingH > 0) renderer.resize(facts.backingW, facts.backingH);
+      failure = null; restorationView = null;
+      pending = frame.pixels !== null;
+      scheduler.wake('size');
+    } catch (error) { failed(error); }
+  }
+
   onMount(() => {
-    renderer = new WaterfallRenderer(canvas, options);
+    canvas.addEventListener('webglcontextlost', contextLost);
+    canvas.addEventListener('webglcontextrestored', initializeRenderer);
+    initializeRenderer();
     rendererReady = true;
-    // The surface may have attached (and published facts) before the
-    // renderer existed — apply the current backing once.
-    const facts = surface.facts;
-    if (facts.backingW > 0 && facts.backingH > 0) {
-      renderer.resize(facts.backingW, facts.backingH);
-    }
     onRegisterPush?.(directPush);
     return () => {
+      canvas.removeEventListener('webglcontextlost', contextLost);
+      canvas.removeEventListener('webglcontextrestored', initializeRenderer);
       stopSizeListener();
       scheduler.dispose();
       renderer?.destroy();
@@ -142,9 +160,12 @@
   });
 </script>
 
-<canvas bind:this={canvas} use:gesture={waterfallGestures}></canvas>
+<canvas bind:this={canvas} data-error={failure?.code} use:gesture={waterfallGestures}></canvas>
+{#if failure}<div class="waterfall-error" role="alert" data-error={failure.code}>{t('core.scope.webglRequired')}</div>{/if}
 
 <style>
+  .waterfall-error { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-secondary); background: #001020; padding: 8px; }
+
   canvas {
     display: block;
     width: 100%;

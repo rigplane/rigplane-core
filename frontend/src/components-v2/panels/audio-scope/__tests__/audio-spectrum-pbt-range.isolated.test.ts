@@ -16,10 +16,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Capabilities } from '$lib/types/capabilities';
 import {
-  renderAudioSpectrum,
+  renderAudioSpectrum as rawRenderAudioSpectrum,
   AudioSpectrumRendererState,
   type SpectrumState,
 } from '../audio-spectrum-renderer';
+import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
+function renderAudioSpectrum(ctx: CanvasRenderingContext2D, width: number, height: number, state: SpectrumState, rs = new AudioSpectrumRendererState()) {
+  recordCanvasLayers(ctx); return rawRenderAudioSpectrum(ctx, width, height, state, rs);
+}
 import type { PbtRange } from '$lib/radio/filter-controls';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 

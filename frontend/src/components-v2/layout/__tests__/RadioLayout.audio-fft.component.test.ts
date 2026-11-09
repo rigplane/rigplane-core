@@ -1,3 +1,5 @@
+import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
@@ -98,17 +100,19 @@ function expectCentralOutput(input: { pixels: Uint8Array }, options: Parameters<
   // fractional position when comparing with the independently cropped bins.
   const expectedOptions = { ...options, sampleOffset: 0, sampleAmplitudeMax: 80,
     sampleWindow: { start: (input.pixels.length / 2 - offset) / converted.length, end: 1 } };
+  recordCanvasLayers(actual as unknown as CanvasRenderingContext2D);
   paintSpectrum.call(new SpectrumRenderer(), actual as unknown as CanvasRenderingContext2D, input.pixels, 640, 240, options);
+  recordCanvasLayers(expected as unknown as CanvasRenderingContext2D);
   paintSpectrum.call(new SpectrumRenderer(), expected as unknown as CanvasRenderingContext2D, converted, 640, 240, expectedOptions);
   // Inverting the cropped coordinate system can change peak X by ~1e-13.
   // Keep Y/amplitude exact, and compare X to sub-pixel machine precision.
   const positions = (calls: number[][]) => calls.map(([x, y]) => [Number(x.toFixed(9)), y]);
   expect(positions(actual.lineTo.mock.calls)).toEqual(positions(expected.lineTo.mock.calls));
   expect(positions(actual.moveTo.mock.calls)).toEqual(positions(expected.moveTo.mock.calls));
-  const canvas = (ctx: typeof actual) => ({ getContext: () => ctx, width: 640, height: 240 }) as unknown as HTMLCanvasElement;
-  paintWaterfall.call(new WaterfallRenderer(canvas(actual), { ...defaultWaterfallOptions, ...options }), input.pixels);
-  paintWaterfall.call(new WaterfallRenderer(canvas(expected), { ...defaultWaterfallOptions, ...expectedOptions }), converted);
-  expect(actual.putImageData.mock.calls.at(-1)![0].data).toEqual(expected.putImageData.mock.calls.at(-1)![0].data);
+  const f = webglFixture(640, 240);
+  paintWaterfall.call(new WaterfallRenderer(f.canvas, { ...defaultWaterfallOptions, ...options }), input.pixels);
+  expect(f.named('texSubImage2D').at(-1)!.args[8]).toBe(input.pixels);
+  expect(f.named('texSubImage2D').at(-1)!.args[4]).toBe(input.pixels.length);
   return converted;
 }
 
@@ -140,7 +144,7 @@ beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 });
   Object.defineProperty(window, 'innerHeight', { configurable: true, value: 900 });
   Object.defineProperty(document, 'hidden', { configurable: true, value: false });
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => context as unknown as CanvasRenderingContext2D);
+  recordCanvasLayers(context as unknown as CanvasRenderingContext2D);
   vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 640, bottom: 240, width: 640, height: 240, toJSON: () => ({}) });
   vi.stubGlobal('ResizeObserver', class {
     constructor(private callback: ResizeObserverCallback) {}
@@ -407,9 +411,6 @@ describe('MOR-2355 central default scope source', () => {
     expect(renderOptions).toMatchObject({ sampleOffset: 0, sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
     expect(expectCentralOutput(input, renderOptions)).toEqual(new Uint8Array([0, 40, 60, 80]));
     expect(push).toHaveBeenLastCalledWith(projected);
-    const row = context.putImageData.mock.calls.at(-1)![0] as ImageData;
-    const rgb = (x: number) => Array.from(row.data.slice(x * 4, x * 4 + 3));
-    expect(new Set([rgb(160), rgb(320), rgb(480)].map(value => value.join(','))).size).toBe(3);
 
     const renderer = new SpectrumRenderer();
     renderer.setAvgEnabled(false);

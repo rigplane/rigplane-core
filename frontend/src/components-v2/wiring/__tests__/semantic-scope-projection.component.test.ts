@@ -1,3 +1,4 @@
+import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
 import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 /** MOR-4241 wire documents are replayed by Python's
  * test_scope_health_watchdog_mor3690.py::test_scope_ctr_control_and_scope_wire_replay
@@ -236,7 +237,7 @@ beforeEach(() => {
   const noop = () => {}; const ctx = new Proxy({ measureText: () => ({ width: 1 }),
     createImageData: () => ({ data: new Uint8ClampedArray(4) }), getImageData: () => ({ data: new Uint8ClampedArray(4) }),
     createLinearGradient: () => ({ addColorStop: noop }) }, { get: (obj, key) => key in obj ? obj[key as keyof typeof obj] : noop });
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx as never);
+  recordCanvasLayers(ctx as unknown as CanvasRenderingContext2D);
   tx = new ManagedAppTxHarness(); h.tx = tx.controller; h.session = { state: 'connected', epoch: 1 }; h.listeners.clear();
   h.frequency.mockClear(); h.width.mockClear(); pendingWidth.clear(); h.acquire.mockClear(); wire = channel();
   h.channelRequests = [];

@@ -1,3 +1,5 @@
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
+import { RecordedPath } from '$lib/renderers/__tests__/canvas-layers-fixture';
 import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 /** Real binary decoder/controller, panel fanout and canvases; fake app/transport boundary. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -97,7 +99,10 @@ describe('binary → actual controller → actual panel → actual canvases', ()
     let nextRaf = 0;
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { rafs.set(++nextRaf, callback); return nextRaf; });
     vi.stubGlobal('cancelAnimationFrame', (id: number) => rafs.delete(id));
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement) {
+    vi.stubGlobal('Path2D', RecordedPath);
+    vi.stubGlobal('Path2D', RecordedPath);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (this: HTMLCanvasElement, kind: string) {
+      if (kind === 'webgl2') return webglFixture(this.width, this.height).gl;
       const context = {
         canvas: this,
         createImageData: (w: number, h: number) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
