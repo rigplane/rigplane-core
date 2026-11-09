@@ -200,9 +200,22 @@ async def test_view_capture_does_not_retarget_the_shared_scope_receiver(monkeypa
         request = parse_civ_frame(payload)
         assert request.data == b"\x01"
         value = 1 if request.sub == 0x16 else 0
-        return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, radio._radio_addr, request.command, sub=request.sub, data=bytes([1, value])))
+        return parse_civ_frame(
+            build_civ_frame(
+                CONTROLLER_ADDR,
+                radio._radio_addr,
+                request.command,
+                sub=request.sub,
+                data=bytes([1, value]),
+            )
+        )
 
     monkeypatch.setattr(radio, "_send_civ_expect", expect)
     captured = await radio._read_scope_receiver(1)
     assert (captured.mode, captured.span, captured.edge) == (0, 0, 1)
-    assert (controls.receiver, controls.mode, controls.span, controls.edge) == (0, 0, 2, 1)
+    assert (controls.receiver, controls.mode, controls.span, controls.edge) == (
+        0,
+        0,
+        2,
+        1,
+    )

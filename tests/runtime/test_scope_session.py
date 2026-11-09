@@ -370,7 +370,9 @@ async def test_restore_keeps_the_actual_view_observation_instead_of_cached_defau
     async def read_receiver(receiver):
         return writer.state
 
-    session = ScopeSession(read_flags, writer.write, read_receiver=read_receiver, ready=True)
+    session = ScopeSession(
+        read_flags, writer.write, read_receiver=read_receiver, ready=True
+    )
     await session.set_output(True)
     await session.configure(mode=1)
     await session.set_output(False)

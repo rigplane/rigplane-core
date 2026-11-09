@@ -3648,7 +3648,12 @@ async def test_scope_health_monitor_link_down_then_menu_silence(
     try:
         await _elapse_scope_windows(virtual_clock, 2)
         # Link down: the frame clock is reset inside the monitor window.
-        assert srv._radio_scope_session.health(civ_flowing=True, link_ready=radio.radio_ready).hidden is None  # noqa: SLF001
+        assert (
+            srv._radio_scope_session.health(
+                civ_flowing=True, link_ready=radio.radio_ready
+            ).hidden
+            is None
+        )  # noqa: SLF001
         radio.connected = True
         radio.radio_ready = True
         await _elapse_scope_windows(
@@ -5491,7 +5496,9 @@ class TestStateEtag:
 
 
 @pytest.mark.parametrize("signal", ["tx", "readiness"])
-async def test_health_snapshot_cannot_delay_fresh_scope_resume(signal, virtual_clock, monkeypatch):
+async def test_health_snapshot_cannot_delay_fresh_scope_resume(
+    signal, virtual_clock, monkeypatch
+):
     srv, radio, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
     session = srv._radio_scope_session
     transmitting = False
