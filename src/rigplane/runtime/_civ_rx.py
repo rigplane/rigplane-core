@@ -45,6 +45,8 @@ from rigplane.commands import (
     parse_scope_center_type_response,
     parse_scope_during_tx_response,
     parse_scope_edge_response,
+    parse_scope_enabled_response,
+    parse_scope_data_output_enabled_response,
     parse_scope_fixed_edge_response,
     parse_scope_hold_response,
     parse_scope_main_sub_response,
@@ -3437,6 +3439,16 @@ class CivRuntime:
         """
         receiver: int | None = None
         pairs: list[tuple[str, Any]] = []
+        session = getattr(self._host, "_control_scope_session", None)
+        if frame.sub in (0x10, 0x11):
+            value = (
+                parse_scope_enabled_response(frame)
+                if frame.sub == 0x10
+                else parse_scope_data_output_enabled_response(frame)
+            )
+            if isinstance(session, ScopeSession):
+                session.observe("scope_on" if frame.sub == 0x10 else "output_on", value)
+            return []
         if frame.sub == 0x12:
             pairs.append(("receiver", parse_scope_main_sub_response(frame)))
         elif frame.sub == 0x13:
