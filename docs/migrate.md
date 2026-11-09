@@ -243,6 +243,16 @@ members and accepts both `host_api: "2.0"` and `"3.0"` manifests; use `"3.0"`
 when consuming the additional UI and listening methods documented in
 [the public API surface](api/public-api-surface.md#frontend-extension-host-api-pro-facing).
 
+Embedding hosts that supply connection health and connection actions can add
+`health: true` alongside `report` and `language` in the existing version-1
+`rigplane-local-supervisor` declaration before mounting Core. This suppresses
+Core's status-bar radio, control-link, HTTP, bad-link and audio indicators,
+control-link-lost banner, Offline label and Connect/Disconnect button. It leaves
+power, layout, Radio Controls, managed TOT, scope, TX codec fallback and Now Playing
+under their existing conditions. Existing declarations without `health`, and
+values other than literal `true`, preserve Core's health controls. This is additive
+to host API v3; neither the host API nor declaration version changes.
+
 An extension should use a strict canonical non-TX intent, for example:
 
 ```javascript

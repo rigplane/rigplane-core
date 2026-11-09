@@ -21,13 +21,16 @@ export interface LocalExtensionHostDeclaration {
   version: 1;
   report: boolean;
   language: boolean;
+  /** The host supplies connection health and connect/disconnect controls. */
+  health?: boolean;
 }
 
 export function parseHostDeclaration(value: unknown): LocalExtensionHostDeclaration {
   const declaration = value as Partial<LocalExtensionHostDeclaration> | null;
   const valid = declaration?.version === 1 && typeof declaration.report === 'boolean' && typeof declaration.language === 'boolean';
   return { version: 1, report: valid && declaration.report === true,
-    language: valid && declaration.language === true };
+    language: valid && declaration.language === true,
+    health: valid && declaration.health === true };
 }
 
 export function readHostDeclaration(doc: Document | undefined = globalThis.document): LocalExtensionHostDeclaration {
