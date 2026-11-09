@@ -210,18 +210,11 @@ async def test_sub_fixed_slot_capture_preserves_main_selected_edge(sdk):
             assert radio._scope_controls().edge == sim.views[0][2] == 1
 
 
-async def test_standalone_control_ws_setter_retires_after_ack(sdk, monkeypatch):
+async def test_standalone_sdk_span_setter_retires_after_ack(sdk, monkeypatch):
     radio, sim = sdk
     async with web(radio) as (server, _, _, _, ws):
         server._scope_health_interval = 0.05
-        await ws.send_json(
-            {
-                "type": "cmd",
-                "id": "span",
-                "name": "set_scope_span",
-                "params": {"span": 2},
-            }
-        )
+        await radio.set_scope_span(2)
         assert await await_until(lambda: sim.views[0][1] == 2)
         sim.views[0] = (0, 4, 1)
         assert await radio.get_scope_span() == 4

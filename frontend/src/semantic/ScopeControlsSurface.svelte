@@ -3,12 +3,8 @@
   toolbar, the LAST B-slice of the vocabulary program; MOR-2545 PR1 — one row
   plus a More panel for the radio-held controls).
 
-  Presentation only. Renders the MOR-1298/1299/1330 `scopeControls` fact
-  group — all twelve toolbar/popover leaves (mode, edge, span, speed, hold,
-  refDb, dual, receiver, duringTx, centerType, vbwNarrow, rbw) — and emits
-  control intents as callbacks. It holds no radio state and consults no
-  controller (v3 ADR invariant 11); the only local state is the More panel's
-  open/closed UI flag.
+  Presentation only. Renders `scopeControls` facts and the granted
+  subscription span (`spanHz`), emitting control callbacks.
 
   MOR-2545 PR1 SHAPE (owner-approved design, ticket comments 2026-09-23),
   restyled in PR3 round 4 to the owner's style B "raised keys" ("variant B,
@@ -39,20 +35,14 @@
   NATIVE appearance; a kit's renderer owns its own layout.
 
   BINDING CARRY-FORWARDS (11A/11A′/11A″ verify reports):
-  (1) Renders ONLY from `view.scopeControls`. It never reaches into raw
-      state for any leaf — that layering violation is exactly what this
-      program removes.
+  (1) Renders radio controls from `view.scopeControls` and the subscription
+      span from `spanHz`, without reading raw state.
   (2) "receiver/source" is ONE field (`scopeControls.receiver`) — the
       MAIN/SUB keys below, never a second invented source control.
-  (3) EDGE (`isEdgeApplicable`, modes FIX/S-F) and SPAN (`isSpanApplicable`,
-      modes CTR/S-C) are always structurally available; their conditional
-      VISIBILITY is a rendering decision layered on top, using the real
-      `spectrum-toolbar-logic.ts` predicates (do-not-re-derive doctrine) —
-      never a new gate. MOR-2565 split the unread-mode story: EDGE keeps the
-      old contract (out of More until the mode is read), while SPAN KEEPS
-      ITS SLOT unlit — an unread mode never removes a control the radio
-      has (owner ruling 2026-09-21); only a READ inapplicable mode
-      (FIX/S-F) folds SPAN away.
+  (3) EDGE uses `isEdgeApplicable` (FIX/S-F). SPAN displays the subscription
+      grant in every mode. Without a grant, legacy mode applicability retains
+      the unlit slot for CTR/S-C or unread mode. An unread mode keeps its
+      actions inert.
   (5) The four popover-only leaves (duringTx/centerType/vbwNarrow/rbw) are
       rendered from facts exactly like the eight toolbar leaves.
       `fixedEdge` stays excluded (no fact-layer home, MOR-1354).
@@ -66,8 +56,8 @@
   import type { ScopeControlsField } from './radio-view-model';
   import { readingText } from '../primitives/reading-text';
   import {
-    MODE_BUTTONS, SPAN_LABELS, SPEED_LABELS,
-    isSpanApplicable, isEdgeApplicable, clampSpan, clampSpeed, stepRef,
+    MODE_BUTTONS, formatSpanHz, SPEED_LABELS,
+    isSpanApplicable, isEdgeApplicable, clampSpeed, stepRef,
   } from '../components/spectrum/spectrum-toolbar-logic';
 
   /** On/off leaves, `[field, label, reservedWidth]`. */
@@ -130,7 +120,8 @@
     view: RadioViewModel;
     onToggleChange?: (field: ScopeToggleField, next: boolean) => void;
     onChoiceChange?: (field: ScopeChoiceField, value: number) => void;
-    onSpanChange?: (span: number) => void;
+    spanHz?: number | null;
+    onSpanChange?: (delta: -1 | 1) => void;
     onSpeedChange?: (speed: number) => void;
     onRefChange?: (ref: number) => void;
     /**
@@ -165,7 +156,7 @@
     | { finiteAppearance: FiniteControlAppearance<number>; rendererContext: FiniteRendererContext | null };
   type Props = ExistingProps & RendererSelection;
   let {
-    view, onToggleChange, onChoiceChange, onSpanChange, onSpeedChange, onRefChange,
+    view, onToggleChange, onChoiceChange, spanHz = null, onSpanChange, onSpeedChange, onRefChange,
     moreScreen, rowTail, moreAsSheet = false, finiteAppearance, rendererContext,
   }: Props = $props();
 
@@ -178,20 +169,14 @@
   let modeKnown = $derived(
     sc?.mode.reading.status === 'known' ? sc.mode.reading.value : undefined,
   );
-  // MOR-2565: while the mode is unread SPAN keeps its slot unlit instead of
-  // disappearing (owner ruling 2026-09-21 — unread renders in place), so
-  // visibility folds ONLY the read-inapplicable modes (FIX/S-F) away. EDGE
-  // keeps the old contract: it stays out of More until the mode is read.
-  let spanApplicable = $derived(modeKnown === undefined || isSpanApplicable(modeKnown));
+  // A grant keeps SPAN visible in every mode; without one, retain the
+  // legacy slot rules. EDGE remains hidden until the mode is read.
+  let spanApplicable = $derived(spanHz !== null || modeKnown === undefined || isSpanApplicable(modeKnown));
   let edgeApplicable = $derived(isEdgeApplicable(modeKnown));
-  /** MOR-2565 — the observed span label; EMPTY (reserved width, never a
-   *  placeholder) while the mode is unread or the value itself is unread:
-   *  the control is unlit in place until the mode read lights it. */
-  let spanText = $derived(
-    sc && modeKnown !== undefined
-      ? readingText(sc.span, (span) => SPAN_LABELS[span] ?? '')
-      : '',
-  );
+  let spanField = $derived(sc?.span ? { ...sc.span,
+    reading: spanHz === null ? { status: 'unknown' as const } : { status: 'known' as const, value: spanHz },
+  } : undefined);
+  let spanText = $derived(modeKnown !== undefined && spanHz !== null ? formatSpanHz(spanHz) : '');
 
   /** The [MORE ▾] More panel — UI-local open flag (never radio state).
    *  MOR-2545 PR3: the label comes from the i18n system
@@ -216,12 +201,12 @@
   }
   function spanInstrument(delta: -1 | 1) {
     return bindActionInstrument(() => {
-      const field = sc?.span;
+      const field = spanField;
       // MOR-2565: unread mode ⇒ the keys stay inert even with a read span.
       return {
         field,
         blocked: modeKnown === undefined,
-        invoke: () => onSpanChange?.(clampSpan(numberOf(field!), delta)),
+        invoke: () => onSpanChange?.(delta),
       };
     });
   }
@@ -278,7 +263,7 @@
     let seat = actionSeats.get(key);
     if (!seat) {
       seat = createActionRendererSeat(() => ({
-        context: rendererContext ?? null, field: sc?.[field], label: delta < 0 ? '−' : '+',
+        context: rendererContext ?? null, field: field === 'span' ? spanField : sc?.[field], label: delta < 0 ? '−' : '+',
         accessibleLabel: `${delta < 0 ? 'Decrease' : 'Increase'} ${label}`,
         // MOR-2565: the span keys stay inert while the mode is unread.
         // MOR-3694: the REF keys stay inert without a declared range.
@@ -288,10 +273,12 @@
             ? (sc?.refRange ?? null) === null
             : undefined,
         invoke: () => {
-          const current = numberOf(sc![field]);
-          if (field === 'span') onSpanChange?.(clampSpan(current, delta as -1 | 1));
-          else if (field === 'speed') onSpeedChange?.(clampSpeed(current, delta as -1 | 1));
-          else onRefChange?.(stepRef(current, (delta as -5 | 5) === -5 ? -1 : 1, sc!.refRange!));
+          if (field === 'span') onSpanChange?.(delta as -1 | 1);
+          else {
+            const current = numberOf(sc![field]);
+            if (field === 'speed') onSpeedChange?.(clampSpeed(current, delta as -1 | 1));
+            else onRefChange?.(stepRef(current, (delta as -5 | 5) === -5 ? -1 : 1, sc!.refRange!));
+          }
         },
       }));
       actionSeats.set(key, seat);
@@ -333,7 +320,7 @@
             seat={actionSeat('span', -1, 'scope span')} renderer={finiteAppearance.action}
           />{/key}{/key}
           <output class="scope-finite-slot" data-testid="scope-span-value">
-            {modeKnown !== undefined ? readingText(sc.span, (span) => SPAN_LABELS[span] ?? '') : ''}
+            {spanText}
           </output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('span', 1, 'scope span')} renderer={finiteAppearance.action}

@@ -1593,10 +1593,8 @@ export function makeScopeControlsHandlers() {
       if (!context || !acceptsScopeValue(context, 'edge', edge, 'integer', 1, 4)) return;
       dispatchRadioIntent({ name: 'set_scope_edge', params: { edge } });
     },
-    onSpanChange: (span: number) => {
-      const context = currentScopeContext();
-      if (!context || !acceptsScopeValue(context, 'span', span, 'integer', 0, 7)) return;
-      dispatchRadioIntent({ name: 'set_scope_span', params: { span } });
+    onSpanChange: (delta: number) => {
+      if (currentScopeContext() && (delta === -1 || delta === 1)) runtime.scope.spanControl?.step(delta);
     },
     onSpeedChange: (speed: number) => {
       const context = currentScopeContext();
@@ -1953,10 +1951,9 @@ export function dispatchKeyboardRadioAction({ action, params }: KeyboardRadioAct
       return true;
     }
     case 'scope_span_step': {
-      const current = keyboardScopeField(context, 'span');
       const direction = keyboardDirection(safeParams.direction);
-      if (context.caps.scope === true && has('scope') && direction && typeof current === 'number' && Number.isSafeInteger(current) && current >= 0 && current <= 7) {
-        makeScopeControlsHandlers().onSpanChange(Math.max(0, Math.min(7, current + (direction === 'down' ? -1 : 1))));
+      if (context.caps.scope === true && has('scope') && direction) {
+        makeScopeControlsHandlers().onSpanChange(direction === 'down' ? -1 : 1);
       }
       return true;
     }

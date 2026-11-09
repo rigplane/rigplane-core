@@ -1,3 +1,4 @@
+import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 /**
  * MOR-4298 Python counterpart:
  * tests/test_civ_split_tx_frequency.py::test_ic7300_public_ingress_split_tx_matches_browser_golden.
@@ -1074,7 +1075,7 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
   function withHardwareScopeRadio(options: { dual?: boolean; mode?: number } = {}): () => void {
     const dual = options.dual !== false;
     const previousSpanControl = runtime.scope.spanControl;
-    runtime.scope.spanControl = { spanHz: 100000, step: vi.fn() };
+    runtime.scope.spanControl = { spanHz: 100000, step: vi.fn() } satisfies ScopeSpanControl;
     const oldCaps = getCapabilities();
     vi.mocked(hasSpectrum).mockReturnValue(true);
     vi.mocked(getScopeSource).mockReturnValue('hardware');
@@ -1248,14 +1249,13 @@ describe('MobileRadioLayout SCOPE tab desktop-toolbar controls (MOR-2895)', () =
     }
   });
 
-  it('EDGE joins More for a FIX-mode radio and dispatches the desktop intent; SPAN folds', () => {
+  it('EDGE joins More for a FIX-mode radio; granted subscription SPAN remains visible', () => {
     const restore = withHardwareScopeRadio({ mode: 1 });
     try {
       const t = mountMobileWithAppPlan();
       const panel = openScopePanel(t);
-      // A READ inapplicable mode (FIX) folds SPAN away — the surface's own
-      // contract, identical to the desktop row.
-      expect(panel.querySelector('[data-testid="scope-span"]')).toBeNull();
+      // A granted subscription span remains visible in FIXED mode.
+      expect(panel.querySelector('[data-testid="scope-span-value"]')!.textContent).toBe('±50k');
       const more = openMore(panel);
       more.querySelector<HTMLButtonElement>('[data-testid="scope-edge-3"]')!.click();
       flushSync();

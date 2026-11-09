@@ -1,3 +1,4 @@
+import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 /**
  * MOR-1311 — the semantic scope-controls surface wired into
  * `SemanticRadioSurfaces` (vocabulary slice 11B, the scope toolbar — the
@@ -35,7 +36,7 @@ import type { RxAudioTargetSnapshot } from '$lib/stores/audio.svelte';
 
 
 const h = vi.hoisted(() => ({
-  spanControl: { spanHz: 100000, step: vi.fn() },
+  spanControl: { spanHz: 100000, step: vi.fn() } satisfies ScopeSpanControl,
   state: null as unknown,
   caps: null as unknown,
   live: null as unknown,
@@ -740,9 +741,8 @@ describe('SDR hosted semantic scope controls (MOR-2358)', () => {
       expect(leaf!.closest('[data-testid="scope-toolbar-host"]')).not.toBeNull();
     }
     expect(el('scope-edge') !== null).toBe(mode === 1 || mode === 3);
-    // MOR-2565: an unread mode (null) keeps SPAN in its slot — only a read
-    // FIX/S-F mode folds it away.
-    expect(el('scope-span') !== null).toBe(mode === null || mode === 0 || mode === 2);
+    // A subscription grant keeps SPAN visible in every mode.
+    expect(el('scope-span') !== null).toBe(true);
     if (mode === null) expect((el('scope-mode-0') as HTMLButtonElement).disabled).toBe(true);
   });
 

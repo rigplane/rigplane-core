@@ -182,10 +182,10 @@ describe('carry-forward (3): EDGE/SPAN visibility is a rendering decision on top
     r.dispose();
   });
 
-  // F2 — mode S-F (3) shows EDGE and hides SPAN
-  it('shows EDGE in More and hides SPAN when mode is known S-F (3)', () => {
+  // S-F retains EDGE and the subscription SPAN grant.
+  it('shows EDGE and granted subscription SPAN when mode is known S-F (3)', () => {
     const r = render(withSc({ mode: known(3) }));
-    expect(r.el('scope-span')).toBeNull();
+    expect(r.el('scope-span-value')!.textContent).toBe('±50k');
     r.openMore();
     expect(r.el('scope-edge')).not.toBeNull();
     r.dispose();
@@ -747,7 +747,7 @@ describe('field identity: every control names ITS OWN field, never a neighbour\'
   });
 });
 
-describe('steppers compute the next value with the shipped clamp functions', () => {
+describe('steppers delegate span and clamp the remaining radio controls', () => {
   it('SPAN emits a subscription step direction', () => {
     const onSpanChange = vi.fn();
     const r = render(withSc({ mode: known(0), span: known(3) }), { onSpanChange });
@@ -826,7 +826,7 @@ describe('steppers compute the next value with the shipped clamp functions', () 
     r.dispose();
   });
 
-  // F1 — SPAN at the ceiling stays 7, never 8 (domain 0-7)
+  // SPAN bounds are owned by the subscription control.
   it('SPAN delegates bounds to the subscription owner', () => {
     const onSpanChange = vi.fn();
     const r = render(withSc({ mode: known(0), span: known(7) }), { onSpanChange });

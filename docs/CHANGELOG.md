@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Panorama SPAN controls step the scope subscription view and display the granted ±half width, including FIXED-edge grants. Breaking for WS clients: `set_scope_span` is refused; use the scope subscription view. (MOR-4349)
+
 - Scope WebSocket clients now select `radio`, `audio_fft` or `iq_fft` explicitly on `/api/v1/scope`, with a requested view, pixel width and maximum frame rate. The server replies with granted geometry and binary v2 frames, including source identity, coverage and nullable pixels. `/api/v1/audio-scope` and binary v1 scope delivery are removed; clients must migrate their subscription and decoder. (MOR-4273)
 - The SDK `scope_stream()` iterator is a deprecated compatibility adapter that emits `DeprecationWarning`; use `on_scope_data()`. The low-level `scope_data_output_on()` / `scope_data_output_off()` builders are removed; use `scope_data_output(True)` / `scope_data_output(False)`. (MOR-4273)
 - The red BUSY lamp is gone. In its place an SQL tag shows next to the receiver tags whenever the squelch is closed or partly closed (level above 0), on every band, and nothing shows while the squelch is fully open. The radio's squelch-open status is no longer read over CI-V. (MOR-4223)

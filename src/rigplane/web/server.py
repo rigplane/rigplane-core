@@ -4705,7 +4705,9 @@ class WebServer:
     def _scope_source_capabilities(
         self, profile: "RadioProfile | None"
     ) -> ScopeSourceCapabilities:
-        facts = ScopeSourceCapabilities(scopeSources=[], scopeDefaultSourceId=None)
+        facts = ScopeSourceCapabilities(
+            scopeSources=[], scopeDefaultSourceId=None, span_choices_hz=[]
+        )
         available = facts["scopeSources"]
         if (
             self._hardware_scope_available
@@ -4713,6 +4715,7 @@ class WebServer:
             and profile.scope_span_presets_hz
         ):
             available.append("radio")
+            facts["span_choices_hz"] = list(profile.scope_span_presets_hz)
         if self._audio_scope_source is not None:
             available.append("audio_fft")
         if self._config.sdr_config is not None:
