@@ -5519,3 +5519,22 @@ async def test_health_snapshot_cannot_delay_fresh_scope_resume(
     await session.set_output(True)
     assert session.enabled
     assert virtual_clock() - started <= 0.1
+
+
+async def test_scope_monitor_survives_pending_restore_failure(virtual_clock, monkeypatch):
+    from rigplane.core.exceptions import CommandError
+    srv, radio, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
+    session = srv._radio_scope_session
+    radio.disable_scope.side_effect = CommandError("external CAT owns wire")
+    with pytest.raises(CommandError):
+        await session.set_output(False)
+    monitor = asyncio.create_task(srv._scope_health_monitor())
+    try:
+        await _elapse_scope_windows(virtual_clock, 1)
+        assert not monitor.done()
+        radio.disable_scope.side_effect = None
+        await _elapse_scope_windows(virtual_clock, 1)
+        assert not session.restoring
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)

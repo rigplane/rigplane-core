@@ -226,3 +226,14 @@ async def test_fixed_views_on_two_receivers_use_distinct_profile_slots():
         (1, 0),
         (2, 1),
     ]
+
+
+async def test_off_band_fixed_request_uses_center_uncovered_fallback():
+    class FixedWriter(Writer):
+        async def set_fixed(self, edges, receiver):
+            self.writes.append((edges, receiver))
+    writer = FixedWriter()
+    source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
+    grant = await source.set_view(View(7_050_000, 7_150_000), 0)
+    assert grant.coverage == Coverage(13_850_000, 14_350_000)
+    assert writer.writes[-1] == (14_100_000, 500000, 0)
