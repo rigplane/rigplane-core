@@ -4307,6 +4307,7 @@ class CivRuntime:
         )
         changeset = self._host._state_store.apply(observation)
         if changeset.observed_paths:
+            last_modes.clear()
             last_modes[receiver] = scope_frame.mode
         self._record_scheduler_result_for_observation(observation, changeset)
         self._notify_state_store_changed(changeset)
@@ -4395,6 +4396,7 @@ class CivRuntime:
         )
         changeset = self._host._state_store.apply(observation)
         if changeset.observed_paths:
+            last_spans.clear()
             last_spans[receiver] = span
         self._record_scheduler_result_for_observation(observation, changeset)
         self._notify_state_store_changed(changeset)
