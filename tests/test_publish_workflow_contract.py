@@ -12,6 +12,7 @@ from pathlib import Path
 PUBLISH = (
     Path(__file__).resolve().parent.parent / ".github" / "workflows" / "publish.yml"
 )
+QUICK = PUBLISH.with_name("quick.yml")
 
 
 def _job(name: str) -> str:
@@ -55,3 +56,19 @@ def test_validate_frontend_step_sets_the_node_heap_svelte_check_needs() -> None:
         step,
         re.M,
     ), "the publish frontend step must set NODE_OPTIONS=--max-old-space-size=3072"
+
+
+def test_validate_runs_on_the_pool_quick_runs_its_frontend_on() -> None:
+    # The 2 GiB gate pool cannot hold svelte-check (~2 GiB of heap plus Node
+    # overhead), whatever NODE_OPTIONS says. quick.yml moved its frontend job to
+    # the 8 GiB build pool (MOR-4214); validate runs the same `npm run check`.
+    quick = QUICK.read_text()
+    frontend = re.search(
+        r"^  quick-frontend:\n(.*?)(?=^  \w[\w-]*:\n|\Z)", quick, re.S | re.M
+    )
+    assert frontend, "quick.yml has no `quick-frontend` job"
+    quick_pool = re.search(r"^    runs-on: (\[.*\])$", frontend.group(1), re.M)
+    assert quick_pool, "quick-frontend declares no list-form `runs-on`"
+    validate_pool = re.search(r"^    runs-on: (\[.*\])$", _job("validate"), re.M)
+    assert validate_pool, "validate declares no list-form `runs-on`"
+    assert validate_pool.group(1) == quick_pool.group(1)
