@@ -23,16 +23,18 @@ const surfaceFacts = (backingW = 100): CanvasSurfaceFacts => ({
 it('refreshes an explicit view once per confirmed retune across surfaces', () => {
   const { value, publish } = stream();
   const params = { stream: value, receiver: 0, view: { startHz: 14_225_000, endHz: 14_275_000 },
-    facts: surfaceFacts(), revision: '14250000' };
+    facts: surfaceFacts(), frequencyHz: 14_250_000, revision: 'initial' };
   const actions = [0, 1].map(() => scopeSubscriptionSurface(document.createElement('div'), params));
+  const peer = scopeSubscriptionSurface(document.createElement('div'), { ...params, receiver: 1, frequencyHz: 7_100_000 });
   const before = publish.mock.calls.length;
-  actions.forEach(action => action.update({ ...params }));
+  actions.forEach(action => action.update({ ...params, revision: 'geometry-only' }));
   expect(publish).toHaveBeenCalledTimes(before);
-  actions.forEach(action => action.update({ ...params, revision: '14290000' }));
+  actions.forEach(action => action.update({ ...params, frequencyHz: 14_290_000 }));
   expect(publish).toHaveBeenCalledTimes(before + 1);
-  actions.forEach(action => action.update({ ...params, revision: '14290000' }));
+  actions.forEach(action => action.update({ ...params, frequencyHz: 14_290_000, revision: 'new-frame' }));
   expect(publish).toHaveBeenCalledTimes(before + 1);
   actions.forEach(action => action.destroy());
+  peer.destroy();
 });
 
 describe('ScopeStream subscription negotiation', () => {
@@ -166,10 +168,11 @@ it('observes native backing width, intersection and document visibility for dema
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-it.each(['error-first', 'facts-first'])('retries refused startup once for changed facts in %s order', (order) => {
+it.each(['error-first', 'facts-first'].flatMap(order => [false, true].map(explicit => ({ order, explicit }))))('retries refused startup once for changed facts: $order, explicit=$explicit', ({ order, explicit }) => {
   const { value, publish } = stream();
   const node = document.createElement('div'); document.body.append(node);
-  const params = { stream: value, receiver: 0, view: request().view, facts: surfaceFacts(), revision: 'unknown' };
+  const params = { stream: value, receiver: 0, view: explicit ? { startHz: 14_225_000, endHz: 14_275_000 } : request().view,
+    facts: surfaceFacts(), frequencyHz: 14_250_000, revision: 'unknown' };
   const action = scopeSubscriptionSurface(node, params);
   const before = publish.mock.calls.length;
   const error = () => value.handleMessage({ type: 'error', message: 'audio mapping unavailable' });

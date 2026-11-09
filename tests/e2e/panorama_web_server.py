@@ -101,7 +101,9 @@ class PanoramaSimulator(MockIcomRadio):
                 with self.evidence.open("a") as stream:
                     stream.write(
                         ScopeWriteReceipt(
-                            sub, list(rest), self.profile.scope_span_presets_hz[self.span_index]
+                            sub,
+                            list(rest),
+                            self.profile.scope_span_presets_hz[self.span_index],
                         ).to_json()
                         + "\n"
                     )

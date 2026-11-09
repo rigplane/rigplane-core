@@ -25,12 +25,16 @@ def test_panorama_waveform_and_control_span_agree(model: str, tmp_path: Path) ->
         if frame is not None:
             span = sim.profile.scope_span_presets_hz[index]
             assert (frame.start_freq_hz, frame.end_freq_hz) == (
-                14_250_000 - span, 14_250_000 + span
+                14_250_000 - span,
+                14_250_000 + span,
             )
-            assert _span_index_for_hz(
-                (frame.end_freq_hz - frame.start_freq_hz) // 2,
-                sim.profile.scope_span_presets_hz,
-            ) == index
+            assert (
+                _span_index_for_hz(
+                    (frame.end_freq_hz - frame.start_freq_hz) // 2,
+                    sim.profile.scope_span_presets_hz,
+                )
+                == index
+            )
             return
     pytest.fail("simulator produced no complete waveform")
 
