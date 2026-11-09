@@ -1156,12 +1156,6 @@ class CoreRadioSessionLifecycle:
         self._connecting_started = None
         self._cooldown_total_s = cooldown
         self._cooldown_deadline = time.monotonic() + cooldown
-        self._emit(
-            LifecycleState.COOLDOWN,
-            # A discovery pass counts as a busy pass, hence the reason.
-            reason=LifecycleErrorReason.SESSION_BUSY_REJECT,
-            cooldown_remaining_s=cooldown,
-        )
         # First-connect busy hold owns the loop now (MOR-3391 part 2);
         # the same connect keeps running while upper layers serve
         # not-ready off this signal. Every busy pass sets it — a
@@ -1169,6 +1163,12 @@ class CoreRadioSessionLifecycle:
         # emit DISCONNECTED, which clears it, so nothing reports "busy"
         # after the loop gives up.
         self.startup_busy_hold_event.set()
+        self._emit(
+            LifecycleState.COOLDOWN,
+            # A discovery pass counts as a busy pass, hence the reason.
+            reason=LifecycleErrorReason.SESSION_BUSY_REJECT,
+            cooldown_remaining_s=cooldown,
+        )
         try:
             await asyncio.sleep(cooldown)
         finally:

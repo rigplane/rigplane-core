@@ -1019,12 +1019,18 @@ class ControlHandler:
             # WebServer always returns the canonical shared-encoder baseline.
             if not isinstance(initial, dict):
                 initial = {"type": "full", "data": {}}
+            # From here through the connect-time snapshots the queue is
+            # registered: every exit — including a cancellation that lands
+            # inside either snapshot's awaits — must unregister it.
             try:
                 msg = {
                     "type": "state_update",
                     "data": initial,
                 }
                 await self._ws.send_text(encode_json(msg))
+                self._enqueue_current_dx_spots()
+                await self._send_current_audio_session()
+                await self._send_current_managed_tx_document()
             except BaseException as exc:
                 logger.debug("control: failed to send initial state", exc_info=True)
                 self._server.unregister_control_event_queue(
@@ -1033,8 +1039,6 @@ class ControlHandler:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 return
-            self._enqueue_current_dx_spots()
-            await self._send_current_audio_session()
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
         try:
             # Inside the try, so the finally below owns every exit from here on;
@@ -1321,6 +1325,44 @@ class ControlHandler:
         except BaseException as exc:
             logger.debug(
                 "control: failed to send audio_session snapshot", exc_info=True
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+
+    async def _send_current_managed_tx_document(self) -> None:
+        """MOR-4279: deliver the live managed-transmit document on connect.
+
+        The same record the ``managed_transmit_changed`` event carries on
+        change and ``GET /api/v1/managed-transmit`` serves; a fresh client
+        starts from it instead of an initial HTTP fetch. Sent directly
+        (not via the event queue) next to hello and the initial state.
+        """
+        getter = getattr(self._server, "current_managed_tx_document", None)
+        if not callable(getter):
+            return
+        try:
+            document = await getter()
+        except Exception:
+            logger.debug(
+                "control: managed-transmit document snapshot failed", exc_info=True
+            )
+            return
+        if document is None:
+            return
+        try:
+            await self._ws.send_text(
+                encode_json(
+                    {
+                        "type": "event",
+                        "name": "managed_transmit_changed",
+                        "data": document,
+                    }
+                )
+            )
+        except BaseException as exc:
+            logger.debug(
+                "control: failed to send managed-transmit document snapshot",
+                exc_info=True,
             )
             if isinstance(exc, asyncio.CancelledError):
                 raise

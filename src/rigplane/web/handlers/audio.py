@@ -34,6 +34,10 @@ from ...env_config import (
 )
 from ...runtime.managed_tx_state import ManagedTxIntentKind
 from ...types import AudioCodec
+from ..api_contract import (  # noqa: TID251
+    AudioReceiveFailureRecord,
+    AudioReceiveRecord,
+)
 from ..protocol import (  # noqa: TID251
     AUDIO_CODEC_OPUS,
     AUDIO_CODEC_PCM16,
@@ -412,11 +416,17 @@ class AudioBroadcaster:
         radio: "Radio | None",
         *,
         on_client_count_change: Callable[[], None] | None = None,
+        on_rx_start_status_change: Callable[[], None] | None = None,
         adaptive_egress: bool = False,
     ) -> None:
         self.HIGH_WATERMARK = get_audio_broadcaster_high_watermark()
         self._radio = radio
         self._on_client_count_change = on_client_count_change
+        # MOR-4279: fired when a relay/RX start sets or drops the retained
+        # failure, so the web server re-delivers the ``audioReceive`` state
+        # leaf even when no audio client (and thus no client-count change)
+        # accompanied the attempt (tap-only relays: audio scope, CW tune).
+        self._on_rx_start_status_change = on_rx_start_status_change
         self._clients: dict[int, asyncio.Queue[bytes]] = {}
         self._client_ws: dict[int, Connection] = {}
         self._client_rx_codec: dict[int, int] = {}
@@ -663,10 +673,23 @@ class AudioBroadcaster:
         return ("bus", bus)
 
     def invalidate_rx_start_status(self) -> None:
+        had_failure = self._rx_start_failure is not None
         self._rx_start_attempt += 1
         self._rx_start_failure = None
+        if had_failure:
+            self._notify_rx_start_status_change()
 
-    def rx_start_status(self) -> dict[str, Any]:
+    def _notify_rx_start_status_change(self) -> None:
+        if self._on_rx_start_status_change is None:
+            return
+        try:
+            self._on_rx_start_status_change()
+        except Exception:
+            logger.debug(
+                "audio-broadcaster: RX start status callback failed", exc_info=True
+            )
+
+    def rx_start_status(self) -> AudioReceiveRecord:
         failure = self._rx_start_failure
         if failure is not None:
             try:
@@ -679,7 +702,7 @@ class AudioBroadcaster:
                 or route[1] is not failure[1]
             ):
                 self._rx_start_failure = None
-        payload: dict[str, Any] | None = None
+        payload: AudioReceiveFailureRecord | None = None
         if self._rx_start_failure is not None:
             _, _, reason, candidates, holder = self._rx_start_failure
             payload = {
@@ -1337,7 +1360,13 @@ class AudioBroadcaster:
                     subscription.stop()
                 return
             self._subscription = subscription
-            self._rx_start_failure = None
+            if self._rx_start_failure is not None:
+                # A retry succeeded where the previous attempt failed
+                # (MOR-4279): the retained failure is dropped and control
+                # clients learn the record recovered — a tap-only relay
+                # has no client-count change that would carry the news.
+                self._rx_start_failure = None
+                self._notify_rx_start_status_change()
             self._relay_task = asyncio.create_task(self._relay_loop())
         except Exception as exc:
             if source is not None and not self._rx_start_current(
@@ -1355,6 +1384,7 @@ class AudioBroadcaster:
                     candidates,
                     audio_start_failure_holder(exc),
                 )
+                self._notify_rx_start_status_change()
             await self._notify_relay_start_failure(exc)
 
     async def _notify_relay_start_failure(self, exc: Exception) -> None:

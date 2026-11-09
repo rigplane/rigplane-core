@@ -1432,6 +1432,45 @@ Server publishes `state_update` messages in two shapes:
   {"type":"state_update","data":{"type":"delta","changed":{"main":{"freqHz":14075000}},"revision":2}}
   ```
 
+### Pushed fact records (`/api/v1/ws`, MOR-4279)
+
+Three fact groups that `GET /api/v1/managed-transmit` and `GET /api/v1/info`
+serve over HTTP are also pushed to control-WS clients, as typed records from
+the same producers the endpoints use. Every push is change-driven: nothing is
+sent per frame or on a timer while the facts are unchanged, and a client that
+connects receives the current values in its connect-time snapshot (the state
+baseline and one `managed_transmit_changed` event). The pydantic-free record
+types live in `rigplane.web.api_contract` (`ManagedTransmitDocument`,
+`ConnectionIdentityRecord`, `ConnectionSessionRecord`, `AudioReceiveRecord`);
+`rigplane.web.state_schema` pins the same shapes for the conformance tests.
+
+- The `managed_transmit_changed` event carries the full managed-transmit
+  document as its `data` — the same record `GET /api/v1/managed-transmit`
+  returns, including `txObservation.observedPtt`:
+  ```json
+  {"type":"event","name":"managed_transmit_changed","data":{
+    "schemaVersion":1,"sampledAt":"2026-11-08T12:00:00.000Z",
+    "managedTransmit":{"status":"available","intent":{"kind":"ptt","owner":"…"},
+      "releaseRequired":false,"lastError":null,"lastActuation":null,
+      "abortErrors":[],"tot":{"configuredSeconds":180.0,"active":false,
+      "remainingMs":null,"expiresAt":null}},
+    "txObservation":{"observedPtt":"off"}}}
+  ```
+  Clients that treated the event as a bare invalidation signal (`data` was
+  `{}` before MOR-4279) keep working: the extra fields are additive. The
+  event is coalesced: only the latest queued document is delivered per
+  change burst.
+- The public state payload's `connection` object carries `identity` and
+  `session` — the same records `GET /api/v1/info` serves in its
+  `connection` block (`web/server.py: WebServer._connection_identity_payload`
+  and `_startup_busy_session_payload`). They arrive in the connect-time
+  full state and in `state_update` deltas whenever they change; on payloads
+  built without a web server both leaves are `null`/absent.
+- The public state payload carries `audioReceive` — the same record as the
+  `audioReceive` object of `GET /api/v1/info`
+  (`web/handlers/audio.py: AudioBroadcaster.rx_start_status`): schema
+  version 1 with the latest RX-start `failure`, or `null`.
+
 ### `set_band` workflow (`/api/v1/ws`)
 
 ```json

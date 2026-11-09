@@ -588,6 +588,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 self._civ_stream_ready = False
                 self._civ_recovering = False
                 self.last_error = message
+                self._civ_runtime._notify_change("connection_facts_changed", {})
             raise ConnectionError(message) from exc
         finally:
             if self._civ_epoch == attempt_epoch:
@@ -640,6 +641,7 @@ class _IcomSerialRadioBase(CoreRadio):
         self._serial_identity_answer_epoch = None
         self._serial_identity_hold_reconnect_origin = False
         self._serial_deferred_audio = None
+        self._civ_runtime._notify_change("connection_facts_changed", {})
         await self._stop_civ_data_watchdog()
         await self._stop_serial_audio_driver()
         if (
@@ -778,6 +780,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 self._civ_stream_ready = False
                 self._civ_recovering = True
                 self.last_error = message
+                self._civ_runtime._notify_change("connection_facts_changed", {})
             raise ConnectionError(message) from exc
         finally:
             if self._civ_epoch == attempt_epoch:
@@ -1005,6 +1008,7 @@ class _IcomSerialRadioBase(CoreRadio):
 
     def _record_serial_identity_payload(self, payload: bytes | None) -> bool:
         """Compare this link's native ID with the selected profile only."""
+        previous_identity = self._connection_identity
         answered_id = payload.hex().upper() if payload else None
         expected_ids = self._profile.expected_identity_ids
         if payload is None or (expected_ids and not answered_id):
@@ -1032,6 +1036,8 @@ class _IcomSerialRadioBase(CoreRadio):
             self.last_error = self._serial_no_answer_message()
         else:
             self.last_error = None
+        if self._connection_identity != previous_identity:
+            self._civ_runtime._notify_change("connection_facts_changed", {})
         return status in (RadioIdentityStatus.VERIFIED, RadioIdentityStatus.UNVERIFIED)
 
     def _serial_connect_bauds(self) -> tuple[int, ...]:
@@ -1172,6 +1178,7 @@ class _IcomSerialRadioBase(CoreRadio):
             status=RadioIdentityStatus.CHECKING,
             expected_model=self.model,
         )
+        self._civ_runtime._notify_change("connection_facts_changed", {})
         probe_identity = self._connection_identity
         epoch = self._civ_epoch
         owner_stop_epoch = self._owner_stop_epoch
@@ -1181,6 +1188,7 @@ class _IcomSerialRadioBase(CoreRadio):
         if epoch != self._civ_epoch or owner_stop_epoch != self._owner_stop_epoch:
             if self._connection_identity is probe_identity:
                 self._connection_identity = None
+                self._civ_runtime._notify_change("connection_facts_changed", {})
             return False
         if self._record_serial_identity_payload(payload):
             return True
@@ -1271,6 +1279,7 @@ class _IcomSerialRadioBase(CoreRadio):
             f"The serial link on {self._serial_device} failed while waiting "
             f"for the {self.model} identity answer; reconnecting."
         )
+        self._civ_runtime._notify_change("connection_facts_changed", {})
         logger.warning(
             "rigplane (%s): abandoning the identity hold on %s: %s",
             self.model,

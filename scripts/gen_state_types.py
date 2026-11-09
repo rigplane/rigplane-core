@@ -116,7 +116,13 @@ _REQUIRED_BY_MODEL: dict[str, set[str]] = {
     "FieldStatusPublic": {"storePath", "observed", "freshness", "availability"},
     # MOR-3845: ``liveness`` is additive — present in freshly built payloads
     # but consumers must treat it as optional (older Cores omit it).
+    # MOR-4279: ``identity`` / ``session`` are additive server-injected fact
+    # records with the same optional treatment.
     "ConnectionPublic": {"rigConnected", "radioReady", "controlConnected"},
+    # MOR-4279: a failure record carries ``holder`` only for ``device_in_use``
+    # with a resolvable holder and ``candidates`` only when the platform
+    # offered any; both keys are absent on an ordinary failure.
+    "AudioReceiveFailurePublic": {"stage", "code", "reason"},
     # Envelope framing is always present; ``data`` (full) vs ``changed`` +
     # ``removed`` (delta) and the echoed revisions are frame-conditional.
     "StateUpdateEnvelope": {"type", "revision", "transportSeq"},
