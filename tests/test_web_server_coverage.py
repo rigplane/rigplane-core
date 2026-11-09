@@ -5488,3 +5488,26 @@ class TestStateEtag:
         assert "200" in status_line, f"Expected 200, got: {status_line}"
         body_start = text.index("\r\n\r\n") + 4
         assert len(text[body_start:]) > 0, "200 response must have a body"
+
+
+@pytest.mark.parametrize("signal", ["tx", "readiness"])
+async def test_health_snapshot_cannot_delay_fresh_scope_resume(signal, virtual_clock, monkeypatch):
+    srv, radio, _ = await _virtual_scope_server(monkeypatch, virtual_clock)
+    session = srv._radio_scope_session
+    transmitting = signal == "tx"
+    radio.radio_ready = signal != "readiness"
+    monkeypatch.setattr(srv, "_scope_tx_known", lambda: transmitting)
+    session.tx_probe = lambda: transmitting
+    await session.set_output(False, release=False)
+    monitor = asyncio.create_task(srv._scope_health_monitor())
+    try:
+        await _elapse_scope_windows(virtual_clock, 1)
+    finally:
+        monitor.cancel()
+        await asyncio.gather(monitor, return_exceptions=True)
+    transmitting = False
+    radio.radio_ready = True
+    started = virtual_clock()
+    await session.set_output(True)
+    assert session.enabled
+    assert virtual_clock() - started <= 0.1
