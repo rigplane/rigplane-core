@@ -1363,7 +1363,6 @@ class _IcomSerialRadioBase(CoreRadio):
                 ):
                     try:
                         await self._arm_managed_tx()
-                        await self._scope_session_ready()
                     except Exception:
                         # MOR-3071 round 4: ``connect()`` lets an
                         # ``_arm_managed_tx`` failure propagate to its
@@ -1380,6 +1379,7 @@ class _IcomSerialRadioBase(CoreRadio):
                             self._serial_device,
                             exc_info=True,
                         )
+                await self._scope_session_ready()
                 # MOR-3436: the hold completed — run the audio recovery a
                 # connect/soft_reconnect deferred here, once, if the link
                 # and the owner are unchanged.
