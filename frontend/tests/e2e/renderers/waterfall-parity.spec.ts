@@ -1,17 +1,16 @@
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import recordedWires from './reference/recorded-scope-v2.json' with { type: 'json' };
 
 // ScopeAssembler → ScopeWireFrame → encode_scope_frame_v2, from simulator recordings
 // tests/fixtures/{ic705,ic7610}/civ_pairs.jsonl. No live radio is used.
-const recordings: Record<string, number[][]> = JSON.parse(readFileSync(
-  new URL('./reference/recorded-scope-v2.json', import.meta.url), 'utf8'));
+const recordings: Record<string, number[][]> = recordedWires;
 
 for (const profile of ['ic705', 'ic7610']) for (const dpr of [1, 2]) {
   test.describe(`${profile} DPR ${dpr}`, () => {
     test.use({ deviceScaleFactor: dpr, viewport: { width: 1920, height: 900 } });
     for (const shift of [0, 0.5]) test(`rc3 image parity, ${shift} backing pixel offset`, async ({ page }, info) => {
       await page.goto('/fixtures/spectrum-witness.html');
-      const result = await page.evaluate(async ({ wires, shift, dpr }) => {
+      const geometry = await page.evaluate(async ({ wires, shift, dpr }) => {
         const currentUrl = '/src/lib/renderers/waterfall-renderer.ts';
         const referenceUrl = '/tests/e2e/renderers/reference/waterfall-2d-rc3.ts';
         const frameUrl = '/src/lib/runtime/scope-frame.ts';
@@ -37,35 +36,49 @@ for (const profile of ['ic705', 'ic7610']) for (const dpr of [1, 2]) {
           const pixels = frames[i % frames.length].pixels!;
           reference.pushRow(pixels); current.pushRow(pixels);
         }
-        const a = canvases[0].getContext('2d')!.getImageData(0, 0, width, height).data;
-        const gl = canvases[1].getContext('webgl2')!, b = new Uint8Array(width * height * 4);
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, b);
+        return { bins: frames.map(f => f.width), frames: frames.length, width, height, dpr,
+          css: canvases.map(c => [c.getBoundingClientRect().width, c.getBoundingClientRect().height]),
+          glError: canvases[1].getContext('webgl2')!.getError() };
+      }, { wires: recordings[profile], shift, dpr });
+      const screenshots = await Promise.all(['rc3', 'webgl'].map(async id => Array.from(
+        await page.locator(`#${id}`).screenshot({ path: info.outputPath(`${id}.png`) }))));
+      const metric = await page.evaluate(async (screenshots) => {
+        const images = await Promise.all(screenshots.map(async bytes => {
+          const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
+          const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+          const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close();
+          return ctx.getImageData(0, 0, canvas.width, canvas.height);
+        }));
+        const [{ width, height, data: a }, { width: otherWidth, height: otherHeight, data: b }] = images;
+        if (width !== otherWidth || height !== otherHeight) throw new Error('Screenshot geometry differs');
         let sum = 0, changed = 0, active = 0, tolerant = 0; const differences = [];
         for (let y = 0; y < height; y++) for (let x = 2; x < width - 2; x++) {
           let error = 0;
           for (let channel = 0; channel < 3; channel++) {
-            const i = (y * width + x) * 4 + channel, j = ((height - 1 - y) * width + x) * 4 + channel;
+            const i = (y * width + x) * 4 + channel, j = (y * width + x) * 4 + channel;
             error += Math.abs(a[i] - b[j]);
           }
-          let nearest = 255;
+          let nearest = 255, reverse = 255;
           for (let dx = -1; dx <= 1; dx++) {
-            let difference = 0;
-            for (let channel = 0; channel < 3; channel++) difference += Math.abs(
-              a[(y * width + x) * 4 + channel] - b[((height - 1 - y) * width + x + dx) * 4 + channel]);
-            nearest = Math.min(nearest, difference / 3);
+            let difference = 0, reverseDifference = 0;
+            for (let channel = 0; channel < 3; channel++) {
+              difference += Math.abs(a[(y * width + x) * 4 + channel] - b[(y * width + x + dx) * 4 + channel]);
+              reverseDifference += Math.abs(b[(y * width + x) * 4 + channel] - a[(y * width + x + dx) * 4 + channel]);
+            }
+            nearest = Math.min(nearest, difference / 3); reverse = Math.min(reverse, reverseDifference / 3);
           }
-          tolerant += nearest;
+          tolerant += (nearest + reverse) / 2;
           error /= 3; if (a[(y * width + x) * 4] !== 0 || a[(y * width + x) * 4 + 1] !== 16 || a[(y * width + x) * 4 + 2] !== 32 || error > 0) active++; sum += error; differences.push(error); if (error > 1) changed++;
         }
         differences.sort((a, b) => a - b);
         return { mean: sum / differences.length, p99: differences[Math.floor(differences.length * 0.99)],
-          changed, active, tolerantMean: active ? tolerant / active : 0, signalMean: active ? sum / active : 0, bins: frames.map(f => f.width), frames: frames.length, width, height, dpr,
-          css: canvases.map(c => [c.getBoundingClientRect().width, c.getBoundingClientRect().height]), glError: gl.getError() };
-      }, { wires: recordings[profile], shift, dpr });
+          changed, active, tolerantMean: active ? tolerant / active : 0, signalMean: active ? sum / active : 0,
+          screenshotWidth: width, screenshotHeight: height };
+      }, screenshots);
+      const result = { ...geometry, ...metric };
       console.log(JSON.stringify({ profile, shift, ...result }));
       await info.attach('metrics', { body: JSON.stringify(result), contentType: 'application/json' });
-      await page.locator('#rc3').screenshot({ path: info.outputPath('rc3.png') });
-      await page.locator('#webgl').screenshot({ path: info.outputPath('webgl.png') });
+      expect(result.screenshotWidth).toBe(result.width); expect(result.screenshotHeight).toBe(result.height);
       expect(result.glError).toBe(0);
       // RGB with a one-backing-pixel horizontal tolerance for nearest-bin boundary rounding.
       if (profile === 'ic705') expect(result.active).toBeGreaterThan(0);
