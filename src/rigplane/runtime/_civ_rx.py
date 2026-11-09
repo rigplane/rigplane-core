@@ -4333,7 +4333,7 @@ class CivRuntime:
         Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
         span, there is no declared table of legal (start_hz, end_hz) pairs
         to match a fixed-mode frame's edges against —
-        ``_SCOPE_FIXED_EDGE_RANGE_STARTS_HZ`` only maps a start_hz to a
+        profile ``scope_fixed_edge_ranges`` only maps edges to a legal
         *band*, not to a specific stored (range, edge) preset, and a
         preset's actual edges are radio-side user-configured memory, not
         enumerable data. Publishing here would mean guessing which preset

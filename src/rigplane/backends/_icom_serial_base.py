@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Callable, Literal, Protocol
 from .._connection_state import RadioConnectionState
 from ..audio import AudioPacket
 from ..audio.lan_stream import SYNTHETIC_RX_IDENT
-from ..commands import parse_ack_nak
 from ..core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from ..core.serial_open import serial_open_diagnostic
 from ..exceptions import (
@@ -1631,19 +1630,6 @@ class _IcomSerialRadioBase(CoreRadio):
         self._check_connected()
         self._ensure_scope_baud_guardrail()
         await super().enable_scope(output=output, policy=policy, timeout=timeout)
-
-    async def disable_scope(
-        self, *, policy: ScopeCompletionPolicy | str = ScopeCompletionPolicy.FAST
-    ) -> None:
-        await super().disable_scope(policy=policy)
-        pol = ScopeCompletionPolicy(policy)
-        wait_resp = pol == ScopeCompletionPolicy.STRICT
-        resp = await self._send_civ_raw(
-            self._commands.scope_off(to_addr=self._radio_addr),
-            wait_response=wait_resp,
-        )
-        if wait_resp and resp is not None and parse_ack_nak(resp) is False:
-            raise CommandError("Radio rejected scope disable")
 
     # ------------------------------------------------------------------
     # Neutral AudioTransport surface (MOR-532 epic, MOR-540)

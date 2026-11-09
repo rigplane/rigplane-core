@@ -29,6 +29,8 @@ read-only post-ACK readback; it must never be used by background acquisition.
 
 from __future__ import annotations
 
+from rigplane.scope.models import ScopeDemand
+
 import asyncio
 import dataclasses
 import logging
@@ -627,10 +629,6 @@ class RadioPoller:
         # This prevents EnableScope from hanging in tests that don't call start().
         self._initial_fetch_done = asyncio.Event()
         self._initial_fetch_done.set()
-        self._scope_enable_deferred = False
-        self._scope_demand_generation = queue.latest_scope_demand_generation
-        self._scope_session_state: tuple[bool, bool] | None = None
-        self._scope_session_active = False
         self._vfo_command_lock = asyncio.Lock()
         self._vfo_binding_generation = 0
         self._vfo_connect_attempt: tuple[int, object] | None = None
@@ -1690,8 +1688,9 @@ class RadioPoller:
 
         # Initial state is now fetched by CoreRadio._fetch_initial_state()
         # during connect(). Just signal readiness immediately.
-        self._scope_enable_deferred = False
         self._initial_fetch_done.set()
+        if CAP_SCOPE in self._caps:
+            await self._radio.scope_session().set_ready(True)
 
         # NB depth/width are global menu items that cannot ride the poll-query
         # envelope, so seed them once at connect via direct getters (MOR-491-B).
@@ -1894,87 +1893,12 @@ class RadioPoller:
         _active = getattr(rs, "active", None) if rs is not None else None
         return _active if isinstance(_active, str) else "MAIN"
 
-    def _scope_demand_is_stale(self, generation: int) -> bool:
-        latest = max(
-            self._scope_demand_generation,
-            self._queue.latest_scope_demand_generation,
-        )
-        if generation < latest:
-            logger.debug(
-                "radio-poller: dropping stale scope demand generation %d (current=%d)",
-                generation,
-                latest,
-            )
-            return True
-        self._scope_demand_generation = generation
-        return False
-
-    async def _enable_scope_session(self, *, policy: str) -> None:
-        """Capture scope state once, then enable through the existing wire lane."""
-        radio = self._radio
-        get_state = getattr(radio, "get_scope_session_state", None)
-        restore_state = getattr(radio, "restore_scope_session_state", None)
-        if get_state is None or restore_state is None:
-            raise CommandError(
-                "scope backend cannot preserve pre-session panel/output state"
-            )
-        if self._scope_session_state is None:
-            self._scope_session_state = await get_state()
-        try:
-            await radio.enable_scope(policy=policy)  # type: ignore[attr-defined]
-        except BaseException:
-            # Once enable starts, its wire effect is uncertain: FAST can fail
-            # after the panel ON write, and VERIFY can time out after both ON
-            # writes were applied.  Roll back before reporting failure.  The
-            # captured tuple remains owned if rollback itself fails, allowing a
-            # later DisableScope teardown to retry deterministically.
-            self._scope_session_active = True
-            try:
-                await self.restore_scope_session()
-            except BaseException:
-                logger.exception(
-                    "radio-poller: scope enable failed and rollback is pending"
-                )
-            raise
-        self._scope_session_active = True
-
-    async def restore_scope_session(self) -> None:
-        """Restore exactly what the first successful scope viewer inherited."""
-        if not self._scope_session_active or self._scope_session_state is None:
-            return
-        if getattr(self._radio, "external_cat_session_active", False) is True:
-            raise CommandError(
-                "scope restore deferred while an external CAT session owns the wire"
-            )
-        restore_state = getattr(self._radio, "restore_scope_session_state", None)
-        if restore_state is None:
-            raise CommandError(
-                "scope backend cannot restore pre-session panel/output state"
-            )
-        await restore_state(self._scope_session_state)
-        self._scope_session_active = False
-        self._scope_session_state = None
-
     async def restore_scope_after_shutdown(self) -> None:
-        """Restore scope through this stopped poller's sole command executor.
-
-        ``stop_web_server`` calls this only after ``stop()`` and the final TX
-        safety drain.  Re-entering ``_execute`` therefore uses the same sole
-        poller executor as the live ``CommandQueue`` consumer, with no second
-        task or radio-control lane.  The backend write continues through its
-        existing ``_send_civ_raw`` / ``IcomCommander`` serialization.
-        """
-        if CAP_SCOPE not in self._caps:
-            raise CommandError("scope restore unavailable on this radio")
-        generation = (
-            max(
-                self._scope_demand_generation,
-                self._queue.latest_scope_demand_generation,
-            )
-            + 1
-        )
-        await self._execute(DisableScope(generation=generation))
-        if self._scope_session_active:
+        """Release web scope demand after the final TX safety drain."""
+        session = self._radio.scope_session()
+        await session.set_demand(ScopeDemand(0, 0))
+        await session.set_inputs(ready=True, tx=False)
+        if session.restoring:
             raise CommandError("scope restore did not settle")
 
     def _managed_tx(
@@ -2829,33 +2753,24 @@ class RadioPoller:
                     await radio.equalize_vfo_ab(0)
                 else:
                     await radio.equalize_main_sub()
-            case EnableScope(policy=policy, generation=generation):
+            case EnableScope(policy=policy):
                 if CAP_SCOPE in self._caps:
-                    # Defer scope enable during initial fetch to avoid
-                    # CI-V packet queue overflow (scope data + fetch).
-                    if not self._initial_fetch_done.is_set():
-                        if self._scope_demand_is_stale(generation):
-                            return None
-                        if not self._scope_enable_deferred:
-                            logger.info(
-                                "radio-poller: deferring scope enable until initial fetch completes"
-                            )
-                            self._scope_enable_deferred = True
-                        self._queue.put(
-                            EnableScope(policy=policy, generation=generation)
+                    session = radio.scope_session()
+                    await session.set_ready(self._initial_fetch_done.is_set())
+                    try:
+                        await session.set_demand(ScopeDemand(1, 1), owner="sdk")
+                        if policy == "verify" and session.enabled:
+                            await radio.enable_scope(policy=policy)
+                    except BaseException:
+                        await asyncio.shield(
+                            session.set_demand(ScopeDemand(0, 0), owner="sdk")
                         )
-                    else:
-                        if self._scope_demand_is_stale(generation):
-                            return None
-                        await self._enable_scope_session(policy=policy)
-                        logger.info("radio-poller: scope enabled")
-                        await self._fetch_scope_controls()
-            case DisableScope(generation=generation):
+                        raise
+            case DisableScope():
                 if CAP_SCOPE in self._caps:
-                    if self._scope_demand_is_stale(generation):
-                        return None
-                    await self.restore_scope_session()
-                    logger.info("radio-poller: scope session state restored")
+                    await radio.scope_session().set_demand(
+                        ScopeDemand(0, 0), owner="sdk"
+                    )
             case SwitchScopeReceiver(receiver=receiver):
                 # Fire-and-forget scope receiver select (0x27 0x12), routed
                 # through the profile-bound command map (self._cmd_map) via

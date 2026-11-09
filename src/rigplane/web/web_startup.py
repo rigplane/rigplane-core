@@ -1024,18 +1024,17 @@ async def _stop_web_server(server: WebServer) -> None:
     for task in (
         server._zombie_reaper_task,
         server._scope_health_task,
-        server._scope_reenable_task,
     ):
         if task is not None:
             task.cancel()
     server._zombie_reaper_task = None
     server._scope_health_task = None
-    server._scope_reenable_task = None
 
     # 6. Cancel all background + client tasks first
     all_tasks = list(server._bg_tasks) + list(server._client_tasks)
     for task in all_tasks:
-        task.cancel()
+        if not task.cancelling():
+            task.cancel()
 
     # 7. Close TCP listener (now that client tasks are cancelled,
     #    wait_closed() won't block on open connections)
@@ -1066,6 +1065,18 @@ async def _stop_web_server(server: WebServer) -> None:
             )
     server._bg_tasks.clear()
 
+    scope_cancelled = False
+    for handler in tuple(server._scope_handlers):
+        try:
+            await handler._unsubscribe()
+        except asyncio.CancelledError:
+            scope_cancelled = True
+        except Exception:
+            logger.warning(
+                "scope shutdown cleanup failed; restoration remains pending",
+                exc_info=True,
+            )
+
     # 9. Now — and only now — the teardown unkeys those client tasks enqueued on
     #    their way out are in the queue. Bounded, TX-safety only: this executes
     #    pending PttOff entries and discards the rest (MOR-1181). The drain is
@@ -1089,8 +1100,7 @@ async def _stop_web_server(server: WebServer) -> None:
     # incomplete path the flags/snapshot stay intact and the log records that
     # restoration remains pending.
     scope_restore_pending = bool(
-        getattr(server, "_scope_enabled", False)
-        or getattr(server, "_scope_enable_failed", False)
+        server._radio_scope_session is not None and server._radio_scope_session.active
     )
     if scope_restore_pending:
         if radio_poller is None:
@@ -1115,10 +1125,10 @@ async def _stop_web_server(server: WebServer) -> None:
                     exc,
                 )
             else:
-                server._scope_enabled = False
-                server._scope_enable_failed = False
                 logger.info("scope: pre-session state restored during shutdown")
 
     # Radio disconnect is handled by the caller's context manager
     # (async with radio: in _run). Do NOT disconnect here.
     logger.info("web server stopped")
+    if scope_cancelled:
+        raise asyncio.CancelledError

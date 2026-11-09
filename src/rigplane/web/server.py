@@ -118,7 +118,8 @@ from ..sdr.scope_source import FRAME_STALE_S, IqFftSource
 from ..scope.hub import ScopeHub
 from ..scope.models import SourceKind
 from ..runtime.radio_scope_source import RadioScopeSource
-from .scope_sources import WebRadioScopeWriter, WebScopePcmTap  # noqa: TID251
+from .scope_sources import WebScopePcmTap  # noqa: TID251
+from ..runtime.scope_session import ScopeSession, ScopeSessionProvider
 from ..audio.scope_source import AudioFftSource
 from ..radio_state import RadioState
 from ..capabilities import CAP_AUDIO
@@ -167,12 +168,7 @@ from .transport.webrtc import webrtc_available  # noqa: TID251
 from .radio_poller import (  # noqa: TID251
     CommandQueue,
     CommandQueueEntry,
-    DisableScope,
-    EnableScope,
     RadioPoller,
-    SetScopeMode,
-    SetScopeSpan,
-    SwitchScopeReceiver,
 )
 from .monitor_mute import MonitorMuteState  # noqa: TID251
 from .runtime_helpers import (  # noqa: TID251
@@ -1308,13 +1304,8 @@ class WebServer:
         self._scope_handlers: set["ScopeHandler"] = set()
         self._scope_hub: ScopeHub | None = None
         self._radio_scope_source: RadioScopeSource | None = None
-        self._radio_scope_demand = False
         # Confirmed hardware-session state only.  A queued command is not proof.
-        self._scope_enabled = False
-        self._scope_enable_failed = False
-        self._scope_demand_generation = 0
-        self._scope_command_futures: set[asyncio.Future[None]] = set()
-        self._scope_enable_lock: asyncio.Lock = asyncio.Lock()
+        self._radio_scope_session: ScopeSession | None = None
         raw_radio_state = (
             getattr(radio, "radio_state", None) if radio is not None else None
         )
@@ -1453,32 +1444,13 @@ class WebServer:
         self._scope_health_interval: float = (
             10.0  # seconds of missing/blank frames before the hidden verdict
         )
-        self._scope_reenable_task: asyncio.Task[None] | None = None
-        self._scope_reenable_poll_interval: float = 0.5
-        self._scope_reenable_timeout: float = 30.0
         # prevent GC of fire-and-forget tasks
         self._bg_tasks: set[asyncio.Task[Any]] = set()
         # Serialises the managed TX rebind; see _service_managed_tx_release.
         self._managed_tx_rebind_lock: asyncio.Lock = asyncio.Lock()
         # Unsubscribes the managed TX authority invalidation listener on stop.
         self._managed_tx_change_unsubscribe: Callable[[], None] | None = None
-        # MOR-3690 (reopened): the monitor tells "frames arrive" apart from
-        # "frames carry data". All-zero frames that keep arriving — or NO
-        # frames at all while CI-V traffic keeps flowing (an IC-705 over USB
-        # serial sends nothing while in its own menu) — mean the radio
-        # deliberately shows another screen: a valid state, never a
-        # transport fault, and never a reason to write scope-enable (that
-        # write kicks the operator out of the menu).
-        self._scope_started_at: float = 0.0
-        self._scope_hidden_published: bool | None = None  # last fact verdict
-        self._scope_hidden_at: float | None = None  # when last confirmed
-        # The reconnect path is the only automatic scope re-enable left; it
-        # fires at most once per viewing session (demand generation) AND
-        # connection epoch (provider generation), and never while the menu
-        # guard is active. None = never sent.
-        self._scope_reenable_generation: int | None = None
-        self._scope_reenable_provider_generation: int | None = None
-        # Band plan registry
+        self._scope_hidden_published: bool | None = None
         from .band_plan import DEFAULT_BAND_PLANS_DIR, BandPlanRegistry  # noqa: TID251
 
         self._band_plan = BandPlanRegistry(
@@ -1799,13 +1771,23 @@ class WebServer:
             )
             if (
                 self._hardware_scope_available
+                and self._radio is not None
                 and profile is not None
                 and profile.scope_span_presets_hz
             ):
+                self._radio_scope_session = cast(
+                    ScopeSessionProvider, self._radio
+                ).scope_session()
+                self._radio_scope_session.tx_probe = self._scope_tx_known
                 self._radio_scope_source = RadioScopeSource(
-                    profile, WebRadioScopeWriter(self)
+                    profile, self._radio_scope_session
                 )
-                hub.register("radio", self._radio_scope_source)
+                self._set_scope_data_callback(self._radio_scope_source.feed_frame)
+                hub.register(
+                    "radio",
+                    self._radio_scope_source,
+                    on_demand=self._radio_scope_session.set_demand,
+                )
             if self._audio_scope_source is not None:
                 hub.register("audio_fft", self._audio_scope_source)
             self._scope_hub = hub
@@ -1849,83 +1831,6 @@ class WebServer:
     def unregister_scope_handler(self, handler: "ScopeHandler") -> None:
         self._scope_handlers.discard(handler)
         self._broadcast_ws_client_state_update()
-
-    async def _set_radio_scope_output(self, enabled: bool) -> None:
-        async with self._scope_enable_lock:
-            if enabled and self._stopping:
-                raise RuntimeError("scope server is stopping")
-            self._scope_demand_generation += 1
-            self._radio_scope_demand = enabled
-            if enabled:
-                self._set_scope_data_callback(
-                    self._radio_scope_source.feed_frame
-                    if self._radio_scope_source
-                    else None
-                )
-                await self._enable_hardware_scope(
-                    reason="subscription", generation=self._scope_demand_generation
-                )
-                if self._scope_enable_failed:
-                    raise RuntimeError("radio scope enable failed")
-            else:
-                self._cancel_scope_reenable_task()
-                self._set_scope_data_callback(None)
-                if self._stopping:
-                    # web_startup restores after the final TX drain, with its
-                    # existing bound and the stopped poller's sole executor.
-                    return
-                completed = await self._execute_scope_command(
-                    DisableScope(generation=self._scope_demand_generation)
-                )
-                if self._stopping:
-                    return
-                if not completed:
-                    raise RuntimeError("radio scope disable failed")
-                self._scope_enabled = False
-                self._scope_enable_failed = False
-
-    async def _enable_hardware_scope(self, *, reason: str, generation: int) -> None:
-        if self._scope_enabled:
-            return
-        if self._scope_enable_failed:
-            return
-        if self._radio_ready():
-            if await self._execute_scope_command(EnableScope(generation=generation)):
-                self._scope_enabled = True
-                self._scope_started_at = asyncio.get_running_loop().time()
-        else:
-            self._schedule_scope_enable_when_ready(reason=reason, generation=generation)
-
-    async def _execute_scope_command(
-        self,
-        command: EnableScope
-        | DisableScope
-        | SwitchScopeReceiver
-        | SetScopeMode
-        | SetScopeSpan,
-    ) -> bool:
-        """Execute a scope command through the existing ordered command pipeline."""
-        if self._stopping:
-            return False
-        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._scope_command_futures.add(future)
-        try:
-            self._command_queue.put_ordered(command, future=future)
-            await future
-        except asyncio.CancelledError:
-            if self._stopping:
-                return False
-            raise
-        except Exception as exc:
-            if isinstance(command, EnableScope) and not self._scope_enabled:
-                self._scope_enable_failed = True
-            logger.warning("scope: %s failed: %s", type(command).__name__, exc)
-            return False
-        finally:
-            self._scope_command_futures.discard(future)
-        if isinstance(command, EnableScope):
-            self._scope_enable_failed = False
-        return True
 
     @staticmethod
     def _active_primary_freq_mode_value(
@@ -3388,14 +3293,18 @@ class WebServer:
 
     async def _refetch_and_reenable(self) -> None:
         """Release TX first, then refetch state, signal readiness and scope."""
+        if self._radio_scope_session is not None:
+            await self._radio_scope_session.invalidate(
+                connection_epoch=self.command_state_store.provider_generation
+            )
         try:
             # Inside the guard, not above it (MOR-1187's shape, MOR-1196):
             # servicing the release resolves the supervisor, which is
             # backend code and free to raise anything.  Above the
             # ``finally`` it escapes with the gate still clear, and since
             # this method is the only thing in ``src/`` that ever re-sets
-            # the gate, the poller defers and re-queues ``EnableScope`` for
-            # good.  The failure still propagates — the point is that
+            # the gate, readiness would remain closed for good.
+            # The failure still propagates — the point is that
             # cleanup runs first, not that anything is swallowed.
             await self._service_managed_tx_release()
             try:
@@ -3431,157 +3340,8 @@ class WebServer:
                         "reconnect: scan facts seed failed",
                         exc_info=True,
                     )
-        # Re-enable scope after refetch completes — at most once per
-        # viewing session, and never while the menu guard says the radio
-        # shows its own menu (MOR-3690 reopened: an IC-705 over USB sends
-        # no scope frames in its menu, and an unguarded write here kicked
-        # the operator out of it on every reconnect cycle).
-        # Do NOT gate on self._radio_ready(): that property waits for
-        # CI-V broadcast data, but on IC-7610 in the "deaf" firmware
-        # state broadcast may only resume once a scope-enable command
-        # is sent — creating a deadlock where scope re-enable waits
-        # for the very signal it would itself trigger.  The session
-        # is already up at this point (soft_reconnect completed auth +
-        # discovery), so queue EnableScope without waiting; if the
-        # radio is genuinely unreachable the command will fail on its
-        # own, which is strictly better than a silent 30-second wait
-        # every reconnect cycle.
-        generation = self._scope_demand_generation
-        if (
-            self._radio_scope_demand
-            and self._radio is not None
-            and self._hardware_scope_available
-            and not self._scope_enable_failed
-        ):
-            # The existing scope-enable lock serialises the attempt check
-            # and the awaited command: overlapping refetch tasks cannot
-            # both pass the generation check before either enable lands,
-            # so the ordered queue never sees the claimed bound exceeded.
-            async with self._scope_enable_lock:
-                if (
-                    not self._radio_scope_demand
-                    or generation != self._scope_demand_generation
-                    or self._scope_enable_failed
-                ):
-                    return
-                if self._scope_menu_guard_active(now=time.monotonic()):
-                    logger.info(
-                        "scope: reconnect re-enable skipped — radio is in its "
-                        "own menu (scope hidden on the radio)"
-                    )
-                elif self._scope_reenable_recorded_for(
-                    self.command_state_store.provider_generation
-                ):
-                    logger.info(
-                        "scope: reconnect re-enable already sent for this "
-                        "viewing session (generation %d), skipping",
-                        self._scope_demand_generation,
-                    )
-                else:
-                    self._set_scope_data_callback(
-                        self._radio_scope_source.feed_frame
-                        if self._radio_scope_source
-                        else None
-                    )
-                    if await self._execute_scope_command(
-                        EnableScope(generation=generation)
-                    ):
-                        self._scope_enabled = True
-                        self._scope_started_at = asyncio.get_running_loop().time()
-                        self._scope_reenable_generation = generation
-                        self._scope_reenable_provider_generation = (
-                            self.command_state_store.provider_generation
-                        )
-                        logger.info(
-                            "scope: re-enable confirmed after reconnect (%d handlers)",
-                            len(self._scope_handlers),
-                        )
-
-    def _scope_reenable_recorded_for(self, provider_generation: int) -> bool:
-        """Whether the once-per-session reconnect enable already fired for
-        THIS connection epoch.
-
-        The bound is per viewing session AND per provider epoch: a genuinely
-        new connection (the backend's generation advance reached the shared
-        store's provider generation — the invalidation edge
-        ``_on_provider_generation`` already subscribes to) re-arms it, so a
-        second real outage while the same viewer stays connected still gets
-        its scope output restored; repeated refetches inside one epoch do
-        not.
-        """
-        return (
-            self._scope_reenable_generation == self._scope_demand_generation
-            and self._scope_reenable_provider_generation == provider_generation
-        )
-
-    def _cancel_scope_reenable_task(self) -> None:
-        """Cancel readiness work invalidated by a last-viewer transition."""
-        task = self._scope_reenable_task
-        self._scope_reenable_task = None
-        if task is not None and not task.done():
-            task.cancel()
-
-    def _schedule_scope_enable_when_ready(
-        self, *, reason: str, generation: int
-    ) -> None:
-        """Schedule delayed scope enable once radio becomes ready."""
-        if (
-            self._scope_reenable_task is not None
-            and not self._scope_reenable_task.done()
-        ):
-            return
-        loop = asyncio.get_running_loop()
-        self._scope_reenable_task = loop.create_task(
-            self._wait_and_enable_scope(reason=reason, generation=generation),
-            name="scope-reenable-when-ready",
-        )
-
-    async def _wait_and_enable_scope(self, *, reason: str, generation: int) -> None:
-        """Wait until radio_ready before queuing EnableScope."""
-        current_task = asyncio.current_task()
-        deadline = time.monotonic() + self._scope_reenable_timeout
-        try:
-            while True:
-                if (
-                    generation != self._scope_demand_generation
-                    or not self._radio_scope_demand
-                    or self._radio is None
-                ):
-                    return
-                if not self._hardware_scope_available:
-                    return
-                if self._scope_enable_failed:
-                    return
-                if self._radio_ready():
-                    self._set_scope_data_callback(
-                        self._radio_scope_source.feed_frame
-                        if self._radio_scope_source
-                        else None
-                    )
-                    if await self._execute_scope_command(
-                        EnableScope(generation=generation)
-                    ):
-                        self._scope_enabled = True
-                        self._scope_started_at = asyncio.get_running_loop().time()
-                        logger.info(
-                            "scope: enable confirmed after %s (%d handlers)",
-                            reason,
-                            len(self._scope_handlers),
-                        )
-                    return
-                if time.monotonic() >= deadline:
-                    logger.warning(
-                        "scope: radio not ready after %.0fs (%s), skipping re-enable",
-                        self._scope_reenable_timeout,
-                        reason,
-                    )
-                    return
-                await asyncio.sleep(self._scope_reenable_poll_interval)
-        except asyncio.CancelledError:
-            pass
-        finally:
-            if self._scope_reenable_task is current_task:
-                self._scope_reenable_task = None
+        if self._radio_scope_session is not None:
+            await self._radio_scope_session.set_ready(True)
 
     def _scope_tx_known(self) -> bool:
         """Whether a transmit is known from managed intent or observed PTT."""
@@ -3597,11 +3357,6 @@ class WebServer:
             return False
 
     _SCOPE_HIDDEN_PATH = FieldPath.parse("health.health.scope_hidden")
-    #: MOR-3690: the hidden verdict blocks the automatic reconnect re-enable
-    #: only while fresh. A verdict older than this may predate a radio
-    #: power-cycle (which also closes the menu) and no longer counts as
-    #: "known to be in the menu".
-    _SCOPE_HIDDEN_RECONNECT_GRACE = 300.0
 
     def _scope_health_source(self) -> SourceMetadata:
         """Source qualifier for the scope-health state facts (MOR-3690)."""
@@ -3632,46 +3387,13 @@ class WebServer:
             return False
         return now - float(last) <= self._scope_health_interval
 
-    def _scope_menu_guard_active(self, *, now: float) -> bool:
-        """Whether the radio is known to show its own menu (scope hidden).
-
-        MOR-3690 (reopened): the ONE guard every automatic scope-enable
-        write must pass — no automatic path may kick the operator out of
-        the radio's menu. The explicit user-demand enable (a web client
-        opening the scope view) is deliberately not gated: it is the
-        operator's own request and the escape hatch for a stale verdict.
-        """
-        if self._scope_hidden_published is not True:
-            return False
-        published_at = self._scope_hidden_at
-        if published_at is None:
-            return False
-        return now - published_at <= self._SCOPE_HIDDEN_RECONNECT_GRACE
-
     def _publish_scope_hidden(
         self, hidden: bool, *, now: float, detail: str = ""
     ) -> None:
-        """Publish the scope-hidden verdict as a state fact, on change only.
-
-        MOR-3690: ``True`` means the radio deliberately shows another
-        screen (front-panel menu): all-zero frames keep arriving, or — an
-        IC-705 over USB serial — no frames arrive at all while CI-V traffic
-        keeps flowing. ``False`` means non-zero frames flow again. No
-        verdict is published while the monitor cannot tell (CI-V silent
-        too, TX, link down, no viewers), so the last verdict never flaps.
-        """
+        """Publish a change in the typed scope visibility facts."""
         if self._scope_hidden_published is hidden:
-            # A repeated definite observation of the SAME verdict refreshes
-            # its evidence clock BEFORE the duplicate publication is
-            # suppressed: a menu held open past the reconnect grace window
-            # keeps re-confirming itself every monitor window, and the
-            # reconnect guard must keep reading that as fresh evidence —
-            # otherwise the still-open menu goes stale and the next
-            # reconnect ejects the operator from it.
-            self._scope_hidden_at = now
             return
         self._scope_hidden_published = hidden
-        self._scope_hidden_at = now
         self.command_state_store.apply_current(
             Observation(
                 path=self._SCOPE_HIDDEN_PATH,
@@ -3685,47 +3407,28 @@ class WebServer:
             (
                 "hidden on the radio (menu), not re-enabling"
                 if hidden
-                else "visible again (non-zero frames flowing)"
+                else "scope frames present"
             ),
             f" ({detail})" if detail else "",
         )
 
     async def _scope_health_monitor(self) -> None:
-        """Use typed hub arrival evidence; empty or OOR coverage is present."""
+        """Publish typed session visibility facts."""
         try:
             while True:
                 await asyncio.sleep(self._scope_health_interval)
-                if (
-                    not self._radio_scope_demand
-                    or self._radio is None
-                    or not self._scope_enabled
-                ):
+                session = self._radio_scope_session
+                if session is None or self._radio is None:
                     continue
+                await session.reconcile()
                 now = asyncio.get_running_loop().time()
-                if not self._radio_ready() or self._scope_tx_known():
-                    self._scope_started_at = now
-                    continue
-                if self._scope_hub is None or self._radio_scope_source is None:
-                    continue
-                arrivals = [
-                    self._scope_hub.health("radio", receiver).last_frame_at
-                    for receiver in self._radio_scope_source.capabilities().receivers
-                ]
-                last = max(
-                    (
-                        self._scope_started_at,
-                        *(value for value in arrivals if value is not None),
-                    )
+                fact = session.health(
+                    civ_flowing=self._civ_link_flowing(now),
+                    silence_seconds=self._scope_health_interval,
+                    link_ready=self._radio_ready(),
                 )
-                idle = max(0.0, now - last)
-                if idle <= self._scope_health_interval:
-                    self._publish_scope_hidden(False, now=now)
-                elif self._civ_link_flowing(now):
-                    self._publish_scope_hidden(
-                        True,
-                        now=now,
-                        detail=f"no scope frames for {idle:.0f}s, CI-V link healthy",
-                    )
+                if fact.hidden is not None:
+                    self._publish_scope_hidden(fact.hidden, now=now)
         except asyncio.CancelledError:
             pass
 
@@ -4066,12 +3769,8 @@ class WebServer:
         from .web_startup import stop_web_server  # noqa: TID251
 
         self._stopping = True
-        if self._scope_command_futures:
-            self._scope_enable_failed = True
-            for future in tuple(self._scope_command_futures):
-                # The ordered consumer skips cancelled futures; stale scope
-                # writes must not run if this server is later restarted.
-                future.cancel()
+        if self._radio_scope_session is not None:
+            self._radio_scope_session.suspend()
         self._controller.revoke()
         unsubscribe = self._managed_tx_change_unsubscribe
         self._managed_tx_change_unsubscribe = None
@@ -4081,20 +3780,7 @@ class WebServer:
         self._unsubscribe_provider_generation()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
-        cancelled = False
-        for handler in tuple(self._scope_handlers):
-            try:
-                await handler._unsubscribe()
-            except asyncio.CancelledError:
-                cancelled = True
-            except Exception:
-                logger.warning(
-                    "scope shutdown cleanup failed; restoration remains pending",
-                    exc_info=True,
-                )
         await stop_web_server(self)
-        if cancelled:
-            raise asyncio.CancelledError
 
     async def serve_forever(
         self,

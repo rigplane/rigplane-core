@@ -22,6 +22,7 @@ __all__ = [
     "get_audio_capabilities",
     "ScopeCompletionPolicy",
     "ScopeFixedEdge",
+    "ScopeFixedEdgeRange",
     "PacketHeader",
     "CivFrame",
     "HEADER_SIZE",
@@ -201,8 +202,17 @@ class ScopeCompletionPolicy(StrEnum):
     """Policies for awaiting completion of scope commands."""
 
     STRICT = "strict"  # Wait for a CI-V ACK response
-    FAST = "fast"  # Fire-and-forget, do not wait for ACK
-    VERIFY = "verify"  # Fire-and-forget, but await actual scope data activity
+    FAST = "fast"  # ACK completion without waiting for scope activity
+    VERIFY = "verify"  # ACK completion followed by scope activity
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeFixedEdgeRange:
+    """Selectable fixed-edge frequency range."""
+
+    range_index: int
+    start_hz: int
+    end_hz: int
 
 
 @dataclass(frozen=True, slots=True)

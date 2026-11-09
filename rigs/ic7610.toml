@@ -51,6 +51,24 @@ ref_min_db = -30.0
 ref_max_db = 10.0
 ref_step_db = 0.5
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+# IC-7610 CI-V Reference Guide, printed p15, 27 1E fixed-edge table.
+# https://www.icomjapan.com/uploads/support/manual/IC-7610_ENG_CI-V_4.pdf
+# The radio ignores digits below 1 kHz.
+fixed_edge_step_hz = 1000
+fixed_edge_ranges = [
+    { range_index = 1, start_hz = 30000, end_hz = 1600000 },
+    { range_index = 2, start_hz = 1600000, end_hz = 2000000 },
+    { range_index = 3, start_hz = 2000000, end_hz = 6000000 },
+    { range_index = 4, start_hz = 6000000, end_hz = 8000000 },
+    { range_index = 5, start_hz = 8000000, end_hz = 11000000 },
+    { range_index = 6, start_hz = 11000000, end_hz = 15000000 },
+    { range_index = 7, start_hz = 15000000, end_hz = 20000000 },
+    { range_index = 8, start_hz = 20000000, end_hz = 22000000 },
+    { range_index = 9, start_hz = 22000000, end_hz = 26000000 },
+    { range_index = 10, start_hz = 26000000, end_hz = 30000000 },
+    { range_index = 11, start_hz = 30000000, end_hz = 45000000 },
+    { range_index = 12, start_hz = 45000000, end_hz = 60000000 },
+]
 
 # ── Capabilities ─────────────────────────────────────────────────
 # Feature tags determine which UI panels and controls are rendered.

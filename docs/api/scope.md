@@ -280,3 +280,25 @@ Combined image: spectrum on top, waterfall below.
 **`grayscale`** — black (noise) → white (max)
 
 Custom themes can be added to `scope_render.THEMES` dict with anchor points for linear interpolation.
+
+## SDK lifecycle
+
+`src/rigplane/runtime/_scope_runtime.py: ScopeRuntimeMixin.enable_scope` and the
+web radio source share `src/rigplane/runtime/scope_session.py: ScopeSession`.
+Scope writes now await a CI-V acknowledgement for every completion policy:
+`fast` and `strict` do not wait for frames; `verify` additionally waits for
+scope activity. This changes the former fire-and-forget timing of `fast`.
+`disable_scope` releases SDK demand; the last SDK or web release restores the
+captured settings. The wire lifecycle is covered by
+`tests/runtime/test_scope_session_wire.py: test_last_release_restores_wire_snapshot_once`.
+
+Implicit FIXED range selection in
+`src/rigplane/commands/scope.py: scope_set_fixed_edge` requires profile `ranges`;
+callers can instead provide an explicit `range_index`. Negotiated FIXED views
+use only the profiles that declare ranges and their frequency step. The shipped
+IC-7610 data cites its CI-V reference in `rigs/ic7610.toml`; profiles without
+that data negotiate CENTER views.
+
+Hardware scope providers used by the web server must expose
+`src/rigplane/runtime/scope_session.py: ScopeSessionProvider.scope_session`;
+this replaces the web-owned writer adapter.

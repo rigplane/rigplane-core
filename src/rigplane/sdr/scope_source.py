@@ -171,7 +171,7 @@ class IqFftSource:
                     self._last_error = str(exc)
             raise
 
-    async def stop(self) -> None:
+    async def stop(self, *, release: bool = True) -> None:
         if not self._active:
             return
         self._last_error = None

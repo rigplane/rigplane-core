@@ -24,30 +24,6 @@ _AUDIO_MODE_ALIASES = {
 }
 
 
-class WebRadioScopeWriter:
-    def __init__(self, server: WebServer) -> None:
-        self._server = server
-
-    def tuned_frequency(self, receiver: int) -> float:
-        state = self._server._radio_state
-        return float(state.main.freq if receiver == 0 else state.sub.freq)
-
-    async def set_output(self, enabled: bool) -> None:
-        await self._server._set_radio_scope_output(enabled)
-
-    async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
-        from .radio_poller import SetScopeMode, SetScopeSpan, SwitchScopeReceiver  # noqa: TID251
-
-        span = self._server._get_profile().scope_span_presets_hz.index(int(span_hz))
-        for command in (
-            SwitchScopeReceiver(receiver),
-            SetScopeMode(0),
-            SetScopeSpan(span),
-        ):
-            if not await self._server._execute_scope_command(command):
-                raise RuntimeError(f"radio scope {type(command).__name__} failed")
-
-
 class WebScopePcmTap:
     def __init__(self, server: WebServer, *, sample_rate: int | None = None) -> None:
         if sample_rate is not None and (

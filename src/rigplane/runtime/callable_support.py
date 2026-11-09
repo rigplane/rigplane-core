@@ -77,7 +77,7 @@ SupportRelation: TypeAlias = BuilderAllOf | Capability | Protocol | RelativeVfoC
 _SCOPE_BUILDERS = (scope_on, scope_data_output)
 
 BUILDER_RELATIONS: tuple[BuilderAllOf, ...] = (
-    BuilderAllOf("disable_scope", (scope_data_output,), "alias"),
+    BuilderAllOf("disable_scope", (scope_data_output,), "composite"),
     BuilderAllOf("get_alc_meter", (get_alc,), "alias"),
     BuilderAllOf("get_antenna_1", (get_antenna_1,), "alias"),
     BuilderAllOf("get_antenna_2", (get_antenna_2,), "alias"),
