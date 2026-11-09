@@ -8,6 +8,7 @@ import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte
 import { createRawSnippet, mount, unmount, flushSync, tick } from 'svelte';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 
 // ── Hoisted authority/intent harnesses ─────────────────────────────────────
 
@@ -15,7 +16,7 @@ const runtimeHarness = vi.hoisted(() => ({
   runtime: {
     state: Object.freeze({ identity: 'toolbar-state' }),
     caps: Object.freeze({ identity: 'toolbar-capabilities' }),
-    scope: { spanControl: { spanHz: 100000 as number | null } },
+    scope: { spanControl: { spanHz: 100000 as number | null } satisfies ScopeSpanControl },
   },
 }));
 

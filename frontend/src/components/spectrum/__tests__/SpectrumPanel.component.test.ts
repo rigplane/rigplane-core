@@ -18,7 +18,9 @@ import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden } from '../../..
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplay, type ScopePassbandDisplayInput } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
-import { ScopeController } from '$lib/runtime/scope-controller.svelte';
+import { ScopeController, type ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
+import { validateCapabilities } from '$lib/types/capabilities';
+import spanCapabilities from '../../../../../tests/fixtures/scope-span-capabilities.json';
 import { WsChannel } from '$lib/transport/ws-client';
 import { controllerClient } from '$lib/transport/controller-client';
 import PanadapterDisplay from '../../../skins/segmentline/PanadapterDisplay.svelte';
@@ -162,6 +164,7 @@ type TestScopeFrame = ScopeFrame;
 // channels, so every frame assertion runs the real ingress, stream and
 // sink path (zero-copy included). The bridge is assigned after imports.
 type ScopeBridge = {
+  spanControl?: ScopeSpanControl | null;
   stream(source: 'hardware' | 'audio_fft'): ReturnType<ScopeController['stream']>;
   registerPresentationDriver: ScopeController['registerPresentationDriver'];
   subscribeTraceReceipt: ScopeController['subscribeTraceReceipt'];
@@ -934,6 +937,35 @@ afterEach(async () => {
 // ---------------------------------------------------------------------------
 
 describe('SpectrumPanel component', () => {
+  describe.each(['IC-705', 'IC-7300'])('%s pending span requests', (model) => {
+    it.each([-1, 1] as const)('accumulates down then %s before either grant', async (second) => {
+      runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model });
+      const target = mountPanel();
+      emitFrame(); await flushWaterfallPaint();
+      const control = mockRuntime.scope.spanControl!;
+      const view = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view;
+      expect(control.spanHz).toBe(100_000);
+      control.step(-1); flushSync();
+      expect(view()).toEqual({ follow: 'vfo', spanHz: 50_000 });
+      control.step(second); flushSync();
+      const expected = second === -1 ? 25_000 : 100_000;
+      expect(view()).toEqual({ follow: 'vfo', spanHz: expected });
+      expect(control.spanHz).toBe(100_000);
+      emitFrame({ startFreq: 14_050_000 - expected / 2, endFreq: 14_050_000 + expected / 2, sequence: 2 });
+      expect(control.spanHz).toBe(expected);
+    });
+
+    it('steps from the pending absolute zoom view before its grant', async () => {
+      runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model });
+      const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+      mockRuntime.scope.spanControl!.step(-1); flushSync();
+      const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+      expect(request.view).toEqual({ follow: 'vfo', spanHz: 25_000 });
+      expect(mockRuntime.scope.spanControl!.spanHz).toBe(100_000);
+    });
+  });
+
   it('keeps trace controls absent in an ordinary build', () => {
     const target = mountPanel();
     expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();

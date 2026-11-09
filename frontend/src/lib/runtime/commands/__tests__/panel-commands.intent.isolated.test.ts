@@ -13,6 +13,7 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 import { FTX1_CAPABILITIES } from '../../adapters/__tests__/fixtures/ftx1-profile';
 
 const h = vi.hoisted(() => ({
@@ -83,7 +84,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
-    scope: { spanControl: { step: h.spanStep } },
+    scope: { spanControl: { step: h.spanStep } satisfies ScopeSpanControl },
     get rxEnabled() { return h.rxEnabled; },
     get audio() { return { volume: h.volume }; },
     setMuted: h.setMuted,
@@ -3323,9 +3324,13 @@ describe('MOR-2535 onFilterWidthReset radio-default reset intent', () => {
 
 
 it('keyboard span uses the subscription owner without a radio command', () => {
-  h.caps = { ...h.caps!, scope: true, capabilities: ['scope'] };
-  h.state = { ...h.state!, scopeControls: { span: 3 } } as ServerState;
+  h.caps = { ...a06Caps(), capabilities: ['scope', 'dual_rx'] } as unknown as Record<string, unknown>;
+  h.state = a06State();
+  h.unavailable.clear();
+  h.spanStep.mockReset();
+  h.sendCommand.mockClear();
+  resetCommandLifecycle();
   dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'up' } });
-  expect(h.spanStep).toHaveBeenCalledWith(1);
+  expect(h.spanStep).toHaveBeenCalledExactlyOnceWith(1);
   expect(h.sendCommand).not.toHaveBeenCalled();
 });
