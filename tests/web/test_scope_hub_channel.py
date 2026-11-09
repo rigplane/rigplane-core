@@ -458,6 +458,10 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
         task = asyncio.create_task(server._scope_health_monitor())
         try:
             for _ in range(3):
+                # Feed strictly inside the 0.1 window: at exactly 0.1 the
+                # monitor's idle can land one ULP above the interval on bad
+                # start-time bands and nothing is published (MOR-4353).
+                await clock.elapse(0.01)
                 source.feed_frame(
                     ScopeFrame(0, 1, 14_000_000, 14_100_000, pixels, out_of_range)
                 )
@@ -465,7 +469,7 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
                 assert decoded.out_of_range is out_of_range
                 assert decoded.pixels is None
                 assert decoded.coverage_start_hz == decoded.coverage_end_hz
-                await clock.elapse(0.1)
+                await clock.elapse(0.09)
             assert server._scope_hidden_published is False
         finally:
             task.cancel()
