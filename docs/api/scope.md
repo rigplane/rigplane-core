@@ -301,4 +301,6 @@ that data negotiate CENTER views.
 
 Hardware scope providers used by the web server must expose
 `src/rigplane/runtime/scope_session.py: ScopeSessionProvider.scope_session`;
-this replaces the web-owned writer adapter.
+this replaces the web-owned writer adapter. Providers must feed frame arrival,
+readiness, connection changes and TX observations into that session even when
+web subscriptions are paused; Core does this from its RX and lifecycle paths.

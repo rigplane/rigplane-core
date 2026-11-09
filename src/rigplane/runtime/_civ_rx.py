@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import replace as _replace_dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from typing import Literal
 
 from rigplane.core.acquisition_scheduler import (
@@ -96,6 +96,7 @@ from rigplane.core.types import (
     bcd_decode,
     ctcss_booleans_for_tone_squelch_type,
 )
+from rigplane.runtime.scope_session import ScopeSession, ScopeSetting
 from rigplane.runtime._connection_state import RadioConnectionState
 from rigplane.runtime._dual_rx_runtime import _relative_vfo_routing_available
 from rigplane.runtime import radio_reconnect
@@ -1186,6 +1187,11 @@ class CivRuntime:
             ConnectionError(f"CI-V generation advanced: {reason}")
         )
         self._host._state_store.begin_provider_generation()
+        session = getattr(self._host, "_control_scope_session", None)
+        if isinstance(session, ScopeSession):
+            session.invalidate_now(
+                connection_epoch=self._host._state_store.provider_generation
+            )
         # A new generation may face a different selection: unknown until
         # the radio answers 0x07 0xD2 again (MOR-3591, fail closed).
         self._host._forget_selection()
@@ -3468,8 +3474,16 @@ class CivRuntime:
         elif frame.sub == 0x1F:
             receiver, rbw = parse_scope_rbw_response(frame)
             pairs.append(("rbw", rbw))
-        if receiver is not None:
-            pairs.append(("receiver", receiver))
+        session = getattr(self._host, "_control_scope_session", None)
+        if isinstance(session, ScopeSession):
+            for name, value in pairs:
+                if name in ("mode", "span", "edge", "fixed_edge"):
+                    session.observe(cast(ScopeSetting, name), value, receiver or 0)
+        if (
+            receiver is not None
+            and receiver != self._host._radio_state.scope_controls.receiver
+        ):
+            return []
         return [
             self._observation(
                 FieldPath.scope_control("display", name), value, frame=frame
@@ -3997,6 +4011,12 @@ class CivRuntime:
         if frame.sub == 0x00:
             if frame.data:
                 rs.ptt = bool(frame.data[0])
+                session = getattr(self._host, "_control_scope_session", None)
+                if isinstance(session, ScopeSession) and frame.data in (
+                    b"\x00",
+                    b"\x01",
+                ):
+                    session.notify_tx(rs.ptt)
 
     def _handle_1e(
         self,
@@ -4111,55 +4131,55 @@ class CivRuntime:
             scope.dual = parse_scope_single_dual_response(frame)
         elif frame.sub == 0x14:
             receiver, mode = parse_scope_mode_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.mode = mode
         elif frame.sub == 0x15:
             receiver, span = parse_scope_span_response(
                 frame, self._host._profile.scope_span_presets_hz
             )
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.span = span
         elif frame.sub == 0x16:
             receiver, edge = parse_scope_edge_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.edge = edge
         elif frame.sub == 0x17:
             receiver, hold = parse_scope_hold_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.hold = hold
         elif frame.sub == 0x19:
             receiver, ref_db = parse_scope_ref_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.ref_db = ref_db
         elif frame.sub == 0x1A:
             receiver, speed = parse_scope_speed_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.speed = speed
         elif frame.sub == 0x1B:
             scope.during_tx = parse_scope_during_tx_response(frame)
         elif frame.sub == 0x1C:
             receiver, center_type = parse_scope_center_type_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.center_type = center_type
         elif frame.sub == 0x1D:
             receiver, vbw_narrow = parse_scope_vbw_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.vbw_narrow = vbw_narrow
         elif frame.sub == 0x1E:
             scope.fixed_edge = parse_scope_fixed_edge_response(frame)
             scope.edge = scope.fixed_edge.edge
         elif frame.sub == 0x1F:
             receiver, rbw = parse_scope_rbw_response(frame)
-            if receiver is not None:
-                scope.receiver = receiver
+            if receiver is not None and receiver != scope.receiver:
+                return
             scope.rbw = rbw
 
     # Top-level dispatch table for ``_update_radio_state_from_frame``.
@@ -4269,6 +4289,11 @@ class CivRuntime:
         """
         if not 0 <= scope_frame.mode <= 3:
             return
+        session = getattr(self._host, "_control_scope_session", None)
+        if isinstance(session, ScopeSession):
+            session.observe("mode", scope_frame.mode, receiver)
+        if receiver != self._host._radio_state.scope_controls.receiver:
+            return
         last_modes = self._host._scope_stream_last_mode
         if last_modes.get(receiver) == scope_frame.mode:
             return
@@ -4352,6 +4377,11 @@ class CivRuntime:
         span = _span_index_for_hz(span_hz, presets)
         if span is None:
             return
+        session = getattr(self._host, "_control_scope_session", None)
+        if isinstance(session, ScopeSession):
+            session.observe("span", span, receiver)
+        if receiver != self._host._radio_state.scope_controls.receiver:
+            return
         last_spans = self._host._scope_stream_last_span
         if last_spans.get(receiver) == span:
             return
@@ -4372,6 +4402,9 @@ class CivRuntime:
 
     def _publish_scope_frame(self, frame: ScopeFrame) -> None:
         """Publish a frame to the registered callback and SDK adapters."""
+        session = getattr(self._host, "_control_scope_session", None)
+        if isinstance(session, ScopeSession):
+            session.on_frame(frame)
         callback = self._host._scope_callback
         if callback is not None:
             try:

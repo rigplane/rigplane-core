@@ -612,6 +612,7 @@ class _IcomSerialRadioBase(CoreRadio):
             and self._civ_transport is not None
         ):
             await self._arm_managed_tx()
+        await self._scope_session_ready()
         # MOR-3436: an owner connect re-establishes session audio demand
         # that survived its teardown, unless the resident reconnect loop
         # — which recovers from its own snapshot — is the caller.
@@ -821,6 +822,7 @@ class _IcomSerialRadioBase(CoreRadio):
             and self._civ_transport is not None
         ):
             await self.rearm_managed_tx()
+        await self._scope_session_ready()
         if self._on_reconnect is not None:
             try:
                 self._on_reconnect()
@@ -1361,6 +1363,7 @@ class _IcomSerialRadioBase(CoreRadio):
                 ):
                     try:
                         await self._arm_managed_tx()
+                        await self._scope_session_ready()
                     except Exception:
                         # MOR-3071 round 4: ``connect()`` lets an
                         # ``_arm_managed_tx`` failure propagate to its

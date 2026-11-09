@@ -3420,7 +3420,12 @@ class WebServer:
                 session = self._radio_scope_session
                 if session is None or self._radio is None:
                     continue
-                await session.reconcile()
+                try:
+                    await session.reconcile()
+                except Exception:
+                    logger.warning(
+                        "scope reconciliation remains pending", exc_info=True
+                    )
                 now = asyncio.get_running_loop().time()
                 fact = session.health(
                     civ_flowing=self._civ_link_flowing(now),

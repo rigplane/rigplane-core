@@ -543,8 +543,6 @@ class TestExposedKeyDriftGuard:
         builders_module = sys.modules["rigplane.commands._builders"]
         monkeypatch.setattr(builders_module, "_build_from_map", _fake_build_from_map)
         target = inspect.unwrap(builder)
-        if target.__name__ == "scope_set_fixed_edge":
-            return {"edge": 1, "range_index": 1, "start_hz": 1000000, "end_hz": 2000000}
         probe_map = cmd_map
         if "ctcss_tones_centihz" in inspect.signature(target).parameters:
             # Tone builders validate both their profile domain and their named

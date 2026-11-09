@@ -119,6 +119,7 @@ async def test_watchdog_ignores_simulator_blank_stream(
         source = srv._radio_scope_source
         assert source is not None
         from rigplane.radio import IcomRadio
+
         publisher = IcomRadio("127.0.0.1", model="IC-7610")
         publisher._control_scope_session = srv._radio_scope_session
         publisher.on_scope_data(source.feed_frame)

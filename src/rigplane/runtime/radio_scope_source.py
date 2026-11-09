@@ -24,7 +24,6 @@ from rigplane.scope.models import (
 class RadioScopeWriter(Protocol):
     def tuned_frequency(self, receiver: int) -> float: ...
     async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
-    def on_frame(self, frame: ScopeFrame) -> None: ...
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
     async def set_center(
         self, center_hz: float, span_hz: float, receiver: int
@@ -96,7 +95,10 @@ class RadioScopeSource:
     def _fixed_edges(self, view: View, receiver: int) -> ScopeFixedEdge | None:
         if self._fixed_step is None:
             return None
+        tuned = self._writer.tuned_frequency(receiver)
         for limits in self._fixed_ranges:
+            if not limits.start_hz <= tuned < limits.end_hz:
+                continue
             start = math.floor(view.start_hz / self._fixed_step) * self._fixed_step
             end = math.ceil(view.end_hz / self._fixed_step) * self._fixed_step
             if limits.start_hz <= start < end <= limits.end_hz:
@@ -150,7 +152,6 @@ class RadioScopeSource:
     def feed_frame(self, frame: ScopeFrame) -> None:
         if not self._active:
             return
-        self._writer.on_frame(frame)
         receiver = self._receiver(frame.receiver)
         native_width = self._native_widths.get(receiver)
         if frame.pixels and not frame.out_of_range:

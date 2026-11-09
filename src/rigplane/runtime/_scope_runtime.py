@@ -146,6 +146,17 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             self._control_scope_session = session
         return session
 
+    async def _scope_session_ready(self) -> None:
+        session = getattr(self, "_control_scope_session", None)
+        if isinstance(session, ScopeSession):
+            try:
+                await session.set_ready(True)
+            except Exception:
+                logger.warning(
+                    "scope reconciliation remains pending after readiness",
+                    exc_info=True,
+                )
+
     async def _read_scope_receiver(self, receiver: int) -> ScopeState:
         _, mode = await self._read_scope_view_setting("mode", receiver)
         _, span = await self._read_scope_view_setting("span", receiver)
@@ -228,7 +239,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         if name == "fixed_edge":
             assert isinstance(value, ScopeFixedEdge)
             controls.fixed_edge = value
-        elif name not in ("scope_on", "output_on"):
+        elif name not in ("scope_on", "output_on") and receiver == controls.receiver:
             setattr(controls, name, value)
 
     async def enable_scope(
@@ -241,7 +252,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
         """Acquire SDK scope demand through the shared acknowledged session."""
         self._check_connected()
         pol = ScopeCompletionPolicy(policy)
-        if not self.scope_session().enabled:
+        if pol == ScopeCompletionPolicy.VERIFY or not self.scope_session().enabled:
             self._scope_activity_event.clear()
         await self.scope_session().set_demand(ScopeDemand(1, int(output)), owner="sdk")
         if not output:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
@@ -11,6 +12,8 @@ from typing import Literal, Protocol, TypeAlias, cast
 from rigplane.core.types import ScopeFixedEdge
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import ScopeDemand
+
+logger = logging.getLogger(__name__)
 
 ScopeSetting: TypeAlias = Literal[
     "scope_on", "output_on", "mode", "span", "edge", "fixed_edge"
@@ -60,7 +63,7 @@ class ScopeSession:
         self.tx_probe = tx_probe
         self._lock = asyncio.Lock()
         self._ready = ready
-        self._tx = False
+        self._tx = bool(tx_probe and tx_probe())
         self._demands: dict[str, ScopeDemand] = {}
         self._clock = clock
         self._grace = disable_grace_seconds
@@ -84,6 +87,7 @@ class ScopeSession:
         self._applied: dict[tuple[int, ScopeSetting], ScopeValue] = {}
         self._uncertain: set[tuple[int, ScopeSetting]] = set()
         self._restore_pending = False
+        self._event_tasks: set[asyncio.Task[None]] = set()
 
     @property
     def enabled(self) -> bool:
@@ -134,19 +138,63 @@ class ScopeSession:
             self._tx = active
             await self._reconcile()
 
+    def invalidate_now(self, *, connection_epoch: int | None = None) -> None:
+        if connection_epoch is not None and connection_epoch == self._connection_epoch:
+            return
+        self._connection_epoch = connection_epoch
+        self.generation += 1
+        if not self.menu_guard_active():
+            self.observed = None
+            self._applied.clear()
+        self._ready = False
+
     async def invalidate(self, *, connection_epoch: int | None = None) -> None:
         async with self._lock:
-            if (
-                connection_epoch is not None
-                and connection_epoch == self._connection_epoch
-            ):
+            self.invalidate_now(connection_epoch=connection_epoch)
+
+    def observe(self, name: ScopeSetting, value: ScopeValue, receiver: int = 0) -> None:
+        if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
+            matching = [
+                key
+                for key, prior in self._applied.items()
+                if key[1] == name
+                and isinstance(prior, ScopeFixedEdge)
+                and (prior.range_index, prior.edge) == (value.range_index, value.edge)
+            ]
+            if matching:
+                for key in matching:
+                    self._applied[key] = value
                 return
-            self._connection_epoch = connection_epoch
-            self.generation += 1
-            if not self.menu_guard_active():
-                self.observed = None
-                self._applied.clear()
-            self._ready = False
+        self._applied[receiver, name] = value
+        if name != "fixed_edge" and receiver == 0:
+            base = self.observed or self._original
+            if base is not None:
+                if name == "scope_on":
+                    self.observed = replace(base, scope_on=bool(value))
+                elif name == "output_on":
+                    self.observed = replace(base, output_on=bool(value))
+                elif name == "mode":
+                    self.observed = replace(base, mode=cast(int, value))
+                elif name == "span":
+                    self.observed = replace(base, span=cast(int, value))
+                else:
+                    self.observed = replace(base, edge=cast(int, value))
+
+    def notify_tx(self, tx: bool) -> None:
+        previous, self._tx = self._tx, tx
+        if previous and not tx:
+            task = asyncio.create_task(self.reconcile())
+            self._event_tasks.add(task)
+
+            def finished(done: asyncio.Task[None]) -> None:
+                self._event_tasks.discard(done)
+                if not done.cancelled() and done.exception() is not None:
+                    logger.warning(
+                        "scope event reconciliation remains pending: %s",
+                        done.exception(),
+                    )
+
+            task.add_done_callback(finished)
 
     def menu_guard_active(self) -> bool:
         return (
@@ -283,19 +331,7 @@ class ScopeSession:
             self._enabled_at = self._clock()
             self._last_frame_at = None
             self._out_of_range = False
-        if name != "fixed_edge" and receiver == 0:
-            base = self.observed or self._original
-            if base is not None:
-                if name == "scope_on":
-                    self.observed = replace(base, scope_on=bool(value))
-                elif name == "output_on":
-                    self.observed = replace(base, output_on=bool(value))
-                elif name == "mode":
-                    self.observed = replace(base, mode=cast(int, value))
-                elif name == "span":
-                    self.observed = replace(base, span=cast(int, value))
-                else:
-                    self.observed = replace(base, edge=cast(int, value))
+        self.observe(name, value, receiver)
 
     async def _reconcile(self) -> None:
         if (
@@ -390,9 +426,13 @@ class ScopeSession:
                 and self.observed is not None
                 and name != "fixed_edge"
                 and getattr(self.observed, name) == value
+                and (receiver, name) not in self._uncertain
             ):
                 continue
-            if self._applied.get((receiver, name)) == value:
+            if (
+                self._applied.get((receiver, name)) == value
+                and (receiver, name) not in self._uncertain
+            ):
                 continue
             if name == "fixed_edge":
                 assert isinstance(value, ScopeFixedEdge)
@@ -401,7 +441,10 @@ class ScopeSession:
                     if self._read_fixed is None:
                         raise RuntimeError("scope fixed edge cannot be captured")
                     captured_fixed = await self._read_fixed(*slot)
-                    if captured_fixed == value:
+                    if (
+                        captured_fixed == value
+                        and (receiver, name) not in self._uncertain
+                    ):
                         self._applied[receiver, name] = value
                         continue
                     self._fixed[slot] = captured_fixed
@@ -415,11 +458,14 @@ class ScopeSession:
                             else self._original
                         )
                     captured = self._views[receiver]
-                    if getattr(captured, name) == value:
+                    if getattr(captured, name) == value and key not in self._uncertain:
                         self._applied[key] = value
                         continue
                     self._previous[key] = getattr(captured, name)
-            if self._applied.get((receiver, name)) != value:
+            if (
+                self._applied.get((receiver, name)) != value
+                or (receiver, name) in self._uncertain
+            ):
                 await self._put(name, value, receiver)
 
 
