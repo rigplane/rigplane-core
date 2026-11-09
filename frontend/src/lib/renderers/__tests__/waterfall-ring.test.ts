@@ -69,3 +69,15 @@ describe('MOR-4272 texture ring', () => {
     expect(getContext.mock.calls).toEqual([['webgl2', expect.any(Object)]]);
   });
 });
+
+it('does not resubmit invariant uniforms on steady frames', () => {
+  const f = webglFixture(100, 20), r = new WaterfallRenderer(f.canvas, { ...defaultWaterfallOptions, centerHz: 14_050_000, spanHz: 100_000 });
+  const pixels = new Uint8Array(100).fill(40); r.pushRow(pixels);
+  f.calls.length = 0;
+  for (let i = 0; i < 10; i++) r.pushRow(pixels);
+  expect(f.named('uniform3fv')).toHaveLength(0);
+  expect(f.named('uniform1fv')).toHaveLength(0);
+  expect(f.named('uniform2f')).toHaveLength(0);
+  expect(f.named('uniform1f')).toHaveLength(0);
+  expect(f.named('drawArrays')).toHaveLength(10);
+});
