@@ -28,6 +28,11 @@ data_plane_exceptions = [
 ]
 
 [[profiles]]
+path = "rigs/g7250.toml"
+provider = "xiegu_civ"
+required_proof = "LIVE G7250 read-only bench audit 2026-11-09 (MOR-4352); TX/SET round-trips pending"
+
+[[profiles]]
 path = "rigs/ftx1.toml"
 provider = "yaesu_cat"
 required_proof = "MOR-1410 real FTX-1"

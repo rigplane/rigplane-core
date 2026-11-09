@@ -1,0 +1,609 @@
+# Rig Configuration — Xiegu G7250
+#
+# Xiegu G7250 HF/50 MHz transceiver, USB CI-V (subset of standard Icom
+# CI-V, same family personality as the X6200).
+#
+# Sources of truth, per entry:
+#   1. "LIVE G7250 2026-11-09 (MOR-4352)" — the read-only bench audit of a
+#      real G7250 on its USB CH340 serial port at 115200 baud. Every GET
+#      marked LIVE was answered on the air; every NAK/no-reply marked LIVE
+#      was sent and refused/silent in the same session.
+#   2. "inherited from X6200, not probed on G7250" — copied unchanged from
+#      rigs/x6200.toml (Radioddity "Xiegu X6200 CI-V implementation
+#      V1.0.6" and that profile's own live captures). NOT G7250 evidence.
+#
+# The audit never keyed the radio: no SET opcode, no PTT, no TX fact below
+# is bench-proven. History: MOR-4352.
+
+[radio]
+id = "xiegu_g7250"
+model = "G7250"
+# LIVE G7250 2026-11-09 (MOR-4352): the radio answers ANY CI-V address and
+# echoes the address it was asked as its own (probed at 00, A4, 88, 70, 72,
+# E0). 0xA4 is the Xiegu family default (same as X6200), kept so unicast
+# sessions behave like the X6200's and the shared 0xA4 disambiguation path
+# applies.
+civ_addr = 0xA4
+receiver_count = 1
+# The G7250 "LAN" port is a proprietary IQ stream, not Icom LAN control
+# (MOR-4352); has_wifi has no bench evidence either way and stays false —
+# flip only with evidence.
+has_lan = false
+has_wifi = false
+# LIVE G7250 2026-11-09 (MOR-4352): answers 115200, silent at 19200.
+default_baud = 115200
+# LIVE G7250 2026-11-09 (MOR-4352): 0x1D 0x19 answered model id 72 50.
+# Discovery maps these reply bytes back to this profile (data-driven,
+# backends/discovery.py: resolve_civ_radio_identity).
+xiegu_model_id = 0x7250
+# No hamlib_model_id: no Hamlib rig_model integer is pinned for the G7250
+# (unverified whether upstream Hamlib lists one); the rigctld Yaesu
+# dump_state path that consumes this field is not used by this CI-V
+# profile.
+
+[protocol]
+type = "civ"
+address = 0xA4
+
+[audio]
+# LIVE G7250 2026-11-09 (MOR-4352): the radio's USB hub enumerates a
+# C-Media "USB Audio Device" next to the CH340 serial port. The mono
+# capture preference is inherited from X6200 (MOR-236, same C-Media CODEC
+# family); the G7250's channel count was not probed.
+codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
+
+[capabilities]
+# LIVE-marked entries were read back on the bench; the rest is inherited
+# from X6200, not probed on G7250. Deliberately absent vs the X6200 list:
+#   - no ``rit``/``xit``: 0x21 0x00/0x01/0x02 reads got NO reply (LIVE
+#     G7250 2026-11-09) — unlike the X6200, whose write-only 0x21 SET is
+#     live-confirmed, nothing on the G7250's 0x21 path was ever seen to
+#     work, so no RIT/XIT control is exposed.
+#   - no ``pbt``: 0x14 0x07/0x08 reads answer 01 28 (LIVE) but the setter
+#     was never exercised and no Xiegu document covers it — the control is
+#     not exposed pending a live SET round-trip.
+#   - no ``vox``: 0x16 0x46 answers 0x02 (LIVE) with an unconfirmed
+#     meaning; no value domain is declared from a boolean-looking read.
+#   - no ``break_in``: 0x16 0x47 NAKs (LIVE).
+#   - no ``tuner``: 0x1C 0x01 NAKs (LIVE) — the G7250 has no ATU.
+#   - no ``data_mode``: 0x1A 0x06 NAKs (LIVE).
+#   - no ``scope``: 0x27 0x10/0x11/0x14/0x15 got NO reply (LIVE) — no
+#     CI-V scope.
+#   - no tone family: 0x16 0x42/0x43 NAK (LIVE).
+#   - no memory channels: 0x1A 0x00 NAKs (LIVE).
+# ``notch`` keeps the X6200 posture: the capability stays, the mechanism is
+# the DNF toggle at 0x16 0x41 (LIVE: answers 0x02, meaning unconfirmed) and
+# NO width domain is declared. ``scan`` is inherited from X6200, not probed
+# on G7250 (the X6200 map has no scan GET to read, so the audit could not
+# test it).
+features = [
+    "audio",
+    "af_level",
+    "rf_gain",
+    "squelch",
+    "attenuator",
+    "preamp",
+    "nb",
+    "nr",
+    "notch",
+    "tx",
+    "split",
+    "compressor",
+    "cw",
+    "meters",
+    "scan",
+    "dial_lock",
+    "agc",
+    "power_control",
+]
+
+[state_acquisition]
+# inherited from X6200, not probed on G7250 (provider shape); every polled
+# GET below answered LIVE on the bench. The X6200's tuner_status poll is
+# dropped: 0x1C 0x01 NAKs on the G7250 (LIVE).
+provider = "xiegu_civ"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 4.0
+adaptive_decay_max_cadence_seconds = 30.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.25
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_toggles.nb",
+    "global.operator_controls.power_level",
+    "global.operator_controls.mic_gain",
+    "global.operator_controls.monitor_gain",
+    "global.tx_state.ptt",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    "global.meters.power",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "receiver.main.active.freq_mode.filter_width",
+    "global.operator_controls.cw_pitch",
+    "global.operator_controls.key_speed",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+# 0x15 0x12 (SWR) and 0x15 0x13 (ALC) answer 00 00 at idle (LIVE G7250
+# 2026-11-09) — the getters exist but the scale is unconfirmed, so they
+# stay unknown, not polled.
+unsupported = ["global.tx_state.power_on"]
+unknown = ["global.meters.swr", "global.meters.alc"]
+
+[state_acquisition.field_policies."receiver.main.active.freq_mode.mode"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 4.0
+reconciliation_priority = "command_response"
+external_cat_pause = "pause_polling"
+
+# Same event-driven-only shape as x6200.toml's filter_width entry — without
+# this, prime_unobserved() never reaches this path (it only iterates
+# field_policies). inherited from X6200, not probed on G7250 (shape); the
+# GET itself is LIVE (0x1A 0x03 answers).
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+reason = "on-demand, not polled: prime_unobserved (MOR-1490) reads only field_policies paths, and the never TTL keeps the value from expiring"
+cadence_seconds = 25.0
+freshness_ttl_seconds = "never"
+reconciliation_priority = "command_response"
+adaptive_decay = false
+
+[state_acquisition.field_policies."receiver.main.meters.s_meter"]
+cadence_seconds = 0.25
+freshness_ttl_seconds = 1.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.25
+
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 0.25
+freshness_ttl_seconds = 1.0
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.25
+
+# inherited from X6200, not probed on G7250: the audit read mode 0x04 as
+# LSB/FIL1 (LIVE) but never enumerated the dial's full value domain.
+[modes]
+list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
+families = { cw = ["CW", "CW-R"] }
+
+[filters]
+list = ["FIL1", "FIL2", "FIL3"]
+# LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x03 returns one packed-BCD index
+# byte (0x33 -> 33), NOT the X6200's raw-byte formula. All nine measured
+# rows below match the IC-7300's segments exactly: SSB/CW
+# {50..500 step 50, index 0} and {600..3600 step 100, index 10}; AM
+# {200..10000 step 200, index 0}. Owner-read display values, byte logged:
+#   LSB FIL1 0x33=2900  FIL2 0x28=2400  FIL3 0x22=1800
+#   CW  FIL1 0x09=500   FIL2 0x05=300   FIL3 0x02=150
+#   AM  FIL1 0x44=9000  FIL2 0x29=6000  FIL3 0x14=3000
+# RTTY/DIGI/FM widths were NOT measured: do not invent them. RTTY/DIGI
+# carry the SSB segment table (the shared Xiegu family posture) and FM is
+# fixed — all three marked here as not measured, pending a live read.
+encoding = "segmented_bcd_index"
+width_min_hz = 50
+width_max_hz = 9999
+
+[filters.width.SSB]
+# LSB rows measured LIVE (above); USB shares the SSB table (not measured
+# separately — same family posture as every shipped Icom profile).
+min_hz = 50
+max_hz = 3600
+defaults = [2900, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+[filters.width.CW]
+min_hz = 50
+max_hz = 3600
+defaults = [500, 300, 150]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+# RTTY/DIGI: NOT measured on the G7250 — SSB segments re-used per the
+# Xiegu family posture (inherited from X6200, not probed on G7250).
+[filters.width.RTTY]
+min_hz = 50
+max_hz = 3600
+defaults = [2900, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+[filters.width.DIGI]
+min_hz = 50
+max_hz = 3600
+defaults = [2900, 2400, 1800]
+segments = [
+    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
+    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
+]
+
+[filters.width.AM]
+min_hz = 200
+max_hz = 10000
+step_hz = 200
+defaults = [9000, 6000, 3000]
+segments = [
+    { hz_min = 200, hz_max = 10000, step_hz = 200, index_min = 0 },
+]
+
+# FM width NOT measured (inherited fixed posture from X6200).
+[filters.width.FM]
+fixed = true
+
+[vfo]
+scheme = "ab"
+
+# LIVE G7250 2026-11-09 (MOR-4352): 0x11 read back 00 (off). Binary toggle
+# encoding inherited from X6200.
+[attenuator]
+values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
+
+# LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x02 read back 00 (off). Binary
+# toggle encoding inherited from X6200.
+[preamp]
+values = [0, 1]
+
+# LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x12 read back 02. The 0-3
+# OFF/FAST/SLOW/AUTO domain is inherited from X6200, not probed on G7250
+# (which value 02 means was not established).
+[agc]
+modes = [0, 1, 2, 3]
+labels = { "0" = "OFF", "1" = "FAST", "2" = "SLOW", "3" = "AUTO" }
+
+[controls.attenuator]
+style = "toggle"
+
+# Level control ranges — inherited from X6200, not probed on G7250. The
+# G7250's level GETs reply TWO BCD data bytes (LIVE 2026-11-09, e.g.
+# rf gain 02 49, mic gain 01 95), the same 0-255 domain the X6200 PDF
+# documents for its one-byte reads.
+[controls.af_level]
+raw_min = 0
+raw_max = 255
+
+[controls.rf_gain]
+raw_min = 0
+raw_max = 255
+
+[controls.squelch]
+raw_min = 0
+raw_max = 255
+
+[controls.nr_level]
+raw_min = 0
+raw_max = 255
+
+[controls.nb_level]
+raw_min = 0
+raw_max = 255
+
+[controls.compressor_level]
+raw_min = 0
+raw_max = 255
+
+# Display bands inherited from X6200, not probed on G7250 (the G7250 read
+# live was 00 00 = the bottom of the band; the top end is unconfirmed).
+[controls.cw_pitch]
+raw_min = 0
+raw_max = 255
+display_min = 400
+display_max = 1200
+display_unit = "Hz"
+decode_quantum = 1
+encode_rounding = "ceil"
+
+# Display band inherited from X6200, not probed on G7250 (live read
+# 00 90 = raw 90; which WPM that displays was not established).
+[controls.key_speed]
+raw_min = 0
+raw_max = 255
+display_min = 6
+display_max = 48
+display_unit = "WPM"
+decode_quantum = 1
+encode_rounding = "nearest_half_down"
+
+# LIVE G7250 2026-11-09 (MOR-4352): the 0x02 band-edge read answered RX
+# 0.5 .. 54 MHz — the HF envelope is live; it bounds the receiver at
+# 54 MHz, so the X6200's WFM (88-108) and Air (108-136) ranges are NOT
+# carried over. The named ham bands inside HF are inherited from X6200,
+# not probed on G7250.
+[[freq_ranges.ranges]]
+label = "HF"
+start_hz = 500000
+end_hz = 54000000
+
+[[freq_ranges.ranges.bands]]
+name = "160m"
+start_hz = 1800000
+end_hz = 2000000
+default_hz = 1825000
+
+[[freq_ranges.ranges.bands]]
+name = "80m"
+start_hz = 3500000
+end_hz = 3800000
+default_hz = 3600000
+
+[[freq_ranges.ranges.bands]]
+name = "40m"
+start_hz = 7000000
+end_hz = 7200000
+default_hz = 7100000
+
+[[freq_ranges.ranges.bands]]
+name = "30m"
+start_hz = 10100000
+end_hz = 10150000
+default_hz = 10125000
+
+[[freq_ranges.ranges.bands]]
+name = "20m"
+start_hz = 14000000
+end_hz = 14350000
+default_hz = 14200000
+
+[[freq_ranges.ranges.bands]]
+name = "17m"
+start_hz = 18068000
+end_hz = 18168000
+default_hz = 18100000
+
+[[freq_ranges.ranges.bands]]
+name = "15m"
+start_hz = 21000000
+end_hz = 21450000
+default_hz = 21200000
+
+[[freq_ranges.ranges.bands]]
+name = "12m"
+start_hz = 24890000
+end_hz = 24990000
+default_hz = 24940000
+
+[[freq_ranges.ranges.bands]]
+name = "10m"
+start_hz = 28000000
+end_hz = 29700000
+default_hz = 28500000
+
+[[freq_ranges.ranges.bands]]
+name = "6m"
+start_hz = 50000000
+end_hz = 54000000
+default_hz = 51000000
+
+# ── CI-V Commands ────────────────────────────────────────────────
+# Every GET marked LIVE was answered on the bench (read-only audit — no
+# SET was exercised). SET opcodes and every entry without a LIVE mark are
+# inherited from X6200, not probed on G7250.
+#
+# power_on/power_off are INTENTIONALLY OMITTED, as on the X6200: no 0x18
+# row is known for this family and the X6200 wedge history (MOR-170) makes
+# an unconfirmed 0x18 a transmit-chain risk. Do NOT add a 0x18 mapping
+# without hardware validation.
+[commands]
+
+# Frequency / mode
+get_freq         = [0x03]  # LIVE G7250 2026-11-09 (MOR-4352): answered 7.138000 MHz; SET inherited from X6200, not probed
+set_freq         = [0x05]  # inherited from X6200, not probed on G7250 (read-only audit)
+get_mode         = [0x04]  # LIVE G7250 2026-11-09: answered LSB FIL1; SET inherited
+set_mode         = [0x06]  # inherited from X6200, not probed on G7250 (read-only audit)
+
+# Get receiver frequency range
+# LIVE G7250 2026-11-09: answered RX 0.5 .. 54 MHz.
+get_band_edge_freq = [0x02]
+
+# VFO selection / swap (0x07). LIVE G7250 2026-11-09: the radio ACKs a
+# bare 0x07 read with FB (07 with no data is Icom "select VFO mode").
+get_vfo          = [0x07]
+set_vfo          = [0x07]  # inherited from X6200, not probed on G7250
+
+# Split. LIVE G7250 2026-11-09: 0x0F read answered 00 (split off); SET
+# inherited.
+set_split        = [0x0F]
+
+# Attenuator / preamp (reads LIVE: 11 00, 16 02 00)
+get_attenuator   = [0x11]
+set_attenuator   = [0x11]  # inherited from X6200, not probed on G7250
+get_preamp       = [0x16, 0x02]
+set_preamp       = [0x16, 0x02]  # inherited from X6200, not probed on G7250
+
+# Levels (all GETs LIVE G7250 2026-11-09 — two BCD data bytes each; SETs
+# inherited from X6200, not probed on G7250)
+get_af_level     = [0x14, 0x01]
+set_af_level     = [0x14, 0x01]
+get_rf_gain      = [0x14, 0x02]
+set_rf_gain      = [0x14, 0x02]
+get_squelch      = [0x14, 0x03]
+set_squelch      = [0x14, 0x03]
+get_nr_level     = [0x14, 0x06]
+set_nr_level     = [0x14, 0x06]
+get_cw_pitch     = [0x14, 0x09]
+set_cw_pitch     = [0x14, 0x09]
+get_rf_power     = [0x14, 0x0A]
+set_rf_power     = [0x14, 0x0A]
+get_mic_gain     = [0x14, 0x0B]
+set_mic_gain     = [0x14, 0x0B]
+get_key_speed    = [0x14, 0x0C]
+set_key_speed    = [0x14, 0x0C]
+get_nb_level     = [0x14, 0x12]
+set_nb_level     = [0x14, 0x12]
+get_monitor_gain = [0x14, 0x15]
+set_monitor_gain = [0x14, 0x15]
+
+# Meters (all GETs LIVE G7250 2026-11-09; idle read 00 00 except S-meter
+# 00 63 and Vd 01 55 — scales unconfirmed beyond the shared BCD 0-255)
+get_s_meter      = [0x15, 0x02]
+get_power_meter  = [0x15, 0x11]
+get_swr          = [0x15, 0x12]
+get_vd_meter     = [0x15, 0x15]
+
+# Functions (0x16 family; reads LIVE G7250 2026-11-09. 16 12 read 02; the
+# boolean-looking 16 22/40/41/44/50 all read 02 — value meanings
+# unconfirmed, no domain declared from them; SETs inherited from X6200)
+get_agc          = [0x16, 0x12]
+set_agc          = [0x16, 0x12]
+get_nb           = [0x16, 0x22]
+set_nb           = [0x16, 0x22]
+get_nr           = [0x16, 0x40]
+set_nr           = [0x16, 0x40]
+get_compressor   = [0x16, 0x44]
+set_compressor   = [0x16, 0x44]
+get_auto_notch   = [0x16, 0x41]
+set_auto_notch   = [0x16, 0x41]
+get_dial_lock    = [0x16, 0x50]
+set_dial_lock    = [0x16, 0x50]
+
+# Identification. LIVE G7250 2026-11-09: 0x19 0x00 answers the ECHOED
+# asked address byte (asked at A4 -> payload A4), so the payload is not a
+# model token on this radio — the address echo is why discovery falls
+# through to the 0x1D 0x19 probe.
+get_transceiver_id = [0x19, 0x00]
+
+# Filter width. LIVE G7250 2026-11-09: BCD index, IC-7300 segments — see
+# [filters] above for the nine measured (byte, Hz) rows.
+get_filter_width          = [0x1A, 0x03]
+
+# PTT / status. LIVE G7250 2026-11-09: 0x1C 0x00 read answered 00 (idle);
+# the PTT SET bytes are inherited from X6200, not probed (read-only audit).
+ptt_on           = [0x1C, 0x00, 0x01]
+ptt_off          = [0x1C, 0x00, 0x00]
+get_transceiver_status = [0x1C, 0x00]
+set_transceiver_status = [0x1C, 0x00]  # inherited from X6200, not probed on G7250
+
+# Xiegu model ID. LIVE G7250 2026-11-09: answers 72 50 (asked at A4 and at
+# the echoed broadcast 00). The positive disambiguator vs Icom CI-V at the
+# same address and the data key discovery resolves this profile by.
+get_xiegu_model_id = [0x1D, 0x19]
+
+# Selected / unselected VFO (0x25 / 0x26). All four GETs LIVE G7250
+# 2026-11-09 (7.138000 / 7.050000 MHz; 26 00 00 00 01 / 26 01 00 00 01);
+# SETs inherited from X6200, not probed on G7250.
+get_selected_freq    = [0x25, 0x00]
+set_selected_freq    = [0x25, 0x00]
+get_unselected_freq  = [0x25, 0x01]
+set_unselected_freq  = [0x25, 0x01]
+get_selected_mode    = [0x26, 0x00]
+set_selected_mode    = [0x26, 0x00]
+get_unselected_mode  = [0x26, 0x01]
+set_unselected_mode  = [0x26, 0x01]
+
+# Protocol ack/nak echoes (inherited from X6200, not probed on G7250; the
+# radio did send FB to the bare 0x07 read, LIVE).
+get_command_error_fa = [0xFA]
+get_command_ok_fb    = [0xFB]
+
+# ── Live-confirmed absences (read sent, 0xFA NAK answered; LIVE G7250
+# 2026-11-09, MOR-4352) ─────────────────────────────────────────────
+get_band_spectrum_display = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x01 NAKed on the bench — no CI-V band spectrum display" }
+get_tuner_status          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1C 0x01 NAKed on the bench — no ATU" }
+set_tuner_status          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1C 0x01 NAKed on the bench — no ATU" }
+get_data_mode             = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x06 NAKed on the bench — no CI-V data-mode register" }
+set_data_mode             = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x06 NAKed on the bench — no CI-V data-mode register" }
+get_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x00 NAKed on the bench — no CI-V memory channels" }
+set_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x00 NAKed on the bench — no CI-V memory channels" }
+get_break_in              = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x47 NAKed on the bench" }
+set_break_in              = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x47 NAKed on the bench" }
+get_manual_notch          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x48 NAKed on the bench — the notch mechanism is the DNF toggle at 0x16 0x41" }
+set_manual_notch          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x48 NAKed on the bench — the notch mechanism is the DNF toggle at 0x16 0x41" }
+get_repeater_tone         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x42 NAKed on the bench — no tone family" }
+set_repeater_tone         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x42 NAKed on the bench — no tone family" }
+get_repeater_tsql         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x43 NAKed on the bench — no tone family" }
+set_repeater_tsql         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x43 NAKed on the bench — no tone family" }
+get_twin_peak_filter      = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x4F NAKed on the bench" }
+set_twin_peak_filter      = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x4F NAKed on the bench" }
+get_comp_meter            = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x15 0x14 NAKed on the bench" }
+get_id_meter              = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x15 0x16 NAKed on the bench" }
+# 0x1E 0x00 got NO reply (LIVE G7250 2026-11-09) — no CI-V TX-band table,
+# so no TX power/band facts are declared for this radio.
+get_tx_band_count         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1E 0x00 sent on the bench, no reply — no TX-band table" }
+get_tx_band_edge          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): same 0x1E family as get_tx_band_count — no reply, no TX-band table (edge row not separately probed)" }
+# Band stacking: the whole 0x1A 0x01 register NAKs (see
+# get_band_spectrum_display), so Icom's 9-byte band-stacking record cannot
+# exist under this opcode either.
+get_bsr                   = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x01 NAKed on the bench — no band-stacking register" }
+set_bsr                   = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x01 NAKed on the bench — no band-stacking register" }
+# Memory opcodes 0x08-0x0B were not probed on the G7250; the 0x1A 0x00 NAK
+# (above) closes the same family. Absent per the Xiegu family posture
+# (inherited from X6200, not probed on G7250).
+get_memory_mode           = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x08 row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
+set_memory_mode           = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x08 row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
+memory_write              = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x09 row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
+memory_to_vfo             = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x0A row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
+memory_clear              = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x0B row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
+
+# Reads that ANSWER but declare nothing here (recorded so nobody mistakes
+# silence for an oversight — LIVE G7250 2026-11-09, MOR-4352):
+#   - 0x14 0x07 / 0x14 0x08 (PBT inner/outer) answer 01 28 (centre); no
+#     pbt keys — the SET side was never exercised, no capability declared.
+#   - 0x14 0x0D (notch position) answers 00 00; no key — nothing routes a
+#     G7250 notch-position control yet.
+#   - 0x14 0x0E (comp level) answers 00 00; no key beyond the 0x16 0x44
+#     toggle above.
+#   - 0x14 0x0F (QSK delay) answers 00 00; no key — same posture as X6200.
+#   - 0x15 0x01 (squelch status) answers 00 00; no key — dcd was removed
+#     from every shipped profile.
+#   - 0x15 0x13 (ALC meter) answers 00 00; see acquisition unknown above.
+#   - 0x16 0x46 (VOX) answers 02; no key — meaning unconfirmed, no
+#     capability declared.
+#   - 0x1A 0x04 (AGC time constant) answers 00; no key.
+# No reply at all (LIVE): 0x21 0x00/0x01/0x02 (RIT/XIT), 0x27 0x10/0x11/
+# 0x14/0x15 (scope), 0x12 (antenna) — no keys, no capabilities.
+
+[commands.overrides]
+
+[tx_policy]
+# Inherited from X6200, not measured on the G7250 (MOR-1947 posture): the
+# factory routes G7250 onto XieguSerialRadio, which shares the IC-705
+# CI-V personality, and this profile declares the same 0x1C/0x00 PTT
+# command. The transmit-state read (0x1C 0x00) is LIVE-confirmed on this
+# radio (answered 00, idle). The TX decode is shared
+# (runtime/radio.py 0x00/0x01 allowlist), so the ruling is the same
+# ruling, written here rather than left absent because an absent section
+# and an empty one load identically — only a written section records that
+# this was decided. TX power range and TX band edges are unknown for the
+# G7250 (0x1E no reply, LIVE): nothing on this radio's path reads this
+# map today; empty means "nothing measured", not "nothing refuses".
+refused_during_tx = []
+# Positive-RX rule (§3.7): the receiving byte only. This wire carries no
+# keying attribution, so nothing else is mapped and the transmitting byte
+# is not-receiving without an invented source.
+tx_state_map = { "0" = "rx" }

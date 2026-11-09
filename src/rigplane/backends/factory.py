@@ -46,6 +46,9 @@ _SERIAL_MODEL_CLASSES: dict[str, Callable[[], type[_IcomSerialRadioBase]]] = {
     # x6200_caps). Its own subclass keeps the unmeasured 50 ms gap; the
     # command set still comes from the loaded rig via ``model``.
     "X6200": lambda: XieguSerialRadio,
+    # G7250 (MOR-4352) shares the Xiegu CI-V session; its command set comes
+    # from rigs/g7250.toml (LIVE bench audit 2026-11-09).
+    "G7250": lambda: XieguSerialRadio,
     "IC-7300MK2": lambda: Ic7300SerialRadio,
     "IC-9700": lambda: Ic9700SerialRadio,
     "IC-905": lambda: Ic705SerialRadio,

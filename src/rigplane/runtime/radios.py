@@ -92,6 +92,17 @@ RADIOS: dict[str, RadioModel] = {
         has_lan=False,
         has_wifi=True,
     ),
+    # Xiegu G7250 (MOR-4352): answers any CI-V address and echoes it, so
+    # discovery names it through the Xiegu 0x1D 0x19 model id (`72 50`),
+    # never through this address row. 0xA4 here is the Xiegu family
+    # default for `--model G7250` CLI sessions (same disambiguation
+    # posture as X6200 above). USB CI-V only: the LAN port is a
+    # proprietary IQ stream.
+    "G7250": RadioModel(
+        name="G7250",
+        civ_addr=0xA4,
+        has_lan=False,
+    ),
 }
 
 
