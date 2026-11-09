@@ -41,6 +41,7 @@ from rigplane.web.protocol import (  # noqa: E402
 )
 
 from rigplane_testkit.audio_markers import (  # noqa: E402
+    MarkerReport,
     MarkerSpec,
     analyze_marker_pcm16,
     check_marker,
@@ -141,8 +142,51 @@ async def _wait_sink_bytes(sim: MockIcomRadio, payload_bytes: int) -> None:
         await asyncio.sleep(0.02)
 
 
+async def _assert_session_held(sim: MockIcomRadio) -> None:
+    """The radio session must have lasted the whole keyed window (MOR-4331).
+
+    A loop stall longer than the simulator's keepalive hold expires the
+    session: its timer is due the moment the loop runs again. One tick lets
+    that timer fire, so a release is observed here instead of surfacing later
+    as a reset TX audio socket, depending on how recovery races the test.
+    """
+    await asyncio.sleep(0.05)
+    assert sim.released_count == 0, (
+        f"radio session released while keyed: {sim.last_release_reason}"
+    )
+
+
+@pytest.fixture(
+    params=[0.0, _KEEPALIVE_HOLD_S + 0.3], ids=["analysis_fast", "analysis_stalls_loop"]
+)
+def analysis_stall_s(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> float:
+    """MOR-4331: how long ``analyze_marker_pcm16`` blocks the thread it runs on.
+
+    The real analysis is CPU-heavy (a golden-section search of ~60 least-squares
+    fits) and holds the event loop for over ``_KEEPALIVE_HOLD_S`` on a loaded
+    runner. A plain ``time.sleep`` ahead of the real call reproduces that
+    deterministically: if the analysis runs while the radio is keyed inside the
+    arena, the simulator (same loop) misses its keepalive window, drops the
+    session and the TX audio socket resets.
+    """
+    stall_s: float = request.param
+    real_analyze = analyze_marker_pcm16
+
+    def stalling_analyze(pcm: bytes, spec: MarkerSpec) -> MarkerReport:
+        time.sleep(stall_s)
+        return real_analyze(pcm, spec)
+
+    if stall_s:
+        monkeypatch.setattr(
+            sys.modules[__name__], "analyze_marker_pcm16", stalling_analyze
+        )
+    return stall_s
+
+
 async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
-    tmp_path: Path,
+    tmp_path: Path, analysis_stall_s: float
 ) -> None:
     async with _Arena(
         tmp_path, enable_audio=True, sim_options={"capture_tx_audio": True}
@@ -209,6 +253,7 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         first = frames[0]
         assert first.received_at - sent_first <= _WS_TO_SINK_BOUND_S
         assert first.received_at - t_ptt_on <= _PTT_ON_TO_SINK_BOUND_S
+        await _assert_session_held(sim)
 
         # PTT off -> frames stop. The audio gate follows the OBSERVED RF
         # state (the poller must read RX first, as in
@@ -221,7 +266,9 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         assert len(sim.audio_tx_frames) == frozen
 
 
-async def test_marker_check_catches_a_wrong_tone(tmp_path: Path) -> None:
+async def test_marker_check_catches_a_wrong_tone(
+    tmp_path: Path, analysis_stall_s: float
+) -> None:
     """The harness is not vacuous: the same pipeline fed a tone 200 Hz off
     the spec must make ``check_marker`` report the frequency."""
     async with _Arena(
@@ -244,6 +291,7 @@ async def test_marker_check_catches_a_wrong_tone(tmp_path: Path) -> None:
             analyze_marker_pcm16(arena.sim.audio_tx_pcm(), spec), spec
         )
         assert any("frequency" in problem for problem in problems)
+        await _assert_session_held(arena.sim)
         await arena.unkey(session)
 
 
