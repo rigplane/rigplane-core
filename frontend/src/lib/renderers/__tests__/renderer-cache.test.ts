@@ -62,3 +62,15 @@ describe('MOR-4272 static layers and reused buffers', () => {
     expect(labels.mock.calls.length).toBeGreaterThan(labelled);
   });
 });
+
+it('invalidates the audio gradient on a geometry change without pixels', () => {
+  const { ctx, gradient } = contexts(); const rs = new AudioSpectrumRendererState();
+  const state: SpectrumState = { pixels: new Uint8Array(100).fill(80), bandwidth: 12000,
+    filterWidth: 2400, filterWidthMax: 4000, ifShift: 0, pbtInner: 128, pbtOuter: 128,
+    manualNotch: false, notchFreq: 128, contour: 0, contourFreq: 128 };
+  renderAudioSpectrum(ctx, 400, 160, state, rs);
+  ctx.canvas.height = 320;
+  renderAudioSpectrum(ctx, 400, 320, { ...state, pixels: null }, rs);
+  renderAudioSpectrum(ctx, 400, 320, state, rs);
+  expect(gradient).toHaveBeenLastCalledWith(0, 18, 0, 304);
+});
