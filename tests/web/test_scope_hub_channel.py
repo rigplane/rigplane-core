@@ -442,7 +442,7 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
 async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
     virtual_clock, monkeypatch, out_of_range, pixels
 ):
-    from types import SimpleNamespace
+    from rigplane.radio import IcomRadio
     from rigplane.web.protocol import decode_scope_frame_v2
 
     from test_web_server_coverage import _scope_radio
@@ -456,7 +456,8 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
     server.scope_hub.register("radio", source, on_demand=session.set_demand)
     server._radio_scope_source = source
     server._radio_scope_session = session
-    server._radio = SimpleNamespace(last_valid_frame_monotonic=virtual_clock())
+    server._radio = radio
+    radio.last_valid_frame_monotonic = virtual_clock()
     server._hardware_scope_available = True
     server._scope_health_interval = 0.1
     monkeypatch.setattr(server, "_radio_ready", lambda: True)
@@ -464,10 +465,13 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
     sub = await server.scope_hub.subscribe(
         Subscription("radio", 0, View(20_000_000, 20_100_000), 1024, 20)
     )
+    publisher = IcomRadio("127.0.0.1", model="IC-705")
+    publisher._control_scope_session = session
+    publisher.on_scope_data(source.feed_frame)
     task = asyncio.create_task(server._scope_health_monitor())
     try:
-        for _ in range(3):
-            source.feed_frame(
+        for _ in range(6):
+            publisher._civ_runtime._publish_scope_frame(
                 ScopeFrame(0, 1, 14_000_000, 14_100_000, pixels, out_of_range)
             )
             decoded = decode_scope_frame_v2(await sub.receive())
@@ -476,7 +480,7 @@ async def test_typed_oor_and_uncovered_arrivals_never_publish_hidden(
             assert decoded.coverage_start_hz == decoded.coverage_end_hz
             assert session.health(civ_flowing=True).last_frame_at == virtual_clock()
             server._radio.last_valid_frame_monotonic = virtual_clock()
-            await virtual_clock.elapse(0.1)
+            await virtual_clock.elapse(0.05)
         assert server._scope_hidden_published is False
         for _ in range(3):
             server._radio.last_valid_frame_monotonic = virtual_clock()
