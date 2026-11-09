@@ -193,10 +193,12 @@ async def run() -> None:
             for template in templates:
                 assert len(template) == 711 and template[7:9] == b"\x01\x01"
                 assert template[-1] == 0xFD
-                amplitude = bytes(
-                    15 + ((index + receiver * 17) % 90) // 3 for index in range(689)
-                )
-                shaped.append(template[:21] + amplitude + template[-1:])
+                for phase in range(2):
+                    amplitude = bytes(
+                        15 + phase * 25 + ((index + receiver * 17) % 90) // 3
+                        for index in range(689)
+                    )
+                    shaped.append(template[:21] + amplitude + template[-1:])
             simulator._scope_templates[receiver] = shaped
         await simulator.start()
         radio = IcomRadio(

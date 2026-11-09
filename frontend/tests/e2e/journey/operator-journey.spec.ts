@@ -469,6 +469,9 @@ interface PanoramaWitness {
   pinned: boolean;
   baselineSignal: number;
   pixelLosses: number;
+  refusals: string[];
+  changingMain: number;
+  advancingSpectrum: number;
   main: number;
   sub: number;
   audioWire: number;
@@ -494,6 +497,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
     const w: PanoramaWitness = {
       requests: [], grants: [],
       acknowledgments: [], active: false, pinned: false, baselineSignal: 0, pixelLosses: 0, main: 0, sub: 0, audioWire: 0, pcmBuffers: 0,
+      refusals: [], changingMain: 0, advancingSpectrum: 0,
       finiteSamples: 0, nonzeroSamples: 0, invalidSamples: 0, subChecks: 0, losses: 0,
       latestMain: -1, lastReceiver: -1, frames: [], samples: [], pcm: [],
     };
@@ -502,6 +506,8 @@ async function installPanoramaWitness(page: Page): Promise<void> {
     let canvas: HTMLCanvasElement | null = null;
     let width = 0;
     let height = 0;
+    let mainPixels = '';
+    let renderedSignal: number | null = null;
     const selector = '.spectrum-panel[data-waterfall]:not(.audio-fft)';
     // The production canvas is transparent. Exclude its ten/five grid lines,
     // bottom labels, edges, and central tuning/passband overlays. The remaining
@@ -568,6 +574,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
               if (message.type === 'response' && message.ok === true) w.acknowledgments.push(String(message.id));
               const grant = parseGrant(message);
               if (grant?.sourceId === 'radio') w.grants.push(grant);
+              if (path === '/api/v1/scope' && message.type === 'error') w.refusals.push(message.message);
             } catch { /* Non-JSON control traffic is irrelevant to this witness. */ }
             return;
           }
@@ -581,6 +588,11 @@ async function installPanoramaWitness(page: Page): Promise<void> {
           if (!parsed.ok || parsed.frame.source !== 'radio' || parsed.frame.outOfRange || !parsed.frame.pixels) return;
           const { receiver, width: pixels, viewStartHz: start, viewEndHz: end, seq: sequence } = parsed.frame;
           if (receiver !== 0 && receiver !== 1) return;
+          if (receiver === 0 && w.refusals.length > 0) {
+            const nextPixels = Array.from(parsed.frame.pixels).join(',');
+            if (mainPixels && nextPixels !== mainPixels) w.changingMain += 1;
+            mainPixels = nextPixels;
+          }
           if (receiver === 0) { w.main += 1; w.latestMain = sequence; }
           else w.sub += 1;
           w.lastReceiver = receiver;
@@ -594,6 +606,11 @@ async function installPanoramaWitness(page: Page): Promise<void> {
             const current = document.querySelector<HTMLElement>(selector);
             const currentCanvas = current?.querySelector<HTMLCanvasElement>('.spectrum-area canvas') ?? null;
             const rect = currentCanvas?.getBoundingClientRect();
+            if (receiver === 0 && w.pinned && w.refusals.length > 0 && currentCanvas === canvas) {
+              const signal = signalPixels(currentCanvas);
+              if (renderedSignal !== null && signal !== renderedSignal) w.advancingSpectrum += 1;
+              renderedSignal = signal;
+            }
             if (receiver === 0 && w.lastReceiver === 0 && current && currentCanvas && rect && rect.width > 0 && rect.height > 0 && !w.pinned) {
               const signal = signalPixels(currentCanvas);
               if (signal < 20) return;
@@ -711,7 +728,9 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       expect(before.nonzeroSamples).toBeGreaterThan(0);
       expect(before.invalidSamples).toBe(0);
       const modeKey = page.getByTestId('standard-mode-LSB').getByRole('radio');
+      await expect.poll(async () => (await panoramaWitness(page)).pinned).toBe(true);
       await modeKey.click();
+      await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(0);
       await expect.poll(() => sentParams(page, 'set_mode')).toContainEqual({ mode: 'LSB', receiver: 0 });
       await expectServerMain(page, { mode: 'LSB' });
       await expect(modeKey).toHaveAttribute('aria-checked', 'true');
@@ -750,6 +769,9 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
         { message: 'Actual MAIN signal must render while mixed scope, PCM and controls are healthy' }).toBeGreaterThanOrEqual(20);
       await expect.poll(async () => (await panoramaWitness(page)).subChecks).toBeGreaterThanOrEqual(20);
       const rendered = await panoramaWitness(page);
+      expect(rendered.changingMain, 'MAIN wire pixels must change after negotiation refusal').toBeGreaterThan(2);
+      expect.soft(rendered.advancingSpectrum, 'Mounted MAIN spectrum must advance after refusal across SUB-only intervals').toBeGreaterThan(2);
+      await expect.soft(page.locator('[data-testid="toolbar-scope-status"]')).toContainText('Scope view refused');
       expect(rendered.pixelLosses, 'Actual MAIN signal pixels cleared during a SUB-only interval').toBe(0);
       expect(rendered.losses, 'MAIN canvas disappeared or changed geometry after valid SUB before next MAIN').toBe(0);
     } finally {

@@ -4782,6 +4782,49 @@ describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
   });
 });
 
+describe('scope negotiation refusal (MOR-4274)', () => {
+  it('keeps the mounted spectrum advancing after refusal and SUB-only traffic', async () => {
+    const target = mountPanel();
+    emitFrame({ pixels: new Uint8Array([20, 40, 60]), sequence: 1 });
+    await flushWaterfallPaint();
+    const canvas = target.querySelector('.spectrum-area canvas');
+    expect(canvas).not.toBeNull();
+    scopeControllerHarness.stream('hardware').handleMessage({ type: 'error', message: 'View negotiation refused' });
+    flushSync();
+    for (let sequence = 2; sequence < 5; sequence += 1) {
+      emitFrame({ receiver: 1, sequence });
+      await flushWaterfallPaint();
+      spectrumRendererHarness.render.mockClear();
+      const pixels = new Uint8Array([20 * sequence, 40, 60]);
+      emitFrame({ pixels, sequence });
+      await flushWaterfallPaint();
+      expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
+      expect(spectrumRendererHarness.render).toHaveBeenCalled();
+      expect([...spectrumRendererHarness.render.mock.calls.at(-1)![1]]).toEqual([...pixels]);
+    }
+    scopeControllerHarness.stream('hardware').clearMode();
+    flushSync();
+    expect(target.querySelector('.spectrum-area canvas')).toBeNull();
+  });
+
+  it('shows the refusal through panel status alongside the live scope', async () => {
+    const target = mountPanel();
+    emitFrame(); await flushWaterfallPaint();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'error', message: 'View negotiation refused' });
+    flushSync();
+    expect(target.querySelector('[data-testid="toolbar-scope-status"]')?.textContent).toContain('Scope view refused');
+    expect(target.querySelector('[data-testid="toolbar-scope-status"]')?.textContent).toContain('View negotiation refused');
+    expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
+    const request = stream.subscription!;
+    stream.handleMessage({ type: 'granted', ...request,
+      view: { startHz: 14_000_000, endHz: 14_100_000 },
+      coverage: { startHz: 14_000_000, endHz: 14_100_000 }, fps: request.maxFps });
+    flushSync();
+    expect(target.textContent).not.toContain('Scope view refused');
+  });
+});
+
 describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
   it('paints panel, LCD pixels and audio overlays from producer bytes with unchanged buffers', async () => {
     const previousController = scopeControllerHarness;
