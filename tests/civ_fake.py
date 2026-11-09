@@ -60,6 +60,12 @@ _IDENTITY_TABLE: dict[str, tuple[bytes, dict[bytes, bytes]]] = {
     "IC-7610": (b"\x01\x06", {}),
     "IC-705": (b"\x01\x05", {}),
     "X6200": (b"\x01\x05", {_XIEGU_MODEL_ID_OPCODE: b"\x62\x00"}),
+    # G7250 (LIVE bench audit 2026-11-09, MOR-4352): the 19 00 reply
+    # payload is the echoed asked address byte (0xA4 unicast -> A4), and
+    # 0x1D 0x19 answers `72 50`. The static payload covers unicast frames
+    # at the profile address 0xA4; the broadcast-echo replies (payload
+    # 0x00) are pinned by literal wire frames in tests/test_discovery.py.
+    "G7250": (b"\xa4", {_XIEGU_MODEL_ID_OPCODE: b"\x72\x50"}),
 }
 
 
