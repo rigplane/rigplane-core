@@ -768,10 +768,13 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       await expect.poll(async () => (await panoramaWitness(page)).baselineSignal,
         { message: 'Actual MAIN signal must render while mixed scope, PCM and controls are healthy' }).toBeGreaterThanOrEqual(20);
       await expect.poll(async () => (await panoramaWitness(page)).subChecks).toBeGreaterThanOrEqual(20);
+      await expect.poll(async () => (await panoramaWitness(page)).advancingSpectrum,
+        { message: 'Mounted MAIN spectrum must advance after refusal across SUB-only intervals' }).toBeGreaterThan(2);
       const rendered = await panoramaWitness(page);
       expect(rendered.changingMain, 'MAIN wire pixels must change after negotiation refusal').toBeGreaterThan(2);
       expect.soft(rendered.advancingSpectrum, 'Mounted MAIN spectrum must advance after refusal across SUB-only intervals').toBeGreaterThan(2);
       await expect.soft(page.locator('[data-testid="toolbar-scope-status"]')).toContainText('Scope view refused');
+      await expect(page.locator('.spectrum-panel').getByRole('status').filter({ hasText: 'Scope view refused' })).toBeVisible();
       expect(rendered.pixelLosses, 'Actual MAIN signal pixels cleared during a SUB-only interval').toBe(0);
       expect(rendered.losses, 'MAIN canvas disappeared or changed geometry after valid SUB before next MAIN').toBe(0);
     } finally {
