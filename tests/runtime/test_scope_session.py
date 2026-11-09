@@ -308,3 +308,15 @@ async def test_restore_only_writes_view_settings_the_session_changed():
     assert writer.views == [("span", 3, 0)]
     await session.set_output(False)
     assert writer.views == [("span", 3, 0), ("span", 2, 0)]
+
+
+async def test_shared_fixed_slot_is_actuated_again_after_other_receiver_changes_it():
+    writer = Writer()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed, ready=True)
+    await session.set_output(True)
+    first = ScopeFixedEdge(6, 1, 14000000, 14100000)
+    second = ScopeFixedEdge(6, 1, 14100000, 14200000)
+    await session.set_fixed(first, 0)
+    await session.set_fixed(second, 1)
+    await session.set_fixed(first, 0)
+    assert [value for name, value, receiver in writer.views if name == "fixed_edge"] == [first, second, first]
