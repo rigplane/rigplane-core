@@ -513,6 +513,18 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 self.assertIn("needs.classify.outputs.reuse != 'true'", block)
         self.assertIn("npm ci", jobs["quick-frontend"])
         self.assertNotIn("uv run pytest tests/ ", jobs["quick-frontend"])
+        # vitest shells out to `uv run python tests/liveness_ws_trace.py`
+        # (ws-client-store.integration.isolated.test.ts), so quick-frontend
+        # keeps uv, Python 3.11 and the synced environment (trial PR #4557
+        # showed the failure when they were dropped).
+        for needle in (
+            '      UV_PYTHON: "3.11"\n',
+            "      - name: Install uv\n",
+            "        run: uv python install 3.11\n",
+            "        run: uv sync --all-extras\n",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, jobs["quick-frontend"])
         # The Playwright tiers moved to quick-frontend-e2e (MOR-4373); the
         # lint/check/vitest/build job keeps no e2e step.
         self.assertNotIn("test:e2e:i18n", jobs["quick-frontend"])

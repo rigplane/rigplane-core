@@ -170,6 +170,12 @@ jobs:
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
     # loop test. Nothing in this repo reads them.
     env:
+      # Pin uv to the project's minimum Python. Without this, `uv run`
+      # satisfies requires-python=">=3.11" with the newest interpreter on
+      # the runner (3.13), so the "Python 3.11" job silently tested 3.13
+      # (MOR-590). The vitest suite shells out to `uv run python
+      # tests/liveness_ws_trace.py`, so this job still needs uv + deps.
+      UV_PYTHON: "3.11"
       DBUS_SESSION_BUS_ADDRESS: 'disabled:'
       FC_FONTATIONS: '1'
       VK_ICD_FILENAMES: ''
@@ -179,6 +185,25 @@ jobs:
         with:
           # Architecture debt guards compare HEAD with the reachable PR base.
           fetch-depth: 2
+
+      - name: Install uv
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
+        # --all-extras (MOR-1978): every extra declared in pyproject.toml, so
+        # the tests gated on scope/dsp/webrtc extras run instead of skipping.
+        run: uv sync --all-extras
 
       - name: Set up Node.js
         if: needs.classify.outputs.frontend == 'true'
