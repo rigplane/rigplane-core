@@ -841,6 +841,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # only: nothing waits for it and nothing is refused because of it.
         self._connection_identity: RadioIdentity | None = None
         self._identity_read_task: asyncio.Task[None] | None = None
+        # True while a connect found the radio silent on CI-V: its tail waits.
+        self._connect_tail_pending: bool = False
         self._connect_lock = asyncio.Lock()
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
@@ -1938,6 +1940,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         stops being managed until the next ``connect()``.
         """
         self._cancel_identity_read()
+        self._connect_tail_pending = False
         # An owner stop supersedes any audio-silence repair still in flight
         # (MOR-3401): cancel it first so a backoff sleep cannot fire another
         # attempt while the teardown below runs.
@@ -1978,6 +1981,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         :meth:`_park_managed_tx`.
         """
         self._cancel_identity_read()
+        self._connect_tail_pending = False
         if self._conn_state != RadioConnectionState.CONNECTED:
             self._connection_identity = None
             self._civ_runtime._notify_change("connection_facts_changed", {})
@@ -2102,13 +2106,18 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             name="lan-identity-read",
         )
 
-    async def probe_connection_identity(self) -> None:
+    async def probe_connection_identity(self) -> bool:
         """One bounded identity read during connect; publishes, never raises.
 
-        The read also starts the radio's CI-V reply stream the readiness wait
-        needs. When nothing answers, the retries continue in the background.
+        True when the radio answered CI-V. The read also starts the radio's
+        reply stream the readiness wait needs. When nothing answers the radio
+        is not talking CI-V yet (a stale session still held, a radio still
+        starting): the connect does not wait for it, the retries continue in
+        the background, and the post-connect tail (initial fetch, TX arming,
+        reconnect callback) runs when the first answer arrives.
         """
         self._cancel_identity_read()
+        self._connect_tail_pending = False
         epoch = self._civ_epoch
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING, expected_model=self.model
@@ -2120,12 +2129,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             logger.warning(
                 "rigplane (%s): identity read failed", self.model, exc_info=True
             )
-            return
-        if not answered and self._civ_epoch == epoch:
+            return False
+        if answered:
+            return True
+        if self._civ_epoch == epoch:
+            self._connect_tail_pending = True
             self._identity_read_task = asyncio.create_task(
                 self._identity_read_loop(epoch, first_attempt_done=True),
                 name="lan-identity-read",
             )
+        return False
 
     def _cancel_identity_read(self) -> None:
         task = getattr(self, "_identity_read_task", None)
@@ -2167,6 +2180,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 if delay:
                     await asyncio.sleep(delay)
                 if await self._read_identity_attempt(epoch):
+                    await self._run_deferred_connect_tail(epoch)
                     return
         except asyncio.CancelledError:
             pass
@@ -2252,6 +2266,8 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         connect, owner connect, the resident reconnect loop), so a full
         reconnect behaves exactly like a fresh connect.
         """
+        if self._connect_tail_pending:
+            return  # the radio is not answering yet; its first answer runs this
         epoch = self._civ_epoch
         await self._fetch_initial_state()
         if self._civ_epoch != epoch:
@@ -2262,6 +2278,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # and only the reconnect callback re-selects it (the soft path runs
         # the same callback in ``_after_reconnect_parts``).
         self._run_reconnect_callback()
+
+    async def _run_deferred_connect_tail(self, epoch: int) -> None:
+        """Run the connect tail a silent radio owed, once, on its first answer."""
+        if not self._connect_tail_pending or self._civ_epoch != epoch:
+            return
+        self._connect_tail_pending = False
+        await self._complete_connect()
 
     def _run_reconnect_callback(self) -> None:
         """Run the registered reconnect callback; its failure never propagates."""

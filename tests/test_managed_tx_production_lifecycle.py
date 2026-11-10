@@ -104,6 +104,7 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
     radio._conn_state = RadioConnectionState.DISCONNECTED
     radio._connect_lock = asyncio.Lock()
     radio._identity_read_task = None
+    radio._connect_tail_pending = False
     radio._civ_epoch = 0
     radio._on_reconnect = None
     radio._owner_stop_epoch = 0

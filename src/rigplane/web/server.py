@@ -3253,6 +3253,7 @@ class WebServer:
         # fact is independently valid and is reasserted without touching TX.
         if isinstance(self._radio_poller, RadioPoller):
             self._radio_poller.reset_vfo_session(connection_recovery=True)
+            self._radio_poller.retry_connect_selection_after_silence()
         self._publish_single_receiver_topology()
         # Clear poller readiness so scope waits for refetch to complete
         if self._radio_poller is not None:

@@ -558,27 +558,35 @@ class ControlPhaseRuntime:
 
         # The identity read is information only (MOR-4382): it is published,
         # never gates the connect. Its reply also starts the CI-V stream the
-        # readiness wait below needs.
+        # readiness wait below needs. A radio that answers nothing yet (a
+        # stale session still held, a radio still starting) is not a failed
+        # connect: the link stays up, the watchdog keeps nudging it and the
+        # post-connect tail runs on its first answer.
         probe_identity = getattr(h, "probe_connection_identity", None)
-        if probe_identity is not None:
-            await probe_identity()
-
-        try:
-            await wait_for_radio_startup_ready(
-                h,  # type: ignore[arg-type]
-                timeout=getattr(h, "_timeout", 5.0),
-                component="radio connect",
+        answered = True if probe_identity is None else await probe_identity()
+        if answered:
+            try:
+                await wait_for_radio_startup_ready(
+                    h,  # type: ignore[arg-type]
+                    timeout=getattr(h, "_timeout", 5.0),
+                    component="radio connect",
+                )
+            except RuntimeError as exc:
+                # End this attempt only: ``CoreRadio.disconnect`` is the
+                # owner's stop. Retire the identity this attempt recorded, as
+                # that teardown does.
+                await self.disconnect()
+                cancel_identity_read = getattr(h, "_cancel_identity_read", None)
+                if cancel_identity_read is not None:
+                    cancel_identity_read()
+                h._connection_identity = None
+                raise ConnectionError(str(exc)) from exc
+        else:
+            logger.warning(
+                "Radio at %s did not answer CI-V yet; staying connected and "
+                "completing the connect when it answers",
+                h._host,
             )
-        except RuntimeError as exc:
-            # End this attempt only: ``CoreRadio.disconnect`` is the owner's
-            # stop. Retire the identity this attempt recorded, as that
-            # teardown does.
-            await self.disconnect()
-            cancel_identity_read = getattr(h, "_cancel_identity_read", None)
-            if cancel_identity_read is not None:
-                cancel_identity_read()
-            h._connection_identity = None
-            raise ConnectionError(str(exc)) from exc
 
         h._has_connected_once = True
         logger.info(

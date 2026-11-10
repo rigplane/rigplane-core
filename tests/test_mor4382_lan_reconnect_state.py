@@ -77,6 +77,7 @@ async def _wait_state(
 async def _stack(
     sim: MockIcomRadio, *, model: str
 ) -> AsyncIterator[tuple[WebServer, IcomRadio, MockIcomRadio]]:
+    """The ``rigplane web`` order: connect first, then serve the web layer."""
     await sim.start()
     radio = IcomRadio(
         host="127.0.0.1",
@@ -150,6 +151,26 @@ async def _post_radio(web: WebServer, action: str) -> None:
             timeout=aiohttp.ClientTimeout(total=30.0),
         ) as resp:
             assert resp.status == 200
+
+
+@pytest.mark.asyncio
+@_REALTIME
+async def test_first_connect_to_a_radio_silent_on_civ_completes_when_it_answers() -> (
+    None
+):
+    """The first connect (the ``rigplane web`` order) must not abort.
+
+    The IC-705 can hold a stale session and answer nothing on CI-V for a few
+    seconds after the link opens. ``connect()`` used to abort with "radio is
+    not fully ready" and take the whole startup down; it must return, and the
+    post-connect tail (initial state, VFO selection) must run once the radio
+    answers, so freq/mode appear and a command works.
+    """
+    sim = ic705_lan_fake(
+        single_owner=True, keepalive_hold_s=30.0, civ_silent_after_open_s=7.0
+    )
+    async with _stack(sim, model="IC-705") as (web, _r, _s):
+        await _assert_recovered(web, 7_074_000)
 
 
 @pytest.mark.asyncio

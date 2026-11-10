@@ -518,6 +518,7 @@ class MockIcomRadio(AudioPortMixin):
         *,
         single_owner: bool = False,
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
+        civ_silent_after_open_s: float = 0.0,
         drop_rate: float = 0.0,
         lan_civ_echo: bool = True,
         unsolicited_civ: bool = False,
@@ -743,6 +744,13 @@ class MockIcomRadio(AudioPortMixin):
         # so turning standby off resumes cleanly; discovery,
         # pings and OpenClose still work, and the control port is unaffected.
         self._civ_standby: bool = False
+        # CI-V replies start late after a LAN connect: for this many seconds
+        # after the first accepted OpenClose(open) of each login the radio is
+        # in CI-V standby (the bench IC-705 holding a stale session answers
+        # nothing on CI-V for 12-14 s while pings and discovery still work).
+        # Reusable for any smoke of the connect path; 0 keeps replies prompt.
+        self.civ_silent_after_open_s: float = max(0.0, civ_silent_after_open_s)
+        self._civ_silent_armed_for: object = None
         # Power-off notice window (recording w2): after the 0x90 notice the
         # radio still answers discovery/pings until this deadline, then goes dark.
         self._poweroff_notice_until: float = 0.0
@@ -1037,6 +1045,19 @@ class MockIcomRadio(AudioPortMixin):
         """
         self._release_session(reason)
         self._retire_token()
+
+    def _arm_civ_silence_after_open(self) -> None:
+        """Start the ``civ_silent_after_open_s`` window once per login."""
+        if self.civ_silent_after_open_s <= 0:
+            return
+        login = self._owner if self._owner is not None else self._last_login
+        if login is None or login == self._civ_silent_armed_for:
+            return
+        self._civ_silent_armed_for = login
+        self.civ_standby(True)
+        asyncio.get_running_loop().call_later(
+            self.civ_silent_after_open_s, self.civ_standby, False
+        )
 
     def civ_standby(self, on: bool) -> None:
         """Turn the CI-V standby scenario on or off (test helper).
@@ -1963,6 +1984,7 @@ class MockIcomRadio(AudioPortMixin):
                 # the previous session's orphan state when one is kept
                 # (MOR-3418 slice G).
                 self._seed_tracker_from_orphan((addr, sender_id))
+                self._arm_civ_silence_after_open()
                 if not self._civ_standby:
                     civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
                     self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
