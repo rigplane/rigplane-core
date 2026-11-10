@@ -135,9 +135,13 @@ async function runCell(cell: MatrixCell, page: import('@playwright/test').Page, 
     const choices = await spanChoicesHz(page, port);
     const badge = await page.locator('[data-scope-source]').first().innerText().catch(() => null);
 
+    const windowAfter = <T>(baseline: readonly T[], current: readonly T[]): readonly T[] =>
+      current.length < baseline.length ? current : current.slice(baseline.length);
     const invariants = evaluateInvariants({
       cell, radio, report, axis, baselineAxis, baselineBump, baselineWaterfall,
       measurement, waterfall, observations, receipts, baselineReceipts,
+      pathWrites: windowAfter(baselineReceipts.writes, receipts.writes) as ScopeWriteReceipt[],
+      pathNaks: windowAfter(baselineReceipts.naks, receipts.naks) as NakReceipt[],
       freqBefore, freqAfter, displayHz, choices,
     });
 
@@ -185,6 +189,12 @@ interface EvaluationInput {
   readonly observations: PageObservations;
   readonly receipts: Receipts;
   readonly baselineReceipts: Receipts;
+  /** Scope writes that landed while the path ran: the log tail after the
+   * baseline count (or the whole file when the server restarted under the
+   * path, e.g. reconnect — the evidence file restarts empty with it). */
+  readonly pathWrites: ScopeWriteReceipt[];
+  /** Same windowing for NAK receipts (invariant 5). */
+  readonly pathNaks: NakReceipt[];
   readonly freqBefore: number;
   readonly freqAfter: number;
   readonly displayHz: number | null;
@@ -317,11 +327,13 @@ function evaluateInvariants(input: EvaluationInput): InvariantResult[] {
     });
   }
 
-  // Invariant 4 — no stray radio scope writes during the path window.
+  // Invariant 4 — no stray radio scope writes during the path window
+  // (the log tail after the baseline, not the whole session file: the
+  // initial grant triple belongs to page load, not to the path).
   if (report.na[4]) {
     results.push(na(4, report.na[4]));
   } else {
-    const writes = receipts.writes;
+    const writes = input.pathWrites;
     const expectation = report.writes;
     let ok: boolean;
     if (expectation.kind === 'none') {
@@ -342,8 +354,8 @@ function evaluateInvariants(input: EvaluationInput): InvariantResult[] {
   // count (the connection choreography also produces NAK-shaped replies to
   // non-CI-V handshake packets, which the client tolerates by design).
   {
-    const naks = receipts.naks.filter(nak => nak.civHex.length > 0);
-    const handshake = receipts.naks.length - naks.length;
+    const naks = input.pathNaks.filter(nak => nak.civHex.length > 0);
+    const handshake = input.pathNaks.length - naks.length;
     results.push({
       invariant: 5, status: naks.length === 0 ? 'pass' : 'fail',
       summary: naks.length === 0

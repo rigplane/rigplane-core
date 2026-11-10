@@ -123,6 +123,10 @@ const NO_WRITES: WriteExpectation = { kind: 'none' };
 // set_center writes receiver (0x12), mode (0x14) and span (0x15). Stray
 // would be anything else — in particular fixed-edge (0x1E) writes.
 const RECENTER_WRITES: WriteExpectation = { kind: 'contains', subs: [0x15], forbidden: [0x1e] };
+// Non-hardware scope sources (audio-FFT, SDR) have no radio scope to
+// program: any tune expectation there must demand zero radio writes.
+const tuneWrites = (ctx: PathContext): WriteExpectation =>
+  ctx.source !== 'hardware' ? NO_WRITES : RECENTER_WRITES;
 
 // ── paths ──────────────────────────────────────────────────────────────────
 
@@ -137,13 +141,13 @@ async function pathClickTune(ctx: PathContext, area: 'spectrum' | 'waterfall', f
   const note = `clicked ${area} at fraction ${fraction}; axis target ${targetHz ?? '?'} Hz, step ${step ?? '?'} Hz`;
   if (targetHz !== null) {
     return {
-      summary: note, na: {}, writes: RECENTER_WRITES,
+      summary: note, na: {}, writes: tuneWrites(ctx),
       setFreq: { kind: 'strict', values: [toHz], toleranceHz: Math.max(step ?? 1000, 1000), note },
       clickTargetHz: targetHz,
     };
   }
   return {
-    summary: `${note}; axis unavailable, consistency only`, na: {}, writes: RECENTER_WRITES,
+    summary: `${note}; axis unavailable, consistency only`, na: {}, writes: tuneWrites(ctx),
     setFreq: { kind: 'consistency', note }, clickTargetHz: null,
   };
 }
@@ -162,7 +166,7 @@ async function pathDragPan(ctx: PathContext): Promise<PathReport> {
   return {
     summary: note,
     na: {},
-    writes: tuned ? RECENTER_WRITES : NO_WRITES,
+    writes: tuned ? tuneWrites(ctx) : NO_WRITES,
     setFreq: tuned
       ? { kind: 'consistency', note: `${note}; direction semantics is the design's call (MOR-4387), consistency checked only` }
       : { kind: 'no-change' },
@@ -189,7 +193,7 @@ async function tuneStepsAfterClick(ctx: PathContext, method: 'arrows' | 'wheel')
   if (step === null) {
     return {
       summary: `${method} tuning after a click-tune; step readout unparseable, uniform-delta consistency checked`,
-      na: {}, writes: RECENTER_WRITES,
+      na: {}, writes: tuneWrites(ctx),
       setFreq: { kind: 'consistency', note: `click ${clickedHz}, final ${finalHz}` },
       clickTargetHz: null,
     };
@@ -198,7 +202,7 @@ async function tuneStepsAfterClick(ctx: PathContext, method: 'arrows' | 'wheel')
   return {
     summary: `${method} tuning ×${presses} after a click-tune with step ${step} Hz`,
     na: {},
-    writes: RECENTER_WRITES,
+    writes: tuneWrites(ctx),
     setFreq: { kind: 'strict', values: [expected], toleranceHz: Math.max(1, Math.round(step / 100)), note: `click ${clickedHz} + ${presses}×${step}` },
     clickTargetHz: null,
   };
@@ -224,7 +228,7 @@ async function pathDigitWheel(ctx: PathContext): Promise<PathReport> {
   const place = 10_000;
   return {
     summary: `wheel-down on the 10 kHz digit (${fromHz} → ${toHz})`,
-    na: {}, writes: RECENTER_WRITES,
+    na: {}, writes: tuneWrites(ctx),
     setFreq: toHz === fromHz
       ? { kind: 'consistency', note: 'digit wheel produced no frequency change' }
       : { kind: 'strict', values: [fromHz - place], toleranceHz: 1, note: `one notch down on the 10 kHz digit of ${fromHz}` },
@@ -393,7 +397,9 @@ async function pathModeChange(ctx: PathContext): Promise<PathReport> {
   const fromHz = await stateFreq(ctx.page, ctx.port);
   const candidates = ['LSB', 'FM', 'AM', 'USB'];
   for (const name of candidates) {
-    const button = ctx.page.getByRole('button', { name, exact: true }).first();
+    // Anchor at the start to tolerate extra accessible-name content; a
+    // superset of the old exact match.
+    const button = ctx.page.getByRole('button', { name: new RegExp(`^${name}(\\s|$)`) }).first();
     if (await button.count()) {
       await button.click();
       await settle(ctx.page, 3500);
@@ -496,7 +502,9 @@ async function pathTwoClients(ctx: PathContext): Promise<PathReport> {
       .catch(() => '');
     return {
       summary: `second client opened; client 1 click-tuned ${fromHz}→${toHz}; client 2 shows ${display2.replace(/\D/g, '')}`,
-      na: {}, writes: NO_WRITES,
+      // The path performs a click-tune, so a hardware re-centre is
+      // legitimate; only a non-hardware source must stay writeless.
+      na: {}, writes: tuneWrites(ctx),
       setFreq: { kind: 'consistency', note: 'two-client tuning consistency: both displays must agree with the state' },
       clickTargetHz: null,
     };
