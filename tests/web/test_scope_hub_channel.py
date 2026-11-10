@@ -520,8 +520,12 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
         ]
     else:
         assert (grant.coverage.start_hz + grant.coverage.end_hz) / 2 == 14_100_000
-        span = grant.coverage.end_hz - grant.coverage.start_hz
-        index = radio.profile.scope_span_presets_hz.index(span)
+        # MOR-4385: Icom presets are ±half-widths, so coverage is twice
+        # the preset sent to the radio: a view reaching 100 kHz off center
+        # gets the ±100 kHz preset and a 200 kHz wide grant.
+        assert grant.coverage == View(14_000_000, 14_200_000)
+        preset_hz = (grant.coverage.end_hz - grant.coverage.start_hz) / 2
+        index = radio.profile.scope_span_presets_hz.index(preset_hz)
         assert radio.scope_writes == [("mode", 0, 0), ("span", index, 0)]
     assert writer.tuned_frequency(0) == 14_100_000
     radio.scope_writes.clear()

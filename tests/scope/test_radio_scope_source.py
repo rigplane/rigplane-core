@@ -34,7 +34,9 @@ async def test_off_vfo_view_keeps_acquisition_at_tuned_frequency(model):
     requested = View(14_200_000, 14_210_000)
     granted = await source.set_view(requested)
     assert granted.view == requested
-    assert granted.coverage == Coverage(13_975_000, 14_225_000)
+    # The requested edge is 110 kHz off center: the smallest preset whose
+    # ±coverage contains it is 250 kHz (Icom presets are ±half-widths).
+    assert granted.coverage == Coverage(13_850_000, 14_350_000)
     assert writer.writes[-1] == (writer.frequency, 250000, 0)
     assert writer.frequency == 14_100_000
 
@@ -46,13 +48,17 @@ async def test_profile_center_span_and_partial(model):
     source = RadioScopeSource(profile, writer)
     plugin: ScopeSourcePlugin = source
     assert plugin.capabilities().view_modes == ("center",)
-    assert plugin.capabilities().span_choices_hz == profile.scope_span_presets_hz
+    # MOR-4385: choices are published as real VIEW widths — twice the
+    # Icom preset, whose numbers are ±half-widths on the CI-V wire.
+    assert plugin.capabilities().span_choices_hz == tuple(
+        2 * preset for preset in profile.scope_span_presets_hz
+    )
     view = View(14_090_000, 14_105_000)
-    assert plugin.coverage_for(view) == Coverage(14_087_500, 14_112_500)
+    assert plugin.coverage_for(view) == Coverage(14_075_000, 14_125_000)
     await plugin.set_view(view)
     assert writer.writes[-1] == (14_100_000, 25000, 0)
     wide = View(13_000_000, 15_000_000)
-    assert (await plugin.set_view(wide)).coverage == Coverage(13_850_000, 14_350_000)
+    assert (await plugin.set_view(wide)).coverage == Coverage(13_600_000, 14_600_000)
     writer.frequency = 7_100_000
     assert (await plugin.set_view(FollowView("vfo", 5000))).view == View(
         7_097_500, 7_102_500
@@ -60,6 +66,57 @@ async def test_profile_center_span_and_partial(model):
     await plugin.start()
     await plugin.stop()
     assert writer.writes[-2:] == [True, False]
+
+
+@pytest.mark.parametrize(
+    "view_width,preset",
+    [(100_000, 50_000), (200_000, 100_000), (500_000, 250_000)],
+)
+@pytest.mark.parametrize("model", ["ic705", "ic7300"])
+async def test_icom_span_steps_grant_their_own_preset_coverage(
+    model, view_width, preset
+):
+    """MOR-4385: stepping a span choice grants exactly that view width,
+    sends the radio the matching preset (its own ±half-width), and the
+    granted coverage equals the view — so frames at that preset cover
+    the whole view and no native bins are cropped away.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    writer = Writer()
+    source = RadioScopeSource(profile, writer)
+    granted = await source.set_view(FollowView("vfo", view_width))
+    half = view_width / 2
+    assert granted.view == View(14_100_000 - half, 14_100_000 + half)
+    assert granted.coverage == granted.view
+    assert writer.writes[-1] == (14_100_000, preset, 0)
+
+
+_FULL_WIDTH_TOML = """
+[scope]
+span_presets_hz = [2500, 5000, 10000]
+span_preset_semantics = "full_width"
+"""
+
+
+async def test_full_width_semantics_profile_grants_half_of_each_preset(tmp_path):
+    """A profile whose presets are full display widths (no shipped radio
+    declares this today) keeps the historical full-width behaviour:
+    choices are the presets themselves and coverage is center ± preset/2.
+    """
+    from test_rig_loader import _MINIMAL_TOML, _write_toml
+
+    path = _write_toml(tmp_path, _MINIMAL_TOML + _FULL_WIDTH_TOML)
+    profile = load_rig(path).to_profile()
+    writer = Writer()
+    source = RadioScopeSource(profile, writer)
+    assert source.capabilities().span_choices_hz == (2500, 5000, 10000)
+    granted = await source.set_view(FollowView("vfo", 5000))
+    assert granted.view == View(14_097_500, 14_102_500)
+    assert granted.coverage == granted.view
+    assert writer.writes[-1] == (14_100_000, 5000, 0)
+    wide = await source.set_view(FollowView("vfo", 9000))
+    assert wide.coverage == Coverage(14_095_000, 14_105_000)
+    assert writer.writes[-1] == (14_100_000, 10000, 0)
 
 
 async def test_native_frame_and_unsubscribe():
@@ -74,6 +131,47 @@ async def test_native_frame_and_unsubscribe():
     source.feed_frame(ScopeFrame(0, 1, 14_010_000, 14_040_000, b"", True))
     assert len(frames) == 1
     await source.stop()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7300"])
+async def test_granted_preset_frame_uses_every_native_bin(model):
+    """MOR-4385: a frame at the granted preset's own coverage (the CI-V
+    waveform contract: end - start == 2 x span) covers the whole granted
+    view — every native bin lands inside the view, nothing is cropped or
+    stretched by the projection.
+    """
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+
+    writer = Writer()
+    source = RadioScopeSource(load_rig(Path("rigs") / f"{model}.toml").to_profile(), writer)
+    encoded = []
+
+    def encode(frame):
+        encoded.append(frame)
+        return b"frame"
+
+    hub = ScopeHub(encoder=encode)
+    hub.register("radio", source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        assert writer.writes[-1] == (14_100_000, 50_000, 0)
+        source.feed_frame(
+            ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False)
+        )
+        await sub.receive()
+        frame = encoded[-1]
+        assert (frame.view_start_hz, frame.view_end_hz) == (14_050_000, 14_150_000)
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+            14_050_000,
+            14_150_000,
+        )
+        assert frame.width == 475
+        assert frame.pixels is not None and len(frame.pixels) == 475
+    finally:
+        await sub.close()
 
 
 @pytest.mark.parametrize(
@@ -236,5 +334,5 @@ async def test_off_band_fixed_request_uses_center_uncovered_fallback():
     writer = FixedWriter()
     source = RadioScopeSource(load_rig(Path("rigs/ic7610.toml")).to_profile(), writer)
     grant = await source.set_view(View(7_050_000, 7_150_000), 0)
-    assert grant.coverage == Coverage(13_850_000, 14_350_000)
+    assert grant.coverage == Coverage(13_600_000, 14_600_000)
     assert writer.writes[-1] == (14_100_000, 500000, 0)

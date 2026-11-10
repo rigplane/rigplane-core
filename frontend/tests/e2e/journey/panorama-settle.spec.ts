@@ -96,7 +96,10 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const box = await area.boundingBox(); expect(box).not.toBeNull();
         const before = { subscriptions: sent.length, writes: (await writes()).length, work: await work() };
         if (zoom === 'span') {
-          const widths = zoomMode === 1 ? [25000, 50000, 100000] : [50000, 100000, 250000];
+          // MOR-4385: span choices are real view widths (twice the Icom
+          // ±half-width preset), so the steps read like the radio's own
+          // span table and each 0x15 write lands on the width/2 preset.
+          const widths = zoomMode === 1 ? [20000, 50000, 100000] : [50000, 100000, 200000];
           await expect(page.getByTestId('scope-span-value').first()).toHaveText(zoomMode === 1 ? '±25k' : '±50k');
           if (zoomMode === 1) expect((await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
           for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
@@ -109,6 +112,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
             await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
               && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
             await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
+            expect((await writes()).filter(receipt => receipt.sub === 0x15).at(-1)?.span).toBe(width / 2);
           }
         } else {
         await page.mouse.move(box!.x + box!.width * (zoom ? 0.9 : 0.6), box!.y + box!.height * 0.3);
@@ -126,7 +130,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const finalHz = zoom === 'span' ? 14_250_000 : zoom ? 14_290_000 : 14_265_000;
         await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).toMatchObject({ main: { freqHz: finalHz } });
         await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(finalHz);
-        const view = zoom === 'span' ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_125_000, 14_375_000]) : zoom ? [14_225_000, 14_275_000] : [finalHz - 50_000, finalHz + 50_000];
+        const view = zoom === 'span' ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_150_000, 14_350_000]) : zoom ? [14_225_000, 14_275_000] : [finalHz - 50_000, finalHz + 50_000];
         const live = frames.slice(quietStart.frames, quietEnd.frames);
         expect.soft(live.length).toBeGreaterThan(10);
         expect.soft((live[0]?.receivedAt ?? Infinity) - quietStart.atMs).toBeLessThan(1000);
