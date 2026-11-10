@@ -41,7 +41,12 @@ from rigplane.exceptions import (
     TimeoutError,
 )
 from rigplane.core import tx_safety as tx
-from rigplane.core.civ import CivEvent, CivEventType, CivRequestTracker
+from rigplane.core.civ import (
+    CivEvent,
+    CivEventType,
+    CivRequestTracker,
+    read_identity_from_frame,
+)
 from rigplane.radio import IcomRadio
 from rigplane.types import (
     AgcMode,
@@ -1440,6 +1445,12 @@ class TestConnectedProperty:
         assert not radio.connected
 
 
+#: MOR-4384 late-refusal coverage runs on an Icom LAN profile and a USB one.
+_MOR4384_MODELS = pytest.mark.parametrize(
+    "model", ["IC-705", "IC-7300"], ids=["ic705-lan", "ic7300-usb"]
+)
+
+
 class TestAckSinkRobustness:
     """Regression tests for fire-and-forget ACK sink behavior."""
 
@@ -1587,6 +1598,120 @@ class TestAckSinkRobustness:
                 await asyncio.gather(write_task, return_exceptions=True)
 
         assert result is refusal
+
+    @_MOR4384_MODELS
+    @pytest.mark.realtime(
+        reason="the late refusal must land after the retired fixed 120 ms "
+        "drain grace; a real delay stands in for the wire latency that "
+        "carried the answer late"
+    )
+    @pytest.mark.asyncio
+    async def test_late_read_refusal_does_not_reject_the_next_write(
+        self, mock_transport: MockTransport, model: str
+    ) -> None:
+        """MOR-4384: a background read's late refusal is not the write's.
+
+        A refusal is a bare ``FA`` that names no command. The drain before
+        a blocking command used to drop every open fire-and-forget sink
+        after a fixed 120 ms grace, so on a link slower than that the
+        read's refusal arrived once the write's own waiter was registered
+        and settled it: ``set_freq`` failed with "Radio rejected MAIN
+        set_frequency(...)" although the radio tuned (its own ``FB``
+        follows here). The read's sink must stay open for its own answer
+        window — send time + ``_civ_get_timeout`` — so the refusal retires
+        the read it answers and the write settles on its own ``FB``.
+        """
+        radio = IcomRadio("192.168.1.100", model=model)
+        radio._ctrl_transport = mock_transport
+        radio._civ_transport = mock_transport
+        fake_connected(radio)
+        observe_selected_receiver(radio, 0)
+        runtime = radio._civ_runtime
+        radio._civ_min_interval = 0.0
+        radio._civ_get_timeout = 10.0
+        addr = radio._radio_addr
+        # A background read the radio refuses (tuner status): the FA it is
+        # answered with names no command.
+        refused_read = build_civ_frame(addr, CONTROLLER_ADDR, 0x1C, sub=0x01)
+        late_refusal = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFA))
+        write_ack = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFB))
+        with patch.object(runtime, "start_pump"):
+            assert await runtime._execute_civ_raw(refused_read, wait_response=False) is None
+            task = asyncio.create_task(radio.set_freq(7_218_000))
+            try:
+                # Later than the retired fixed grace (120 ms): on the old
+                # code the read's sink was already dropped when this FA
+                # landed, and it settled the write's fresh waiter.
+                await asyncio.sleep(0.2)
+                await runtime._route_civ_frame(late_refusal, generation=radio._civ_epoch)
+                await await_until(
+                    lambda: len(mock_transport.sent_packets) >= 2,
+                    description="the blocking write to go out",
+                )
+                await runtime._route_civ_frame(write_ack, generation=radio._civ_epoch)
+                await asyncio.wait_for(task, timeout=3.0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # The refusal went to the read it answered.
+            assert radio._civ_request_tracker.take_refused_reads() == (
+                read_identity_from_frame(parse_civ_frame(refused_read)),
+            )
+
+    @_MOR4384_MODELS
+    @pytest.mark.realtime(
+        reason="the late refusal must land after the retired fixed 120 ms "
+        "drain grace; a real delay stands in for the wire latency that "
+        "carried the answer late"
+    )
+    @pytest.mark.asyncio
+    async def test_late_read_refusal_does_not_refuse_the_next_read(
+        self, mock_transport: MockTransport, model: str
+    ) -> None:
+        """MOR-4384: a background read's late refusal is not the next read's.
+
+        Same wire shape as the write case above, but the blocking command
+        is a read: on the old code the dropped read's late ``FA`` settled
+        the ``get_mode`` read's NAK-only waiter and the read failed with
+        "CI-V command 0x04 refused (NAK)" instead of its own answer.
+        """
+        radio = IcomRadio("192.168.1.100", model=model)
+        radio._ctrl_transport = mock_transport
+        radio._civ_transport = mock_transport
+        fake_connected(radio)
+        observe_selected_receiver(radio, 0)
+        runtime = radio._civ_runtime
+        radio._civ_min_interval = 0.0
+        radio._civ_get_timeout = 10.0
+        addr = radio._radio_addr
+        refused_read = build_civ_frame(addr, CONTROLLER_ADDR, 0x1C, sub=0x01)
+        late_refusal = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFA))
+        mode_answer = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, addr, 0x04, data=bytes([Mode.USB, 0x01]))
+        )
+        with patch.object(runtime, "start_pump"):
+            assert await runtime._execute_civ_raw(refused_read, wait_response=False) is None
+            task = asyncio.create_task(radio.get_mode_info())
+            try:
+                await asyncio.sleep(0.2)
+                await runtime._route_civ_frame(late_refusal, generation=radio._civ_epoch)
+                # Let a waiter the refusal wrongly settled fail before the
+                # real answer can also resolve it (``asyncio.wait`` checks
+                # the response future first).
+                await asyncio.sleep(0.05)
+                await await_until(
+                    lambda: len(mock_transport.sent_packets) >= 2,
+                    description="the blocking read to go out",
+                )
+                await runtime._route_civ_frame(mode_answer, generation=radio._civ_epoch)
+                result = await asyncio.wait_for(task, timeout=3.0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        assert result == (Mode.USB, 1)
+        assert radio._civ_request_tracker.take_refused_reads() == (
+            read_identity_from_frame(parse_civ_frame(refused_read)),
+        )
 
     @pytest.mark.asyncio
     async def test_fire_and_forget_missing_ack_does_not_poison_next_ack(
