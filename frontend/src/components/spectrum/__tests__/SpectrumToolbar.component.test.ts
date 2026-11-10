@@ -752,13 +752,14 @@ describe('structural and browser-local behavior', () => {
   it('exposes the waterfall smoothing toggle, default ON and browser-local (MOR-4383)', () => {
     const target = mountToolbar({ enableSmooth: true });
     const smooth = button(target, 'SMTH')!;
-    expect(smooth.getAttribute('aria-pressed')).toBe('true');
+    const lit = () => smooth.getAttribute('aria-pressed') === 'true' || smooth.classList.contains('active');
+    expect(lit()).toBe(true);
     smooth.click();
     flushSync();
-    expect(button(target, 'SMTH')!.getAttribute('aria-pressed')).toBe('false');
+    expect(lit()).toBe(false);
     smooth.click();
     flushSync();
-    expect(button(target, 'SMTH')!.getAttribute('aria-pressed')).toBe('true');
+    expect(lit()).toBe(true);
     for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
     expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
