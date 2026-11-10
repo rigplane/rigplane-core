@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-11-10
+
+Final 3.2.0. The code is identical to 3.2.0rc8; only the version changes. The changes since 3.1 are listed in the release candidate sections below (3.2.0rc1 to 3.2.0rc8).
+
 ## [3.2.0rc8] — 2026-11-09
 
 This is the eighth release candidate of 3.2.0. Equals 3.2.0rc7 plus the Xiegu G7250 profile and macOS USB audio pairing for radios whose CODECs share one name.
