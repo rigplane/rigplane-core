@@ -161,6 +161,9 @@ class PanoramaSimulator(MockIcomRadio):
             except RuntimeError:
                 loop = None
             if loop is not None:
+                # Bound here: zero-arg super() cannot run inside the nested
+                # _fire closure (it has no instance argument).
+                base_handle = super()._handle_civ_data
 
                 def _fire() -> None:
                     # Re-stamp the refused payload at fire time (D6): _dispatch
@@ -170,7 +173,7 @@ class PanoramaSimulator(MockIcomRadio):
                     # Synchronous dispatch makes the stamp exact.
                     self._last_nak_payload = data
                     self._last_nak_was_civ = True
-                    super()._handle_civ_data(data, addr, sender_id, proto)
+                    base_handle(data, addr, sender_id, proto)
 
                 loop.call_later(self.slow_civ_ms / 1000.0, _fire)
                 return
