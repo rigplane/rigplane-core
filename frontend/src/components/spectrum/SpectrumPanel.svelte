@@ -14,6 +14,7 @@
   } from '../../lib/renderers/spectrum-renderer';
   import {
     defaultWaterfallOptions,
+    type WaterfallFrameIdentity,
     type WaterfallOptions,
     type ColorSchemeName,
   } from '../../lib/renderers/waterfall-renderer';
@@ -105,7 +106,8 @@
   // MOR-2851: `enableAvg`, `enablePeakHold` and `showBandPlan` were local
   // `$state` and become `$bindable` props with unchanged defaults, so the
   // phone layout can own them from its SCOPE chip tab. Callers that do not
-  // bind them behave exactly as before.
+  // bind them behave exactly as before. MOR-4383 adds `enableSmooth` (the
+  // waterfall temporal-smoothing toggle, default ON) to the same mechanism.
   //
   // `colorRoles` is resolved over the defaults once, and the one resolved
   // record feeds the canvas renderer options, the CSS custom properties the
@@ -113,11 +115,11 @@
   // panel root — one resolution for all three, pinned by `resolves the roles
   // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
-    enableAvg = $bindable(true), enablePeakHold = $bindable(true), showBandPlan = $bindable(true), scopeControls,
+    enableAvg = $bindable(true), enablePeakHold = $bindable(true), enableSmooth = $bindable(true), showBandPlan = $bindable(true), scopeControls,
     scopeStatusIndicator, scopeRegion, scopeDemanded = true, onScopeDemandChange, colorRoles,
     captureTraceTimeline = false, onTraceComplete }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
-    enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
+    enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
     scopeStatusIndicator?: Snippet;
     scopeRegion?: ManagedScopeRegion | null;
@@ -207,7 +209,7 @@
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
-  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
+  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null, identity?: WaterfallFrameIdentity) => void) | null = null;
   const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
   let trace: ScopeRenderTrace | null = $state(null);
   let traceStatus: 'idle' | TraceStatus = $state('idle');
@@ -927,6 +929,7 @@
 
   let waterfallOptions = $derived<WaterfallOptions>({
     ...defaultWaterfallOptions,
+    temporalSmoothing: enableSmooth,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
     coverage: audioFft ? undefined : frameGeometry?.coverage,
@@ -1407,7 +1410,11 @@
         // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
         // panorama holds its last pre-transmit image under the TX marker;
         // only the paint is withheld.
-        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
+        // MOR-4383: the delivery carries the frame identity so the renderer
+        // paints one row group per NEW frame (registration replays dedupe).
+        // Field names come straight from the ScopeFrame contract.
+        const identity: WaterfallFrameIdentity = { seq: frame.seq, epoch: frame.epoch };
+        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token, identity);
         else trace?.record('waterfall_suppressed', token, 0, true);
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
@@ -1529,7 +1536,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
   {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
@@ -1656,7 +1663,7 @@
             const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh' && !sdrTxFrozen
               ? runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware')
                 .latest(scopeSlotKey(geometry.sourceId, geometry.receiver)) : null;
-            if (frame?.pixels) fn(frame.pixels, waterfallOptions);
+            if (frame?.pixels) fn(frame.pixels, waterfallOptions, null, { seq: frame.seq, epoch: frame.epoch });
           }}
         />
         <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so

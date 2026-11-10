@@ -131,10 +131,12 @@ function panoramaShiftPixels(options: SpectrumOptions, width: number): number {
 }
 
 // Map data to canvas y-coordinates for the shifted viewport (MOR-2464):
-// the resting profile keeps the established nearest-bin mapping per screen
-// column; a fractional shift interpolates that translated profile between
-// neighbouring columns, so the resting shape never morphs. Columns whose
-// translated position leaves [0, width-1] stay uncovered in `covered`.
+// every column samples the bin-space position of its source-column centre,
+// (p + 0.5) / width mapped through the sample window into bins, minus half a
+// bin, and linearly interpolates the adjacent calibrated bins (edge bins
+// repeat) — the same interpolation rule the waterfall uses (MOR-4383).
+// Columns whose translated position leaves [0, width-1] stay uncovered in
+// `covered`.
 function mapShiftedPoints(
   data: Uint8Array,
   width: number,
@@ -156,14 +158,17 @@ function mapShiftedPoints(
     if (coverage && (hz < coverage.startHz || hz >= coverage.endHz)) continue;
     const p = width / 2 + (x - width / 2) * viewScale + shiftPx;
     if (p < 0 || p > width - 1) continue;
-    const i0 = Math.floor(p);
-    const frac = p - i0;
-    const c0 = start + i0 / width * range, c1 = start + (i0 + 1) / width * range;
-    const v0 = c0 < 0 || c0 > 1 ? 0 : data[offset + Math.min(n - 1, Math.floor(c0 * n))];
-    const v1 = c1 < 0 || c1 > 1 ? 0 : data[offset + Math.min(n - 1, Math.floor(c1 * n))];
-    const a0 = amplitudeMax === 80 ? v0 : Math.round(Math.min(v0, amplitudeMax) * 80 / amplitudeMax);
-    const a1 = amplitudeMax === 80 ? v1 : Math.round(Math.min(v1, amplitudeMax) * 80 / amplitudeMax);
-    const sample = frac === 0 ? a0 : a0 * (1 - frac) + a1 * frac;
+    const c = start + (p + 0.5) / width * range;
+    let sample: number;
+    if (c < 0 || c > 1) sample = 0;
+    else {
+      const pos = Math.min(n - 1, Math.max(0, c * n - 0.5));
+      const b0 = Math.floor(pos), fraction = pos - b0;
+      const v0 = data[offset + b0], v1 = data[offset + Math.min(b0 + 1, n - 1)];
+      const a0 = amplitudeMax === 80 ? v0 : Math.round(Math.min(v0, amplitudeMax) * 80 / amplitudeMax);
+      const a1 = amplitudeMax === 80 ? v1 : Math.round(Math.min(v1, amplitudeMax) * 80 / amplitudeMax);
+      sample = fraction === 0 ? a0 : a0 * (1 - fraction) + a1 * fraction;
+    }
     yPoints[x] = height * (1 - spectrumDisplayAmplitude(sample, refLevel));
     covered[x] = 1;
   }
