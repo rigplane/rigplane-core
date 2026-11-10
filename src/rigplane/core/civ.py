@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 from .types import CivFrame
 
@@ -158,9 +159,19 @@ class _AckWaiter:
     token: int
     created_monotonic: float
     generation: int
+    sent_monotonic: float | None = None
     nak_only: bool = False
     response_key: CivRequestKey | None = None
     refused_read: CivRequestKey | None = None
+
+    @property
+    def kind(self) -> Literal["read", "write"]:
+        """Whether this waiter rides on a read or on a write.
+
+        A read's sink carries the ``response_key`` its data answer must
+        match; a write's only answer is a bare FB/FA.
+        """
+        return "read" if self.response_key is not None else "write"
 
 
 @dataclass(slots=True)
@@ -316,16 +327,17 @@ class CivRequestTracker:
 
     @property
     def ack_unclaimed_at(self) -> float | None:
-        """Monotonic time a write's ACK/NAK was last left unclaimed, if ever.
+        """Monotonic time a bare FB/FA was last left able to arrive unclaimed.
 
         An ACK/NAK frame names no command and ``resolve`` hands it to the
-        first eligible waiter, so a write whose answer was left unclaimed can
-        still settle a later write's waiter (MOR-2860).
+        first eligible waiter, so an answer whose waiter is gone — a
+        write's FB/FA (MOR-2860) or a read's FA, since a refused read is
+        answered with one — can still settle a later waiter.
         """
         return self._ack_unclaimed_at
 
     def note_ack_unclaimed(self) -> None:
-        """Record that a write's ACK/NAK can still arrive with no waiter."""
+        """Record that a bare FB/FA can still arrive with no waiter."""
         self._ack_unclaimed_at = time.monotonic()
 
     def snapshot_stats(self) -> dict[str, int]:
@@ -413,6 +425,20 @@ class CivRequestTracker:
         refused, self._refused_reads = tuple(self._refused_reads), []
         return refused
 
+    def restore_refused_reads(self, keys: Iterable[CivRequestKey]) -> None:
+        """Re-queue refused reads no consumer could deliver (MOR-4384).
+
+        :meth:`take_refused_reads` hands refusals to the acquisition
+        scheduler; a refusal naming no declared path — or taken where no
+        scheduler is installed — is information, not garbage. Dropping it
+        erases the only record of which read the radio refused, so
+        undelivered keys queue again for the next taker, deduplicated so
+        a repeatedly refused read keeps one entry per generation.
+        """
+        for key in keys:
+            if key not in self._refused_reads:
+                self._refused_reads.append(key)
+
     def register_response(self, key: CivRequestKey) -> asyncio.Future[CivFrame]:
         """Register a pending request that expects a specific data response."""
         created = time.monotonic()
@@ -442,18 +468,61 @@ class CivRequestTracker:
                 return True
         return False
 
-    def drop_ack_sinks(self) -> int:
-        """Drop all fire-and-forget ACK sinks.
+    def mark_ack_sink_sent(self, token: int, *, sent_monotonic: float) -> None:
+        """Stamp when a fire-and-forget sink's frame left this side.
+
+        The sink's answer window opens at the send, not at registration:
+        the pacing gap between them is this side's own scheduling, the
+        same part of the budget the blocking path spends from the send
+        (MOR-4384).
+        """
+        for waiter in self._ack_waiters:
+            if waiter.token == token and waiter.future is None:
+                waiter.sent_monotonic = sent_monotonic
+                return
+
+    def expire_ack_sinks(
+        self, *, answer_window: float, now_monotonic: float | None = None
+    ) -> int:
+        """Drop fire-and-forget sinks whose own answer window has closed.
+
+        Each sink is owed its answer for ``answer_window`` from its send
+        (or from registration while the send stamp is still pending); a
+        sink still inside that window is kept claimable, because the
+        bare FB/FA or data answer the radio owes it names no command for
+        ``resolve`` and must land on it, not on a later waiter (MOR-4384).
+
+        A sink dropped here never got that answer, so whatever the radio
+        still sends for it — an FB for a write, an FA for a refused read
+        of either kind — can settle a later waiter: every expired sink,
+        read or write (``_AckWaiter.kind``), records that ambiguity via
+        :meth:`note_ack_unclaimed`, which the PTT-release readback check
+        reads.
 
         Returns:
-            Number of dropped sink entries.
+            Number of sink entries expired.
         """
-        before = len(self._ack_waiters)
-        # A sink without ``response_key`` belongs to a write, answered by FB/FA.
-        if any(w.future is None and w.response_key is None for w in self._ack_waiters):
+        now = now_monotonic if now_monotonic is not None else time.monotonic()
+        kept: list[_AckWaiter] = []
+        expired = 0
+        for waiter in self._ack_waiters:
+            if waiter.future is not None:
+                # Blocking waiters run out their own answer window.
+                kept.append(waiter)
+                continue
+            opened_at = (
+                waiter.sent_monotonic
+                if waiter.sent_monotonic is not None
+                else waiter.created_monotonic
+            )
+            if now < opened_at + answer_window:
+                kept.append(waiter)
+                continue
+            expired += 1
             self.note_ack_unclaimed()
-        self._ack_waiters = [w for w in self._ack_waiters if w.future is not None]
-        return before - len(self._ack_waiters)
+        if expired:
+            self._ack_waiters = kept
+        return expired
 
     def drop_ack_backlog(self) -> int:
         """Drop orphan ACK/NAK backlog without touching active waiters."""

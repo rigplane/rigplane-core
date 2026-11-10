@@ -658,9 +658,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_epoch = self._civ_request_tracker.generation
         self._scope_stream_callbacks: list[Callable[[ScopeFrame], None]] = []
         self._scope_activity_event = asyncio.Event()
-        self._civ_ack_sink_grace: float = (
-            float(os.environ.get("ICOM_CIV_ACK_SINK_GRACE_MS", "120")) / 1000.0
-        )
         self._civ_waiter_ttl_gc_interval: float = 1.0
         self._civ_last_waiter_gc_monotonic: float = time.monotonic()
         self._state_cache: StateCache = StateCache()
