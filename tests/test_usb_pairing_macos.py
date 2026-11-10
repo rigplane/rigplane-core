@@ -547,6 +547,55 @@ def test_channel_mismatch_blocks_binding_and_keeps_the_contested_refusal():
         assert result.reason == "contested"
 
 
+def test_coreaudio_device_added_after_portaudio_init_unbinds_every_name():
+    """PortAudio caches its device list at initialization; CoreAudio is
+    read fresh. A device that appeared after must unbind EVERY name — a
+    per-name binding would still pair the same-named pair onto records
+    that may no longer sit where the cached list says."""
+    session = _macos_session()
+    _second_same_named_c_media(session)
+    headset = deepcopy(
+        next(
+            row
+            for row in session["raw"]["macos"]["audio_devices"]
+            if row["device_id"] == 154
+        )
+    )
+    headset.update(
+        uid="AppleUSBAudioEngine:Hot Plug:USB Headset:52140400:0",
+        name="USB Headset",
+        input_channels=1,
+        output_channels=0,
+    )
+    session["raw"]["macos"]["audio_devices"].append(headset)
+    snapshot = _adapt(session)
+    assert all(endpoint.portaudio_index is None for endpoint in snapshot.endpoints)
+    for port in (FTX_PORT, "/dev/cu.other"):
+        result = pair(snapshot, port, get_radio_profile("FTX-1").usb_identity)
+        assert isinstance(result, PairRefused), result
+        assert result.reason == "contested"
+
+
+def test_coreaudio_order_changed_relative_to_portaudio_unbinds_every_name():
+    """A same-named device moved after another CoreAudio device breaks the
+    parallel-walk assumption the binding rests on; nothing may bind."""
+    session = _macos_session()
+    _second_same_named_c_media(session)
+    rows = session["raw"]["macos"]["audio_devices"]
+    codec = next(row for row in rows if row["device_id"] == 154)
+    rows.remove(codec)
+    rows.insert(
+        next(index for index, row in enumerate(rows) if row["device_id"] == 127) + 1,
+        codec,
+    )
+    snapshot = _adapt(session)
+    assert all(endpoint.portaudio_index is None for endpoint in snapshot.endpoints)
+    for port in (FTX_PORT, "/dev/cu.other"):
+        result = pair(snapshot, port, get_radio_profile("FTX-1").usb_identity)
+        assert isinstance(result, PairRefused), result
+        assert result.reason == "contested"
+
+
 def test_split_pair_preserves_portaudio_index_zero():
     session = _synthetic_macos()
     devices = session["raw"]["portaudio"]["devices"]
