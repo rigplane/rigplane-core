@@ -121,16 +121,22 @@ class RadioScopeSource:
     def resolve_follow(
         self, view: FollowView, native: Coverage, receiver: int | None = None
     ) -> View:
-        """Granted view for a follow request: the native coverage.
+        """Granted view for a follow request: the requested window
+        clipped to the live native coverage.
 
-        MOR-4385: the radio is the authority for its scope settings.
-        Core drives the radio's span from the request on subscribe, so
-        live native coverage that disagrees with the request is an
-        external change (front panel, another controller, another Core
-        on the same radio) — the grant adopts it instead of holding
-        the last view Core wrote. The request keeps the user's own
-        span; following never writes back.
+        MOR-4392: ZOOM asks for a visible width (follow, centred on
+        the VFO); the radio is driven to the smallest preset covering
+        it (``_center_span``) and the remainder is a crop — so the
+        grant is the requested window, not the native coverage. When
+        an external change narrows native below the request, the grant
+        is the clipped intersection and nothing is written back
+        (MOR-4385 adoption). A disjoint request falls back to native.
         """
+        requested = self.resolve_view(view, receiver)
+        start = max(requested.start_hz, native.start_hz)
+        end = min(requested.end_hz, native.end_hz)
+        if start < end:
+            return View(start, end)
         return native
 
     def coverage_for(self, view: ViewRequest, receiver: int | None = None) -> Coverage:

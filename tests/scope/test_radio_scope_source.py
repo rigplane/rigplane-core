@@ -411,8 +411,10 @@ def _sim_hub(source):
 async def test_external_span_change_is_adopted_without_writes(model):
     """MOR-4385 B2: another controller moves the radio ±50k → ±100k.
 
-    The SPAN label shows the radio's ±100k value, the granted view
-    covers it with no hatch, and Core writes nothing back (no loop).
+    The SPAN label shows the radio's ±100k value; MOR-4392 keeps the
+    granted view on our own ±50k requested window while the coverage
+    stays the truthful native ±100k — and Core writes nothing back
+    (no loop).
     """
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     sim = _SimRadio(profile)
@@ -439,11 +441,13 @@ async def test_external_span_change_is_adopted_without_writes(model):
         source.feed_frame(ScopeFrame(0, 0, 14_000_000, 14_200_000, bytes(475), False))
         await sub.receive()
         adopted = encoded[-1]
-        assert (adopted.view_start_hz, adopted.view_end_hz) == (14_000_000, 14_200_000)
+        assert (adopted.view_start_hz, adopted.view_end_hz) == (14_050_000, 14_150_000)
         assert (adopted.coverage_start_hz, adopted.coverage_end_hz) == (
-            14_000_000,
-            14_200_000,
+            14_050_000,
+            14_150_000,
         )
+        assert sub.granted.view == View(14_050_000, 14_150_000)
+        assert sub.granted.coverage == Coverage(14_000_000, 14_200_000)
         await session.reconcile()
         assert sim.writes == []
     finally:
@@ -484,7 +488,9 @@ async def test_external_centre_change_is_adopted_without_writes(model):
 
 async def test_external_vfo_change_is_adopted_without_writes():
     """MOR-4385 B2: the radio VFO moves and Core's reading caught up —
-    the granted view follows the new centre and Core writes nothing.
+    the granted view follows the new centre (here the ±50k requested
+    window coincides with the native coverage) and Core writes
+    nothing (MOR-4392 keeps the coverage truthful).
     """
     profile = load_rig(Path("rigs/ic705.toml")).to_profile()
     sim = _SimRadio(profile)
@@ -507,6 +513,8 @@ async def test_external_vfo_change_is_adopted_without_writes():
             14_150_000,
             14_250_000,
         )
+        assert sub.granted.view == View(14_150_000, 14_250_000)
+        assert sub.granted.coverage == Coverage(14_150_000, 14_250_000)
         await session.reconcile()
         assert sim.writes == []
     finally:
