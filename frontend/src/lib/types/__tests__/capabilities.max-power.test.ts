@@ -64,7 +64,7 @@ describe('capabilities maxPowerW', () => {
       .toThrow(/\$\.txBands\[0\]\.maxPowerW: expected a positive integer/);
   });
 
-  it('state-wire goldens carry the IC-9700, IC-905 and IC-7300/MK2 per-band maxima and no other radio invents one', () => {
+  it('state-wire goldens carry the IC-9700, IC-905, IC-7300/MK2 and G7250 per-band maxima and no other radio invents one', () => {
     type Golden = { capabilities: { maxPowerW?: number; txBands: Array<{ name: string; maxPowerW?: number }> | null } };
     const byModel = goldens as unknown as Record<string, Golden>;
     const ic9700 = byModel['IC-9700'].capabilities;
@@ -84,7 +84,15 @@ describe('capabilities maxPowerW', () => {
       .map((b) => [b.name, b.maxPowerW]);
     expect(Object.fromEntries(perBandMaxima('IC-7300'))).toEqual({ '4m': 50 });
     expect(Object.fromEntries(perBandMaxima('IC-7300MK2'))).toEqual({ '4m': 50 });
-    const withPerBandRows = new Set(['IC-9700', 'IC-905', 'IC-7300', 'IC-7300MK2']);
+    // G7250 (MOR-4352 follow-up): preliminary vendor spec — 100 W on HF,
+    // 90 W on 50 MHz; not bench-proven (the audit never keyed the radio).
+    const g7250 = byModel['G7250'].capabilities;
+    expect(g7250.maxPowerW).toBe(100);
+    expect(Object.fromEntries(perBandMaxima('G7250'))).toEqual({
+      '160m': 100, '80m': 100, '40m': 100, '30m': 100, '20m': 100,
+      '17m': 100, '15m': 100, '12m': 100, '10m': 100, '6m': 90,
+    });
+    const withPerBandRows = new Set(['IC-9700', 'IC-905', 'IC-7300', 'IC-7300MK2', 'G7250']);
     for (const [model, golden] of Object.entries(byModel)) {
       if (withPerBandRows.has(model)) continue;
       expect(

@@ -2240,6 +2240,23 @@ class TestToProfile:
             # manual 11 SPECIFICATIONS).
             ("ic7300.toml", {"4m": 50}),
             ("ic7300mk2.toml", {"4m": 50}),
+            # MOR-4352 follow-up: G7250 preliminary vendor spec — 100 W
+            # HF, 90 W 50 MHz (not bench-proven; the audit never keyed).
+            (
+                "g7250.toml",
+                {
+                    "160m": 100,
+                    "80m": 100,
+                    "40m": 100,
+                    "30m": 100,
+                    "20m": 100,
+                    "17m": 100,
+                    "15m": 100,
+                    "12m": 100,
+                    "10m": 100,
+                    "6m": 90,
+                },
+            ),
             # Flat-maximum radios declare no per-band row.
             ("ic705.toml", {}),
             ("ftx1.toml", {}),

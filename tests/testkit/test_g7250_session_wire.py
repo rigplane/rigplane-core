@@ -68,10 +68,7 @@ _BENCH_ROWS = [
 def _bench_answer_table(
     extra_rows: list[dict[str, str]] | None = None,
 ) -> RecordedAnswerTable:
-    rows = [
-        {"transport": "usb", **row}
-        for row in [*_BENCH_ROWS, *(extra_rows or [])]
-    ]
+    rows = [{"transport": "usb", **row} for row in [*_BENCH_ROWS, *(extra_rows or [])]]
     return RecordedAnswerTable.from_civ_pairs(rows, "usb")
 
 
@@ -431,9 +428,7 @@ async def test_set_rf_power_normalized_minimum_reaches_wire_and_state(
 
         # The wire SET carries exactly the profile minimum, BCD-encoded.
         assert any(
-            frame.command == 0x14
-            and frame.sub == 0x0A
-            and frame.data == b"\x00\x12"
+            frame.command == 0x14 and frame.sub == 0x0A and frame.data == b"\x00\x12"
             for frame in fake.commands
         )
 
