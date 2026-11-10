@@ -8,10 +8,12 @@ _os.environ.setdefault("RIGPLANE_DISABLE_DIAGNOSTIC_LOGGING", "1")
 del _os
 
 # MOR-4075: refuse new tests that depend on the real clock (see the plugin's docstring).
+# MOR-4373: "pytester" runs child pytest processes for the shard-plugin tests.
 pytest_plugins = [
     "rigplane_testkit.realtime_guard",
     # MOR-4333: a test that leaks a connected Radio fails itself, not a neighbour.
     "rigplane_testkit.leaked_radio_guard",
+    "pytester",
 ]
 
 import struct  # noqa: E402

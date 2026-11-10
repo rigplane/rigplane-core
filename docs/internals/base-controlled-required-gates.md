@@ -59,9 +59,13 @@ emits a `web` output for non-documentation changes under `frontend/`, which `qui
 the earlier rules only; it does not implement these two additions.
 
 The trusted base classifier predicts whether substantive `quick` must run. Workflow-level success with that job skipped
-is unknown/failure. The legacy run has exactly four jobs: `classify`, the build-tier halves `quick-frontend` and `quick-python`, and the
-`quick` aggregator on the light pool. A base `frontend` route requires `quick-frontend` to have run, and a base `ci` route
-requires `quick-python`; a base `core` route pins neither, because it also covers unknown roots that select no half. Stale head/base, fork, cancellation, changed control, incomplete pagination, ambiguous association,
+is unknown/failure. The legacy run has six job groups: `classify`, the build-tier halves `quick-frontend` and `quick-python`,
+each half's sharded matrix tier (`quick-frontend-e2e (visual|guards|journey)` and `quick-python-tests (1)`–`(4)`, MOR-4373),
+and the `quick` aggregator on the light pool. Each tier appears either as its full leg set (each leg once, on its half's
+build pool) or as the single skipped entry a job-level-skipped matrix collapses to. A base `frontend` route requires
+`quick-frontend` and its e2e legs to have run, and a base `ci` route requires `quick-python`; a base `core` route pins
+neither, because it also covers unknown roots that select no half and no tier (the suite tier runs only on the classifier's
+core route, which the aggregator's own check enforces). Stale head/base, fork, cancellation, changed control, incomplete pagination, ambiguous association,
 non-current attempt, or route/job disagreement cannot publish success.
 
 The observation logs these metrics from the independently bound assessment:

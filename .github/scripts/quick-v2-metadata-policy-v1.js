@@ -155,32 +155,59 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // MOR-3875: legacy quick runs classify, two parallel worker halves, and the
 // `quick` aggregator on the light pool. classify sits on the light pool. The
 // halves run on build pools (MOR-4214), not on the 2 GiB gate pool.
+// MOR-4373: each half additionally has a sharded matrix tier —
+// `quick-python-tests (1)`..`(4)` beside quick-python and
+// `quick-frontend-e2e (visual|guards|journey)` beside quick-frontend. A
+// matrix job whose job-level `if` is false collapses to exactly ONE entry
+// named after the job id (verified on Pro's skipped pytest matrix), so each
+// tier's topology is valid either as its full leg set or as that single
+// skipped entry. The frontend tier is required exactly by the frontend route
+// (base frontend implies classifier frontend); no base route pins the python
+// suite tier, because the base core route also covers unknown roots whose
+// runs legitimately skip it — the aggregator's own selection check is what
+// fails a skipped selected tier there.
 const FRONTEND_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
 const PYTHON_LABELS = Object.freeze(['self-hosted', 'Linux', 'X64', 'build']);
 const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
+const PYTHON_TEST_LEGS = Object.freeze(['quick-python-tests (1)', 'quick-python-tests (2)', 'quick-python-tests (3)', 'quick-python-tests (4)']);
+const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey)']);
 function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
 function ranOnRunner(job) { return job !== undefined && job.conclusion !== 'skipped' && typeof job.runner_name === 'string' && job.runner_name.length > 0; }
-function evaluateJobTopology(run, jobs, routes, draft) { const names = jobs.map((job) => job.name);
-  const expectedNames = ['classify', 'quick-frontend', 'quick-python', 'quick'];
-  const topologyMatches = jobs.length === expectedNames.length && expectedNames.every((name) => names.filter((candidate) => candidate === name).length === 1) && jobs.every((job) => job.run_attempt === run.run_attempt && job.status === 'completed');
-  const classify = jobs.find((job) => job.name === 'classify');
-  const frontend = jobs.find((job) => job.name === 'quick-frontend');
-  const python = jobs.find((job) => job.name === 'quick-python');
-  const quick = jobs.find((job) => job.name === 'quick');
-  const workers = [[frontend, FRONTEND_LABELS], [python, PYTHON_LABELS]];
+function tierShape(jobs, legs, bareName) {
+  const bare = jobs.filter((job) => job.name === bareName);
+  const legJobs = legs.map((name) => jobs.filter((job) => job.name === name));
+  const ranInFull = bare.length === 0 && legJobs.every((found) => found.length === 1);
+  return {
+    ranInFull,
+    skipped: bare.length === 1 && legJobs.every((found) => found.length === 0),
+    // Empty unless the tier ran in full, so a skipped tier contributes no
+    // worker to bind to a runner.
+    legs: ranInFull ? legJobs.map((found) => found[0]) : [],
+    bare: bare[0],
+  };
+}
+function evaluateJobTopology(run, jobs, routes, draft) {
+  const singleNames = ['classify', 'quick-frontend', 'quick-python', 'quick'];
+  const singles = singleNames.map((name) => jobs.filter((job) => job.name === name));
+  const pythonTests = tierShape(jobs, PYTHON_TEST_LEGS, 'quick-python-tests');
+  const frontendE2e = tierShape(jobs, FRONTEND_E2E_LEGS, 'quick-frontend-e2e');
+  const expectedCount = singleNames.length + (pythonTests.ranInFull ? PYTHON_TEST_LEGS.length : 1) + (frontendE2e.ranInFull ? FRONTEND_E2E_LEGS.length : 1);
+  const topologyMatches = singles.every((found) => found.length === 1) && (pythonTests.ranInFull || pythonTests.skipped) && (frontendE2e.ranInFull || frontendE2e.skipped) && jobs.length === expectedCount && jobs.every((job) => job.run_attempt === run.run_attempt && job.status === 'completed');
+  const [classify, frontend, python, quick] = singles.map((found) => found[0]);
+  const workers = [[frontend, FRONTEND_LABELS], [python, PYTHON_LABELS], ...pythonTests.legs.map((job) => [job, PYTHON_LABELS]), ...frontendE2e.legs.map((job) => [job, FRONTEND_LABELS])];
   const frontendRequired = routes.frontend === true;
   const pythonRequired = routes.ci === true;
   const classifyMatches = classify?.conclusion === 'success' && hasLabels(classify, LIGHT_LABELS);
   const workersBound = workers.every(([job, labels]) => job?.conclusion === 'skipped' || (ranOnRunner(job) && hasLabels(job, labels)));
-  const skippedWork = quick?.conclusion === 'skipped' || (frontendRequired && frontend?.conclusion === 'skipped') || (pythonRequired && python?.conclusion === 'skipped');
-  const quickWasSubstantive = ranOnRunner(quick) && (!frontendRequired || ranOnRunner(frontend)) && (!pythonRequired || ranOnRunner(python));
+  const skippedWork = quick?.conclusion === 'skipped' || (frontendRequired && frontend?.conclusion === 'skipped') || (frontendRequired && frontendE2e.skipped && frontendE2e.bare?.conclusion === 'skipped') || (pythonRequired && python?.conclusion === 'skipped');
+  const quickWasSubstantive = ranOnRunner(quick) && (!frontendRequired || (ranOnRunner(frontend) && frontendE2e.legs.every((job) => ranOnRunner(job)))) && (!pythonRequired || ranOnRunner(python));
   const labelsMatch = hasLabels(quick, LIGHT_LABELS) && workersBound;
   const routeConcordance = topologyMatches && classifyMatches && labelsMatch && routes.docs === false && draft === false && quickWasSubstantive;
   if (run.conclusion === 'success' && skippedWork) { return {ok: false, code: 'skipped_substantive', routeConcordance: false};
   }
   if (!routeConcordance) { return {ok: false, code: 'route_mismatch', routeConcordance: false};
   }
-  if (run.conclusion !== 'success' || quick.conclusion !== 'success' || workers.some(([job]) => job.conclusion !== 'success' && job.conclusion !== 'skipped')) { return {ok: false, code: 'terminal_failure', routeConcordance: true};
+  if (run.conclusion !== 'success' || quick.conclusion !== 'success' || workers.some(([job]) => job.conclusion !== 'success' && job.conclusion !== 'skipped') || (pythonTests.skipped && pythonTests.bare.conclusion !== 'skipped') || (frontendE2e.skipped && frontendE2e.bare.conclusion !== 'skipped')) { return {ok: false, code: 'terminal_failure', routeConcordance: true};
   }
   return {ok: true, code: 'terminal_match', routeConcordance: true};
 }

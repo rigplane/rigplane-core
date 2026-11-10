@@ -68,6 +68,14 @@ concurrency:
   group: tests-quick-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+env:
+  # MOR-4373: one constant per sharded matrix tier. The matrix lists further
+  # down are literal; the pins in .github/scripts/quick-path-filters.test.py
+  # tie each list to its constant, and the quick-v2 observer pins the leg
+  # names they produce.
+  QUICK_PYTHON_SHARDS: "4"
+  QUICK_FRONTEND_E2E_LEGS: "visual guards journey"
+
 jobs:
   classify:
     runs-on: [self-hosted, Linux, ARM64, light]
@@ -130,16 +138,19 @@ jobs:
 
   # The frontend and Python halves run as parallel jobs on separate build
   # runners (MOR-3875). In series a core+frontend run took ~28-30 minutes and
-  # needed a 40-minute job timeout; each half now fits in 25. The required
-  # `quick` context is the aggregator job below, so branch protection and the
-  # merge queue need no change.
+  # needed a 40-minute job timeout. MOR-4373 additionally shards each half's
+  # heavy test tier into a matrix job (quick-python-tests below, and
+  # quick-frontend-e2e for the Playwright groups), so each half's lint/build
+  # job keeps only its static checks. The required `quick` context is the
+  # aggregator job below, so branch protection and the merge queue need no
+  # change.
   quick-frontend:
     needs: classify
     # Draft pushes are development checkpoints, not immutable review heads.
     # The ready_for_review event starts the one natural expensive run once the
     # candidate is ready. Docs-only diffs never allocate a self-hosted runner,
     # and a merge-queue entry whose tree is the tested head tree (reuse) skips
-    # all three jobs; the skipped `quick` satisfies the required context.
+    # every quick job; the skipped `quick` satisfies the required context.
     if: >-
       always() &&
       needs.classify.outputs.docs != 'true' &&
@@ -159,11 +170,6 @@ jobs:
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
     # loop test. Nothing in this repo reads them.
     env:
-      # Pin uv to the project's minimum Python. Without this, `uv run`
-      # satisfies requires-python=">=3.11" with the newest interpreter on
-      # the runner (3.13), so the "Python 3.11" job silently tested 3.13
-      # (MOR-590).
-      UV_PYTHON: "3.11"
       DBUS_SESSION_BUS_ADDRESS: 'disabled:'
       FC_FONTATIONS: '1'
       VK_ICD_FILENAMES: ''
@@ -173,32 +179,6 @@ jobs:
         with:
           # Architecture debt guards compare HEAD with the reachable PR base.
           fetch-depth: 2
-
-      - name: Install uv
-        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
-        uses: astral-sh/setup-uv@v8.1.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
-
-      - name: Set up Python 3.11
-        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
-        run: uv python install 3.11
-
-      - name: Install dependencies
-        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
-        # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
-        # already installed its packages (pytest, ruff, mypy, pydantic,
-        # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
-        # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
-        # `webrtc` (aiortc), the extras that gate 62 tests in tests/. Those
-        # tests ran skipped in CI while still showing green. `uv sync
-        # --all-extras` installs every extra declared in pyproject.toml's
-        # [project.optional-dependencies], so those tests run instead of
-        # skipping.
-        run: uv sync --all-extras
 
       - name: Set up Node.js
         if: needs.classify.outputs.frontend == 'true'
@@ -230,10 +210,11 @@ jobs:
           mkdir -p ../src/rigplane/web/static
           cp -r dist/* ../src/rigplane/web/static/
 
-      # Explicit, fail-loud browser provisioning ahead of both browser test
-      # suites. A red install step reads as provisioning, not as a fixture
-      # regression.
-      - name: Ensure Playwright chromium for capture
+      # Explicit, fail-loud browser provisioning for the component-kit proof
+      # below (MOR-4373: the e2e tiers now provision their own browsers in
+      # quick-frontend-e2e). A red install step reads as provisioning, not as
+      # a fixture regression.
+      - name: Ensure Playwright chromium for component-kit proof
         if: needs.classify.outputs.frontend == 'true'
         run: |
           cd frontend
@@ -249,22 +230,115 @@ jobs:
         working-directory: frontend
         run: npm run verify:component-kit-api
 
+  # The Playwright tiers of the old quick-frontend (MOR-4373), sharded into
+  # parallel matrix legs on the same build pool. Every leg repeats its own
+  # npm ci + build + browser provisioning: the groups that serve pages need
+  # frontend/dist (the i18n preview, the FTX-1 RIT and journey fake servers),
+  # and there is no artifact hand-off between jobs. The guards and journey
+  # legs additionally install uv + Python 3.11 + `uv sync --all-extras`
+  # because their Playwright configs start Python web servers through
+  # `uv run`. Deliberately no `name:` template: GitHub names the legs
+  # `quick-frontend-e2e (<leg>)`, and a job-level skip collapses the matrix
+  # to ONE entry named `quick-frontend-e2e` (verified for Pro's skipped
+  # pytest matrix); the quick-v2 observer accepts both shapes. The leg ports
+  # are pairwise distinct so parallel legs on one CI host (MOR-2830) cannot
+  # collide: visual 4173/5199, guards 5599/5601/18765, journey 18766/18767.
+  quick-frontend-e2e:
+    needs: classify
+    # Draft pushes are development checkpoints, not immutable review heads.
+    # The ready_for_review event starts the one natural expensive run once the
+    # candidate is ready. Docs-only diffs never allocate a self-hosted runner,
+    # and a merge-queue entry whose tree is the tested head tree (reuse) skips
+    # every quick job; the skipped `quick` satisfies the required context.
+    if: >-
+      always() &&
+      needs.classify.outputs.docs != 'true' &&
+      needs.classify.outputs.reuse != 'true' &&
+      (github.event_name == 'merge_group' ||
+      github.event.pull_request.draft == false) &&
+      needs.classify.outputs.frontend == 'true'
+    runs-on: [self-hosted, Linux, ARM64, build]
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned equal to env.QUICK_FRONTEND_E2E_LEGS by
+        # quick-path-filters.test.py.
+        group: [visual, guards, journey]
+    # MOR-3778: presetting the variables Chromium's browser process adds at
+    # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
+    # loop test. Nothing in this repo reads them.
+    env:
+      # Pin uv to the project's minimum Python for the legs that start
+      # `uv run` web servers (MOR-590).
+      UV_PYTHON: "3.11"
+      DBUS_SESSION_BUS_ADDRESS: 'disabled:'
+      FC_FONTATIONS: '1'
+      VK_ICD_FILENAMES: ''
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Install uv
+        if: matrix.group == 'guards' || matrix.group == 'journey'
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        if: matrix.group == 'guards' || matrix.group == 'journey'
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        if: matrix.group == 'guards' || matrix.group == 'journey'
+        # --all-extras, same rationale as quick-python-tests: the fake web
+        # servers import the full rigplane package set.
+        run: uv sync --all-extras
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Frontend install + build
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Ensure Playwright chromium
+        run: |
+          cd frontend
+          npx playwright install chromium
+
+      - name: Install Playwright Chromium system dependencies
+        working-directory: frontend
+        run: sudo -E env "PATH=$PATH" npx playwright install-deps chromium
+
       - name: Frontend i18n visual smoke (RP-ML-006)
         id: i18n-visual
-        if: needs.classify.outputs.frontend == 'true'
+        if: matrix.group == 'visual'
         run: npm run test:e2e:i18n
         working-directory: frontend
 
       - name: Annotate production design-language visual result
-        if: always() && needs.classify.outputs.frontend == 'true' && steps.i18n-visual.outcome == 'failure'
+        if: always() && matrix.group == 'visual' && steps.i18n-visual.outcome == 'failure'
         run: echo "::error::Production design-language pixel gate failed. See the Frontend i18n visual smoke step log."
 
       # MOR-1382 — wires the MOR-1070/1085/1087/1088 browser fixture-harness
-      # capture (`frontend/fixtures/capture.mjs`) into the PR leg. Gated by
-      # the SAME `needs.classify.outputs.frontend` path filter as the rest of
-      # this frontend block (frontend/** or src/rigplane/web/**) —
-      # minimum Actions minutes is a hard project policy (CLAUDE.md), so
-      # this never runs on an unrelated push/PR.
+      # capture (`frontend/fixtures/capture.mjs`) into this leg. Gated by the
+      # SAME `needs.classify.outputs.frontend` path filter as the rest of the
+      # frontend block — minimum Actions minutes is a hard project policy
+      # (CLAUDE.md), so this never runs on an unrelated push/PR.
       #
       # BLOCKING since MOR-1386 (v3 gate promotion, session-9): this step
       # used to run `continue-on-error: true` for one cycle (MOR-1382);
@@ -275,11 +349,11 @@ jobs:
       # regression only.
       - name: Frontend fixture-harness capture
         id: capture
-        if: needs.classify.outputs.frontend == 'true'
+        if: matrix.group == 'visual'
         run: node frontend/fixtures/capture.mjs
 
       - name: Annotate fixture-harness capture result
-        if: always() && needs.classify.outputs.frontend == 'true'
+        if: always() && matrix.group == 'visual'
         run: |
           if [ "${{ steps.capture.outcome }}" = "failure" ]; then
             echo "::error::Fixture-harness capture FAILED — blocking since MOR-1386 gate promotion. See the Frontend fixture-harness capture step log."
@@ -288,11 +362,10 @@ jobs:
       # MOR-2677 — placeholder-guard part 2: the whole-page placeholder scan
       # over the MOR-2676 face × state × language matrix, against the token
       # rule and the offenders.json ratchet. Blocking; gated by the SAME
-      # frontend path filter as the rest of this block, so it runs on
-      # frontend PRs and on main. Runs after the capture step so the
-      # already-provisioned Chromium (installed above) serves it too.
+      # frontend path filter as the rest of this job. Runs after the browser
+      # provisioning step so the already-provisioned Chromium serves it too.
       - name: Frontend placeholder-guard page scan (MOR-2677)
-        if: needs.classify.outputs.frontend == 'true'
+        if: matrix.group == 'guards'
         working-directory: frontend
         run: npm run test:e2e:placeholder-guard
 
@@ -301,7 +374,7 @@ jobs:
       # already-provisioned Chromium as the placeholder-guard scan above; the
       # unrelated harness-reach matrix in the same directory stays unwired.
       - name: Frontend page-chrome inset geometry (MOR-3845)
-        if: needs.classify.outputs.frontend == 'true'
+        if: matrix.group == 'guards'
         working-directory: frontend
         run: npm run test:e2e:chrome-top-inset
 
@@ -310,7 +383,7 @@ jobs:
       # Playwright config starts through `uv run`. Serves the frontend/dist
       # built above. Blocking.
       - name: Frontend FTX-1 RIT fake-server E2E
-        if: needs.classify.outputs.frontend == 'true'
+        if: matrix.group == 'guards'
         working-directory: frontend
         continue-on-error: false
         env:
@@ -318,30 +391,33 @@ jobs:
         run: npx playwright test --project ftx1-rit
 
       - name: Upload FTX-1 RIT E2E report on failure
-        if: failure() && needs.classify.outputs.frontend == 'true'
+        if: failure() && matrix.group == 'guards'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: ftx1-rit-e2e-report
+          name: ftx1-rit-e2e-report-${{ matrix.group }}
           path: .playwright-output
           if-no-files-found: ignore
           retention-days: 3
 
       # Operator journey against tests/e2e/journey_web_server.py, which the
       # Playwright config starts through `uv run`. Serves the frontend/dist
-      # built above. Blocking.
+      # built above. Blocking. One leg, not --shard: the journey config is
+      # deliberately serial (workers: 1, fullyParallel: false) over two
+      # stateful servers on hardcoded ports (18766/18767), so two shard legs
+      # on one CI host would fight over the ports and the shared state.
       - name: Frontend operator-journey fake-server E2E
-        if: needs.classify.outputs.frontend == 'true'
+        if: matrix.group == 'journey'
         working-directory: frontend
         continue-on-error: false
         run: npx playwright test -c ./playwright.journey.config.ts
 
       - name: Upload operator-journey E2E report on failure
-        if: failure() && needs.classify.outputs.frontend == 'true'
+        if: failure() && matrix.group == 'journey'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: journey-e2e-report
+          name: journey-e2e-report-${{ matrix.group }}
           path: .playwright-output
           if-no-files-found: ignore
           retention-days: 3
@@ -480,17 +556,90 @@ jobs:
         run: uv run mypy --strict src/rigplane/web
 
       - name: Web Python subset (frontend-only changes)
-        # Core selection already runs all of tests/ below.
+        # Core selection already runs all of tests/ below — in
+        # quick-python-tests (MOR-4373).
         if: needs.classify.outputs.web == 'true' && needs.classify.outputs.core != 'true'
         run: >-
           uv run pytest tests/web tests/test_web_*.py -n auto --maxprocesses 4
           --tb=short --timeout=300 --timeout-method=thread
+
+  # The heavy pytest tier of quick-python (MOR-4373), sharded over the crc32
+  # partition in .github/scripts/pytest_shard.py (loaded with -p pytest_shard,
+  # the same PYTHONPATH the worker diagnostics ride). Only the core route
+  # selects it: a ci-only change still runs quick-python's control tests but
+  # not the suite, and the web subset stays in quick-python. Deliberately no
+  # `name:` template: GitHub names the legs `quick-python-tests (1)`..`(4)`,
+  # and a job-level skip collapses the matrix to ONE entry named
+  # `quick-python-tests`; the quick-v2 observer accepts both shapes.
+  quick-python-tests:
+    needs: classify
+    if: >-
+      always() &&
+      needs.classify.outputs.docs != 'true' &&
+      needs.classify.outputs.reuse != 'true' &&
+      (github.event_name == 'merge_group' ||
+      github.event.pull_request.draft == false) &&
+      needs.classify.outputs.core == 'true'
+    # Build pool, not the 2 GiB gate pool: four pytest workers peak near 2 GiB (MOR-4214).
+    runs-on: [self-hosted, Linux, X64, build]
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # Pinned equal to env.QUICK_PYTHON_SHARDS by
+        # quick-path-filters.test.py.
+        shard: [1, 2, 3, 4]
+    # MOR-3778: presetting the variables Chromium's browser process adds at
+    # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
+    # loop test. Nothing in this repo reads them.
+    env:
+      # Pin uv to the project's minimum Python. Without this, `uv run`
+      # satisfies requires-python=">=3.11" with the newest interpreter on
+      # the runner (3.13), so the "Python 3.11" job silently tested 3.13
+      # (MOR-590).
+      UV_PYTHON: "3.11"
+      DBUS_SESSION_BUS_ADDRESS: 'disabled:'
+      FC_FONTATIONS: '1'
+      VK_ICD_FILENAMES: ''
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Architecture debt guards compare HEAD with the reachable PR base.
+          fetch-depth: 2
+
+      - name: Install uv
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true' || needs.classify.outputs.ci == 'true'
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
+        # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
+        # already installed its packages (pytest, ruff, mypy, pydantic,
+        # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
+        # alias) — but neither flag named `scope` (Pillow), `dsp` (scipy), or
+        # `webrtc` (aiortc), the extras that gate 62 tests in tests/. Those
+        # tests ran skipped in CI while still showing green. `uv sync
+        # --all-extras` installs every extra declared in pyproject.toml's
+        # [project.optional-dependencies], so those tests run instead of
+        # skipping.
+        run: uv sync --all-extras
 
       - name: Run tests
         if: needs.classify.outputs.core == 'true'
         env:
           PYTHONPATH: ${{ github.workspace }}/.github/scripts
           RIGPLANE_WORKER_DIAG_DIR: ${{ runner.temp }}/pytest-worker-diagnostics
+          SHARD: ${{ matrix.shard }}
         run: |
           # Without pipefail the pipe's exit status is tee's (always 0), so
           # pytest failures were swallowed and the step reported success.
@@ -498,7 +647,7 @@ jobs:
           # pytest's code so failing tests fail the step.
           # Several quick jobs share one CI host; uncapped workers
           # oversubscribe it and turn timing budgets into flaky timeouts (MOR-2830).
-          uv run pytest tests/ -p pytest_worker_diagnostics -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread \
+          uv run pytest tests/ -p pytest_shard --shard "$SHARD/$QUICK_PYTHON_SHARDS" -p pytest_worker_diagnostics -n auto --maxprocesses 4 --tb=short --timeout=300 --timeout-method=thread \
             | tee pytest-output.txt
           rc=${PIPESTATUS[0]}
           exit "$rc"
@@ -513,7 +662,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
-          name: worker-diagnostics-quick
+          name: worker-diagnostics-quick-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/pytest-worker-diagnostics/events-*.jsonl
             ${{ runner.temp }}/pytest-worker-diagnostics/phases-*.jsonl
@@ -527,10 +676,11 @@ jobs:
 
   quick:
     # The required `quick` context. It runs no checks itself: it fails unless
-    # classification succeeded, every selected half succeeded, and every
-    # unselected half was skipped. It runs on the light pool so it never waits
-    # behind build jobs for a runner (MOR-3875).
-    needs: [classify, quick-frontend, quick-python]
+    # classification succeeded, every selected half AND tier succeeded, and
+    # every unselected half or tier was skipped. A matrix job's result is
+    # success only when every leg succeeded (MOR-4373). It runs on the light
+    # pool so it never waits behind build jobs for a runner (MOR-3875).
+    needs: [classify, quick-frontend, quick-frontend-e2e, quick-python, quick-python-tests]
     if: >-
       always() &&
       needs.classify.outputs.docs != 'true' &&
@@ -545,8 +695,14 @@ jobs:
           CLASSIFY_RESULT: ${{ needs.classify.result }}
           FRONTEND_SELECTED: ${{ needs.classify.outputs.frontend == 'true' }}
           FRONTEND_RESULT: ${{ needs.quick-frontend.result }}
+          FRONTEND_E2E_SELECTED: ${{ needs.classify.outputs.frontend == 'true' }}
+          FRONTEND_E2E_RESULT: ${{ needs.quick-frontend-e2e.result }}
           PYTHON_SELECTED: ${{ needs.classify.outputs.core == 'true' || needs.classify.outputs.ci == 'true' || needs.classify.outputs.web == 'true' }}
           PYTHON_RESULT: ${{ needs.quick-python.result }}
+          # The suite tier is selected by the core route alone: a ci-only
+          # change runs quick-python's control tests without the suite.
+          PYTHON_TESTS_SELECTED: ${{ needs.classify.outputs.core == 'true' }}
+          PYTHON_TESTS_RESULT: ${{ needs.quick-python-tests.result }}
         run: |
           if [ "$CLASSIFY_RESULT" != "success" ]; then
             echo "::error::Changed-path classification failed."
@@ -554,6 +710,8 @@ jobs:
           fi
           echo "Core checks selected: ${{ needs.classify.outputs.core }}"
           echo "Frontend checks selected: ${{ needs.classify.outputs.frontend }}"
+          echo "Frontend e2e legs: $QUICK_FRONTEND_E2E_LEGS"
+          echo "Python shards: $QUICK_PYTHON_SHARDS"
           echo "CI contract checks selected: ${{ needs.classify.outputs.ci }}"
           echo "Web Python subset selected: ${{ needs.classify.outputs.web }}"
           echo "Docs-only quick skipped: ${{ needs.classify.outputs.docs }}"
@@ -570,5 +728,7 @@ jobs:
             fi
           }
           check_half quick-frontend "$FRONTEND_SELECTED" "$FRONTEND_RESULT"
+          check_half quick-frontend-e2e "$FRONTEND_E2E_SELECTED" "$FRONTEND_E2E_RESULT"
           check_half quick-python "$PYTHON_SELECTED" "$PYTHON_RESULT"
+          check_half quick-python-tests "$PYTHON_TESTS_SELECTED" "$PYTHON_TESTS_RESULT"
           exit "$status"

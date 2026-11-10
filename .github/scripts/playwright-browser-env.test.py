@@ -19,6 +19,7 @@ BROWSER_ENV = {
 }
 EXPECTED_BROWSER_JOBS = {
     ("quick.yml", "quick-frontend"),
+    ("quick.yml", "quick-frontend-e2e"),
     ("full.yml", "capture-harness"),
     ("visual.yml", "visual"),
 }
