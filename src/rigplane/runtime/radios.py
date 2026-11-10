@@ -94,13 +94,15 @@ RADIOS: dict[str, RadioModel] = {
     ),
     # Xiegu G7250 (MOR-4352): answers any CI-V address and echoes it, so
     # discovery names it through the Xiegu 0x1D 0x19 model id (`72 50`),
-    # never through this address row. 0xA4 here is the Xiegu family
-    # default for `--model G7250` CLI sessions (same disambiguation
-    # posture as X6200 above). USB CI-V only: the LAN port is a
-    # proprietary IQ stream.
+    # never through this address row. 0x88 (LIVE G7250 2026-11-09: probed
+    # 00/A4/88/70/72/E0, 0x88 answered the full read set), not the Xiegu
+    # family default 0xA4: the TOML profile loads before ic705.toml, and
+    # the profiles' address-only table would otherwise resolve 0xA4 to the
+    # G7250, stealing the IC-705's resolution. USB CI-V only: the LAN port
+    # is a proprietary IQ stream.
     "G7250": RadioModel(
         name="G7250",
-        civ_addr=0xA4,
+        civ_addr=0x88,
         has_lan=False,
     ),
 }

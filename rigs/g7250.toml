@@ -20,10 +20,16 @@ id = "xiegu_g7250"
 model = "G7250"
 # LIVE G7250 2026-11-09 (MOR-4352): the radio answers ANY CI-V address and
 # echoes the address it was asked as its own (probed at 00, A4, 88, 70, 72,
-# E0). 0xA4 is the Xiegu family default (same as X6200), kept so unicast
-# sessions behave like the X6200's and the shared 0xA4 disambiguation path
-# applies.
-civ_addr = 0xA4
+# E0; 0x88 answered the full read set in the same audit). 0x88, not the
+# Xiegu family default 0xA4: this file loads before ic705.toml/x6200.toml,
+# and the profiles' address-only table (profiles/__init__.py
+# _by_civ_addr) would otherwise resolve 0xA4 lookups to the G7250,
+# stealing the IC-705's address-only resolution. No shipped profile uses
+# 0x88, so 0xA4 (IC-705) and 0x70 (X6100) keep resolving as before, and
+# unicast sessions still work: the radio answers whatever address it is
+# asked. Discovery names this radio through 0x1D 0x19 at 0x00, never
+# through the address table.
+civ_addr = 0x88
 receiver_count = 1
 # The G7250 "LAN" port is a proprietary IQ stream, not Icom LAN control
 # (MOR-4352); has_wifi has no bench evidence either way and stays false —
@@ -43,7 +49,7 @@ xiegu_model_id = 0x7250
 
 [protocol]
 type = "civ"
-address = 0xA4
+address = 0x88
 
 [audio]
 # LIVE G7250 2026-11-09 (MOR-4352): the radio's USB hub enumerates a
@@ -64,6 +70,10 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     not exposed pending a live SET round-trip.
 #   - no ``vox``: 0x16 0x46 answers 0x02 (LIVE) with an unconfirmed
 #     meaning; no value domain is declared from a boolean-looking read.
+#   - no ``notch``/``compressor``/``dial_lock``: their reads answer 0x02,
+#     not 00/01 (LIVE G7250 2026-11-09: 0x16 0x41 auto notch / DNF,
+#     0x16 0x44 compressor, 0x16 0x50 dial lock) — the meaning of 0x02 on
+#     this radio is unconfirmed, so no toggle state is declared from them.
 #   - no ``break_in``: 0x16 0x47 NAKs (LIVE).
 #   - no ``tuner``: 0x1C 0x01 NAKs (LIVE) — the G7250 has no ATU.
 #   - no ``data_mode``: 0x1A 0x06 NAKs (LIVE).
@@ -71,11 +81,8 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     CI-V scope.
 #   - no tone family: 0x16 0x42/0x43 NAK (LIVE).
 #   - no memory channels: 0x1A 0x00 NAKs (LIVE).
-# ``notch`` keeps the X6200 posture: the capability stays, the mechanism is
-# the DNF toggle at 0x16 0x41 (LIVE: answers 0x02, meaning unconfirmed) and
-# NO width domain is declared. ``scan`` is inherited from X6200, not probed
-# on G7250 (the X6200 map has no scan GET to read, so the audit could not
-# test it).
+# ``scan`` is inherited from X6200, not probed on G7250 (the X6200 map has
+# no scan GET to read, so the audit could not test it).
 features = [
     "audio",
     "af_level",
@@ -85,14 +92,11 @@ features = [
     "preamp",
     "nb",
     "nr",
-    "notch",
     "tx",
     "split",
-    "compressor",
     "cw",
     "meters",
     "scan",
-    "dial_lock",
     "agc",
     "power_control",
 ]
@@ -314,10 +318,6 @@ raw_max = 255
 raw_min = 0
 raw_max = 255
 
-[controls.compressor_level]
-raw_min = 0
-raw_max = 255
-
 # Display bands inherited from X6200, not probed on G7250 (the G7250 read
 # live was 00 00 = the bottom of the band; the top end is unconfirmed).
 [controls.cw_pitch]
@@ -476,26 +476,22 @@ get_power_meter  = [0x15, 0x11]
 get_swr          = [0x15, 0x12]
 get_vd_meter     = [0x15, 0x15]
 
-# Functions (0x16 family; reads LIVE G7250 2026-11-09. 16 12 read 02; the
-# boolean-looking 16 22/40/41/44/50 all read 02 — value meanings
-# unconfirmed, no domain declared from them; SETs inherited from X6200)
+# Functions (0x16 family; reads LIVE G7250 2026-11-09: 16 12 (AGC) read
+# 02, 16 22 (NB) and 16 40 (NR) read 00 — off is consistent with the
+# 00/01 toggle encoding, so NB/NR stay. SETs inherited from X6200, not
+# probed on G7250. The toggles whose reads answered 0x02 with no 00/01
+# evidence (16 41, 16 44, 16 50) are formally absent below.)
 get_agc          = [0x16, 0x12]
 set_agc          = [0x16, 0x12]
 get_nb           = [0x16, 0x22]
 set_nb           = [0x16, 0x22]
 get_nr           = [0x16, 0x40]
 set_nr           = [0x16, 0x40]
-get_compressor   = [0x16, 0x44]
-set_compressor   = [0x16, 0x44]
-get_auto_notch   = [0x16, 0x41]
-set_auto_notch   = [0x16, 0x41]
-get_dial_lock    = [0x16, 0x50]
-set_dial_lock    = [0x16, 0x50]
 
 # Identification. LIVE G7250 2026-11-09: 0x19 0x00 answers the ECHOED
-# asked address byte (asked at A4 -> payload A4), so the payload is not a
-# model token on this radio — the address echo is why discovery falls
-# through to the 0x1D 0x19 probe.
+# asked address byte (asked at 88 -> payload 88; asked at the broadcast
+# 00 -> payload 00), so the payload is not a model token on this radio —
+# the address echo is why discovery falls through to the 0x1D 0x19 probe.
 get_transceiver_id = [0x19, 0x00]
 
 # Filter width. LIVE G7250 2026-11-09: BCD index, IC-7300 segments — see
@@ -542,8 +538,8 @@ get_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0
 set_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x00 NAKed on the bench — no CI-V memory channels" }
 get_break_in              = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x47 NAKed on the bench" }
 set_break_in              = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x47 NAKed on the bench" }
-get_manual_notch          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x48 NAKed on the bench — the notch mechanism is the DNF toggle at 0x16 0x41" }
-set_manual_notch          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x48 NAKed on the bench — the notch mechanism is the DNF toggle at 0x16 0x41" }
+get_manual_notch          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x48 NAKed on the bench — no manual notch; the DNF read at 0x16 0x41 answers 0x02, meaning unconfirmed, and is absent above" }
+set_manual_notch          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x48 NAKed on the bench — no manual notch; the DNF read at 0x16 0x41 answers 0x02, meaning unconfirmed, and is absent above" }
 get_repeater_tone         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x42 NAKed on the bench — no tone family" }
 set_repeater_tone         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x42 NAKed on the bench — no tone family" }
 get_repeater_tsql         = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x43 NAKed on the bench — no tone family" }
@@ -570,14 +566,25 @@ memory_write              = { absent = "inherited from X6200, not probed on G725
 memory_to_vfo             = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x0A row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
 memory_clear              = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x0B row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
 
+# ── Reads that answer 0x02, meaning unconfirmed (LIVE G7250 2026-11-09,
+# MOR-4352 — sent and answered, but not with a 00/01 toggle value, so no
+# state is declared from them) ──────────────────────────────────────
+get_auto_notch   = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfirmed" }
+set_auto_notch   = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfirmed" }
+get_compressor   = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfirmed" }
+set_compressor   = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfirmed" }
+get_dial_lock    = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfirmed" }
+set_dial_lock    = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfirmed" }
+
 # Reads that ANSWER but declare nothing here (recorded so nobody mistakes
 # silence for an oversight — LIVE G7250 2026-11-09, MOR-4352):
 #   - 0x14 0x07 / 0x14 0x08 (PBT inner/outer) answer 01 28 (centre); no
 #     pbt keys — the SET side was never exercised, no capability declared.
 #   - 0x14 0x0D (notch position) answers 00 00; no key — nothing routes a
 #     G7250 notch-position control yet.
-#   - 0x14 0x0E (comp level) answers 00 00; no key beyond the 0x16 0x44
-#     toggle above.
+#   - 0x14 0x0E (comp level) answers 00 00; no key — the 0x16 0x44
+#     compressor read answers 0x02 with an unconfirmed meaning and is
+#     formally absent above.
 #   - 0x14 0x0F (QSK delay) answers 00 00; no key — same posture as X6200.
 #   - 0x15 0x01 (squelch status) answers 00 00; no key — dcd was removed
 #     from every shipped profile.

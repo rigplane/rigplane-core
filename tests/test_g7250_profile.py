@@ -18,7 +18,11 @@ from rigplane.backends.config import SerialBackendConfig
 from rigplane.backends.factory import create_radio, supports_serial_model
 from rigplane.backends.ic705.serial import XieguSerialRadio
 from rigplane.commands._codec import filter_index_to_hz
-from rigplane.profiles import get_radio_profile, profile_by_xiegu_model_id
+from rigplane.profiles import (
+    get_radio_profile,
+    profile_by_xiegu_model_id,
+    resolve_radio_profile,
+)
 from rigplane.profiles.rig_loader import RigConfig, discover_rigs
 from rigplane.runtime.radios import RADIOS, get_civ_addr
 
@@ -65,6 +69,18 @@ _LIVE_NAKED_ABSENT = {
     "get_id_meter",
 }
 
+# Answered 0x02, not 00/01 (LIVE G7250 2026-11-09, MOR-4352): the meaning
+# of 0x02 on this radio is unconfirmed, so these keys must load as
+# formally absent with that source, never present.
+_LIVE_02_ABSENT = {
+    "get_auto_notch",
+    "set_auto_notch",
+    "get_compressor",
+    "set_compressor",
+    "get_dial_lock",
+    "set_dial_lock",
+}
+
 
 def _config() -> RigConfig:
     return discover_rigs(RIGS_DIR)["G7250"]
@@ -85,9 +101,12 @@ def test_identity_is_g7250_with_the_live_baud_and_model_id() -> None:
     assert config.id == "xiegu_g7250"
     assert config.model == "G7250"
     # The radio answers ANY CI-V address and echoes the address it was
-    # asked as its own (LIVE 2026-11-09); 0xA4 is the Xiegu family
-    # default, kept so unicast sessions behave like the X6200's.
-    assert config.civ_addr == 0xA4
+    # asked as its own (LIVE 2026-11-09, probed 00/A4/88/70/72/E0; 0x88
+    # answered the full read set). 0x88, not the family default 0xA4:
+    # this file loads before ic705.toml and the profiles' address-only
+    # table would otherwise resolve 0xA4 to the G7250 (the IC-705's
+    # address). See test_address_only_resolution_regression below.
+    assert config.civ_addr == 0x88
     assert config.receiver_count == 1
     # The G7250 "LAN" port is a proprietary IQ stream, not CI-V control.
     assert config.has_lan is False
@@ -98,11 +117,29 @@ def test_identity_is_g7250_with_the_live_baud_and_model_id() -> None:
 
 
 def test_registry_rows_resolve_the_model() -> None:
-    assert RADIOS["G7250"].civ_addr == 0xA4
+    assert RADIOS["G7250"].civ_addr == 0x88
     assert RADIOS["G7250"].has_lan is False
     assert RADIOS["G7250"].receivers == 1
-    assert get_civ_addr("g7250") == 0xA4
-    assert get_civ_addr("G-7250") == 0xA4
+    assert get_civ_addr("g7250") == 0x88
+    assert get_civ_addr("G-7250") == 0x88
+
+
+def test_address_only_resolution_regression() -> None:
+    """The 0x88 move must not disturb address-only profile resolution.
+
+    g7250.toml loads before ic705.toml and x6200.toml, and the profiles'
+    ``_by_civ_addr`` table keeps the FIRST profile per address — with the
+    G7250 at 0xA4 it stole the IC-705's address-only resolution (the
+    local Codex review's round-1 blocker). 0x88 is used by no other
+    shipped profile, so the pre-G7250 rows are unchanged.
+    """
+    assert resolve_radio_profile(radio_addr=0xA4).model == "IC-705"
+    assert resolve_radio_profile(radio_addr=0x70).model == "X6100"
+    # The G7250 itself resolves by name (or id) to its own 0x88 profile.
+    by_name = resolve_radio_profile(model="G7250")
+    assert by_name.model == "G7250"
+    assert by_name.civ_addr == 0x88
+    assert resolve_radio_profile(radio_addr=0x88).model == "G7250"
 
 
 def test_factory_routes_the_shared_xiegu_serial_class() -> None:
@@ -180,16 +217,42 @@ def test_live_naked_reads_are_formally_absent() -> None:
         assert "LIVE G7250" in profile.absent_command_sources[name], name
 
 
+def test_0x02_reads_are_formally_absent() -> None:
+    """Toggles whose reads answered 0x02 (not 00/01) declare no state.
+
+    The round-1 review blocker: ``CoreRadio.get_*`` compares to 0x01 while
+    ingress uses ``bool(data[0])``, so a 0x02 reply shows contradictory
+    state. NB (16 22) and NR (16 40) read 00 — off — and stay; the
+    auto-notch/compressor/dial-lock reads answered 0x02 with an
+    unconfirmed meaning and must be formally absent.
+    """
+    profile = get_radio_profile("G7250")
+    missing = _LIVE_02_ABSENT - profile.absent_command_names
+    assert not missing, f"0x02-read keys not declared absent: {missing}"
+    for name in _LIVE_02_ABSENT:
+        assert profile.absent_command_sources[name] == (
+            "LIVE G7250 2026-11-09: read 0x02, meaning unconfirmed"
+        ), name
+    # Their capabilities are gone with them.
+    for cap in ("notch", "compressor", "dial_lock"):
+        assert not profile.supports_capability(cap), cap
+
+
 def test_no_rit_xit_pbt_vox_tone_or_data_mode_capability() -> None:
     profile = get_radio_profile("G7250")
     # LIVE: 0x21 RIT/XIT reads timed out; 0x16 0x46 VOX answered 0x02
     # with an unconfirmed meaning; tone/memory/data-mode NAKed. PBT reads
-    # (0x14 0x07/0x08) answer but the setter was never exercised.
+    # (0x14 0x07/0x08) answer but the setter was never exercised. The
+    # auto-notch/compressor/dial-lock reads (0x16 0x41/0x44/0x50) answered
+    # 0x02 — same unconfirmed-meaning posture as VOX.
     for cap in (
         "rit",
         "xit",
         "pbt",
         "vox",
+        "notch",
+        "compressor",
+        "dial_lock",
         "tuner",
         "break_in",
         "data_mode",
@@ -206,13 +269,10 @@ def test_no_rit_xit_pbt_vox_tone_or_data_mode_capability() -> None:
         "preamp",
         "nb",
         "nr",
-        "notch",
         "tx",
         "split",
-        "compressor",
         "cw",
         "meters",
-        "dial_lock",
         "agc",
         "power_control",
     ):
