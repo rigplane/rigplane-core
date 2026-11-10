@@ -15,7 +15,13 @@ from unittest.mock import Mock
 import pytest
 
 from rigplane.audio._portaudio_enum import PortAudioEnumeration
-from rigplane.audio._usb_pairing import PairOk, PairRefused, pair
+from rigplane.audio._usb_pairing import (
+    PairOk,
+    PairRefused,
+    candidate_stable_id,
+    pair,
+    same_endpoint_records,
+)
 from rigplane.audio._usb_raw_macos import RawMacos
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.profiles import get_radio_profile
@@ -427,6 +433,117 @@ def test_two_radios_same_codec_identity_on_different_hubs_do_not_use_name_rank(
         else:
             assert isinstance(result, PairOk)
             assert (result.rx_index, result.tx_index) == indices
+
+
+def _duplicate_subtree(session, ids):
+    raw = session["raw"]["macos"]
+    for original in tuple(raw["usb_devices"]):
+        if original["registry_id"] not in ids:
+            continue
+        row = deepcopy(original)
+        row["registry_id"] = ids[original["registry_id"]]
+        if row["parent_registry_id"] in ids:
+            row["parent_registry_id"] = ids[row["parent_registry_id"]]
+        row["location_id"] += 0x10000
+        raw["usb_devices"].append(row)
+
+
+def _second_same_named_burr_brown(session):
+    """A second IC-705-shaped radio whose CODEC rows keep the same name."""
+    _duplicate_subtree(
+        session,
+        {
+            4295496583: 4295496683,
+            4295496601: 4295496701,
+            4295496626: 4295496726,
+        },
+    )
+    raw = session["raw"]["macos"]
+    raw["serial_devices"].append(
+        {"device": "/dev/cu.other", "usb_registry_id": 4295496701}
+    )
+    for original in tuple(raw["audio_devices"]):
+        row = deepcopy(original)
+        row["uid"] = row["uid"].replace("3121400", "3131400")
+        raw["audio_devices"].append(row)
+    devices = session["raw"]["portaudio"]["devices"]
+    for original in (devices[1], devices[2]):
+        devices.append({**original, "index": len(devices)})
+
+
+def _second_same_named_c_media(session):
+    """A second FTX-1-shaped radio whose CODEC row keeps the same name."""
+    _duplicate_subtree(
+        session,
+        {
+            4295976864: 4295976964,
+            4295976883: 4295976983,
+            4295976942: 4295977042,
+        },
+    )
+    raw = session["raw"]["macos"]
+    raw["serial_devices"].append(
+        {"device": "/dev/cu.other", "usb_registry_id": 4295976983}
+    )
+    codec = deepcopy(
+        next(row for row in raw["audio_devices"] if row["device_id"] == 154)
+    )
+    codec["uid"] = codec["uid"].replace("3122200", "3132200")
+    raw["audio_devices"].append(codec)
+    devices = session["raw"]["portaudio"]["devices"]
+    devices.append({**devices[3], "index": len(devices)})
+
+
+@pytest.mark.parametrize(
+    "shape,port,indices",
+    [
+        ("split", MAC_PORT, (2, 1)),
+        ("split", "/dev/cu.other", (18, 17)),
+        ("duplex", FTX_PORT, (3, 3)),
+        ("duplex", "/dev/cu.other", (17, 17)),
+    ],
+)
+def test_same_named_codecs_on_different_hubs_pair_through_their_own_records(
+    shape, port, indices
+):
+    session = _synthetic_macos() if shape == "split" else _macos_session()
+    if shape == "split":
+        _second_same_named_burr_brown(session)
+        profile, codec_name = "IC-705", "USB Audio CODEC"
+    else:
+        _second_same_named_c_media(session)
+        profile, codec_name = "FTX-1", "USB Audio Device"
+    snapshot = _adapt(session)
+    result = pair(snapshot, port, get_radio_profile(profile).usb_identity)
+    assert isinstance(result, PairOk), result
+    assert (result.rx_index, result.tx_index) == indices
+    assert snapshot.portaudio.devices[result.rx_index].name == codec_name
+    assert all(
+        endpoint.portaudio_index is not None
+        for endpoint in snapshot.endpoints
+        if endpoint.name == codec_name
+    )
+    api = next(api for api in snapshot.portaudio.hostapis if api.name == "Core Audio")
+    selector = candidate_stable_id(
+        snapshot, snapshot.portaudio.devices[result.rx_index], api, "capture"
+    )
+    assert not selector.partition("|")[2].startswith("name:")
+    assert [
+        record.index for record, _ in same_endpoint_records(snapshot, selector, "capture")
+    ] == [result.rx_index]
+
+
+def test_channel_mismatch_blocks_binding_and_keeps_the_contested_refusal():
+    session = _synthetic_macos()
+    _second_same_named_burr_brown(session)
+    devices = session["raw"]["portaudio"]["devices"]
+    devices[-1]["max_input_channels"] = 1
+    snapshot = _adapt(session)
+    assert all(endpoint.portaudio_index is None for endpoint in snapshot.endpoints)
+    for port in (MAC_PORT, "/dev/cu.other"):
+        result = pair(snapshot, port, get_radio_profile("IC-705").usb_identity)
+        assert isinstance(result, PairRefused), result
+        assert result.reason == "contested"
 
 
 def test_split_pair_preserves_portaudio_index_zero():
