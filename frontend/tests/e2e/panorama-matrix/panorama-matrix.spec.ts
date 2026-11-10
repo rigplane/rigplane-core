@@ -26,7 +26,14 @@ import { startJourneyServer, type JourneyServerHandle } from '../journey/server-
 
 const scope: MatrixScope = process.env.PANORAMA_MATRIX_SCOPE === 'full' ? 'full' : 'subset';
 const cells = generateCells(scope);
-const portBase = Number(process.env.PANORAMA_MATRIX_PORT_BASE ?? 21_500);
+// D10: per-run port range. Two matrix runs share the mini, and a fixed base
+// (rc8: 21500, one run probed 23700 = another run's range) lets one run's
+// start/kill hit the other's servers (ECONNREFUSED / exit 143). The base is
+// offset by a run slot, and a busy port is skipped by retry below, so ranges
+// cannot collide in practice.
+const runSlot = Number(process.env.PANORAMA_MATRIX_RUN_ID ?? process.pid % 64);
+const portBase = Number(process.env.PANORAMA_MATRIX_PORT_BASE ?? 24_000 + runSlot * 400);
+const workerStride = 100;
 let portCounter = 0;
 
 interface Receipts {
@@ -111,13 +118,26 @@ async function setSpanHz(page: import('@playwright/test').Page, targetHz: number
 
 async function runCell(cell: MatrixCell, page: import('@playwright/test').Page, browser: import('@playwright/test').Browser, info: import('@playwright/test').TestInfo): Promise<CellResult> {
   const radio = MATRIX_RADIOS[cell.radio];
-  const port = portBase + info.workerIndex * 100 + (portCounter++ % 90);
+  // D10: skip ports held by another run instead of failing setup on them.
+  // startJourneyServer throws 'already listens' when the port is taken; each
+  // retry steps to the next port (bounded: a genuinely broken server still
+  // fails the cell instead of wandering the range).
+  let port = portBase + info.workerIndex * workerStride + (portCounter++ % 90);
   const evidencePath = info.outputPath('radio.jsonl');
   const serverArgs = ['--model', radio.model, '--evidence', evidencePath, '--signal-amplitude', '235', ...radio.serverArgs, ...cell.serverArgs];
   let server: JourneyServerHandle | null = null;
   const startServer = async (): Promise<JourneyServerHandle> =>
     startJourneyServer(port, 14_250_000, serverArgs, 'tests/e2e/panorama_web_server.py');
-  server = await startServer();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      server = await startServer();
+      break;
+    } catch (error) {
+      const busy = String(error).includes('already listens');
+      if (!busy || attempt >= 9) throw error;
+      port += 1;
+    }
+  }
 
   const observations: PageObservations = { subscriptions: [], grants: [], frames: [], commands: [], commandErrors: [] };
   try {
