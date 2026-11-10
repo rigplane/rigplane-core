@@ -43,6 +43,10 @@ export interface WaterfallOptions {
   // Viewport center minus sample-window center, Hz (MOR-2464). Samples the
   // NEW row only; history is projected from its retained frequency coordinates.
   panoramaShiftHz: number;
+  // MOR-4383: temporal per-bin IIR (alpha 0.5 per new frame) on the
+  // waterfall rows. Default on; the spatial [1 2 1]/4 and the 3-row blended
+  // groups are part of the single render path and always apply.
+  temporalSmoothing?: boolean;
 }
 
 export const defaultWaterfallOptions: WaterfallOptions = {
@@ -52,6 +56,7 @@ export const defaultWaterfallOptions: WaterfallOptions = {
   centerHz: 0,
   spanHz: 0,
   panoramaShiftHz: 0,
+  temporalSmoothing: true,
 };
 
 export class WaterfallRenderError extends Error {
@@ -161,6 +166,21 @@ export class WaterfallRenderer {
   private sentHead = -2;
   private sentCount = -1;
   private destroyed = false;
+  // MOR-4383 smoothing state, ported from the RigDeck presenter: temporal
+  // per-bin IIR, spatial [1 2 1]/4, and one blended 3-row group per new
+  // frame. Reset by geometry change (bins, span, window, sample centre)
+  // or clear().
+  private smoothState = new Float32Array(0);
+  private filtered = new Float32Array(0);
+  private currentRow = new Uint8Array(0);
+  private previousRow = new Uint8Array(0);
+  private rowUpload = new Uint8Array(0);
+  private smoothBins = 0;
+  private smoothSpan = 0;
+  private smoothStart = 0;
+  private smoothRange = 1;
+  private smoothCentre = 0;
+  private previousValid = false;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
@@ -309,22 +329,58 @@ export class WaterfallRenderer {
     if (samples <= 0) return;
     if (data.length > this.textureWidth) this.growTexture(data.length);
     const gl = this.gl;
-    this.head = (this.head + 1) % this.rows;
-    this.count = Math.min(this.rows, this.count + 1);
     const o = this.options, span = o.sampleSpanHz || o.spanHz || 1;
     const start = o.sampleWindow?.start ?? 0, range = (o.sampleWindow?.end ?? 1) - start;
-    const sampleStart = o.centerHz - o.panoramaShiftHz - span / 2 - start * span / range;
+    const centre = o.centerHz - o.panoramaShiftHz;
+    const keep = this.smoothBins === samples && this.smoothSpan === span
+      && this.smoothStart === start && this.smoothRange === range && this.smoothCentre === centre;
+    if (this.smoothState.length !== samples) {
+      this.smoothState = new Float32Array(samples);
+      this.filtered = new Float32Array(samples);
+      this.currentRow = new Uint8Array(samples);
+      this.previousRow = new Uint8Array(samples);
+    }
+    if (this.rowUpload.length < data.length) this.rowUpload = new Uint8Array(data.length);
+    for (let i = 0; i < offset; i++) this.rowUpload[i] = data[i];
+    const temporal = o.temporalSmoothing !== false && keep;
+    for (let i = 0; i < samples; i++) {
+      const value = data[offset + i];
+      this.smoothState[i] = temporal ? (this.smoothState[i] + value) / 2 : value;
+    }
+    for (let i = 0; i < samples; i++) {
+      const left = this.smoothState[i > 0 ? i - 1 : 0];
+      const right = this.smoothState[i + 1 < samples ? i + 1 : samples - 1];
+      this.filtered[i] = (left + 2 * this.smoothState[i] + right) / 4;
+      this.currentRow[i] = Math.round(this.filtered[i]);
+    }
+    const sampleStart = centre - span / 2 - start * span / range;
     const delta = sampleStart - this.originHz;
     this.row[0] = Math.fround(delta); this.row[1] = delta - this.row[0]; this.row[2] = span / range;
     this.row[3] = (o.coverage?.startHz ?? Math.min(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[4] = (o.coverage?.endHz ?? Math.max(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[5] = o.sampleAmplitudeMax ?? 80; this.row[6] = samples; this.row[7] = offset;
     this.row[8] = this.width; this.row[9] = start; this.row[10] = range;
-    this.metadata.set(this.row, this.head * 12);
-    gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[Math.floor(this.head / this.blockRows)]);
-    gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 48, this.row);
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, this.head, data.length, 1, gl.RED, gl.UNSIGNED_BYTE, data, 0);
+    const group = Math.min(3, this.rows);
+    const blend = this.previousValid && keep;
+    for (let k = 1; k <= group; k++) {
+      if (blend && k < group) {
+        for (let i = 0; i < samples; i++) {
+          this.rowUpload[offset + i] = Math.round(
+            (this.previousRow[i] * (group - k) + this.currentRow[i] * k) / group);
+        }
+      } else this.rowUpload.set(this.currentRow, offset);
+      this.head = (this.head + 1) % this.rows;
+      this.count = Math.min(this.rows, this.count + 1);
+      this.metadata.set(this.row, this.head * 12);
+      gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[Math.floor(this.head / this.blockRows)]);
+      gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 48, this.row);
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, this.head, data.length, 1, gl.RED, gl.UNSIGNED_BYTE, this.rowUpload, 0);
+    }
+    this.previousRow.set(this.currentRow);
+    this.previousValid = true;
+    this.smoothBins = samples; this.smoothSpan = span;
+    this.smoothStart = start; this.smoothRange = range; this.smoothCentre = centre;
     this.draw();
   }
 
@@ -388,7 +444,11 @@ export class WaterfallRenderer {
     return this.width > 0 && this.options.spanHz > 0
       ? this.options.centerHz - this.options.spanHz / 2 + x / this.width * this.options.spanHz : this.options.centerHz;
   }
-  clear(): void { this.head = -1; this.count = 0; this.draw(); }
+  clear(): void {
+    this.head = -1; this.count = 0;
+    this.smoothBins = 0; this.previousValid = false;
+    this.draw();
+  }
   destroy(): void {
     if (!this.destroyed) {
       this.destroyed = true; this.releaseProgram(); this.gl.deleteTexture(this.texture); this.texture = null;

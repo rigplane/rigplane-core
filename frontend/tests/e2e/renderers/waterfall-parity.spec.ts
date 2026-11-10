@@ -35,10 +35,10 @@ test('interpolates calibrated adjacent bins around the column centre', async ({ 
   });
   // [1 2 1] of [0,96,0,0] stores [24,48,24,0]; column centres x=1,2 then
   // sample the bin-centre positions 1.5/2.5 and lerp the calibrated bins.
-  expect(results[0].expected).toEqual([171, 171, 171, 98, 98, 98, 255, 255]);
-  expect(results[1].expected).toEqual([114, 114, 114, 0, 0, 0, 255, 255]);
-  expect(results[2].expected).toEqual([120, 120, 120, 69, 69, 69, 255, 255]);
-  expect(results[3].expected).toEqual([0, 0, 0, 0, 0, 0, 255, 255]);
+  expect(results[0].expected).toEqual([171, 171, 171, 255, 98, 98, 98, 255]);
+  expect(results[1].expected).toEqual([114, 114, 114, 255, 0, 0, 0, 255]);
+  expect(results[2].expected).toEqual([120, 120, 120, 255, 69, 69, 69, 255]);
+  expect(results[3].expected).toEqual([0, 0, 0, 255, 0, 0, 0, 255]);
   for (const result of results) {
     expect(result.error).toBe(0);
     expect(result.actual, JSON.stringify(result)).toEqual(result.expected);

@@ -6,7 +6,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('MOR-4272 texture ring', () => {
   const options = { ...defaultWaterfallOptions, centerHz: 14_050_000, spanHz: 100_000 };
-  it('uploads exactly one R8 row and draws one quad per frame, wrapping by height', () => {
+  it('uploads one R8 row per group row (3) and draws one quad per frame, wrapping by height', () => {
     const f = webglFixture(100, 3);
     const r = new WaterfallRenderer(f.canvas, options);
     const pixels = new Uint8Array(100).fill(40);
@@ -14,11 +14,13 @@ describe('MOR-4272 texture ring', () => {
     f.calls.length = 0;
     for (let i = 0; i < 10; i++) r.pushRow(pixels);
     const uploads = f.named('texSubImage2D');
-    expect(uploads).toHaveLength(10);
-    expect(uploads.map(call => call.args[3])).toEqual([1, 2, 0, 1, 2, 0, 1, 2, 0, 1]);
+    expect(uploads).toHaveLength(30);
+    expect(uploads.map(call => call.args[3])).toEqual(Array.from({ length: 30 }, (_, i) => i % 3));
     for (const call of uploads) {
       expect(call.args.slice(4, 8)).toEqual([100, 1, f.gl.RED, f.gl.UNSIGNED_BYTE]);
-      expect(call.args[8]).toBe(pixels);
+      // The uploaded row is the [1 2 1]-filtered scratch, constant 40 here.
+      expect(Array.from((call.args[8] as Uint8Array).subarray(0, 100))).toEqual(Array(100).fill(40));
+      expect(call.args[9]).toBe(0);
     }
     expect(f.named('drawArrays')).toHaveLength(10);
     expect(f.getContext).toHaveBeenCalledWith('webgl2', expect.any(Object));
@@ -56,8 +58,10 @@ describe('MOR-4272 texture ring', () => {
     f.calls.length = 0;
     r.updateOptions({ centerHz: 14_060_000, panoramaShiftHz: 0 });
     r.pushRow(new Uint8Array(100).fill(80));
-    expect(f.named('bufferSubData')[0].args[1]).toBe(48);
-    expect(f.named('texSubImage2D')).toHaveLength(1);
+    // MOR-4383: the warm-up push filled ring rows 0-2; the next frame's
+    // group starts at row 3.
+    expect(f.named('bufferSubData')[0].args[1]).toBe(144);
+    expect(f.named('texSubImage2D')).toHaveLength(3);
   });
   it('reports WebGL unavailability as a typed error and never requests a 2D context', () => {
     const canvas = document.createElement('canvas');

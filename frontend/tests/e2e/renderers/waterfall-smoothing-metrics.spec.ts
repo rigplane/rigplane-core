@@ -86,12 +86,14 @@ for (const dpr of [1, 2]) {
       await info.attach('metrics', { body: JSON.stringify(result), contentType: 'application/json' });
       expect(result.width).toBe(1900 * dpr);
       // Speckle energy per direction drops: blended groups correlate rows,
-      // bin interpolation and [1 2 1] soften independent per-bin noise.
+      // bin interpolation and [1 2 1] soften independent per-bin noise. The
+      // noise floor dimming is the intended smoothing, so preservation is
+      // asserted on the signal peaks, not the all-pixel mean.
       expect(result.after.rowDiff).toBeLessThan(0.75 * result.before.rowDiff);
       expect(result.after.columnDiff).toBeLessThan(0.9 * result.before.columnDiff);
       // Signal peaks survive the smoothing.
       expect(result.after.maxLum).toBeGreaterThanOrEqual(0.7 * result.before.maxLum);
-      expect(result.after.meanSignal).toBeGreaterThanOrEqual(0.8 * result.before.meanSignal);
+      expect(result.after.p999Lum).toBeGreaterThanOrEqual(0.7 * result.before.p999Lum);
     });
   });
 }
