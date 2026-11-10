@@ -449,7 +449,14 @@ def _duplicate_subtree(session, ids):
 
 
 def _second_same_named_burr_brown(session):
-    """A second IC-705-shaped radio whose CODEC rows keep the same name."""
+    """A second IC-705-shaped radio whose CODEC rows keep the same name.
+
+    The PortAudio list is rebuilt to mirror the synthetic CoreAudio rows
+    (only the codec records, cloned once, dense indices): the binding now
+    requires the two whole sequences to agree, so the fixture must model a
+    machine whose cached PortAudio list still matches what CoreAudio
+    reports.
+    """
     _duplicate_subtree(
         session,
         {
@@ -467,8 +474,12 @@ def _second_same_named_burr_brown(session):
         row["uid"] = row["uid"].replace("3121400", "3131400")
         raw["audio_devices"].append(row)
     devices = session["raw"]["portaudio"]["devices"]
-    for original in (devices[1], devices[2]):
-        devices.append({**original, "index": len(devices)})
+    codec_records = [
+        deepcopy(row) for row in devices if row["name"] == "USB Audio CODEC"
+    ]
+    devices[:] = codec_records + deepcopy(codec_records)
+    for index, row in enumerate(devices):
+        row["index"] = index
 
 
 def _second_same_named_c_media(session):
@@ -497,8 +508,8 @@ def _second_same_named_c_media(session):
 @pytest.mark.parametrize(
     "shape,port,indices",
     [
-        ("split", MAC_PORT, (2, 1)),
-        ("split", "/dev/cu.other", (18, 17)),
+        ("split", MAC_PORT, (1, 0)),
+        ("split", "/dev/cu.other", (3, 2)),
         ("duplex", FTX_PORT, (3, 3)),
         ("duplex", "/dev/cu.other", (17, 17)),
     ],

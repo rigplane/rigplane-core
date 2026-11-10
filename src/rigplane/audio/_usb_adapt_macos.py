@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from collections.abc import Sequence
 
 from rigplane.audio._portaudio_enum import PortAudioEnumeration
 from rigplane.audio._usb_names import endpoint_name_key
-from rigplane.audio._usb_raw_macos import RawMacos
+from rigplane.audio._usb_raw_macos import CoreAudioDeviceRow, RawMacos
 from rigplane.audio._usb_snapshot import (
     AudioEndpoint,
-    Flow,
     SerialPortRef,
     Unavailable,
     UsbNode,
@@ -18,16 +17,21 @@ from rigplane.audio._usb_snapshot import (
 )
 
 
-def _portaudio_binding(rows, portaudio: PortAudioEnumeration) -> dict[str, int]:
+def _portaudio_binding(
+    rows: Sequence[CoreAudioDeviceRow], portaudio: PortAudioEnumeration
+) -> dict[str, int]:
     """Bind CoreAudio devices to PortAudio records by enumeration order.
 
-    PortAudio's Core Audio host API walks the same
-    ``kAudioHardwarePropertyDevices`` list this snapshot read, so within one
-    device name the k-th CoreAudio device is the k-th PortAudio record of
-    that host API. Binding the k-th to the k-th requires equal list lengths
-    and equal input and output channel counts for every pair; anything less
-    leaves the name unbound and pairing falls back to name matching. Keys
-    are CoreAudio UIDs, the endpoint identity.
+    PortAudio caches its device list at initialization and is never
+    re-initialized, while this snapshot reads CoreAudio fresh; after a
+    hot-plug the two lists disagree. So nothing binds at all unless the
+    WHOLE ordered sequence of ``(endpoint_name_key(name),
+    input_channels, output_channels)`` of the CoreAudio devices (rows with
+    uid and name) equals the ordered sequence of the PortAudio records on
+    the "Core Audio" host API. With the sequences equal, both lists walked
+    the same ``kAudioHardwarePropertyDevices`` order, and the k-th
+    CoreAudio device is the k-th PortAudio record — per name, the k-th to
+    the k-th. Keys are CoreAudio UIDs, the endpoint identity.
     """
     api_index = next(
         (api.index for api in portaudio.hostapis if api.name == "Core Audio"),
@@ -35,26 +39,37 @@ def _portaudio_binding(rows, portaudio: PortAudioEnumeration) -> dict[str, int]:
     )
     if api_index is None:
         return {}
-    by_name: dict[str, list[dict[str, Any]]] = {}
+    devices: list[tuple[str, tuple[str, int | None, int | None]]] = []
     for row in rows:
-        by_name.setdefault(endpoint_name_key(row["name"]), []).append(row)
-    records = sorted(portaudio.devices, key=lambda record: record.index)
-    binding: dict[str, int] = {}
-    for name, named in by_name.items():
-        listed = [
-            record
-            for record in records
-            if record.hostapi == api_index and endpoint_name_key(record.name) == name
-        ]
-        if len(listed) != len(named) or not all(
-            row["input_channels"] == record.max_input_channels
-            and row["output_channels"] == record.max_output_channels
-            for row, record in zip(named, listed)
-        ):
+        uid, name = row["uid"], row["name"]
+        if not uid or name is None:
             continue
-        for row, record in zip(named, listed):
-            binding[row["uid"]] = record.index
-    return binding
+        devices.append(
+            (
+                uid,
+                (
+                    endpoint_name_key(name),
+                    row["input_channels"],
+                    row["output_channels"],
+                ),
+            )
+        )
+    records = sorted(
+        (record for record in portaudio.devices if record.hostapi == api_index),
+        key=lambda record: record.index,
+    )
+    if [shape for _, shape in devices] != [
+        (
+            endpoint_name_key(record.name),
+            record.max_input_channels,
+            record.max_output_channels,
+        )
+        for record in records
+    ]:
+        return {}
+    return {
+        uid: record.index for (uid, _), record in zip(devices, records, strict=True)
+    }
 
 
 def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
@@ -100,13 +115,10 @@ def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
         )
         unavailable.append(Unavailable(normalized, part + ":" + failure["reason"]))
     endpoints = []
-    binding = _portaudio_binding(
-        [row for row in raw.audio_devices if row["uid"] and row["name"] is not None],
-        portaudio,
-    )
-    for row in raw.audio_devices:
-        uid = row["uid"]
-        name = row["name"]
+    binding = _portaudio_binding(raw.audio_devices, portaudio)
+    for device_row in raw.audio_devices:
+        uid = device_row["uid"]
+        name = device_row["name"]
         if not uid or name is None:
             unavailable.append(Unavailable("endpoints", "CoreAudio identity missing"))
             continue
@@ -134,12 +146,10 @@ def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
                 == endpoint_name_key(device["product"] or "")
             }
         owner = next(iter(owners)) if len(owners) == 1 else "opaque:" + uid
-        directions: tuple[tuple[Flow, str], ...] = (
-            ("capture", "input_channels"),
-            ("render", "output_channels"),
-        )
-        for flow, field in directions:
-            channels = row[field]
+        for flow, channels in (
+            ("capture", device_row["input_channels"]),
+            ("render", device_row["output_channels"]),
+        ):
             if channels is None:
                 unavailable.append(
                     Unavailable("endpoints", "CoreAudio channels missing")

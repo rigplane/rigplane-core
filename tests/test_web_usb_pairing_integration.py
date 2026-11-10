@@ -741,8 +741,8 @@ async def test_w3_dual_cp210x_browser_audio_start_selects_ic7610_codec(
 @pytest.mark.parametrize(
     "shape,port,indices",
     [
-        ("split", MAC_PORT, (2, 1)),
-        ("split", "/dev/cu.other", (18, 17)),
+        ("split", MAC_PORT, (1, 0)),
+        ("split", "/dev/cu.other", (3, 2)),
         ("duplex", FTX_PORT, (3, 3)),
         ("duplex", "/dev/cu.other", (17, 17)),
     ],
