@@ -92,6 +92,9 @@ scripts/*
 !scripts/gen_control_domain_vectors.py
 # And the state wire golden generator is tracked.
 !scripts/gen_state_wire_goldens.py
+# And the pre-push quick gate and its selection logic are tracked (MOR-4372).
+!scripts/local-ci.sh
+!scripts/pre_push_scope.py
 # And the IC-7610 capture probe driver is tracked (MOR-3307).
 !scripts/ic7610_capture/
 # And the IC-7300 capture bridge and scope session driver are tracked (MOR-3595).

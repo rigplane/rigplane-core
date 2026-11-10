@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
-from typing import Sequence
+from typing import Sequence, TypedDict
 
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -89,6 +89,19 @@ CORE_DOCS_TEST_INPUT_EXACT = {
     "docs/guide/diagnostic-reports.md",  # tests/test_docs_runtime_sync.py
     "docs/internals/audio-capture-health.md",  # tests/test_docs_runtime_sync.py
 }
+
+
+class QuickClassification(TypedDict):
+    """The result of `classify`: what quick CI selects for a diff.
+
+    Consumed by quick.yml (as step outputs) and by scripts/pre_push_scope.py, which reads
+    these fields to choose the pre-push gate's checks; add a field here, never a bare key.
+    """
+
+    core: bool
+    frontend: bool
+    ci: bool
+    docs: bool
 
 
 class ClassificationError(ValueError):
@@ -173,7 +186,7 @@ def is_core(path: str) -> bool:
     return parts[0] in {"src", "tests", "rigs", "contracts"}
 
 
-def classify(paths: Sequence[str]) -> dict[str, bool]:
+def classify(paths: Sequence[str]) -> QuickClassification:
     normalized = list(dict.fromkeys(paths))
     if not normalized:
         raise ClassificationError("the exact diff contains no changed paths")
