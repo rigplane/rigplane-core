@@ -317,8 +317,6 @@ class ScopeHub:
                 if native_width is not None
                 else client._request.width,
             )
-            if client.granted.max_fps == 0:
-                continue
             grant = client.granted
             if isinstance(client._request.view, FollowView):
                 # MOR-4385: what a follow grant tracks is the source's own
@@ -339,6 +337,11 @@ class ScopeHub:
                 view = grant.view
             coverage = _intersection(view, frame.coverage)
             client.granted = replace(grant, view=view, coverage=coverage)
+            if grant.max_fps == 0:
+                # Passive attach (MOR-4385): the grant tracks the source
+                # without set_view writes, but no frames are encoded or
+                # delivered.
+                continue
             key = grant.width, view, coverage
             if key not in encoded:
                 pixels = (
