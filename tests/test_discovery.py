@@ -24,7 +24,7 @@ from rigplane.discovery import (
     SerialPortCandidate,
     _are_you_there_packet,
     _is_candidate,
-    _is_xiegu_model_id_reply,
+    _parse_xiegu_model_id_reply,
     _local_ipv4_addresses,
     _parse_probe_response,
     build_setup_discovery_payload,
@@ -304,6 +304,17 @@ _XIEGU_MODEL_ID_CMD = bytes([0xFE, 0xFE, 0xA4, 0xE0, 0x1D, 0x19, 0xFD])
 _XIEGU_MODEL_ID_REPLY = bytes([0xFE, 0xFE, 0xE0, 0xA4, 0x1D, 0x19, 0x62, 0x00, 0xFD])
 _XIEGU_NAK_REPLY = bytes([0xFE, 0xFE, 0xE0, 0xA4, 0xFA, 0xFD])
 
+# G7250 live wire frames (LIVE bench audit 2026-11-09, MOR-4352). The radio
+# answers the broadcast probe with the echoed broadcast address 0x00, and
+# answers 0x1D 0x19 with its model id `72 50` at whatever address was asked.
+_G7250_ECHO_ID_REPLY = bytes([0xFE, 0xFE, 0xE0, 0x00, 0x19, 0x00, 0x00, 0xFD])
+_G7250_MODEL_ID_REPLY_00 = bytes([0xFE, 0xFE, 0xE0, 0x00, 0x1D, 0x19, 0x72, 0x50, 0xFD])
+_G7250_MODEL_ID_REPLY_A4 = bytes([0xFE, 0xFE, 0xE0, 0xA4, 0x1D, 0x19, 0x72, 0x50, 0xFD])
+# A future/unlisted Xiegu answering an unknown model id at 0xA4.
+_XIEGU_UNKNOWN_MODEL_ID_REPLY = bytes(
+    [0xFE, 0xFE, 0xE0, 0xA4, 0x1D, 0x19, 0x51, 0x00, 0xFD]
+)
+
 
 # ---------------------------------------------------------------------------
 # CI-V probe tests
@@ -470,39 +481,49 @@ class TestParseProbeResponse:
 # ---------------------------------------------------------------------------
 
 
-class TestIsXieguModelIdReply:
-    def test_valid_reply_is_xiegu(self) -> None:
-        assert _is_xiegu_model_id_reply("/dev/x", _XIEGU_MODEL_ID_REPLY) is True
+class TestParseXieguModelIdReply:
+    def test_valid_reply_yields_the_model_id_bytes(self) -> None:
+        assert (
+            _parse_xiegu_model_id_reply("/dev/x", _XIEGU_MODEL_ID_REPLY) == b"\x62\x00"
+        )
 
-    def test_nak_is_not_xiegu(self) -> None:
+    def test_g7250_echo_reply_yields_its_model_id_bytes(self) -> None:
+        # Real G7250 frame: asked at the echoed broadcast address 0x00
+        # (LIVE G7250 2026-11-09, MOR-4352).
+        assert (
+            _parse_xiegu_model_id_reply("/dev/x", _G7250_MODEL_ID_REPLY_00)
+            == b"\x72\x50"
+        )
+
+    def test_nak_is_not_a_xiegu(self) -> None:
         # IC-705 has no 0x1D 0x19 opcode → NAK collision FE FE E0 A4 FA FD.
-        assert _is_xiegu_model_id_reply("/dev/x", _XIEGU_NAK_REPLY) is False
+        assert _parse_xiegu_model_id_reply("/dev/x", _XIEGU_NAK_REPLY) is None
 
-    def test_wrong_command_echo_is_not_xiegu(self) -> None:
+    def test_wrong_command_echo_is_not_a_xiegu(self) -> None:
         # A 0x19 0x00 transceiver-ID frame must not be mistaken for 0x1D 0x19.
-        assert _is_xiegu_model_id_reply("/dev/x", _IC705_RESPONSE) is False
+        assert _parse_xiegu_model_id_reply("/dev/x", _IC705_RESPONSE) is None
 
-    def test_no_preamble_is_not_xiegu(self) -> None:
-        assert _is_xiegu_model_id_reply("/dev/x", bytes(8)) is False
+    def test_no_preamble_is_not_a_xiegu(self) -> None:
+        assert _parse_xiegu_model_id_reply("/dev/x", bytes(8)) is None
 
-    def test_short_reply_is_not_xiegu(self) -> None:
-        assert _is_xiegu_model_id_reply("/dev/x", bytes([0xFE, 0xFE, 0xE0])) is False
+    def test_short_reply_is_not_a_xiegu(self) -> None:
+        assert _parse_xiegu_model_id_reply("/dev/x", bytes([0xFE, 0xFE, 0xE0])) is None
 
     def test_command_echo_before_reply_is_ignored(self) -> None:
         # The radio's echo of our command (dest 0xA4) lacks the FE FE E0
         # controller preamble, so only the real reply is matched.
         data = _XIEGU_MODEL_ID_CMD + _XIEGU_MODEL_ID_REPLY
-        assert _is_xiegu_model_id_reply("/dev/x", data) is True
+        assert _parse_xiegu_model_id_reply("/dev/x", data) == b"\x62\x00"
 
 
 class TestProbeXieguModelId:
     @pytest.mark.asyncio
-    async def test_valid_reply_returns_true(self) -> None:
+    async def test_x6200_reply_returns_its_model_id_bytes(self) -> None:
         radio = CivRadioFake("X6200")
         result = await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.1, _open_serial=CivSerialPort(radio).opener
+            "/dev/x", 19200, 0xA4, timeout=0.1, _open_serial=CivSerialPort(radio).opener
         )
-        assert result is True
+        assert result == b"\x62\x00"
         (sent,) = radio.commands
         assert (sent.to_addr, sent.command, sent.sub, sent.data) == (
             0xA4,
@@ -512,33 +533,65 @@ class TestProbeXieguModelId:
         )
 
     @pytest.mark.asyncio
-    async def test_nak_returns_false(self) -> None:
+    async def test_g7250_reply_returns_its_model_id_bytes(self) -> None:
+        # Asked at the Xiegu family default 0xA4 the radio is the 0xA4
+        # radio (it answers ANY address and echoes it, LIVE G7250
+        # 2026-11-09), so the fake sits at the asked address explicitly —
+        # its default is the profile address 0x88.
+        radio = CivRadioFake("G7250", civ_addr=0xA4)
+        result = await probe_xiegu_model_id(
+            "/dev/x",
+            115200,
+            0xA4,
+            timeout=0.1,
+            _open_serial=CivSerialPort(radio).opener,
+        )
+        assert result == b"\x72\x50"
+
+    @pytest.mark.asyncio
+    async def test_probe_asks_the_passed_address(self) -> None:
+        # The G7250 answers any address and echoes it as its own (LIVE
+        # G7250 2026-11-09, MOR-4352): the echo path probes 0x1D 0x19 at
+        # the echoed broadcast address 0x00, not at a fixed 0xA4.
+        radio = CivRadioFake("G7250")
+        await probe_xiegu_model_id(
+            "/dev/x",
+            115200,
+            0x00,
+            timeout=0.1,
+            _open_serial=CivSerialPort(radio).opener,
+        )
+        (sent,) = radio.commands
+        assert (sent.to_addr, sent.command, sent.data) == (0x00, 0x1D, b"\x19")
+
+    @pytest.mark.asyncio
+    async def test_nak_returns_none(self) -> None:
         # An IC-705 NAKs 0x1D 0x19 because that is what an IC-705 is —
         # identity, not an injected fault.
         radio = CivRadioFake("IC-705")
         result = await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.1, _open_serial=CivSerialPort(radio).opener
+            "/dev/x", 19200, 0xA4, timeout=0.1, _open_serial=CivSerialPort(radio).opener
         )
-        assert result is False
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_false(self) -> None:
+    async def test_timeout_returns_none(self) -> None:
         # The port opens, but the device on it is not a radio.
         port = CivSerialPort(CivRadioFake("X6200"), silent=True)
         result = await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.05, _open_serial=port.opener
+            "/dev/x", 19200, 0xA4, timeout=0.05, _open_serial=port.opener
         )
-        assert result is False
+        assert result is None
 
     @pytest.mark.asyncio
-    async def test_open_failure_returns_false(self) -> None:
+    async def test_open_failure_returns_none(self) -> None:
         async def _open(*, url: str, baudrate: int, **_kw: object):
             raise OSError("Resource busy")
 
         result = await probe_xiegu_model_id(
-            "/dev/x", 19200, timeout=0.1, _open_serial=_open
+            "/dev/x", 19200, 0xA4, timeout=0.1, _open_serial=_open
         )
-        assert result is False
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_closes_writer(self) -> None:
@@ -550,7 +603,9 @@ class TestProbeXieguModelId:
             writers.append(pair[1])
             return pair
 
-        await probe_xiegu_model_id("/dev/x", 19200, timeout=0.1, _open_serial=_open)
+        await probe_xiegu_model_id(
+            "/dev/x", 19200, 0xA4, timeout=0.1, _open_serial=_open
+        )
         assert writers[0].closed is True
 
 
@@ -1229,9 +1284,9 @@ class TestProbeStepMarkers:
         port = CivSerialPort(CivRadioFake("X6200"), silent=True)
         with caplog.at_level(logging.DEBUG, logger="rigplane.backends.discovery"):
             result = await probe_xiegu_model_id(
-                "/dev/x", 19200, timeout=0.05, _open_serial=port.opener
+                "/dev/x", 19200, 0xA4, timeout=0.05, _open_serial=port.opener
             )
-        assert result is False
+        assert result is None
         messages = _captured_messages(caplog)
         positions = _marker_positions(
             messages, ["opening /dev/x @ 19200", "closing /dev/x", "closed /dev/x"]
@@ -1506,6 +1561,137 @@ class TestDiscoverSerialRadios:
         assert results[0].address == 0xA4
         assert results[0].model == "IC-705"
         assert results[0].profile_id == "icom_ic705"
+
+    @pytest.mark.asyncio
+    async def test_civ_broadcast_echo_g7250_resolves_by_model_id(self) -> None:
+        """MOR-4352: a G7250 answers the broadcast probe with the echoed
+        broadcast address 0x00 (real wire frame from the bench, LIVE
+        2026-11-09). The address table alone would say "Unknown (0x00)";
+        the Xiegu model-ID probe at 0x00 resolves it to the G7250 profile.
+        """
+        # First read → broadcast-ID echo reply (addr 0x00, payload 0x00);
+        # second read → the Xiegu model-ID reply to 0x1D 0x19 asked at 0x00.
+        reader = _FakeReader([_G7250_ECHO_ID_REPLY, _G7250_MODEL_ID_REPLY_00])
+        writer = _FakeWriter()
+
+        # The real bench bridge: a generic WCH CH340 (1A86:7523) "USB
+        # Serial" — deliberately NOT the X6200 CH342 fingerprint.
+        port = _make_port(
+            "/dev/cu.usbserial-2130",
+            "USB Serial",
+            "USB VID:PID=1A86:7523",
+            vid=0x1A86,
+            pid=0x7523,
+            manufacturer="wch",
+            product="USB Serial",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].address == 0x00
+        assert results[0].model == "G7250"
+        assert results[0].profile_id == "xiegu_g7250"
+
+    @pytest.mark.asyncio
+    async def test_civ_broadcast_echo_x6200_resolves_by_model_id(self) -> None:
+        """Any Xiegu behind the 0x00 echo resolves by its model id: an
+        echoing X6200 (0x62 0x00 asked at 0x00) classifies as X6200, not
+        as the 0xA4 address default IC-705."""
+        echo = bytes([0xFE, 0xFE, 0xE0, 0x00, 0x19, 0x00, 0x00, 0xFD])
+        reply = bytes([0xFE, 0xFE, 0xE0, 0x00, 0x1D, 0x19, 0x62, 0x00, 0xFD])
+        reader = _FakeReader([echo, reply])
+        writer = _FakeWriter()
+
+        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=1A86:7523")
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].model == "X6200"
+        assert results[0].profile_id == "xiegu_x6200"
+
+    @pytest.mark.asyncio
+    async def test_civ_broadcast_echo_silent_model_id_stays_unknown(self) -> None:
+        """A radio echoing 0x00 that does NOT answer 0x1D 0x19 keeps the
+        documented Unknown (0x00) result — no guess, no fallback label."""
+        reader = _FakeReader([_G7250_ECHO_ID_REPLY])
+        writer = _FakeWriter()
+
+        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=1A86:7523")
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].model == "Unknown (0x00)"
+        assert results[0].profile_id == ""
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_g7250_model_id_resolves_to_g7250(self) -> None:
+        """MOR-4352: a G7250 asked at the Xiegu family default 0xA4 (the
+        radio echoes any address) is resolved by its `72 50` model id —
+        data-driven through the profiles, not a model branch."""
+        reader = _FakeReader([_IC705_RESPONSE, _G7250_MODEL_ID_REPLY_A4])
+        writer = _FakeWriter()
+
+        port = _make_port(
+            "/dev/cu.usbserial-2130",
+            "USB Serial",
+            "USB VID:PID=1A86:7523",
+            vid=0x1A86,
+            pid=0x7523,
+            product="USB Serial",
+        )
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].address == 0xA4
+        assert results[0].model == "G7250"
+        assert results[0].profile_id == "xiegu_g7250"
+
+    @pytest.mark.asyncio
+    async def test_civ_addr_0xA4_unknown_xiegu_model_id_reports_unknown_xiegu(
+        self,
+    ) -> None:
+        """A valid 0x1D 0x19 reply whose bytes match no profile is named
+        "Unknown Xiegu (model id XXXX)" instead of being mislabeled X6200
+        (the pre-MOR-4352 behaviour for any answering Xiegu at 0xA4)."""
+        reader = _FakeReader([_IC705_RESPONSE, _XIEGU_UNKNOWN_MODEL_ID_REPLY])
+        writer = _FakeWriter()
+
+        port = _make_port("/dev/ttyUSB0", "USB Serial", "USB VID:PID=DEAD:BEEF")
+        with (
+            _fast_probes(),
+            patch("serial.tools.list_ports.comports", return_value=[port]),
+        ):
+            results = await discover_serial_radios(
+                _open_serial=_make_open(reader, writer),
+            )
+
+        assert len(results) == 1
+        assert results[0].model == "Unknown Xiegu (model id 5100)"
+        assert results[0].profile_id == ""
 
     @pytest.mark.asyncio
     async def test_civ_radio_preserves_usb_audio_resolution_metadata(self) -> None:

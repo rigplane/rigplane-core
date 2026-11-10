@@ -76,6 +76,10 @@ _EXPECTED_COUNTS = {
     "TX-500": (11, 23),
     "X6100": (15, 19),
     "X6200": (15, 19),
+    # G7250 (MOR-4352): the X6200 shape — same Xiegu command surface minus
+    # band-spectrum/tuner, plus the formally-absent tone/memory/data-mode
+    # rows; nets out to the same partition.
+    "G7250": (15, 19),
 }
 _ALIASES = {
     "disable_scope": ScopeRuntimeMixin,
@@ -224,9 +228,9 @@ class TestProfileDerivedSupport:
         for name in (*CALLABLE_RELATIONS, *EXCLUDED_OPERATIONS):
             assert hasattr(CoreRadio, name)
 
-    def test_core_instances_delegate_for_all_eight_civ_profiles(self, profiles):
+    def test_core_instances_delegate_for_all_civ_profiles(self, profiles):
         civ_profiles = [p for p in profiles.values() if p.protocol_type == "civ"]
-        assert len(civ_profiles) == 8
+        assert len(civ_profiles) == 9
         for profile in civ_profiles:
             radio = CoreRadio("127.0.0.1", profile=profile)
             assert all(

@@ -36,6 +36,11 @@ has_wifi = true
 # PDF page 4: "For CAT control, a speed of 19.200 bps on the SERIAL-B port
 # is used." SERIAL-A at up to 115200 is the terminal port, not CAT.
 default_baud = 19200
+# The value bytes this radio answers to the Xiegu-only 0x1D 0x19 model-ID
+# query (V1.0.6 p.9; reply `62 00` in the live capture behind
+# tests/test_discovery.py's _XIEGU_MODEL_ID_REPLY). Discovery maps the
+# reply back to this profile through this field (MOR-4352).
+xiegu_model_id = 0x6200
 
 [protocol]
 type = "civ"

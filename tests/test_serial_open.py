@@ -453,10 +453,10 @@ class TestOpenErrorClassification:
 
         with caplog.at_level(logging.DEBUG):
             result = await probe_xiegu_model_id(
-                "/dev/ttyTEST", 19200, timeout=0.01, _open_serial=_open
+                "/dev/ttyTEST", 19200, 0xA4, timeout=0.01, _open_serial=_open
             )
 
-        assert result is False
+        assert result is None
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any(
             "TypeError" in r.getMessage() and "cannot open" not in r.getMessage()
@@ -471,10 +471,10 @@ class TestOpenErrorClassification:
 
         with caplog.at_level(logging.DEBUG):
             result = await probe_xiegu_model_id(
-                "/dev/ttyTEST", 19200, timeout=0.01, _open_serial=_open
+                "/dev/ttyTEST", 19200, 0xA4, timeout=0.01, _open_serial=_open
             )
 
-        assert result is False
+        assert result is None
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
@@ -501,7 +501,7 @@ class TestCallSiteWiring:
         opener, captured = _capturing_opener(reader, writer)
 
         await probe_xiegu_model_id(
-            "/dev/ttyTEST", 19200, timeout=0.01, _open_serial=opener
+            "/dev/ttyTEST", 19200, 0xA4, timeout=0.01, _open_serial=opener
         )
 
         assert captured, "Xiegu model-ID probe never opened the port"
