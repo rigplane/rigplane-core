@@ -144,7 +144,7 @@ def _rebuild_stubs(
     with ExitStack() as stack:
         stack.enter_context(patch("rigplane.transport.IcomCivTransport", transport_cls))
         stack.enter_context(
-            patch.object(radio._control_phase, "_after_reconnect", new=AsyncMock())
+            patch.object(radio._control_phase, "_after_reconnect_parts", new=AsyncMock())
         )
         for name in (
             "advance_generation",
@@ -271,7 +271,7 @@ async def test_fresh_login_starts_the_civ_numbering_at_zero() -> None:
         with (
             _ConnectOnceStubs(radio),
             patch("rigplane.transport.IcomCivTransport", _OfflineCivTransport),
-            patch.object(radio, "_gate_lan_identity", new=AsyncMock(return_value=True)),
+            patch.object(radio, "probe_connection_identity", new=AsyncMock()),
         ):
             await radio._control_phase._connect_once()
         new = radio._civ_transport

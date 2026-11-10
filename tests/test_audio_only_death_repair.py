@@ -313,38 +313,6 @@ async def test_no_repair_when_civ_not_healthy() -> None:
         await stack.aclose()
 
 
-async def test_no_repair_when_identity_hold_owns_link() -> None:
-    """A LAN identity hold owning the open link blocks the repair."""
-    stack = await soak_driver._start_simulator_stack()
-    try:
-        radio = stack.radio
-        sub = await radio.audio_session.subscribe_rx("web-audio")
-        assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
-
-        calls, restore = _spy_method(radio, "_teardown_audio_transport")
-        try:
-            radio._connection_identity = RadioIdentity(
-                status=RadioIdentityStatus.NO_RESPONSE,
-                expected_model=radio.model,
-            )
-            radio._lan_identity_owned_epoch = radio._civ_epoch
-            radio._lan_identity_gate_running = True
-            try:
-                assert radio._lan_identity_phase_owns_open_link()
-                radio.audio_session._emit("rx_silent")  # noqa: SLF001
-                await asyncio.sleep(0.5)
-                assert calls == []
-                assert radio._audio_silence_repair_task is None
-            finally:
-                radio._lan_identity_gate_running = False
-                radio._connection_identity = None
-        finally:
-            restore()
-        await sub.release()
-    finally:
-        await stack.aclose()
-
-
 async def test_owner_stop_during_backoff_cancels_pending_repair() -> None:
     """Owner ``disconnect()`` during the backoff cancels the pending repair."""
     stack = await soak_driver._start_simulator_stack()

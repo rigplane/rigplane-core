@@ -13,11 +13,9 @@ simulator counted, and that the client then stays CONNECTED for
 
 The no-notice drop also pins how it recovered: the watchdog probes the
 control session before its OpenClose patience and escalates on exactly one
-rejected renewal (with the patience patched short this also covers the
-identity-hold route). A standby scenario (a simulator scenario, not
-recorded radio behaviour) pins the other side: a radio that keeps
-answering renewals while its CI-V DATA is silent never escalates and
-never re-logs in — answered instantly, answered late, or silent for 20 s.
+rejected renewal. A standby scenario (a simulator scenario, not recorded
+radio behaviour) pins the other side: a radio that keeps answering renewals
+while its CI-V DATA is silent for 20 s never escalates and never re-logs in.
 
 ``_Run.report`` prints the state sequence, reconnect-status callbacks,
 counters and the first log lines when an assert fails.
@@ -69,26 +67,10 @@ _SILENT_DROP_RECOVERY_S = (
 )
 _STORM_MARKER = "civ.soft_reconnect.already_open_stalled"
 
-# Standby scenario: the watchdog hands the silent CI-V link off after
-# _STANDBY_PATIENCE_S of unanswered OpenClose nudges (CI-V-port pings stay
-# answered, so the 60 s patient deadline applies), the identity hold's
-# re-read turns run every _STANDBY_REREAD_S, and the test keeps the radio
-# in standby for _STANDBY_HOLD_S after the hold is first observed.
-_STANDBY_PATIENCE_S = 2.0
-_STANDBY_REREAD_S = 0.5
-_STANDBY_HOLD_S = 12.5
-
 # MOR-3703: a silent drop with the DEFAULT 60 s OpenClose patience must
 # still recover within ~10 s — the watchdog probes the control session
 # before waiting the patience out, and a rejected renewal escalates at once.
 _FAST_SILENT_RECOVERY_S = 10.0
-
-# Late-renewal variant: control-to-client replies delayed past the probe's
-# 1 s per-attempt timeout but inside its 3 x 1 s budget, so the probe still
-# sees the late OK instead of a dead session.
-_LATE_RENEWAL_S = 1.5
-# How long the late-renewal variant stays in the identity hold.
-_LATE_RENEWAL_HOLD_S = 5.0
 
 # Long CI-V silence variant: CI-V DATA withheld while pings and renewals
 # keep their instant answers; the default 60 s patience must hold.
@@ -134,7 +116,7 @@ class _Run:
     storm_lines: list[str] = field(default_factory=list)
     freq: int | str | None = None
     log_head: list[str] = field(default_factory=list)
-    # Every "control session dead (<verdict>) during the identity hold" line
+    # Every "control session dead (<verdict>)" line
     # of the run (log_head keeps only the first 30 lines).
     dead_hold_lines: list[str] = field(default_factory=list)
 
@@ -442,8 +424,7 @@ async def test_session_drop_without_notice_recovers_within_the_watchdog_budget(
     assert run.storm_lines == [], run.report()
     assert run.freq == _FREQ_HZ, run.report()
     # Recovery escalated on a rejected renewal: exactly one reject verdict,
-    # never the three-silent-probes verdict. With the pre-patience probe the
-    # verdict comes from the watchdog; without it, from the identity hold.
+    # never the three-silent-probes verdict. The verdict comes from the watchdog's pre-patience probe.
     assert len([line for line in run.dead_hold_lines if "(reject)" in line]) == 1, (
         run.report()
     )
@@ -486,100 +467,6 @@ async def test_silent_drop_with_default_patience_recovers_within_10s(
     assert not [
         line for line in run.dead_hold_lines if "(no renewal answer)" in line
     ], run.report()
-
-
-async def test_standby_radio_answering_late_renewals_never_escalates(
-    sim: MockIcomRadio,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Renewals answered OK but LATE: no escalation, no re-login (MOR-3703).
-
-    The control-to-client stream is delayed 1.5 s: the first probe attempt
-    times out at its 1 s timeout and a later attempt is settled by the late
-    OK answer, so both the watchdog's pre-patience probe and the identity
-    hold's probe see a live session. A radio that is merely slow must never
-    be declared dead by the probe.
-    """
-    monkeypatch.setattr(
-        "rigplane.runtime._civ_rx._OPENCLOSE_DEADLINE", _STANDBY_PATIENCE_S
-    )
-    monkeypatch.setattr(
-        "rigplane.runtime.radio.CoreRadio._LAN_IDENTITY_REREAD_BACKOFF_S",
-        (_STANDBY_REREAD_S,),
-    )
-    monkeypatch.setattr(
-        "rigplane.runtime.radio.CoreRadio._LAN_IDENTITY_REREAD_STEADY_S",
-        _STANDBY_REREAD_S,
-    )
-    monkeypatch.setattr(
-        "rigplane.runtime._control_phase.ControlPhaseRuntime.TOKEN_RENEWAL_INTERVAL",
-        1.0,
-    )
-    caplog.set_level(logging.INFO, logger="rigplane")
-    sim.keepalive_hold_s = 30.0
-    sim.fault_plan = FaultPlan()
-    radio = _client(sim)
-    with fast_connect():
-        await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
-        try:
-            logins0 = sim.login_count
-            first_record = len(caplog.records)
-            sim.fault_plan.control_to_client.delay_s = _LATE_RENEWAL_S
-            sim.civ_standby(True)
-
-            states: list[RadioConnectionState] = []
-            assert await _sample(
-                radio,
-                states,
-                15.0,
-                lambda: radio._lan_identity_phase_owns_open_link(),
-            ), (
-                "no identity hold before standby ends; "
-                f"states={[s.value for s in states]}"
-            )
-            # The hold is owned from here on; a renewal answered earlier,
-            # while still CONNECTED, must not satisfy the assert below.
-            hold_observed_at = time.monotonic()
-
-            owned: list[bool] = []
-            end = time.monotonic() + _LATE_RENEWAL_HOLD_S
-            while time.monotonic() < end:
-                owned.append(radio._lan_identity_phase_owns_open_link())
-                await asyncio.sleep(0.05)
-            assert all(owned), (
-                "identity hold lost while the radio stood by: "
-                f"sim released={sim.released_count} "
-                f"last_release={sim.last_release_reason!r}"
-            )
-
-            answered_at = radio._control_phase._renewal_answered_at
-            assert answered_at is not None and answered_at > hold_observed_at, (
-                f"no renewal answered inside the hold: answered_at={answered_at}, "
-                f"hold_observed_at={hold_observed_at}"
-            )
-            sim.fault_plan.control_to_client.delay_s = 0.0
-            sim.civ_standby(False)
-
-            assert await _sample(
-                radio, states, 5.0, lambda: radio.conn_state is _CONNECTED
-            ), f"hold did not complete; states={[s.value for s in states]}"
-            dead_lines = [
-                record.getMessage()
-                for record in caplog.records[first_record:]
-                if _is_rigplane(record)
-                and "control session dead" in record.getMessage()
-            ]
-            assert dead_lines == []
-            assert sim.login_count == logins0
-            assert radio.conn_state is _CONNECTED
-            assert await _ask_freq(radio, 5.0) == _FREQ_HZ
-        finally:
-            poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller
-            await asyncio.wait_for(radio.disconnect(), 10.0)
 
 
 async def test_long_civ_silence_with_live_control_never_reconnects(
@@ -631,103 +518,6 @@ async def test_long_civ_silence_with_live_control_never_reconnects(
             sim.civ_standby(False)
             assert await _ask_freq(radio, 5.0) == _FREQ_HZ
             assert radio.conn_state is _CONNECTED
-        finally:
-            poller.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await poller
-            await asyncio.wait_for(radio.disconnect(), 10.0)
-
-
-async def test_standby_radio_answering_renewals_never_escalates(
-    sim: MockIcomRadio,
-    caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A radio that keeps answering renewals while CI-V DATA is silent.
-
-    ``civ_standby`` is a simulator scenario, NOT recorded radio behaviour:
-    CI-V DATA goes silent while pings on both ports and control-port token
-    renewals keep being answered. The client's watchdog hands the silent
-    CI-V link to recovery, the identity gate gets no answer and the hold's
-    re-read loop owns the link; every renewal is answered OK, so the hold
-    must not escalate to a re-login. When the radio leaves standby the held
-    link completes with the same session.
-    """
-    monkeypatch.setattr(
-        "rigplane.runtime._civ_rx._OPENCLOSE_DEADLINE", _STANDBY_PATIENCE_S
-    )
-    monkeypatch.setattr(
-        "rigplane.runtime.radio.CoreRadio._LAN_IDENTITY_REREAD_BACKOFF_S",
-        (_STANDBY_REREAD_S,),
-    )
-    monkeypatch.setattr(
-        "rigplane.runtime.radio.CoreRadio._LAN_IDENTITY_REREAD_STEADY_S",
-        _STANDBY_REREAD_S,
-    )
-    monkeypatch.setattr(
-        "rigplane.runtime._control_phase.ControlPhaseRuntime.TOKEN_RENEWAL_INTERVAL",
-        1.0,
-    )
-    caplog.set_level(logging.INFO, logger="rigplane")
-    # The fixture's 0.5 s keepalive hold races the 0.5 s ping period: in one
-    # run it released the session mid-hold (sim.last_release_reason ==
-    # 'keepalive_timeout'). This scenario needs the session held for the
-    # whole standby window, so lift the hold.
-    sim.keepalive_hold_s = 30.0
-    radio = _client(sim)
-    with fast_connect():
-        await radio.connect()
-        poller = asyncio.create_task(_poll(radio))
-        try:
-            logins0 = sim.login_count
-            first_record = len(caplog.records)
-            sim.civ_standby(True)
-
-            states: list[RadioConnectionState] = []
-            assert await _sample(
-                radio,
-                states,
-                15.0,
-                lambda: radio._lan_identity_phase_owns_open_link(),
-            ), (
-                f"no identity hold before standby ends; states={[s.value for s in states]}"
-            )
-            # The hold is owned from here on; a renewal answered earlier,
-            # while still CONNECTED, must not satisfy the assert below.
-            hold_observed_at = time.monotonic()
-
-            # Stay in the hold for at least _STANDBY_HOLD_S.
-            owned: list[bool] = []
-            end = time.monotonic() + _STANDBY_HOLD_S
-            while time.monotonic() < end:
-                owned.append(radio._lan_identity_phase_owns_open_link())
-                await asyncio.sleep(0.05)
-            assert all(owned), (
-                "identity hold lost while the radio stood by: "
-                f"sim released={sim.released_count} "
-                f"last_release={sim.last_release_reason!r}"
-            )
-
-            answered_at = radio._control_phase._renewal_answered_at
-            assert answered_at is not None and answered_at > hold_observed_at, (
-                f"no renewal answered inside the hold: answered_at={answered_at}, "
-                f"hold_observed_at={hold_observed_at}"
-            )
-            sim.civ_standby(False)
-
-            assert await _sample(
-                radio, states, 5.0, lambda: radio.conn_state is _CONNECTED
-            ), f"hold did not complete; states={[s.value for s in states]}"
-            dead_lines = [
-                record.getMessage()
-                for record in caplog.records[first_record:]
-                if _is_rigplane(record)
-                and "control session dead" in record.getMessage()
-            ]
-            assert dead_lines == []
-            assert sim.login_count == logins0
-            assert radio.conn_state is _CONNECTED
-            assert await _ask_freq(radio, 5.0) == _FREQ_HZ
         finally:
             poller.cancel()
             with contextlib.suppress(asyncio.CancelledError):

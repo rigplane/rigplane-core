@@ -346,7 +346,7 @@ async def test_user_disconnect_at_loop_connect_entry_ends_loop() -> None:
     await _assert_user_disconnect_ends_loop("connect")
 
 
-@pytest.mark.parametrize("failure_point", ["identity_gate", "startup_readiness"])
+@pytest.mark.parametrize("failure_point", ["startup_readiness"])
 async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
     failure_point: str,
 ) -> None:
@@ -389,13 +389,6 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
         handler = _FailedRound(level=logging.WARNING)
         with fast_connect():
             await radio.connect()
-            orig_gate = radio._gate_lan_identity
-
-            async def gate(*, revalidate_origin: bool = False) -> bool:
-                if failure_point == "identity_gate" and take_injection():
-                    raise RuntimeError("injected identity-gate failure")
-                return await orig_gate(revalidate_origin=revalidate_origin)
-
             async def readiness(*args: object, **kwargs: object) -> None:
                 if failure_point == "startup_readiness" and take_injection():
                     raise RuntimeError("injected startup-readiness failure")
@@ -403,7 +396,6 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
             radio_reconnect.logger.addHandler(handler)
             try:
                 with (
-                    patch.object(radio, "_gate_lan_identity", gate),
                     patch(
                         "rigplane.runtime._control_phase.wait_for_radio_startup_ready",
                         readiness,
