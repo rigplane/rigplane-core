@@ -1310,6 +1310,7 @@ describe('SpectrumPanel component', () => {
     // below the narrowest span preset — the crop never stalls at a preset.
     const floor = 4 * (100_000 / 475);
     for (let i = 0; i < 12; i++) { zoomIn.click(); flushSync(); }
+    await flushWaterfallPaint();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: expect.closeTo(floor, 0) });
     expect(spectrumRendererHarness.lastOptions.spanHz).toBeCloseTo(floor, 0);
     const settled = read();
@@ -1376,9 +1377,12 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left).toBe('25%');
     expect(spectrumRendererHarness.lastOptions).toMatchObject({
       spanHz: 100_000, tuneHz: 14_025_000, scopeMode: 1, panoramaShiftHz: 0, passbandHz: 3_000 });
+    // The passband-geometry mock projects symmetrically as passbandHz/100
+    // around the carrier percent; the real LSB left-of-carrier geometry is
+    // pinned by the panorama-zoom-fix E2E on the real module.
     const overlay = target.querySelector<HTMLElement>('.waterfall-content .passband-overlay')!;
-    expect(overlay.style.left).toBe('22%');
-    expect(overlay.style.width).toBe('3%');
+    expect(overlay.style.left).toBe('10%');
+    expect(overlay.style.width).toBe('30%');
   });
 
   it('clips a FIX zoom-out to the fixed window instead of hatching beyond it (MOR-4392)', async () => {
