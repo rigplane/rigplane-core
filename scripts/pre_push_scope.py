@@ -28,6 +28,9 @@ from types import ModuleType
 ROOT = Path(__file__).resolve().parents[1]
 # Names that appear in nearly every test; matching on them would select the whole suite.
 GENERIC_NAMES = frozenset({"__init__.py", "conftest.py", "README.md", "main.py"})
+# The fields of the producer's result (`QuickClassification` in classify-quick-paths.py) that
+# this gate reads; tests/test_pre_push_scope.py pins them against the producer's declaration.
+CLASSIFICATION_FIELDS_READ = ("core", "frontend")
 
 
 @dataclass(frozen=True)
@@ -114,13 +117,16 @@ def legs(changes: Sequence[Change]) -> list[str]:
     paths = [c.path for c in changes]
     if not paths:
         return []
-    result = _classifier().classify(paths)
+    result = _classifier().classify(
+        paths
+    )  # QuickClassification (the producer's contract)
+    core, frontend = (result[name] for name in CLASSIFICATION_FIELDS_READ)
     selected = []
-    if result["core"]:
+    if core:
         selected.append("python")
-    if result["frontend"]:
+    if frontend:
         selected.append("frontend")
-    if result["core"] and result["frontend"]:
+    if core and frontend:
         selected.append("mypy-web")
     return selected
 

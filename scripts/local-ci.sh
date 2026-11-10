@@ -20,7 +20,7 @@
 #   python    ruff == uv.lock version, ruff check/format, lint-imports, validation dry-run goldens
 #   mypy-web  mypy --strict src/rigplane/web (CI: only when core and frontend are both selected)
 #   always    the tests that mention a changed file (a changed test file counts as mentioning)
-#   frontend  npm ci (cached by package-lock.json hash), lint, i18n:check, svelte-check, vitest,
+#   frontend  npm ci (cached by package.json + lockfile hash), lint, i18n:check, svelte-check, vitest,
 #             build, with NODE_OPTIONS=--max-old-space-size=3072 as in quick.yml
 # Not covered (they need a browser and run in CI only): the Playwright i18n visual, fixture
 # capture, placeholder-guard, chrome-inset, FTX-1 RIT and operator-journey specs.
@@ -177,17 +177,19 @@ pre_push_related_tests() {
     pre_push_run_tests $files
 }
 
-# The same install cache as mini-test's vitest mode: node_modules is kept between runs and
-# marked with the hash of package-lock.json it was installed from.
+# node_modules is kept between runs and marked with the hash of the two files `npm ci` reads
+# (package.json AND package-lock.json: CI's `npm ci` rejects a manifest the lockfile does not
+# cover, so a dependency added to package.json alone must force a fresh install here too).
 pre_push_frontend_install() {
-    local lock_hash
-    lock_hash="$(shasum frontend/package-lock.json | cut -c1-12)"
+    local manifest_hash
+    manifest_hash="$(cat frontend/package.json frontend/package-lock.json | shasum | cut -c1-12)"
     (
         cd frontend
-        if [[ -d node_modules && "$(cat node_modules/.mini-test-lock 2>/dev/null)" == "$lock_hash" ]]; then
-            echo "node_modules matches package-lock.json (cached)"
+        if [[ -d node_modules && "$(cat node_modules/.pre-push-install 2>/dev/null)" == "$manifest_hash" ]]; then
+            echo "node_modules matches package.json + package-lock.json (cached)"
         else
-            npm ci --no-audit --no-fund && mkdir -p node_modules && echo "$lock_hash" > node_modules/.mini-test-lock
+            rm -f node_modules/.pre-push-install
+            npm ci --no-audit --no-fund && mkdir -p node_modules && echo "$manifest_hash" > node_modules/.pre-push-install
         fi
     )
 }
@@ -240,16 +242,20 @@ not_run() {
 pre_push_orchestrate() {
     command -v mini-test >/dev/null 2>&1 || not_run "mini-test not found: --pre-push runs on the test host, never here"
     MERGE_BASE="$(git merge-base "$BASE" HEAD)" || not_run "no merge base with $BASE (git fetch origin main?)"
-    local log
+    local log mini_rc=0 verdict
     log="$(mktemp)"
     MINI_HOST="${PRE_PUSH_HOST:-moroz@192.168.55.152}" \
-        mini-test --run -- bash -c "$PRE_PUSH_REMOTE" _ "$MERGE_BASE" > "$log" 2>&1 < /dev/null || true
+        mini-test --run -- bash -c "$PRE_PUSH_REMOTE" _ "$MERGE_BASE" > "$log" 2>&1 < /dev/null || mini_rc=$?
     printf "%s▶ test host report%s\n" "$BOLD" "$RESET"
     sed '/Ignoring unknown extended header/d' "$log"
+    # The host prints its verdict as the last PRE-PUSH-HOST line, after every step; an earlier
+    # such line is test output. The verdict counts only when the executor's status agrees with it
+    # (host exits 0 on PASS, 1 on FAIL): a dropped connection or a cancelled run is "not run".
+    verdict="$(grep -E '^PRE-PUSH-HOST: (PASS|FAIL)$' "$log" | tail -n 1 || true)"
     STEPS_NAME+=("test host"); STEPS_TIME+=("-")
-    if grep -qx "PRE-PUSH-HOST: PASS" "$log"; then
+    if [[ "$verdict" == "PRE-PUSH-HOST: PASS" && $mini_rc -eq 0 ]]; then
         STEPS_STATUS+=("PASS")
-    elif grep -qx "PRE-PUSH-HOST: FAIL" "$log"; then
+    elif [[ "$verdict" == "PRE-PUSH-HOST: FAIL" && $mini_rc -eq 1 ]]; then
         STEPS_STATUS+=("FAIL"); FAILED=1
     else
         STEPS_STATUS+=("FAIL"); INFRA_FAIL=1

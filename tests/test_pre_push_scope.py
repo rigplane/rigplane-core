@@ -198,3 +198,14 @@ def test_the_command_line_prints_what_the_script_runs(
     assert run("ruff-pin", "ruff 0.15.2").returncode == 0
     stale = run("ruff-pin", "ruff 0.14.0")
     assert stale.returncode == 1 and "0.15.2" in stale.stdout
+
+
+def test_the_gate_reads_only_fields_the_classifier_declares() -> None:
+    # the gate consumes CI's classifier through its declared result type, not guessed keys
+    producer = scope._classifier()
+    declared = set(producer.QuickClassification.__annotations__)
+    assert set(scope.CLASSIFICATION_FIELDS_READ) <= declared
+    assert producer.classify.__annotations__["return"] == "QuickClassification"
+    result = producer.classify(["src/rigplane/web/server.py"])
+    assert declared == set(result)
+    assert all(isinstance(result[name], bool) for name in declared)

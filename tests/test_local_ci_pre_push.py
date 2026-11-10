@@ -69,6 +69,7 @@ def sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     _write(repo, "src/rigplane/audio/bridge.py", "X = 1\n")
     _write(repo, "src/rigplane/web/server.py", "Y = 1\n")
     _write(repo, "frontend/src/lib/meter.ts", "export const m = 1;\n")
+    _write(repo, "frontend/package.json", "{}\n")
     _write(repo, "frontend/package-lock.json", "{}\n")
     _write(repo, "tests/test_bridge.py", "from rigplane.audio.bridge import X\n")
     _write(repo, "docs/guide/other.md", "prose\n")
@@ -178,27 +179,33 @@ def test_the_test_host_can_be_overridden(sandbox) -> None:
 
 
 @pytest.mark.parametrize(
-    ("reply", "rc", "word"),
+    ("reply", "mini_rc", "rc", "word"),
     [
-        ("PRE-PUSH-HOST: PASS", 0, "PASS"),
-        (
-            "PRE-PUSH-HOST: FAIL",
-            1,
-            "FAIL",
-        ),  # a real failure: the builder fixes and reruns
-        (
-            "",
-            2,
-            "NOT RUN",
-        ),  # the host never reached its verdict line: CI stays the gate
+        ("PRE-PUSH-HOST: PASS", 0, 0, "PASS"),
+        # a real failure: the builder fixes and reruns
+        ("PRE-PUSH-HOST: FAIL", 1, 1, "FAIL"),
+        # the host never reached its verdict line: CI stays the gate
+        ("", 0, 2, "NOT RUN"),
+        # a selected test printed a bare PASS line into its captured output; the host's own
+        # verdict is the LAST line, and it says FAIL
+        ("PRE-PUSH-HOST: PASS\nPRE-PUSH-HOST: FAIL", 1, 1, "FAIL"),
+        # the connection broke after a PASS line was printed: no verdict was reached
+        ("PRE-PUSH-HOST: PASS", 255, 2, "NOT RUN"),
+        ("PRE-PUSH-HOST: FAIL", 255, 2, "NOT RUN"),
+        # a verdict that contradicts the executor's status is not trusted either way
+        ("PRE-PUSH-HOST: PASS", 1, 2, "NOT RUN"),
     ],
 )
-def test_the_verdict_line_decides_the_exit_code(
-    sandbox, reply: str, rc: int, word: str
+def test_the_last_verdict_line_and_the_executor_status_decide_the_exit_code(
+    sandbox, reply: str, mini_rc: int, rc: int, word: str
 ) -> None:
     repo, env = sandbox
     _change(repo, "src/rigplane/audio/bridge.py")
-    result = _run(repo, {**env, "FAKE_REPLY": reply}, "--pre-push")
+    result = _run(
+        repo,
+        {**env, "FAKE_REPLY": reply, "FAKE_MINI_RC": str(mini_rc)},
+        "--pre-push",
+    )
     assert result.returncode == rc, result.stdout + result.stderr
     assert word in result.stdout
 
@@ -297,17 +304,30 @@ def test_a_frontend_change_runs_install_check_tests_and_build_with_ci_heap_size(
     )  # a frontend-only diff skips the Python checks
 
 
-def test_npm_ci_is_skipped_when_node_modules_matches_the_lockfile(sandbox) -> None:
+def _install_digest(repo: Path) -> str:
+    manifests = (repo / "frontend/package.json").read_bytes()
+    manifests += (repo / "frontend/package-lock.json").read_bytes()
+    return hashlib.sha1(manifests).hexdigest()[:12]
+
+
+def test_npm_ci_is_skipped_only_while_node_modules_matches_both_manifests(
+    sandbox,
+) -> None:
     repo, env = sandbox
     _change(repo, "frontend/src/lib/meter.ts")
-    digest = hashlib.sha1(
-        (repo / "frontend/package-lock.json").read_bytes()
-    ).hexdigest()[:12]
-    _write(repo, "frontend/node_modules/.mini-test-lock", digest + "\n")
+    _write(
+        repo, "frontend/node_modules/.pre-push-install", _install_digest(repo) + "\n"
+    )
     _host_run(repo, env)
     steps = _steps(env)
     assert not any(s.startswith("npm ci") for s in steps)
     assert any(s.startswith("npm run check") for s in steps)
+    # CI's `npm ci` rejects a package.json that the lockfile does not cover: a dependency added
+    # to package.json alone must force the install, not reuse the old node_modules
+    (Path(env["FAKE_LOG"]) / "steps").unlink()
+    _write(repo, "frontend/package.json", '{"dependencies": {"left-pad": "1"}}\n')
+    _host_run(repo, env)
+    assert any(s.startswith("npm ci") for s in _steps(env))
 
 
 def test_a_web_change_adds_the_strict_type_check_ci_runs(sandbox) -> None:
