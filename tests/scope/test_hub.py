@@ -54,6 +54,9 @@ class FakeSource:
             else view
         )
 
+    def resolve_follow(self, view, native, receiver=None):
+        return self.resolve_view(view, receiver)
+
     def coverage_for(self, view, receiver=None):
         return self.coverage
 
@@ -251,6 +254,29 @@ async def test_follow_view_refreshes_and_slow_consumer_keeps_only_latest(virtual
     assert encoder.frames[-1].view_start_hz == 10
     assert await sub.receive() == b"2"
     await sub.close()
+
+
+@pytest.mark.asyncio
+async def test_passive_subscription_attaches_without_writing_and_tracks_coverage():
+    """MOR-4385: a max_fps=0 subscription never calls set_view (no radio
+    write) but its grant still tracks the streamed native coverage."""
+    hub, source, encoder = setup()
+    active = await hub.subscribe(request(width=4, fps=30))
+    try:
+        views_before = list(source.set_views)
+        passive = await hub.subscribe(
+            request(width=4, view=FollowView("vfo", 4), fps=0)
+        )
+        try:
+            assert source.set_views == views_before
+            source.emit(NativeFrame(0, Coverage(10, 14), b"efgh"))
+            assert source.set_views == views_before
+            assert passive.granted.view == View(10, 14)
+            assert passive.granted.coverage == Coverage(10, 14)
+        finally:
+            await passive.close()
+    finally:
+        await active.close()
 
 
 @pytest.mark.asyncio
