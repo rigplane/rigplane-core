@@ -40,6 +40,7 @@ from rigplane.sdr.fake import FakeIqSource  # noqa: E402
 from rigplane.sdr.types import SdrConfig  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
+from rigplane_testkit.icom.simulator import _CIV_HEADER_SIZE  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -107,16 +108,21 @@ class PanoramaSimulator(MockIcomRadio):
 
     def _civ_nak(self, to: int, frm: int) -> bytes:
         # Only a packet that arrived on the CI-V port can carry a refused
-        # CI-V command: the CI-V frame starts past the 0x15-byte LAN header,
-        # so the old data[:20] slice never contained it and every NAK looked
-        # like handshake choreography. Handshake/control NAKs keep an empty
+        # CI-V command. The CI-V frame starts past the LAN header (the
+        # testkit's own _CIV_HEADER_SIZE, 0x15 bytes) — searching the whole
+        # packet for FE FE matched header bytes and invented refusals like
+        # rc8's "cmd 0xe0" (D7), so the frame is sliced at the header and
+        # must validate as FE FE … FD. Handshake/control NAKs keep an empty
         # frame and stay tolerated by invariant 5.
         frame = b""
-        if self._last_nak_was_civ:
-            index = self._last_nak_payload.find(b"\xfe\xfe")
-            if index >= 0:
-                end = self._last_nak_payload.find(b"\xfd", index)
-                frame = self._last_nak_payload[index : end + 1 if end > 0 else None]
+        if self._last_nak_was_civ and len(self._last_nak_payload) > _CIV_HEADER_SIZE:
+            candidate = bytes(self._last_nak_payload[_CIV_HEADER_SIZE:])
+            if (
+                len(candidate) >= 6
+                and candidate.startswith(b"\xfe\xfe")
+                and candidate.endswith(b"\xfd")
+            ):
+                frame = candidate
         with self.nak_evidence.open("a") as stream:
             stream.write(NakReceipt(time.time(), to, frm, frame.hex()).to_json() + "\n")
         return super()._civ_nak(to, frm)
@@ -155,14 +161,18 @@ class PanoramaSimulator(MockIcomRadio):
             except RuntimeError:
                 loop = None
             if loop is not None:
-                loop.call_later(
-                    self.slow_civ_ms / 1000.0,
-                    super()._handle_civ_data,
-                    data,
-                    addr,
-                    sender_id,
-                    proto,
-                )
+
+                def _fire() -> None:
+                    # Re-stamp the refused payload at fire time (D6): _dispatch
+                    # stored the most recently arrived packet, but on a slow
+                    # link many packets land during the deferral — the NAK
+                    # must cite the frame being answered, not a later arrival.
+                    # Synchronous dispatch makes the stamp exact.
+                    self._last_nak_payload = data
+                    self._last_nak_was_civ = True
+                    super()._handle_civ_data(data, addr, sender_id, proto)
+
+                loop.call_later(self.slow_civ_ms / 1000.0, _fire)
                 return
         super()._handle_civ_data(data, addr, sender_id, proto)
 

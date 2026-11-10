@@ -564,6 +564,38 @@ async function receiptCounts(evidencePath: string): Promise<{ writes: number; ci
   return { writes: writes.length, civNaks: naks.filter(nak => nak.civHex.length > 0).length };
 }
 
+async function forceBackgroundTunerRead(page: Page, port: number): Promise<string> {
+  // D6: the armed 1C:01 refusal can only trigger while a tuner-status read
+  // is on the wire, and Core never polls it during 5 fast click-tunes (rc8:
+  // zero 1C:01 frames in the whole run) — so the path sends one itself. A
+  // second, subscription-free socket on the page's own origin behaves like a
+  // second tab that never subscribes (the two-clients path proves attach is
+  // safe): no scope traffic, nothing the page observes. RX-safe — a bare
+  // get_tuner_status read never transmits. Fired just before the tune loop,
+  // the slow link (150 ms deferral) lands its FA mid-tune, which is the
+  // MOR-4384 overlap under test.
+  return page.evaluate((targetPort: number) => new Promise<string>(resolve => {
+    let settled = false;
+    const done = (outcome: string): void => { if (!settled) { settled = true; resolve(outcome); } };
+    const ws = new WebSocket(`ws://127.0.0.1:${targetPort}/api/v1/ws`);
+    const timer = setTimeout(() => { try { ws.close(); } catch { /* noop */ } done('timeout'); }, 10_000);
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'cmd', name: 'get_tuner_status', id: 'mor4388-ack-probe', params: {} }));
+    ws.onmessage = (event: MessageEvent) => {
+      if (typeof event.data !== 'string') return;
+      try {
+        const incoming = JSON.parse(event.data) as { id?: string; ok?: boolean };
+        if (incoming.id === 'mor4388-ack-probe') {
+          clearTimeout(timer);
+          try { ws.close(); } catch { /* noop */ }
+          done(incoming.ok === false ? 'refused' : 'answered');
+        }
+      } catch { /* ignore non-JSON frames */ }
+    };
+    ws.onerror = () => { clearTimeout(timer); done('ws-error'); };
+    ws.onclose = () => { clearTimeout(timer); done('closed-no-answer'); };
+  }), port);
+}
+
 async function pathAckTracker(ctx: PathContext): Promise<PathReport> {
   const errorsBefore = ctx.observations.commandErrors.length;
   // Several click-tunes raise the odds that a late FA is in flight while a
@@ -571,13 +603,15 @@ async function pathAckTracker(ctx: PathContext): Promise<PathReport> {
   // overlap); every tune must still land and report success. pathClickTune
   // throws when a tune never lands, so reaching the return means all five
   // applied on the radio.
+  const probe = forceBackgroundTunerRead(ctx.page, ctx.port);
   let last: PathReport | null = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     last = await pathClickTune(ctx, 'spectrum', 0.30 + 0.08 * attempt);
   }
+  const probeOutcome = await probe;
   const commandErrors = ctx.observations.commandErrors.slice(errorsBefore).map(entry => entry.message);
   return {
-    summary: `5 click-tunes on a slow link (150 ms answers, one armed 1C:01 refusal); ${commandErrors.length} command error(s) during the path`,
+    summary: `5 click-tunes on a slow link (150 ms answers, one armed 1C:01 refusal, forced-read outcome: ${probeOutcome}); ${commandErrors.length} command error(s) during the path`,
     na: {},
     writes: NO_WRITES,
     setFreq: last?.setFreq ?? { kind: 'consistency', note: 'no tune completed' },

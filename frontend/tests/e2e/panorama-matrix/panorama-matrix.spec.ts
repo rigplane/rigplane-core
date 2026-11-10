@@ -62,6 +62,22 @@ function parseRefusedFrame(civHex: string): RefusedFrame | null {
   if (bytes.length < 6 || bytes[0] !== 0xfe || bytes[1] !== 0xfe || bytes[bytes.length - 1] !== 0xfd) return null;
   const cmd = bytes[4];
   const inner = bytes.slice(5, -1);
+  // D7: a 0x29-wrapped frame (dual-receiver prefix: 29 RECEIVER CMD [SUB]
+  // [DATA…]) judges bareness on the INNER command, not the receiver byte. A
+  // wrapped bare read (e.g. 29 00 1A 03 on the 7610) is a tolerated
+  // simulator gap when refused, exactly like its plain form; only a wrapped
+  // write or action fails invariant 5.
+  if (cmd === 0x29 && inner.length >= 2) {
+    const receiver = inner[0];
+    const realCmd = inner[1];
+    const rest = inner.slice(2);
+    const realSub = rest.length >= 1 ? rest[0] : null;
+    const hex = (value: number): string => `0x${value.toString(16)}`;
+    return {
+      cmd: realCmd, sub: realSub, bareRead: rest.length <= 1,
+      describe: `cmd29/rx${receiver} cmd=${hex(realCmd)}${realSub === null ? '' : ` sub=${hex(realSub)}`} len=${bytes.length}`,
+    };
+  }
   const sub = inner.length >= 1 ? inner[0] : null;
   // Bare command (FE FE TO FR CMD FD) or command+sub only: a read. The
   // 0x07 select form (CMD + one D0/D1/D2 byte) is the same length but is
