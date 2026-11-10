@@ -466,8 +466,10 @@ class RadioProfile:
     # The whole-watt write lattice of a raw_255 (CI-V) radio declared in
     # ``[controls.rf_power].write_quantum_w`` (MOR-4352). ``None`` — every
     # radio without the field — keeps today's encoder exactly: the
-    # normalized level is written as its own rounded raw byte.
-    power_write_quantum: PowerWriteQuantum | None = None
+    # normalized level is written as its own rounded raw byte. Keyword-only
+    # like every field appended after the positional-contract freeze
+    # (tests/test_discovery_probe_baud_order.py).
+    power_write_quantum: PowerWriteQuantum | None = field(default=None, kw_only=True)
     att_values: tuple[int, ...] | None = None
     att_labels: dict[str, str] | None = None
     pre_values: tuple[int, ...] | None = None
