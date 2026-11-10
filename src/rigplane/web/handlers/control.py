@@ -362,6 +362,9 @@ def _level_for_power(value: Any, radio: Any) -> int:
         power_native_unit=getattr(radio, "native_power_unit", "raw_255"),
         power_max_watts=getattr(getattr(radio, "profile", None), "max_watts", None),
         power_min_watts=getattr(getattr(radio, "profile", None), "min_watts", None),
+        power_write_quantum=getattr(
+            getattr(radio, "profile", None), "power_write_quantum", None
+        ),
     )
     return int(native)
 
@@ -1819,10 +1822,15 @@ class ControlHandler:
         power_max_watts = None
         power_min_watts = None
         power_native_unit = getattr(self._radio, "native_power_unit", "raw_255")
+        profile = getattr(self._radio, "profile", None)
+        # MOR-4352: the whole-watt write quantum needs the watts scale on a
+        # raw_255 radio too, so the max is threaded whenever either applies.
+        power_write_quantum = getattr(profile, "power_write_quantum", None)
         if power_native_unit == "watts":
-            profile = getattr(self._radio, "profile", None)
             power_max_watts = getattr(profile, "max_watts", None)
             power_min_watts = getattr(profile, "min_watts", None)
+        elif power_write_quantum is not None:
+            power_max_watts = getattr(profile, "max_watts", None)
         descriptor = command_descriptor(name)
         if (
             descriptor is not None
@@ -1853,6 +1861,7 @@ class ControlHandler:
                 power_native_unit=power_native_unit,
                 power_max_watts=power_max_watts,
                 power_min_watts=power_min_watts,
+                power_write_quantum=power_write_quantum,
             )
         executor = (
             _ControlCommandExecutor(self, wait_for_completion=False)

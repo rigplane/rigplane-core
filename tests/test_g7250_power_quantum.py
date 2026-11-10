@@ -72,7 +72,8 @@ def test_normalized_level_writes_the_smallest_raw_for_the_whole_watt_step(
     level: float, expected_native: int, expected_admitted: float
 ) -> None:
     assert resolve_power_level_target(
-        level, **_g7250_resolver_kwargs()  # type: ignore[arg-type]
+        level,
+        **_g7250_resolver_kwargs(),  # type: ignore[arg-type]
     ) == (expected_native, expected_admitted)
 
 
@@ -91,7 +92,8 @@ def test_raw_int_write_keeps_the_byte_and_admits_the_radio_readback(
     raw: int, expected_admitted: float
 ) -> None:
     assert resolve_power_level_target(
-        raw, **_g7250_resolver_kwargs()  # type: ignore[arg-type]
+        raw,
+        **_g7250_resolver_kwargs(),  # type: ignore[arg-type]
     ) == (raw, expected_admitted)
 
 
@@ -186,11 +188,7 @@ def _patched_g7250(tmp_path: Path, *replacements: tuple[str, str]) -> Path:
 
 
 def test_loader_refuses_the_quantum_without_power_max_watts(tmp_path: Path) -> None:
-    broken = _patched_g7250(
-        tmp_path,
-        ("raw_min = 12", "raw_min = 12\nwrite_quantum_w = 1"),
-        ("max_watts = 100\n", ""),
-    )
+    broken = _patched_g7250(tmp_path, ("max_watts = 100\n", ""))
     with pytest.raises(
         RigLoadError, match=r"write_quantum_w requires \[power\]\.max_watts"
     ):
@@ -200,7 +198,7 @@ def test_loader_refuses_the_quantum_without_power_max_watts(tmp_path: Path) -> N
 @pytest.mark.parametrize("bad", ["0", "-1"])
 def test_loader_refuses_a_non_positive_quantum(tmp_path: Path, bad: str) -> None:
     broken = _patched_g7250(
-        tmp_path, ("raw_min = 12", f"raw_min = 12\nwrite_quantum_w = {bad}")
+        tmp_path, ("write_quantum_w = 1", f"write_quantum_w = {bad}")
     )
     with pytest.raises(RigLoadError, match=r"write_quantum_w must be > 0"):
         load_rig(broken)
@@ -209,7 +207,11 @@ def test_loader_refuses_a_non_positive_quantum(tmp_path: Path, bad: str) -> None
 def test_loader_refuses_the_quantum_on_another_control(tmp_path: Path) -> None:
     broken = _patched_g7250(
         tmp_path,
-        ("[controls.af_level]\nraw_min = 0", "[controls.af_level]\nraw_min = 0\nwrite_quantum_w = 1"),
+        ("write_quantum_w = 1\n", ""),
+        (
+            "[controls.af_level]\nraw_min = 0",
+            "[controls.af_level]\nraw_min = 0\nwrite_quantum_w = 1",
+        ),
     )
     with pytest.raises(RigLoadError, match=r"only valid on \[controls\.rf_power\]"):
         load_rig(broken)
@@ -218,8 +220,8 @@ def test_loader_refuses_the_quantum_on_another_control(tmp_path: Path) -> None:
 def test_loader_refuses_the_quantum_without_the_raw_band(tmp_path: Path) -> None:
     broken = _patched_g7250(
         tmp_path,
-        ("raw_min = 12", "raw_min = 12\nwrite_quantum_w = 1"),
-        # Comment the band away: write_quantum_w is left without raw_min.
+        # Comment the band's low end away: write_quantum_w is left without
+        # the raw_min it must be declared with.
         ("raw_min = 12", "# raw band removed"),
     )
     with pytest.raises(RigLoadError, match=r"write_quantum_w requires"):

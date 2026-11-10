@@ -22,6 +22,7 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
+from rigplane.core.state_pipeline_contracts import PowerWriteQuantum
 from rigplane.core.types import (
     ScopeFixedEdgeRange,
     MemoryProfile,
@@ -45,6 +46,7 @@ __all__ = [
     "FilterWidthSegment",
     "FilterWidthRule",
     "MeterCalibrationPoint",
+    "PowerWriteQuantum",
     "RadioProfile",
     "RuleSpec",
     "TxPolicy",
@@ -99,6 +101,7 @@ class ControlSpec(TypedDict, total=False):
     display_unit: str
     decode_quantum: int
     encode_rounding: str
+    write_quantum_w: float
 
 
 class _ControlDomainBase(TypedDict):
@@ -460,6 +463,11 @@ class RadioProfile:
     # Lower bound of the ``PC`` power range in watts (MOR-2998). ``None``
     # keeps today's behaviour: a request below the range is sent as-is.
     min_watts: int | None = None
+    # The whole-watt write lattice of a raw_255 (CI-V) radio declared in
+    # ``[controls.rf_power].write_quantum_w`` (MOR-4352). ``None`` — every
+    # radio without the field — keeps today's encoder exactly: the
+    # normalized level is written as its own rounded raw byte.
+    power_write_quantum: PowerWriteQuantum | None = None
     att_values: tuple[int, ...] | None = None
     att_labels: dict[str, str] | None = None
     pre_values: tuple[int, ...] | None = None

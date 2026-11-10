@@ -966,6 +966,7 @@ class TciAdapterHandler:
                 power_native_unit=getattr(self._radio, "native_power_unit", "raw_255"),
                 power_max_watts=getattr(radio_profile, "max_watts", None),
                 power_min_watts=getattr(radio_profile, "min_watts", None),
+                power_write_quantum=getattr(radio_profile, "power_write_quantum", None),
             )
             intent = self._intent(
                 "set_rf_power",
@@ -973,6 +974,7 @@ class TciAdapterHandler:
                 power_native_unit=getattr(self._radio, "native_power_unit", "raw_255"),
                 power_max_watts=getattr(radio_profile, "max_watts", None),
                 power_min_watts=getattr(radio_profile, "min_watts", None),
+                power_write_quantum=getattr(radio_profile, "power_write_quantum", None),
             )
             await self._execute_write(intent)
         except Exception:

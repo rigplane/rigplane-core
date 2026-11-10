@@ -292,12 +292,17 @@ class IcomRadio:
             raise AttributeError(
                 "set_rf_power requires a radio that implements PowerControlCapable"
             )
+        profile = getattr(self._radio, "profile", None)
         power_max_watts = None
         power_min_watts = None
+        # MOR-4352: the whole-watt write quantum needs the watts scale on a
+        # raw_255 radio too, so the max is threaded whenever either applies.
+        power_write_quantum = getattr(profile, "power_write_quantum", None)
         if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
-            profile = getattr(self._radio, "profile", None)
             power_max_watts = getattr(profile, "max_watts", None)
             power_min_watts = getattr(profile, "min_watts", None)
+        elif power_write_quantum is not None:
+            power_max_watts = getattr(profile, "max_watts", None)
         self._run(
             self._command_service.execute(
                 command_intent_from_request(
@@ -306,6 +311,7 @@ class IcomRadio:
                     source="public_api",
                     power_max_watts=power_max_watts,
                     power_min_watts=power_min_watts,
+                    power_write_quantum=power_write_quantum,
                 )
             )
         )

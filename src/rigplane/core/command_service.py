@@ -13,6 +13,7 @@ import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any, Protocol
 
 from rigplane.core.acquisition_scheduler import AcquisitionPriority, AcquisitionStatus
@@ -33,6 +34,7 @@ from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
     ObservationSource,
+    PowerWriteQuantum,
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
@@ -58,11 +60,13 @@ __all__ = [
     "CommandService",
     "CommandServiceResult",
     "PendingOverlay",
+    "PowerWriteQuantum",
     "admitted_level_for_intent",
     "command_intent_from_request",
     "command_response_observation",
     "expected_observations_for_command",
     "observable_field_path",
+    "resolve_power_level_target",
 ]
 
 _UNSET = object()
@@ -985,6 +989,7 @@ def resolve_power_level_target(
     power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
     power_min_watts: int | float | None = None,
+    power_write_quantum: PowerWriteQuantum | None = None,
 ) -> tuple[int, float]:
     """Resolve the native power integer and its exact normalized readback.
 
@@ -993,6 +998,12 @@ def resolve_power_level_target(
     bare ints alike (MOR-2998: a profile floor such as the FTX-1's 5 W
     lifts the bottom of the range off the refused 0 W write). A radio
     without ``min_watts`` keeps today's behaviour exactly.
+
+    On a raw_255 (CI-V) radio whose profile declares a whole-watt write
+    quantum (MOR-4352, ``[controls.rf_power].write_quantum_w``), the
+    request is resolved through the radio's measured storage model — see
+    :func:`_resolve_quantized_power_target`. A radio without the field,
+    an invalid one, or a watts-native radio keeps today's behaviour.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"level {value!r} must be an int or a normalized float")
@@ -1016,6 +1027,15 @@ def resolve_power_level_target(
     )
     lower = int(power_min_watts) if valid_min else 0
 
+    quantum = _valid_write_quantum(
+        power_write_quantum, watts_native=watts_native, valid_max=valid_max
+    )
+    if quantum is not None:
+        assert power_max_watts is not None  # valid_max held for the branch
+        return _resolve_quantized_power_target(
+            value, quantum, max_watts=power_max_watts
+        )
+
     if isinstance(value, float):
         if not (0.0 <= value <= 1.0):
             raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
@@ -1025,6 +1045,86 @@ def resolve_power_level_target(
     else:
         native = value
     return native, native / scale
+
+
+def _valid_write_quantum(
+    quantum: PowerWriteQuantum | None, *, watts_native: bool, valid_max: bool
+) -> PowerWriteQuantum | None:
+    """The declared write quantum when it applies, else ``None``.
+
+    A hand-built fact with a non-positive quantum or a malformed raw band
+    is ignored (today's behaviour), mirroring how the resolver treats an
+    invalid ``power_max_watts``; the loader guarantees shipped profiles
+    declare it correctly.
+    """
+    if quantum is None or watts_native or not valid_max:
+        return None
+    q = quantum.quantum_w
+    raw_min, raw_max = quantum.raw_min, quantum.raw_max
+    if (
+        isinstance(q, bool)
+        or not isinstance(q, (int, float))
+        or not q > 0
+        or isinstance(raw_min, bool)
+        or not isinstance(raw_min, int)
+        or isinstance(raw_max, bool)
+        or not isinstance(raw_max, int)
+        or not 0 <= raw_min <= raw_max <= 255
+    ):
+        return None
+    return quantum
+
+
+def _resolve_quantized_power_target(
+    value: int | float,
+    quantum: PowerWriteQuantum,
+    *,
+    max_watts: int | float,
+) -> tuple[int, float]:
+    """Resolve a power target through a radio's whole-watt storage model.
+
+    Measured on the Xiegu G7250 (LIVE 2026-11-10, MOR-4352): the radio
+    stores power on a fixed watt lattice — a write of raw ``r`` lands on
+    ``W = floor(r * max_w / 255)`` and a read answers
+    ``floor(W * 255 / max_w)``. Writing the raw byte a normalized level
+    rounds to stores the WRONG watt (12 stored 4 W, read back 10), so a
+    float level ``L`` resolves instead to the target watt
+    ``W = round(L * max_w / q) * q``, clamped to the watt range the
+    declared raw band represents, and is written as the SMALLEST raw
+    ``r`` with ``floor(r * max_w / 255) == W``; the admitted normalized
+    level is the radio's own readback ``floor(W * 255 / max_w) / 255``.
+    A bare int is the documented raw byte: it goes out as written and
+    only its admitted readback follows the storage model. Computed in
+    exact :class:`~fractions.Fraction` arithmetic — no float drift
+    between the write byte and the readback expectation.
+    """
+    max_w = _exact_power_fraction(max_watts)
+    step = _exact_power_fraction(quantum.quantum_w)
+    # The watt range the declared raw band represents, on the lattice:
+    # floor(W * 255 / max_w) >= raw_min  <=>  W >= raw_min * max_w / 255.
+    lowest_step = math.ceil(Fraction(quantum.raw_min) * max_w / 255 / step)
+    highest_step = math.floor(Fraction(quantum.raw_max) * max_w / 255 / step)
+    if isinstance(value, float):
+        if not (0.0 <= value <= 1.0):
+            raise ValueError(f"level {value!r} is out of the normalized 0.0-1.0 domain")
+        target_step = round(Fraction(value) * max_w / step)
+        target_step = max(lowest_step, min(highest_step, target_step))
+        watts = target_step * step
+        native = math.ceil(watts * 255 / max_w)
+    else:
+        native = value
+        watts = math.floor(Fraction(value) * max_w / 255)
+    admitted = math.floor(watts * 255 / max_w) / 255
+    return int(native), admitted
+
+
+def _exact_power_fraction(value: int | float) -> Fraction:
+    """An exact Fraction for a loader-validated power fact.
+
+    ``str()`` keeps the decimal the TOML author wrote (``0.5`` stays 1/2,
+    not the binary float near it); ints convert exactly.
+    """
+    return Fraction(str(value)) if isinstance(value, float) else Fraction(value)
 
 
 def _normalize_raw_level_value(value: Any) -> Any:
@@ -1258,6 +1358,7 @@ def command_intent_from_request(
     power_native_unit: str | None = None,
     power_max_watts: int | float | None = None,
     power_min_watts: int | float | None = None,
+    power_write_quantum: PowerWriteQuantum | None = None,
 ) -> CommandIntent:
     """Normalize a production command request into a backend-neutral intent."""
 
@@ -1331,6 +1432,7 @@ def command_intent_from_request(
             power_native_unit=power_native_unit,
             power_max_watts=power_max_watts,
             power_min_watts=power_min_watts,
+            power_write_quantum=power_write_quantum,
         )
     elif command_name == "set_split":
         normalized["split"] = bool(normalized.get("on", False))

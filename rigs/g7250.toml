@@ -318,6 +318,14 @@ raw_max = 255
 [controls.rf_power]
 raw_min = 12   # LIVE 2026-11-10: lowest setting, display 5 W, 14 0A reads 00 12
 raw_max = 255  # LIVE 2026-11-09: full setting, 14 0A reads 02 55 (100 W rated)
+# LIVE 2026-11-10 (MOR-4352): the radio stores power in WHOLE WATTS.
+# Measured: a write of 14 0A 00 12 (the readback's own minimum byte) landed
+# on 4 W — the radio then read raw 10, never returning to the requested 12.
+# Model: W = floor(raw * 100 / 255) on write, raw = floor(W * 255 / 100) on
+# read (5 W -> 12/13, 4 W -> 10/12, 100 W -> 255). With the quantum declared
+# the encoder writes the SMALLEST raw whose stored watt reads back as the
+# target (5 W -> 13), so the exact-readback contract holds.
+write_quantum_w = 1
 
 # Display bands inherited from X6200, not probed on G7250 (the G7250 read
 # live was 00 00 = the bottom of the band; the top end is unconfirmed).
