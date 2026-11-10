@@ -8,7 +8,14 @@ from typing import Callable
 import pytest
 
 from rigplane.scope import ScopeFrame
-from rigplane.sdr import FakeIqSource, IqBlock, IqScopeSink, IqSource, SdrConfig
+from rigplane.sdr import (
+    FakeIqSource,
+    IqBlock,
+    IqScopeSink,
+    IqSource,
+    IqSourceFacts,
+    SdrConfig,
+)
 from rigplane.sdr.controller import (
     DEFAULT_SPAN_DIVISOR,
     RETUNE_DEBOUNCE_S,
@@ -77,11 +84,14 @@ def make_controller(
     frequency_range: tuple[int, int] = (100_000, 6_000_000_000),
     config: SdrConfig | None = None,
     tx_hold_s: float = TX_HOLD_S,
+    sample_rate_hz: int = SAMPLE_RATE_HZ,
+    facts: IqSourceFacts | None = None,
 ) -> tuple[SdrScopeController, CountingSource, RecordingSink, FakeClock]:
     clock = FakeClock()
     source = CountingSource(
-        sample_rate_hz=SAMPLE_RATE_HZ,
+        sample_rate_hz=sample_rate_hz,
         frequency_range=frequency_range,
+        facts=facts,
     )
     sink = RecordingSink()
     controller = SdrScopeController(
@@ -92,6 +102,90 @@ def make_controller(
         tx_hold_s=tx_hold_s,
     )
     return controller, source, sink, clock
+
+
+def make_slaved_controller(
+    *,
+    config: SdrConfig | None = None,
+    facts: IqSourceFacts = IqSourceFacts(
+        "slaved", center_offset_hz=8000, usable_bandwidth_hz=40_000
+    ),
+) -> tuple[SdrScopeController, CountingSource, RecordingSink, FakeClock]:
+    return make_controller(
+        config=config,
+        sample_rate_hz=48_000,
+        facts=facts,
+    )
+
+
+def test_slaved_construction_uses_usable_bandwidth_as_default_span() -> None:
+    controller, _source, sink, _clock = make_slaved_controller()
+
+    assert controller.span_hz == 40_000
+    assert sink.calls == [("span", 40_000)]
+
+
+def test_slaved_construction_defaults_to_full_sample_rate_without_usable_bandwidth() -> (
+    None
+):
+    controller, _source, sink, _clock = make_slaved_controller(
+        facts=IqSourceFacts("slaved", center_offset_hz=8000)
+    )
+
+    assert controller.span_hz == 48_000
+    assert sink.calls == [("span", 48_000)]
+
+
+def test_slaved_follows_vfo_immediately_without_debounce_or_duplicate_retune() -> None:
+    controller, source, sink, clock = make_slaved_controller()
+
+    controller.on_radio_state(7_175_000, False)
+
+    assert source.center_freq_hz == 7_183_000
+    assert source.retune_calls == [7_183_000]
+    assert sink.of("view") == [7_175_000]
+
+    clock.advance(0.010)
+    controller.on_radio_state(7_176_000, False)
+
+    assert source.center_freq_hz == 7_184_000
+    assert source.retune_calls == [7_183_000, 7_184_000]
+    assert controller.retune_pending is False
+    assert sink.of("view") == [7_175_000, 7_176_000]
+
+    controller.on_radio_state(7_176_000, False)
+
+    assert source.retune_calls == [7_183_000, 7_184_000]
+
+
+def test_slaved_applies_display_and_window_offsets() -> None:
+    controller, source, sink, _clock = make_slaved_controller(
+        config=SdrConfig(device_args="driver=fake", freq_offset_hz=1000)
+    )
+
+    controller.on_radio_state(7_175_000, False)
+
+    assert source.center_freq_hz == 7_184_000
+    assert sink.of("view") == [7_176_000]
+
+
+def test_slaved_tx_freeze_uses_same_hold_policy() -> None:
+    controller, _source, sink, clock = make_slaved_controller()
+
+    controller.on_radio_state(7_175_000, True)
+
+    assert sink.of("tx") == [True]
+
+    clock.advance(1.0)
+    controller.on_radio_state(7_175_000, False)
+    sink.calls.clear()
+    clock.advance(TX_HOLD_S - 0.001)
+    controller.tick()
+    assert sink.calls == []
+
+    clock.advance(0.002)
+    controller.tick()
+    assert sink.calls == [("tx", False)]
 
 
 def test_construction_sends_default_span_to_sink() -> None:

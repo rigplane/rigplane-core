@@ -4,16 +4,68 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import sys
+from types import SimpleNamespace
 
 import pytest
 
 from rigplane.core.env_config import get_sdr_env_overrides
+from rigplane.sdr import FakeIqSource
+from rigplane.sdr import runtime as sdr_runtime
 from rigplane.sdr.runtime import (
     apply_remote_only_env,
+    build_source,
+    register_source_kind,
     remote_only_env_updates,
     resolve_sdr_config,
 )
-from rigplane.sdr.types import SdrConfig
+from rigplane.sdr.types import SdrConfig, SoapySourceSpec
+
+
+def test_build_source_uses_registered_soapy_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "SoapySDR", raising=False)
+    provider = FakeIqSource()
+    spec = SoapySourceSpec(SdrConfig(device_args="driver=remote"))
+    seen: list[SoapySourceSpec] = []
+
+    def factory(received: SoapySourceSpec) -> FakeIqSource:
+        seen.append(received)
+        return provider
+
+    monkeypatch.setitem(sdr_runtime._SOURCE_FACTORIES, "soapy", factory)
+
+    assert build_source(spec) is provider
+    assert seen == [spec]
+    assert "SoapySDR" not in sys.modules
+
+
+def test_build_source_rejects_unknown_kind() -> None:
+    spec = SimpleNamespace(kind="nope")
+
+    with pytest.raises(ValueError) as excinfo:
+        build_source(spec)  # type: ignore[arg-type]
+
+    message = str(excinfo.value)
+    assert "kind" in message
+    assert "nope" in message
+    assert "soapy" in message
+
+
+def test_register_source_kind_rejects_duplicate() -> None:
+    with pytest.raises(ValueError, match="soapy"):
+        register_source_kind("soapy", lambda spec: FakeIqSource())
+
+
+def test_register_and_build_new_source_kind() -> None:
+    provider = FakeIqSource()
+    kind = "test-only"
+    register_source_kind(kind, lambda spec: provider)
+    try:
+        assert build_source(SimpleNamespace(kind=kind)) is provider  # type: ignore[arg-type]
+    finally:
+        sdr_runtime._SOURCE_FACTORIES.pop(kind, None)
 
 
 @pytest.mark.parametrize(

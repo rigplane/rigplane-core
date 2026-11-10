@@ -12,7 +12,7 @@ from .controller import SdrScopeController
 from .fake import FakeIqSource
 from .iq_scope import IqFftScope
 from .protocol import IqScopeSink, IqSource
-from .types import IqBlock, SdrConfig
+from .types import IqBlock, IqSourceFacts, IqSourceSpec, SdrConfig, SoapySourceSpec
 
 __all__ = [
     "FakeIqSource",
@@ -20,6 +20,9 @@ __all__ = [
     "IqFftScope",
     "IqScopeSink",
     "IqSource",
+    "IqSourceFacts",
+    "IqSourceSpec",
     "SdrConfig",
     "SdrScopeController",
+    "SoapySourceSpec",
 ]

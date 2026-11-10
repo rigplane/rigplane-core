@@ -15,7 +15,7 @@ import time
 from typing import Callable
 
 from .protocol import IqScopeSink, IqSource
-from .types import SdrConfig
+from .types import IqDisplaySettings
 
 __all__ = [
     "DEFAULT_SPAN_DIVISOR",
@@ -53,14 +53,16 @@ class SdrScopeController:
     * The source range is checked first: when the RF frequency lies
       outside ``source.frequency_range_hz()`` no retune and no view
       call happen, and :attr:`frequency_in_range` reports ``False``.
-    * View shift vs retune: when the display window (effective span
-      around the VFO) fits inside the current IQ window minus a 10 %
-      guard band at each edge, only ``sink.set_view_center()`` is
-      called. Otherwise the source is retuned so the VFO sits at +1/4
-      of the IQ bandwidth from center (keeping the LO DC spike away
-      from the VFO), clamped to the source range, and then the view is
-      set.
-    * Retune debounce: hardware retunes are at least
+    * Independent sources use view shift vs retune: when the display
+      window (effective span around the VFO) fits inside the current IQ
+      window minus a 10 % guard band at each edge, only
+      ``sink.set_view_center()`` is called. Otherwise the source is
+      retuned so the VFO sits at +1/4 of the IQ bandwidth from center
+      (keeping the LO DC spike away from the VFO), clamped to the source
+      range, and then the view is set.
+    * Slaved sources record ``rf_hz + facts.center_offset_hz`` at once
+      whenever that centre changes, without debounce or placement logic.
+    * Independent-source hardware retunes are at least
       ``RETUNE_DEBOUNCE_S`` apart. A suppressed retune stays pending
       and is re-evaluated on the next :meth:`on_radio_state` or
       :meth:`tick`; a later state whose window fits supersedes it with
@@ -77,9 +79,10 @@ class SdrScopeController:
     Args:
         source: IQ source to (re)tune; never opened or closed here.
         sink: Scope sink driven with span/view/TX decisions.
-        config: SDR settings. ``span_hz=None`` selects
-            ``source.sample_rate_hz // DEFAULT_SPAN_DIVISOR``; the
-            effective span is sent to the sink once, at construction.
+        config: Display settings. ``span_hz=None`` selects a quarter of
+            the sample rate for independent sources, or the usable
+            bandwidth (falling back to the full sample rate) for slaved
+            sources. The effective span is sent once, at construction.
         clock: Monotonic time source, injectable for determinism.
         tx_hold_s: Seconds to keep the sink TX-frozen after the radio
             leaves TX.
@@ -89,7 +92,7 @@ class SdrScopeController:
         self,
         source: IqSource,
         sink: IqScopeSink,
-        config: SdrConfig,
+        config: IqDisplaySettings,
         clock: Callable[[], float] = time.monotonic,
         *,
         tx_hold_s: float = TX_HOLD_S,
@@ -99,12 +102,19 @@ class SdrScopeController:
         self._config = config
         self._clock = clock
         self._tx_hold_s = float(tx_hold_s)
+        self._facts = source.facts
 
-        self._span_hz: int = (
-            config.span_hz
-            if config.span_hz is not None
-            else source.sample_rate_hz // DEFAULT_SPAN_DIVISOR
-        )
+        self._span_hz: int
+        if config.span_hz is not None:
+            self._span_hz = config.span_hz
+        elif self._facts.tuning == "slaved":
+            self._span_hz = (
+                self._facts.usable_bandwidth_hz
+                if self._facts.usable_bandwidth_hz is not None
+                else source.sample_rate_hz
+            )
+        else:
+            self._span_hz = source.sample_rate_hz // DEFAULT_SPAN_DIVISOR
 
         self._freq_hz: int | None = None
         self._last_view_hz: int | None = None
@@ -219,6 +229,14 @@ class SdrScopeController:
             self._frequency_in_range = False
             return
         self._frequency_in_range = True
+
+        if self._facts.tuning == "slaved":
+            center_hz = rf_hz + self._facts.center_offset_hz
+            if center_hz != source.center_freq_hz:
+                source.set_center_freq(center_hz)
+            self._retune_pending = False
+            self._set_view_center(rf_hz)
+            return
 
         sample_rate_hz = source.sample_rate_hz
         center_hz = source.center_freq_hz

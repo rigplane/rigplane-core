@@ -19,9 +19,18 @@ composes acquisition and TX policy for the shared scope hub;
   `gain_db` (`None` = AGC), `ppm`, `freq_offset_hz` (`0` = antenna
   tap), `invert_spectrum`, `span_hz` (`None` = full rate),
   `extra_settings` (read-only); `from_mapping()` names the bad field.
+- `IqSourceFacts` — frozen dataclass declaring `independent` or `slaved`
+  tuning, the slaved window's `center_offset_hz`, and optional positive
+  `usable_bandwidth_hz` (`None` = full sample rate).
+- `SoapySourceSpec` / `IqSourceSpec` — frozen, `kind`-tagged source
+  selection carrying the `SdrConfig`; the alias is the union extension
+  point for additional source kinds.
+- `IqDisplaySettings` — Protocol for the controller's read-only
+  `span_hz` and `freq_offset_hz` settings; `SdrConfig` satisfies it.
 - `IqSource` — runtime_checkable Protocol: `open`/`close`/`is_open`,
-  tuning/rate/gain setters, `frequency_range_hz`, single-slot
-  `on_block` (callback runs on the reader thread).
+  `facts`, tuning/rate/gain setters, `frequency_range_hz`, single-slot
+  `on_block` (callback runs on the reader thread). A slaved source only
+  records the controller-computed centre; it does not retune hardware.
 - `IqScopeSink` — runtime_checkable Protocol: enqueue-only `feed`,
   display-only `set_view_center`, `set_span`, `set_tx_active`,
   single-slot `on_frame` emitting `scope.ScopeFrame`.
@@ -29,11 +38,14 @@ composes acquisition and TX policy for the shared scope hub;
   `[(offset_hz, dbfs)]`, noise floor, block size; `pump(n_blocks)` or
   background reader thread.
 - `IqFftScope` — IQ blocks → `ScopeFrame` at `fps` (MOR-3154).
-- `SdrScopeController` — VFO view-shift/retune + TX freeze (MOR-3156).
+- `SdrScopeController` — source-facts-driven VFO tracking + TX freeze:
+  independent sources keep debounced view-shift/retune decisions, while
+  slaved sources immediately follow `radio RF + center_offset_hz`.
 - `IqFftSource` — demand-owned provider/controller/FFT composition. The
   controller's acquisition and TX decisions are retained, while each hub
   subscription projects its own view from the full native capture.
 - `sdr.runtime` (not re-exported) — `default_source_factory`,
+  `register_source_kind` / `build_source` for the source-kind registry,
   `resolve_sdr_config` and the remote-only GPL guard (MOR-3157).
 
 ## Allowed dependencies

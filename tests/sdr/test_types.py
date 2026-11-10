@@ -8,7 +8,39 @@ from collections.abc import Mapping
 import numpy as np
 import pytest
 
-from rigplane.sdr import IqBlock, SdrConfig
+from rigplane.sdr import IqBlock, IqSourceFacts, SdrConfig, SoapySourceSpec
+
+
+def test_iq_source_facts_defaults() -> None:
+    facts = IqSourceFacts()
+
+    assert facts.tuning == "independent"
+    assert facts.center_offset_hz == 0
+    assert facts.usable_bandwidth_hz is None
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        ({"tuning": "independent", "center_offset_hz": 8000}, "center_offset_hz"),
+        ({"usable_bandwidth_hz": 0}, "usable_bandwidth_hz"),
+        ({"usable_bandwidth_hz": -1}, "usable_bandwidth_hz"),
+        ({"tuning": "other"}, "tuning"),
+        ({"center_offset_hz": True}, "center_offset_hz"),
+        ({"usable_bandwidth_hz": True}, "usable_bandwidth_hz"),
+    ],
+)
+def test_iq_source_facts_rejects_bad_values(
+    kwargs: dict[str, object], field: str
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        IqSourceFacts(**kwargs)  # type: ignore[arg-type]
+
+
+def test_soapy_source_spec_kind() -> None:
+    spec = SoapySourceSpec(SdrConfig(device_args="driver=remote"))
+
+    assert spec.kind == "soapy"
 
 
 def test_sdr_config_defaults() -> None:
