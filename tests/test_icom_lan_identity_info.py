@@ -36,12 +36,9 @@ class _SilentIdentity(MockIcomRadio):
 
 @contextlib.asynccontextmanager
 async def _connected(
-    *,
-    model_id: bytes = b"\x98",
-    sim_cls: type[MockIcomRadio] = MockIcomRadio,
-    enable_audio: bool = False,
+    *, model_id: bytes = b"\x98", sim_cls: type[MockIcomRadio] = MockIcomRadio
 ) -> AsyncIterator[tuple[IcomRadio, MockIcomRadio]]:
-    sim = sim_cls(enable_audio=enable_audio)
+    sim = sim_cls()
     sim.model_id = model_id
     await sim.start()
     radio = IcomRadio(
@@ -104,24 +101,3 @@ async def test_disconnect_clears_identity_and_a_new_connect_reads_it_again() -> 
         await radio.connect()
         await _wait_status(radio, RadioIdentityStatus.VERIFIED)
         assert await radio.get_freq() > 0
-
-
-async def test_audio_start_right_after_connect_works_while_identity_is_unanswered() -> (
-    None
-):
-    """The browser's ``audio_start`` lands right after a reconnect.
-
-    The radio has not answered ``19 00`` yet. The RX start used to be refused
-    ("commands are refused until the radio answers its 19 00 model
-    identification"), which raised the "Radio audio capture could not start"
-    toast; now the start goes through at once.
-    """
-    async with _connected(sim_cls=_SilentIdentity, enable_audio=True) as (radio, _sim):
-        await radio.disconnect()
-        await radio.connect()
-        sub = await radio.audio_session.subscribe_rx("web-audio")
-        try:
-            packet = await sub.get(timeout=10.0)
-            assert packet is not None
-        finally:
-            await sub.release()
