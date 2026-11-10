@@ -144,7 +144,9 @@ async def test_granted_preset_frame_uses_every_native_bin(model):
     from rigplane.scope.models import Subscription
 
     writer = Writer()
-    source = RadioScopeSource(load_rig(Path("rigs") / f"{model}.toml").to_profile(), writer)
+    source = RadioScopeSource(
+        load_rig(Path("rigs") / f"{model}.toml").to_profile(), writer
+    )
     encoded = []
 
     def encode(frame):
@@ -158,9 +160,7 @@ async def test_granted_preset_frame_uses_every_native_bin(model):
     )
     try:
         assert writer.writes[-1] == (14_100_000, 50_000, 0)
-        source.feed_frame(
-            ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False)
-        )
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
         await sub.receive()
         frame = encoded[-1]
         assert (frame.view_start_hz, frame.view_end_hz) == (14_050_000, 14_150_000)
@@ -419,7 +419,9 @@ async def test_external_span_change_is_adopted_without_writes(model):
     session = _sim_session(sim, profile)
     source = RadioScopeSource(profile, session)
     hub, encoded, Subscription = _sim_hub(source)
-    sub = await hub.subscribe(Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
     try:
         assert sim.writes
         source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
@@ -459,7 +461,9 @@ async def test_external_centre_change_is_adopted_without_writes(model):
     session = _sim_session(sim, profile)
     source = RadioScopeSource(profile, session)
     hub, encoded, Subscription = _sim_hub(source)
-    sub = await hub.subscribe(Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
     try:
         source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
         await sub.receive()
@@ -487,7 +491,9 @@ async def test_external_vfo_change_is_adopted_without_writes():
     session = _sim_session(sim, profile)
     source = RadioScopeSource(profile, session)
     hub, encoded, Subscription = _sim_hub(source)
-    sub = await hub.subscribe(Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
     try:
         source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
         await sub.receive()

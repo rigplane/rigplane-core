@@ -26,9 +26,7 @@ class RadioScopeWriter(Protocol):
     async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
 
-    async def set_center(
-        self, center_hz: float, span_hz: float, receiver: int
-    ) -> None:
+    async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
         """Tune the center-mode viewport.
 
         ``span_hz`` is the profile preset value (an entry of

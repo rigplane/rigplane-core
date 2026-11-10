@@ -277,6 +277,7 @@ class ScopeSourcePlugin(Protocol):
         scope writes) adopts the native coverage, while a source with
         a fixed native passband (FFT) keeps the requested crop.
         """
+
     def coverage_for(
         self, view: ViewRequest, receiver: int | None = None
     ) -> Coverage | None: ...

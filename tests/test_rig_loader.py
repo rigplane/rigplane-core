@@ -3070,7 +3070,7 @@ class TestScopeSpanPresetSemantics:
     def test_parses_declared_semantics(self, tmp_path, semantics):
         toml = (
             _MINIMAL_TOML
-            + f"\n[scope]\nspan_presets_hz = [2500, 5000]\n"
+            + "\n[scope]\nspan_presets_hz = [2500, 5000]\n"
             + f'span_preset_semantics = "{semantics}"\n'
         )
         p = _write_toml(tmp_path, toml)
