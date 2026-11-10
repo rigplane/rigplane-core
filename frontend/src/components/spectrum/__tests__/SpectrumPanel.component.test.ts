@@ -1284,20 +1284,123 @@ describe('SpectrumPanel component', () => {
     expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_000, spanHz: 50_000, sampleSpanHz: 100_000 });
   });
 
-  it('hatches both uncovered requested margins with a typed reason', async () => {
+  it('hatches the uncovered requested margin of a band preset with a typed reason', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_250 });
+    const target = mountPanel();
+    // CENTER: a pinned band preset wider than the delivered coverage keeps
+    // the hatch for the margin the frames do not cover.
+    emitFrame();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+    select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync(); await flushWaterfallPaint();
+    const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
+    expect(hatches).toHaveLength(1);
+    expect(hatches[0]!.title).toBe('View wider than the delivered scope coverage');
+    expect(parseFloat(hatches[0]!.style.left)).toBeCloseTo(100 / 350 * 100, 1);
+  });
+
+  // ── MOR-4392: ZOOM is a client crop of the requested width ──
+  it('crops below the narrowest span preset down to a floor of a few native bins (MOR-4392)', async () => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const zoomIn = target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!;
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    // 100 kHz of coverage over 475 bins: the floor is a few native bins, far
+    // below the narrowest span preset — the crop never stalls at a preset.
+    const floor = 4 * (100_000 / 475);
+    for (let i = 0; i < 12; i++) { zoomIn.click(); flushSync(); }
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: expect.closeTo(floor, 0) });
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBeCloseTo(floor, 0);
+    const settled = read();
+    zoomIn.click(); flushSync();
+    expect(read()).toEqual(settled);
+  });
+
+  it('widens the crop up to the widest span preset and stops there (MOR-4392)', async () => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const zoomOut = target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!;
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    const widest = Math.max(...spanCapabilities.span_choices_hz);
+    const widths: number[] = [];
+    for (let i = 0; i < 8; i++) {
+      zoomOut.click(); flushSync();
+      const width = read().view.spanHz as number;
+      if (widths.at(-1) === width) break;
+      widths.push(width);
+    }
+    expect(widths.at(-1)).toBe(widest);
+    for (let i = 1; i < widths.length; i++) expect(widths[i]!).toBeLessThanOrEqual(widths[i - 1]! * 2);
+    const settled = read();
+    zoomOut.click(); flushSync();
+    expect(read()).toEqual(settled);
+  });
+
+  it('clamps the requested width only when an adopted coverage no longer contains it (MOR-4392)', async () => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    // The grant of the requested width arrives: nothing to clamp.
+    emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000, sequence: 2 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    // An external narrowing (front panel / RigDeck) that no longer contains
+    // the requested window clamps it to the new coverage — adoption only.
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000, sequence: 3 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    emitFrame({ startFreq: 14_025_000, endFreq: 14_075_000, sequence: 4 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    // Adoptions whose coverage still contains the requested width keep it —
+    // the subscription value is untouched, so no new subscription is caused.
+    emitFrame({ startFreq: 13_925_000, endFreq: 14_175_000, sequence: 5 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000, sequence: 6 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+  });
+
+  it('keeps the fixed window for the FIX marker and passband after a CENTER zoom (MOR-4392)', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000, mode: 'LSB', filterWidthHz: 3_000,
+      filterWidthDisplay: { state: 'known', hz: 3_000, stale: false } });
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    const target = mountPanel();
+    emitFrame(); await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+    // The 50 kHz requested width left over from the CENTER zoom must not
+    // leak into FIX: marker, passband and viewport use the fixed window.
+    emitFrame({ mode: 1 }); flushSync(); await flushWaterfallPaint();
+    expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left).toBe('25%');
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({
+      spanHz: 100_000, tuneHz: 14_025_000, scopeMode: 1, panoramaShiftHz: 0, passbandHz: 3_000 });
+    const overlay = target.querySelector<HTMLElement>('.waterfall-content .passband-overlay')!;
+    expect(overlay.style.left).toBe('22%');
+    expect(overlay.style.width).toBe('3%');
+  });
+
+  it('clips a FIX zoom-out to the fixed window instead of hatching beyond it (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     const target = mountPanel();
-    // FIX scope: absolute requested bounds stay pinned there, so a zoomed-out
-    // request wider than the delivered coverage keeps both hatch margins.
-    emitFrame({ mode: 1 });
+    emitFrame({ mode: 1 }); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    // The displayed window is the fixed window or a crop inside it: zooming
+    // out past the fixed edges is a no-op, never a hatched wider view.
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click();
     flushSync(); await flushWaterfallPaint();
-    const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
-    expect(hatches).toHaveLength(2);
-    expect([...hatches].map((hatch) => [hatch.style.left, hatch.style.width])).toEqual([['0%', '25%'], ['75%', '25%']]);
-    expect([...hatches].every((hatch) => hatch.title === 'View wider than the delivered scope coverage')).toBe(true);
-    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(100_000);
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    expect(read().view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
   });
 
   it('mounts without errors', () => {

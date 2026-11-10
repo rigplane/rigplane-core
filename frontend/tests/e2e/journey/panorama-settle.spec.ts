@@ -6,6 +6,7 @@ import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/s
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import { startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
+import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
 interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
 declare global { interface Window { panoramaWork: Work } }
@@ -21,10 +22,9 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const sent: Array<ScopeSubscription & { type: string }> = [];
         const grants: ScopeGranted[] = [];
         const frames: Array<{ view: number[]; coverage: number[]; pixels: boolean; seq: number; receivedAt: number }> = [];
-        const errors: string[] = [];
+        const watch = watchPanoramaErrors(page);
+        const errors = watch.pageErrors;
         const commands: WsCommand[] = [];
-        page.on('pageerror', error => errors.push(error.message));
-        page.on('console', message => { if (message.type() === 'error') console.log('browser', message.text()); });
         page.on('response', response => { if (response.status() >= 400) console.log('HTTP', response.status(), response.url()); });
         page.on('websocket', socket => {
           if (new URL(socket.url()).pathname === '/api/v1/ws') socket.on('framesent', ({ payload }) => {
@@ -184,7 +184,9 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         expect.soft(idleEnd.draw - idleStart.draw).toBe(0);
         expect.soft(idleEnd.static - idleStart.static).toBe(0);
         expect.soft(idleEnd.rafMs - idleStart.rafMs).toBeLessThan(20);
-        expect(errors).toEqual([]);
+        // MOR-4392: no page error and no Svelte effect-depth loop anywhere
+        // in the scenario (shared panorama guard).
+        expectPanoramaSettled(watch);
       } finally {
         await server.kill();
       }
@@ -204,6 +206,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const wsCommands: WsCommand[] = [];
+    const watch = watchPanoramaErrors(page);
     try {
       const state = { sent: 0, frames: 0 };
       page.on('websocket', socket => {
@@ -232,6 +235,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       }
       const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
       await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).not.toBe(14_250_000);
+      const clickedHz = (await radioState()).main!.freqHz!;
       const sentBefore = state.sent;
       const commandsBeforeArrows = wsCommands.length;
       // Realistic key-repeat pacing (the MOR-4387 repro's cadence): the
@@ -251,8 +255,14 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const steps = arrowSteps();
       for (let i = 1; i < steps.length; i++) expect(steps[i]! - steps[i - 1]!).toBe(1_000);
       await expect.poll(radioState).toMatchObject({ main: { freqHz: steps.at(-1) } });
+      // Owner rule (no weakened tests): the user-facing outcome is the final
+      // VFO — 12 paced ArrowRight presses land +12 kHz from the frequency the
+      // last click tuned to. The command-series check above is the additional
+      // assertion, never the replacement.
+      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(clickedHz + 12_000);
       await expect(marker).toBeVisible();
       expect(state.sent - sentBefore).toBe(0);
+      expectPanoramaSettled(watch);
     } finally {
       await writeFile(info.outputPath('commands.json'), JSON.stringify(wsCommands)).catch(() => {});
       await server.kill();
@@ -263,6 +273,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const port = 18870 + index;
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+    const watch = watchPanoramaErrors(page);
     try {
       const sent: Array<ScopeSubscription & { type: string }> = [];
       const frames = { count: 0 };
@@ -292,6 +303,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await expect(marker).toBeVisible();
       expect(sent.filter(request => 'follow' in request.view)).toHaveLength(sent.length);
       expect(sent.length - sentBefore).toBe(0);
+      expectPanoramaSettled(watch);
     } finally {
       await server.kill();
     }
@@ -301,6 +313,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const port = 18880 + index;
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+    const watch = watchPanoramaErrors(page);
     try {
       const sent: Array<ScopeSubscription & { type: string }> = [];
       const frames = { count: 0 };
@@ -329,6 +342,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         .toMatchObject({ main: { freqHz: 14_650_000 } });
       await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 100_000 });
       await expect(marker).toBeVisible();
+      expectPanoramaSettled(watch);
     } finally {
       await server.kill();
     }
