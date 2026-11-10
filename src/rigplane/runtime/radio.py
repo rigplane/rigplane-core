@@ -18,9 +18,9 @@ import logging
 import os
 import socket as _socket
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace as _replace_dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
 if TYPE_CHECKING:
     from typing import Any
@@ -4612,6 +4612,30 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
     _PTT_READBACK_SETTLE_S: float = 0.2
 
+    # The profile command each managed-release abort executes, with its
+    # fixed leading arguments (MOR-4352). ``actuate`` builds the frame
+    # from this table and ``abort_applicable`` checks the same command
+    # names through ``supports_command``, so the executed command and the
+    # applicability decision are one mapping, never two.
+    _ABORT_COMMANDS: ClassVar[Mapping[AbortOperation, tuple[str, tuple[int, ...]]]] = {
+        AbortOperation.STOP_CW: ("stop_cw", ()),
+        AbortOperation.STOP_TUNE: ("set_tuner_status", (0,)),
+    }
+
+    def abort_applicable(self, operation: AbortOperation) -> bool:
+        """Whether this profile declares the command *operation* executes.
+
+        MOR-4352: a managed-release abort the radio cannot execute is not
+        applicable -- the effect lane never schedules it and it never
+        surfaces as an ``abortErrors`` entry. The decision is the
+        profile's own command declaration (:meth:`supports_command`)
+        over ``_ABORT_COMMANDS``; an undeclared name and a declared-absent
+        one are equally not applicable
+        (``RadioProfile.supports_command`` does not distinguish them).
+        """
+        abort = self._ABORT_COMMANDS.get(operation)
+        return abort is not None and self.supports_command(abort[0])
+
     async def actuate(
         self,
         token: EffectToken,
@@ -4631,11 +4655,9 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             elif operation is ActuationOperation.FORCE_RECEIVE:
                 civ = self._commands.ptt_off(to_addr=self._radio_addr)
                 priority = Priority.FORCE_RELEASE
-            elif operation is AbortOperation.STOP_CW:
-                civ = self._commands.stop_cw(to_addr=self._radio_addr)
-                priority = Priority.ABORT
-            elif operation is AbortOperation.STOP_TUNE:
-                civ = self._commands.set_tuner_status(0, to_addr=self._radio_addr)
+            elif (abort := self._ABORT_COMMANDS.get(operation)) is not None:
+                name, args = abort
+                civ = getattr(self._commands, name)(*args, to_addr=self._radio_addr)
                 priority = Priority.ABORT
             else:
                 return ActuationResult.REJECTED

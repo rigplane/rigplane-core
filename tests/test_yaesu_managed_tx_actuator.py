@@ -256,3 +256,76 @@ async def test_managed_cw_abort_ends_earlier_sends_only_once_accepted() -> None:
 
     radio._transport.write.await_args.kwargs["on_committed"]()
     assert radio._cw_text_generation != before
+
+
+@pytest.mark.asyncio
+async def test_abort_mapping_alone_drives_applicability_and_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4352 review round 1: one mapping for applicability AND actuation.
+
+    ``abort_applicable`` and ``actuate`` must both resolve the same
+    ``_ABORT_COMMANDS`` entry: redirecting the STOP_CW entry moves the
+    applicability answer and the dispatched frame together, and an entry
+    naming a command the profile does not declare is not applicable and
+    refuses before any write. RED before the round-1 fix: ``actuate``
+    hard-coded ``send_cw``, so redirecting the entry moved only the
+    applicability answer while the wire kept the old command.
+    """
+    config = load_rig(_RIGS_DIR / "ftx1.toml")
+    commands = dict(config.commands)
+    commands.update(_PROFILE_TEMPLATES)
+    # A second command with send_cw's parameter shape, so a redirected
+    # entry still formats; only the NAME resolution is under test.
+    commands["cw_halt"] = CatCommandSpec(write="ZH{type}{mem};")
+    radio = YaesuCatRadio("/dev/null", profile=replace(config, commands=commands))
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    # ``supports_command`` requires a same-named callable besides the
+    # declaration; the fixture reuses the real send_cw callable so the
+    # redirected entry is fully supported, the way a second CW-stop
+    # command on a real profile would be.
+    radio.cw_halt = radio.send_cw  # type: ignore[method-assign]
+
+    # Shipped table: STOP_CW resolves to send_cw, which the profile declares.
+    assert radio.abort_applicable(AbortOperation.STOP_CW) is True
+    assert (
+        await radio.actuate(_token(), AbortOperation.STOP_CW, is_current=lambda: True)
+        is ActuationResult.ACCEPTED
+    )
+    assert radio._transport.write.await_args.args == ("ZC00;",)
+
+    # Redirect the entry: both the applicability answer (now over
+    # cw_halt's declaration) and the dispatched command follow the table.
+    monkeypatch.setattr(
+        YaesuCatRadio,
+        "_ABORT_COMMANDS",
+        {
+            AbortOperation.STOP_CW: "cw_halt",
+            AbortOperation.STOP_TUNE: "set_tuner",
+        },
+    )
+    assert radio.abort_applicable(AbortOperation.STOP_CW) is True
+    assert (
+        await radio.actuate(_token(), AbortOperation.STOP_CW, is_current=lambda: True)
+        is ActuationResult.ACCEPTED
+    )
+    assert radio._transport.write.await_args.args == ("ZH00;",)
+
+    # An entry naming a command the profile does not declare: not
+    # applicable, and actuate refuses before any write.
+    monkeypatch.setattr(
+        YaesuCatRadio,
+        "_ABORT_COMMANDS",
+        {
+            AbortOperation.STOP_CW: "undeclared_cw_stop",
+            AbortOperation.STOP_TUNE: "set_tuner",
+        },
+    )
+    assert radio.abort_applicable(AbortOperation.STOP_CW) is False
+    radio._transport.write.reset_mock()
+    assert (
+        await radio.actuate(_token(), AbortOperation.STOP_CW, is_current=lambda: True)
+        is ActuationResult.REJECTED
+    )
+    radio._transport.write.assert_not_awaited()

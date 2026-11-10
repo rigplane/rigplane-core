@@ -4380,6 +4380,12 @@ class _X6DeclaresAbsentCommands:
     row in the table) stays absent there; x6200.toml keeps the full
     sibling-table basis (its V1.0.6 table has no VOX row of any kind)
     and stays absent in both directions.
+
+    MOR-4352 adds the CW-keying pair to x6200.toml only: the V1.0.6
+    Table 1 has no CI-V CW send/stop row, so the managed full-force
+    release's STOP_CW is not applicable on an X6200 and both names are
+    formally absent. The X6100 keeps its own sourcing rule (its manual
+    was not re-read for CW keying here), so it adds nothing.
     """
 
     _SHARED_ABSENT = frozenset(
@@ -4450,7 +4456,9 @@ class _X6DeclaresAbsentCommands:
 
 class TestX6200DeclaresAbsentCommands(_X6DeclaresAbsentCommands):
     _TOML_NAME = "x6200.toml"
-    _EXPECTED_ABSENT = _X6DeclaresAbsentCommands._SHARED_ABSENT | frozenset({"get_vox"})
+    _EXPECTED_ABSENT = _X6DeclaresAbsentCommands._SHARED_ABSENT | frozenset(
+        {"get_vox", "send_cw", "stop_cw"}
+    )
 
 
 class TestX6100DeclaresAbsentCommands(_X6DeclaresAbsentCommands):

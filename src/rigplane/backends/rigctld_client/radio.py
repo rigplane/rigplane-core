@@ -972,6 +972,17 @@ class RigctldClientRadio:
             f"T {1 if on else 0}", is_current=is_current, urgent=urgent
         )
 
+    def abort_applicable(self, operation: AbortOperation) -> bool:
+        """No rigctld abort primitive exists (MOR-4352).
+
+        ``actuate`` answers every :class:`AbortOperation` with REJECTED
+        without emitting a command -- the daemon protocol has no CW-keying
+        or tuner abort form -- so no abort operation is applicable and
+        the managed-release lane never schedules one.
+        """
+        del operation
+        return False
+
     async def actuate(
         self,
         token: EffectToken,

@@ -41,6 +41,24 @@ class ManagedTxActuator(Protocol):
     ) -> ActuationResult: ...
 
 
+@runtime_checkable
+class AbortApplicability(Protocol):
+    """Optional actuator surface declaring which abort operations apply.
+
+    MOR-4352: an abort the actuator cannot execute is NOT APPLICABLE --
+    ``ManagedTxEffectLane.settle_abort`` returns without claiming or
+    dispatching it, so it never reaches the radio and never surfaces as
+    an ``abortErrors`` entry (unsupported is not failed). An actuator
+    answers from the same profile-command declaration its ``actuate``
+    dispatches on, so there is one notion of "supported", not two.
+    Actuators without this surface keep the previous behaviour: every
+    scheduled abort is attempted, and one the radio refuses settles as a
+    reported failure, never a silent skip.
+    """
+
+    def abort_applicable(self, operation: AbortOperation) -> bool: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _Outcome:
     result: ActuationResult
@@ -109,12 +127,26 @@ class ManagedTxEffectLane:
         deadline_monotonic: float,
         is_current: Callable[[], bool] | None = None,
     ) -> AbortFailed | None:
+        """Settle one abort; an inapplicable abort settles as no failure.
+
+        MOR-4352: an abort the actuator declares inapplicable (the radio
+        has no command for it) is not attempted at all, so it never lands
+        in ``abortErrors`` -- unsupported is not failed.
+        """
+        if not self._abort_applicable(operation):
+            return None
         outcome = await self._settle(token, operation, deadline_monotonic, is_current)
         if outcome is None:
             return None
         if outcome.result is ActuationResult.ACCEPTED:
             return None
         return AbortFailed(token, operation, outcome.error or outcome.result.value)
+
+    def _abort_applicable(self, operation: AbortOperation) -> bool:
+        """Whether the actuator declares *operation* executable (default True)."""
+        if isinstance(self._actuator, AbortApplicability):
+            return self._actuator.abort_applicable(operation)
+        return True
 
     async def _settle(
         self,

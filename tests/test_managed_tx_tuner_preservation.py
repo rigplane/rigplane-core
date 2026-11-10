@@ -5,7 +5,9 @@ lifecycle exit -- an explicit release (``force_off``), a normal shutdown, an
 owner disconnect, or the transport detach behind disconnect/soft-disconnect
 and reconnect switches (``transport_unavailable``) -- must not switch that
 tuner off. Every implicit full-force abort family dispatches FORCE_RECEIVE
-and STOP_CW only, and no lifecycle route reads the tuner to decide anything.
+and STOP_CW only -- STOP_CW solely on a radio whose profile declares the
+abort's command (MOR-4352; the IC-7610 and FTX-1 here both do) -- and no
+lifecycle route reads the tuner to decide anything.
 
 Expected RED on the current tree: the implicit full-force family is
 dispatched per operation (``managed_tx_authority.py:

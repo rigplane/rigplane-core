@@ -2003,6 +2003,28 @@ class YaesuCatRadio:
         """
         await self._write("set_ptt", state="1" if on else "0")
 
+    # The profile command each managed-release abort executes (MOR-4352).
+    # ``actuate`` resolves its abort command NAMES from this table -- the
+    # CAT "KY P1 0" stop for STOP_CW (2508-C printed p.18), the
+    # ``set_tuner`` state-0 write for STOP_TUNE -- and ``abort_applicable``
+    # checks the same names, so the executed command and the applicability
+    # decision are one mapping, never two.
+    _ABORT_COMMANDS: Mapping[AbortOperation, str] = {
+        AbortOperation.STOP_CW: "send_cw",
+        AbortOperation.STOP_TUNE: "set_tuner",
+    }
+
+    def abort_applicable(self, operation: AbortOperation) -> bool:
+        """Whether the profile declares the command *operation* executes.
+
+        MOR-4352: an abort the radio cannot execute is not applicable --
+        the effect lane never schedules it and it never surfaces as an
+        ``abortErrors`` entry. Decided by :meth:`supports_command` over
+        ``_ABORT_COMMANDS``, the same names ``actuate`` writes.
+        """
+        command = self._ABORT_COMMANDS.get(operation)
+        return command is not None and self.supports_command(command)
+
     async def actuate(
         self,
         token: EffectToken,
@@ -2021,22 +2043,21 @@ class YaesuCatRadio:
                 {"state": "0"},
                 ExchangeTier.FORCE_RELEASE,
             )
-        elif operation is AbortOperation.STOP_CW:
-            # KY P1 P2 with P2 0 = STOP (CAT 2508-C printed p.18), MOR-3678.
-            # Only a stop the transport lets out ends earlier sends; a
-            # stale or superseded one leaves them alone (#4317 review).
-            on_committed = self._end_earlier_cw_text_sends
-            command, params, tier = (
-                "send_cw",
-                {"type": self._cw_text_memory_type_code(), "mem": "0"},
-                ExchangeTier.ABORT,
-            )
-        elif operation is AbortOperation.STOP_TUNE:
-            command, params, tier = (
-                "set_tuner",
-                {"src": "0", "type": "0", "state": "0"},
-                ExchangeTier.ABORT,
-            )
+        elif (abort := self._ABORT_COMMANDS.get(operation)) is not None:
+            # MOR-4352 review round 1: the command NAME comes from
+            # ``_ABORT_COMMANDS`` -- the same entry ``abort_applicable``
+            # answers from -- so what the lane schedules and what the
+            # profile declares can never diverge. Parameters, the ABORT
+            # tier and the CW commit callback stay per-operation.
+            command, tier = abort, ExchangeTier.ABORT
+            if operation is AbortOperation.STOP_CW:
+                # KY P1 P2 with P2 0 = STOP (CAT 2508-C printed p.18), MOR-3678.
+                # Only a stop the transport lets out ends earlier sends; a
+                # stale or superseded one leaves them alone (#4317 review).
+                on_committed = self._end_earlier_cw_text_sends
+                params = {"type": self._cw_text_memory_type_code(), "mem": "0"}
+            else:
+                params = {"src": "0", "type": "0", "state": "0"}
         else:
             return ActuationResult.REJECTED
 

@@ -651,6 +651,12 @@ get_nr_level     = [0x14, 0x06]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via
 set_nr_level     = [0x14, 0x06]  # source: Radioddity X6200 CI-V V1.0.6 p.7
 get_cw_pitch     = [0x14, 0x09]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md; see also [controls.cw_pitch] above)
 set_cw_pitch     = [0x14, 0x09]  # source: Radioddity X6200 CI-V V1.0.6 p.7
+# No CI-V CW keying: the documented command table (V1.0.6 Table 1,
+# pp.5-9, the complete opcode list) has no CW send/stop row of any kind,
+# so both directions are formally absent (MOR-4352) and the name is
+# never a "neither declared nor declared absent" state-3 gap.
+send_cw          = { absent = "Radioddity X6200 CI-V V1.0.6 Table 1 (pp.5-9, the complete documented opcode list) has no CI-V CW keying row of any kind -- documented-absent, not live-confirmed (MOR-4352)" }
+stop_cw          = { absent = "Radioddity X6200 CI-V V1.0.6 Table 1 (pp.5-9, the complete documented opcode list) has no CI-V CW keying row of any kind -- documented-absent, not live-confirmed (MOR-4352)" }
 get_rf_power     = [0x14, 0x0A]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
 set_rf_power     = [0x14, 0x0A]  # source: Radioddity X6200 CI-V V1.0.6 p.7
 get_mic_gain     = [0x14, 0x0B]  # source: Radioddity X6200 CI-V V1.0.6 p.6 (via docs/validation/cat-audits/x6200.md)
