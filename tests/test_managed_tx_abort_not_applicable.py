@@ -38,6 +38,7 @@ record no CW-keying absence.
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,10 @@ from rigplane.commands import parse_civ_frame
 from rigplane.core.state_store import StateStore
 from rigplane.profiles import get_radio_profile
 from rigplane.runtime.managed_tx_authority import ManagedTxProjection
-from rigplane.runtime.managed_tx_composition import ManagedTxComposition
+from rigplane.runtime.managed_tx_composition import (
+    ManagedTxComposition,
+    install_managed_tx_composition,
+)
 from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -58,7 +62,13 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxIntentKind,
     ManagedTxOutcome,
 )
+from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.web_startup import attach_managed_tx_composition
 from test_icom7610_serial_radio import _FakeSerialCivLink
+from test_managed_tx_production_fake_wire import (
+    _drain_managed_positive_queue,
+    _http_tx_command,
+)
 
 _TMP_CONFIG = "mor4352-tot.json"
 
@@ -208,6 +218,126 @@ async def test_g7250_normal_unkey_never_schedules_an_abort(
     assert projection.state.intent.kind is ManagedTxIntentKind.RX
     assert projection.state.abort_errors == ()
     assert _stop_cw_frames(list(link.sent_frames)) == []
+
+
+# ---------------------------------------------------------------------------
+# The same contract through the REAL HTTP product boundary
+# ---------------------------------------------------------------------------
+
+
+async def _await_settled_kind(
+    composition: ManagedTxComposition, kind: ManagedTxIntentKind
+) -> None:
+    """Wait until the authority holds *kind* with no pending effect."""
+
+    async def wait() -> None:
+        while True:
+            state = (await composition.authority.snapshot()).state
+            if state.pending_effect is None and state.intent.kind is kind:
+                return
+            await asyncio.sleep(0)
+
+    await asyncio.wait_for(wait(), 2.0)
+
+
+async def _managed_tx_http_document(server: WebServer) -> dict[str, Any]:
+    """``GET /api/v1/managed-transmit`` through the real HTTP handler."""
+    writer = bytearray()
+
+    class _Sink:
+        def write(self, data: bytes) -> None:
+            writer.extend(data)
+
+        async def drain(self) -> None:
+            return None
+
+    await server._handle_http(  # noqa: SLF001
+        _Sink(),  # type: ignore[arg-type]
+        "GET",
+        "/api/v1/managed-transmit",
+    )
+    status = int(writer.split(b" ", 2)[1])
+    assert status == 200
+    return json.loads(writer.split(b"\r\n\r\n", 1)[1] or b"{}")
+
+
+async def _released_over_http(
+    radio: _IcomSerialRadioBase,
+    link: _ManagedReleaseCivLink,
+    tmp_path: Path,
+) -> tuple[dict[str, Any], list[bytes]]:
+    """``transmit_on`` then ``force_off`` through the real HTTP handlers.
+
+    The composition, the WebServer, the managed-TX HTTP command/status
+    handlers and the rig profile are all the production ones; only the
+    CI-V link underneath the radio is the house fake. The composition is
+    installed before ``connect`` because the serial runtime requires it.
+    """
+    composition = ManagedTxComposition(radio, config_path=tmp_path / _TMP_CONFIG)
+    install_managed_tx_composition(radio, composition)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
+    server.command_queue.bind_connection_generation(lambda: radio)
+    await radio.connect()
+    drain = asyncio.create_task(_drain_managed_positive_queue(server))
+    try:
+        await composition.transport_ready(radio)
+        await composition.bind_state_store(server.command_state_store)
+        attach_managed_tx_composition(server, composition)
+        await _http_tx_command(server, "transmit_on")
+        await _await_settled_kind(composition, ManagedTxIntentKind.TRANSMIT)
+        await _http_tx_command(server, "force_off")
+        await _await_settled_kind(composition, ManagedTxIntentKind.RX)
+        document = await _managed_tx_http_document(server)
+        frames = list(link.sent_frames)
+    finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+        await composition.shutdown(asyncio.Event())
+        await radio.disconnect()
+    return document, frames
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["G7250", "X6200"])
+async def test_http_full_force_release_reports_no_abort_error(
+    tmp_path: Path, model: str
+) -> None:
+    """The Pro tool's own path: POST transmit_on, POST force_off, GET status.
+
+    RED on the pre-fix src (2f6a39fd3): the same run the live G7250 hit
+    through the HTTP API settled with ``abortErrors: [stop_cw rejected]``
+    in the status document.
+    """
+    link = _ManagedReleaseCivLink()
+    radio = XieguSerialRadio(device="/dev/ttyUSB0", model=model, civ_link=link)
+    radio._civ_get_timeout = 0.2
+
+    document, frames = await _released_over_http(radio, link, tmp_path)
+
+    managed = document["managedTransmit"]
+    assert managed["intent"] == {"kind": "rx"}
+    assert managed["releaseRequired"] is False
+    assert managed["abortErrors"] == []
+    assert _stop_cw_frames(frames) == []
+
+
+@pytest.mark.asyncio
+async def test_http_ic705_full_force_release_still_sends_stop_cw(
+    tmp_path: Path,
+) -> None:
+    link = _ManagedReleaseCivLink()
+    radio = Ic705SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+
+    document, frames = await _released_over_http(radio, link, tmp_path)
+
+    managed = document["managedTransmit"]
+    assert managed["intent"] == {"kind": "rx"}
+    assert managed["releaseRequired"] is False
+    # A fire-and-forget abort the profile can build is accepted, not an
+    # abortError, and the profile's own STOP_CW bytes reach the wire.
+    assert managed["abortErrors"] == []
+    assert bytes(radio._commands.stop_cw(to_addr=radio._radio_addr)) in frames
 
 
 # ---------------------------------------------------------------------------
