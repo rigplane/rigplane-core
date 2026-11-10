@@ -618,43 +618,56 @@ def _parse_probe_response(port: str, baud: int, data: bytes) -> CivProbeResult |
 
 
 # ---------------------------------------------------------------------------
-# Xiegu model-ID probe (X6200 vs IC-705 disambiguation at CI-V address 0xA4)
+# Xiegu model-ID probe (Xiegu-vs-Icom disambiguation; see resolve_civ_radio_identity)
 # ---------------------------------------------------------------------------
 
-#: CI-V *get Xiegu model ID* command (``0x1D 0x19``), addressed to a radio at
-#: 0xA4 from the controller (0xE0). Documented for the X6200 (Radioddity
-#: *X6200 CI-V implementation V1.0.6*, PDF page 9); Icom radios at the same
-#: address (IC-705) have no such opcode and answer with a NAK.
-_XIEGU_MODEL_ID_CMD = bytes([0xFE, 0xFE, 0xA4, 0xE0, 0x1D, 0x19, 0xFD])
+
+def _xiegu_model_id_cmd(address: int) -> bytes:
+    """CI-V *get Xiegu model ID* frame (``0x1D 0x19``) for a radio at
+    *address*.
+
+    Documented for the X6200 at 0xA4 (Radioddity *X6200 CI-V
+    implementation V1.0.6*, PDF page 9); the G7250 answers the opcode at
+    any address and echoes the asked address as its own (LIVE bench audit
+    2026-11-09, MOR-4352), so the echo path asks at 0x00. Icom radios at
+    the same address (IC-705) have no such opcode and answer with a NAK.
+    """
+    return bytes([0xFE, 0xFE, address, 0xE0, 0x1D, 0x19, 0xFD])
 
 
 async def probe_xiegu_model_id(
     port: str,
     baud: int,
+    address: int,
     timeout: float = 0.5,
     *,
     _open_serial: _OpenSerial | None = None,
-) -> bool:
-    """Return ``True`` if *port* answers the Xiegu model-ID query (0x1D 0x19).
+) -> bytes | None:
+    """Ask the Xiegu model-ID query (``0x1D 0x19``) at *address*; return the
+    reply's model-id bytes.
 
-    Disambiguates the Xiegu X6200 from the Icom IC-705: both default to CI-V
-    address 0xA4, but only the Xiegu implements ``0x1D 0x19`` (Radioddity
-    X6200 CI-V V1.0.6, PDF page 9). A valid (non-NAK) reply positively
-    identifies a Xiegu, regardless of the USB bridge it enumerates behind —
-    so it survives USB-chip changes that the hwid fingerprint would miss
-    (MOR-226). Safe to send to an IC-705: standard Icom CI-V NAKs unknown
-    commands rather than wedging.
+    Disambiguates Xiegu radios from Icom at shared CI-V addresses: only the
+    Xiegu firmware implements ``0x1D 0x19`` (Radioddity X6200 CI-V V1.0.6,
+    PDF page 9; the G7250 answers it too, LIVE 2026-11-09). A valid
+    (non-NAK) reply positively identifies a Xiegu regardless of the USB
+    bridge it enumerates behind — so it survives USB-chip changes the hwid
+    fingerprint misses (MOR-226). Safe to send to an IC-705: standard Icom
+    CI-V NAKs unknown commands rather than wedging.
 
     Args:
         port: Serial device path.
         baud: Baud rate to use (the rate the CI-V probe already succeeded at).
+        address: CI-V address to ask (0xA4 for the family default; 0x00 for
+            a radio that echoed the broadcast address — the G7250 answers
+            any address, LIVE G7250 2026-11-09, MOR-4352).
         timeout: Read timeout in seconds.
         _open_serial: Overrides the open step of :func:`rigplane.core.serial_open.open_serial_port`;
             post-open control-line deassert still applies (used in tests).
 
     Returns:
-        ``True`` on a valid ``0x1D 0x19`` reply, ``False`` on NAK, timeout,
-        unexpected data, or open failure.
+        The model-id payload bytes (e.g. ``b"\x72\x50"``) on a valid
+        ``0x1D 0x19`` reply, ``None`` on NAK, timeout, unexpected data, or
+        open failure.
     """
     logger.debug("probe_xiegu_model_id: opening %s @ %d", port, baud)
     try:
@@ -665,7 +678,7 @@ async def probe_xiegu_model_id(
         # Expected during a scan: port busy, absent, or refusing the baud
         # rate. pyserial's SerialException subclasses OSError.
         logger.debug("probe_xiegu_model_id: cannot open %s @ %d", port, baud)
-        return False
+        return None
     except Exception as exc:
         # Unexpected: programming error or broken environment. Not a
         # "cannot open" — make it visible at default logging.
@@ -677,10 +690,10 @@ async def probe_xiegu_model_id(
             exc,
             exc_info=True,
         )
-        return False
+        return None
 
     try:
-        writer.write(_XIEGU_MODEL_ID_CMD)
+        writer.write(_xiegu_model_id_cmd(address))
         await writer.drain()
 
         buf = bytearray()
@@ -698,7 +711,7 @@ async def probe_xiegu_model_id(
             if buf.find(response_preamble) != -1:
                 break
 
-        return _is_xiegu_model_id_reply(port, bytes(buf))
+        return _parse_xiegu_model_id_reply(port, bytes(buf))
     finally:
         logger.debug("probe_xiegu_model_id: closing %s", port)
         writer.close()
@@ -706,41 +719,42 @@ async def probe_xiegu_model_id(
         logger.debug("probe_xiegu_model_id: closed %s", port)
 
 
-def _is_xiegu_model_id_reply(port: str, data: bytes) -> bool:
-    """Return ``True`` if *data* holds a valid CI-V ``0x1D 0x19`` reply.
+def _parse_xiegu_model_id_reply(port: str, data: bytes) -> bytes | None:
+    """Return the model-id payload of a valid CI-V ``0x1D 0x19`` reply in
+    *data*, or ``None``.
 
     Expected frame: ``FE FE E0 <addr> 1D 19 <model...> FD``. A NAK collision
-    (``FE FE E0 <addr> FA FD``) or any other command echo means the radio does
-    not implement the Xiegu opcode (i.e. it is an IC-705, not an X6200).
+    (``FE FE E0 <addr> FA FD``) or any other command echo means the radio
+    does not implement the Xiegu opcode (i.e. it is an IC-705, not a Xiegu).
     """
     search = bytes([0xFE, 0xFE, 0xE0])
     idx = data.find(search)
     if idx == -1:
         logger.debug("probe_xiegu_model_id: no reply from %s (not a Xiegu)", port)
-        return False
+        return None
 
     frame = data[idx:]
     if len(frame) < 6:
         logger.debug("probe_xiegu_model_id: reply too short from %s", port)
-        return False
+        return None
 
     if frame[4] == 0xFA:
         logger.debug("probe_xiegu_model_id: %s NAKed 0x1D 0x19 (not a Xiegu)", port)
-        return False
+        return None
     if frame[4] != 0x1D or frame[5] != 0x19:
         logger.debug(
             "probe_xiegu_model_id: unexpected reply from %s: %s",
             port,
             frame[:8].hex(),
         )
-        return False
+        return None
 
     end_idx = frame.find(0xFD, 6)
     model = bytes(frame[6:end_idx]) if end_idx != -1 else b""
     logger.info(
         "probe_xiegu_model_id: %s is a Xiegu (model id %s)", port, model.hex() or "?"
     )
-    return True
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -1340,13 +1354,17 @@ async def resolve_civ_radio_identity(
     2. the X6200 USB-hardware fingerprint override at the shared 0xA4
        address (MOR-170), when *port* metadata is supplied;
     3. the Xiegu-only ``0x1D 0x19`` model-ID opcode when the fingerprint
-       is absent or inconclusive at 0xA4 (MOR-226) — the one extra probe,
-       never sent to radios outside 0xA4, with *port*/*baud* taken from
-       *civ* and the same ``_open_serial`` injection as the CI-V probe.
+       is absent or inconclusive at 0xA4 (MOR-226), and at 0x00 for a
+       radio that answered the broadcast probe by echoing the broadcast
+       address (MOR-4352) — the one extra probe, sent to no other address,
+       with *port*/*baud* taken from *civ* and the same ``_open_serial``
+       injection as the CI-V probe. The reply is mapped to a profile
+       through the profiles' ``[radio].xiegu_model_id`` data.
 
     Callers own the address/model *match* decision; this helper only
     names what answered.
     """
+    from rigplane.profiles import profile_by_xiegu_model_id
     from rigplane.radios import CIV_PROFILE_MAP, identify_radio
 
     model = identify_radio(civ.address, civ.model_id)
@@ -1356,14 +1374,32 @@ async def resolve_civ_radio_identity(
     xiegu_override = (
         _resolve_xiegu_x6200_override(civ.address, port) if port is not None else None
     )
-    if xiegu_override is None and civ.address == 0xA4:
+    if xiegu_override is None and civ.address in (0xA4, 0x00):
         # When the USB fingerprint is missing or inconclusive at the shared
         # 0xA4 address, confirm via the Xiegu-only CI-V model-ID opcode
         # (0x1D 0x19) — survives future USB-chip changes the hwid
         # fingerprint misses and never mislabels an IC-705 (which NAKs the
         # opcode). MOR-226.
-        if await probe_xiegu_model_id(civ.port, civ.baud, _open_serial=_open_serial):
-            xiegu_override = ("X6200", "xiegu_x6200")
+        # MOR-4352 also asks at 0x00: a Xiegu that answered the broadcast
+        # probe by echoing the broadcast address (address 0x00 in *civ*,
+        # LIVE G7250 2026-11-09) is otherwise "Unknown (0x00)" — the address
+        # table cannot name it, but its 0x1D 0x19 reply can.
+        model_id = await probe_xiegu_model_id(
+            civ.port, civ.baud, civ.address, _open_serial=_open_serial
+        )
+        if model_id is not None:
+            # Data-driven mapping through the profiles' [radio]
+            # .xiegu_model_id (0x6200 -> X6200, 0x7250 -> G7250): no
+            # per-model branch here, and an unlisted Xiegu is named as
+            # what it is instead of being mislabeled X6200 (MOR-4352).
+            profile = profile_by_xiegu_model_id(model_id)
+            if profile is not None:
+                xiegu_override = (profile.model, profile.id)
+            else:
+                xiegu_override = (
+                    f"Unknown Xiegu (model id {model_id.hex()})",
+                    "",
+                )
     if xiegu_override is not None:
         model, profile_id = xiegu_override
     return model, profile_id

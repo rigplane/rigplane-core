@@ -22,6 +22,7 @@ from typing import Iterable
 
 EXPECTED_PROFILES: dict[str, tuple[str, str]] = {
     "ftx1.toml": ("yaesu_ftx1", "FTX-1"),
+    "g7250.toml": ("xiegu_g7250", "G7250"),
     "ic705.toml": ("icom_ic705", "IC-705"),
     "ic7300.toml": ("icom_ic7300", "IC-7300"),
     "ic7300mk2.toml": ("icom_ic7300mk2", "IC-7300MK2"),

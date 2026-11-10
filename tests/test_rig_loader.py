@@ -3387,6 +3387,7 @@ _SHIPPED_RIG_TOMLS = sorted(
 # band: its author must classify every row here first.
 _SHIPPED_RX_ONLY_BANDS = {
     "ftx1.toml": (),
+    "g7250.toml": (),
     "ic705.toml": ("2200m", "630m", "WFM", "Air", "Gen"),
     "ic7300.toml": (),
     "ic7300mk2.toml": (),

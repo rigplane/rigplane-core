@@ -619,6 +619,14 @@ class RadioProfile:
     # discovery probes these bauds first (:func:`preferred_serial_bauds`).
     # Keyword-only and appended so no positional argument shifts.
     default_baud: int = field(default=19200, kw_only=True)
+    # MOR-4352: ``[radio].xiegu_model_id`` — the integer whose big-endian
+    # bytes the radio answers to the Xiegu-only CI-V 0x1D 0x19 model-ID
+    # query (0x6200 = X6200's ``62 00``, 0x7250 = G7250's ``72 50``).
+    # ``None`` on every non-Xiegu profile. Read by
+    # :func:`profile_by_xiegu_model_id` so discovery maps a reply to a
+    # profile through profile data alone — no per-model branches.
+    # Keyword-only and appended so no positional argument shifts.
+    xiegu_model_id: int | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:
@@ -899,6 +907,24 @@ def preferred_serial_bauds(protocol_type: str) -> tuple[int, ...]:
         if profile.protocol_type == protocol_type
     }
     return tuple(sorted(bauds, reverse=True))
+
+
+def profile_by_xiegu_model_id(model_id: bytes) -> RadioProfile | None:
+    """The loaded profile whose ``xiegu_model_id`` matches *model_id*.
+
+    ``model_id`` is the payload of a CI-V ``0x1D 0x19`` reply (e.g.
+    ``b"\x72\x50"``). Returns ``None`` when no loaded profile declares a
+    matching value — an unlisted Xiegu stays unnamed rather than falling
+    back to a known profile. Data-driven (MOR-4352): adding a Xiegu radio
+    means adding ``xiegu_model_id`` to its TOML, nothing here.
+    """
+    if not model_id:
+        return None
+    value = int.from_bytes(model_id, "big")
+    for profile in _ensure_loaded().values():
+        if profile.xiegu_model_id == value:
+            return profile
+    return None
 
 
 def resolve_radio_profile(
