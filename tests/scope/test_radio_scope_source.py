@@ -336,3 +336,228 @@ async def test_off_band_fixed_request_uses_center_uncovered_fallback():
     grant = await source.set_view(View(7_050_000, 7_150_000), 0)
     assert grant.coverage == Coverage(13_600_000, 14_600_000)
     assert writer.writes[-1] == (14_100_000, 500000, 0)
+
+
+class _SimRadio:
+    """In-test stand-in for the radio behind a ScopeSession.
+
+    MOR-4385 B2: tests mutate ``span_index``/``frequency``/``fixed``
+    directly — never through Core — to model a front-panel change,
+    another controller, or another Core on the same radio.
+    """
+
+    def __init__(self, profile, *, start_span_hz=250_000):
+        self.presets = profile.scope_span_presets_hz
+        self.span_index = self.presets.index(start_span_hz)
+        self.frequency = 14_100_000
+        self.mode = 0
+        self.fixed_edges = (14_200_000, 14_300_000)
+        self.writes: list = []
+
+    async def read(self):
+        from rigplane.runtime.scope_session import ScopeState
+
+        return ScopeState(False, True, self.mode, self.span_index, 1)
+
+    async def write(self, name, value, receiver):
+        self.writes.append((name, value, receiver))
+        if name == "span":
+            self.span_index = value
+        elif name == "mode":
+            self.mode = value
+        elif name == "fixed_edge":
+            self.fixed_edges = (value.start_hz, value.end_hz)
+
+    async def read_fixed(self, range_index, edge):
+        from rigplane.core.types import ScopeFixedEdge
+
+        start_hz, end_hz = self.fixed_edges
+        return ScopeFixedEdge(range_index, edge, start_hz, end_hz)
+
+    def tuned(self, receiver):
+        return float(self.frequency)
+
+
+def _sim_session(sim, profile):
+    from rigplane.runtime.scope_session import ScopeSession
+
+    return ScopeSession(
+        sim.read,
+        sim.write,
+        sim.read_fixed,
+        None,
+        sim.tuned,
+        spans=profile.scope_span_presets_hz,
+        ready=True,
+    )
+
+
+def _sim_hub(source):
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription as _Subscription
+
+    encoded = []
+
+    def encode(frame):
+        encoded.append(frame)
+        return b"frame"
+
+    hub = ScopeHub(encoder=encode)
+    hub.register("radio", source)
+    return hub, encoded, _Subscription
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7300"])
+async def test_external_span_change_is_adopted_without_writes(model):
+    """MOR-4385 B2: another controller moves the radio ±50k → ±100k.
+
+    The SPAN label shows the radio's ±100k value, the granted view
+    covers it with no hatch, and Core writes nothing back (no loop).
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+    try:
+        assert sim.writes
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        first = encoded[-1]
+        assert (first.view_start_hz, first.view_end_hz) == (14_050_000, 14_150_000)
+        assert (first.coverage_start_hz, first.coverage_end_hz) == (
+            14_050_000,
+            14_150_000,
+        )
+        sim.writes.clear()
+        new_index = profile.scope_span_presets_hz.index(100_000)
+        sim.span_index = new_index
+        session.observe("span", new_index, 0)
+        source.feed_frame(ScopeFrame(0, 0, 14_000_000, 14_200_000, bytes(475), False))
+        await sub.receive()
+        adopted = encoded[-1]
+        assert (adopted.view_start_hz, adopted.view_end_hz) == (14_000_000, 14_200_000)
+        assert (adopted.coverage_start_hz, adopted.coverage_end_hz) == (
+            14_000_000,
+            14_200_000,
+        )
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7300"])
+async def test_external_centre_change_is_adopted_without_writes(model):
+    """MOR-4385 B2: the radio retunes behind our back while Core's VFO
+    reading is still stale — the granted view still follows the frames
+    the radio actually streams, with no writes back.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        source.feed_frame(ScopeFrame(0, 0, 14_150_000, 14_250_000, bytes(475), False))
+        await sub.receive()
+        adopted = encoded[-1]
+        assert (adopted.view_start_hz, adopted.view_end_hz) == (14_150_000, 14_250_000)
+        assert (adopted.coverage_start_hz, adopted.coverage_end_hz) == (
+            14_150_000,
+            14_250_000,
+        )
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+async def test_external_vfo_change_is_adopted_without_writes():
+    """MOR-4385 B2: the radio VFO moves and Core's reading caught up —
+    the granted view follows the new centre and Core writes nothing.
+    """
+    profile = load_rig(Path("rigs/ic705.toml")).to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        sim.frequency = 14_200_000
+        source.feed_frame(ScopeFrame(0, 0, 14_150_000, 14_250_000, bytes(475), False))
+        await sub.receive()
+        adopted = encoded[-1]
+        assert (adopted.view_start_hz, adopted.view_end_hz) == (14_150_000, 14_250_000)
+        assert (adopted.coverage_start_hz, adopted.coverage_end_hz) == (
+            14_150_000,
+            14_250_000,
+        )
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+async def test_external_fixed_change_is_adopted_without_writes():
+    """MOR-4385 B2: the radio's fixed edges change behind our back — the
+    grant keeps the user's crop, covers it with no hatch, and Core
+    writes nothing back.
+    """
+    from rigplane.core.types import ScopeFixedEdge
+
+    profile = load_rig(Path("rigs/ic7610.toml")).to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, View(14_180_000, 14_200_000), 475, 20)
+    )
+    try:
+        assert ("mode", 1, 0) in sim.writes
+        source.feed_frame(ScopeFrame(0, 1, 14_180_000, 14_200_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        new_edges = ScopeFixedEdge(6, 1, 14_180_000, 14_320_000)
+        sim.fixed_edges = (new_edges.start_hz, new_edges.end_hz)
+        session.observe("fixed_edge", new_edges, 0)
+        source.feed_frame(ScopeFrame(0, 1, 14_180_000, 14_320_000, bytes(475), False))
+        await sub.receive()
+        adopted = encoded[-1]
+        assert (adopted.view_start_hz, adopted.view_end_hz) == (14_180_000, 14_200_000)
+        assert (adopted.coverage_start_hz, adopted.coverage_end_hz) == (
+            14_180_000,
+            14_200_000,
+        )
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+async def test_observed_external_span_is_adopted_never_reasserted():
+    """MOR-4385 B2: a radio-reported span differing from our last write
+    becomes the desired state — reconcile never writes our stale span.
+    """
+    profile = load_rig(Path("rigs/ic705.toml")).to_profile()
+    sim = _SimRadio(profile, start_span_hz=100_000)
+    session = _sim_session(sim, profile)
+    await session.set_output(True)
+    await session.set_center(14_100_000, 50_000, 0)
+    assert ("span", profile.scope_span_presets_hz.index(50_000), 0) in sim.writes
+    sim.writes.clear()
+    new_index = profile.scope_span_presets_hz.index(100_000)
+    sim.span_index = new_index
+    session.observe("span", new_index, 0)
+    await session.reconcile()
+    assert sim.writes == []
+    assert session.observed is not None and session.observed.span == new_index
