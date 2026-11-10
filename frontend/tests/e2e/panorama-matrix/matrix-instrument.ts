@@ -10,7 +10,8 @@ import type { Page } from '@playwright/test';
 import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeFrame } from '../../../src/lib/runtime/adapters/scope-adapter';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
-import type { WsCommand } from '../../../src/lib/types/protocol';
+import type { WsCommand, WsIncoming } from '../../../src/lib/types/protocol';
+import type { CommandErrorObservation } from './matrix-contract';
 
 export interface AxisSample { readonly atMs: number; readonly labels: readonly string[] }
 export interface WaterfallRowSummary {
@@ -123,6 +124,7 @@ export interface PageObservations {
   readonly grants: ScopeGranted[];
   readonly frames: ObservedFrame[];
   readonly commands: WsCommand[];
+  readonly commandErrors: CommandErrorObservation[];
 }
 
 export function observePage(page: Page, observations: PageObservations): void {
@@ -133,6 +135,28 @@ export function observePage(page: Page, observations: PageObservations): void {
         if (typeof payload === 'string') {
           const command = JSON.parse(payload) as WsCommand;
           if (command.type === 'cmd') observations.commands.push(command);
+        }
+      });
+      // Command outcomes: a refused command (the ack-tracker false NAK
+      // surfaces here) arrives as a failed response or an error message.
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload !== 'string') return;
+        let incoming: WsIncoming;
+        try {
+          incoming = JSON.parse(payload) as WsIncoming;
+        } catch {
+          return;
+        }
+        if (incoming.type === 'response' && incoming.ok === false) {
+          observations.commandErrors.push({
+            id: incoming.id ?? null,
+            message: incoming.error ?? incoming.message ?? 'command failed',
+          });
+        } else if (incoming.type === 'error') {
+          observations.commandErrors.push({
+            id: incoming.id ?? null,
+            message: incoming.message,
+          });
         }
       });
     }

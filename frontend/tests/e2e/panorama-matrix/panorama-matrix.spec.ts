@@ -34,6 +34,36 @@ interface Receipts {
   readonly naks: NakReceipt[];
 }
 
+interface RefusedFrame {
+  readonly cmd: number;
+  readonly sub: number | null;
+  /** A bare read (no data bytes): tolerated as a simulator gap. Anything longer refused is a write/action. */
+  readonly bareRead: boolean;
+  readonly describe: string;
+}
+
+/** Parse a refused CI-V frame (FE FE TO FR CMD [SUB] [DATA…] FD) from its hex. Null when unparseable. */
+function parseRefusedFrame(civHex: string): RefusedFrame | null {
+  let bytes: Uint8Array;
+  try {
+    const clean = civHex.trim();
+    if (clean.length === 0 || clean.length % 2 !== 0) return null;
+    bytes = Uint8Array.from({ length: clean.length / 2 }, (_, i) => Number.parseInt(clean.slice(2 * i, 2 * i + 2), 16));
+  } catch {
+    return null;
+  }
+  if (bytes.length < 6 || bytes[0] !== 0xfe || bytes[1] !== 0xfe || bytes[bytes.length - 1] !== 0xfd) return null;
+  const cmd = bytes[4];
+  const inner = bytes.slice(5, -1);
+  const sub = inner.length >= 1 ? inner[0] : null;
+  // Bare command (FE FE TO FR CMD FD) or command+sub only: a read. The
+  // 0x07 select form (CMD + one D0/D1/D2 byte) is the same length but is
+  // connect-time and therefore outside every path window.
+  const bareRead = inner.length <= 1;
+  const describe = `cmd=0x${cmd.toString(16)}${sub === null ? '' : ` sub=0x${sub.toString(16)}`} len=${bytes.length}`;
+  return { cmd, sub, bareRead, describe };
+}
+
 async function readReceipts(evidencePath: string): Promise<Receipts> {
   const read = async <T>(file: string, parse: (line: string) => T): Promise<T[]> => {
     try {
@@ -83,13 +113,13 @@ async function runCell(cell: MatrixCell, page: import('@playwright/test').Page, 
   const radio = MATRIX_RADIOS[cell.radio];
   const port = portBase + info.workerIndex * 100 + (portCounter++ % 90);
   const evidencePath = info.outputPath('radio.jsonl');
-  const serverArgs = ['--model', radio.model, '--evidence', evidencePath, '--signal-amplitude', '235', ...radio.serverArgs];
+  const serverArgs = ['--model', radio.model, '--evidence', evidencePath, '--signal-amplitude', '235', ...radio.serverArgs, ...cell.serverArgs];
   let server: JourneyServerHandle | null = null;
   const startServer = async (): Promise<JourneyServerHandle> =>
     startJourneyServer(port, 14_250_000, serverArgs, 'tests/e2e/panorama_web_server.py');
   server = await startServer();
 
-  const observations: PageObservations = { subscriptions: [], grants: [], frames: [], commands: [] };
+  const observations: PageObservations = { subscriptions: [], grants: [], frames: [], commands: [], commandErrors: [] };
   try {
     await page.addInitScript(MATRIX_INIT);
     observePage(page, observations);
@@ -116,6 +146,7 @@ async function runCell(cell: MatrixCell, page: import('@playwright/test').Page, 
       source: radio.source,
       spanHz: cell.spanHz,
       observations,
+      evidencePath,
       restartServer: async () => {
         await server?.kill();
         server = await startServer();
@@ -346,22 +377,55 @@ function evaluateInvariants(input: EvaluationInput): InvariantResult[] {
     results.push({
       invariant: 4, status: ok ? 'pass' : 'fail',
       summary: `${writes.length} scope write(s) during the path (${writes.map(write => `0x${write.sub.toString(16)}:${write.span}`).join(' ') || 'none'})`,
-      evidence: { writes: JSON.stringify(writes), expectation: JSON.stringify(expectation) },
+      evidence: {
+        writes: JSON.stringify(writes), expectation: JSON.stringify(expectation),
+        externalSteps: report.external ? JSON.stringify(report.external) : null,
+      },
     });
   }
 
   // Invariant 5 — no false NAKs. Only NAKs answering a real CI-V frame
   // count (the connection choreography also produces NAK-shaped replies to
-  // non-CI-V handshake packets, which the client tolerates by design).
+  // non-CI-V handshake packets, which the client tolerates by design). A
+  // bare-read refusal is a simulator gap — the simulator NAKs background
+  // poll reads it does not model, which the real radio answers — and is
+  // recorded, not failed; a refused write or action is never a gap.
+  // The ack-tracker cell additionally demands its armed refusal to have
+  // flown (scenario triggered) with no refused writes and no command
+  // errors surfaced to the client.
   {
     const naks = input.pathNaks.filter(nak => nak.civHex.length > 0);
     const handshake = input.pathNaks.length - naks.length;
+    const refused = naks.map(nak => parseRefusedFrame(nak.civHex)).filter(frame => frame !== null);
+    const refusedWrites = refused.filter(frame => !frame.bareRead);
+    const expectation = report.naks ?? { kind: 'reads-tolerated' };
+    const commandErrors = report.commandErrors ?? [];
+    let ok: boolean;
+    let summary: string;
+    if (expectation.kind === 'armed-refusal') {
+      const armed = refused.filter(frame =>
+        frame.cmd === expectation.cmd && (expectation.sub === null || frame.sub === expectation.sub));
+      ok = armed.length >= 1 && refusedWrites.length === 0 && commandErrors.length === 0;
+      summary = ok
+        ? `${armed.length} armed refusal(s) flew, no refused writes, no command errors (${naks.length} bare-read refusals tolerated, ${handshake} handshake)`
+        : `armed refusal ${expectation.cmd.toString(16)}:${expectation.sub?.toString(16) ?? '-'} seen ${armed.length}x, refused writes ${refusedWrites.length}, command errors ${commandErrors.length}`;
+    } else {
+      ok = refusedWrites.length === 0;
+      summary = ok
+        ? `no refused writes (${naks.length} bare-read refusals tolerated, ${handshake} handshake)`
+        : `${refusedWrites.length} refused write(s): ${refusedWrites.slice(0, 5).map(frame => frame.describe).join(' ')}`;
+    }
     results.push({
-      invariant: 5, status: naks.length === 0 ? 'pass' : 'fail',
-      summary: naks.length === 0
-        ? `no CI-V NAKs from the simulator (${handshake} tolerated handshake NAKs)`
-        : `${naks.length} CI-V NAK(s): ${naks.slice(0, 5).map(nak => `0x${nak.civHex}`).join(' ')}`,
-      evidence: { civNaks: naks.length, handshakeNaks: handshake, naks: JSON.stringify(naks.slice(0, 20)) },
+      invariant: 5, status: ok ? 'pass' : 'fail',
+      summary,
+      evidence: {
+        civNaks: naks.length, handshakeNaks: handshake,
+        refusedReads: refused.length - refusedWrites.length,
+        refusedWrites: refusedWrites.length,
+        commandErrors: commandErrors.length,
+        commandErrorText: commandErrors.slice(0, 5).join(' | ') || null,
+        naks: JSON.stringify(naks.slice(0, 20)),
+      },
     });
   }
 

@@ -23,12 +23,15 @@ export type MatrixPath =
   | 'hold'
   | 'fullscreen'
   | 'resize-dpr'
-  | 'two-clients';
+  | 'two-clients'
+  | 'ack-tracker'
+  | 'external-change';
 
 export const MATRIX_PATHS: readonly MatrixPath[] = [
   'click-waterfall', 'click-spectrum', 'drag-pan', 'arrows', 'wheel', 'digit-wheel',
   'span-steps', 'ctr-fix', 'band-presets', 'zoom', 'band-change', 'mode-change',
   'reconnect', 'hold', 'fullscreen', 'resize-dpr', 'two-clients',
+  'ack-tracker', 'external-change',
 ];
 
 export type RadioKind = 'ic705' | 'ic7300' | 'ic9700' | 'ic7610' | 'audiofft' | 'iqfft';
@@ -64,6 +67,43 @@ export interface MatrixCell {
   readonly radio: RadioKind;
   readonly spanHz: number | null;
   readonly dpr: 1 | 2;
+  /** Extra simulator server args for this cell (ack-tracker slow-link mode). */
+  readonly serverArgs: readonly string[];
+}
+
+/**
+ * What invariant 5 ("no false NAKs") demands of the path window.
+ * The default tolerates bare-read refusals — the simulator NAKs background
+ * poll reads it does not model (the real radio answers them) — but a
+ * refused write or action is never a simulator gap and fails. The
+ * ack-tracker cell additionally demands its armed refusal to have flown
+ * (the scenario actually triggered) with no refused writes.
+ */
+export type NakExpectation =
+  | { kind: 'reads-tolerated' }
+  | { kind: 'armed-refusal'; cmd: number; sub: number | null };
+
+/** One server → client command failure observed on the control socket. */
+export interface CommandErrorObservation {
+  readonly id: string | null;
+  readonly message: string;
+}
+
+/** One external-change step and what the UI/server showed after it. */
+export interface ExternalStepReport {
+  readonly step: string;
+  readonly change: string;
+  readonly spanLabel: string | null;
+  readonly viewStartHz: number | null;
+  readonly viewEndHz: number | null;
+  readonly coverageStartHz: number | null;
+  readonly coverageEndHz: number | null;
+  readonly stateFreqHz: number | null;
+  readonly writesDelta: number;
+  readonly grantsDelta: number;
+  readonly setFreqDelta: number;
+  readonly ok: boolean;
+  readonly note: string;
 }
 
 export type InvariantId = 1 | 2 | 3 | 4 | 5 | 6 | 7;
@@ -176,11 +216,19 @@ const SUBSET_SPAN = 100_000;
 const SUBSET_SPAN_VARIANTS = [5_000, 500_000];
 const SPAN_VARIANT_PATHS: readonly MatrixPath[] = ['click-spectrum', 'drag-pan', 'zoom', 'span-steps'];
 
-function cell(path: MatrixPath, radio: RadioKind, spanHz: number | null, dpr: 1 | 2 = 1): MatrixCell {
+function cell(
+  path: MatrixPath, radio: RadioKind, spanHz: number | null,
+  dpr: 1 | 2 = 1, serverArgs: readonly string[] = [],
+): MatrixCell {
   const span = spanHz === null ? 'default' : String(spanHz);
   const dprTag = dpr === 2 ? '-dpr2' : '';
-  return { id: `${radio}-${path}-${span}${dprTag}`, path, radio, spanHz, dpr };
+  return { id: `${radio}-${path}-${span}${dprTag}`, path, radio, spanHz, dpr, serverArgs };
 }
+
+// The ack-tracker cell models a slow radio link with one refused
+// background read: every CI-V answer lands past the 120 ms ack-tracker
+// grace, and the next matching 1C 01 (tuner status) read gets one FA.
+const ACK_TRACKER_ARGS: readonly string[] = ['--slow-civ-ms', '150', '--refuse-once', '1C:01'];
 
 /**
  * The subset follows the brief's representative plan: every path × IC-705
@@ -195,11 +243,12 @@ export function generateCells(scope: MatrixScope): MatrixCell[] {
   for (const radio of radios) {
     const preset = radio === 'audiofft' || radio === 'iqfft';
     for (const path of MATRIX_PATHS) {
+      const extraArgs = path === 'ack-tracker' ? ACK_TRACKER_ARGS : [];
       if (scope === 'subset') {
-        cells.push(cell(path, radio, preset ? null : SUBSET_SPAN));
+        cells.push(cell(path, radio, preset ? null : SUBSET_SPAN, 1, extraArgs));
       } else {
         const spans = preset ? [null] : [2_500, 5_000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000, null];
-        for (const span of spans) cells.push(cell(path, radio, span));
+        for (const span of spans) cells.push(cell(path, radio, span, 1, extraArgs));
       }
     }
   }

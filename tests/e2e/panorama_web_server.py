@@ -2,8 +2,20 @@
 
 Also the entry point of the MOR-4388 acceptance matrix: the extra optional
 flags (``--scope-source``, ``--static-dir``, ``--enable-audio``,
-``--signal-amplitude``, ``--iq``) only add knobs the matrix cells need; the
-journey spec's invocation is unchanged.
+``--signal-amplitude``, ``--iq``, ``--slow-civ-ms``, ``--refuse-once``) only
+add knobs the matrix cells need; the journey spec's invocation is unchanged.
+
+MOR-4388 NAK evidence: ``_civ_nak`` records every NAK with the refused CI-V
+frame when the refused packet arrived on the CI-V port (a real refused
+command); NAKs answering handshake/control packets keep an empty frame and
+the matrix tolerates them as choreography. ``--slow-civ-ms`` defers whole
+CI-V command processing past the ack-tracker grace (a slow radio link), and
+``--refuse-once CMD[:SUB]`` answers the next matching command with one FA
+(a refused background read like the IC-705 tuner-status read 1C 01). The
+``<evidence>.extchange.json`` trigger file applies external radio changes
+(VFO, span, scope mode, fixed edges) directly to simulator state — never
+via CI-V, never with scope-write receipts — modelling a front-panel or
+second-controller change for the external-change matrix row.
 """
 
 from __future__ import annotations
@@ -66,6 +78,8 @@ class PanoramaSimulator(MockIcomRadio):
         *,
         enable_audio: bool = False,
         signal_amplitude: int = 0,
+        slow_civ_ms: int = 0,
+        refuse_once: tuple[int, int | None] | None = None,
     ) -> None:
         self.profile = resolve_radio_profile(model=model)
         super().__init__(
@@ -85,15 +99,24 @@ class PanoramaSimulator(MockIcomRadio):
         self.scope_controls: dict[int, int] = {}
         self.fixed = (14_200_000, 14_300_000)
         self.signal_amplitude = signal_amplitude
+        self.slow_civ_ms = slow_civ_ms
+        self.refuse_once = refuse_once
         self._last_nak_payload = b""
+        self._last_nak_was_civ = False
         self.set_frequency(14_250_000)
 
     def _civ_nak(self, to: int, frm: int) -> bytes:
+        # Only a packet that arrived on the CI-V port can carry a refused
+        # CI-V command: the CI-V frame starts past the 0x15-byte LAN header,
+        # so the old data[:20] slice never contained it and every NAK looked
+        # like handshake choreography. Handshake/control NAKs keep an empty
+        # frame and stay tolerated by invariant 5.
         frame = b""
-        index = self._last_nak_payload.find(b"\xfe\xfe")
-        if index >= 0:
-            end = self._last_nak_payload.find(b"\xfd", index)
-            frame = self._last_nak_payload[index : end + 1 if end > 0 else None]
+        if self._last_nak_was_civ:
+            index = self._last_nak_payload.find(b"\xfe\xfe")
+            if index >= 0:
+                end = self._last_nak_payload.find(b"\xfd", index)
+                frame = self._last_nak_payload[index : end + 1 if end > 0 else None]
         with self.nak_evidence.open("a") as stream:
             stream.write(NakReceipt(time.time(), to, frm, frame.hex()).to_json() + "\n")
         return super()._civ_nak(to, frm)
@@ -110,8 +133,52 @@ class PanoramaSimulator(MockIcomRadio):
     ) -> None:
         # Remember the packet being dispatched so a NAK it triggers carries
         # the refused payload (MOR-4388 invariant 5 evidence).
-        self._last_nak_payload = data[:20]
+        self._last_nak_payload = data if label == "civ" else b""
+        self._last_nak_was_civ = label == "civ"
         super()._dispatch(data, addr, ptype, sender_id, seq, label, proto)
+
+    def _handle_civ_data(
+        self,
+        data: bytes,
+        addr: tuple[str, int],
+        sender_id: int,
+        proto: object,
+    ) -> None:
+        # MOR-4388 slow-link mode: defer whole CI-V command processing past
+        # the ack-tracker grace (default 120 ms in Core), so every FB/FA
+        # answer lands late — the base _handle_civ already routed by packet
+        # type, so anything reaching here is a real CI-V command packet and
+        # the deferred wrap+send keeps LAN sequence order intact.
+        if self.slow_civ_ms > 0:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                loop.call_later(
+                    self.slow_civ_ms / 1000.0,
+                    super()._handle_civ_data,
+                    data,
+                    addr,
+                    sender_id,
+                    proto,
+                )
+                return
+        super()._handle_civ_data(data, addr, sender_id, proto)
+
+    def _dispatch_civ(self, cmd: int, payload: bytes, from_addr: int) -> bytes | None:
+        # MOR-4388 one-shot refusal: the next matching background read gets
+        # one FA (a refused background read like the IC-705 tuner-status
+        # read 1C 01). The receipt is written by _civ_nak as usual.
+        armed = self.refuse_once
+        if (
+            armed is not None
+            and cmd == armed[0]
+            and (armed[1] is None or payload[:1] == bytes([armed[1]]))
+        ):
+            self.refuse_once = None
+            return self._civ_nak(from_addr, self._radio_addr)
+        return super()._dispatch_civ(cmd, payload, from_addr)
 
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
         if payload and payload[0] == 0x1E and len(payload) == 3:
@@ -234,7 +301,45 @@ class PanoramaSimulator(MockIcomRadio):
             )
         return bytes(shaped)
 
+    def _apply_external_change(self, change: dict[str, object]) -> None:
+        # An external change (front panel, second controller over its own
+        # CI-V) bypasses Core entirely: direct simulator state, no CI-V
+        # traffic, no scope-write receipts. Unknown keys and out-of-preset
+        # spans are ignored with a log line, never applied half-way.
+        applied: list[str] = []
+        freq = change.get("freq_hz")
+        if isinstance(freq, int) and freq > 0:
+            self.set_frequency(freq)
+            applied.append(f"freq={freq}")
+        span = change.get("span_hz")
+        if isinstance(span, int) and span in self.profile.scope_span_presets_hz:
+            self.span_index = self.profile.scope_span_presets_hz.index(span)
+            applied.append(f"span={span}")
+        mode = change.get("scope_mode")
+        if mode in (0, 1):
+            self.scope_mode = mode
+            applied.append(f"mode={mode}")
+        fixed = change.get("fixed")
+        if (
+            isinstance(fixed, list)
+            and len(fixed) == 2
+            and all(isinstance(edge, int) for edge in fixed)
+        ):
+            self.fixed = (fixed[0], fixed[1])
+            applied.append(f"fixed={fixed[0]}..{fixed[1]}")
+        logging.info("panorama external change applied: %s", ",".join(applied) or "none")
+
     def pump_scope_stream(self) -> int:
+        trigger = self.evidence.with_suffix(".extchange.json")
+        if trigger.exists():
+            try:
+                change = json.loads(trigger.read_text())
+            except (OSError, ValueError):
+                change = {}
+            finally:
+                trigger.unlink(missing_ok=True)
+            if isinstance(change, dict):
+                self._apply_external_change(change)
         if self.evidence.with_suffix(".pause").exists():
             return 0
         span = self.profile.scope_span_presets_hz[self.span_index]
@@ -277,14 +382,36 @@ async def run() -> None:
         action="store_true",
         help="register the deterministic FakeIqSource (MOR-4388 IQ cells)",
     )
+    parser.add_argument(
+        "--slow-civ-ms",
+        type=int,
+        default=0,
+        help="defer CI-V command processing by this many ms (MOR-4388 "
+        "slow-link mode: every FB/FA answer lands past the ack-tracker grace)",
+    )
+    parser.add_argument(
+        "--refuse-once",
+        default=None,
+        help="one-shot FA for the next matching CI-V command, CMD[:SUB] hex "
+        "(MOR-4388 refused background read, e.g. 1C:01 tuner status)",
+    )
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
+    refuse_once: tuple[int, int | None] | None = None
+    if args.refuse_once is not None:
+        parts = args.refuse_once.split(":")
+        refuse_once = (
+            int(parts[0], 16),
+            int(parts[1], 16) if len(parts) > 1 else None,
+        )
     simulator = PanoramaSimulator(
         args.model,
         args.evidence,
         enable_audio=args.enable_audio,
         signal_amplitude=args.signal_amplitude,
+        slow_civ_ms=args.slow_civ_ms,
+        refuse_once=refuse_once,
     )
     await simulator.start()
     radio = IcomRadio(

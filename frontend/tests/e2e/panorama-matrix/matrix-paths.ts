@@ -8,7 +8,11 @@
 // presets) turn the cell into an honest 'na' instead of a failure.
 
 import { expect, type Browser, type Page } from '@playwright/test';
-import type { InvariantId } from './matrix-contract';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import type {
+  ExternalStepReport, InvariantId, NakExpectation,
+} from './matrix-contract';
+import { parseNakReceipt, parseReceiptLines, parseScopeWriteReceipt } from './matrix-contract';
 import type { PageObservations } from './matrix-instrument';
 
 export type WriteExpectation =
@@ -28,6 +32,12 @@ export interface PathReport {
   readonly clickTargetHz: number | null;
   /** The simulator's injected-bump fraction of the radio window (0.625 centre, 0.40 fixed edges); default 0.625. */
   readonly bumpFraction?: number;
+  /** Invariant 5 demand; default { kind: 'reads-tolerated' } (only the ack-tracker cell overrides). */
+  readonly naks?: NakExpectation;
+  /** Command errors (failed WS responses, server errors) seen during the path; default []. */
+  readonly commandErrors?: string[];
+  /** External-change step observations (only the external-change path sets it). */
+  readonly external?: ExternalStepReport[];
 }
 
 export interface PathContext {
@@ -38,6 +48,7 @@ export interface PathContext {
   readonly source: 'hardware' | 'audio_fft' | 'iq_fft';
   readonly spanHz: number | null;
   readonly observations: PageObservations;
+  readonly evidencePath: string;
   readonly restartServer: () => Promise<void>;
   readonly currentSpanHz: () => number | null;
 }
@@ -119,14 +130,11 @@ async function settle(page: Page, ms = 2500): Promise<void> {
 }
 
 const NO_WRITES: WriteExpectation = { kind: 'none' };
-// A follow-view tune legitimately re-centres the radio scope: the server's
-// set_center writes receiver (0x12), mode (0x14) and span (0x15). Stray
-// would be anything else — in particular fixed-edge (0x1E) writes.
-const RECENTER_WRITES: WriteExpectation = { kind: 'contains', subs: [0x15], forbidden: [0x1e] };
-// Non-hardware scope sources (audio-FFT, SDR) have no radio scope to
-// program: any tune expectation there must demand zero radio writes.
-const tuneWrites = (ctx: PathContext): WriteExpectation =>
-  ctx.source !== 'hardware' ? NO_WRITES : RECENTER_WRITES;
+// Tunes never touch the radio scope on rc8: WebRadioScopeWriter.set_center
+// returns without writing when receiver/mode/span are unchanged
+// (src/rigplane/web/scope_sources.py), and a tune changes none of them —
+// the view follows the VFO frontend-side. Any radio write during a tune
+// path is therefore stray, on every source kind.
 
 // ── paths ──────────────────────────────────────────────────────────────────
 
@@ -141,13 +149,13 @@ async function pathClickTune(ctx: PathContext, area: 'spectrum' | 'waterfall', f
   const note = `clicked ${area} at fraction ${fraction}; axis target ${targetHz ?? '?'} Hz, step ${step ?? '?'} Hz`;
   if (targetHz !== null) {
     return {
-      summary: note, na: {}, writes: tuneWrites(ctx),
+      summary: note, na: {}, writes: NO_WRITES,
       setFreq: { kind: 'strict', values: [toHz], toleranceHz: Math.max(step ?? 1000, 1000), note },
       clickTargetHz: targetHz,
     };
   }
   return {
-    summary: `${note}; axis unavailable, consistency only`, na: {}, writes: tuneWrites(ctx),
+    summary: `${note}; axis unavailable, consistency only`, na: {}, writes: NO_WRITES,
     setFreq: { kind: 'consistency', note }, clickTargetHz: null,
   };
 }
@@ -166,7 +174,7 @@ async function pathDragPan(ctx: PathContext): Promise<PathReport> {
   return {
     summary: note,
     na: {},
-    writes: tuned ? tuneWrites(ctx) : NO_WRITES,
+    writes: NO_WRITES,
     setFreq: tuned
       ? { kind: 'consistency', note: `${note}; direction semantics is the design's call (MOR-4387), consistency checked only` }
       : { kind: 'no-change' },
@@ -193,7 +201,7 @@ async function tuneStepsAfterClick(ctx: PathContext, method: 'arrows' | 'wheel')
   if (step === null) {
     return {
       summary: `${method} tuning after a click-tune; step readout unparseable, uniform-delta consistency checked`,
-      na: {}, writes: tuneWrites(ctx),
+      na: {}, writes: NO_WRITES,
       setFreq: { kind: 'consistency', note: `click ${clickedHz}, final ${finalHz}` },
       clickTargetHz: null,
     };
@@ -202,7 +210,7 @@ async function tuneStepsAfterClick(ctx: PathContext, method: 'arrows' | 'wheel')
   return {
     summary: `${method} tuning ×${presses} after a click-tune with step ${step} Hz`,
     na: {},
-    writes: tuneWrites(ctx),
+    writes: NO_WRITES,
     setFreq: { kind: 'strict', values: [expected], toleranceHz: Math.max(1, Math.round(step / 100)), note: `click ${clickedHz} + ${presses}×${step}` },
     clickTargetHz: null,
   };
@@ -228,7 +236,7 @@ async function pathDigitWheel(ctx: PathContext): Promise<PathReport> {
   const place = 10_000;
   return {
     summary: `wheel-down on the 10 kHz digit (${fromHz} → ${toHz})`,
-    na: {}, writes: tuneWrites(ctx),
+    na: {}, writes: NO_WRITES,
     setFreq: toHz === fromHz
       ? { kind: 'consistency', note: 'digit wheel produced no frequency change' }
       : { kind: 'strict', values: [fromHz - place], toleranceHz: 1, note: `one notch down on the 10 kHz digit of ${fromHz}` },
@@ -504,7 +512,7 @@ async function pathTwoClients(ctx: PathContext): Promise<PathReport> {
       summary: `second client opened; client 1 click-tuned ${fromHz}→${toHz}; client 2 shows ${display2.replace(/\D/g, '')}`,
       // The path performs a click-tune, so a hardware re-centre is
       // legitimate; only a non-hardware source must stay writeless.
-      na: {}, writes: tuneWrites(ctx),
+      na: {}, writes: NO_WRITES,
       setFreq: { kind: 'consistency', note: 'two-client tuning consistency: both displays must agree with the state' },
       clickTargetHz: null,
     };
@@ -536,7 +544,208 @@ export async function runPath(path: PathId, ctx: PathContext): Promise<PathRepor
     case 'fullscreen': return pathFullscreen(ctx);
     case 'resize-dpr': return pathResizeDpr(ctx);
     case 'two-clients': return pathTwoClients(ctx);
+    case 'ack-tracker': return pathAckTracker(ctx);
+    case 'external-change': return pathExternalChange(ctx);
   }
+}
+
+// ── ack-tracker (MOR-4388 + MOR-4384): no false NAKs on a slow link ─────────
+
+async function receiptCounts(evidencePath: string): Promise<{ writes: number; civNaks: number }> {
+  const read = async <T>(file: string, parse: (line: string) => T): Promise<T[]> => {
+    try {
+      return parseReceiptLines(await readFile(file, 'utf8'), parse);
+    } catch {
+      return [];
+    }
+  };
+  const writes = await read(evidencePath, parseScopeWriteReceipt);
+  const naks = await read(`${evidencePath.slice(0, -'.jsonl'.length)}.nak.jsonl`, parseNakReceipt);
+  return { writes: writes.length, civNaks: naks.filter(nak => nak.civHex.length > 0).length };
+}
+
+async function pathAckTracker(ctx: PathContext): Promise<PathReport> {
+  const errorsBefore = ctx.observations.commandErrors.length;
+  // Several click-tunes raise the odds that a late FA is in flight while a
+  // set_freq waiter is registered (the MOR-4384 misattribution needs that
+  // overlap); every tune must still land and report success. pathClickTune
+  // throws when a tune never lands, so reaching the return means all five
+  // applied on the radio.
+  let last: PathReport | null = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    last = await pathClickTune(ctx, 'spectrum', 0.30 + 0.08 * attempt);
+  }
+  const commandErrors = ctx.observations.commandErrors.slice(errorsBefore).map(entry => entry.message);
+  return {
+    summary: `5 click-tunes on a slow link (150 ms answers, one armed 1C:01 refusal); ${commandErrors.length} command error(s) during the path`,
+    na: {},
+    writes: NO_WRITES,
+    setFreq: last?.setFreq ?? { kind: 'consistency', note: 'no tune completed' },
+    clickTargetHz: last?.clickTargetHz ?? null,
+    naks: { kind: 'armed-refusal', cmd: 0x1c, sub: 0x01 },
+    commandErrors,
+  };
+}
+
+// ── external change on the radio (owner row, MOR-4388 notes-next) ───────────
+// The change is applied directly to simulator state (trigger file), never
+// via Core: no CI-V from us, no scope-write receipts. The owner invariant:
+// RigPlane adopts the radio's value (SPAN label + view follow the new
+// coverage, zoom stays a crop inside), no hatch, zero scope writes from us,
+// no loop (no set_freq from us, no re-subscribe storm).
+
+async function readSpanLabel(page: Page): Promise<string | null> {
+  const text = await page.getByTestId('scope-span-value').first().innerText().catch(() => '');
+  return text === '' ? null : text;
+}
+
+interface ExternalSnapshot {
+  readonly view: readonly [number, number] | null;
+  readonly coverage: readonly [number, number] | null;
+  readonly writes: number;
+  readonly grants: number;
+  readonly setFreqs: number;
+  readonly freq: number;
+  readonly spanLabel: string | null;
+}
+
+async function pathExternalChange(ctx: PathContext): Promise<PathReport> {
+  if (ctx.source !== 'hardware') {
+    return {
+      summary: 'external radio change on a non-hardware scope source',
+      na: {
+        1: 'no radio VFO on this source',
+        2: 'no radio span on this source',
+        3: 'no radio span presets on this source',
+        4: 'no radio scope writes possible',
+      },
+      writes: NO_WRITES, setFreq: { kind: 'no-change' }, clickTargetHz: null,
+    };
+  }
+  const triggerFile = `${ctx.evidencePath.slice(0, -'.jsonl'.length)}.extchange.json`;
+  const failures: string[] = [];
+  const steps: ExternalStepReport[] = [];
+
+  const snapshot = async (): Promise<ExternalSnapshot> => {
+    const lastFrame = ctx.observations.frames.at(-1) ?? null;
+    const lastGrant = ctx.observations.grants.at(-1) ?? null;
+    const counts = await receiptCounts(ctx.evidencePath);
+    return {
+      view: lastFrame ? [lastFrame.view[0], lastFrame.view[1]]
+        : lastGrant ? [lastGrant.view.startHz, lastGrant.view.endHz] : null,
+      coverage: lastFrame ? [lastFrame.coverage[0], lastFrame.coverage[1]] : null,
+      writes: counts.writes,
+      grants: ctx.observations.grants.length,
+      setFreqs: ctx.observations.commands.filter(command => command.name === 'set_freq').length,
+      freq: await stateFreq(ctx.page, ctx.port),
+      spanLabel: await readSpanLabel(ctx.page),
+    };
+  };
+
+  const applyExternal = async (step: string, change: Record<string, unknown>): Promise<boolean> => {
+    await writeFile(triggerFile, JSON.stringify(change));
+    try {
+      await expect.poll(async () => {
+        try {
+          await stat(triggerFile);
+          return 'pending';
+        } catch {
+          return 'applied';
+        }
+      }, { timeout: 10_000 }).toBe('applied');
+      return true;
+    } catch {
+      failures.push(`${step}: the simulator did not apply ${JSON.stringify(change)} within 10 s`);
+      return false;
+    }
+  };
+
+  const recordStep = async (
+    step: string, change: Record<string, unknown>, note: string, ok: boolean,
+    before: ExternalSnapshot, after: ExternalSnapshot,
+  ): Promise<void> => {
+    if (!ok) failures.push(`${step}: ${note}`);
+    steps.push({
+      step, change: JSON.stringify(change), spanLabel: after.spanLabel,
+      viewStartHz: after.view?.[0] ?? null, viewEndHz: after.view?.[1] ?? null,
+      coverageStartHz: after.coverage?.[0] ?? null, coverageEndHz: after.coverage?.[1] ?? null,
+      stateFreqHz: after.freq,
+      writesDelta: after.writes - before.writes,
+      grantsDelta: after.grants - before.grants,
+      setFreqDelta: after.setFreqs - before.setFreqs,
+      ok, note,
+    });
+  };
+
+  const quiet = (before: ExternalSnapshot, after: ExternalSnapshot): string | null => {
+    if (after.writes - before.writes !== 0) return `us-scope-writes=${after.writes - before.writes}`;
+    if (after.setFreqs - before.setFreqs !== 0) return `us-set_freq=${after.setFreqs - before.setFreqs}`;
+    if (after.grants - before.grants > 2) return `grants-storm=${after.grants - before.grants}`;
+    return null;
+  };
+
+  // 1. VFO knob on the radio: 14.25 → 14.18 MHz.
+  let before = await snapshot();
+  if (await applyExternal('vfo', { freq_hz: 14_180_000 })) {
+    await settle(ctx.page, 3000);
+    const after = await snapshot();
+    const adopted = after.freq === 14_180_000;
+    const noise = quiet(before, after);
+    await recordStep('vfo', { freq_hz: 14_180_000 },
+      adopted ? (noise ?? 'state follows the radio VFO') : `state freq ${after.freq}, radio at 14180000`,
+      adopted && noise === null, before, after);
+    before = after;
+  }
+  // 2. Span knob on the radio: 100 kHz → 50 kHz.
+  if (await applyExternal('span', { span_hz: 50_000 })) {
+    await settle(ctx.page, 3000);
+    const after = await snapshot();
+    const width = after.view === null ? null : after.view[1] - after.view[0];
+    const adopted = width === 50_000;
+    const labelMoved = after.spanLabel !== before.spanLabel;
+    const noise = quiet(before, after);
+    await recordStep('span', { span_hz: 50_000 },
+      !adopted ? `view width ${width}, radio span 50000`
+        : !labelMoved ? `SPAN label stuck at ${after.spanLabel}`
+        : (noise ?? 'view and SPAN label follow the radio span'),
+      adopted && labelMoved && noise === null, before, after);
+    before = after;
+  }
+  // 3. Scope mode on the radio: centre → FIX (fixed edges 14.2–14.3 MHz).
+  if (await applyExternal('mode-fixed', { scope_mode: 1 })) {
+    await settle(ctx.page, 3000);
+    const after = await snapshot();
+    const adopted = after.coverage?.[0] === 14_200_000 && after.coverage?.[1] === 14_300_000;
+    const noise = quiet(before, after);
+    await recordStep('mode-fixed', { scope_mode: 1 },
+      adopted ? (noise ?? 'coverage follows the fixed edges')
+        : `coverage ${after.coverage?.join('..')}, fixed 14200000..14300000`,
+      adopted && noise === null, before, after);
+    before = after;
+  }
+  // 4. Restore the default state so the post-path invariants evaluate.
+  if (await applyExternal('restore', { scope_mode: 0, span_hz: 100_000, freq_hz: 14_250_000 })) {
+    await settle(ctx.page, 3000);
+    const after = await snapshot();
+    const width = after.view === null ? null : after.view[1] - after.view[0];
+    const restored = after.freq === 14_250_000 && width === 100_000;
+    const noise = quiet(before, after);
+    await recordStep('restore', { scope_mode: 0, span_hz: 100_000, freq_hz: 14_250_000 },
+      restored ? (noise ?? 'default state restored') : `freq ${after.freq}, width ${width}`,
+      restored && noise === null, before, after);
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`external radio change not adopted:\n${failures.join('\n')}\nsteps: ${JSON.stringify(steps)}`);
+  }
+  return {
+    summary: `external VFO/span/mode/restore adopted: ${steps.map(step => `${step.step}(${step.note})`).join('; ')}`,
+    na: { 3: 'the radio span is set externally; no covering-preset request exists' },
+    writes: NO_WRITES,
+    setFreq: { kind: 'no-change' },
+    clickTargetHz: null,
+    external: steps,
+  };
 }
 
 export { stateFreq, vfoDisplayHz, waitForFrames, settle, readStepHz };
