@@ -106,6 +106,9 @@ export interface ControlRange {
   display_unit?: string;
   decode_quantum?: number;
   encode_rounding?: string;
+  /** Whole-watt CI-V power write lattice (MOR-4352), backend-validated;
+   *  pass-through data for the client, published beside the raw band. */
+  write_quantum_w?: number;
   style?: string;
 }
 
@@ -359,6 +362,7 @@ const DOMAIN_REQUIRED_KEYS = [
 const DOMAIN_KEYS = new Set([
   ...DOMAIN_REQUIRED_KEYS, 'style', 'range_min', 'range_max',
   'raw_center', 'display_center', 'decode_quantum', 'encode_rounding', 'lookup',
+  'write_quantum_w',
 ]);
 const EXPLICIT_DOMAIN_KEYS = new Set([
   'raw_step', 'raw_origin', 'display_step', 'display_origin', 'display_center',

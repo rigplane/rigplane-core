@@ -75,6 +75,7 @@ from rigplane.profiles import (
     KeyboardConfig,
     MemoryProfile,
     MeterCalibrationPoint,
+    PowerWriteQuantum,
     RadioProfile,
     RuleSpec,
     TxPolicy,
@@ -118,6 +119,7 @@ _CONTROL_KEYS = {
     "display_unit",
     "decode_quantum",
     "encode_rounding",
+    "write_quantum_w",
     "mapping",
     "quantization",
     "restoration",
@@ -368,6 +370,30 @@ def _parse_control_spec(
         raise RigLoadError(
             f"{prefix}.style must be one of {VALID_CONTROL_STYLES}, got {style!r}"
         )
+
+    # MOR-4352: the whole-watt CI-V power write quantum. Validated before
+    # the band checks below so a quantum without its raw band reports the
+    # quantum, not the half-declared band pair.
+    if "write_quantum_w" in raw:
+        quantum = raw["write_quantum_w"]
+        if control_name != "rf_power":
+            raise RigLoadError(
+                f"{prefix}.write_quantum_w is only valid on [controls.rf_power]"
+            )
+        _control_number(quantum, f"{prefix}.write_quantum_w")
+        if not quantum > 0:
+            raise RigLoadError(f"{prefix}.write_quantum_w must be > 0")
+        if set(raw) & _EXPLICIT_CONTROL_DOMAIN_KEYS:
+            raise RigLoadError(
+                f"{prefix}.write_quantum_w is a legacy-band key and cannot be "
+                "combined with an explicit domain"
+            )
+        missing_band = [key for key in ("raw_min", "raw_max") if key not in raw]
+        if missing_band:
+            raise RigLoadError(
+                f"{prefix}.write_quantum_w requires the declared raw band "
+                f"(raw_min/raw_max); missing {missing_band!r}"
+            )
 
     for first, last, integer in (
         ("range_min", "range_max", True),
@@ -689,6 +715,9 @@ class RigConfig:
     filter_config: dict[str, FilterWidthRule] | None = None
     max_watts: int | None = None
     min_watts: int | None = None
+    # MOR-4352: ``[controls.rf_power].write_quantum_w`` lifted beside the
+    # other power facts. ``None`` for every radio that declares none.
+    power_write_quantum: PowerWriteQuantum | None = None
     data_mode_count: int = 0
     data_mode_labels: dict[str, str] | None = None
     data_mode_inputs: tuple[tuple[int, str], ...] | None = None
@@ -924,6 +953,7 @@ class RigConfig:
             filter_config=self.filter_config,
             max_watts=self.max_watts,
             min_watts=self.min_watts,
+            power_write_quantum=self.power_write_quantum,
             att_values=self.att_values,
             att_labels=self.att_labels,
             pre_values=self.pre_values,
@@ -3444,6 +3474,19 @@ def load_rig(path: Path) -> RigConfig:
         if not control_domains:
             control_domains = None
 
+    # MOR-4352: lift the declared whole-watt write quantum of the RF power
+    # control onto the config beside the [power] facts, so the single
+    # power-write encoder (resolve_power_level_target) receives it as one
+    # typed fact instead of every caller re-reading the control table.
+    power_write_quantum: PowerWriteQuantum | None = None
+    rf_power_control = (controls or {}).get("rf_power")
+    if isinstance(rf_power_control, dict) and "write_quantum_w" in rf_power_control:
+        power_write_quantum = PowerWriteQuantum(
+            quantum_w=float(rf_power_control["write_quantum_w"]),
+            raw_min=int(rf_power_control["raw_min"]),
+            raw_max=int(rf_power_control["raw_max"]),
+        )
+
     # Parse [meters] (optional)
     meters_raw = data.get("meters")
     meter_calibrations: dict[str, list[MeterCalibrationPoint]] | None = None
@@ -3663,6 +3706,11 @@ def load_rig(path: Path) -> RigConfig:
             min_watts = min_watts_raw
         if min_watts is not None and max_watts is not None and min_watts > max_watts:
             raise RigLoadError(f"{filename}: [power].min_watts must be <= max_watts")
+    if power_write_quantum is not None and max_watts is None:
+        raise RigLoadError(
+            f"{filename}: [controls.rf_power].write_quantum_w requires "
+            "[power].max_watts"
+        )
     _validate_band_max_power(filename, freq_ranges_data, max_watts)
 
     state_acquisition = _parse_state_acquisition(
@@ -3719,6 +3767,7 @@ def load_rig(path: Path) -> RigConfig:
         filter_config=filter_config,
         max_watts=max_watts,
         min_watts=min_watts,
+        power_write_quantum=power_write_quantum,
         vfo_scheme=scheme,
         vfo_readback=vfo_readback,
         tx_receiver_rule=tx_receiver_rule,

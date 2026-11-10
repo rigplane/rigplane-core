@@ -282,6 +282,29 @@ default = 0
 "420-1000MHz" = [0, 7, 10, 13, 16, 19, 22, 25, 31, 34]
 ```
 
+### RF power write quantum
+
+`[controls.rf_power]` may declare `write_quantum_w` — the fixed watt lattice
+a raw_255 (CI-V) radio stores RF power on (MOR-4352, measured on the Xiegu
+G7250: `W = floor(raw * max_w / 255)` on write, `raw = floor(W * 255 / max_w)`
+on read). With the field declared, a normalized power request resolves to
+the target whole watt and is written as the smallest raw byte whose stored
+watt reads back as that value, so the exact-readback contract holds; the
+declared `raw_min..raw_max` band clamps the watt range. Radios without the
+field (or watts-native CAT radios) keep the direct raw encoding.
+
+```toml
+[controls.rf_power]
+raw_min = 12          # the readable band, both ends measured
+raw_max = 255
+write_quantum_w = 1   # the radio stores whole watts
+```
+
+Loader rules: `write_quantum_w` must be a positive number, is valid only on
+`[controls.rf_power]`, requires the legacy `raw_min`/`raw_max` band (not an
+explicit domain), and requires a valid `[power].max_watts` — the implied
+watt range is derived from the two together.
+
 ---
 
 ## Layer 3: Rules

@@ -30,6 +30,7 @@ from ..core.command_service import (
     CommandServiceResult,
     PendingOverlay,
     command_intent_from_request,
+    resolve_power_level_target,
 )
 from ..core.exceptions import (
     CommandError,
@@ -731,6 +732,11 @@ class _RigctldCommandExecutor:
                 vfo_arg=None
                 if params.get("vfo_arg") is None
                 else str(params["vfo_arg"]),
+                power_native=(
+                    None
+                    if params.get("power_native") is None
+                    else int(params["power_native"])
+                ),
             )
             if error is not HamlibError.OK:
                 raise _RigctldCommandFailure(error)
@@ -2799,6 +2805,22 @@ class RigctldHandler:
         }
         if level == "PREAMP" and self._routing is None:
             params["preamp"] = _preamp_db_to_index(value)
+        # RFPOWER resolves ONCE here, inside intent construction: the same
+        # shared call produces the wire byte (``power_native``) and the
+        # admitted readback (``power_level``) the pending overlay expects,
+        # so a whole-watt radio (MOR-4352) never answers a readback the
+        # write did not store.
+        power_facts: dict[str, Any] = {}
+        if level == "RFPOWER":
+            profile = getattr(self._radio, "profile", None)
+            power_facts = {
+                "power_native_unit": getattr(
+                    self._radio, "native_power_unit", "raw_255"
+                ),
+                "power_max_watts": getattr(profile, "max_watts", None),
+                "power_min_watts": getattr(profile, "min_watts", None),
+                "power_write_quantum": getattr(profile, "power_write_quantum", None),
+            }
         await self._execute_write(
             command_intent_from_request(
                 "set_level",
@@ -2806,6 +2828,7 @@ class RigctldHandler:
                 source="rigctld",
                 command_id=f"rigctld-set-level-{time.monotonic_ns()}",
                 session_id=self._session_id(),
+                **power_facts,
             )
         )
         return _ok()
@@ -2835,6 +2858,7 @@ class RigctldHandler:
         *,
         receiver: int,
         vfo_arg: str | None,
+        power_native: int | None = None,
     ) -> HamlibError:
         if self._routing is not None:
             return HamlibError(
@@ -2845,10 +2869,26 @@ class RigctldHandler:
             # Hamlib publishes RFPOWER on the normalized 0.0-1.0 domain; an
             # out-of-range client value (``L RFPOWER 1.5``) answers EINVAL
             # here with no radio call instead of scaling to an off-band raw
-            # level (MOR-2480).
+            # level (MOR-2480). The raw byte was resolved ONCE when the
+            # intent was built (``power_native``, MOR-4352) — the same
+            # resolution the pending readback expectation came from; the
+            # resolver below only serves an intent that reached this seat
+            # without one.
             if not 0.0 <= value <= 1.0:
                 return HamlibError.EINVAL
-            await self._radio.set_rf_power(round(value * 255))
+            native = power_native
+            if native is None:
+                profile = getattr(self._radio, "profile", None)
+                native, _admitted = resolve_power_level_target(
+                    value,
+                    power_native_unit=getattr(
+                        self._radio, "native_power_unit", "raw_255"
+                    ),
+                    power_max_watts=getattr(profile, "max_watts", None),
+                    power_min_watts=getattr(profile, "min_watts", None),
+                    power_write_quantum=getattr(profile, "power_write_quantum", None),
+                )
+            await self._radio.set_rf_power(int(native))
             return HamlibError.OK
 
         if level in _SET_LEVEL_FLOAT:

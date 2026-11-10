@@ -16,7 +16,9 @@ answers ANY CI-V address and echoes the address it was asked as its own
 answers 7.138000 MHz, ``04`` answers LSB FIL1, ``0x1A 0x03`` answers
 0x33 (2900 Hz through the profile's segmented-BCD table), ``15 02``
 answers ``00 63``, and ``0x1A 0x01`` / ``0x1C 0x01`` NAK. The audit never
-keyed the radio; no SET path is exercised here.
+keyed the radio; the one SET path exercised here (``14 0A`` RF power) is
+answered by a register model fitted to the whole-watt quantum measured on
+the bench (LIVE 2026-11-10), not by a recorded bench reply.
 """
 
 from __future__ import annotations
@@ -28,8 +30,9 @@ from typing import Any
 import pytest
 from rigplane.backends.factory import create_radio
 from rigplane.cli import _build_backend_config, _build_parser
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, _level_bcd_decode, build_civ_frame
 from rigplane.core import serial_open
+from rigplane_testkit.icom import _level_bcd_encode
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.serial import CivSerialFake
 from test_discovery import _make_port
@@ -340,22 +343,55 @@ async def test_nb_and_nr_wire_zero_reads_false(
 # RF power: the Pro TX smoke tool's pre-key round trip (MOR-4352 follow-up)
 # ---------------------------------------------------------------------------
 
-# The 14 0A register rows. The GET pair is the literal bench minimum read
-# (LIVE G7250 2026-11-10: 14 0A answered 00 12; owner-read display 5 W, the
-# menu goes no lower). The SET pair teaches the table that 14 0A writes are
-# ACKed -- inherited from the X6200 family protocol, not probed on the
-# G7250 (the audit never keyed the radio). With it the fake holds the
-# written value like a register, so the poll after a SET reads raw 12 back.
-_RF_POWER_ROWS = [
-    {"dir": "c2r", "frame": "fefe88e0140afd"},
-    {"dir": "r2c", "frame": "fefee088140a0012fd"},
-    {"dir": "c2r", "frame": "fefe88e0140a0012fd"},
-    {"dir": "r2c", "frame": "fefee088fbfd"},
-]
+
+class _G7250QuantizedPowerFake(CivSerialFake):
+    """The G7250's whole-watt RF power register (LIVE 2026-11-10).
+
+    The radio stores ``W = floor(raw * 100 / 255)`` WHOLE WATTS and answers
+    ``14 0A`` reads with ``floor(W * 255 / 100)`` BCD-encoded: the menu
+    minimum (display 5 W) reads ``00 12``, full power (100 W) reads
+    ``02 55`` — the measured rows behind ``[controls.rf_power]`` in
+    rigs/g7250.toml. Writing raw 12 stores 4 W and reads back 10: the exact
+    trap the unquantized encoder fell into on the bench radio.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            model="G7250",
+            civ_addr=0x88,
+            # The constructor refuses a profile without expected_ids; the
+            # bench echo at the session address 0x88 is the cited source.
+            model_id=b"\x88",
+            recorded_answers=_bench_answer_table(),
+            # LIVE G7250 2026-11-09: 03 -> 7.138000 MHz, 04 -> LSB FIL1,
+            # 15 02 -> 00 63, 1C 00 -> 00 (idle).
+            frequency_hz=7_138_000,
+            mode=0x00,
+            filter_width=1,
+            s_meter=63,
+        )
+        # The radio stood at its menu minimum: display 5 W, reads 00 12.
+        self.power_watts = 5
+
+    def _answer(self, parsed: Any, connection: Any, frame: bytes) -> bytes | None:
+        if parsed.command == 0x14 and parsed.sub == 0x0A:
+            if parsed.data:
+                # SET: store the whole watts the raw byte admits.
+                self.power_watts = _level_bcd_decode(parsed.data) * 100 // 255
+                return self._ack()
+            # GET: answer with the raw the stored watts read back as.
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                0x14,
+                sub=0x0A,
+                data=_level_bcd_encode(self.power_watts * 255 // 100),
+            )
+        return super()._answer(parsed, connection, frame)
 
 
 @pytest.mark.asyncio
-async def test_set_rf_power_normalized_minimum_reaches_wire_and_state(
+async def test_set_rf_power_normalized_minimum_lands_on_the_whole_watt_step(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The minimum-power round trip the TX smoke tool gates its key-up on.
@@ -364,9 +400,11 @@ async def test_set_rf_power_normalized_minimum_reaches_wire_and_state(
     ``raw_max == 255``, sets the radio to ``raw_min / 255`` through
     ``POST /api/v1/commands`` with ``level_unit = "normalized"`` and
     requires the ``powerLevel`` readback to reach that minimum before it
-    keys. The same round trip against the bench personality, with only the
-    serial port faked: the wire SET is ``FE FE 88 E0 14 0A 00 12 FD`` and
-    the served state reports the profile minimum.
+    keys. The same round trip against the whole-watt bench personality
+    (only the serial port faked): the wire SET is
+    ``FE FE 88 E0 14 0A 00 13 FD`` — the smallest raw whose stored watt
+    (floor(13 * 100 / 255) = 5 W) reads back as the requested minimum —
+    and the served state reports the profile minimum.
     """
     from rigplane.profiles import get_radio_profile
     from rigplane.web.server import WebConfig, WebServer
@@ -377,20 +415,7 @@ async def test_set_rf_power_normalized_minimum_reaches_wire_and_state(
     raw_min, raw_max = rf_power["raw_min"], rf_power["raw_max"]
     assert raw_max == 255  # the tool's precondition
 
-    fake = CivSerialFake(
-        model="G7250",
-        civ_addr=0x88,
-        # The constructor refuses a profile without expected_ids; the
-        # bench echo at the session address 0x88 is the cited source.
-        model_id=b"\x88",
-        recorded_answers=_bench_answer_table(_RF_POWER_ROWS),
-        # LIVE G7250 2026-11-09: 03 -> 7.138000 MHz, 04 -> LSB FIL1,
-        # 15 02 -> 00 63, 1C 00 -> 00 (idle).
-        frequency_hz=7_138_000,
-        mode=0x00,
-        filter_width=1,
-        s_meter=63,
-    )
+    fake = _G7250QuantizedPowerFake()
     opens: list[tuple[str, int]] = []
     _mount(monkeypatch, fake, opens)
 
@@ -426,14 +451,26 @@ async def test_set_rf_power_normalized_minimum_reaches_wire_and_state(
         assert status == 200, (status, body)
         assert json.loads(body)["ok"] is True
 
-        # The wire SET carries exactly the profile minimum, BCD-encoded.
+        # The wire SET carries raw 13, BCD-encoded: the radio stores 5 W
+        # from it, where the raw_min byte itself (12) would store 4 W and
+        # read back 10 — never reaching the requested minimum.
         assert any(
-            frame.command == 0x14 and frame.sub == 0x0A and frame.data == b"\x00\x12"
+            frame.command == 0x14 and frame.sub == 0x0A and frame.data == b"\x00\x13"
             for frame in fake.commands
         )
+        # The register really holds the 5 W whole-watt step.
+        assert fake.power_watts == 5
 
         state = await _http_state(host, port)
         assert state["powerLevel"] == pytest.approx(raw_min / 255)
+
+        # The whole mechanism is profile data: the measured quantum over the
+        # measured raw band, declared in rigs/g7250.toml.
+        from rigplane.profiles import PowerWriteQuantum
+
+        assert profile.power_write_quantum == PowerWriteQuantum(
+            quantum_w=1, raw_min=raw_min, raw_max=raw_max
+        )
     finally:
         await web.stop()
         await radio.disconnect()

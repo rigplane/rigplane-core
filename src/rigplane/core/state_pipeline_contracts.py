@@ -39,6 +39,7 @@ __all__ = [
     "PANEL_ADJUSTABLE_FIELD_NAMES",
     "PANEL_FIELD_NAMES",
     "PendingPolicy",
+    "PowerWriteQuantum",
     "SourceMetadata",
     "TX_METER_FIELD_NAMES",
     "VfoSlot",
@@ -1114,6 +1115,28 @@ class CommandIntent:
                 for path in value.get("expectedObservations", ())
             ),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class PowerWriteQuantum:
+    """A raw_255 radio that stores RF power on a fixed watt lattice.
+
+    Declared in a profile as ``[controls.rf_power].write_quantum_w``
+    (MOR-4352) and produced by the profile loader; measured on the Xiegu
+    G7250: the radio stores ``W = floor(raw * max_w / 255)`` whole watts
+    and answers reads with ``floor(W * 255 / max_w)`` (writing raw 12 at
+    100 W max stored 4 W and read back 10; the 5 W menu minimum reads
+    12). ``quantum_w`` is the lattice step in watts; the raw band is the
+    control's declared ``raw_min..raw_max``, whose implied watt range
+    clamps a request. Consumed by ``core/command_service.py:
+    resolve_power_level_target`` — the single power-write encoder; the
+    profile loader guarantees ``quantum_w > 0``, a valid
+    ``[power].max_watts`` and a declared raw band.
+    """
+
+    quantum_w: float
+    raw_min: int
+    raw_max: int
 
 
 @dataclass(frozen=True, slots=True)
