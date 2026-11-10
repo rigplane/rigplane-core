@@ -12,7 +12,7 @@ import { readFile, stat, writeFile } from 'node:fs/promises';
 import type {
   ExternalStepReport, InvariantId, NakExpectation,
 } from './matrix-contract';
-import { parseNakReceipt, parseReceiptLines, parseScopeWriteReceipt } from './matrix-contract';
+import { ACK_TRACKER_PROBE_ID, parseNakReceipt, parseReceiptLines, parseScopeWriteReceipt } from './matrix-contract';
 import type { PageObservations } from './matrix-instrument';
 
 export type WriteExpectation =
@@ -574,17 +574,17 @@ async function forceBackgroundTunerRead(page: Page, port: number): Promise<strin
   // get_tuner_status read never transmits. Fired just before the tune loop,
   // the slow link (150 ms deferral) lands its FA mid-tune, which is the
   // MOR-4384 overlap under test.
-  return page.evaluate((targetPort: number) => new Promise<string>(resolve => {
+  return page.evaluate(([targetPort, probeId]: [number, string]) => new Promise<string>(resolve => {
     let settled = false;
     const done = (outcome: string): void => { if (!settled) { settled = true; resolve(outcome); } };
     const ws = new WebSocket(`ws://127.0.0.1:${targetPort}/api/v1/ws`);
     const timer = setTimeout(() => { try { ws.close(); } catch { /* noop */ } done('timeout'); }, 10_000);
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'cmd', name: 'get_tuner_status', id: 'mor4388-ack-probe', params: {} }));
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'cmd', name: 'get_tuner_status', id: probeId, params: {} }));
     ws.onmessage = (event: MessageEvent) => {
       if (typeof event.data !== 'string') return;
       try {
         const incoming = JSON.parse(event.data) as { id?: string; ok?: boolean };
-        if (incoming.id === 'mor4388-ack-probe') {
+        if (incoming.id === probeId) {
           clearTimeout(timer);
           try { ws.close(); } catch { /* noop */ }
           done(incoming.ok === false ? 'refused' : 'answered');
@@ -593,7 +593,7 @@ async function forceBackgroundTunerRead(page: Page, port: number): Promise<strin
     };
     ws.onerror = () => { clearTimeout(timer); done('ws-error'); };
     ws.onclose = () => { clearTimeout(timer); done('closed-no-answer'); };
-  }), port);
+  }), [port, ACK_TRACKER_PROBE_ID] as [number, string]);
 }
 
 async function pathAckTracker(ctx: PathContext): Promise<PathReport> {

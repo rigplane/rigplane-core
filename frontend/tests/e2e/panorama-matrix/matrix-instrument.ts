@@ -11,7 +11,7 @@ import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runt
 import type { ScopeFrame } from '../../../src/lib/runtime/adapters/scope-adapter';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import type { WsCommand, WsIncoming } from '../../../src/lib/types/protocol';
-import type { CommandErrorObservation } from './matrix-contract';
+import { ACK_TRACKER_PROBE_ID, type CommandErrorObservation } from './matrix-contract';
 
 export interface AxisSample { readonly atMs: number; readonly labels: readonly string[] }
 export interface WaterfallRowSummary {
@@ -134,7 +134,9 @@ export function observePage(page: Page, observations: PageObservations): void {
       socket.on('framesent', ({ payload }) => {
         if (typeof payload === 'string') {
           const command = JSON.parse(payload) as WsCommand;
-          if (command.type === 'cmd') observations.commands.push(command);
+          // The ack-tracker probe's own forced read is the scenario, not a
+          // page command: never let it pollute tuning/error evidence.
+          if (command.type === 'cmd' && command.id !== ACK_TRACKER_PROBE_ID) observations.commands.push(command);
         }
       });
       // Command outcomes: a refused command (the ack-tracker false NAK
@@ -147,6 +149,7 @@ export function observePage(page: Page, observations: PageObservations): void {
         } catch {
           return;
         }
+        if (incoming.id === ACK_TRACKER_PROBE_ID) return;
         if (incoming.type === 'response' && incoming.ok === false) {
           observations.commandErrors.push({
             id: incoming.id ?? null,

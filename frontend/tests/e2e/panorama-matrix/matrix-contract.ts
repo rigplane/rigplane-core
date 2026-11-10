@@ -107,6 +107,13 @@ export interface ExternalStepReport {
 }
 
 export type InvariantId = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+
+/**
+ * The control-socket id of the ack-tracker path's forced background read
+ * (matrix-paths forceBackgroundTunerRead). The page's socket tracker ignores
+ * this id: its refused answer is the scenario working, not a page failure.
+ */
+export const ACK_TRACKER_PROBE_ID = 'mor4388-ack-probe';
 export type InvariantStatus = 'pass' | 'fail' | 'na' | 'expected-fail';
 
 export type EvidenceValue = string | number | boolean | null;
