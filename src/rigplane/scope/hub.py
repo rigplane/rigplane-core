@@ -320,11 +320,23 @@ class ScopeHub:
             if client.granted.max_fps == 0:
                 continue
             grant = client.granted
-            view = (
-                source.plugin.resolve_view(client._request.view, frame.receiver)
-                if isinstance(client._request.view, FollowView)
-                else grant.view
-            )
+            if isinstance(client._request.view, FollowView):
+                # MOR-4385: what a follow grant tracks is the source's own
+                # follow semantics (ScopeSourcePlugin.resolve_follow) — the
+                # radio adopts the streamed native coverage (an external
+                # span, centre or VFO change), an FFT source keeps the
+                # requested crop. Following never writes back. Frames
+                # without real data keep the resolved view.
+                if frame.out_of_range:
+                    view = source.plugin.resolve_view(
+                        client._request.view, frame.receiver
+                    )
+                else:
+                    view = source.plugin.resolve_follow(
+                        client._request.view, frame.coverage, frame.receiver
+                    )
+            else:
+                view = grant.view
             coverage = _intersection(view, frame.coverage)
             client.granted = replace(grant, view=view, coverage=coverage)
             key = grant.width, view, coverage

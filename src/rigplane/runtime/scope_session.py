@@ -170,6 +170,29 @@ class ScopeSession:
         async with self._lock:
             self.invalidate_now(connection_epoch=connection_epoch)
 
+    def _adopt_external(self, key: tuple[int, ScopeSetting], value: ScopeValue) -> None:
+        """Take a radio-reported setting as the desired one (MOR-4385).
+
+        The radio is the authority for its scope settings: when an
+        observation differs from what Core last applied and no user
+        intent is pending (desired already equals applied), the
+        observation is an external change — front panel, another
+        controller, another Core on the same radio — so it becomes the
+        new desired state and reconcile never writes Core's stale
+        intent back (no write loop). While a write is in flight
+        (uncertain) a frame may still echo pre-write state, so the
+        observation is recorded but never adopted. Keys Core never
+        desired are only recorded: with nothing desired there is
+        nothing to re-assert.
+        """
+        if (
+            key not in self._uncertain
+            and key in self._desired
+            and self._desired[key] == self._applied.get(key)
+            and self._desired[key] != value
+        ):
+            self._desired[key] = value
+
     def observe(self, name: ScopeSetting, value: ScopeValue, receiver: int = 0) -> None:
         if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
             matching = [
@@ -181,8 +204,10 @@ class ScopeSession:
             ]
             if matching:
                 for key in matching:
+                    self._adopt_external(key, value)
                     self._applied[key] = value
                 return
+        self._adopt_external((receiver, name), value)
         self._applied[receiver, name] = value
         if name == "dual":
             if self.observed is not None:

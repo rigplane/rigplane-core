@@ -120,6 +120,21 @@ class RadioScopeSource:
             return View(center - view.span_hz / 2, center + view.span_hz / 2)
         return view
 
+    def resolve_follow(
+        self, view: FollowView, native: Coverage, receiver: int | None = None
+    ) -> View:
+        """Granted view for a follow request: the native coverage.
+
+        MOR-4385: the radio is the authority for its scope settings.
+        Core drives the radio's span from the request on subscribe, so
+        live native coverage that disagrees with the request is an
+        external change (front panel, another controller, another Core
+        on the same radio) — the grant adopts it instead of holding
+        the last view Core wrote. The request keeps the user's own
+        span; following never writes back.
+        """
+        return native
+
     def coverage_for(self, view: ViewRequest, receiver: int | None = None) -> Coverage:
         resolved = self.resolve_view(view, receiver)
         if not isinstance(view, FollowView):

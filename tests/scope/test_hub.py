@@ -54,6 +54,9 @@ class FakeSource:
             else view
         )
 
+    def resolve_follow(self, view, native, receiver=None):
+        return self.resolve_view(view, receiver)
+
     def coverage_for(self, view, receiver=None):
         return self.coverage
 
