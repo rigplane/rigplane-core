@@ -33,7 +33,7 @@ from rigplane.core import serial_open
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.serial import CivSerialFake
 from test_discovery import _make_port
-from test_web_server import _addr, _http_get
+from test_web_server import _addr, _http_get, _read_http_response
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 _ANSWER_WINDOW_S = 0.2  # compressed CI-V answer window (production: 2.0 s)
@@ -65,8 +65,13 @@ _BENCH_ROWS = [
 ]
 
 
-def _bench_answer_table() -> RecordedAnswerTable:
-    rows = [{"transport": "usb", **row} for row in _BENCH_ROWS]
+def _bench_answer_table(
+    extra_rows: list[dict[str, str]] | None = None,
+) -> RecordedAnswerTable:
+    rows = [
+        {"transport": "usb", **row}
+        for row in [*_BENCH_ROWS, *(extra_rows or [])]
+    ]
     return RecordedAnswerTable.from_civ_pairs(rows, "usb")
 
 
@@ -136,6 +141,31 @@ async def _http_state(host: str, port: int) -> dict:
     status, _, body = await _http_get(host, port, "/api/v1/state")
     assert status == 200, f"GET /api/v1/state: HTTP {status}"
     return json.loads(body)
+
+
+async def _http_post_json(
+    host: str, port: int, path: str, payload: dict
+) -> tuple[int, dict[str, str], bytes]:
+    """Minimal POST with a JSON body over a real socket (mirrors _http_get)."""
+    body = json.dumps(payload).encode()
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(
+            f"POST {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n"
+            "Connection: close\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        return await asyncio.wait_for(_read_http_response(reader), timeout=5.0)
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -306,4 +336,109 @@ async def test_nb_and_nr_wire_zero_reads_false(
         assert (0x16, 0x22) in asked
         assert (0x16, 0x40) in asked
     finally:
+        await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# RF power: the Pro TX smoke tool's pre-key round trip (MOR-4352 follow-up)
+# ---------------------------------------------------------------------------
+
+# The 14 0A register rows. The GET pair is the literal bench minimum read
+# (LIVE G7250 2026-11-10: 14 0A answered 00 12; owner-read display 5 W, the
+# menu goes no lower). The SET pair teaches the table that 14 0A writes are
+# ACKed -- inherited from the X6200 family protocol, not probed on the
+# G7250 (the audit never keyed the radio). With it the fake holds the
+# written value like a register, so the poll after a SET reads raw 12 back.
+_RF_POWER_ROWS = [
+    {"dir": "c2r", "frame": "fefe88e0140afd"},
+    {"dir": "r2c", "frame": "fefee088140a0012fd"},
+    {"dir": "c2r", "frame": "fefe88e0140a0012fd"},
+    {"dir": "r2c", "frame": "fefee088fbfd"},
+]
+
+
+@pytest.mark.asyncio
+async def test_set_rf_power_normalized_minimum_reaches_wire_and_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The minimum-power round trip the TX smoke tool gates its key-up on.
+
+    The tool reads ``[controls.rf_power]`` from the profile, requires
+    ``raw_max == 255``, sets the radio to ``raw_min / 255`` through
+    ``POST /api/v1/commands`` with ``level_unit = "normalized"`` and
+    requires the ``powerLevel`` readback to reach that minimum before it
+    keys. The same round trip against the bench personality, with only the
+    serial port faked: the wire SET is ``FE FE 88 E0 14 0A 00 12 FD`` and
+    the served state reports the profile minimum.
+    """
+    from rigplane.profiles import get_radio_profile
+    from rigplane.web.server import WebConfig, WebServer
+
+    profile = get_radio_profile("G7250")
+    assert profile.controls is not None
+    rf_power = profile.controls["rf_power"]
+    raw_min, raw_max = rf_power["raw_min"], rf_power["raw_max"]
+    assert raw_max == 255  # the tool's precondition
+
+    fake = CivSerialFake(
+        model="G7250",
+        civ_addr=0x88,
+        # The constructor refuses a profile without expected_ids; the
+        # bench echo at the session address 0x88 is the cited source.
+        model_id=b"\x88",
+        recorded_answers=_bench_answer_table(_RF_POWER_ROWS),
+        # LIVE G7250 2026-11-09: 03 -> 7.138000 MHz, 04 -> LSB FIL1,
+        # 15 02 -> 00 63, 1C 00 -> 00 (idle).
+        frequency_hz=7_138_000,
+        mode=0x00,
+        filter_width=1,
+        s_meter=63,
+    )
+    opens: list[tuple[str, int]] = []
+    _mount(monkeypatch, fake, opens)
+
+    args = _build_parser().parse_args(
+        ["--model", "G7250", "--serial-port", _DEVICE, "status"]
+    )
+    config = await _build_backend_config(args)
+
+    radio = create_radio(config)
+    radio._civ_get_timeout = _ANSWER_WINDOW_S
+    radio._enumerate_serial_ports_fn = lambda: []  # no OS port enumeration
+    web = WebServer(
+        radio,
+        WebConfig(host="127.0.0.1", port=0, await_initial_state=True),
+    )
+    try:
+        await asyncio.wait_for(radio.connect(), 30)
+        await asyncio.wait_for(web.start(), 90)
+
+        host, port = _addr(web)
+        status, _, body = await _http_post_json(
+            host,
+            port,
+            "/api/v1/commands",
+            {
+                "name": "set_rf_power",
+                "params": {
+                    "level": raw_min / 255,
+                    "level_unit": "normalized",
+                },
+            },
+        )
+        assert status == 200, (status, body)
+        assert json.loads(body)["ok"] is True
+
+        # The wire SET carries exactly the profile minimum, BCD-encoded.
+        assert any(
+            frame.command == 0x14
+            and frame.sub == 0x0A
+            and frame.data == b"\x00\x12"
+            for frame in fake.commands
+        )
+
+        state = await _http_state(host, port)
+        assert state["powerLevel"] == pytest.approx(raw_min / 255)
+    finally:
+        await web.stop()
         await radio.disconnect()
