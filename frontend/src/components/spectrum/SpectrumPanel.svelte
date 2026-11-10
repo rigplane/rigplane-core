@@ -14,6 +14,7 @@
   } from '../../lib/renderers/spectrum-renderer';
   import {
     defaultWaterfallOptions,
+    type WaterfallFrameIdentity,
     type WaterfallOptions,
     type ColorSchemeName,
   } from '../../lib/renderers/waterfall-renderer';
@@ -207,7 +208,7 @@
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
-  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
+  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null, identity?: WaterfallFrameIdentity) => void) | null = null;
   const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
   let trace: ScopeRenderTrace | null = $state(null);
   let traceStatus: 'idle' | TraceStatus = $state('idle');
@@ -1407,7 +1408,11 @@
         // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
         // panorama holds its last pre-transmit image under the TX marker;
         // only the paint is withheld.
-        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
+        // MOR-4383: the delivery carries the frame identity so the renderer
+        // paints one row group per NEW frame (registration replays dedupe).
+        // Field names come straight from the ScopeFrame contract.
+        const identity: WaterfallFrameIdentity = { seq: frame.seq, epoch: frame.epoch };
+        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token, identity);
         else trace?.record('waterfall_suppressed', token, 0, true);
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
@@ -1656,7 +1661,7 @@
             const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh' && !sdrTxFrozen
               ? runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware')
                 .latest(scopeSlotKey(geometry.sourceId, geometry.receiver)) : null;
-            if (frame?.pixels) fn(frame.pixels, waterfallOptions);
+            if (frame?.pixels) fn(frame.pixels, waterfallOptions, null, { seq: frame.seq, epoch: frame.epoch });
           }}
         />
         <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so

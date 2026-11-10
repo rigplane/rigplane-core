@@ -59,6 +59,15 @@ export const defaultWaterfallOptions: WaterfallOptions = {
   temporalSmoothing: true,
 };
 
+/** Frame identity for the per-frame dedupe (MOR-4383): one row group per NEW
+ * frame. A repeated or stale identity is a registration replay, never a new
+ * row; a new epoch restarts the smoothing state like a geometry change.
+ * Field names match the ScopeFrame contract the delivery maps from. */
+export interface WaterfallFrameIdentity {
+  readonly seq: number;
+  readonly epoch: number;
+}
+
 export class WaterfallRenderError extends Error {
   readonly code = 'webgl-required';
   constructor() { super('WebGL required for the waterfall'); }
@@ -181,6 +190,10 @@ export class WaterfallRenderer {
   private smoothRange = 1;
   private smoothCentre = 0;
   private previousValid = false;
+  // MOR-4383 frame dedupe: the last delivered identity (mirrors the 2D
+  // reference's frameEpoch/lastSeq, both starting at zero = none seen).
+  private frameEpoch = 0;
+  private lastSeq = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
@@ -323,10 +336,25 @@ export class WaterfallRenderer {
     gl.deleteTexture(this.texture); this.texture = texture; this.textureWidth = width;
   }
 
-  pushRow(data: Uint8Array): void {
+  pushRow(data: Uint8Array, identity?: WaterfallFrameIdentity): void {
     if (this.destroyed || !this.program || this.width <= 0 || this.height <= 0) return;
     const offset = this.options.sampleOffset ?? 0, samples = data.length - offset;
     if (samples <= 0) return;
+    // One group per NEW frame: a repeated or older identity is a
+    // registration replay — no rows, no draw. A new epoch restarts the
+    // smoothing state exactly like a geometry change (keep goes false
+    // below via smoothBins/previousValid). Calls without an identity keep
+    // the legacy always-process behaviour.
+    if (identity !== undefined) {
+      if (identity.epoch !== this.frameEpoch) {
+        this.frameEpoch = identity.epoch;
+        this.lastSeq = 0;
+        this.smoothBins = 0;
+        this.previousValid = false;
+      }
+      if (identity.seq <= this.lastSeq) return;
+      this.lastSeq = identity.seq;
+    }
     if (data.length > this.textureWidth) this.growTexture(data.length);
     const gl = this.gl;
     const o = this.options, span = o.sampleSpanHz || o.spanHz || 1;
