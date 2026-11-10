@@ -39,6 +39,10 @@ for (const scheme of ['classic', 'thermal', 'grayscale'] as const) {
       : scheme === 'thermal' ? [255, 197, 0, 255] : [220, 220, 220, 255]);
     expect(result.shifted).toEqual(result.bright);
     expect(result.gap).not.toEqual(result.stripe);
+    // MOR-4383 B1 RED: uncovered columns must read as noise-floor
+    // background, never a hatch mark (x=2 sits outside the granted
+    // coverage; the hatch paints it grey (36,48,60) instead).
+    expect(result.gap).toEqual([0, 16, 32, 255]);
     expect(result.recoloured).not.toEqual(result.bright);
     expect(result.dimmed).not.toEqual(result.recoloured);
     expect(errors).toEqual([]);
