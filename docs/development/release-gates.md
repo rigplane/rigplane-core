@@ -22,6 +22,7 @@ On 2026-10-12 it returned two contexts, `quick` and `Agent Review Gate`; [base-c
 | Merge queue | The tree that lands on `main`: `quick.yml` on the batch, with the queue-side counterpart of the pull-request `Agent Review Gate` | `[self-hosted, linux, light]`, `[self-hosted, linux, build]` | `merge_group` | Required: `quick`, `Agent Review Gate` |
 | Integration | On a schedule, on `main`. There is no run on the push that follows the merge queue: the queue already tested that tree (MOR-3878) | `[self-hosted, linux, build]`, `[self-hosted, macOS, ARM64, platform]`, `[self-hosted, macOS, ARM64, bench]` | `schedule` | Informational |
 | Release Candidate | `full.yml` on a `v*rc*` tag, or dispatched with `rc=true` | `[self-hosted, linux, build]` | `push` of a tag, `workflow_dispatch` | Informational |
+| Rehearsal | `publish.yml` in rehearsal mode (MOR-4375): the release pipeline's `validate` and `build` jobs run untagged — the radio-smoke receipt step and the `publish` job are release-only, so no receipts are downloaded and nothing reaches PyPI | `[self-hosted, linux, build]` | `schedule` (nightly 06:00 UTC, default branch) and `workflow_dispatch` | Informational |
 | Release (Stable) | `publish.yml`: `validate` (including the radio-smoke receipt gate), `build`, `publish` | `[self-hosted, linux, build]` | `release` `published`, pre-releases included | Not a status; the `needs` chain gates the PyPI upload |
 
 ## Development
@@ -78,13 +79,19 @@ gh workflow run full.yml --ref main -f rc=true
 
 The run is a workflow run on `main` or on the tag, not a status on any pull request, and it is informational: no workflow reads its result, and `publish.yml` does not depend on it.
 
+## Rehearsal
+
+Since MOR-4375, `publish.yml` also runs untagged: nightly on the default branch at 06:00 UTC (`schedule`) and on demand (`workflow_dispatch`, no inputs). A rehearsal runs the release pipeline's `validate` and `build` jobs with no release: the radio-smoke receipt step is skipped (`if: github.event_name == 'release'` — there is no release to download receipts from) and the `publish` job is skipped the same way, so a rehearsal never reaches `uv publish` and never touches PyPI. The build job's installed-profile smoke uses `GITHUB_SHA` — the scheduled or dispatched ref's head, no tag needed — and `uv build` versions the wheel from the checked-out `pyproject.toml`.
+
+A candidate is cut only from a commit whose rehearsal run is green on the ref being cut (`AGENTS.md`, "Release-candidate freeze"). GitHub runs scheduled workflows on the default branch only, and Core candidates are cut on `release/<minor>.x` branches, not main: the active release branch is rehearsed with `gh workflow run publish.yml --ref release/<minor>.x` once the trigger change has been carried onto that branch. The rehearsal status is informational — nothing in GitHub requires it.
+
 ## Release (Stable)
 
-`publish.yml` runs on `release` `published`:
+`publish.yml` runs on `release` `published` (its nightly rehearsal triggers are covered above):
 
 1. `validate` on `[self-hosted, linux, build]`, Python 3.12 and 3.13 (3.11 is not in its matrix). After checkout it installs uv and the matrix Python, then the radio-smoke receipt gate runs (see below): it downloads `radio-smoke-rx.json` and `radio-smoke-tx.json` from the triggering release with the job's `GITHUB_TOKEN` and runs `uv run --no-project python scripts/release/check_radio_smoke.py check --tag "$TAG" --git-sha "$GITHUB_SHA"` on them — the matrix interpreter, because the runners' system python3 is 3.10 with no tomllib. A missing asset fails the download; a red receipt fails the checker — either way the job is red before the expensive steps start. The rest of the job: frontend `npm run check`, Vitest and build; Ruff check and format check on `src/` and `tests/`; mypy strict on `src/rigplane/web`; import-linter; `pytest tests/ -n auto -m 'not benchmark'`, so `slow`-marked tests run (`test_publish_validate_runs_the_slow_tests` in `tests/test_ci_pytest_invocation.py`).
 2. `build`, which `needs` `validate`: frontend build, `uv build`, an installed-profile smoke of the wheel, artifact upload.
-3. `publish`, which `needs` `build`: uploads to PyPI through the `pypi` environment. On 2026-10-12 that environment had no protection rules (`gh api repos/rigplane/rigplane-core/environments`), so no approval step sits between `build` and `publish`.
+3. `publish`, which `needs` `build`: uploads to PyPI through the `pypi` environment. On 2026-10-12 that environment had no protection rules (`gh api repos/rigplane/rigplane-core/environments`), so no approval step sits between `build` and `publish`; the job's `if: github.event_name == 'release'` (MOR-4375) is what keeps the nightly rehearsal away from the upload.
 
 The release exists before this workflow starts, so a red `validate` or `build` stops the PyPI upload and leaves the tag and the GitHub Release in place. `publish.yml` has no `prerelease` condition, so it also runs for a release marked pre-release: on 2026-10-12 `gh release list` showed `v3.0.0b15` as a pre-release, and `gh run list --workflow publish.yml` showed a `release`-event run for it. The only workflow that checks the pre-release flag is `dispatch-downstream.yml`, listed below.
 
@@ -135,4 +142,4 @@ A candidate of a different `X.Y.Z`, a malformed sha, a missing repo/commit/tag, 
 
 ## What no workflow enforces
 
-Live radio smoke **is** enforced: since MOR-3839, `publish.yml`'s `validate` job refuses a release whose `radio-smoke-rx.json` or `radio-smoke-tx.json` assets are missing, malformed, attached to the wrong tag or commit, or carry anything but PASS (see "Radio-smoke receipts" above). What no workflow still enforces: a bench-certification night, a 24-hour soak, or an open-issue count as a condition of an RC dispatch or of `publish.yml`. Those remain operator judgement.
+Live radio smoke **is** enforced: since MOR-3839, `publish.yml`'s `validate` job refuses a release whose `radio-smoke-rx.json` or `radio-smoke-tx.json` assets are missing, malformed, attached to the wrong tag or commit, or carry anything but PASS (see "Radio-smoke receipts" above). What no workflow still enforces: a bench-certification night, a 24-hour soak, or an open-issue count as a condition of an RC dispatch or of `publish.yml`. The nightly rehearsal (MOR-4375) likewise runs green or red, but nothing in GitHub mechanically blocks cutting a candidate from a commit whose rehearsal is not green — that condition lives in `AGENTS.md` ("Release-candidate freeze") and remains operator judgement.

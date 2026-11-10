@@ -35,6 +35,15 @@ stabilization freeze of 2026-10-13. What remains is a freeze on a candidate:
   version may change: version files, the lockfile version line and the
   changelog heading. Any other difference is a new candidate (`rcN+1`), which
   is tested again; a moved or reused tag is never allowed.
+- A candidate is cut only from a commit whose nightly rehearsal run
+  (`publish.yml` on `schedule`: the validate and build jobs, no upload) is
+  green on the ref being cut. The nightly schedule runs on `main`; Core
+  candidates are cut on `release/<minor>.x` branches, not main, so the
+  active release branch is rehearsed with
+  `gh workflow run publish.yml --ref release/<minor>.x` once the trigger
+  change has been carried onto that branch.
+- After rc1 only fixes for defects found on that candidate go in; new scope
+  waits for the next release. A P0/P1 customer fix ships right away.
 - Every fix carries a test that fails on the old code, and an integration test
   where it crosses a module boundary.
 - Review is at most two rounds of Codex review; after the second the

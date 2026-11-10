@@ -136,6 +136,27 @@ def test_receipt_step_uses_the_job_github_token_and_release_tag() -> None:
     )
 
 
+def test_receipt_step_is_release_only() -> None:
+    """The nightly rehearsal (MOR-4375) has no release and no receipts.
+
+    `schedule` and `workflow_dispatch` runs of publish.yml exercise the
+    validate matrix without a release object: the receipt step must be
+    gated to `release` events instead of failing every rehearsal on an
+    empty tag or a missing `gh release download` target.
+    """
+    block = _receipt_step_block()
+    match = re.search(r"^        if: (.+)$", block, re.MULTILINE)
+    assert match is not None, (
+        f"the receipt step needs a step-level `if:` gating it to release "
+        f"events; step:\n{block}"
+    )
+    assert match.group(1) == "github.event_name == 'release'", (
+        "the receipt step must run only for release events — every other "
+        "trigger (nightly rehearsal schedule, manual dispatch) has no "
+        "release to download receipts from"
+    )
+
+
 def test_receipt_step_passes_the_repo_to_the_checker() -> None:
     step = _receipt_step()
     assert '--repo "$GITHUB_WORKSPACE"' in step, (
