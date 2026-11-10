@@ -486,6 +486,12 @@ get_nr_level     = [0x14, 0x06]
 set_nr_level     = [0x14, 0x06]
 get_cw_pitch     = [0x14, 0x09]
 set_cw_pitch     = [0x14, 0x09]
+# No CI-V CW keying: the managed full-force release logged stop_cw
+# undeclared (the D1 warning) and the radio has no keyer form on the
+# wire. Both directions are formally absent so the name is never a
+# "neither declared nor declared absent" state-3 gap.
+send_cw          = { absent = "LIVE 2026-11-10 (MOR-4352): no CI-V CW keying; managed release logged stop_cw undeclared" }
+stop_cw          = { absent = "LIVE 2026-11-10 (MOR-4352): no CI-V CW keying; managed release logged stop_cw undeclared" }
 get_rf_power     = [0x14, 0x0A]
 set_rf_power     = [0x14, 0x0A]
 get_mic_gain     = [0x14, 0x0B]

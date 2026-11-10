@@ -748,9 +748,11 @@ async def test_authority_canonical_rigctld_release_precedes_unrelated_cleanup(
             assert not finish_cleanup.is_set() and not state.release_required
             assert state.last_actuation.operation is ActuationOperation.FORCE_RECEIVE
             assert state.last_actuation.result is ActuationResult.ACCEPTED
-            assert {error.operation for error in state.abort_errors} == {
-                AbortOperation.STOP_CW,
-            }
+            # MOR-4352: the daemon protocol has no abort form, so
+            # ``abort_applicable`` is False for every AbortOperation and
+            # STOP_CW is never scheduled -- no abortError for an abort
+            # this backend cannot even express.
+            assert state.abort_errors == ()
         finally:
             finish_cleanup.set()
             if managed is not None:

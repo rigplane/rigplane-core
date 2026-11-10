@@ -2003,6 +2003,27 @@ class YaesuCatRadio:
         """
         await self._write("set_ptt", state="1" if on else "0")
 
+    # The profile command each managed-release abort executes (MOR-4352):
+    # ``actuate`` dispatches STOP_CW to the CAT "KY P1 0" stop (2508-C
+    # printed p.18) and STOP_TUNE to the ``set_tuner`` state-0 write.
+    # ``abort_applicable`` checks these same names, so the executed
+    # command and the applicability decision are one mapping.
+    _ABORT_COMMANDS: Mapping[AbortOperation, str] = {
+        AbortOperation.STOP_CW: "send_cw",
+        AbortOperation.STOP_TUNE: "set_tuner",
+    }
+
+    def abort_applicable(self, operation: AbortOperation) -> bool:
+        """Whether the profile declares the command *operation* executes.
+
+        MOR-4352: an abort the radio cannot execute is not applicable --
+        the effect lane never schedules it and it never surfaces as an
+        ``abortErrors`` entry. Decided by :meth:`supports_command` over
+        ``_ABORT_COMMANDS``, the same names ``actuate`` writes.
+        """
+        command = self._ABORT_COMMANDS.get(operation)
+        return command is not None and self.supports_command(command)
+
     async def actuate(
         self,
         token: EffectToken,
